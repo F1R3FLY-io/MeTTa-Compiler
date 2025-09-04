@@ -1,0 +1,4 @@
+(: $x Bool)
+(= $z "hello")
+{ (add-atom $x $y) (match $z $x $y) }
+(: $r3 String) .

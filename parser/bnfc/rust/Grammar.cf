@@ -1,0 +1,131 @@
+--Program
+Colony            . Prog  ::= [Prog1] "."                                ;
+separator Prog " " ;
+
+--TypeAssertion     . Prog1 ::= Typing                                     ;
+KB                . Prog1 ::= "!" Expr                                   ;
+Query             . Prog1 ::= "?" Expr                                   ;
+Expression        . Prog1 ::= Expr                                       ;
+separator Prog1 " ";
+
+--Types
+TArrow            . Type  ::= "(" "->" Type [Type]")"                    ;
+TGround           . Type  ::= GroundT                                    ;
+TBase             . Type  ::= Atom                                       ;
+separator Type " " ;
+
+TBool             . GroundT ::= "Bool"                                   ;
+TString           . GroundT ::= "String"                                 ;
+TLong             . GroundT ::= "Long"                                   ;
+TUri              . GroundT ::= "URI"                                    ;
+
+--Typing
+Assertion         . Typing ::= "(" ":" Expr Type ")"                     ;
+
+-- Exprs:
+Rule              . Expr ::= "(" "=" Expr Expr ")"                       ;
+AddAtom           . Expr ::= "(" "add-atom" Atom Expr ")"                ;
+RemAtom           . Expr ::= "(" "rem-atom" Atom Expr ")"                ;
+Transform         . Expr ::= "(" "transform" Atom Expr ")"               ;
+Match             . Expr ::= "(" "match" Atom Expr Expr ")"              ;
+Bind              . Expr ::= "(" "bind!" Atom Expr ")"                   ;
+SequentialExt     . Expr  ::= "(" [Expr] ")"                             ;
+SequentialExtNull . Expr  ::= "()"                                       ;
+ConcurrentExt     . Expr  ::= "{" [Expr] "}"                             ;
+ConcurrentExtNull . Expr  ::= "{}"                                       ;
+SequentialInt     . Expr  ::= "(" [Expr] ";" Expr "|" [Receipt] "." [Expr] "|" [Expr] ")"      ;
+ConcurrentInt     . Expr  ::= "{" [Expr] ";" Expr "|" [Receipt] "." [Expr] "|" [Expr] "}"      ;
+TypedAtom         . Expr ::= Typing                                      ;
+Atomic            . Expr  ::= Atom                                       ;
+separator nonempty Expr "" ;
+
+-- Receipts:
+ReceiptLinear     . Receipt ::= ReceiptLinearImpl                       ;
+ReceiptRepeated   . Receipt ::= ReceiptRepeatedImpl                     ;
+ReceiptPeek       . Receipt ::= ReceiptPeekImpl                         ;
+separator nonempty Receipt ";" ;
+
+-- Linear Receipts:
+LinearSimple      . ReceiptLinearImpl ::= [LinearBind]                  ;
+
+-- Single Linear Bind:
+LinearBindImpl    . LinearBind ::= [Name] NameRemainder "<-" AtomSource ;
+separator nonempty LinearBind "&" ;
+
+SimpleSource      . AtomSource ::= Name                                 ;
+ReceiveSendSource . AtomSource ::= Name "?!"                            ;
+SendReceiveSource . AtomSource ::= Name "!?" "(" [Expr] ")"             ;
+
+-- Repeated Receipts:
+RepeatedSimple    . ReceiptRepeatedImpl ::= [RepeatedBind]              ;
+-- Single Repeated Bind:
+RepeatedBindImpl  . RepeatedBind ::= [Name] NameRemainder "<=" Atom     ;
+separator nonempty RepeatedBind "&" ;
+
+-- Peek Receipts:
+PeekSimple        . ReceiptPeekImpl ::= [PeekBind]                      ;
+-- Single Peek:
+PeekBindImpl      . PeekBind ::= [Name] NameRemainder "<<-" Atom        ;
+separator nonempty PeekBind "&" ;
+
+-- Remainders:
+ExprRemainderVar.   ExprRemainder ::= "..." ExprVar                     ;
+ExprRemainderEmpty. ExprRemainder ::= ""                                ;
+NameRemainderVar.   NameRemainder ::= "..." "@" ExprVar                 ;
+NameRemainderEmpty. NameRemainder ::= ""                                ;
+
+-- Atoms:
+Grounded          . Atom ::= Ground                                     ;
+Included          . Atom ::= Builtin                                    ;
+--Free              . Atom ::= Var                                        ;
+Free              . Atom ::= Name                                       ;
+
+-- Names
+NameWildcard      . Name ::= "_"                                        ;
+NameVar           . Name ::= Var                                        ;
+NameQuote         . Name ::= "@" Expr                                   ;
+separator Name "," ;
+
+-- Booleans:
+BoolTrue          . BoolLiteral ::= "true"                              ;
+BoolFalse         . BoolLiteral ::= "false"                             ;
+-- Ground types:
+-- The "Literal" suffix avoids collisions with Simple Types
+GroundBool        . Ground ::= BoolLiteral                              ;
+GroundInt         . Ground ::= LongLiteral                              ;
+GroundString      . Ground ::= StringLiteral                            ;
+GroundUri         . Ground ::= UriLiteral                               ;
+
+-- Builtin:
+Addition            . Builtin ::= "+"                                     ;
+Subtraction         . Builtin ::= "-"                                     ;
+Multiplication      . Builtin ::= "*"                                     ;
+Division            . Builtin ::= "/"                                     ;
+
+LTEqual             . Builtin ::= "<="                                    ;
+LT                  . Builtin ::= "<"                                     ;
+GTEqual             . Builtin ::= ">="                                    ;
+GT                  . Builtin ::= ">"                                     ;
+Equal               . Builtin ::= "=="                                    ;
+
+-- Expr variables:
+ExprVarWildcard   . ExprVar ::= "_"                                     ;
+ExprVarVar        . ExprVar ::= Var                                     ;
+
+-- lexical tokens:
+
+token Var ((('&' | '$' | letter | '\'') (letter | digit | '_' | '\'')*)|(('_') (letter | digit | '_' | '\'')+)) ;
+token StringLiteral ( '"' ((char - ["\"\\"]) | ('\\' ["\"\\nt"]))* '"' )                            ;
+token UriLiteral ('`' ((char - ["\\`"]) | ('\\' ["`\\"]))* '`')                                     ;
+-- Custom integer token according to https://github.com/BNFC/bnfc/issues/153#issuecomment-152612231
+-- notice this shadows the built-in Integer token, which might be a problem if we need integers
+-- in the grammar for other purposes than the integer literal.
+
+position token LongLiteral digit+;
+
+-- Comments:
+comment "//" ;
+comment "/*" "*/" ;
+comment ";" ;
+
+entrypoints Prog, Expr;

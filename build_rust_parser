@@ -34,7 +34,7 @@ bear -- gcc *.c -o binary.tmp
 rm binary.tmp
 
 # Generating Rust files from C
-c2rust transpile --emit-build-files --binary Test compile_commands.json > /dev/null 2>&1
+~/.cargo/bin/c2rust transpile --emit-build-files --binary Test compile_commands.json > /dev/null 2>&1
 
 # Building the Rust project
 RUSTFLAGS="-Awarnings" cargo build --release

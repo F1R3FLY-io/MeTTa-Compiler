@@ -34,7 +34,7 @@ bear -- gcc *.c -o binary.tmp
 rm binary.tmp
 
 # Generating Rust files from C
-~/.cargo/bin/c2rust transpile --emit-build-files --binary Test compile_commands.json > /dev/null 2>&1
+c2rust transpile --emit-build-files --binary Test compile_commands.json > /dev/null 2>&1
 
 # Building the Rust project
 RUSTFLAGS="-Awarnings" cargo build --release
@@ -46,7 +46,7 @@ echo -e "\e[1;32mThe Rust parser has been built. Usage: ./output/target/release/
 echo -e "\e[1;32mYou may find the Rust files in the folder parser/bnfc/rust/output/*.rs\e[0m"
 
 # Showing the results:
-read -n 1 -s -r -p "Press any key to see the parser output>"
+read -r -p "Press <Enter> to see the parser output>"
 
 # - Displaying sample input file
 echo ""

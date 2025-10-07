@@ -9,6 +9,7 @@ Compiler from MeTTa to MeTTa IL
 - gcc: ( "sudo apt install build-essential" on Linux; "brew install gcc" on macOS )
 - BNFC grammar file "parser/bnfc/rust/Grammar.cf" for building parser
   ( such as, https://gist.github.com/leithaus/954de3e97593525ace3dd2a7999e28f1 )
+- bear
 
 # Build and run
 ./build_rust_parser

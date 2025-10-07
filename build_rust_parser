@@ -46,7 +46,7 @@ echo -e "\e[1;32mThe Rust parser has been built. Usage: ./output/target/release/
 echo -e "\e[1;32mYou may find the Rust files in the folder parser/bnfc/rust/output/*.rs\e[0m"
 
 # Showing the results:
-read -r -p "Press <Enter> to see the parser output>"
+bash -c "read -r -p \"Press <Enter> to see the parser output>\""
 
 # - Displaying sample input file
 echo ""

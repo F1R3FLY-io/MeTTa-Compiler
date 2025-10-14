@@ -1,0 +1,84 @@
+// Example usage of the new MeTTa backend
+
+use mettatron::backend::*;
+
+fn main() {
+    println!("=== MeTTa Backend Usage Examples ===\n");
+
+    // Example 1: Basic arithmetic
+    example_arithmetic();
+
+    // Example 2: Pattern matching with rules
+    example_rules();
+
+    // Example 3: Working with environments
+    example_environment();
+}
+
+fn example_arithmetic() {
+    println!("--- Example 1: Basic Arithmetic ---");
+
+    // Compile MeTTa source code
+    let src = "(+ 10 5)";
+    let (sexprs, env) = compile(src).expect("Compilation failed");
+
+    println!("Source: {}", src);
+    println!("Compiled: {:?}", sexprs);
+
+    // Evaluate the expression
+    let (results, _new_env) = eval(sexprs[0].clone(), env);
+    println!("Result: {:?}\n", results);
+}
+
+fn example_rules() {
+    println!("--- Example 2: Pattern Matching with Rules ---");
+
+    // Create an environment and add a rule: (= (double $x) (mul $x 2))
+    let mut env = Environment::new();
+    env.add_rule(Rule {
+        lhs: MettaValue::SExpr(vec![
+            MettaValue::Atom("double".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]),
+        rhs: MettaValue::SExpr(vec![
+            MettaValue::Atom("mul".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Long(2),
+        ]),
+    });
+
+    // Evaluate (double 7)
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("double".to_string()),
+        MettaValue::Long(7),
+    ]);
+
+    println!("Rule: (= (double $x) (mul $x 2))");
+    println!("Expression: (double 7)");
+
+    let (results, _) = eval(expr, env);
+    println!("Result: {:?}\n", results);
+}
+
+fn example_environment() {
+    println!("--- Example 3: Compositional Environments ---");
+
+    // Compile multiple expressions
+    let src1 = "(+ 1 2)";
+    let src2 = "(* 3 4)";
+
+    let (exprs1, env1) = compile(src1).expect("Compilation failed");
+    let (exprs2, env2) = compile(src2).expect("Compilation failed");
+
+    println!("Expression 1: {}", src1);
+    let (result1, env_after1) = eval(exprs1[0].clone(), env1);
+    println!("Result 1: {:?}", result1);
+
+    println!("\nExpression 2: {}", src2);
+    let (result2, env_after2) = eval(exprs2[0].clone(), env2);
+    println!("Result 2: {:?}", result2);
+
+    // Union the environments (compositional)
+    let combined_env = env_after1.union(&env_after2);
+    println!("\nCombined environment has {} rules", combined_env.rules.len());
+}

@@ -1,0 +1,313 @@
+// Generated from MeTTa by MeTTa-Compiler
+
+// MeTTa Reduction Engine (MVP Runtime)
+// Implements pattern matching, substitution, and evaluation
+
+// ============================================
+// MeTTa Reduction Engine (Simplified)
+// Relies on PathMap.restriction() for pattern matching
+// ============================================
+
+// ASSUMPTIONS:
+// - PathMap.restriction(expr) returns list of (pattern, body) matches
+// - Empty list [] if no matches
+// - Variable bindings extracted from match context
+
+// Main reduction contract
+// reduce(@expr, @space, @retChan)
+//   expr: Expression to reduce (PathMap encoded)
+//   space: PathMap of (pattern, body) rules
+//   retChan: Channel to send result(s)
+contract reduce(@expr, @space, @retChan) = {
+  // Check for errors first
+  match expr {
+    {| "__ERROR__", @msg, @details |} => {
+      retChan!(expr)  // Propagate errors
+    }
+    _ => {
+      // Query space using PathMap.restriction()
+      new matchesChan in {
+        for(@spaceContents <- space) {
+          // PathMap.restriction() does ALL pattern matching
+          matchesChan!(spaceContents.restriction(expr)) |
+          space!!(spaceContents)
+        } |
+        
+        // Process match results
+        for(@matches <- matchesChan) {
+          match matches {
+            {| |} => {
+              // No matches - try as grounded function
+              tryGroundedReduction!(expr, space, retChan)
+            }
+            _ => {
+              // Have matches - process them
+              processMatches!(matches, space, retChan)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+
+// Process matches from PathMap.restriction()
+// processMatches(@matches, @space, @retChan)
+//   matches: List of (pattern, body) tuples from PathMap
+//   space: Current space for recursive reduction
+//   retChan: Send all reduced results (multivalued)
+contract processMatches(@matches, @space, @retChan) = {
+  // Iterate through all matches
+  for(@match <- matches) {
+    match match {
+      (@pattern, @body) => {
+        // TODO: Extract variable bindings from pattern/expr match
+        // For now, assume PathMap provides bindings or body is pre-substituted
+        
+        // Option 1: If body needs substitution
+        // new substChan in {
+        //   substitute!(body, bindings, substChan) |
+        //   for(@substBody <- substChan) {
+        //     reduce!(substBody, space, retChan)
+        //   }
+        // }
+        
+        // Option 2: If PathMap already substituted
+        reduce!(body, space, retChan)
+      }
+      (@pattern, @body, @bindings) => {
+        // If PathMap returns bindings as third element
+        new substChan in {
+          substitute!(body, bindings, substChan) |
+          for(@substBody <- substChan) {
+            reduce!(substBody, space, retChan)
+          }
+        }
+      }
+      _ => {
+        // Unknown match format
+        makeError!("Invalid match format", match, retChan)
+      }
+    }
+  }
+}
+
+
+// Variable substitution
+// substitute(@expr, @bindings, @retChan)
+//   expr: Expression with variables
+//   bindings: Map of (varName, value) pairs
+//   retChan: Returns expression with variables replaced
+contract substitute(@expr, @bindings, @retChan) = {
+  match expr {
+    {| "__VAR__", @varName |} => {
+      // Look up variable in bindings
+      match bindings {
+        {| ..., (varName, @value), ... |} => {
+          retChan!(value)
+        }
+        _ => {
+          // Unbound variable - keep as is
+          retChan!(expr)
+        }
+      }
+    }
+    {| "__APP__", @op, @args |} => {
+      // Substitute in application arguments
+      new argsChan in {
+        substituteList!(args, bindings, argsChan) |
+        for(@substArgs <- argsChan) {
+          retChan!({| "__APP__", op, substArgs |})
+        }
+      }
+    }
+    _ => {
+      // Literal - no substitution needed
+      retChan!(expr)
+    }
+  }
+}
+
+// Substitute in list of expressions
+contract substituteList(@exprList, @bindings, @retChan) = {
+  match exprList {
+    {| |} => retChan!({| |})
+    {| @head, @tail |} => {
+      new headChan, tailChan in {
+        substitute!(head, bindings, headChan) |
+        substituteList!(tail, bindings, tailChan) |
+        for(@substHead <- headChan) {
+          for(@substTail <- tailChan) {
+            retChan!({| substHead, substTail |})
+          }
+        }
+      }
+    }
+    _ => substitute!(exprList, bindings, retChan)
+  }
+}
+
+
+// Try to reduce as grounded (built-in) function
+contract tryGroundedReduction(@expr, @space, @retChan) = {
+  match expr {
+    {| "__APP__", "+", @args |} => {
+      groundedAdd!(args, space, retChan)
+    }
+    {| "__APP__", "-", @args |} => {
+      groundedSub!(args, space, retChan)
+    }
+    {| "__APP__", "*", @args |} => {
+      groundedMul!(args, space, retChan)
+    }
+    {| "__APP__", "/", @args |} => {
+      groundedDiv!(args, space, retChan)
+    }
+    {| "__APP__", "<", @args |} => {
+      groundedLt!(args, space, retChan)
+    }
+    {| "__APP__", ">", @args |} => {
+      groundedGt!(args, space, retChan)
+    }
+    {| "__APP__", "==", @args |} => {
+      groundedEq!(args, space, retChan)
+    }
+    _ => {
+      // Not a grounded function - return unchanged
+      retChan!(expr)
+    }
+  }
+}
+
+// Grounded addition - lazy evaluation for symbolic args
+contract groundedAdd(@args, @space, @retChan) = {
+  match args {
+    {| @arg1, @arg2 |} => {
+      match (arg1, arg2) {
+        ({| "__VAR__", _ |}, _) => {
+          retChan!({| "__APP__", "+", args |})  // Keep symbolic
+        }
+        (_, {| "__VAR__", _ |}) => {
+          retChan!({| "__APP__", "+", args |})  // Keep symbolic
+        }
+        (Int(@n1), Int(@n2)) => {
+          retChan!(n1 + n2)  // Reduce
+        }
+        _ => {
+          // Reduce arguments first
+          new r1Chan, r2Chan in {
+            reduce!(arg1, space, r1Chan) |
+            reduce!(arg2, space, r2Chan) |
+            for(@r1 <- r1Chan) {
+              for(@r2 <- r2Chan) {
+                groundedAdd!({| r1, r2 |}, space, retChan)
+              }
+            }
+          }
+        }
+      }
+    }
+    _ => makeError!("Type error", "+ requires 2 arguments", retChan)
+  }
+}
+
+// TODO: Implement groundedSub, groundedMul, groundedDiv, groundedLt, groundedGt, groundedEq
+// Pattern: Same as groundedAdd - check for symbolic args, reduce if numeric
+
+
+// Error construction
+contract makeError(@msg, @details, @retChan) = {
+  retChan!({| "__ERROR__", msg, details |})
+}
+
+// End of Reduction Engine
+
+contract rule_0(@args_2, @ret_1) = {
+  match args_2 {
+    {| @double, @x |} => {
+      ret_1!((x + x))
+    }
+    _ => {
+      ret_1!({{| "__ERROR__", "Pattern match failed", {} |}})
+    }
+  }
+}
+contract rule_3(@args_5, @ret_4) = {
+  match args_5 {
+    {| @triple, @x |} => {
+      ret_4!((x + (x + x)))
+    }
+    _ => {
+      ret_4!({{| "__ERROR__", "Pattern match failed", {} |}})
+    }
+  }
+}
+contract rule_6(@args_8, @ret_7) = {
+  match args_8 {
+    {| @fib |} => {
+      ret_7!(1)
+    }
+    _ => {
+      ret_7!({{| "__ERROR__", "Pattern match failed", {} |}})
+    }
+  }
+}
+contract rule_9(@args_11, @ret_10) = {
+  match args_11 {
+    {| @fib |} => {
+      ret_10!(1)
+    }
+    _ => {
+      ret_10!({{| "__ERROR__", "Pattern match failed", {} |}})
+    }
+  }
+}
+contract rule_12(@args_14, @ret_13) = {
+  match args_14 {
+    {| @fib, @n |} => {
+      ret_13!((fib!((n - 1)) + fib!((n - 2))))
+    }
+    _ => {
+      ret_13!({{| "__ERROR__", "Pattern match failed", {} |}})
+    }
+  }
+}
+(2 + 3)
+(10 - 4)
+(3 * 4)
+(12 / 3)
+(x + y)
+double!(z)
+double!((2 + 3))
+triple!(fib!(3))
+contract rule_15(@args_17, @ret_16) = {
+  match args_17 {
+    {| @color |} => {
+      ret_16!(red)
+    }
+    _ => {
+      ret_16!({{| "__ERROR__", "Pattern match failed", {} |}})
+    }
+  }
+}
+contract rule_18(@args_20, @ret_19) = {
+  match args_20 {
+    {| @color |} => {
+      ret_19!(blue)
+    }
+    _ => {
+      ret_19!({{| "__ERROR__", "Pattern match failed", {} |}})
+    }
+  }
+}
+contract rule_21(@args_23, @ret_22) = {
+  match args_23 {
+    {| @color |} => {
+      ret_22!(green)
+    }
+    _ => {
+      ret_22!({{| "__ERROR__", "Pattern match failed", {} |}})
+    }
+  }
+}

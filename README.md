@@ -417,7 +417,9 @@ See `docs/MVP_BACKEND_COMPLETE.md` for details.
 
 ## License
 
-See LICENSE file for details.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
+Copyright 2025 F1R3FLY.io
 
 ## Contributing
 

@@ -121,8 +121,8 @@ mod tests {
         // First expression: rule definition
         let (results, new_env) = eval(state.pending_exprs[0].clone(), env);
         env = new_env;
-        assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Nil));
+        // Rule definition returns empty list
+        assert!(results.is_empty());
 
         // Second expression: evaluation
         let (results, _env) = eval(state.pending_exprs[1].clone(), env);

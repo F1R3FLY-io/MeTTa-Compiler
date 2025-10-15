@@ -78,7 +78,7 @@ pub fn metta_state_to_json(state: &MettaState) -> String {
 
     // For environment, we'll serialize facts count as a placeholder
     // Full serialization of MORK Space would require more complex handling
-    let env_json = format!(r#"{{"facts_count":{}}}"#, state.environment.rule_cache.len());
+    let env_json = format!(r#"{{"facts_count":{}}}"#, state.environment.rule_count());
 
     format!(
         r#"{{"pending_exprs":[{}],"environment":{},"eval_outputs":[{}]}}"#,
@@ -123,9 +123,17 @@ pub fn run_state(accumulated_state: MettaState, compiled_state: MettaState) -> R
 
     // Evaluate each pending expression from compiled state
     for expr in compiled_state.pending_exprs {
+        // Check if this is an evaluation expression (starts with !)
+        let is_eval_expr = matches!(&expr, MettaValue::SExpr(items) if items.first().map(|v| matches!(v, MettaValue::Atom(s) if s == "!")).unwrap_or(false));
+
         let (results, new_env) = eval(expr, env);
         env = new_env;
-        outputs.extend(results);
+
+        // Only extend outputs for evaluation expressions (!)
+        // Other S-expressions are added to the atom space but produce no outputs
+        if is_eval_expr {
+            outputs.extend(results);
+        }
     }
 
     // Return new accumulated state
@@ -266,7 +274,7 @@ mod tests {
         // Compiled state should have pending expressions
         assert_eq!(state.pending_exprs.len(), 1);
         // Environment should be empty (fresh compilation)
-        assert_eq!(state.environment.rule_cache.len(), 0);
+        assert_eq!(state.environment.rule_count(), 0);
         // No outputs yet
         assert_eq!(state.eval_outputs.len(), 0);
     }
@@ -307,8 +315,8 @@ mod tests {
         // Start with empty accumulated state
         let accumulated = MettaState::new_empty();
 
-        // Compile expression
-        let compiled = compile("(+ 10 5)").unwrap();
+        // Compile expression with ! to produce output
+        let compiled = compile("!(+ 10 5)").unwrap();
 
         // Run compiled against accumulated
         let result = run_state(accumulated, compiled).unwrap();
@@ -329,14 +337,14 @@ mod tests {
         // Start with empty state
         let mut accumulated = MettaState::new_empty();
 
-        // First evaluation: (+ 1 2)
-        let compiled1 = compile("(+ 1 2)").unwrap();
+        // First evaluation: !(+ 1 2)
+        let compiled1 = compile("!(+ 1 2)").unwrap();
         accumulated = run_state(accumulated, compiled1).unwrap();
         assert_eq!(accumulated.eval_outputs.len(), 1);
         assert_eq!(accumulated.eval_outputs[0], MettaValue::Long(3));
 
-        // Second evaluation: (* 3 4)
-        let compiled2 = compile("(* 3 4)").unwrap();
+        // Second evaluation: !(* 3 4)
+        let compiled2 = compile("!(* 3 4)").unwrap();
         accumulated = run_state(accumulated, compiled2).unwrap();
 
         // Should have both outputs
@@ -358,21 +366,20 @@ mod tests {
         let compiled_rule = compile(rule_src).unwrap();
         accumulated = run_state(accumulated, compiled_rule).unwrap();
 
-        // Rule definition returns Nil
-        assert_eq!(accumulated.eval_outputs.len(), 1);
-        assert_eq!(accumulated.eval_outputs[0], MettaValue::Nil);
+        // Rule definition returns empty list (no output)
+        assert_eq!(accumulated.eval_outputs.len(), 0);
 
         // Environment should now have the rule
-        assert_eq!(accumulated.environment.rule_cache.len(), 1);
+        assert_eq!(accumulated.environment.rule_count(), 1);
 
         // Step 2: Use the rule
         let use_src = "!(double 21)";
         let compiled_use = compile(use_src).unwrap();
         accumulated = run_state(accumulated, compiled_use).unwrap();
 
-        // Should have 2 outputs: Nil from rule definition, 42 from evaluation
-        assert_eq!(accumulated.eval_outputs.len(), 2);
-        assert_eq!(accumulated.eval_outputs[1], MettaValue::Long(42));
+        // Should have 1 output: 42 from evaluation (rule def produced no output)
+        assert_eq!(accumulated.eval_outputs.len(), 1);
+        assert_eq!(accumulated.eval_outputs[0], MettaValue::Long(42));
     }
 
     #[test]
@@ -382,8 +389,8 @@ mod tests {
 
         let accumulated = MettaState::new_empty();
 
-        // Compile multiple expressions
-        let compiled = compile("(+ 1 2) (* 3 4)").unwrap();
+        // Compile multiple expressions with ! to produce outputs
+        let compiled = compile("!(+ 1 2) !(* 3 4)").unwrap();
         assert_eq!(compiled.pending_exprs.len(), 2);
 
         let result = run_state(accumulated, compiled).unwrap();
@@ -414,22 +421,21 @@ mod tests {
             compile("!(triple 7)").unwrap()
         ).unwrap();
 
-        // Input 3: Simple arithmetic
+        // Input 3: Simple arithmetic with ! to produce output
         repl_state = run_state(
             repl_state,
-            compile("(+ 10 11)").unwrap()
+            compile("!(+ 10 11)").unwrap()
         ).unwrap();
 
-        // Should have 3 outputs
-        assert_eq!(repl_state.eval_outputs.len(), 3);
-        assert_eq!(repl_state.eval_outputs[0], MettaValue::Nil);  // Rule definition
-        assert_eq!(repl_state.eval_outputs[1], MettaValue::Long(21)); // triple 7
-        assert_eq!(repl_state.eval_outputs[2], MettaValue::Long(21)); // 10 + 11
+        // Should have 2 outputs (rule definition produces no output)
+        assert_eq!(repl_state.eval_outputs.len(), 2);
+        assert_eq!(repl_state.eval_outputs[0], MettaValue::Long(21)); // triple 7
+        assert_eq!(repl_state.eval_outputs[1], MettaValue::Long(21)); // 10 + 11
 
         // Environment should have accumulated rules
-        // Note: rule_cache.len() may not be exactly 1 due to MORK Space internals
+        // Note: rule_count() may not be exactly 1 due to MORK Space internals
         // The important thing is that the rule works (verified by output above)
-        assert!(repl_state.environment.rule_cache.len() > 0);
+        assert!(repl_state.environment.rule_count() > 0);
     }
 
     #[test]
@@ -439,8 +445,8 @@ mod tests {
 
         let accumulated = MettaState::new_empty();
 
-        // Compile an error expression
-        let compiled = compile(r#"(error "test error" 42)"#).unwrap();
+        // Compile an error expression with ! to produce output
+        let compiled = compile(r#"!(error "test error" 42)"#).unwrap();
         let result = run_state(accumulated, compiled).unwrap();
 
         // Should have one error output
@@ -479,9 +485,9 @@ mod tests {
         // Test: s.run(a).run(b).run(c) should accumulate all results
         let mut state = MettaState::new_empty();
 
-        let a = compile("(+ 1 2)").unwrap();
-        let b = compile("(* 3 4)").unwrap();
-        let c = compile("(- 10 5)").unwrap();
+        let a = compile("!(+ 1 2)").unwrap();
+        let b = compile("!(* 3 4)").unwrap();
+        let c = compile("!(- 10 5)").unwrap();
 
         // Compose sequentially
         state = run_state(state, a).unwrap();
@@ -522,7 +528,9 @@ mod tests {
         ).unwrap();
 
         // quadruple 3 = double (double 3) = double 6 = 12
-        assert_eq!(state.eval_outputs[2], MettaValue::Long(12));
+        // Index 0: first rule definition produced no output, second rule at index 0? No, both rules produce no output
+        // So the first actual output is the result of !(quadruple 3)
+        assert_eq!(state.eval_outputs[0], MettaValue::Long(12));
     }
 
     #[test]
@@ -534,7 +542,7 @@ mod tests {
         let accum1 = MettaState::new_empty();
         let accum2 = MettaState::new_empty();
 
-        let compiled = compile("(+ 10 20)").unwrap();
+        let compiled = compile("!(+ 10 20)").unwrap();
 
         // Run same compiled state against different accumulated states
         let result1 = run_state(accum1, compiled.clone()).unwrap();
@@ -561,7 +569,7 @@ mod tests {
         let mut counts = vec![];
 
         for i in 1..=5 {
-            let src = format!("(+ {} {})", i, i);
+            let src = format!("!(+ {} {})", i, i);
             state = run_state(state, compile(&src).unwrap()).unwrap();
             counts.push(state.eval_outputs.len());
         }
@@ -583,7 +591,7 @@ mod tests {
 
         // Test: Running against empty state should work like first run
         let empty = MettaState::new_empty();
-        let compiled = compile("(+ 5 7)").unwrap();
+        let compiled = compile("!(+ 5 7)").unwrap();
 
         let result = run_state(empty, compiled).unwrap();
 
@@ -609,7 +617,7 @@ mod tests {
             compile("(= (inc $x) (+ $x 1))").unwrap()
         ).unwrap();
 
-        let rules_after_first = state.environment.rule_cache.len();
+        let rules_after_first = state.environment.rule_count();
 
         // Add second rule
         state = run_state(
@@ -617,7 +625,7 @@ mod tests {
             compile("(= (dec $x) (- $x 1))").unwrap()
         ).unwrap();
 
-        let rules_after_second = state.environment.rule_cache.len();
+        let rules_after_second = state.environment.rule_count();
 
         // Should have more rules after second (monotonic)
         assert!(rules_after_second >= rules_after_first);
@@ -628,8 +636,8 @@ mod tests {
             compile("!(inc 5) !(dec 5)").unwrap()
         ).unwrap();
 
-        // Should have 4 outputs: 2 Nils from rule defs + 6 + 4
-        assert!(state.eval_outputs.len() >= 4);
+        // Should have 2 outputs: 6 + 4 (rule defs produce no output)
+        assert!(state.eval_outputs.len() >= 2);
         assert_eq!(state.eval_outputs[state.eval_outputs.len() - 2], MettaValue::Long(6));
         assert_eq!(state.eval_outputs[state.eval_outputs.len() - 1], MettaValue::Long(4));
     }
@@ -660,13 +668,15 @@ mod tests {
             state_a,
             compile("!(double 5)").unwrap()
         ).unwrap();
-        assert_eq!(state_a.eval_outputs[1], MettaValue::Long(10));
+        // Rule def produced no output, so first output is at index 0
+        assert_eq!(state_a.eval_outputs[0], MettaValue::Long(10));
 
         // State B should have triple, not double
         state_b = run_state(
             state_b,
             compile("!(triple 5)").unwrap()
         ).unwrap();
-        assert_eq!(state_b.eval_outputs[1], MettaValue::Long(15));
+        // Rule def produced no output, so first output is at index 0
+        assert_eq!(state_b.eval_outputs[0], MettaValue::Long(15));
     }
 }

@@ -109,7 +109,7 @@ mod tests {
         let state = result.unwrap();
         assert_eq!(state.pending_exprs.len(), 1);
         // Environment is empty at compile time (facts added during eval)
-        assert!(state.environment.rule_cache.is_empty());
+        assert_eq!(state.environment.rule_count(), 0);
         assert!(state.eval_outputs.is_empty());
 
         // Should be: (add 1 2)

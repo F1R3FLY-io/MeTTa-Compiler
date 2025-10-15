@@ -1,6 +1,6 @@
 // Type definitions for the MeTTa backend
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 use mork::space::Space;
@@ -46,32 +46,16 @@ pub type Bindings = HashMap<String, MettaValue>;
 pub struct Environment {
     /// Type assertions: atom/expression -> type (fast lookup cache)
     pub types: HashMap<String, MettaValue>,
-    /// Rule cache: LHS -> RHS (for fast pattern matching)
-    /// Kept temporarily for convenience until we can parse rules directly from MORK
-    /// The source of truth is MORK Space
-    pub(crate) rule_cache: Vec<Rule>,
-    /// Rule index: head symbol -> Vec<rule indices>
-    /// TEMPORARY: Provides O(1) lookup for rules by head symbol
-    /// TODO: Replace with PathMap prefix queries once binary format querying is understood
-    pub(crate) rule_index: HashMap<String, Vec<usize>>,
     /// MORK Space: primary fact database for all rules and expressions
     /// PathMap's trie provides O(m) prefix queries and O(m) existence checks
     pub space: Rc<RefCell<Space>>,
-    /// S-expression tracking for fast existence checks
-    /// TEMPORARY: PathMap stores s-expressions in binary format (from parse), but
-    /// has_sexpr_fact() needs to check MORK text format. This HashSet bridges that gap.
-    /// TODO: Remove once we can query MORK Space with parsed binary keys
-    pub(crate) sexpr_facts: HashSet<String>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         Environment {
             types: HashMap::new(),
-            rule_cache: Vec::new(),
-            rule_index: HashMap::new(),
             space: Rc::new(RefCell::new(Space::new())),
-            sexpr_facts: HashSet::new(),
         }
     }
 
@@ -85,24 +69,74 @@ impl Environment {
         self.types.get(name)
     }
 
-    /// Add a rule to the environment (for backwards compatibility with tests)
-    /// Rules are stored in MORK Space (source of truth) and rule_cache (temporary convenience)
-    pub fn add_rule(&mut self, rule: Rule) {
-        // Get the index where this rule will be stored
-        let rule_idx = self.rule_cache.len();
+    /// Get the number of rules in the environment
+    /// Counts rules directly from PathMap Space
+    pub fn rule_count(&self) -> usize {
+        self.iter_rules().count()
+    }
 
-        // Add to rule cache for convenience
-        // TODO: Eventually parse rules directly from MORK Space and remove this cache
-        self.rule_cache.push(rule.clone());
+    /// Iterator over all rules in the Space
+    /// Rules are stored as MORK s-expressions: (= lhs rhs)
+    ///
+    /// Uses direct zipper traversal to avoid dump/parse overhead.
+    /// This provides O(n) iteration without string serialization.
+    pub fn iter_rules(&self) -> impl Iterator<Item = Rule> {
+        use crate::backend::compile::compile;
+        use mork_bytestring::Expr;
 
-        // Index the rule by its head symbol for O(1) lookup
-        if let Some(head) = rule.lhs.get_head_symbol() {
-            self.rule_index
-                .entry(head)
-                .or_insert_with(Vec::new)
-                .push(rule_idx);
+        let space = self.space.borrow();
+        let mut rz = space.btm.read_zipper();
+        let mut rules = Vec::new();
+
+        // Directly iterate through all values in the trie
+        while rz.to_next_val() {
+            // Get the s-expression at this position
+            let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
+
+            // Serialize just this one expression to string for parsing
+            // This is still string-based but only for values we're interested in
+            let mut buffer = Vec::new();
+            expr.serialize2(&mut buffer,
+                |s| {
+                    #[cfg(feature="interning")]
+                    {
+                        let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+                        let mstr = space.sm.get_bytes(symbol).map(|x| unsafe { std::str::from_utf8_unchecked(x) });
+                        unsafe { std::mem::transmute(mstr.unwrap_or("")) }
+                    }
+                    #[cfg(not(feature="interning"))]
+                    unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
+                },
+                |i, _intro| { Expr::VARNAMES[i as usize] });
+
+            let sexpr_str = String::from_utf8_lossy(&buffer);
+
+            // Try to parse as a rule
+            if let Ok(state) = compile(&sexpr_str) {
+                for value in state.pending_exprs {
+                    if let MettaValue::SExpr(items) = &value {
+                        if items.len() == 3 {
+                            if let MettaValue::Atom(op) = &items[0] {
+                                if op == "=" {
+                                    rules.push(Rule {
+                                        lhs: items[1].clone(),
+                                        rhs: items[2].clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
+        drop(space);
+        rules.into_iter()
+    }
+
+    /// Add a rule to the environment
+    /// Rules are stored in MORK Space as s-expressions: (= lhs rhs)
+    pub fn add_rule(&mut self, rule: Rule) {
         // Create a rule s-expression: (= lhs rhs)
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
@@ -136,12 +170,52 @@ impl Environment {
         false
     }
 
-    /// Check if an s-expression fact exists
-    /// Uses HashSet for O(1) lookups on MORK text format
-    /// TODO: Replace with PathMap query once we can convert to binary format
+    /// Check if an s-expression fact exists in the PathMap
+    /// Checks directly in the Space using MORK binary format
+    /// Uses structural equivalence to handle variable name changes from MORK's De Bruijn indices
+    ///
+    /// Uses direct zipper iteration to avoid dumping the entire Space.
     pub fn has_sexpr_fact(&self, sexpr: &MettaValue) -> bool {
-        let mork_str = sexpr.to_mork_string();
-        self.sexpr_facts.contains(&mork_str)
+        use crate::backend::compile::compile;
+        use mork_bytestring::Expr;
+
+        let space = self.space.borrow();
+        let mut rz = space.btm.read_zipper();
+
+        // Directly iterate through all values in the trie
+        while rz.to_next_val() {
+            // Get the s-expression at this position
+            let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
+
+            // Serialize just this one expression to string for parsing
+            let mut buffer = Vec::new();
+            expr.serialize2(&mut buffer,
+                |s| {
+                    #[cfg(feature="interning")]
+                    {
+                        let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+                        let mstr = space.sm.get_bytes(symbol).map(|x| unsafe { std::str::from_utf8_unchecked(x) });
+                        unsafe { std::mem::transmute(mstr.unwrap_or("")) }
+                    }
+                    #[cfg(not(feature="interning"))]
+                    unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
+                },
+                |i, _intro| { Expr::VARNAMES[i as usize] });
+
+            let sexpr_str = String::from_utf8_lossy(&buffer);
+
+            // Try to parse and compare
+            if let Ok(state) = compile(&sexpr_str) {
+                for stored_value in state.pending_exprs {
+                    // Check structural equivalence (ignores variable names)
+                    if sexpr.structurally_equivalent(&stored_value) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
     }
 
     /// Add a fact to the MORK Space for pattern matching
@@ -149,11 +223,6 @@ impl Environment {
     pub fn add_to_space(&mut self, value: &MettaValue) {
         let mork_str = value.to_mork_string();
         let mork_bytes = mork_str.as_bytes();
-
-        // Track s-expressions in the sexpr_facts set for fast existence checks
-        if matches!(value, MettaValue::SExpr(_)) {
-            self.sexpr_facts.insert(mork_str.clone());
-        }
 
         // Use MORK's parser to load the s-expression into PathMap trie
         let mut space = self.space.borrow_mut();
@@ -168,31 +237,11 @@ impl Environment {
         let mut types = self.types.clone();
         types.extend(other.types.clone());
 
-        // Merge rule caches
-        let mut rule_cache = self.rule_cache.clone();
-        let base_offset = rule_cache.len();
-        rule_cache.extend(other.rule_cache.clone());
-
-        // Merge rule indices (adjust indices for other's rules)
-        let mut rule_index = self.rule_index.clone();
-        for (head, indices) in &other.rule_index {
-            let adjusted_indices: Vec<usize> = indices.iter()
-                .map(|&idx| idx + base_offset)
-                .collect();
-            rule_index.entry(head.clone())
-                .or_insert_with(Vec::new)
-                .extend(adjusted_indices);
-        }
-
-        // Merge s-expression tracking sets
-        let mut sexpr_facts = self.sexpr_facts.clone();
-        sexpr_facts.extend(other.sexpr_facts.clone());
-
         // Space is shared via Rc, so both self and other point to the same Space
         // Facts added to either are automatically visible in both
         let space = self.space.clone();
 
-        Environment { types, rule_cache, rule_index, space, sexpr_facts }
+        Environment { types, space }
     }
 }
 
@@ -212,6 +261,50 @@ impl std::fmt::Debug for Environment {
 }
 
 impl MettaValue {
+    /// Check structural equivalence (ignoring variable names)
+    /// Two expressions are structurally equivalent if they have the same structure,
+    /// with variables in the same positions (regardless of variable names)
+    pub fn structurally_equivalent(&self, other: &MettaValue) -> bool {
+        match (self, other) {
+            // Variables match any other variable (names don't matter)
+            (MettaValue::Atom(a), MettaValue::Atom(b))
+                if (a.starts_with('$') || a.starts_with('&') || a.starts_with('\''))
+                && (b.starts_with('$') || b.starts_with('&') || b.starts_with('\'')) => true,
+
+            // Wildcards match wildcards
+            (MettaValue::Atom(a), MettaValue::Atom(b)) if a == "_" && b == "_" => true,
+
+            // Non-variable atoms must match exactly
+            (MettaValue::Atom(a), MettaValue::Atom(b)) => a == b,
+
+            // Other ground types must match exactly
+            (MettaValue::Bool(a), MettaValue::Bool(b)) => a == b,
+            (MettaValue::Long(a), MettaValue::Long(b)) => a == b,
+            (MettaValue::String(a), MettaValue::String(b)) => a == b,
+            (MettaValue::Uri(a), MettaValue::Uri(b)) => a == b,
+            (MettaValue::Nil, MettaValue::Nil) => true,
+
+            // S-expressions must have same structure
+            (MettaValue::SExpr(a_items), MettaValue::SExpr(b_items)) => {
+                if a_items.len() != b_items.len() {
+                    return false;
+                }
+                a_items.iter().zip(b_items.iter())
+                    .all(|(a, b)| a.structurally_equivalent(b))
+            }
+
+            // Errors must have same message and equivalent details
+            (MettaValue::Error(a_msg, a_details), MettaValue::Error(b_msg, b_details)) => {
+                a_msg == b_msg && a_details.structurally_equivalent(b_details)
+            }
+
+            // Types must be structurally equivalent
+            (MettaValue::Type(a), MettaValue::Type(b)) => a.structurally_equivalent(b),
+
+            _ => false,
+        }
+    }
+
     /// Extract the head symbol from a pattern for indexing
     /// Returns None if the pattern doesn't have a clear head symbol
     pub fn get_head_symbol(&self) -> Option<String> {

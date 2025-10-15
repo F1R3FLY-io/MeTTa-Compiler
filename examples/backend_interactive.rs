@@ -32,12 +32,12 @@ fn main() {
 
         // Compile and evaluate
         match compile(input) {
-            Ok((sexprs, new_env)) => {
+            Ok(state) => {
                 // Merge new environment
-                env = env.union(&new_env);
+                env = env.union(&state.environment);
 
                 // Evaluate each expression
-                for sexpr in sexprs {
+                for sexpr in state.pending_exprs {
                     match eval(sexpr.clone(), env.clone()) {
                         (results, updated_env) => {
                             env = updated_env;

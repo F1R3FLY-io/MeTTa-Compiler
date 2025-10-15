@@ -12,12 +12,17 @@ categories = ["compilers", "parser-implementations"]
 [lib]
 name = "mettatron"
 path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "mettatron"
 path = "src/main.rs"
 
 [dependencies]
+# PathMap - Trie-map library used by MORK
+pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
+# MORK - MeTTa Optimal Reduction Kernel for pattern matching
+mork = { path = "../MORK/kernel" }
 
 [dev-dependencies]
 

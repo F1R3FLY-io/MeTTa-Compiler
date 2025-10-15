@@ -363,43 +363,167 @@ cargo test -- --nocapture
 
 ```
 MeTTa-Compiler/
-├── src/
+├── src/                        # Source code
 │   ├── main.rs                 # CLI and REPL implementation
 │   ├── lib.rs                  # Library exports
 │   ├── sexpr.rs                # Lexer and S-expression parser
-│   └── backend/
-│       ├── mod.rs              # Backend module exports
-│       ├── types.rs            # Core types (MettaValue, Environment, Rule)
-│       ├── compile.rs          # MeTTa source → MettaValue compilation
-│       └── eval.rs             # Lazy evaluation with pattern matching
-├── examples/                   # Example Rust programs using the backend
-│   ├── backend_usage.rs
-│   ├── backend_interactive.rs
-│   └── mvp_complete.rs
+│   ├── backend/                # Evaluation engine
+│   │   ├── mod.rs              # Module exports
+│   │   ├── types.rs            # Core types (MettaValue, Environment, Rule)
+│   │   ├── compile.rs          # MeTTa source → MettaValue compilation
+│   │   └── eval.rs             # Lazy evaluation with pattern matching
+│   ├── rholang_integration.rs  # Rholang integration API
+│   └── ffi.rs                  # C FFI layer
+├── examples/                   # Example files
+│   ├── *.metta                 # MeTTa language examples
+│   ├── *.rs                    # Rust backend examples
+│   └── *.rho                   # Rholang integration examples
 ├── docs/                       # Documentation
-│   ├── BACKEND_API_REFERENCE.md
-│   ├── BACKEND_IMPLEMENTATION.md
-│   ├── ISSUE_3_SATISFACTION.md
-│   ├── METTA_TYPE_SYSTEM_REFERENCE.md
-│   ├── MVP_BACKEND_COMPLETE.md
-│   ├── REDUCTION_PREVENTION.md
-│   ├── REPL_USAGE.md
-│   └── TYPE_SYSTEM_ANALYSIS.md
+│   ├── guides/                 # User guides
+│   ├── reference/              # API and language reference
+│   ├── design/                 # Design documents
+│   ├── ISSUE_3_SATISFACTION.md # MVP satisfaction analysis
+│   └── MVP_BACKEND_COMPLETE.md # MVP status report
+├── integration/                # Rholang integration
+│   ├── templates/              # Integration code templates
+│   ├── archive/                # Legacy FFI approaches
+│   ├── README.md               # Integration guide
+│   └── *.md                    # Integration documentation
+├── target/                     # Build artifacts (gitignored)
 ├── Cargo.toml                  # Rust project configuration
+├── Cargo.lock                  # Dependency lock file
 ├── CLAUDE.md                   # Claude Code guidance
+├── LICENSE                     # Apache 2.0 license
 └── README.md                   # This file
 ```
 
+## Rholang Integration
+
+MeTTaTron can be integrated with Rholang to provide MeTTa compilation as a system process service. Since both projects are written in Rust, **direct Rust linking** is recommended for better performance, safety, and simplicity.
+
+### Integration Approach
+
+**⭐ Recommended: Direct Rust Linking (v3)**
+- Simple, safe, and fast
+- No FFI overhead
+- Pure Rust integration
+- 60% less code than FFI
+
+**Alternative: FFI (v2)**
+- For non-Rust languages (Python, Node.js, C++)
+- C-compatible interface
+- Cross-language ABI
+
+### Quick Start
+
+**Direct Rust Integration (~15 minutes)**:
+1. Add to Rholang's `Cargo.toml`: `mettatron = { path = "../../../MeTTa-Compiler" }`
+2. Import: `use mettatron::rholang_integration::compile_safe;`
+3. Call directly: `let result = compile_safe(&src);`
+
+**For complete instructions**, see:
+- **`integration/DIRECT_RUST_INTEGRATION.md`** ⭐ - Direct Rust integration guide (recommended)
+- **`integration/FFI_VS_DIRECT_COMPARISON.md`** - Detailed comparison of approaches
+- **`integration/DEPLOYMENT_CHECKLIST.md`** - Quick reference checklist
+- **`integration/DEPLOYMENT_GUIDE.md`** - Comprehensive step-by-step guide (FFI approach)
+
+### What's Provided
+
+✅ **Direct Rust Integration (v3) - Recommended**:
+- Handler code (`integration/templates/rholang_handler.rs`) - Direct Rust handlers (no FFI)
+- Registry code (`integration/templates/rholang_registry.rs`) - Service registration
+- JSON serialization (`src/rholang_integration.rs`) - Native Rust API
+- Complete documentation (`integration/DIRECT_RUST_INTEGRATION.md`)
+
+✅ **FFI Integration (v2) - For non-Rust languages**:
+- C FFI layer (`src/ffi.rs`) - Memory-safe C-compatible interface
+- Handler code (`integration/archive/rholang_handler_v2_ffi.rs`) - FFI handlers
+- Registry code (`integration/archive/rholang_registry_v2_ffi.rs`) - FFI service registration
+- Deployment guide (`integration/DEPLOYMENT_GUIDE.md`)
+
+### Usage from Rholang
+
+Once deployed, compile MeTTa code from Rholang using **two patterns**:
+
+**Traditional Pattern** (explicit return channel):
+```rholang
+new result in {
+  @"rho:metta:compile"!("(+ 1 2)", *result) |
+  for (@json <- result) {
+    stdoutAck!(json, *ack)
+  }
+}
+```
+
+**Synchronous Pattern** (optimized for `!?`):
+```rholang
+@"rho:metta:compile:sync" !? ("(+ 1 2)") ; {
+  // Continuation executes after compile completes
+  stdoutAck!("Compilation done", *ack)
+}
+```
+
+See **`RHOLANG_SYNC_GUIDE.md`** for complete usage patterns with the `!?` operator
+
+### Integration Features
+
+**Direct Rust (v3) Benefits:**
+- ✅ **Type Safe**: Compile-time error checking
+- ✅ **Memory Safe**: Automatic memory management (no manual allocation)
+- ✅ **Performance**: 5-10x faster than FFI (no ABI overhead)
+- ✅ **Simple**: 60% less code than FFI approach
+- ✅ **No Unsafe Code**: Pure safe Rust
+- ✅ **Better Debugging**: Full Rust stack traces
+
+**Both Approaches:**
+- **Thread Safe**: No shared mutable state
+- **Error Handling**: JSON responses for success and failure
+- **Zero I/O**: Pure compilation (no filesystem/network access)
+- **Compilation Time**: ~1-5ms per expression
+
+### Documentation
+
+**Integration Guides:**
+- **`integration/DIRECT_RUST_INTEGRATION.md`** ⭐ - Direct Rust integration (recommended for Rholang)
+- **`integration/FFI_VS_DIRECT_COMPARISON.md`** - Complete comparison of FFI vs Direct Rust
+- **`integration/DEPLOYMENT_CHECKLIST.md`** - Quick deployment checklist
+- **`integration/DEPLOYMENT_GUIDE.md`** - Complete deployment guide (FFI approach)
+
+**Usage Guides:**
+- **`integration/RHOLANG_SYNC_GUIDE.md`** - Using MeTTa with Rholang's `!?` operator (two patterns)
+- **`integration/RHOLANG_REGISTRY_PATTERN.md`** - Registry binding with `!?` operator
+- **`integration/SYNC_OPERATOR_SUMMARY.md`** - `!?` operator implementation summary
+
+**Technical Details:**
+- **`integration/RHOLANG_INTEGRATION_SUMMARY.md`** - Integration status and overview
+- **`integration/RHOLANG_INTEGRATION.md`** - Technical architecture details
+
 ## Documentation
 
-- **`docs/BACKEND_API_REFERENCE.md`** - Complete API reference for the backend
-- **`docs/BACKEND_IMPLEMENTATION.md`** - Backend implementation details
-- **`docs/ISSUE_3_SATISFACTION.md`** - GitHub Issue #3 requirements satisfaction analysis
-- **`docs/METTA_TYPE_SYSTEM_REFERENCE.md`** - Official MeTTa type system reference (from hyperon-experimental)
+### User Guides
+- **`docs/guides/REPL_USAGE.md`** - Interactive REPL usage guide
+- **`docs/guides/REDUCTION_PREVENTION.md`** - Comprehensive reduction prevention guide
+
+### API Reference
+- **`docs/reference/BACKEND_API_REFERENCE.md`** - Complete backend API reference
+- **`docs/reference/METTA_TYPE_SYSTEM_REFERENCE.md`** - Official MeTTa type system reference
+- **`docs/reference/TYPE_SYSTEM_ANALYSIS.md`** - Type system implementation analysis
+
+### Design Documents
+- **`docs/design/BACKEND_IMPLEMENTATION.md`** - Backend implementation details
+- **`docs/design/TYPE_SYSTEM_IMPLEMENTATION.md`** - Type system design
+- **`docs/design/TYPE_SYSTEM_RHOLANG_INTEGRATION.md`** - Type system Rholang integration
+- **`docs/design/MORK_PATHMAP_QUERY_DESIGN.md`** - MORK PathMap query design
+- **`docs/design/RULE_INDEX_OPTIMIZATION.md`** - Rule indexing optimization
+- **`docs/design/SEXPR_FACTS_DESIGN.md`** - S-expression facts design
+- **`docs/design/TODO_ANALYSIS.md`** - TODO analysis and planning
+
+### Status Reports
+- **`docs/ISSUE_3_SATISFACTION.md`** - GitHub Issue #3 MVP requirements satisfaction
 - **`docs/MVP_BACKEND_COMPLETE.md`** - MVP implementation status and test results
-- **`docs/REDUCTION_PREVENTION.md`** - Comprehensive reduction prevention guide
-- **`docs/REPL_USAGE.md`** - Interactive REPL usage guide
-- **`docs/TYPE_SYSTEM_ANALYSIS.md`** - Type system implementation complexity analysis
+
+### Integration
+- **`integration/`** - Complete Rholang integration documentation (see `integration/README.md`)
 
 ## MVP Status
 

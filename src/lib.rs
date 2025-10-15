@@ -32,8 +32,9 @@
 ///     !(double 21)
 /// "#;
 ///
-/// let (sexprs, mut env) = compile(input).unwrap();
-/// for sexpr in sexprs {
+/// let state = compile(input).unwrap();
+/// let mut env = state.environment;
+/// for sexpr in state.pending_exprs {
 ///     let (results, new_env) = eval(sexpr, env);
 ///     env = new_env;
 ///
@@ -62,11 +63,18 @@
 
 pub mod sexpr;
 pub mod backend;
+pub mod rholang_integration;
+pub mod ffi;
 
 pub use sexpr::{Lexer, Parser, SExpr, Token};
 pub use backend::{
     compile, eval,
-    types::{MettaValue, Environment, Rule},
+    types::{MettaValue, Environment, Rule, MettaState},
+};
+pub use rholang_integration::{
+    run_state,
+    metta_state_to_json,
+    compile_to_state_json,
 };
 
 #[cfg(test)]
@@ -83,10 +91,10 @@ mod tests {
     #[test]
     fn test_compile_and_eval_arithmetic() {
         let input = "(+ 10 20)";
-        let (sexprs, env) = compile(input).unwrap();
-        assert_eq!(sexprs.len(), 1);
+        let state = compile(input).unwrap();
+        assert_eq!(state.pending_exprs.len(), 1);
 
-        let (results, _env) = eval(sexprs[0].clone(), env);
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], MettaValue::Long(30)));
     }
@@ -98,17 +106,18 @@ mod tests {
             !(double 21)
         "#;
 
-        let (sexprs, mut env) = compile(input).unwrap();
-        assert_eq!(sexprs.len(), 2);
+        let state = compile(input).unwrap();
+        assert_eq!(state.pending_exprs.len(), 2);
+        let mut env = state.environment;
 
         // First expression: rule definition
-        let (results, new_env) = eval(sexprs[0].clone(), env);
+        let (results, new_env) = eval(state.pending_exprs[0].clone(), env);
         env = new_env;
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], MettaValue::Nil));
 
         // Second expression: evaluation
-        let (results, _env) = eval(sexprs[1].clone(), env);
+        let (results, _env) = eval(state.pending_exprs[1].clone(), env);
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], MettaValue::Long(42)));
     }
@@ -116,8 +125,8 @@ mod tests {
     #[test]
     fn test_if_control_flow() {
         let input = r#"(if (< 5 10) "yes" "no")"#;
-        let (sexprs, env) = compile(input).unwrap();
-        let (results, _env) = eval(sexprs[0].clone(), env);
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], MettaValue::String(ref s) if s == "yes"));
@@ -126,8 +135,8 @@ mod tests {
     #[test]
     fn test_quote() {
         let input = "(quote (+ 1 2))";
-        let (sexprs, env) = compile(input).unwrap();
-        let (results, _env) = eval(sexprs[0].clone(), env);
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], MettaValue::SExpr(_)));
@@ -136,8 +145,8 @@ mod tests {
     #[test]
     fn test_error_propagation() {
         let input = r#"(error "test error" 42)"#;
-        let (sexprs, env) = compile(input).unwrap();
-        let (results, _env) = eval(sexprs[0].clone(), env);
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], MettaValue::Error(_, _)));

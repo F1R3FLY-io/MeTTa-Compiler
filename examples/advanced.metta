@@ -3,8 +3,9 @@
 // Type assertion with arrow type
 (: $func (-> Long Long Bool))
 
-// Nested rules
-(= (factorial $n) (* $n (factorial (- $n 1))))
+// Nested rules with pattern matching
+(= (double $x) (* $x 2))
+(= (quadruple $x) (double (double $x)))
 
 // Add atom to space
 (add-atom $space (= $x 10))

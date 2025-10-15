@@ -23,6 +23,10 @@ path = "src/main.rs"
 pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel" }
+# MORK bytestring - S-expression representation used by MORK
+mork-bytestring = { path = "../MORK/experiments/expr/bytestring" }
+# MORK frontend - Parser for MORK s-expressions
+mork-frontend = { path = "../MORK/frontend" }
 # Models - Rholang protobuf models for PathMap Par integration
 models = { path = "../f1r3node/models" }
 

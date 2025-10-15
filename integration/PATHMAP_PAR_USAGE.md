@@ -4,6 +4,39 @@
 
 The MeTTa compiler integration with Rholang now uses **PathMap Par** structures (specifically `EPathMap`) instead of JSON strings. This provides type-safe, efficient state management for MeTTa evaluation in Rholang contracts.
 
+## PathMap `.run()` Method
+
+**NEW:** PathMap instances now have a `.run()` method that allows direct method-style invocation without using system processes!
+
+### Syntax
+
+```rholang
+accumulatedState.run(compiledState)
+```
+
+**Parameters:**
+- `accumulatedState` - PathMap Par (use `{||}` for empty state)
+- `compiledState` - PathMap Par from `rho:metta:compile`
+
+**Returns:** PathMap Par with updated accumulated state (synchronously)
+
+### Example
+
+```rholang
+new result in {
+  // Call .run() synchronously and send result to channel
+  result!({||}.run(compiledState)) |
+  for (@newState <- result) {
+    // Use newState here
+    ...
+  }
+}
+```
+
+### Full Workflow Example
+
+See `integration/test_pathmap_run_method.rho` for a complete example demonstrating the `.run()` method.
+
 ## System Processes
 
 ### `rho:metta:compile` - Compile MeTTa Source
@@ -41,24 +74,6 @@ new result in {
 }
 ```
 
-### `rho:metta:run` - Evaluate MettaState
-
-**Channel:** 202
-**Arity:** 3 (accumulated_state, compiled_state, return channel)
-**Returns:** EPathMap Par with updated accumulated state
-
-```rholang
-new result in {
-  @"rho:metta:run"!(accumulatedState, compiledState, *result) |
-  for (@newState <- result) {
-    // newState contains:
-    // - Empty pending_exprs (all evaluated)
-    // - Updated environment (with new rules)
-    // - Extended eval_outputs (accumulated results)
-    ...
-  }
-}
-```
 
 ## PathMap Par Structure
 
@@ -105,34 +120,34 @@ new result in {
 }
 ```
 
+
 ## REPL Pattern
 
-To implement a REPL-like workflow where state accumulates across evaluations:
+To implement a REPL-like workflow where state accumulates across evaluations, use the `.run()` method:
 
 ```rholang
 new mettaCompile(`rho:metta:compile`),
-    mettaRun(`rho:metta:run`),
     stdoutAck(`rho:io:stdoutAck`),
     ack in {
 
-  // Step 1: Start with empty state
-  new state1, compiled1 in {
+  // Step 1: Compile and run rule
+  new compiled1, result1 in {
     mettaCompile!("(= (double $x) (* $x 2))", *compiled1) |
-    for (@compiled <- compiled1) {
-      // Step 2: Run against empty state (Nil)
-      mettaRun!(Nil, compiled, *state1) |
-      for (@accumulated1 <- state1) {
+    for (@compiledRule <- compiled1) {
+      // Step 2: Run against empty state using .run() method
+      result1!({||}.run(compiledRule)) |
+      for (@accumulated1 <- result1) {
         stdoutAck!("Rule defined\n", *ack) |
 
-        // Step 3: Use the rule
+        // Step 3: Compile and run expression
         for (_ <- ack) {
-          new state2, compiled2 in {
+          new compiled2, result2 in {
             mettaCompile!("!(double 21)", *compiled2) |
-            for (@compiled <- compiled2) {
-              // Step 4: Run against accumulated state
-              mettaRun!(accumulated1, compiled, *state2) |
-              for (@accumulated2 <- state2) {
-                stdoutAck!("Rule executed - result in eval_outputs\n", *ack)
+            for (@compiledExpr <- compiled2) {
+              // Step 4: Run against accumulated state using .run() method
+              result2!(accumulated1.run(compiledExpr)) |
+              for (@accumulated2 <- result2) {
+                stdoutAck!("Result: 42\n", *ack)
               }
             }
           }
@@ -142,6 +157,7 @@ new mettaCompile(`rho:metta:compile`),
   }
 }
 ```
+
 
 ## Important Notes
 
@@ -175,18 +191,18 @@ for (@statePar <- result) {
 
 The `++` operator only works with strings, not PathMap Par objects. You must print them separately as shown above.
 
-### Initial State for `mettaRun`
+### Initial State for `.run()`
 
-For the first `mettaRun` call (when there's no accumulated state), use `Nil`:
+For the first `.run()` call (when there's no accumulated state), use an empty PathMap `{||}`:
 
 ```rholang
-mettaRun!(Nil, compiledState, *result)
+result!({||}.run(compiledState))
 ```
 
-For subsequent calls, pass the accumulated state from the previous run:
+For subsequent calls, call `.run()` on the accumulated state:
 
 ```rholang
-mettaRun!(accumulatedState, compiledState, *result)
+result!(accumulatedState.run(compiledState))
 ```
 
 ## Example: Complete Workflow
@@ -200,16 +216,18 @@ See `integration/test_metta_integration.rho` for a complete example demonstratin
 
 ## Testing
 
-Run the integration test:
+Run the integration tests:
 
 ```bash
 cd /home/dylon/Workspace/f1r3fly.io/f1r3node
+
+# Test PathMap .run() method (recommended)
+./target/release/rholang-cli /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/integration/test_pathmap_run_method.rho
+
+# Test system processes
 ./target/release/rholang-cli /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/integration/test_metta_integration.rho
-```
 
-Or run the simple test:
-
-```bash
+# Simple PathMap printing test
 ./target/release/rholang-cli /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/integration/test_pathmap_simple.rho
 ```
 

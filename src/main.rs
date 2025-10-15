@@ -151,6 +151,14 @@ fn format_result(value: &MettaValue) -> String {
     }
 }
 
+fn format_results(results: &[MettaValue]) -> String {
+    if results.is_empty() {
+        return "[]".to_string();
+    }
+    let formatted: Vec<String> = results.iter().map(format_result).collect();
+    format!("[{}]", formatted.join(", "))
+}
+
 fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     // Lexical analysis
     let mut lexer = Lexer::new(input);
@@ -175,11 +183,15 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     // Evaluate each expression
     let mut output = String::new();
     for sexpr in state.pending_exprs {
+        // Only output results for S-expressions, not atoms or ground types
+        let should_output = matches!(sexpr, MettaValue::SExpr(_));
+
         let (results, new_env) = eval(sexpr, env);
         env = new_env;
 
-        for result in results {
-            output.push_str(&format!("{}\n", format_result(&result)));
+        // Print results with list notation (only for S-expressions)
+        if should_output && !results.is_empty() {
+            output.push_str(&format!("{}\n", format_results(&results)));
         }
     }
 
@@ -215,12 +227,16 @@ fn run_repl() {
                 env = env.union(&state.environment);
 
                 for sexpr in state.pending_exprs {
+                    // Only output results for S-expressions, not atoms or ground types
+                    let should_output = matches!(sexpr, MettaValue::SExpr(_));
+
                     match eval(sexpr.clone(), env.clone()) {
                         (results, updated_env) => {
                             env = updated_env;
 
-                            for result in results {
-                                println!("{}", format_result(&result));
+                            // Print results with list notation (only for S-expressions)
+                            if should_output && !results.is_empty() {
+                                println!("{}", format_results(&results));
                             }
                         }
                     }

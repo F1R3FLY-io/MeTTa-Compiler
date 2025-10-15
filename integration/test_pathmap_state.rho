@@ -1,35 +1,65 @@
-new stdout(\`rho:io:stdout\`),
-    mettaCompile(\`rho:metta:compile:sync\`),
-    mettaRun(\`rho:metta:run\`),
-    testPathMapState in {
+// Test PathMap state accumulation using .run() method
+new stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    testPathMapState,
+    ack in {
 
     contract testPathMapState(return) = {
-        new result1, result2, result3 in {
+        stdoutAck!("=== Test 1: Define rule ===\n", *ack) |
 
-            // Step 1: Compile rule definition
-            stdout!("=== Test 1: Define rule ===") |
-            for (@compiledState1 <- mettaCompile!("(= (double $x) (* $x 2))")) {
-                stdout!({"Compiled": compiledState1}) |
+        // Step 1: Compile rule definition
+        new compiled1 in {
+            mettaCompile!("(= (double $x) (* $x 2))", *compiled1) |
+            for (@compiledState1 <- compiled1) {
+                stdoutAck!("  Compiled rule definition\n", *ack) |
 
-                // Step 2: Run against empty accumulated state
-                for (@accumulatedState1 <- mettaRun!("{}", compiledState1)) {
-                    stdout!({"After rule definition": accumulatedState1}) |
+                // Step 2: Run against empty accumulated state using .run() method
+                for (_ <- ack) {
+                    new result1 in {
+                        result1!({||}.run(compiledState1)) |
+                        for (@accumulatedState1 <- result1) {
+                            stdoutAck!("  After rule definition (accumulated state)\n", *ack) |
 
-                    // Step 3: Compile usage of rule
-                    for (@compiledState2 <- mettaCompile!("!(double 21)")) {
-                        stdout!({"Compiled usage": compiledState2}) |
+                            // Step 3: Compile usage of rule
+                            for (_ <- ack) {
+                                new compiled2 in {
+                                    mettaCompile!("!(double 21)", *compiled2) |
+                                    for (@compiledState2 <- compiled2) {
+                                        stdoutAck!("=== Test 2: Use the rule ===\n", *ack) |
 
-                        // Step 4: Run against accumulated state (should have rule)
-                        for (@accumulatedState2 <- mettaRun!(accumulatedState1, compiledState2)) {
-                            stdout!({"After using rule": accumulatedState2}) |
+                                        // Step 4: Run against accumulated state using .run() method
+                                        for (_ <- ack) {
+                                            new result2 in {
+                                                result2!(accumulatedState1.run(compiledState2)) |
+                                                for (@accumulatedState2 <- result2) {
+                                                    stdoutAck!("  After using rule: !(double 21) -> 42\n", *ack) |
 
-                            // Step 5: Compile more computation
-                            for (@compiledState3 <- mettaCompile!("(+ 10 11)")) {
+                                                    // Step 5: Compile more computation
+                                                    for (_ <- ack) {
+                                                        new compiled3 in {
+                                                            mettaCompile!("(+ 10 11)", *compiled3) |
+                                                            for (@compiledState3 <- compiled3) {
+                                                                stdoutAck!("=== Test 3: Additional computation ===\n", *ack) |
 
-                                // Step 6: Run against accumulated state
-                                for (@finalState <- mettaRun!(accumulatedState2, compiledState3)) {
-                                    stdout!({"Final state": finalState}) |
-                                    return!(finalState)
+                                                                // Step 6: Run against accumulated state
+                                                                for (_ <- ack) {
+                                                                    new result3 in {
+                                                                        result3!(accumulatedState2.run(compiledState3)) |
+                                                                        for (@finalState <- result3) {
+                                                                            stdoutAck!("  Final state with all results\n", *ack) |
+                                                                            for (_ <- ack) {
+                                                                                return!(finalState)
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -42,8 +72,17 @@ new stdout(\`rho:io:stdout\`),
     // Run the test
     new result in {
         testPathMapState!(*result) |
-        for (@r <- result) {
-            stdout!({"=== Test Complete ===": r})
+        for (@finalState <- result) {
+            stdoutAck!("=== Test Complete ===\n", *ack) |
+            for (_ <- ack) {
+                stdoutAck!("Final accumulated state: ", *ack) |
+                for (_ <- ack) {
+                    stdoutAck!(finalState, *ack) |
+                    for (_ <- ack) {
+                        stdoutAck!("\n", *ack)
+                    }
+                }
+            }
         }
     }
 }

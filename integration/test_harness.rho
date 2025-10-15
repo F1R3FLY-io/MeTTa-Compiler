@@ -1,0 +1,338 @@
+// =====================================================================
+// MeTTaTron Test Harness for Rholang Integration
+// =====================================================================
+// Comprehensive test suite for MeTTa compiler and evaluator
+// =====================================================================
+
+new stdout(`rho:io:stdout`),
+    stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    runMeTTa,
+    testHarness,
+    runTestSuite,
+    ack in {
+
+  // ===================================================================
+  // Core Contracts
+  // ===================================================================
+
+  /**
+   * runMeTTa: Compile and evaluate MeTTa code
+   * @param ret - Return channel for result
+   * @param src - Source channel for MeTTa code
+   */
+  contract runMeTTa(ret, src) = {
+    for (@code <= src) {
+      new compiledState in {
+        mettaCompile!(code, *compiledState) |
+        for (@pm <- compiledState) {
+          // Run compiled state against empty accumulated state
+          new result in {
+            result!({||}.run(pm)) |
+            for (@accumulated <- result) {
+              ret!(accumulated)
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  /**
+   * testHarness: Run a single test with multiple MeTTa expressions
+   * @param testName - Name of the test
+   * @param src - Source channel for MeTTa code
+   * @param expectedCount - Expected number of outputs (for display only)
+   */
+  contract testHarness(@testName, src, @expectedCount) = {
+    new srcChan, resultChan in {
+      stdoutAck!("Test: " ++ testName ++ "\n", *ack) |
+      for (_ <- ack) {
+        stdoutAck!("  Expected outputs: ", *ack) |
+        for (_ <- ack) {
+          stdoutAck!(expectedCount, *ack) |
+          for (_ <- ack) {
+            stdoutAck!("\n", *ack) |
+            for (_ <- ack) {
+              // Feed all MeTTa code into source channel
+              for (@code <= src) {
+                srcChan!(code)
+              } |
+
+              // Run MeTTa and collect result
+              runMeTTa!(*resultChan, *srcChan) |
+              for (@result <- resultChan) {
+                stdoutAck!("  Result: ", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!(result, *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("\n\n", *ack)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Test Suite
+  // ===================================================================
+
+  contract runTestSuite(@_) = {
+    stdoutAck!("=== MeTTaTron Test Harness ===\n\n", *ack) |
+
+    // Test 1: Basic Arithmetic
+    for (_ <- ack) {
+      new src in {
+        src!("(+ 1 2)") |
+        testHarness!("Basic arithmetic: (+ 1 2)", *src, 1)
+      }
+    } |
+
+    // Test 2: Nested Arithmetic
+    for (_ <- ack) {
+      new src in {
+        src!("(+ 1 (* 2 3))") |
+        testHarness!("Nested arithmetic: (+ 1 (* 2 3))", *src, 1)
+      }
+    } |
+
+    // Test 3: Multiple Expressions
+    for (_ <- ack) {
+      new src in {
+        src!("(+ 1 2)") |
+        src!("(* 3 4)") |
+        src!("(- 10 5)") |
+        testHarness!("Multiple expressions", *src, 3)
+      }
+    } |
+
+    // Test 4: Rule Definition
+    for (_ <- ack) {
+      new src in {
+        src!("(= (double $x) (* $x 2))") |
+        testHarness!("Rule definition: double", *src, 0)
+      }
+    } |
+
+    // Test 5: Rule Usage (Sequential)
+    for (_ <- ack) {
+      stdoutAck!("Test: Rule usage (sequential)\n", *ack) |
+      for (_ <- ack) {
+        new src1, result1, src2, result2 in {
+          // Step 1: Define rule
+          src1!("(= (triple $x) (* $x 3))") |
+          runMeTTa!(*result1, *src1) |
+          for (@accumulated1 <- result1) {
+            stdoutAck!("  Step 1 - Rule defined: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(accumulated1, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n", *ack) |
+                for (_ <- ack) {
+                  // Step 2: Use rule (run against accumulated state)
+                  new useCompiled in {
+                    mettaCompile!("!(triple 7)", *useCompiled) |
+                    for (@compiledUse <- useCompiled) {
+                      new finalResult in {
+                        finalResult!(accumulated1.run(compiledUse)) |
+                        for (@accumulated2 <- finalResult) {
+                          stdoutAck!("  Step 2 - Rule used: ", *ack) |
+                          for (_ <- ack) {
+                            stdoutAck!(accumulated2, *ack) |
+                            for (_ <- ack) {
+                              stdoutAck!("\n\n", *ack)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // Test 6: Boolean Operations
+    for (_ <- ack) {
+      new src in {
+        src!("(< 1 2)") |
+        src!("(> 5 3)") |
+        src!("(== 4 4)") |
+        testHarness!("Boolean operations", *src, 3)
+      }
+    } |
+
+    // Test 7: Quote and Eval
+    for (_ <- ack) {
+      new src in {
+        src!("(quote (+ 1 2))") |
+        testHarness!("Quote expression", *src, 1)
+      }
+    } |
+
+    // Test 8: Error Handling
+    for (_ <- ack) {
+      new src in {
+        src!("(error \"test error\" 42)") |
+        testHarness!("Error handling", *src, 1)
+      }
+    } |
+
+    // Test 9: Catch Expression
+    for (_ <- ack) {
+      new src in {
+        src!("(catch (error \"test\" 0) \"recovered\")") |
+        testHarness!("Catch expression", *src, 1)
+      }
+    } |
+
+    // Test 10: Conditional (if)
+    for (_ <- ack) {
+      new src in {
+        src!("(if (< 1 2) \"yes\" \"no\")") |
+        testHarness!("Conditional if (true case)", *src, 1)
+      }
+    } |
+
+    // Test 11: Multiple Rule Definitions
+    for (_ <- ack) {
+      stdoutAck!("Test: Multiple rules with chaining\n", *ack) |
+      for (_ <- ack) {
+        new src1, result1 in {
+          // Define double rule
+          src1!("(= (double $x) (* $x 2))") |
+          runMeTTa!(*result1, *src1) |
+          for (@accumulated1 <- result1) {
+            stdoutAck!("  Step 1 - double rule defined\n", *ack) |
+            for (_ <- ack) {
+              // Define quadruple rule (uses double)
+              new src2, useCompiled2 in {
+                mettaCompile!("(= (quadruple $x) (double (double $x)))", *useCompiled2) |
+                for (@compiled2 <- useCompiled2) {
+                  new result2 in {
+                    result2!(accumulated1.run(compiled2)) |
+                    for (@accumulated2 <- result2) {
+                      stdoutAck!("  Step 2 - quadruple rule defined\n", *ack) |
+                      for (_ <- ack) {
+                        // Use quadruple rule
+                        new useCompiled3 in {
+                          mettaCompile!("!(quadruple 3)", *useCompiled3) |
+                          for (@compiled3 <- useCompiled3) {
+                            new result3 in {
+                              result3!(accumulated2.run(compiled3)) |
+                              for (@accumulated3 <- result3) {
+                                stdoutAck!("  Step 3 - Final result: ", *ack) |
+                                for (_ <- ack) {
+                                  stdoutAck!(accumulated3, *ack) |
+                                  for (_ <- ack) {
+                                    stdoutAck!("\n\n", *ack)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // Test 12: REPL Simulation (Multiple Sequential Evaluations)
+    for (_ <- ack) {
+      stdoutAck!("Test: REPL simulation (accumulate multiple evaluations)\n", *ack) |
+      for (_ <- ack) {
+        new src1, result1 in {
+          src1!("(+ 10 5)") |
+          runMeTTa!(*result1, *src1) |
+          for (@acc1 <- result1) {
+            stdoutAck!("  Input 1: (+ 10 5)\n", *ack) |
+            for (_ <- ack) {
+              new useCompiled2 in {
+                mettaCompile!("(* 3 4)", *useCompiled2) |
+                for (@compiled2 <- useCompiled2) {
+                  new result2 in {
+                    result2!(acc1.run(compiled2)) |
+                    for (@acc2 <- result2) {
+                      stdoutAck!("  Input 2: (* 3 4)\n", *ack) |
+                      for (_ <- ack) {
+                        new useCompiled3 in {
+                          mettaCompile!("(- 20 10)", *useCompiled3) |
+                          for (@compiled3 <- useCompiled3) {
+                            new result3 in {
+                              result3!(acc2.run(compiled3)) |
+                              for (@acc3 <- result3) {
+                                stdoutAck!("  Input 3: (- 20 10)\n", *ack) |
+                                for (_ <- ack) {
+                                  stdoutAck!("  Final accumulated state: ", *ack) |
+                                  for (_ <- ack) {
+                                    stdoutAck!(acc3, *ack) |
+                                    for (_ <- ack) {
+                                      stdoutAck!("\n\n", *ack)
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // Test 13: Division Operations
+    for (_ <- ack) {
+      new src in {
+        src!("(/ 10 2)") |
+        src!("(/ 7 3)") |
+        testHarness!("Division operations", *src, 2)
+      }
+    } |
+
+    // Test 14: Complex Nested Expression
+    for (_ <- ack) {
+      new src in {
+        src!("(+ (* 2 3) (- 10 5))") |
+        testHarness!("Complex nested: (+ (* 2 3) (- 10 5))", *src, 1)
+      }
+    } |
+
+    // Test 15: Type System (if available)
+    for (_ <- ack) {
+      new src in {
+        src!("(: x Number)") |
+        testHarness!("Type assertion", *src, 0)
+      }
+    } |
+
+    // Final Summary
+    for (_ <- ack) {
+      stdoutAck!("=== Test Suite Complete ===\n", *ack)
+    }
+  } |
+
+  // ===================================================================
+  // Start Test Suite
+  // ===================================================================
+
+  runTestSuite!(Nil)
+}

@@ -64,8 +64,8 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                     use crate::backend::types::Rule;
                     new_env.add_rule(Rule { lhs, rhs });
 
-                    // Return nil to indicate rule was added
-                    return (vec![MettaValue::Nil], new_env);
+                    // Return empty list (rule definitions don't produce output)
+                    return (vec![], new_env);
                 } else{
                     let err = MettaValue::Error(
                         "= requires exactly two arguments: lhs and rhs".to_string(),
@@ -197,7 +197,8 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                     let type_expr = MettaValue::SExpr(items);
                     new_env.add_to_space(&type_expr);
 
-                    return (vec![MettaValue::Nil], new_env);
+                    // Return empty list (type assertions don't produce output)
+                    return (vec![], new_env);
                 } else {
                     let err = MettaValue::Error(
                         ": requires 2 arguments: expression and type".to_string(),
@@ -289,15 +290,22 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     }
 
     // Try to match against rules in MORK Space
-    // For now, we use a simplified approach: iterate through the Space to find rules
-    // A full implementation would use MORK's query_multi() for efficient pattern matching
     let sexpr = MettaValue::SExpr(evaled_items.clone());
 
-    // Try to find a matching rule in MORK Space
-    if let Some((rhs, bindings)) = try_match_rule(&sexpr, &unified_env) {
-        // Apply bindings to RHS and evaluate
-        let instantiated_rhs = apply_bindings(&rhs, &bindings);
-        return eval(instantiated_rhs, unified_env);
+    // Collect ALL matching rules with the BEST specificity (MeTTa returns multiple results)
+    // The helper function already filters to return only rules with the best specificity
+    let all_matches = try_match_all_rules(&sexpr, &unified_env);
+
+    if !all_matches.is_empty() {
+        // Evaluate all matching rule bodies (all have the same specificity)
+        let mut all_results = Vec::new();
+        for (rhs, bindings) in all_matches {
+            // Apply bindings to RHS and evaluate
+            let instantiated_rhs = apply_bindings(&rhs, &bindings);
+            let (results, _) = eval(instantiated_rhs, unified_env.clone());
+            all_results.extend(results);
+        }
+        return (all_results, unified_env);
     }
 
     // No rule matched, add to MORK Space and return it
@@ -549,35 +557,263 @@ fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
     }
 }
 
+/// Compute the specificity of a pattern (lower is more specific)
+/// More specific patterns have fewer variables
+fn pattern_specificity(pattern: &MettaValue) -> usize {
+    match pattern {
+        MettaValue::Atom(s) if s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') || s == "_" => {
+            1000 // Variables are least specific
+        }
+        MettaValue::Atom(_) | MettaValue::Bool(_) | MettaValue::Long(_)
+        | MettaValue::String(_) | MettaValue::Uri(_) | MettaValue::Nil => {
+            0 // Literals are most specific
+        }
+        MettaValue::SExpr(items) => {
+            // Sum specificity of all items
+            items.iter().map(|item| pattern_specificity(item)).sum()
+        }
+        MettaValue::Error(_, details) => pattern_specificity(details),
+        MettaValue::Type(t) => pattern_specificity(t),
+    }
+}
+
 /// Try to find a rule in the environment that matches the given expression
 /// Returns Some((rhs, bindings)) if a match is found
-/// Uses indexed lookup by head symbol for O(1) + O(k) performance where k = rules with that head
+///
+/// This implementation attempts to use MORK's query_multi for O(k) pattern matching where k = matching rules.
+/// Falls back to O(n) iteration if query_multi cannot be used.
+/// Rules are tried in order of specificity (more specific first).
 fn try_match_rule(expr: &MettaValue, env: &Environment) -> Option<(MettaValue, Bindings)> {
-    // Try to extract head symbol for indexed lookup
-    if let Some(head) = get_head_symbol(expr) {
-        // Look up rules with this head symbol (O(1) hash lookup)
-        if let Some(rule_indices) = env.rule_index.get(&head) {
-            // Try to match against rules with matching head (O(k) where k = rules with this head)
-            for &idx in rule_indices {
-                let rule = &env.rule_cache[idx];
-                if let Some(bindings) = pattern_match(&rule.lhs, expr) {
-                    return Some((rule.rhs.clone(), bindings));
+    // Try query_multi optimization first
+    if let Some(result) = try_match_rule_query_multi(expr, env) {
+        return Some(result);
+    }
+
+    // Fall back to iteration-based approach
+    try_match_rule_iterative(expr, env)
+}
+
+/// Find ALL rules in the environment that match the given expression
+/// Returns Vec<(rhs, bindings)> with all matching rules
+///
+/// This function supports MeTTa's non-deterministic semantics where multiple rules
+/// can match the same expression and all results should be returned.
+fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
+    // Try query_multi optimization first
+    let query_multi_results = try_match_all_rules_query_multi(expr, env);
+    if !query_multi_results.is_empty() {
+        return query_multi_results;
+    }
+
+    // Fall back to iteration-based approach
+    try_match_all_rules_iterative(expr, env)
+}
+
+/// Try pattern matching using MORK's query_multi (O(k) where k = matching rules)
+fn try_match_rule_query_multi(expr: &MettaValue, env: &Environment) -> Option<(MettaValue, Bindings)> {
+    use crate::backend::mork_convert::{metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext};
+    use mork_bytestring::Expr;
+    use std::collections::BTreeMap;
+
+    // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
+    // This will find all rules where the LHS matches our expression
+    let space = env.space.borrow();
+
+    // Convert expression to MORK format for querying
+    let mut ctx = ConversionContext::new();
+    let expr_bytes = match metta_to_mork_bytes(expr, &space, &mut ctx) {
+        Ok(bytes) => bytes,
+        Err(_) => return None, // Fallback to iterative if conversion fails
+    };
+
+    // Create a query pattern: (= <expr> $rhs)
+    // We need to wrap the expression in a rule pattern
+    let pattern_str = format!("(= {} $rhs)", String::from_utf8_lossy(&expr_bytes));
+    let pattern_bytes = pattern_str.as_bytes();
+
+    // Parse the pattern using MORK's parser
+    let mut parse_buffer = vec![0u8; 4096];
+    let mut pdp = mork::space::ParDataParser::new(&space.sm);
+    use mork_frontend::bytestring_parser::Parser;
+    let mut ez = mork_bytestring::ExprZipper::new(Expr { ptr: parse_buffer.as_mut_ptr() });
+    let mut context = mork_frontend::bytestring_parser::Context::new(pattern_bytes);
+
+    if pdp.sexpr(&mut context, &mut ez).is_err() {
+        return None; // Fallback if parsing fails
+    }
+
+    let pattern_expr = Expr { ptr: parse_buffer.as_ptr().cast_mut() };
+
+    // Collect matches using query_multi
+    let mut matches: Vec<(MettaValue, Bindings, usize)> = Vec::new();
+
+    mork::space::Space::query_multi(&space.btm, pattern_expr, |result, _matched_expr| {
+        if let Err((bindings, _, _, _)) = result {
+            // Convert MORK bindings to our format
+            if let Ok(our_bindings) = mork_bindings_to_metta(&bindings, &ctx, &space) {
+                // Extract the RHS from bindings
+                if let Some(rhs) = our_bindings.get("$rhs") {
+                    let specificity = pattern_specificity(&rhs);
+                    matches.push((rhs.clone(), our_bindings, specificity));
+                }
+            }
+        }
+        true // Continue searching for all matches
+    });
+
+    // Sort by specificity and return best match
+    matches.sort_by_key(|(_, _, spec)| *spec);
+    matches.into_iter().next().map(|(rhs, bindings, _)| (rhs, bindings))
+    // space will be dropped automatically here
+}
+
+/// Try pattern matching using MORK's query_multi to find ALL matching rules (O(k) where k = matching rules)
+fn try_match_all_rules_query_multi(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
+    use crate::backend::mork_convert::{metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext};
+    use mork_bytestring::Expr;
+    use std::collections::BTreeMap;
+
+    // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
+    // This will find all rules where the LHS matches our expression
+    let space = env.space.borrow();
+
+    // Convert expression to MORK format for querying
+    let mut ctx = ConversionContext::new();
+    let expr_bytes = match metta_to_mork_bytes(expr, &space, &mut ctx) {
+        Ok(bytes) => bytes,
+        Err(_) => return Vec::new(), // Fallback to iterative if conversion fails
+    };
+
+    // Create a query pattern: (= <expr> $rhs)
+    let pattern_str = format!("(= {} $rhs)", String::from_utf8_lossy(&expr_bytes));
+    let pattern_bytes = pattern_str.as_bytes();
+
+    // Parse the pattern using MORK's parser
+    let mut parse_buffer = vec![0u8; 4096];
+    let mut pdp = mork::space::ParDataParser::new(&space.sm);
+    use mork_frontend::bytestring_parser::Parser;
+    let mut ez = mork_bytestring::ExprZipper::new(Expr { ptr: parse_buffer.as_mut_ptr() });
+    let mut context = mork_frontend::bytestring_parser::Context::new(pattern_bytes);
+
+    if pdp.sexpr(&mut context, &mut ez).is_err() {
+        return Vec::new(); // Fallback if parsing fails
+    }
+
+    let pattern_expr = Expr { ptr: parse_buffer.as_ptr().cast_mut() };
+
+    // Collect ALL matches using query_multi
+    // Note: All matches from query_multi will have the same LHS pattern (since we're querying for it)
+    // Therefore, they all have the same LHS specificity and we should return all of them
+    let mut matches: Vec<(MettaValue, Bindings)> = Vec::new();
+
+    mork::space::Space::query_multi(&space.btm, pattern_expr, |result, _matched_expr| {
+        if let Err((bindings, _, _, _)) = result {
+            // Convert MORK bindings to our format
+            if let Ok(our_bindings) = mork_bindings_to_metta(&bindings, &ctx, &space) {
+                // Extract the RHS from bindings
+                if let Some(rhs) = our_bindings.get("$rhs") {
+                    matches.push((rhs.clone(), our_bindings));
+                }
+            }
+        }
+        true // Continue searching for ALL matches
+    });
+
+    matches
+    // space will be dropped automatically here
+}
+
+/// Fallback: Try pattern matching using iteration (O(n) where n = total rules)
+fn try_match_rule_iterative(expr: &MettaValue, env: &Environment) -> Option<(MettaValue, Bindings)> {
+    use crate::backend::types::Rule;
+
+    // Try to extract head symbol for filtering
+    let target_head = get_head_symbol(expr);
+
+    // Collect all matching rules
+    let mut matching_rules: Vec<Rule> = Vec::new();
+
+    // First pass: collect rules with matching head symbol
+    if let Some(ref head) = target_head {
+        for rule in env.iter_rules() {
+            if let Some(rule_head) = rule.lhs.get_head_symbol() {
+                if &rule_head == head {
+                    matching_rules.push(rule);
                 }
             }
         }
     }
 
-    // Fallback: try all rules without a head symbol (e.g., variable patterns)
-    // This handles rules like (= $x ...) that don't have a concrete head symbol
-    for rule in &env.rule_cache {
+    // Second pass: collect rules without a head symbol (e.g., variable patterns)
+    for rule in env.iter_rules() {
         if rule.lhs.get_head_symbol().is_none() {
-            if let Some(bindings) = pattern_match(&rule.lhs, expr) {
-                return Some((rule.rhs.clone(), bindings));
-            }
+            matching_rules.push(rule);
+        }
+    }
+
+    // Sort rules by specificity (more specific first)
+    matching_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
+
+    // Try each rule in order of specificity
+    for rule in matching_rules {
+        if let Some(bindings) = pattern_match(&rule.lhs, expr) {
+            return Some((rule.rhs.clone(), bindings));
         }
     }
 
     None
+}
+
+/// Fallback: Try pattern matching using iteration to find ALL matching rules (O(n) where n = total rules)
+fn try_match_all_rules_iterative(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
+    use crate::backend::types::Rule;
+
+    // Try to extract head symbol for filtering
+    let target_head = get_head_symbol(expr);
+
+    // Collect all matching rules
+    let mut matching_rules: Vec<Rule> = Vec::new();
+
+    // First pass: collect rules with matching head symbol
+    if let Some(ref head) = target_head {
+        for rule in env.iter_rules() {
+            if let Some(rule_head) = rule.lhs.get_head_symbol() {
+                if &rule_head == head {
+                    matching_rules.push(rule);
+                }
+            }
+        }
+    }
+
+    // Second pass: collect rules without a head symbol (e.g., variable patterns)
+    for rule in env.iter_rules() {
+        if rule.lhs.get_head_symbol().is_none() {
+            matching_rules.push(rule);
+        }
+    }
+
+    // Sort rules by specificity (more specific first)
+    matching_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
+
+    // Collect ALL matching rules, tracking LHS specificity
+    let mut matches: Vec<(MettaValue, Bindings, usize)> = Vec::new();
+    for rule in matching_rules {
+        if let Some(bindings) = pattern_match(&rule.lhs, expr) {
+            let lhs_specificity = pattern_specificity(&rule.lhs);
+            matches.push((rule.rhs.clone(), bindings, lhs_specificity));
+        }
+    }
+
+    // Find the best (lowest) specificity
+    if let Some(best_spec) = matches.iter().map(|(_, _, spec)| *spec).min() {
+        // Return only matches with the best specificity
+        matches.into_iter()
+            .filter(|(_, _, spec)| *spec == best_spec)
+            .map(|(rhs, bindings, _)| (rhs, bindings))
+            .collect()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Infer the type of an expression
@@ -1033,8 +1269,8 @@ mod tests {
 
         let (result, _new_env) = eval(rule_def, env);
 
-        // Rule definition should return Nil
-        assert_eq!(result[0], MettaValue::Nil);
+        // Rule definition should return empty list
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -1302,8 +1538,8 @@ mod tests {
 
         let (result, new_env) = eval(type_assertion, env);
 
-        // Type assertion should return Nil
-        assert_eq!(result[0], MettaValue::Nil);
+        // Type assertion should return empty list
+        assert!(result.is_empty());
 
         // Environment should have the type assertion
         assert_eq!(
@@ -1446,8 +1682,8 @@ mod tests {
         let (result, new_env) = eval(arrow_type, env);
         env = new_env;
 
-        // Should return Nil
-        assert_eq!(result[0], MettaValue::Nil);
+        // Should return empty list
+        assert!(result.is_empty());
 
         // Get the type back
         let arrow_type_expected = MettaValue::SExpr(vec![
@@ -2031,8 +2267,8 @@ mod tests {
 
         let (result, new_env) = eval(rule_def.clone(), env);
 
-        // Rule definition should return Nil
-        assert_eq!(result[0], MettaValue::Nil);
+        // Rule definition should return empty list
+        assert!(result.is_empty());
 
         // Rule definition should also be in the fact database
         assert!(new_env.has_sexpr_fact(&rule_def));
@@ -2051,8 +2287,8 @@ mod tests {
 
         let (result, new_env) = eval(type_assertion.clone(), env);
 
-        // Type assertion should return Nil
-        assert_eq!(result[0], MettaValue::Nil);
+        // Type assertion should return empty list
+        assert!(result.is_empty());
 
         // Type should be in the type database
         assert_eq!(

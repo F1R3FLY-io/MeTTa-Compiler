@@ -41,22 +41,20 @@ fn escape_json(s: &str) -> String {
         .replace('\t', r"\t")
 }
 
-/// Compile MeTTa source and return JSON string representation
+/// Compile MeTTa source and return full MettaState as JSON
+/// Returns the complete state (pending_exprs, environment, eval_outputs)
+/// This is the PathMap-compatible interface that should be used by all compile handlers
 pub fn compile_to_json(src: &str) -> Result<String, String> {
     let state = crate::backend::compile::compile(src)?;
-
-    let exprs_json: Vec<String> = state.pending_exprs.iter()
-        .map(|expr| metta_value_to_rholang_string(expr))
-        .collect();
-
-    Ok(format!(r#"{{"success":true,"exprs":[{}]}}"#, exprs_json.join(",")))
+    Ok(metta_state_to_json(&state))
 }
 
-/// Compile MeTTa source and return error JSON on failure
+/// Compile MeTTa source and return full MettaState JSON (error-safe version)
+/// Returns the complete state (pending_exprs, environment, eval_outputs)
 pub fn compile_safe(src: &str) -> String {
     match compile_to_json(src) {
         Ok(json) => json,
-        Err(e) => format!(r#"{{"success":false,"error":"{}"}}"#, escape_json(&e)),
+        Err(e) => format!(r#"{{"error":"{}"}}"#, escape_json(&e)),
     }
 }
 
@@ -136,7 +134,7 @@ pub fn run_state(accumulated_state: MettaState, compiled_state: MettaState) -> R
 
 /// Run state from JSON inputs (for Rholang integration)
 /// Parses JSON states, runs evaluation, returns JSON result
-pub fn run_state_json(accumulated_json: &str, compiled_json: &str) -> Result<String, String> {
+pub fn run_state_json(_accumulated_json: &str, _compiled_json: &str) -> Result<String, String> {
     // For now, we'll use the direct MettaState approach
     // Full JSON deserialization would require a proper JSON parser
     // This is a placeholder that will be implemented when needed for Rholang
@@ -144,8 +142,8 @@ pub fn run_state_json(accumulated_json: &str, compiled_json: &str) -> Result<Str
 }
 
 /// Run state from JSON (error-safe version)
-pub fn run_state_json_safe(accumulated_json: &str, compiled_json: &str) -> String {
-    match run_state_json(accumulated_json, compiled_json) {
+pub fn run_state_json_safe(_accumulated_json: &str, _compiled_json: &str) -> String {
+    match run_state_json(_accumulated_json, _compiled_json) {
         Ok(json) => json,
         Err(e) => format!(r#"{{"error":"{}"}}"#, escape_json(&e)),
     }
@@ -159,7 +157,10 @@ mod tests {
     fn test_compile_simple() {
         let src = "(+ 1 2)";
         let result = compile_safe(src);
-        assert!(result.contains(r#""success":true"#));
+        // Should return full MettaState with pending_exprs, environment, eval_outputs
+        assert!(result.contains(r#""pending_exprs""#));
+        assert!(result.contains(r#""environment""#));
+        assert!(result.contains(r#""eval_outputs""#));
         assert!(result.contains(r#""type":"sexpr""#));
     }
 
@@ -167,7 +168,7 @@ mod tests {
     fn test_compile_error() {
         let src = "(unclosed";
         let result = compile_safe(src);
-        assert!(result.contains(r#""success":false"#));
+        // Error format should contain "error" field
         assert!(result.contains(r#""error""#));
     }
 
@@ -232,7 +233,10 @@ mod tests {
     fn test_compile_nested_arithmetic() {
         let src = "(+ 1 (* 2 3))";
         let result = compile_safe(src);
-        assert!(result.contains(r#""success":true"#));
+        // Should return full MettaState
+        assert!(result.contains(r#""pending_exprs""#));
+        assert!(result.contains(r#""environment""#));
+        assert!(result.contains(r#""eval_outputs""#));
         // Should have nested sexpr
         assert!(result.contains(r#""type":"sexpr""#));
     }
@@ -241,8 +245,11 @@ mod tests {
     fn test_compile_multiple_expressions() {
         let src = "(+ 1 2) (- 3 4)";
         let result = compile_safe(src);
-        assert!(result.contains(r#""success":true"#));
-        // Should have 2 expressions in the array
+        // Should return full MettaState
+        assert!(result.contains(r#""pending_exprs""#));
+        assert!(result.contains(r#""environment""#));
+        assert!(result.contains(r#""eval_outputs""#));
+        // Should have 2 expressions in the pending_exprs array
         let count = result.matches(r#""type":"sexpr""#).count();
         assert_eq!(count, 2);
     }

@@ -17,8 +17,22 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
             (vec![value], env)
         }
 
-        // For atoms and types, return as-is
-        MettaValue::Atom(_) | MettaValue::Bool(_) | MettaValue::Long(_)
+        // For atoms: add bare symbols to MORK Space, then return as-is
+        MettaValue::Atom(ref name) => {
+            // Only add non-variable atoms to MORK Space
+            // Variables start with $, &, or '
+            // Wildcards are _
+            if !name.starts_with('$') && !name.starts_with('&') && !name.starts_with('\'') && name != "_" {
+                let mut new_env = env.clone();
+                new_env.add_to_space(&value);
+                (vec![value], new_env)
+            } else {
+                (vec![value], env)
+            }
+        }
+
+        // For other ground types, return as-is
+        MettaValue::Bool(_) | MettaValue::Long(_)
         | MettaValue::String(_) | MettaValue::Uri(_) | MettaValue::Nil
         | MettaValue::Type(_) => {
             (vec![value], env)
@@ -38,16 +52,21 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     // Check for special forms before evaluation
     if let Some(MettaValue::Atom(op)) = items.first() {
         match op.as_str() {
-            // Rule definition: (= lhs rhs) - add to environment, don't evaluate
+            // Rule definition: (= lhs rhs) - add to MORK Space and rule cache
             "=" => {
                 if items.len() >= 3 {
                     let lhs = items[1].clone();
                     let rhs = items[2].clone();
+
                     let mut new_env = env.clone();
-                    new_env.add_rule(crate::backend::types::Rule { lhs, rhs });
+
+                    // Add rule using add_rule (stores in both rule_cache and MORK Space)
+                    use crate::backend::types::Rule;
+                    new_env.add_rule(Rule { lhs, rhs });
+
                     // Return nil to indicate rule was added
                     return (vec![MettaValue::Nil], new_env);
-                } else {
+                } else{
                     let err = MettaValue::Error(
                         "= requires exactly two arguments: lhs and rhs".to_string(),
                         Box::new(MettaValue::SExpr(items)),
@@ -173,6 +192,11 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 
                     let mut new_env = env.clone();
                     new_env.add_type(name, typ);
+
+                    // Add the type assertion to MORK Space
+                    let type_expr = MettaValue::SExpr(items);
+                    new_env.add_to_space(&type_expr);
+
                     return (vec![MettaValue::Nil], new_env);
                 } else {
                     let err = MettaValue::Error(
@@ -264,18 +288,23 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
         }
     }
 
-    // Try to match against rules in the environment
+    // Try to match against rules in MORK Space
+    // For now, we use a simplified approach: iterate through the Space to find rules
+    // A full implementation would use MORK's query_multi() for efficient pattern matching
     let sexpr = MettaValue::SExpr(evaled_items.clone());
-    for rule in &unified_env.rules {
-        if let Some(bindings) = pattern_match(&rule.lhs, &sexpr) {
-            // Apply bindings to the rhs and evaluate
-            let instantiated_rhs = apply_bindings(&rule.rhs, &bindings);
-            return eval(instantiated_rhs, unified_env);
-        }
+
+    // Try to find a matching rule in MORK Space
+    if let Some((rhs, bindings)) = try_match_rule(&sexpr, &unified_env) {
+        // Apply bindings to RHS and evaluate
+        let instantiated_rhs = apply_bindings(&rhs, &bindings);
+        return eval(instantiated_rhs, unified_env);
     }
 
-    // No rule matched, return the evaluated s-expression
-    (vec![MettaValue::SExpr(evaled_items)], unified_env)
+    // No rule matched, add to MORK Space and return it
+    let mut final_env = unified_env;
+    final_env.add_to_space(&sexpr);
+
+    (vec![sexpr], final_env)
 }
 
 /// Evaluate if control flow: (if condition then-branch else-branch)
@@ -491,6 +520,64 @@ fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaValue {
         }
         _ => value.clone(),
     }
+}
+
+/// Extract the head symbol from a pattern for indexing
+/// Returns None if the pattern doesn't have a clear head symbol
+fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
+    match pattern {
+        // For s-expressions like (double $x), extract "double"
+        MettaValue::SExpr(items) if !items.is_empty() => {
+            match &items[0] {
+                MettaValue::Atom(head) if !head.starts_with('$')
+                    && !head.starts_with('&')
+                    && !head.starts_with('\'')
+                    && head != "_" => {
+                    Some(head.clone())
+                }
+                _ => None,
+            }
+        }
+        // For bare atoms like foo, use the atom itself
+        MettaValue::Atom(head) if !head.starts_with('$')
+            && !head.starts_with('&')
+            && !head.starts_with('\'')
+            && head != "_" => {
+            Some(head.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Try to find a rule in the environment that matches the given expression
+/// Returns Some((rhs, bindings)) if a match is found
+/// Uses indexed lookup by head symbol for O(1) + O(k) performance where k = rules with that head
+fn try_match_rule(expr: &MettaValue, env: &Environment) -> Option<(MettaValue, Bindings)> {
+    // Try to extract head symbol for indexed lookup
+    if let Some(head) = get_head_symbol(expr) {
+        // Look up rules with this head symbol (O(1) hash lookup)
+        if let Some(rule_indices) = env.rule_index.get(&head) {
+            // Try to match against rules with matching head (O(k) where k = rules with this head)
+            for &idx in rule_indices {
+                let rule = &env.rule_cache[idx];
+                if let Some(bindings) = pattern_match(&rule.lhs, expr) {
+                    return Some((rule.rhs.clone(), bindings));
+                }
+            }
+        }
+    }
+
+    // Fallback: try all rules without a head symbol (e.g., variable patterns)
+    // This handles rules like (= $x ...) that don't have a concrete head symbol
+    for rule in &env.rule_cache {
+        if rule.lhs.get_head_symbol().is_none() {
+            if let Some(bindings) = pattern_match(&rule.lhs, expr) {
+                return Some((rule.rhs.clone(), bindings));
+            }
+        }
+    }
+
+    None
 }
 
 /// Infer the type of an expression
@@ -944,13 +1031,10 @@ mod tests {
             MettaValue::Long(42),
         ]);
 
-        let (result, new_env) = eval(rule_def, env);
+        let (result, _new_env) = eval(rule_def, env);
 
         // Rule definition should return Nil
         assert_eq!(result[0], MettaValue::Nil);
-
-        // Environment should now have the rule
-        assert_eq!(new_env.rules.len(), 1);
     }
 
     #[test]
@@ -1427,5 +1511,556 @@ mod tests {
         ]);
         let (result, _) = eval(value, env);
         assert_eq!(result[0], MettaValue::Long(10));
+    }
+
+    // === Tests adapted from hyperon-experimental ===
+    // Source: https://github.com/trueagi-io/hyperon-experimental
+
+    #[test]
+    fn test_nested_arithmetic() {
+        // From c1_grounded_basic.metta: (+ 2 (* 3 5))
+        let env = Environment::new();
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("add".to_string()),
+            MettaValue::Long(2),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("mul".to_string()),
+                MettaValue::Long(3),
+                MettaValue::Long(5),
+            ]),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results[0], MettaValue::Long(17)); // 2 + (3 * 5) = 17
+    }
+
+    #[test]
+    fn test_comparison_with_arithmetic() {
+        // From c1_grounded_basic.metta: (< 4 (+ 2 (* 3 5)))
+        let env = Environment::new();
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("lt".to_string()),
+            MettaValue::Long(4),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("add".to_string()),
+                MettaValue::Long(2),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("mul".to_string()),
+                    MettaValue::Long(3),
+                    MettaValue::Long(5),
+                ]),
+            ]),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results[0], MettaValue::Bool(true)); // 4 < 17
+    }
+
+    #[test]
+    fn test_equality_literals() {
+        // From c1_grounded_basic.metta: (== 4 (+ 2 2))
+        let env = Environment::new();
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("eq".to_string()),
+            MettaValue::Long(4),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("add".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(2),
+            ]),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results[0], MettaValue::Bool(true)); // 4 == 4
+    }
+
+    #[test]
+    fn test_equality_sexpr() {
+        // From c1_grounded_basic.metta: structural equality tests
+        let env = Environment::new();
+
+        // (== (A B) (A B)) should be supported via pattern matching
+        // For now we test that equal atoms are equal
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("eq".to_string()),
+            MettaValue::Long(42),
+            MettaValue::Long(42),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results[0], MettaValue::Bool(true));
+    }
+
+    #[test]
+    fn test_factorial_recursive() {
+        // From c1_grounded_basic.metta: factorial example
+        let mut env = Environment::new();
+
+        // (= (fact 0) 1)
+        let rule1 = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("fact".to_string()),
+                MettaValue::Long(0),
+            ]),
+            rhs: MettaValue::Long(1),
+        };
+        env.add_rule(rule1);
+
+        // (= (fact $n) (* $n (fact (- $n 1))))
+        let rule2 = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("fact".to_string()),
+                MettaValue::Atom("$n".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("mul".to_string()),
+                MettaValue::Atom("$n".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("fact".to_string()),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("sub".to_string()),
+                        MettaValue::Atom("$n".to_string()),
+                        MettaValue::Long(1),
+                    ]),
+                ]),
+            ]),
+        };
+        env.add_rule(rule2);
+
+        // Test (fact 5) = 120
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("fact".to_string()),
+            MettaValue::Long(5),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results[0], MettaValue::Long(120));
+    }
+
+    #[test]
+    fn test_incremental_nested_arithmetic() {
+        // From test_metta.py: !(+ 1 (+ 2 (+ 3 4)))
+        let env = Environment::new();
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("add".to_string()),
+            MettaValue::Long(1),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("add".to_string()),
+                MettaValue::Long(2),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("add".to_string()),
+                    MettaValue::Long(3),
+                    MettaValue::Long(4),
+                ]),
+            ]),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results[0], MettaValue::Long(10));
+    }
+
+    #[test]
+    fn test_function_definition_and_call() {
+        // From test_run_metta.py: (= (f) (+ 2 3)) !(f)
+        let mut env = Environment::new();
+
+        // Define rule: (= (f) (+ 2 3))
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![MettaValue::Atom("f".to_string())]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("add".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // Evaluate (f)
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("f".to_string())]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results[0], MettaValue::Long(5));
+    }
+
+    #[test]
+    fn test_multiple_pattern_variables() {
+        // Test pattern matching with multiple variables
+        let mut env = Environment::new();
+
+        // (= (add3 $a $b $c) (+ $a (+ $b $c)))
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("add3".to_string()),
+                MettaValue::Atom("$a".to_string()),
+                MettaValue::Atom("$b".to_string()),
+                MettaValue::Atom("$c".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("$a".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("add".to_string()),
+                    MettaValue::Atom("$b".to_string()),
+                    MettaValue::Atom("$c".to_string()),
+                ]),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // (add3 10 20 30) = 60
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("add3".to_string()),
+            MettaValue::Long(10),
+            MettaValue::Long(20),
+            MettaValue::Long(30),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results[0], MettaValue::Long(60));
+    }
+
+    #[test]
+    fn test_nested_pattern_matching() {
+        // Test nested S-expression pattern matching
+        let mut env = Environment::new();
+
+        // (= (eval-pair (pair $x $y)) (+ $x $y))
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("eval-pair".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("pair".to_string()),
+                    MettaValue::Atom("$x".to_string()),
+                    MettaValue::Atom("$y".to_string()),
+                ]),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Atom("$y".to_string()),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // (eval-pair (pair 5 7)) = 12
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("eval-pair".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("pair".to_string()),
+                MettaValue::Long(5),
+                MettaValue::Long(7),
+            ]),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results[0], MettaValue::Long(12));
+    }
+
+    #[test]
+    fn test_wildcard_pattern() {
+        // Test wildcard matching
+        let pattern = MettaValue::Atom("_".to_string());
+        let value = MettaValue::Long(42);
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_some());
+
+        // Wildcard should not bind the value
+        let bindings = bindings.unwrap();
+        assert!(bindings.is_empty());
+    }
+
+    #[test]
+    fn test_variable_consistency_in_pattern() {
+        // Test that the same variable in a pattern must match the same value
+        let pattern = MettaValue::SExpr(vec![
+            MettaValue::Atom("same".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        // Should match when both are the same
+        let value1 = MettaValue::SExpr(vec![
+            MettaValue::Atom("same".to_string()),
+            MettaValue::Long(5),
+            MettaValue::Long(5),
+        ]);
+        assert!(pattern_match(&pattern, &value1).is_some());
+
+        // Should not match when they differ
+        let value2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("same".to_string()),
+            MettaValue::Long(5),
+            MettaValue::Long(7),
+        ]);
+        assert!(pattern_match(&pattern, &value2).is_none());
+    }
+
+    #[test]
+    fn test_conditional_with_pattern_matching() {
+        // Test combining if with pattern matching
+        let mut env = Environment::new();
+
+        // (= (abs $x) (if (< $x 0) (- 0 $x) $x))
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("abs".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("if".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("lt".to_string()),
+                    MettaValue::Atom("$x".to_string()),
+                    MettaValue::Long(0),
+                ]),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("sub".to_string()),
+                    MettaValue::Long(0),
+                    MettaValue::Atom("$x".to_string()),
+                ]),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // abs(-5) = 5
+        let value1 = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs".to_string()),
+            MettaValue::Long(-5),
+        ]);
+        let (results, env1) = eval(value1, env.clone());
+        assert_eq!(results[0], MettaValue::Long(5));
+
+        // abs(7) = 7
+        let value2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs".to_string()),
+            MettaValue::Long(7),
+        ]);
+        let (results, _) = eval(value2, env1);
+        assert_eq!(results[0], MettaValue::Long(7));
+    }
+
+    #[test]
+    fn test_string_values() {
+        // Test string value handling
+        let env = Environment::new();
+        let value = MettaValue::String("test".to_string());
+        let (results, _) = eval(value.clone(), env);
+        assert_eq!(results[0], value);
+    }
+
+    #[test]
+    fn test_boolean_values() {
+        let env = Environment::new();
+
+        let value_true = MettaValue::Bool(true);
+        let (results, _) = eval(value_true.clone(), env.clone());
+        assert_eq!(results[0], value_true);
+
+        let value_false = MettaValue::Bool(false);
+        let (results, _) = eval(value_false.clone(), env);
+        assert_eq!(results[0], value_false);
+    }
+
+    #[test]
+    fn test_nil_value() {
+        let env = Environment::new();
+        let value = MettaValue::Nil;
+        let (results, _) = eval(value, env);
+        assert_eq!(results[0], MettaValue::Nil);
+    }
+
+    // === Fact Database Tests ===
+
+    #[test]
+    fn test_symbol_added_to_fact_database() {
+        // When a bare symbol like "Hello" is evaluated, it should be added to the fact database
+        let env = Environment::new();
+
+        // Evaluate the symbol "Hello"
+        let symbol = MettaValue::Atom("Hello".to_string());
+        let (results, new_env) = eval(symbol.clone(), env);
+
+        // Symbol should be returned unchanged
+        assert_eq!(results[0], symbol);
+
+        // Symbol should be added to fact database
+        assert!(new_env.has_fact("Hello"));
+    }
+
+    #[test]
+    fn test_variables_not_added_to_fact_database() {
+        let env = Environment::new();
+
+        // Test $variable
+        let var1 = MettaValue::Atom("$x".to_string());
+        let (_, new_env) = eval(var1, env.clone());
+        assert!(!new_env.has_fact("$x"));
+
+        // Test &variable
+        let var2 = MettaValue::Atom("&y".to_string());
+        let (_, new_env) = eval(var2, env.clone());
+        assert!(!new_env.has_fact("&y"));
+
+        // Test 'variable
+        let var3 = MettaValue::Atom("'z".to_string());
+        let (_, new_env) = eval(var3, env.clone());
+        assert!(!new_env.has_fact("'z"));
+
+        // Test wildcard
+        let wildcard = MettaValue::Atom("_".to_string());
+        let (_, new_env) = eval(wildcard, env);
+        assert!(!new_env.has_fact("_"));
+    }
+
+    #[test]
+    fn test_multiple_symbols_in_fact_database() {
+        let env = Environment::new();
+
+        // Evaluate multiple symbols
+        let symbol1 = MettaValue::Atom("Foo".to_string());
+        let (_, env1) = eval(symbol1, env);
+
+        let symbol2 = MettaValue::Atom("Bar".to_string());
+        let (_, env2) = eval(symbol2, env1);
+
+        let symbol3 = MettaValue::Atom("Baz".to_string());
+        let (_, env3) = eval(symbol3, env2);
+
+        // All symbols should be in the fact database
+        assert!(env3.has_fact("Foo"));
+        assert!(env3.has_fact("Bar"));
+        assert!(env3.has_fact("Baz"));
+    }
+
+    #[test]
+    fn test_sexpr_added_to_fact_database() {
+        // When an s-expression like (Hello World) is evaluated, it should be added to the fact database
+        let env = Environment::new();
+
+        // Evaluate the s-expression (Hello World)
+        let sexpr = MettaValue::SExpr(vec![
+            MettaValue::Atom("Hello".to_string()),
+            MettaValue::Atom("World".to_string()),
+        ]);
+        let expected_result = MettaValue::SExpr(vec![
+            MettaValue::Atom("Hello".to_string()),
+            MettaValue::Atom("World".to_string()),
+        ]);
+
+        let (results, new_env) = eval(sexpr.clone(), env);
+
+        // S-expression should be returned (with evaluated elements)
+        assert_eq!(results[0], expected_result);
+
+        // S-expression should be added to fact database
+        assert!(new_env.has_sexpr_fact(&expected_result));
+
+        // Individual atoms should also be in the fact database
+        assert!(new_env.has_fact("Hello"));
+        assert!(new_env.has_fact("World"));
+    }
+
+    #[test]
+    fn test_nested_sexpr_in_fact_database() {
+        let env = Environment::new();
+
+        // Evaluate a nested s-expression
+        let sexpr = MettaValue::SExpr(vec![
+            MettaValue::Atom("Outer".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("Inner".to_string()),
+                MettaValue::Atom("Nested".to_string()),
+            ]),
+        ]);
+
+        let (_, new_env) = eval(sexpr, env);
+
+        // Outer s-expression should be in fact database
+        let expected_outer = MettaValue::SExpr(vec![
+            MettaValue::Atom("Outer".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("Inner".to_string()),
+                MettaValue::Atom("Nested".to_string()),
+            ]),
+        ]);
+        assert!(new_env.has_sexpr_fact(&expected_outer));
+
+        // Inner s-expression should also be in fact database
+        let expected_inner = MettaValue::SExpr(vec![
+            MettaValue::Atom("Inner".to_string()),
+            MettaValue::Atom("Nested".to_string()),
+        ]);
+        assert!(new_env.has_sexpr_fact(&expected_inner));
+
+        // All atoms should be in the atom fact database
+        assert!(new_env.has_fact("Outer"));
+        assert!(new_env.has_fact("Inner"));
+        assert!(new_env.has_fact("Nested"));
+    }
+
+    #[test]
+    fn test_grounded_operations_not_added_to_sexpr_facts() {
+        let env = Environment::new();
+
+        // Evaluate an arithmetic operation (add 1 2)
+        let sexpr = MettaValue::SExpr(vec![
+            MettaValue::Atom("add".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+
+        let (results, new_env) = eval(sexpr.clone(), env);
+
+        // Result should be 3
+        assert_eq!(results[0], MettaValue::Long(3));
+
+        // The s-expression should NOT be in the fact database
+        // because it was reduced to a value by a grounded operation
+        assert!(!new_env.has_sexpr_fact(&sexpr));
+    }
+
+    #[test]
+    fn test_rule_definition_added_to_fact_database() {
+        let env = Environment::new();
+
+        // Define a rule: (= (double $x) (* $x 2))
+        let rule_def = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("double".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("mul".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (result, new_env) = eval(rule_def.clone(), env);
+
+        // Rule definition should return Nil
+        assert_eq!(result[0], MettaValue::Nil);
+
+        // Rule definition should also be in the fact database
+        assert!(new_env.has_sexpr_fact(&rule_def));
+    }
+
+    #[test]
+    fn test_type_assertion_added_to_fact_database() {
+        let env = Environment::new();
+
+        // Define a type assertion: (: x Number)
+        let type_assertion = MettaValue::SExpr(vec![
+            MettaValue::Atom(":".to_string()),
+            MettaValue::Atom("x".to_string()),
+            MettaValue::Atom("Number".to_string()),
+        ]);
+
+        let (result, new_env) = eval(type_assertion.clone(), env);
+
+        // Type assertion should return Nil
+        assert_eq!(result[0], MettaValue::Nil);
+
+        // Type should be in the type database
+        assert_eq!(
+            new_env.get_type("x"),
+            Some(&MettaValue::Atom("Number".to_string()))
+        );
+
+        // Type assertion should also be in the fact database
+        assert!(new_env.has_sexpr_fact(&type_assertion));
     }
 }

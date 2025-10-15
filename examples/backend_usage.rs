@@ -20,13 +20,13 @@ fn example_arithmetic() {
 
     // Compile MeTTa source code
     let src = "(+ 10 5)";
-    let (sexprs, env) = compile(src).expect("Compilation failed");
+    let state = compile(src).expect("Compilation failed");
 
     println!("Source: {}", src);
-    println!("Compiled: {:?}", sexprs);
+    println!("Compiled: {:?}", state.pending_exprs);
 
     // Evaluate the expression
-    let (results, _new_env) = eval(sexprs[0].clone(), env);
+    let (results, _new_env) = eval(state.pending_exprs[0].clone(), state.environment);
     println!("Result: {:?}\n", results);
 }
 
@@ -67,18 +67,19 @@ fn example_environment() {
     let src1 = "(+ 1 2)";
     let src2 = "(* 3 4)";
 
-    let (exprs1, env1) = compile(src1).expect("Compilation failed");
-    let (exprs2, env2) = compile(src2).expect("Compilation failed");
+    let state1 = compile(src1).expect("Compilation failed");
+    let state2 = compile(src2).expect("Compilation failed");
 
     println!("Expression 1: {}", src1);
-    let (result1, env_after1) = eval(exprs1[0].clone(), env1);
+    let (result1, env_after1) = eval(state1.pending_exprs[0].clone(), state1.environment);
     println!("Result 1: {:?}", result1);
 
     println!("\nExpression 2: {}", src2);
-    let (result2, env_after2) = eval(exprs2[0].clone(), env2);
+    let (result2, env_after2) = eval(state2.pending_exprs[0].clone(), state2.environment);
     println!("Result 2: {:?}", result2);
 
     // Union the environments (compositional)
-    let combined_env = env_after1.union(&env_after2);
-    println!("\nCombined environment has {} rules", combined_env.rules.len());
+    let _combined_env = env_after1.union(&env_after2);
+    println!("\nCombined environment unioned successfully");
+    println!("(All facts stored in MORK Space)");
 }

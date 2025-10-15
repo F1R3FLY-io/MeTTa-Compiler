@@ -7,12 +7,12 @@
 //
 // Grounded operators like +, -, * are replaced with textual names like "add", "sub", "mul"
 
-use crate::backend::types::{MettaValue, Environment};
+use crate::backend::types::{MettaValue, MettaState};
 use crate::sexpr::{Lexer, Parser, SExpr};
 
-/// Compile MeTTa source code into a list of MettaValue s-expressions
-/// Returns (parsed_sexprs, empty_environment)
-pub fn compile(src: &str) -> Result<(Vec<MettaValue>, Environment), String> {
+/// Compile MeTTa source code into a MettaState ready for evaluation
+/// Returns a compiled state with pending expressions and empty environment
+pub fn compile(src: &str) -> Result<MettaState, String> {
     // Parse the source into s-expressions
     let mut lexer = Lexer::new(src);
     let tokens = lexer.tokenize()?;
@@ -26,7 +26,7 @@ pub fn compile(src: &str) -> Result<(Vec<MettaValue>, Environment), String> {
         metta_values.push(sexpr_to_metta_value(&sexpr)?);
     }
 
-    Ok((metta_values, Environment::new()))
+    Ok(MettaState::new_compiled(metta_values))
 }
 
 /// Convert an SExpr to a MettaValue
@@ -106,12 +106,14 @@ mod tests {
         let result = compile(src);
         assert!(result.is_ok());
 
-        let (exprs, env) = result.unwrap();
-        assert_eq!(exprs.len(), 1);
-        assert_eq!(env.rules.len(), 0);
+        let state = result.unwrap();
+        assert_eq!(state.pending_exprs.len(), 1);
+        // Environment is empty at compile time (facts added during eval)
+        assert!(state.environment.rule_cache.is_empty());
+        assert!(state.eval_outputs.is_empty());
 
         // Should be: (add 1 2)
-        if let MettaValue::SExpr(items) = &exprs[0] {
+        if let MettaValue::SExpr(items) = &state.pending_exprs[0] {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Atom("add".to_string()));
             assert_eq!(items[1], MettaValue::Long(1));
@@ -135,8 +137,8 @@ mod tests {
 
         for (op, expected) in operators {
             let src = format!("({} 1 2)", op);
-            let result = compile(&src).unwrap();
-            if let MettaValue::SExpr(items) = &result.0[0] {
+            let state = compile(&src).unwrap();
+            if let MettaValue::SExpr(items) = &state.pending_exprs[0] {
                 assert_eq!(items[0], MettaValue::Atom(expected.to_string()),
                     "Failed for operator {}", op);
             }
@@ -147,8 +149,8 @@ mod tests {
     fn test_compile_gt() {
         // Test > operator
         let src = "(> 1 2)";
-        let result = compile(src).unwrap();
-        if let MettaValue::SExpr(items) = &result.0[0] {
+        let state = compile(src).unwrap();
+        if let MettaValue::SExpr(items) = &state.pending_exprs[0] {
             assert_eq!(items[0], MettaValue::Atom("gt".to_string()));
         }
 
@@ -160,9 +162,9 @@ mod tests {
     #[test]
     fn test_compile_literals() {
         let src = "(true false 42 \"hello\")";
-        let result = compile(src).unwrap();
+        let state = compile(src).unwrap();
 
-        if let MettaValue::SExpr(items) = &result.0[0] {
+        if let MettaValue::SExpr(items) = &state.pending_exprs[0] {
             assert_eq!(items[0], MettaValue::Bool(true));
             assert_eq!(items[1], MettaValue::Bool(false));
             assert_eq!(items[2], MettaValue::Long(42));

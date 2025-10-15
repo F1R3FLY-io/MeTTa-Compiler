@@ -169,11 +169,12 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     }
 
     // Compile to MettaValue
-    let (sexprs, mut env) = compile(input)?;
+    let state = compile(input)?;
+    let mut env = state.environment;
 
     // Evaluate each expression
     let mut output = String::new();
-    for sexpr in sexprs {
+    for sexpr in state.pending_exprs {
         let (results, new_env) = eval(sexpr, env);
         env = new_env;
 
@@ -210,10 +211,10 @@ fn run_repl() {
         }
 
         match compile(input) {
-            Ok((sexprs, new_env)) => {
-                env = env.union(&new_env);
+            Ok(state) => {
+                env = env.union(&state.environment);
 
-                for sexpr in sexprs {
+                for sexpr in state.pending_exprs {
                     match eval(sexpr.clone(), env.clone()) {
                         (results, updated_env) => {
                             env = updated_env;

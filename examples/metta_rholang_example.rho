@@ -1,0 +1,150 @@
+// =====================================================================
+// Example: Using MeTTa Compiler from Rholang
+// =====================================================================
+// This example demonstrates how to use the MeTTa compiler service
+// from Rholang contracts.
+// =====================================================================
+
+new stdout(`rho:io:stdout`), stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    ack, result
+in {
+  // ===================================================================
+  // Example 1: Simple Arithmetic Compilation
+  // ===================================================================
+  stdoutAck!("=== Example 1: Simple Arithmetic ===", *ack) |
+  for (_ <- ack) {
+    // Compile a simple MeTTa expression
+    mettaCompile!("(+ 1 2)", *result) |
+    for (@compiledResult <- result) {
+      // compiledResult is a JSON string with the compiled AST
+      stdoutAck!(compiledResult, *ack) |
+      for (_ <- ack) {
+        stdout!("\n")
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Example 2: Compiling a Rule Definition
+  // ===================================================================
+  stdoutAck!("=== Example 2: Rule Definition ===", *ack) |
+  for (_ <- ack) {
+    mettaCompile!("(= (double $x) (* $x 2))", *result) |
+    for (@compiledResult <- result) {
+      stdoutAck!(compiledResult, *ack) |
+      for (_ <- ack) {
+        stdout!("\n")
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Example 3: Nested Expressions
+  // ===================================================================
+  stdoutAck!("=== Example 3: Nested Expression ===", *ack) |
+  for (_ <- ack) {
+    mettaCompile!("(+ 1 (* 2 3))", *result) |
+    for (@compiledResult <- result) {
+      stdoutAck!(compiledResult, *ack) |
+      for (_ <- ack) {
+        stdout!("\n")
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Example 4: Error Handling
+  // ===================================================================
+  stdoutAck!("=== Example 4: Syntax Error ===", *ack) |
+  for (_ <- ack) {
+    // This will produce an error due to unclosed parenthesis
+    mettaCompile!("(+ 1 2", *result) |
+    for (@compiledResult <- result) {
+      // Result will contain {"success":false,"error":"..."}
+      stdoutAck!(compiledResult, *ack) |
+      for (_ <- ack) {
+        stdout!("\n")
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Example 5: MeTTa Compiler as a Service
+  // ===================================================================
+  stdoutAck!("=== Example 5: Compiler Service ===", *ack) |
+  for (_ <- ack) {
+    // Create a reusable compiler contract
+    contract @"compileAndPrint"(source) = {
+      new resultChan in {
+        mettaCompile!(source, *resultChan) |
+        for (@result <- resultChan) {
+          stdoutAck!("Compiled: " ++ result, *ack)
+        }
+      }
+    } |
+
+    // Use the service multiple times
+    @"compileAndPrint"!("(+ 1 2)") |
+    @"compileAndPrint"!("(* 3 4)") |
+    @"compileAndPrint"!("(< 5 10)")
+  } |
+
+  // ===================================================================
+  // Example 6: Parsing JSON Result
+  // ===================================================================
+  stdoutAck!("=== Example 6: JSON Parsing ===", *ack) |
+  for (_ <- ack) {
+    contract @"parseCompileResult"(source, @success, @error) = {
+      new resultChan in {
+        mettaCompile!(source, *resultChan) |
+        for (@result <- resultChan) {
+          // In a real implementation, you would parse the JSON
+          // For now, we just check if it contains "success":true
+          match result {
+            String => {
+              if (result.contains("\"success\":true")) {
+                success!(result)
+              } else {
+                error!(result)
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    new successChan, errorChan in {
+      @"parseCompileResult"!("(+ 1 2)", *successChan, *errorChan) |
+      for (@s <- successChan) {
+        stdoutAck!("Success: " ++ s, *ack)
+      } |
+      for (@e <- errorChan) {
+        stdoutAck!("Error: " ++ e, *ack)
+      }
+    }
+  }
+}
+
+// =====================================================================
+// Expected Output
+// =====================================================================
+// === Example 1: Simple Arithmetic ===
+// {"success":true,"exprs":[{"type":"sexpr","items":[{"type":"atom","value":"add"},{"type":"number","value":1},{"type":"number","value":2}]}]}
+//
+// === Example 2: Rule Definition ===
+// {"success":true,"exprs":[{"type":"sexpr","items":[{"type":"atom","value":"="},{"type":"sexpr","items":[{"type":"atom","value":"double"},{"type":"atom","value":"$x"}]},{"type":"sexpr","items":[{"type":"atom","value":"mul"},{"type":"atom","value":"$x"},{"type":"number","value":2}]}]}]}
+//
+// === Example 3: Nested Expression ===
+// {"success":true,"exprs":[{"type":"sexpr","items":[{"type":"atom","value":"add"},{"type":"number","value":1},{"type":"sexpr","items":[{"type":"atom","value":"mul"},{"type":"number","value":2},{"type":"number","value":3}]}]}]}
+//
+// === Example 4: Syntax Error ===
+// {"success":false,"error":"Expected closing parenthesis..."}
+//
+// === Example 5: Compiler Service ===
+// Compiled: {"success":true,...}
+// Compiled: {"success":true,...}
+// Compiled: {"success":true,...}
+//
+// === Example 6: JSON Parsing ===
+// Success: {"success":true,...}

@@ -1,0 +1,55 @@
+// =====================================================================
+// Quick Test: MeTTa Integration with Rholang
+// =====================================================================
+// This is a minimal test to verify the MeTTa compiler service works
+// =====================================================================
+
+new stdout(`rho:io:stdout`), stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    mettaCompileSync(`rho:metta:compile:sync`),
+    ack in {
+
+  stdoutAck!("=== Testing MeTTa Integration ===\n", *ack) |
+
+  // Test 1: Basic compilation with explicit return channel
+  for (_ <- ack) {
+    stdoutAck!("Test 1: Basic arithmetic (+ 1 2)...", *ack) |
+    for (_ <- ack) {
+      new result in {
+        mettaCompile!("(+ 1 2)", *result) |
+        for (@json <- result) {
+          stdoutAck!("Result: " ++ json ++ "\n", *ack)
+        }
+      }
+    }
+  } |
+
+  // Test 2: Synchronous pattern with !?
+  for (_ <- ack) {
+    stdoutAck!("Test 2: Rule definition with sync...", *ack) |
+    for (_ <- ack) {
+      new result in {
+        mettaCompileSync!("(= (double $x) (* $x 2))", *result) |
+        for (@json <- result) {
+          stdoutAck!("Result: " ++ json ++ "\n", *ack)
+        }
+      }
+    }
+  } |
+
+  // Test 3: Error handling
+  for (_ <- ack) {
+    stdoutAck!("Test 3: Syntax error (unclosed paren)...", *ack) |
+    for (_ <- ack) {
+      new result in {
+        mettaCompile!("(+ 1 2", *result) |
+        for (@json <- result) {
+          stdoutAck!("Result: " ++ json ++ "\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("\n=== All tests complete! ===\n", *ack)
+          }
+        }
+      }
+    }
+  }
+}

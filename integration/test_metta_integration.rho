@@ -1,37 +1,50 @@
 // =====================================================================
-// Quick Test: MeTTa Integration with Rholang
+// Quick Test: MeTTa Integration with Rholang (PathMap Par Version)
 // =====================================================================
-// This is a minimal test to verify the MeTTa compiler service works
+// This test verifies the MeTTa compiler service works with PathMap Par
 // =====================================================================
 
 new stdout(`rho:io:stdout`), stdoutAck(`rho:io:stdoutAck`),
     mettaCompile(`rho:metta:compile`),
     mettaCompileSync(`rho:metta:compile:sync`),
+    mettaRun(`rho:metta:run`),
     ack in {
 
-  stdoutAck!("=== Testing MeTTa Integration ===\n", *ack) |
+  stdoutAck!("=== Testing MeTTa Integration (PathMap Par) ===\n", *ack) |
 
   // Test 1: Basic compilation with explicit return channel
   for (_ <- ack) {
-    stdoutAck!("Test 1: Basic arithmetic (+ 1 2)...", *ack) |
+    stdoutAck!("Test 1: Basic arithmetic (+ 1 2)...\n", *ack) |
     for (_ <- ack) {
       new result in {
         mettaCompile!("(+ 1 2)", *result) |
-        for (@json <- result) {
-          stdoutAck!("Result: " ++ json ++ "\n", *ack)
+        for (@statePar <- result) {
+          stdoutAck!("  Compiled state: ", *ack) |
+          for (_ <- ack) {
+            stdoutAck!(statePar, *ack) |
+            for (_ <- ack) {
+              stdoutAck!("\n", *ack)
+            }
+          }
         }
       }
     }
   } |
 
-  // Test 2: Synchronous pattern with !?
+  // Test 2: Synchronous pattern compilation
   for (_ <- ack) {
-    stdoutAck!("Test 2: Rule definition with sync...", *ack) |
+    stdoutAck!("Test 2: Rule definition with sync...\n", *ack) |
     for (_ <- ack) {
       new result in {
         mettaCompileSync!("(= (double $x) (* $x 2))", *result) |
-        for (@json <- result) {
-          stdoutAck!("Result: " ++ json ++ "\n", *ack)
+        for (@statePar <- result) {
+          stdoutAck!("  Compiled state: ", *ack) |
+          for (_ <- ack) {
+            stdoutAck!(statePar, *ack) |
+            for (_ <- ack) {
+              stdoutAck!("\n", *ack)
+            }
+          }
         }
       }
     }
@@ -39,14 +52,59 @@ new stdout(`rho:io:stdout`), stdoutAck(`rho:io:stdoutAck`),
 
   // Test 3: Error handling
   for (_ <- ack) {
-    stdoutAck!("Test 3: Syntax error (unclosed paren)...", *ack) |
+    stdoutAck!("Test 3: Syntax error (unclosed paren)...\n", *ack) |
     for (_ <- ack) {
       new result in {
         mettaCompile!("(+ 1 2", *result) |
-        for (@json <- result) {
-          stdoutAck!("Result: " ++ json ++ "\n", *ack) |
+        for (@errorPar <- result) {
+          stdoutAck!("  Error: ", *ack) |
           for (_ <- ack) {
-            stdoutAck!("\n=== All tests complete! ===\n", *ack)
+            stdoutAck!(errorPar, *ack) |
+            for (_ <- ack) {
+              stdoutAck!("\n", *ack)
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // Test 4: Full REPL workflow (compile + run + run again)
+  for (_ <- ack) {
+    stdoutAck!("Test 4: REPL workflow (compile -> run -> accumulate)...\n", *ack) |
+    for (_ <- ack) {
+      new compiledState, runResult1, runResult2 in {
+        // Step 1: Compile arithmetic expression
+        mettaCompile!("(+ 10 5)", *compiledState) |
+        for (@compiled <- compiledState) {
+          stdoutAck!("  Step 1: Compiled (+ 10 5)\n", *ack) |
+          for (_ <- ack) {
+            // Step 2: Run against empty state
+            new emptyState in {
+              mettaRun!(Nil, compiled, *runResult1) |
+              for (@accumulatedState1 <- runResult1) {
+                stdoutAck!("  Step 2: Evaluated - result in accumulated state\n", *ack) |
+                for (_ <- ack) {
+                  // Step 3: Compile and run another expression
+                  new compiledState2 in {
+                    mettaCompile!("(* 3 4)", *compiledState2) |
+                    for (@compiled2 <- compiledState2) {
+                      stdoutAck!("  Step 3: Compiled (* 3 4)\n", *ack) |
+                      for (_ <- ack) {
+                        // Step 4: Run against accumulated state
+                        mettaRun!(accumulatedState1, compiled2, *runResult2) |
+                        for (@accumulatedState2 <- runResult2) {
+                          stdoutAck!("  Step 4: Evaluated - both results in accumulated state\n", *ack) |
+                          for (_ <- ack) {
+                            stdoutAck!("\n=== All tests complete! ===\n", *ack)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

@@ -12,7 +12,7 @@ use std::os::raw::c_char;
 #[no_mangle]
 pub unsafe extern "C" fn metta_compile(src_ptr: *const c_char) -> *mut c_char {
     if src_ptr.is_null() {
-        let error = r#"{"success":false,"error":"null pointer provided"}"#;
+        let error = r#"{"error":"null pointer provided"}"#;
         return match CString::new(error) {
             Ok(s) => s.into_raw(),
             Err(_) => std::ptr::null_mut(),
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn metta_compile(src_ptr: *const c_char) -> *mut c_char {
     let src = match CStr::from_ptr(src_ptr).to_str() {
         Ok(s) => s,
         Err(_) => {
-            let error = r#"{"success":false,"error":"invalid UTF-8"}"#;
+            let error = r#"{"error":"invalid UTF-8"}"#;
             return match CString::new(error) {
                 Ok(s) => s.into_raw(),
                 Err(_) => std::ptr::null_mut(),
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn metta_compile(src_ptr: *const c_char) -> *mut c_char {
     match CString::new(result) {
         Ok(s) => s.into_raw(),
         Err(_) => {
-            let error = r#"{"success":false,"error":"result contains null byte"}"#;
+            let error = r#"{"error":"result contains null byte"}"#;
             match CString::new(error) {
                 Ok(s) => s.into_raw(),
                 Err(_) => std::ptr::null_mut(),
@@ -68,7 +68,10 @@ mod tests {
             assert!(!result_ptr.is_null());
 
             let result = CStr::from_ptr(result_ptr).to_str().unwrap();
-            assert!(result.contains(r#""success":true"#));
+            // Should return full MettaState
+            assert!(result.contains(r#""pending_exprs""#));
+            assert!(result.contains(r#""environment""#));
+            assert!(result.contains(r#""eval_outputs""#));
 
             metta_free_string(result_ptr);
         }
@@ -82,7 +85,7 @@ mod tests {
             assert!(!result_ptr.is_null());
 
             let result = CStr::from_ptr(result_ptr).to_str().unwrap();
-            assert!(result.contains(r#""success":false"#));
+            // Error format should contain "error" field
             assert!(result.contains(r#""error""#));
 
             metta_free_string(result_ptr);
@@ -96,7 +99,8 @@ mod tests {
             assert!(!result_ptr.is_null());
 
             let result = CStr::from_ptr(result_ptr).to_str().unwrap();
-            assert!(result.contains(r#""success":false"#));
+            // Error format should contain "error" field and message
+            assert!(result.contains(r#""error""#));
             assert!(result.contains("null pointer"));
 
             metta_free_string(result_ptr);
@@ -119,7 +123,10 @@ mod tests {
             assert!(!result_ptr.is_null());
 
             let result = CStr::from_ptr(result_ptr).to_str().unwrap();
-            assert!(result.contains(r#""success":true"#));
+            // Should return full MettaState with nested sexpr
+            assert!(result.contains(r#""pending_exprs""#));
+            assert!(result.contains(r#""environment""#));
+            assert!(result.contains(r#""eval_outputs""#));
             assert!(result.contains(r#""type":"sexpr""#));
 
             metta_free_string(result_ptr);

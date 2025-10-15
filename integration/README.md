@@ -17,13 +17,14 @@ integration/
     └── rholang_registry_v2_ffi.rs
 ```
 
-## Current Integration (Direct Rust Linking)
+## Current Integration (Direct Rust Linking with PathMap Par)
 
 The templates in `integration/templates/` implement **direct Rust linking** - no FFI required!
 
 ### Integration Status
 
 ✅ **Successfully Deployed** to `/home/dylon/Workspace/f1r3fly.io/f1r3node/rholang/`
+✅ **Updated to PathMap Par** - Now uses EPathMap structures instead of JSON
 
 ### Files Modified in Rholang
 
@@ -33,31 +34,62 @@ The templates in `integration/templates/` implement **direct Rust linking** - no
 
 ### Services Available
 
-- `rho:metta:compile` (arity 2) - Traditional pattern with explicit return channel
-- `rho:metta:compile:sync` (arity 2) - Synchronous pattern with implicit return
+- `rho:metta:compile` (arity 2, channel 200) - Compile MeTTa to PathMap Par
+- `rho:metta:compile:sync` (arity 2, channel 201) - Synchronous compile
+- `rho:metta:run` (arity 3, channel 202) - Evaluate with state accumulation
 
 ### Usage from Rholang
 
+**⚠️ Important:** Services now return **PathMap Par** structures, not JSON strings!
+
+PathMaps are **printable** - use `stdoutAck` to display them:
+
 ```rholang
-// Traditional Pattern
+// Compile MeTTa code and print result
 new result in {
   @"rho:metta:compile"!("(+ 1 2)", *result) |
-  for (@json <- result) {
-    stdoutAck!(json, *ack)
+  for (@statePar <- result) {
+    // statePar is an EPathMap containing MettaState
+    stdoutAck!("Compiled state: ", *ack) |
+    for (_ <- ack) {
+      stdoutAck!(statePar, *ack) |  // Prints PathMap as {|...|}
+      for (_ <- ack) {
+        stdoutAck!("\n", *ack)
+      }
+    }
   }
 }
 
-// Synchronous Pattern with !?
-@"rho:metta:compile:sync" !? ("(+ 1 2)", *ack) ; {
-  stdoutAck!("Compilation complete", *ack)
+// REPL workflow with state accumulation
+new compiled, evaluated in {
+  @"rho:metta:compile"!("(+ 10 5)", *compiled) |
+  for (@compiledState <- compiled) {
+    @"rho:metta:run"!(Nil, compiledState, *evaluated) |
+    for (@accumulatedState <- evaluated) {
+      stdoutAck!("Result: ", *ack) |
+      for (_ <- ack) {
+        stdoutAck!(accumulatedState, *ack)
+      }
+    }
+  }
 }
 ```
 
-### Compilation Function
+**Note:** Do NOT use `++` operator on PathMap Par (use separate `stdoutAck` calls).
 
-Both services use: `mettatron::rholang_integration::compile_safe(&str) -> String`
+See **`PATHMAP_PAR_USAGE.md`** for complete usage guide and examples.
 
-Returns JSON with compiled AST or error message.
+### PathMap Par Integration
+
+Functions used:
+- `mettatron::metta_state_to_pathmap_par(&MettaState) -> Par` - Convert state to EPathMap
+- `mettatron::pathmap_par_to_metta_state(&Par) -> Result<MettaState>` - Deserialize
+- `mettatron::run_state(accumulated, compiled) -> Result<MettaState>` - Evaluate
+
+Returns EPathMap Par with structure:
+- Element 0: `("pending_exprs", EList([...]))`
+- Element 1: `("environment", metadata)`
+- Element 2: `("eval_outputs", EList([...]))`
 
 ## Documentation
 

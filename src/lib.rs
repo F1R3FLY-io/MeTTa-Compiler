@@ -64,6 +64,7 @@
 pub mod sexpr;
 pub mod backend;
 pub mod rholang_integration;
+pub mod pathmap_par_integration;
 pub mod ffi;
 
 pub use sexpr::{Lexer, Parser, SExpr, Token};
@@ -75,6 +76,13 @@ pub use rholang_integration::{
     run_state,
     metta_state_to_json,
     compile_to_state_json,
+};
+pub use pathmap_par_integration::{
+    metta_value_to_par,
+    metta_state_to_pathmap_par,
+    metta_error_to_par,
+    par_to_metta_value,
+    pathmap_par_to_metta_state,
 };
 
 #[cfg(test)]

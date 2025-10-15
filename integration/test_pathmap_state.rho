@@ -1,0 +1,49 @@
+new stdout(\`rho:io:stdout\`),
+    mettaCompile(\`rho:metta:compile:sync\`),
+    mettaRun(\`rho:metta:run\`),
+    testPathMapState in {
+
+    contract testPathMapState(return) = {
+        new result1, result2, result3 in {
+
+            // Step 1: Compile rule definition
+            stdout!("=== Test 1: Define rule ===") |
+            for (@compiledState1 <- mettaCompile!("(= (double $x) (* $x 2))")) {
+                stdout!({"Compiled": compiledState1}) |
+
+                // Step 2: Run against empty accumulated state
+                for (@accumulatedState1 <- mettaRun!("{}", compiledState1)) {
+                    stdout!({"After rule definition": accumulatedState1}) |
+
+                    // Step 3: Compile usage of rule
+                    for (@compiledState2 <- mettaCompile!("!(double 21)")) {
+                        stdout!({"Compiled usage": compiledState2}) |
+
+                        // Step 4: Run against accumulated state (should have rule)
+                        for (@accumulatedState2 <- mettaRun!(accumulatedState1, compiledState2)) {
+                            stdout!({"After using rule": accumulatedState2}) |
+
+                            // Step 5: Compile more computation
+                            for (@compiledState3 <- mettaCompile!("(+ 10 11)")) {
+
+                                // Step 6: Run against accumulated state
+                                for (@finalState <- mettaRun!(accumulatedState2, compiledState3)) {
+                                    stdout!({"Final state": finalState}) |
+                                    return!(finalState)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } |
+
+    // Run the test
+    new result in {
+        testPathMapState!(*result) |
+        for (@r <- result) {
+            stdout!({"=== Test Complete ===": r})
+        }
+    }
+}

@@ -606,7 +606,402 @@ mod tests {
         let mut lexer = Lexer::new("(+ 1 2)");
         let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens.len(), 6); // (, +, 1, 2, ), EOF
+        assert_eq!(tokens[0], Token::LParen);
+        assert_eq!(tokens[1], Token::Symbol("+".to_string()));
+        assert_eq!(tokens[2], Token::Integer(1));
+        assert_eq!(tokens[3], Token::Integer(2));
+        assert_eq!(tokens[4], Token::RParen);
+        assert_eq!(tokens[5], Token::Eof);
     }
+
+    #[test]
+    fn test_lexer_parens() {
+        let mut lexer = Lexer::new("()");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::LParen);
+        assert_eq!(tokens[1], Token::RParen);
+        assert_eq!(tokens[2], Token::Eof);
+    }
+
+    #[test]
+    fn test_lexer_braces() {
+        let mut lexer = Lexer::new("{}");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::LBrace);
+        assert_eq!(tokens[1], Token::RBrace);
+        assert_eq!(tokens[2], Token::Eof);
+    }
+
+    #[test]
+    fn test_lexer_symbols() {
+        let mut lexer = Lexer::new("foo bar-baz qux_123");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Symbol("foo".to_string()));
+        assert_eq!(tokens[1], Token::Symbol("bar-baz".to_string()));
+        assert_eq!(tokens[2], Token::Symbol("qux_123".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_operators() {
+        let mut lexer = Lexer::new("+ - * /");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Symbol("+".to_string()));
+        assert_eq!(tokens[1], Token::Symbol("-".to_string()));
+        assert_eq!(tokens[2], Token::Symbol("*".to_string()));
+        assert_eq!(tokens[3], Token::Symbol("/".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_positive_numbers() {
+        let mut lexer = Lexer::new("0 1 42 12345");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Integer(0));
+        assert_eq!(tokens[1], Token::Integer(1));
+        assert_eq!(tokens[2], Token::Integer(42));
+        assert_eq!(tokens[3], Token::Integer(12345));
+    }
+
+    #[test]
+    fn test_lexer_negative_numbers() {
+        let mut lexer = Lexer::new("-1 -42 -999");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Integer(-1));
+        assert_eq!(tokens[1], Token::Integer(-42));
+        assert_eq!(tokens[2], Token::Integer(-999));
+    }
+
+    #[test]
+    fn test_lexer_zero() {
+        let mut lexer = Lexer::new("0");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Integer(0));
+    }
+
+    #[test]
+    fn test_lexer_string_basic() {
+        let mut lexer = Lexer::new(r#""hello""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::String("hello".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_string_empty() {
+        let mut lexer = Lexer::new(r#""""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::String("".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_string_with_spaces() {
+        let mut lexer = Lexer::new(r#""hello world""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::String("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_string_escapes() {
+        let mut lexer = Lexer::new(r#""hello\nworld\t!""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::String("hello\nworld\t!".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_string_escaped_quote() {
+        let mut lexer = Lexer::new(r#""say \"hello\"""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::String(r#"say "hello""#.to_string()));
+    }
+
+    #[test]
+    fn test_lexer_string_escaped_backslash() {
+        let mut lexer = Lexer::new(r#""path\\to\\file""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::String(r#"path\to\file"#.to_string()));
+    }
+
+    #[test]
+    fn test_lexer_string_unclosed() {
+        let mut lexer = Lexer::new(r#""hello"#);
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unclosed string"));
+    }
+
+    #[test]
+    fn test_lexer_multiple_strings() {
+        let mut lexer = Lexer::new(r#""first" "second" "third""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::String("first".to_string()));
+        assert_eq!(tokens[1], Token::String("second".to_string()));
+        assert_eq!(tokens[2], Token::String("third".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_exclaim() {
+        let mut lexer = Lexer::new("!");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Exclaim);
+    }
+
+    #[test]
+    fn test_lexer_question() {
+        let mut lexer = Lexer::new("?");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Question);
+    }
+
+    #[test]
+    fn test_lexer_colon() {
+        let mut lexer = Lexer::new(":");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Colon);
+    }
+
+    #[test]
+    fn test_lexer_equals() {
+        let mut lexer = Lexer::new("=");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Equals);
+    }
+
+    #[test]
+    fn test_lexer_double_equals() {
+        let mut lexer = Lexer::new("==");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Symbol("==".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_arrow() {
+        let mut lexer = Lexer::new("->");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Arrow);
+    }
+
+    #[test]
+    fn test_lexer_left_arrow() {
+        let mut lexer = Lexer::new("<-");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::LeftArrow);
+    }
+
+    #[test]
+    fn test_lexer_double_left_arrow() {
+        let mut lexer = Lexer::new("<=");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::DoubleLeftArrow);
+    }
+
+    #[test]
+    fn test_lexer_triple_left_arrow() {
+        let mut lexer = Lexer::new("<<-");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::TripleLeftArrow);
+    }
+
+    #[test]
+    fn test_lexer_dot() {
+        let mut lexer = Lexer::new(".");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Dot);
+    }
+
+    #[test]
+    fn test_lexer_ellipsis() {
+        let mut lexer = Lexer::new("...");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Ellipsis);
+    }
+
+    #[test]
+    fn test_lexer_pipe() {
+        let mut lexer = Lexer::new("|");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Pipe);
+    }
+
+    #[test]
+    fn test_lexer_comma() {
+        let mut lexer = Lexer::new(",");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Comma);
+    }
+
+    #[test]
+    fn test_lexer_ampersand() {
+        let mut lexer = Lexer::new("&");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Ampersand);
+    }
+
+    #[test]
+    fn test_lexer_at() {
+        let mut lexer = Lexer::new("@");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::At);
+    }
+
+    #[test]
+    fn test_lexer_question_exclaim() {
+        let mut lexer = Lexer::new("?!");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::QuestionExclaim);
+    }
+
+    #[test]
+    fn test_lexer_exclaim_question() {
+        let mut lexer = Lexer::new("!?");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::ExclaimQuestion);
+    }
+
+    #[test]
+    fn test_lexer_semicolon_comment() {
+        let mut lexer = Lexer::new("; this is a comment\n42");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Integer(42));
+    }
+
+    #[test]
+    fn test_lexer_double_slash_comment() {
+        let mut lexer = Lexer::new("// this is a comment\n42");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Integer(42));
+    }
+
+    #[test]
+    fn test_lexer_block_comment() {
+        let mut lexer = Lexer::new("/* this is a\n multi-line comment */ 42");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Integer(42));
+    }
+
+    #[test]
+    fn test_lexer_block_comment_unclosed() {
+        let mut lexer = Lexer::new("/* unclosed comment");
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unclosed block comment"));
+    }
+
+    #[test]
+    fn test_lexer_multiple_comments() {
+        let mut lexer = Lexer::new("; first\n// second\n/* third */ 42");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Integer(42));
+    }
+
+    #[test]
+    fn test_lexer_comment_before_expression() {
+        let mut lexer = Lexer::new("; comment\n(+ 1 2)");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::LParen);
+        assert_eq!(tokens[1], Token::Symbol("+".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_whitespace_between_tokens() {
+        let mut lexer = Lexer::new("  (  +  1  2  )  ");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::LParen);
+        assert_eq!(tokens[1], Token::Symbol("+".to_string()));
+        assert_eq!(tokens[2], Token::Integer(1));
+    }
+
+    #[test]
+    fn test_lexer_newlines() {
+        let mut lexer = Lexer::new("(\n+\n1\n2\n)");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::LParen);
+        assert_eq!(tokens[1], Token::Symbol("+".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_tabs() {
+        let mut lexer = Lexer::new("(\t+\t1\t2\t)");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::LParen);
+        assert_eq!(tokens[1], Token::Symbol("+".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_dollar_variable() {
+        let mut lexer = Lexer::new("$x $var $my_var");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Symbol("$x".to_string()));
+        assert_eq!(tokens[1], Token::Symbol("$var".to_string()));
+        assert_eq!(tokens[2], Token::Symbol("$my_var".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_ampersand_variable() {
+        let mut lexer = Lexer::new("&rest &args");
+        let tokens = lexer.tokenize().unwrap();
+        // Note: & is tokenized separately, then the symbol
+        assert_eq!(tokens[0], Token::Ampersand);
+        assert_eq!(tokens[1], Token::Symbol("rest".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_quote_variable() {
+        let mut lexer = Lexer::new("'quoted");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Symbol("'quoted".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_wildcard() {
+        let mut lexer = Lexer::new("_");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Symbol("_".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_nested_expression() {
+        let mut lexer = Lexer::new("(+ 1 (+ 2 3))");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::LParen);
+        assert_eq!(tokens[1], Token::Symbol("+".to_string()));
+        assert_eq!(tokens[2], Token::Integer(1));
+        assert_eq!(tokens[3], Token::LParen);
+        assert_eq!(tokens[4], Token::Symbol("+".to_string()));
+        assert_eq!(tokens[5], Token::Integer(2));
+        assert_eq!(tokens[6], Token::Integer(3));
+        assert_eq!(tokens[7], Token::RParen);
+        assert_eq!(tokens[8], Token::RParen);
+    }
+
+    #[test]
+    fn test_lexer_rule_definition() {
+        let mut lexer = Lexer::new("(= (double $x) (* $x 2))");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::LParen);
+        assert_eq!(tokens[1], Token::Equals);
+        assert_eq!(tokens[2], Token::LParen);
+        assert_eq!(tokens[3], Token::Symbol("double".to_string()));
+        assert_eq!(tokens[4], Token::Symbol("$x".to_string()));
+        assert_eq!(tokens[5], Token::RParen);
+    }
+
+    #[test]
+    fn test_lexer_type_assertion() {
+        let mut lexer = Lexer::new("(: x Number)");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::LParen);
+        assert_eq!(tokens[1], Token::Colon);
+        assert_eq!(tokens[2], Token::Symbol("x".to_string()));
+        assert_eq!(tokens[3], Token::Symbol("Number".to_string()));
+    }
+
+    #[test]
+    fn test_lexer_empty_input() {
+        let mut lexer = Lexer::new("");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], Token::Eof);
+    }
+
+    /* -- -- -- Parser tests -- -- -- */
 
     #[test]
     fn test_parser_basic() {
@@ -615,5 +1010,230 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let exprs = parser.parse().unwrap();
         assert_eq!(exprs.len(), 1);
+
+        match &exprs[0] {
+            SExpr::List(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], SExpr::Atom("+".to_string()));
+                assert_eq!(items[1], SExpr::Integer(1));
+                assert_eq!(items[2], SExpr::Integer(2));
+            }
+            _ => panic!("Expected list"),
+        }
+    }
+
+    #[test]
+    fn test_parser_empty_list() {
+        let mut lexer = Lexer::new("()");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let exprs = parser.parse().unwrap();
+        assert_eq!(exprs.len(), 1);
+        assert_eq!(exprs[0], SExpr::List(vec![]));
+    }
+
+    #[test]
+    fn test_parser_atom() {
+        let mut lexer = Lexer::new("foo");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let exprs = parser.parse().unwrap();
+        assert_eq!(exprs.len(), 1);
+        assert_eq!(exprs[0], SExpr::Atom("foo".to_string()));
+    }
+
+    #[test]
+    fn test_parser_integer() {
+        let mut lexer = Lexer::new("42");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let exprs = parser.parse().unwrap();
+        assert_eq!(exprs.len(), 1);
+        assert_eq!(exprs[0], SExpr::Integer(42));
+    }
+
+    #[test]
+    fn test_parser_string() {
+        let mut lexer = Lexer::new(r#""hello""#);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let exprs = parser.parse().unwrap();
+        assert_eq!(exprs.len(), 1);
+        assert_eq!(exprs[0], SExpr::String("hello".to_string()));
+    }
+
+    #[test]
+    fn test_parser_nested_lists() {
+        let mut lexer = Lexer::new("(a (b (c)))");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let exprs = parser.parse().unwrap();
+        assert_eq!(exprs.len(), 1);
+
+        match &exprs[0] {
+            SExpr::List(outer) => {
+                assert_eq!(outer.len(), 2);
+                assert_eq!(outer[0], SExpr::Atom("a".to_string()));
+
+                match &outer[1] {
+                    SExpr::List(middle) => {
+                        assert_eq!(middle.len(), 2);
+                        assert_eq!(middle[0], SExpr::Atom("b".to_string()));
+
+                        match &middle[1] {
+                            SExpr::List(inner) => {
+                                assert_eq!(inner.len(), 1);
+                                assert_eq!(inner[0], SExpr::Atom("c".to_string()));
+                            }
+                            _ => panic!("Expected inner list"),
+                        }
+                    }
+                    _ => panic!("Expected middle list"),
+                }
+            }
+            _ => panic!("Expected outer list"),
+        }
+    }
+
+    #[test]
+    fn test_parser_multiple_expressions() {
+        let mut lexer = Lexer::new("(+ 1 2) (* 3 4)");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let exprs = parser.parse().unwrap();
+        assert_eq!(exprs.len(), 2);
+    }
+
+    #[test]
+    fn test_parser_exclaim_prefix() {
+        let mut lexer = Lexer::new("!(foo)");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let exprs = parser.parse().unwrap();
+        assert_eq!(exprs.len(), 1);
+
+        // !(foo) should parse as (! (foo))
+        match &exprs[0] {
+            SExpr::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], SExpr::Atom("!".to_string()));
+                match &items[1] {
+                    SExpr::List(_) => {}
+                    _ => panic!("Expected list after !"),
+                }
+            }
+            _ => panic!("Expected list"),
+        }
+    }
+
+    #[test]
+    fn test_parser_question_prefix() {
+        let mut lexer = Lexer::new("?(foo)");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let exprs = parser.parse().unwrap();
+        assert_eq!(exprs.len(), 1);
+
+        match &exprs[0] {
+            SExpr::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], SExpr::Atom("?".to_string()));
+            }
+            _ => panic!("Expected list"),
+        }
+    }
+
+    #[test]
+    fn test_parser_braces() {
+        let mut lexer = Lexer::new("{a b c}");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let exprs = parser.parse().unwrap();
+        assert_eq!(exprs.len(), 1);
+
+        // Braces are marked with {} atom at start
+        match &exprs[0] {
+            SExpr::List(items) => {
+                assert_eq!(items[0], SExpr::Atom("{}".to_string()));
+                assert_eq!(items[1], SExpr::Atom("a".to_string()));
+            }
+            _ => panic!("Expected list"),
+        }
+    }
+
+    #[test]
+    fn test_parser_unclosed_paren() {
+        let mut lexer = Lexer::new("(+ 1 2");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("EOF"));
+    }
+
+    #[test]
+    fn test_parser_extra_close_paren() {
+        let mut lexer = Lexer::new("(+ 1 2))");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse();
+        assert!(result.is_err() || result.unwrap().len() == 1);
+    }
+
+    #[test]
+    fn test_parser_mismatched_braces_parens() {
+        let mut lexer = Lexer::new("(+ 1 2}");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parser_empty_input() {
+        let mut lexer = Lexer::new("");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let exprs = parser.parse().unwrap();
+        assert_eq!(exprs.len(), 0);
+    }
+
+    #[test]
+    fn test_parser_special_operators() {
+        let test_cases = vec![
+            (":", SExpr::Atom(":".to_string())),
+            ("->", SExpr::Atom("->".to_string())),
+            ("=", SExpr::Atom("=".to_string())),
+            ("<-", SExpr::Atom("<-".to_string())),
+            ("<=", SExpr::Atom("<=".to_string())),
+            ("...", SExpr::Atom("...".to_string())),
+        ];
+
+        for (input, expected) in test_cases {
+            let mut lexer = Lexer::new(input);
+            let tokens = lexer.tokenize().unwrap();
+            let mut parser = Parser::new(tokens);
+            let exprs = parser.parse().unwrap();
+            assert_eq!(exprs.len(), 1);
+            assert_eq!(exprs[0], expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_display_sexpr() {
+        let expr = SExpr::List(vec![
+            SExpr::Atom("+".to_string()),
+            SExpr::Integer(1),
+            SExpr::Integer(2),
+        ]);
+        assert_eq!(format!("{}", expr), "(+ 1 2)");
+    }
+
+    #[test]
+    fn test_display_token() {
+        assert_eq!(format!("{}", Token::LParen), "(");
+        assert_eq!(format!("{}", Token::Symbol("foo".to_string())), "foo");
+        assert_eq!(format!("{}", Token::Integer(42)), "42");
+        assert_eq!(format!("{}", Token::Arrow), "->");
     }
 }

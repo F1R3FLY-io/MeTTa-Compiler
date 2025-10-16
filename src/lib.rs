@@ -379,7 +379,6 @@ mod tests {
         assert!(matches!(results[0], MettaValue::SExpr(_)));
     }
 
-    // TODO -> more on error propagation and invalid syntax
     #[test]
     fn test_error_propagation() {
         let input = r#"(error "test error" 42)"#;
@@ -388,6 +387,312 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], MettaValue::Error(_, _)));
+    }
+
+    #[test]
+    fn test_error_in_nested_expression() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"(+ 1 (+ 2 (+ 3 (error "deep error" nested))))"#;
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
+
+        assert_eq!(results.len(), 1);
+        if let MettaValue::Error(msg, _) = &results[0] {
+            assert_eq!(msg, "deep error");
+        } else {
+            panic!("Expected error propagation from nested expression");
+        }
+    }
+
+    #[test]
+    fn test_error_in_function_call() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (= (safe-op $x) (if (< $x 0) (error "negative value" $x) (* $x 2)))
+            !(safe-op -5)
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.pending_exprs {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if let Some(r) = expr_results.last() {
+                result = Some(r.clone());
+            }
+        }
+
+        if let Some(MettaValue::Error(msg, details)) = result {
+            assert_eq!(msg, "negative value");
+            assert_eq!(*details, MettaValue::Long(-5));
+        } else {
+            panic!("Expected error from function call");
+        }
+    }
+
+    #[test]
+    fn test_error_in_recursive_function() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (= (div-by-zero $n)
+                (if (== $n 0)
+                    (error "division by zero" $n)
+                    (div-by-zero (- $n 1))))
+            !(div-by-zero 3)
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.pending_exprs {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if let Some(r) = expr_results.last() {
+                result = Some(r.clone());
+            }
+        }
+
+        if let Some(MettaValue::Error(msg, _)) = result {
+            assert_eq!(msg, "division by zero");
+        } else {
+            panic!("Expected error from recursive function");
+        }
+    }
+
+    #[test]
+    fn test_error_with_catch() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"(catch (error "caught" 42) "default-value")"#;
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("default-value".to_string()));
+    }
+
+    #[test]
+    fn test_catch_without_error() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"(catch (+ 5 7) "default-value")"#;
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(12));
+    }
+
+    #[test]
+    fn test_nested_catch() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+        (catch 
+                (catch (error "inner" 1) (error "middle" 2))
+                "outer-default")
+        "#;
+
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("outer-default".to_string()));
+    }
+
+    #[test]
+    fn test_error_in_condition() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"(if (error "condition failed" cond) yes no)"#;
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
+
+        assert_eq!(results.len(), 1);
+        if let MettaValue::Error(msg, _) = &results[0] {
+            assert_eq!(msg, "condition failed");
+        } else {
+            panic!("Expected error from condition evaluation");
+        }
+    }
+
+    #[test]
+    fn test_is_error_check() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"(is-error (error "test" 0))"#;
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+    }
+
+    #[test]
+    fn test_is_error_with_normal_value() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"(is-error (+ 1 2))"#;
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+    }
+
+    #[test]
+    fn test_error_recovery_pattern() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (= (safe-div $x $y)
+                (if (== $y 0)
+                    (error "division by zero" $y)
+                    (/ $x $y)))
+            (= (try-div $x $y)
+                (catch (safe-div $x $y) -1))
+            !(try-div 10 0)
+            !(try-div 10 2)
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut results = Vec::new();
+
+        for expr in state.pending_exprs {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                results.extend(expr_results);
+            }
+        }
+
+        assert_eq!(results[0], MettaValue::Long(-1));
+        assert_eq!(results[1], MettaValue::Long(5));
+    }
+
+    #[test]
+    fn test_multiple_errors_in_sequence() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (error "first" 1)
+            (error "second" 2)
+            (error "third" 3)
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut errors = Vec::new();
+
+        for expr in state.pending_exprs {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if let Some(MettaValue::Error(msg, _)) = expr_results.first() {
+                errors.push(msg.clone());
+            }
+        }
+
+        assert_eq!(errors.len(), 3);
+        assert_eq!(errors[0], "first");
+        assert_eq!(errors[1], "second");
+        assert_eq!(errors[2], "third");
+    }
+
+    #[test]
+    fn test_error_stops_evaluation_in_expression() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (= (side-effect) (error "should not see this" 0))
+            (+ (error "first-error" 1) (side-effect))
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.pending_exprs {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if let Some(r) = expr_results.last() {
+                result = Some(r.clone());
+            }
+        }
+
+        if let Some(MettaValue::Error(msg, _)) = result {
+            assert_eq!(msg, "first-error");
+        } else {
+            panic!("Expected first error to propagate");
+        }
+    }
+
+    #[test]
+    fn test_error_with_complex_details() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"(error "complex" (+ 1 (+ 2 3)))"#;
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
+
+        assert_eq!(results.len(), 1);
+        if let MettaValue::Error(msg, details) = &results[0] {
+            assert_eq!(msg, "complex");
+            assert!(matches!(**details, MettaValue::SExpr(_)));
+        } else {
+            panic!("Expected error with complex details");
+        }
+    }
+
+    #[test]
+    fn test_catch_in_recursive_context() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (= (safe-fact $n)
+                (if (< $n 0)
+                    (catch (error "negative" $n) 0)
+                    (if (== $n 0)
+                        1
+                        (* $n (safe-fact (- $n 1))))))
+            !(safe-fact 5)
+            !(safe-fact -3)
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut results = Vec::new();
+
+        for expr in state.pending_exprs {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                results.extend(expr_results);
+            }
+        }
+
+        assert_eq!(results[0], MettaValue::Long(120));
+        assert_eq!(results[1], MettaValue::Long(0));
     }
 
     #[test]
@@ -780,6 +1085,31 @@ mod tests {
         }
 
         assert_eq!(last_result, Some(MettaValue::Long(3)));
+    }
+
+    #[test]
+    fn test_compile_nested_lists() {
+        let src = "(a (b (c d)))";
+        let state = compile(src).unwrap();
+
+        if let MettaValue::SExpr(outer) = &state.pending_exprs[0] {
+            assert_eq!(outer[0], MettaValue::Atom("a".to_string()));
+
+            if let MettaValue::SExpr(middle) = &outer[1] {
+                assert_eq!(middle[0], MettaValue::Atom("b".to_string()));
+
+                if let MettaValue::SExpr(inner) = &middle[1] {
+                    assert_eq!(inner[0], MettaValue::Atom("c".to_string()));
+                    assert_eq!(inner[1], MettaValue::Atom("d".to_string()));
+                } else {
+                    panic!("Expected SExpr for innermost");
+                }
+            } else {
+                panic!("Expected SExpr for middle");
+            }
+        } else {
+            panic!("Expected SExpr for outer");
+        }
     }
 
     #[test]

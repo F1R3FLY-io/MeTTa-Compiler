@@ -7,7 +7,7 @@
 //
 // Grounded operators like +, -, * are replaced with textual names like "add", "sub", "mul"
 
-use crate::backend::types::{MettaValue, MettaState};
+use crate::backend::types::{MettaState, MettaValue};
 use crate::sexpr::{Lexer, Parser, SExpr};
 
 /// Compile MeTTa source code into a MettaState ready for evaluation
@@ -101,6 +101,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_compile_empty_input() {
+        let result = compile("");
+        assert!(result.is_ok());
+        let state = result.unwrap();
+        assert_eq!(state.pending_exprs.len(), 0);
+    }
+
+    #[test]
     fn test_compile_simple() {
         let src = "(+ 1 2)";
         let result = compile(src);
@@ -124,6 +132,13 @@ mod tests {
     }
 
     #[test]
+    fn test_compile_multiple_expressions() {
+        let src = "(+ 1 2) (* 3 4)";
+        let state = compile(src).unwrap();
+        assert_eq!(state.pending_exprs.len(), 2);
+    }
+
+    #[test]
     fn test_compile_operators() {
         let operators = vec![
             ("+", "add"),
@@ -139,8 +154,12 @@ mod tests {
             let src = format!("({} 1 2)", op);
             let state = compile(&src).unwrap();
             if let MettaValue::SExpr(items) = &state.pending_exprs[0] {
-                assert_eq!(items[0], MettaValue::Atom(expected.to_string()),
-                    "Failed for operator {}", op);
+                assert_eq!(
+                    items[0],
+                    MettaValue::Atom(expected.to_string()),
+                    "Failed for operator {}",
+                    op
+                );
             }
         }
     }
@@ -160,6 +179,29 @@ mod tests {
     }
 
     #[test]
+    fn test_compile_negative_numbers() {
+        let src = "(+ -5 -10)";
+        let state = compile(src).unwrap();
+
+        if let MettaValue::SExpr(items) = &state.pending_exprs[0] {
+            assert_eq!(items[0], MettaValue::Atom("add".to_string()));
+            assert_eq!(items[1], MettaValue::Long(-5));
+            assert_eq!(items[2], MettaValue::Long(-10));
+        } else {
+            panic!("Expected SExpr with negative numbers");
+        }
+    }
+
+    #[test]
+    fn test_compile_zero() {
+        let src = "0";
+        let state = compile(src).unwrap();
+
+        assert_eq!(state.pending_exprs.len(), 1);
+        assert_eq!(state.pending_exprs[0], MettaValue::Long(0));
+    }
+
+    #[test]
     fn test_compile_literals() {
         let src = "(true false 42 \"hello\")";
         let state = compile(src).unwrap();
@@ -169,6 +211,176 @@ mod tests {
             assert_eq!(items[1], MettaValue::Bool(false));
             assert_eq!(items[2], MettaValue::Long(42));
             assert_eq!(items[3], MettaValue::String("hello".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_compile_mixed_literals() {
+        let src = "(list 42 -7 0 true false \"text\" ())";
+        let state = compile(src).unwrap();
+
+        if let MettaValue::SExpr(items) = &state.pending_exprs[0] {
+            assert_eq!(items[0], MettaValue::Atom("list".to_string()));
+            assert_eq!(items[1], MettaValue::Long(42));
+            assert_eq!(items[2], MettaValue::Long(-7));
+            assert_eq!(items[3], MettaValue::Long(0));
+            assert_eq!(items[4], MettaValue::Bool(true));
+            assert_eq!(items[5], MettaValue::Bool(false));
+            assert_eq!(items[6], MettaValue::String("text".to_string()));
+            assert_eq!(items[7], MettaValue::Nil);
+        } else {
+            panic!("Expected SExpr with mixed literals");
+        }
+    }
+
+    #[test]
+    fn test_compile_with_comments() {
+        let src = r#"
+            // Single line comment
+            (+ 1 2)
+            /* Block comment */
+            (* 3 4)
+        "#;
+        let state = compile(src).unwrap();
+        assert_eq!(state.pending_exprs.len(), 2);
+    }
+
+    #[test]
+    fn test_compile_type_assertion() {
+        let src = "(: x Number)";
+        let state = compile(src).unwrap();
+
+        assert_eq!(state.pending_exprs.len(), 1);
+
+        if let MettaValue::SExpr(items) = &state.pending_exprs[0] {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0], MettaValue::Atom(":".to_string()));
+            assert_eq!(items[1], MettaValue::Atom("x".to_string()));
+            assert_eq!(items[2], MettaValue::Atom("Number".to_string()));
+        } else {
+            panic!("Expected SExpr for type assertion");
+        }
+    }
+
+    #[test]
+    fn test_compile_exclaim_operator() {
+        let src = "!(double 5)";
+        let state = compile(src).unwrap();
+
+        assert_eq!(state.pending_exprs.len(), 1);
+
+        if let MettaValue::SExpr(items) = &state.pending_exprs[0] {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], MettaValue::Atom("!".to_string()));
+
+            if let MettaValue::SExpr(inner) = &items[1] {
+                assert_eq!(inner[0], MettaValue::Atom("double".to_string()));
+                assert_eq!(inner[1], MettaValue::Long(5));
+            } else {
+                panic!("Expected SExpr inside !");
+            }
+        } else {
+            panic!("Expected SExpr for ! operator");
+        }
+    }
+
+    #[test]
+    fn test_compile_dollar_variable() {
+        let src = "$x";
+        let state = compile(src).unwrap();
+
+        assert_eq!(state.pending_exprs.len(), 1);
+        assert_eq!(state.pending_exprs[0], MettaValue::Atom("$x".to_string()));
+    }
+
+    #[test]
+    fn test_compile_quote_variable() {
+        let src = "'quoted";
+        let state = compile(src).unwrap();
+
+        assert_eq!(state.pending_exprs.len(), 1);
+        assert_eq!(
+            state.pending_exprs[0],
+            MettaValue::Atom("'quoted".to_string())
+        );
+    }
+
+    #[test]
+    fn test_compile_deeply_nested() {
+        let src = "(+ 1 (+ 2 (+ 3 (+ 4 5))))";
+        let state = compile(src).unwrap();
+
+        assert_eq!(state.pending_exprs.len(), 1);
+
+        // Outer: (add 1 ...)
+        if let MettaValue::SExpr(outer) = &state.pending_exprs[0] {
+            assert_eq!(outer[0], MettaValue::Atom("add".to_string()));
+            assert_eq!(outer[1], MettaValue::Long(1));
+
+            // Level 2: (add 2 ...)
+            if let MettaValue::SExpr(level2) = &outer[2] {
+                assert_eq!(level2[0], MettaValue::Atom("add".to_string()));
+                assert_eq!(level2[1], MettaValue::Long(2));
+
+                // Level 3: (add 3 ...)
+                if let MettaValue::SExpr(level3) = &level2[2] {
+                    assert_eq!(level3[0], MettaValue::Atom("add".to_string()));
+                    assert_eq!(level3[1], MettaValue::Long(3));
+
+                    // Level 4: (add 4 5)
+                    if let MettaValue::SExpr(level4) = &level3[2] {
+                        assert_eq!(level4[0], MettaValue::Atom("add".to_string()));
+                        assert_eq!(level4[1], MettaValue::Long(4));
+                        assert_eq!(level4[2], MettaValue::Long(5));
+                    } else {
+                        panic!("Expected SExpr at level 4");
+                    }
+                } else {
+                    panic!("Expected SExpr at level 3");
+                }
+            } else {
+                panic!("Expected SExpr at level 2");
+            }
+        } else {
+            panic!("Expected SExpr for outer expression");
+        }
+    }
+
+    #[test]
+    fn test_invalid_syntax_unclosed_paren() {
+        let input = "(+ 1 2";
+        let result = compile(input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_syntax_extra_close_paren() {
+        let input = "(+ 1 2))";
+        let result = compile(input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_syntax_mismatched_parens() {
+        let input = "((+ 1 2)";
+        let result = compile(input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_with_atom_message() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"(error failure-code 42)"#;
+        let state = compile(input).unwrap();
+        let (results, _env) = eval(state.pending_exprs[0].clone(), state.environment);
+
+        assert_eq!(results.len(), 1);
+        if let MettaValue::Error(msg, _) = &results[0] {
+            assert_eq!(msg, "failure-code");
+        } else {
+            panic!("Expected error");
         }
     }
 

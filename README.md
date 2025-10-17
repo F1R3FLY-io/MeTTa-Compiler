@@ -11,13 +11,17 @@ MeTTaTron is a direct evaluator for the MeTTa language featuring lazy evaluation
 - **Direct S-expression parsing** - No external parser generators required
 - **Pure Rust implementation** - Fast, safe, and portable
 - **Lazy evaluation** - Expressions evaluated only when needed
+- **Async parallel evaluation** - True parallelization with configurable threading via Tokio
 - **Pattern matching** - Automatic variable binding with `$x`, `&y`, `'z` variables
 - **Rule definitions** - Define rewrite rules with `=`
 - **Special forms** - Control flow (`if`), evaluation (`!`), quote, error handling
 - **Type system** - Type assertions, type inference, and type checking with arrow types
 - **Grounded functions** - Direct arithmetic and comparison operations
+- **MORK/PathMap integration** - Efficient pattern matching with MORK zipper optimization
 - **REPL mode** - Interactive evaluation environment
 - **CLI and library** - Use as a command-line tool or integrate into your Rust projects
+- **Comprehensive tests** - 287 tests covering all language features
+- **Nondeterministic evaluation** - Multiply-defined patterns with Cartesian product semantics
 
 ## Prerequisites
 
@@ -78,21 +82,17 @@ MeTTaTron REPL v0.1.0
 Enter MeTTa expressions. Type 'exit' or 'quit' to exit.
 
 metta[1]> (= (double $x) (* $x 2))
-Nil
-
 metta[2]> !(double 21)
-42
-
+[42]
 metta[3]> (= (factorial 0) 1)
-Nil
-
 metta[4]> (= (factorial $n) (* $n (factorial (- $n 1))))
-Nil
-
 metta[5]> !(factorial 5)
-120
-
-metta[6]> exit
+[120]
+metta[6]> (= (coin) heads)
+metta[7]> (= (coin) tails)
+metta[8]> !(coin)
+[heads, tails]
+metta[9]> exit
 Goodbye!
 ```
 
@@ -118,14 +118,34 @@ let input = r#"
     !(double 21)
 "#;
 
-let (sexprs, mut env) = compile(input).unwrap();
-for sexpr in sexprs {
+let state = compile(input).unwrap();
+let mut env = state.environment;
+
+for sexpr in state.source {
     let (results, new_env) = eval(sexpr, env);
     env = new_env;
 
     for result in results {
         println!("{:?}", result);  // Prints: Long(42)
     }
+}
+```
+
+For async parallel evaluation:
+
+```rust
+use mettatron::{compile, run_state_async, MettaState, config};
+
+// Configure threading (optional, call once at startup)
+config::configure_eval(config::EvalConfig::cpu_optimized());
+
+#[tokio::main]
+async fn main() {
+    let state = MettaState::new_empty();
+    let compiled = compile("!(+ 1 2)").unwrap();
+
+    let result = run_state_async(state, compiled).await.unwrap();
+    println!("{:?}", result.output);  // Prints evaluation results
 }
 ```
 
@@ -238,6 +258,44 @@ metta[2]> !(add 10 20)
 30
 ```
 
+### Nondeterministic Evaluation
+
+MeTTa supports nondeterministic evaluation where multiply-defined patterns return all matching results:
+
+**Simple Nondeterminism**:
+```lisp
+(= (coin) heads)
+(= (coin) tails)
+!(coin)  ; Returns [heads, tails]
+```
+
+**Nested Application** - Functions apply to ALL results:
+```lisp
+(= (f) 1)
+(= (f) 2)
+(= (f) 3)
+(= (g $x) (* $x $x))
+!(g (f))  ; Returns [1, 4, 9]
+```
+
+**Cartesian Product** - Multiple nondeterministic operands:
+```lisp
+(= (a) 1)
+(= (a) 2)
+(= (b) 10)
+(= (b) 20)
+!(+ (a) (b))  ; Returns [11, 21, 12, 22]
+```
+
+**Pattern Specificity**: When patterns overlap, only the most specific matches are used:
+```lisp
+(= (factorial 0) 1)
+(= (factorial $n) (* $n (factorial (- $n 1))))
+!(factorial 5)  ; Returns [120] (not multiple results)
+```
+
+The `(factorial 0)` pattern is more specific than `(factorial $n)`, so only the best match is evaluated.
+
 ### Evaluation Strategy
 
 - **Lazy Evaluation**: Expressions evaluated only when needed
@@ -270,26 +328,40 @@ The evaluator provides comprehensive reduction prevention mechanisms:
 
 ## Examples
 
-See the `examples/` directory for sample programs:
+See the `examples/` directory for sample programs and detailed usage guide in `examples/README.md`.
 
-- `examples/mvp_test.metta` - MVP feature demonstrations
+### MeTTa Language Examples
+
 - `examples/simple.metta` - Basic language features
 - `examples/advanced.metta` - Advanced patterns
+- `examples/mvp_test.metta` - MVP feature demonstrations
 - `examples/type_system_demo.metta` - Type system demonstrations
+- `examples/pathmap_demo.metta` - PathMap operations
 
-Example files using the backend:
-
-```bash
-cargo run --example backend_usage      # Basic backend usage
-cargo run --example backend_interactive # Interactive REPL
-cargo run --example mvp_complete       # Complete MVP demonstration
-```
-
-Run an example:
+### Rust Backend Examples
 
 ```bash
-./target/release/mettatron examples/mvp_test.metta
+cargo run --example backend_usage         # Basic backend API usage
+cargo run --example backend_interactive   # Interactive REPL implementation
+cargo run --example mvp_complete          # Complete MVP demonstration
+cargo run --example test_zipper_optimization  # MORK zipper optimization
+cargo run --example threading_config      # Threading configuration examples
 ```
+
+### Run a MeTTa File
+
+```bash
+# Build first
+cargo build --release
+
+# Run an example
+./target/release/mettatron examples/simple.metta
+```
+
+### Rholang Integration Examples
+
+- `examples/metta_rholang_example.rho` - Basic MeTTa usage from Rholang
+- `examples/robot_planning.rho` - Robot planning domain example
 
 ## Architecture
 
@@ -310,15 +382,16 @@ The evaluator consists of two main stages:
 
 #### Compilation (`src/backend/compile.rs`)
 - Parses MeTTa source to `MettaValue` expressions
-- Converts operators to function names (`+` → `"add"`)
-- Returns expressions and initial environment
+- Preserves operator symbols as-is (`+` stays `+`, not normalized)
+- Returns `MettaState` with source expressions and empty environment
 
 #### Evaluation (`src/backend/eval.rs`)
 - Lazy evaluation with special forms
-- Pattern matching with variable binding
+- Pattern matching with variable binding (MORK/PathMap optimized)
 - Rule application with `!` operator
 - Grounded function dispatch
 - Error propagation
+- Async parallel evaluation support via `run_state_async`
 
 ### Evaluation Flow
 
@@ -363,38 +436,49 @@ cargo test -- --nocapture
 
 ```
 MeTTa-Compiler/
-├── src/                        # Source code
-│   ├── main.rs                 # CLI and REPL implementation
-│   ├── lib.rs                  # Library exports
-│   ├── sexpr.rs                # Lexer and S-expression parser
-│   ├── backend/                # Evaluation engine
-│   │   ├── mod.rs              # Module exports
-│   │   ├── types.rs            # Core types (MettaValue, Environment, Rule)
-│   │   ├── compile.rs          # MeTTa source → MettaValue compilation
-│   │   └── eval.rs             # Lazy evaluation with pattern matching
-│   ├── rholang_integration.rs  # Rholang integration API
-│   └── ffi.rs                  # C FFI layer
-├── examples/                   # Example files
-│   ├── *.metta                 # MeTTa language examples
-│   ├── *.rs                    # Rust backend examples
-│   └── *.rho                   # Rholang integration examples
-├── docs/                       # Documentation
-│   ├── guides/                 # User guides
-│   ├── reference/              # API and language reference
-│   ├── design/                 # Design documents
-│   ├── ISSUE_3_SATISFACTION.md # MVP satisfaction analysis
-│   └── MVP_BACKEND_COMPLETE.md # MVP status report
-├── integration/                # Rholang integration
-│   ├── templates/              # Integration code templates
-│   ├── archive/                # Legacy FFI approaches
-│   ├── README.md               # Integration guide
-│   └── *.md                    # Integration documentation
-├── target/                     # Build artifacts (gitignored)
-├── Cargo.toml                  # Rust project configuration
-├── Cargo.lock                  # Dependency lock file
-├── CLAUDE.md                   # Claude Code guidance
-├── LICENSE                     # Apache 2.0 license
-└── README.md                   # This file
+├── src/                           # Source code
+│   ├── main.rs                    # CLI and REPL implementation
+│   ├── lib.rs                     # Library exports
+│   ├── config.rs                  # Threading configuration
+│   ├── sexpr.rs                   # Lexer and S-expression parser
+│   ├── backend/                   # Evaluation engine
+│   │   ├── mod.rs                 # Module exports
+│   │   ├── types.rs               # Core types (MettaValue, Environment, Rule)
+│   │   ├── compile.rs             # MeTTa source → MettaValue compilation
+│   │   ├── eval.rs                # Lazy evaluation with pattern matching
+│   │   └── mork_convert.rs        # MORK/PathMap conversion
+│   ├── rholang_integration.rs     # Rholang integration API (sync & async)
+│   ├── pathmap_par_integration.rs # PathMap Par conversion
+│   └── ffi.rs                     # C FFI layer
+├── examples/                      # Code examples
+│   ├── README.md                  # Examples guide
+│   ├── *.metta                    # MeTTa language examples
+│   ├── *.rs                       # Rust backend examples
+│   └── *.rho                      # Rholang integration examples
+├── docs/                          # User documentation
+│   ├── README.md                  # Documentation index
+│   ├── guides/                    # User guides (REPL, reduction prevention)
+│   ├── reference/                 # API and language reference
+│   ├── design/                    # Design documents
+│   ├── CONFIGURATION.md           # Configuration guide
+│   └── THREADING_MODEL.md         # Threading documentation
+├── integration/                   # Integration guides
+│   ├── README.md                  # Integration overview
+│   ├── QUICK_START.md             # Quick start guide
+│   ├── RHOLANG_INTEGRATION.md     # Rholang integration details
+│   ├── DEPLOYMENT_*.md            # Deployment guides
+│   ├── TESTING_GUIDE.md           # Testing documentation
+│   ├── test_*.rho                 # Integration test files
+│   └── *.md                       # Other integration docs
+├── .claude/                       # Claude AI documentation (19 files)
+│   ├── README.md                  # Guide to AI docs
+│   ├── CLAUDE.md                  # Claude Code instructions
+│   └── *.md                       # Planning guides, status docs
+├── target/                        # Build artifacts (gitignored)
+├── Cargo.toml                     # Rust project configuration
+├── Cargo.lock                     # Dependency lock file
+├── LICENSE                        # Apache 2.0 license
+└── README.md                      # This file
 ```
 
 ## Rholang Integration
@@ -498,11 +582,48 @@ See **`RHOLANG_SYNC_GUIDE.md`** for complete usage patterns with the `!?` operat
 - **`integration/RHOLANG_INTEGRATION_SUMMARY.md`** - Integration status and overview
 - **`integration/RHOLANG_INTEGRATION.md`** - Technical architecture details
 
+## Threading and Performance
+
+MeTTaTron supports **async parallel evaluation** for independent MeTTa expressions using Tokio's async runtime. This enables true parallelization and efficient resource utilization.
+
+### Configuration
+
+```rust
+use mettatron::config::{EvalConfig, configure_eval};
+
+// Configure once at startup
+configure_eval(EvalConfig::cpu_optimized());
+```
+
+### Preset Configurations
+
+- **`default()`** - Tokio default (512 max blocking threads)
+- **`cpu_optimized()`** - Best for CPU-bound workloads (num_cpus × 2)
+- **`memory_optimized()`** - Best for memory-constrained systems (num_cpus)
+- **`throughput_optimized()`** - Best for high-throughput batch processing (1024 threads)
+
+### Custom Configuration
+
+```rust
+configure_eval(EvalConfig {
+    max_blocking_threads: 256,
+    batch_size_hint: 64,
+});
+```
+
+See **`docs/THREADING_MODEL.md`** and **`docs/CONFIGURATION.md`** for detailed information.
+
 ## Documentation
+
+### Getting Started
+- **`examples/README.md`** - Examples usage guide
+- **`integration/QUICK_START.md`** - Quick start for Rholang integration
 
 ### User Guides
 - **`docs/guides/REPL_USAGE.md`** - Interactive REPL usage guide
 - **`docs/guides/REDUCTION_PREVENTION.md`** - Comprehensive reduction prevention guide
+- **`docs/CONFIGURATION.md`** - Configuration guide
+- **`docs/THREADING_MODEL.md`** - Threading and parallelization documentation
 
 ### API Reference
 - **`docs/reference/BACKEND_API_REFERENCE.md`** - Complete backend API reference
@@ -512,18 +633,16 @@ See **`RHOLANG_SYNC_GUIDE.md`** for complete usage patterns with the `!?` operat
 ### Design Documents
 - **`docs/design/BACKEND_IMPLEMENTATION.md`** - Backend implementation details
 - **`docs/design/TYPE_SYSTEM_IMPLEMENTATION.md`** - Type system design
-- **`docs/design/TYPE_SYSTEM_RHOLANG_INTEGRATION.md`** - Type system Rholang integration
 - **`docs/design/MORK_PATHMAP_QUERY_DESIGN.md`** - MORK PathMap query design
 - **`docs/design/RULE_INDEX_OPTIMIZATION.md`** - Rule indexing optimization
 - **`docs/design/SEXPR_FACTS_DESIGN.md`** - S-expression facts design
-- **`docs/design/TODO_ANALYSIS.md`** - TODO analysis and planning
-
-### Status Reports
-- **`docs/ISSUE_3_SATISFACTION.md`** - GitHub Issue #3 MVP requirements satisfaction
-- **`docs/MVP_BACKEND_COMPLETE.md`** - MVP implementation status and test results
 
 ### Integration
-- **`integration/`** - Complete Rholang integration documentation (see `integration/README.md`)
+- **`integration/README.md`** - Integration overview and guides
+- **`integration/DIRECT_RUST_INTEGRATION.md`** - Direct Rust integration (recommended)
+- **`integration/RHOLANG_INTEGRATION.md`** - Technical architecture details
+- **`integration/DEPLOYMENT_GUIDE.md`** - Deployment guide
+- **`integration/TESTING_GUIDE.md`** - Testing documentation
 
 ## MVP Status
 

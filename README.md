@@ -197,6 +197,7 @@ MeTTa uses S-expression syntax similar to Lisp:
 - **`=`** - Define rule: `(= lhs rhs)` adds pattern matching rule
 - **`!`** - Force evaluation: `!(expr)` applies rules
 - **`if`** - Conditional: `(if cond then else)` with lazy branch evaluation
+- **`match`** - Pattern matching: `(match space pattern template)` queries atom space
 - **`quote`** - Prevent evaluation: `(quote expr)` returns expr unevaluated
 - **`eval`** - Force evaluation: `(eval expr)` evaluates quoted expressions
 - **`error`** - Create error: `(error msg details)`
@@ -257,6 +258,46 @@ Nil
 metta[2]> !(add 10 20)
 30
 ```
+
+### Match Operation
+
+The `match` special form queries the atom space for patterns and instantiates templates:
+
+**Basic Syntax**: `(match & self pattern template)`
+- `&` - Space reference operator
+- `self` - Name of the space (currently only `self` is supported)
+- `pattern` - Pattern to match (with variables like `$x`, `$y`)
+- `template` - Template to instantiate for each match
+
+**Example - Basic Pattern**:
+```lisp
+(Sam is a frog)
+(Tom is a cat)
+!(match & self ($who is a $what) ($who the $what))
+; Returns: [(Sam the frog), (Tom the cat)]
+```
+
+**Example - Extracting Values**:
+```lisp
+(number 42)
+(number 100)
+!(match & self (number $n) (value $n))
+; Returns: [(value 42), (value 100)]
+```
+
+**Example - Nested Structures**:
+```lisp
+((nested value) result)
+!(match & self (($x $y) result) (found $x and $y))
+; Returns: [(found nested and value)]
+```
+
+**Key Features**:
+- Returns ALL matching results (nondeterministic)
+- Works directly with MORK/PathMap for efficient querying
+- Variables in pattern bind to matched values
+- Template is instantiated for each match
+- Empty list returned if no matches found
 
 ### Nondeterministic Evaluation
 

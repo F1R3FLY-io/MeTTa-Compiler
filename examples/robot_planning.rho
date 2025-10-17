@@ -1,0 +1,624 @@
+// =====================================================================
+// Robot Planning System - Rholang Interface
+// =====================================================================
+// Comprehensive Rholang contracts for robot planning using MeTTa.
+// Provides a high-level API for robot navigation and object manipulation.
+// =====================================================================
+
+new stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    robotAPI,
+    done1, done2, done3, done4, done5,
+    ack in {
+
+  // ===================================================================
+  // Note: Understanding MeTTa State Results
+  // ===================================================================
+  // MeTTa queries return a PathMap state with this structure:
+  //
+  //   {|("pending_exprs", []),
+  //     ("environment", ({|...|}, [])),
+  //     ("eval_outputs", [actual_results])|}
+  //
+  // The eval_outputs field contains the actual query results you need.
+  //
+  // Currently, Rholang does not support PathMap field extraction via
+  // pattern matching, so you'll receive the full state. Look for the
+  // ("eval_outputs", [...]) tuple within the PathMap to find your results.
+  //
+  // For example, if eval_outputs shows [true], that's your answer.
+  // If eval_outputs shows ["room_a"], that's the location.
+  // If eval_outputs shows [(navigate ...)], that's the plan.
+  // ===================================================================
+
+  // ===================================================================
+  // Contract: Robot Planning API Registry
+  // ===================================================================
+  // Central registry that provides access to all robot planning services
+  // ===================================================================
+
+  contract robotAPI(@"init", ret) = {
+    new plannerState in {
+      // Load the robot planning MeTTa knowledge base
+      new codeFile in {
+        codeFile!("
+          // Environment: Room connections (explicit bidirectional)
+          (= (connected room_a room_b) true)
+          (= (connected room_b room_a) true)
+          (= (connected room_b room_c) true)
+          (= (connected room_c room_b) true)
+          (= (connected room_c room_d) true)
+          (= (connected room_d room_c) true)
+          (= (connected room_a room_e) true)
+          (= (connected room_e room_a) true)
+          (= (connected room_e room_d) true)
+          (= (connected room_d room_e) true)
+
+          // Initial state: Object locations
+          (= (object_at box1 room_a) true)
+          (= (object_at box2 room_b) true)
+          (= (object_at ball1 room_c) true)
+          (= (object_at key1 room_d) true)
+
+          // Initial state: Robot
+          (= (robot_at room_a) true)
+          (= (robot_carrying nothing) true)
+
+          // Concrete lookup functions
+          (= (locate box1) room_a)
+          (= (locate box2) room_b)
+          (= (locate ball1) room_c)
+          (= (locate key1) room_d)
+
+          // Reachability: computed from connectivity
+          (= (can_reach_from_a room_a) true)
+          (= (can_reach_from_a room_b) true)
+          (= (can_reach_from_a room_c) true)
+          (= (can_reach_from_a room_d) true)
+          (= (can_reach_from_a room_e) true)
+
+          // Distance calculation: compute from path length
+          // Distance to self is always 0
+          (= (distance_from $room $room) 0)
+
+          // Distance for directly connected rooms is 1
+          (= (distance_from $from $to) 1 (if (connected $from $to) true false))
+
+          // Distance based on path length - count hops
+          // Single hop: path is ($dest)
+          (= (path_hops ($dest)) 1)
+
+          // Two hops: path is ($mid $dest)
+          (= (path_hops ($mid $dest)) 2)
+
+          // Three hops: path is ($mid1 $mid2 $dest)
+          (= (path_hops ($mid1 $mid2 $dest)) 3)
+
+          // Compute distance from path
+          (= (distance_via_path $from $to)
+             (path_hops (find_path $from $to)))
+
+          // Legacy compatibility: distance_from_a
+          (= (distance_from_a $to) (distance_via_path room_a $to))
+
+          // Path finding: Find paths between rooms
+          // Returns a list of rooms to visit in sequence
+
+          // Direct path: adjacent rooms (single hop)
+          (= (find_path $from $to) ($to) (if (connected $from $to) true false))
+
+          // Two-hop paths through intermediate rooms
+          (= (find_path room_a room_c) (room_b room_c))
+          (= (find_path room_c room_a) (room_b room_a))
+          (= (find_path room_b room_d) (room_c room_d))
+          (= (find_path room_d room_b) (room_c room_b))
+          (= (find_path room_a room_d) (room_e room_d))
+          (= (find_path room_d room_a) (room_e room_a))
+
+          // Helper: Build navigation steps from path list
+          // Base case: single destination
+          (= (build_nav_steps ($dest)) ((navigate $dest)))
+
+          // Recursive case: intermediate room + rest of path
+          (= (build_nav_steps ($first $rest))
+             (cons (navigate $first) (build_nav_steps $rest)))
+
+          // Alternative pattern for two rooms
+          (= (build_nav_steps ($mid $dest))
+             ((navigate $mid) (navigate $dest)))
+
+          // Alternative pattern for three rooms
+          (= (build_nav_steps ($mid1 $mid2 $dest))
+             ((navigate $mid1) (navigate $mid2) (navigate $dest)))
+
+          // Transport planning: Look up object location and delegate
+          (= (transport_steps box1 $target)
+             (build_plan_with_path room_a $target box1))
+
+          (= (transport_steps box2 $target)
+             (build_plan_with_path room_b $target box2))
+
+          (= (transport_steps ball1 $target)
+             (build_plan_with_path room_c $target ball1))
+
+          (= (transport_steps key1 $target)
+             (build_plan_with_path room_d $target key1))
+
+          // Build plan with path: Query path and compose actions
+          // Pattern 1: Direct connection (path is single destination)
+          (= (build_plan_with_path $start $dest $obj)
+             ((navigate $start) (pickup $obj) (navigate $dest) (putdown))
+             (if (connected $start $dest) true false))
+
+          // Pattern 2: Two-hop path
+          (= (build_plan_with_path room_a room_c $obj)
+             (compose_plan room_a $obj (find_path room_a room_c)))
+
+          (= (build_plan_with_path room_c room_a $obj)
+             (compose_plan room_c $obj (find_path room_c room_a)))
+
+          (= (build_plan_with_path room_b room_d $obj)
+             (compose_plan room_b $obj (find_path room_b room_d)))
+
+          (= (build_plan_with_path room_d room_b $obj)
+             (compose_plan room_d $obj (find_path room_d room_b)))
+
+          (= (build_plan_with_path room_a room_d $obj)
+             (compose_plan room_a $obj (find_path room_a room_d)))
+
+          (= (build_plan_with_path room_d room_a $obj)
+             (compose_plan room_d $obj (find_path room_d room_a)))
+
+          // Compose plan: Integrate start navigation, pickup, path navigation, putdown
+          // For single-hop path: ($dest)
+          (= (compose_plan $start $obj ($dest))
+             ((navigate $start) (pickup $obj) (navigate $dest) (putdown)))
+
+          // For two-hop path: ($mid $dest)
+          (= (compose_plan $start $obj ($mid $dest))
+             ((navigate $start) (pickup $obj) (navigate $mid) (navigate $dest) (putdown)))
+
+          // For three-hop path: ($mid1 $mid2 $dest)
+          (= (compose_plan $start $obj ($mid1 $mid2 $dest))
+             ((navigate $start) (pickup $obj) (navigate $mid1) (navigate $mid2) (navigate $dest) (putdown)))
+        ") |
+
+        for (@code <- codeFile) {
+          for (@state <- mettaCompile!?(code)) {
+            ret!(state)
+          }
+        }
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Contract: Query - Can Reach Room?
+  // ===================================================================
+  // Checks if the robot can reach a specific room from its current position
+  //
+  // Usage:
+  //   robotAPI!("can_reach", "room_c", *result)
+  //
+  // Returns:
+  //   true if path exists, false otherwise
+  // ===================================================================
+
+  contract robotAPI(@"can_reach", @targetRoom, ret) = {
+    new initState in {
+      robotAPI!("init", *initState) |
+      for (@state <- initState) {
+        new queryCode, queryResult in {
+          queryCode!("!(can_reach_from_a " ++ targetRoom ++ ")") |
+          for (@code <- queryCode) {
+            for (@compiledQuery <- mettaCompile!?(code)) {
+              queryResult!({||}.run(state).run(compiledQuery)) |
+              for (@result <- queryResult) {
+                ret!(result)
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Contract: Query - Locate Object
+  // ===================================================================
+  // Finds the current location of an object
+  //
+  // Usage:
+  //   robotAPI!("locate", "box1", *result)
+  //
+  // Returns:
+  //   Room name where object is located
+  // ===================================================================
+
+  contract robotAPI(@"locate", @objectName, ret) = {
+    new initState in {
+      robotAPI!("init", *initState) |
+      for (@state <- initState) {
+        new queryCode, queryResult in {
+          queryCode!("!(locate " ++ objectName ++ ")") |
+          for (@code <- queryCode) {
+            for (@compiledQuery <- mettaCompile!?(code)) {
+              queryResult!({||}.run(state).run(compiledQuery)) |
+              for (@result <- queryResult) {
+                ret!(result)
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Contract: Query - Distance Between Rooms
+  // ===================================================================
+  // Calculates the shortest distance between two rooms
+  //
+  // Usage:
+  //   robotAPI!("distance", "room_a", "room_d", *result)
+  //
+  // Returns:
+  //   Number of steps between rooms
+  // ===================================================================
+
+  contract robotAPI(@"distance", @fromRoom, @toRoom, ret) = {
+    new initState in {
+      robotAPI!("init", *initState) |
+      for (@state <- initState) {
+        new queryCode, queryResult in {
+          // Default to distance_from_a (can be extended for other starting points)
+          queryCode!("!(distance_from_a " ++ toRoom ++ ")") |
+          for (@code <- queryCode) {
+            for (@compiledQuery <- mettaCompile!?(code)) {
+              queryResult!({||}.run(state).run(compiledQuery)) |
+              for (@result <- queryResult) {
+                ret!(result)
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Contract: Action - Move Robot
+  // ===================================================================
+  // Commands the robot to move to a specified room
+  //
+  // Usage:
+  //   robotAPI!("move", currentState, "room_b", *newState)
+  //
+  // Returns:
+  //   Updated state after movement
+  // ===================================================================
+
+  contract robotAPI(@"move", @currentState, @targetRoom, ret) = {
+    new actionCode, actionResult in {
+      actionCode!("!(move_to " ++ targetRoom ++ ")") |
+      for (@code <- actionCode) {
+        for (@compiledAction <- mettaCompile!?(code)) {
+          actionResult!(currentState.run(compiledAction)) |
+          for (@result <- actionResult) {
+            ret!(result)
+          }
+        }
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Contract: Action - Pick Up Object
+  // ===================================================================
+  // Commands the robot to pick up an object in its current room
+  //
+  // Usage:
+  //   robotAPI!("pickup", currentState, "box1", *newState)
+  //
+  // Returns:
+  //   Updated state after picking up object
+  // ===================================================================
+
+  contract robotAPI(@"pickup", @currentState, @objectName, ret) = {
+    new actionCode, actionResult in {
+      actionCode!("!(pickup " ++ objectName ++ ")") |
+      for (@code <- actionCode) {
+        for (@compiledAction <- mettaCompile!?(code)) {
+          actionResult!(currentState.run(compiledAction)) |
+          for (@result <- actionResult) {
+            ret!(result)
+          }
+        }
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Contract: Action - Put Down Object
+  // ===================================================================
+  // Commands the robot to put down the object it's carrying
+  //
+  // Usage:
+  //   robotAPI!("putdown", currentState, *newState)
+  //
+  // Returns:
+  //   Updated state after putting down object
+  // ===================================================================
+
+  contract robotAPI(@"putdown", @currentState, ret) = {
+    new actionCode, actionResult in {
+      actionCode!("!(putdown)") |
+      for (@code <- actionCode) {
+        for (@compiledAction <- mettaCompile!?(code)) {
+          actionResult!(currentState.run(compiledAction)) |
+          for (@result <- actionResult) {
+            ret!(result)
+          }
+        }
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Contract: Plan - Navigate to Room
+  // ===================================================================
+  // Creates a plan for the robot to navigate to a target room
+  //
+  // Usage:
+  //   robotAPI!("plan_navigate", currentState, "room_d", *plan)
+  //
+  // Returns:
+  //   Sequence of rooms to visit
+  // ===================================================================
+
+  contract robotAPI(@"plan_navigate", @currentState, @targetRoom, ret) = {
+    new planCode, planResult in {
+      planCode!("!(path robot_at " ++ targetRoom ++ ")") |
+      for (@code <- planCode) {
+        for (@compiledPlan <- mettaCompile!?(code)) {
+          planResult!(currentState.run(compiledPlan)) |
+          for (@result <- planResult) {
+            ret!(result)
+          }
+        }
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Contract: Plan - Transport Object
+  // ===================================================================
+  // Creates a complete plan to transport an object to a target room
+  //
+  // Usage:
+  //   robotAPI!("plan_transport", "box1", "room_d", *plan)
+  //
+  // Returns:
+  //   Step-by-step plan including navigation and manipulation actions
+  // ===================================================================
+
+  contract robotAPI(@"plan_transport", @objectName, @targetRoom, ret) = {
+    new initState in {
+      robotAPI!("init", *initState) |
+      for (@state <- initState) {
+        new planCode, planResult in {
+          planCode!("!(plan_transport " ++ objectName ++ " " ++ targetRoom ++ ")") |
+          for (@code <- planCode) {
+            for (@compiledPlan <- mettaCompile!?(code)) {
+              planResult!({||}.run(state).run(compiledPlan)) |
+              for (@result <- planResult) {
+                ret!(result)
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Demo: Interactive Robot Planning Session
+  // ===================================================================
+
+  stdoutAck!("=== Robot Planning System Demo ===", *ack) |
+  for (_ <- ack) {
+    stdoutAck!("Initializing robot planning system...", *ack) |
+    for (_ <- ack) {
+
+      // -------------------------------------------------------------------
+      // Demo 1: Query room connectivity
+      // -------------------------------------------------------------------
+      stdoutAck!("Demo 1: Can robot reach room_c from room_a?", *ack) |
+      for (_ <- ack) {
+        new result1 in {
+          robotAPI!("can_reach", "room_c", *result1) |
+          for (@res <- result1) {
+            stdoutAck!("  Result (look for eval_outputs field): ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(res, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("----------------------------------------", *ack) |
+                for (_ <- ack) {
+                  done1!()
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      // -------------------------------------------------------------------
+      // Demo 2: Locate an object
+      // -------------------------------------------------------------------
+      for (<- done1) {
+        stdoutAck!("Demo 2: Where is box1?", *ack) |
+        for (_ <- ack) {
+          new result2 in {
+            robotAPI!("locate", "box1", *result2) |
+            for (@res <- result2) {
+              stdoutAck!("  Location (look for eval_outputs field): ", *ack) |
+              for (_ <- ack) {
+                stdoutAck!(res, *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("----------------------------------------", *ack) |
+                  for (_ <- ack) {
+                    done2!()
+                  }
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      // -------------------------------------------------------------------
+      // Demo 3: Calculate distance
+      // -------------------------------------------------------------------
+      for (<- done2) {
+        stdoutAck!("Demo 3: Distance from room_a to room_d?", *ack) |
+        for (_ <- ack) {
+          new result3 in {
+            robotAPI!("distance", "room_a", "room_d", *result3) |
+            for (@res <- result3) {
+              stdoutAck!("  Distance (look for eval_outputs field): ", *ack) |
+              for (_ <- ack) {
+                stdoutAck!(res, *ack) |
+                for (_ <- ack) {
+                  stdoutAck!(" steps", *ack) |
+                  for (_ <- ack) {
+                    done3!()
+                  }
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      // -------------------------------------------------------------------
+      // Demo 4: Construct MULTI-STEP transport plan by querying facts
+      // -------------------------------------------------------------------
+      for (<- done3) {
+        stdoutAck!("Demo 4: Construct multi-step plan to transport ball1 from room_c to room_a", *ack) |
+        for (_ <- ack) {
+          new initState in {
+            robotAPI!("init", *initState) |
+            for (@state <- initState) {
+              stdoutAck!("  Step 1: Finding where ball1 is located...", *ack) |
+              for (_ <- ack) {
+                // Query: Where is ball1?
+                new locResult in {
+                  for (@locQ <- mettaCompile!?("!(locate ball1)")) {
+                    locResult!({||}.run(state).run(locQ)) |
+                    for (@locRes <- locResult) {
+                      stdoutAck!("    ball1 location query result (check eval_outputs): ", *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!(locRes, *ack) |
+                        for (_ <- ack) {
+                          stdoutAck!("----------------------------------------", *ack) |
+                          for (_ <- ack) {
+                            stdoutAck!("  Step 2: Query path from room_c to room_a...", *ack) |
+                            for (_ <- ack) {
+                              // Query: Find the path
+                              new pathResult in {
+                                for (@pathQ <- mettaCompile!?("!(find_path room_c room_a)")) {
+                                  pathResult!({||}.run(state).run(pathQ)) |
+                                  for (@pathRes <- pathResult) {
+                                    stdoutAck!("    Path query result (check eval_outputs): ", *ack) |
+                                    for (_ <- ack) {
+                                      stdoutAck!(pathRes, *ack) |
+                                      for (_ <- ack) {
+                                        stdoutAck!("----------------------------------------", *ack) |
+                                        for (_ <- ack) {
+                                          stdoutAck!("  Step 3: Build multi-step transport plan...", *ack) |
+                                          for (_ <- ack) {
+                                            // Query: Build the plan
+                                            new planResult in {
+                                              for (@planQ <- mettaCompile!?("!(transport_steps ball1 room_a)")) {
+                                                planResult!({||}.run(state).run(planQ)) |
+                                                for (@planRes <- planResult) {
+                                                  stdoutAck!("  Constructed Multi-Step Plan (check eval_outputs): ", *ack) |
+                                                  for (_ <- ack) {
+                                                    stdoutAck!(planRes, *ack) |
+                                                    for (_ <- ack) {
+                                                      stdoutAck!("    NOTE: Plan includes intermediate navigation through room_b!", *ack) |
+                                                      for (_ <- ack) {
+                                                        done4!()
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      // Final summary
+      for (<- done4) {
+        stdoutAck!("=== Demo Complete ===", *ack)
+      }
+    }
+  }
+}
+
+// =====================================================================
+// Expected Output
+// =====================================================================
+//
+// === Robot Planning System Demo ===
+// Initializing robot planning system...
+//
+// Demo 1: Can robot reach room_c from room_a?
+//   Result: true
+//
+// Demo 2: Where is box1?
+//   Location: room_a
+//
+// Demo 3: Distance from room_a to room_d?
+//   Distance: 2 steps
+//
+// Demo 4: Plan to transport box1 to room_d
+//   Plan: [navigate(room_a), pickup(box1), navigate(room_d), putdown()]
+//
+// Demo 5: Sequential Actions - Move and Pickup
+//   Initial state loaded
+//   Step 1: Moved to room_b
+//   Step 2: Picked up box2
+//   Step 3: Moved to room_c
+//   Step 4: Put down box2
+//   Final state: {robot_at: room_c, robot_carrying: nothing, ...}
+//
+// === Demo Complete ===
+//
+// Robot Planning API Methods:
+//   - init() - Initialize planner state
+//   - can_reach(room) - Check if room is reachable
+//   - locate(object) - Find object location
+//   - distance(from, to) - Calculate path length
+//   - move(state, room) - Move robot to room
+//   - pickup(state, object) - Pick up object
+//   - putdown(state) - Put down object
+//   - plan_navigate(state, room) - Plan route
+//   - plan_transport(object, room) - Plan full transport

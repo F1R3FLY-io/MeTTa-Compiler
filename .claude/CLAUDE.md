@@ -220,19 +220,67 @@ cargo run --example backend_usage
 cargo run --example backend_interactive
 ```
 
+## Threading and Parallelization
+
+MeTTaTron supports parallel evaluation of independent MeTTa expressions using Tokio's async runtime.
+
+### Configuration
+
+```rust
+use mettatron::config::{EvalConfig, configure_eval};
+
+// Configure before any async operations (call once at startup)
+configure_eval(EvalConfig::cpu_optimized());
+```
+
+### Preset Configurations
+
+- **`EvalConfig::default()`** - Default Tokio settings (512 max blocking threads)
+- **`EvalConfig::cpu_optimized()`** - Best for CPU-bound workloads (num_cpus × 2)
+- **`EvalConfig::memory_optimized()`** - Best for memory-constrained systems (num_cpus)
+- **`EvalConfig::throughput_optimized()`** - Best for high-throughput batch processing (1024 threads)
+
+### Custom Configuration
+
+```rust
+configure_eval(EvalConfig {
+    max_blocking_threads: 256,    // Max parallel evaluations
+    batch_size_hint: 64,          // Batch size for consecutive evals
+});
+```
+
+### Threading Model
+
+MeTTaTron uses **two thread pools** managed by Rholang's Tokio runtime:
+
+1. **Async Executor Threads** (Tokio default)
+   - Handles async coordination and I/O
+   - Fixed by Tokio (~num_cpus threads)
+
+2. **Blocking Thread Pool** (Configurable)
+   - Handles CPU-intensive MeTTa evaluation
+   - Configurable via `max_blocking_threads`
+   - Prevents starving async executor
+
+**Key Point**: Both pools are coordinated by the **same Tokio runtime**, ensuring optimal resource management without contention.
+
+For detailed information, see `docs/THREADING_MODEL.md`.
+
 ## Code Organization
 
 ```
 src/
 ├── main.rs                  # CLI and REPL implementation
 ├── lib.rs                   # Public API exports
+├── config.rs                # Threading configuration
 ├── sexpr.rs                 # Lexer and S-expression parser
 ├── backend/                 # Evaluation engine
 │   ├── mod.rs              # Module exports
 │   ├── types.rs            # MettaValue, Environment, Rule
 │   ├── compile.rs          # MeTTa source → MettaValue
 │   └── eval.rs             # Lazy evaluation engine
-├── rholang_integration.rs   # Rholang integration API
+├── rholang_integration.rs   # Rholang integration API (sync & async)
+├── pathmap_par_integration.rs  # PathMap Par conversion
 └── ffi.rs                   # C FFI layer
 ```
 

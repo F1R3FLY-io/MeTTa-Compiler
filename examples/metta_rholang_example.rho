@@ -14,10 +14,9 @@ in {
   // ===================================================================
   stdoutAck!("=== Example 1: Simple Arithmetic ===", *ack) |
   for (_ <- ack) {
-    // Compile a simple MeTTa expression
-    mettaCompile!("(+ 1 2)", *result) |
-    for (@compiledResult <- result) {
-      // compiledResult is a JSON string with the compiled AST
+    // Compile a simple MeTTa expression using !? operator
+    for (@compiledResult <- mettaCompile!?("(+ 1 2)")) {
+      // compiledResult is a PathMap Par with the compiled state
       stdoutAck!(compiledResult, *ack) |
       for (_ <- ack) {
         stdout!("\n")
@@ -30,8 +29,7 @@ in {
   // ===================================================================
   stdoutAck!("=== Example 2: Rule Definition ===", *ack) |
   for (_ <- ack) {
-    mettaCompile!("(= (double $x) (* $x 2))", *result) |
-    for (@compiledResult <- result) {
+    for (@compiledResult <- mettaCompile!?("(= (double $x) (* $x 2))")) {
       stdoutAck!(compiledResult, *ack) |
       for (_ <- ack) {
         stdout!("\n")
@@ -44,8 +42,7 @@ in {
   // ===================================================================
   stdoutAck!("=== Example 3: Nested Expression ===", *ack) |
   for (_ <- ack) {
-    mettaCompile!("(+ 1 (* 2 3))", *result) |
-    for (@compiledResult <- result) {
+    for (@compiledResult <- mettaCompile!?("(+ 1 (* 2 3))")) {
       stdoutAck!(compiledResult, *ack) |
       for (_ <- ack) {
         stdout!("\n")
@@ -59,9 +56,8 @@ in {
   stdoutAck!("=== Example 4: Syntax Error ===", *ack) |
   for (_ <- ack) {
     // This will produce an error due to unclosed parenthesis
-    mettaCompile!("(+ 1 2", *result) |
-    for (@compiledResult <- result) {
-      // Result will contain {"success":false,"error":"..."}
+    for (@compiledResult <- mettaCompile!?("(+ 1 2")) {
+      // Result will contain error Par
       stdoutAck!(compiledResult, *ack) |
       for (_ <- ack) {
         stdout!("\n")
@@ -74,12 +70,12 @@ in {
   // ===================================================================
   stdoutAck!("=== Example 5: Compiler Service ===", *ack) |
   for (_ <- ack) {
-    // Create a reusable compiler contract
+    // Create a reusable compiler contract using !? operator
     contract @"compileAndPrint"(source) = {
-      new resultChan in {
-        mettaCompile!(source, *resultChan) |
-        for (@result <- resultChan) {
-          stdoutAck!("Compiled: " ++ result, *ack)
+      for (@result <- mettaCompile!?(source)) {
+        stdoutAck!("Compiled: ", *ack) |
+        for (_ <- ack) {
+          stdoutAck!(result, *ack)
         }
       }
     } |
@@ -91,36 +87,32 @@ in {
   } |
 
   // ===================================================================
-  // Example 6: Parsing JSON Result
+  // Example 6: Working with PathMap Results
   // ===================================================================
-  stdoutAck!("=== Example 6: JSON Parsing ===", *ack) |
+  stdoutAck!("=== Example 6: PathMap Results ===", *ack) |
   for (_ <- ack) {
-    contract @"parseCompileResult"(source, @success, @error) = {
-      new resultChan in {
-        mettaCompile!(source, *resultChan) |
-        for (@result <- resultChan) {
-          // In a real implementation, you would parse the JSON
-          // For now, we just check if it contains "success":true
-          match result {
-            String => {
-              if (result.contains("\"success\":true")) {
-                success!(result)
-              } else {
-                error!(result)
-              }
-            }
-          }
-        }
+    contract @"compileAndCheck"(source, @success, @error) = {
+      for (@result <- mettaCompile!?(source)) {
+        // result is now a PathMap Par
+        // You can inspect it or pass it to other contracts
+        // For demonstration, we'll just send it to success channel
+        success!(result)
       }
     } |
 
     new successChan, errorChan in {
-      @"parseCompileResult"!("(+ 1 2)", *successChan, *errorChan) |
+      @"compileAndCheck"!("(+ 1 2)", *successChan, *errorChan) |
       for (@s <- successChan) {
-        stdoutAck!("Success: " ++ s, *ack)
+        stdoutAck!("Success (PathMap): ", *ack) |
+        for (_ <- ack) {
+          stdoutAck!(s, *ack)
+        }
       } |
       for (@e <- errorChan) {
-        stdoutAck!("Error: " ++ e, *ack)
+        stdoutAck!("Error: ", *ack) |
+        for (_ <- ack) {
+          stdoutAck!(e, *ack)
+        }
       }
     }
   }
@@ -130,21 +122,21 @@ in {
 // Expected Output
 // =====================================================================
 // === Example 1: Simple Arithmetic ===
-// {"success":true,"exprs":[{"type":"sexpr","items":[{"type":"atom","value":"add"},{"type":"number","value":1},{"type":"number","value":2}]}]}
+// {|("pending_exprs", []), ("environment", ...), ("eval_outputs", [3])|}
 //
 // === Example 2: Rule Definition ===
-// {"success":true,"exprs":[{"type":"sexpr","items":[{"type":"atom","value":"="},{"type":"sexpr","items":[{"type":"atom","value":"double"},{"type":"atom","value":"$x"}]},{"type":"sexpr","items":[{"type":"atom","value":"mul"},{"type":"atom","value":"$x"},{"type":"number","value":2}]}]}]}
+// {|("pending_exprs", []), ("environment", ...), ("eval_outputs", [])|}
 //
 // === Example 3: Nested Expression ===
-// {"success":true,"exprs":[{"type":"sexpr","items":[{"type":"atom","value":"add"},{"type":"number","value":1},{"type":"sexpr","items":[{"type":"atom","value":"mul"},{"type":"number","value":2},{"type":"number","value":3}]}]}]}
+// {|("pending_exprs", []), ("environment", ...), ("eval_outputs", [7])|}
 //
 // === Example 4: Syntax Error ===
-// {"success":false,"error":"Expected closing parenthesis..."}
+// (Error "Parse error: ..." ...)
 //
 // === Example 5: Compiler Service ===
-// Compiled: {"success":true,...}
-// Compiled: {"success":true,...}
-// Compiled: {"success":true,...}
+// Compiled: {|...|}
+// Compiled: {|...|}
+// Compiled: {|...|}
 //
-// === Example 6: JSON Parsing ===
-// Success: {"success":true,...}
+// === Example 6: PathMap Results ===
+// Success (PathMap): {|("pending_exprs", []), ("environment", ...), ("eval_outputs", [3])|}

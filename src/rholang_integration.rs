@@ -42,7 +42,7 @@ fn escape_json(s: &str) -> String {
 }
 
 /// Compile MeTTa source and return full MettaState as JSON
-/// Returns the complete state (pending_exprs, environment, eval_outputs)
+/// Returns the complete state (source, environment, output)
 /// This is the PathMap-compatible interface that should be used by all compile handlers
 pub fn compile_to_json(src: &str) -> Result<String, String> {
     let state = crate::backend::compile::compile(src)?;
@@ -50,7 +50,7 @@ pub fn compile_to_json(src: &str) -> Result<String, String> {
 }
 
 /// Compile MeTTa source and return full MettaState JSON (error-safe version)
-/// Returns the complete state (pending_exprs, environment, eval_outputs)
+/// Returns the complete state (source, environment, output)
 pub fn compile_safe(src: &str) -> String {
     match compile_to_json(src) {
         Ok(json) => json,
@@ -62,17 +62,17 @@ pub fn compile_safe(src: &str) -> String {
 /// Returns a JSON string with the format:
 /// ```json
 /// {
-///   "pending_exprs": [...],
+///   "source": [...],
 ///   "environment": {"facts_count": N},
-///   "eval_outputs": [...]
+///   "output": [...]
 /// }
 /// ```
 pub fn metta_state_to_json(state: &MettaState) -> String {
-    let pending_json: Vec<String> = state.pending_exprs.iter()
+    let pending_json: Vec<String> = state.source.iter()
         .map(|expr| metta_value_to_rholang_string(expr))
         .collect();
 
-    let outputs_json: Vec<String> = state.eval_outputs.iter()
+    let outputs_json: Vec<String> = state.output.iter()
         .map(|output| metta_value_to_rholang_string(output))
         .collect();
 
@@ -81,7 +81,7 @@ pub fn metta_state_to_json(state: &MettaState) -> String {
     let env_json = format!(r#"{{"facts_count":{}}}"#, state.environment.rule_count());
 
     format!(
-        r#"{{"pending_exprs":[{}],"environment":{},"eval_outputs":[{}]}}"#,
+        r#"{{"source":[{}],"environment":{},"output":[{}]}}"#,
         pending_json.join(","),
         env_json,
         outputs_json.join(",")
@@ -111,18 +111,18 @@ pub fn compile_to_state_safe(src: &str) -> String {
 /// - `compiled_state`: Fresh state with pending expressions to evaluate
 ///
 /// Returns a new accumulated state with:
-/// - Empty pending_exprs (all evaluated)
+/// - Empty source (all evaluated)
 /// - Updated environment (merged with new rules/facts)
-/// - Extended eval_outputs (accumulated results)
+/// - Extended output (accumulated results)
 pub fn run_state(accumulated_state: MettaState, compiled_state: MettaState) -> Result<MettaState, String> {
     use crate::backend::eval::eval;
 
     // Start with accumulated environment
     let mut env = accumulated_state.environment;
-    let mut outputs = accumulated_state.eval_outputs;
+    let mut outputs = accumulated_state.output;
 
     // Evaluate each pending expression from compiled state
-    for expr in compiled_state.pending_exprs {
+    for expr in compiled_state.source {
         // Check if this is an evaluation expression (starts with !)
         let is_eval_expr = matches!(&expr, MettaValue::SExpr(items) if items.first().map(|v| matches!(v, MettaValue::Atom(s) if s == "!")).unwrap_or(false));
 
@@ -138,6 +138,119 @@ pub fn run_state(accumulated_state: MettaState, compiled_state: MettaState) -> R
 
     // Return new accumulated state
     Ok(MettaState::new_accumulated(env, outputs))
+}
+
+/// Async version of run_state with parallel evaluation of independent expressions
+///
+/// This function parallelizes evaluation of consecutive `!` (eval) expressions
+/// while maintaining sequential execution for rule definitions (`=`) to preserve
+/// MeTTa semantics.
+///
+/// **MeTTa Semantics Preserved:**
+/// - Rule definitions execute sequentially (environment threading)
+/// - Independent eval expressions execute in parallel
+/// - Output ordering is preserved
+/// - Environment updates are atomic per batch
+///
+/// **Threading Model:** Uses Tokio's async/await (same as Rholang)
+///
+/// **Thread Safety:** Environment now uses `Arc<Mutex<T>>` for thread-safe sharing
+#[cfg(feature = "async")]
+pub async fn run_state_async(
+    accumulated_state: MettaState,
+    compiled_state: MettaState,
+) -> Result<MettaState, String> {
+    use crate::backend::eval::eval;
+
+    // Start with accumulated environment
+    let mut env = accumulated_state.environment;
+    let mut outputs = accumulated_state.output;
+
+    // Batch expressions into parallelizable groups
+    let mut current_batch: Vec<(usize, MettaValue, bool)> = Vec::new();
+    let exprs: Vec<_> = compiled_state.source.into_iter().enumerate().collect();
+
+    for (idx, expr) in exprs {
+        let is_eval_expr = matches!(&expr, MettaValue::SExpr(items)
+            if items.first().map(|v| matches!(v, MettaValue::Atom(s) if s == "!")).unwrap_or(false));
+
+        let is_rule_def = matches!(&expr, MettaValue::SExpr(items)
+            if items.first().map(|v| matches!(v, MettaValue::Atom(s) if s == "=")).unwrap_or(false));
+
+        // If this is a rule definition and we have a batch, evaluate the batch first
+        if is_rule_def && !current_batch.is_empty() {
+            // Evaluate parallel batch
+            let batch_results = evaluate_batch_parallel(current_batch, env.clone()).await;
+            for (_batch_idx, results, should_output) in batch_results {
+                if should_output {
+                    outputs.extend(results);
+                }
+            }
+            current_batch = Vec::new();
+        }
+
+        // If this is a rule definition, execute it sequentially
+        if is_rule_def {
+            let (_results, new_env) = eval(expr, env);
+            env = new_env;
+            // Rule definitions don't produce output
+        } else {
+            // Add to current batch for parallel execution
+            current_batch.push((idx, expr, is_eval_expr));
+        }
+    }
+
+    // Evaluate any remaining batch
+    if !current_batch.is_empty() {
+        let batch_results = evaluate_batch_parallel(current_batch, env.clone()).await;
+        for (_batch_idx, results, should_output) in batch_results {
+            if should_output {
+                outputs.extend(results);
+            }
+        }
+    }
+
+    Ok(MettaState::new_accumulated(env, outputs))
+}
+
+/// Helper function to evaluate a batch of expressions in parallel
+/// Returns results in original order with their indices
+#[cfg(feature = "async")]
+async fn evaluate_batch_parallel(
+    batch: Vec<(usize, MettaValue, bool)>,
+    env: crate::backend::types::Environment,
+) -> Vec<(usize, Vec<MettaValue>, bool)> {
+    use crate::backend::eval::eval;
+    use tokio::task;
+
+    // Spawn parallel evaluation tasks
+    let tasks: Vec<_> = batch
+        .into_iter()
+        .map(|(idx, expr, should_output)| {
+            let env = env.clone(); // Arc clone is cheap
+            task::spawn_blocking(move || {
+                let (results, _new_env) = eval(expr, env);
+                (idx, results, should_output)
+            })
+        })
+        .collect();
+
+    // Collect results
+    let mut results = Vec::new();
+    for task_handle in tasks {
+        match task_handle.await {
+            Ok(result) => results.push(result),
+            Err(e) => {
+                // Task panicked - this shouldn't happen with our eval
+                eprintln!("Parallel evaluation task panicked: {:?}", e);
+            }
+        }
+    }
+
+    // Sort results by original index to preserve order
+    results.sort_by_key(|(idx, _, _)| *idx);
+
+    results
 }
 
 /// Run state from JSON inputs (for Rholang integration)
@@ -165,10 +278,10 @@ mod tests {
     fn test_compile_simple() {
         let src = "(+ 1 2)";
         let result = compile_safe(src);
-        // Should return full MettaState with pending_exprs, environment, eval_outputs
-        assert!(result.contains(r#""pending_exprs""#));
+        // Should return full MettaState with source, environment, output
+        assert!(result.contains(r#""source""#));
         assert!(result.contains(r#""environment""#));
-        assert!(result.contains(r#""eval_outputs""#));
+        assert!(result.contains(r#""output""#));
         assert!(result.contains(r#""type":"sexpr""#));
     }
 
@@ -242,9 +355,9 @@ mod tests {
         let src = "(+ 1 (* 2 3))";
         let result = compile_safe(src);
         // Should return full MettaState
-        assert!(result.contains(r#""pending_exprs""#));
+        assert!(result.contains(r#""source""#));
         assert!(result.contains(r#""environment""#));
-        assert!(result.contains(r#""eval_outputs""#));
+        assert!(result.contains(r#""output""#));
         // Should have nested sexpr
         assert!(result.contains(r#""type":"sexpr""#));
     }
@@ -254,10 +367,10 @@ mod tests {
         let src = "(+ 1 2) (- 3 4)";
         let result = compile_safe(src);
         // Should return full MettaState
-        assert!(result.contains(r#""pending_exprs""#));
+        assert!(result.contains(r#""source""#));
         assert!(result.contains(r#""environment""#));
-        assert!(result.contains(r#""eval_outputs""#));
-        // Should have 2 expressions in the pending_exprs array
+        assert!(result.contains(r#""output""#));
+        // Should have 2 expressions in the source array
         let count = result.matches(r#""type":"sexpr""#).count();
         assert_eq!(count, 2);
     }
@@ -272,11 +385,11 @@ mod tests {
         let state = compile(src).unwrap();
 
         // Compiled state should have pending expressions
-        assert_eq!(state.pending_exprs.len(), 1);
+        assert_eq!(state.source.len(), 1);
         // Environment should be empty (fresh compilation)
         assert_eq!(state.environment.rule_count(), 0);
         // No outputs yet
-        assert_eq!(state.eval_outputs.len(), 0);
+        assert_eq!(state.output.len(), 0);
     }
 
     #[test]
@@ -289,9 +402,9 @@ mod tests {
 
         let json = metta_state_to_json(&state);
 
-        assert!(json.contains(r#""pending_exprs""#));
+        assert!(json.contains(r#""source""#));
         assert!(json.contains(r#""environment""#));
-        assert!(json.contains(r#""eval_outputs""#));
+        assert!(json.contains(r#""output""#));
         assert!(json.contains(r#""type":"number","value":42"#));
     }
 
@@ -300,9 +413,9 @@ mod tests {
         let src = "(+ 1 2)";
         let json = compile_to_state_json(src).unwrap();
 
-        assert!(json.contains(r#""pending_exprs""#));
+        assert!(json.contains(r#""source""#));
         assert!(json.contains(r#""environment""#));
-        assert!(json.contains(r#""eval_outputs""#));
+        assert!(json.contains(r#""output""#));
     }
 
     // Tests for run_state() function
@@ -322,11 +435,11 @@ mod tests {
         let result = run_state(accumulated, compiled).unwrap();
 
         // Should have one output
-        assert_eq!(result.eval_outputs.len(), 1);
-        assert_eq!(result.eval_outputs[0], MettaValue::Long(15));
+        assert_eq!(result.output.len(), 1);
+        assert_eq!(result.output[0], MettaValue::Long(15));
 
         // Pending expressions should be empty (all evaluated)
-        assert_eq!(result.pending_exprs.len(), 0);
+        assert_eq!(result.source.len(), 0);
     }
 
     #[test]
@@ -340,17 +453,17 @@ mod tests {
         // First evaluation: !(+ 1 2)
         let compiled1 = compile("!(+ 1 2)").unwrap();
         accumulated = run_state(accumulated, compiled1).unwrap();
-        assert_eq!(accumulated.eval_outputs.len(), 1);
-        assert_eq!(accumulated.eval_outputs[0], MettaValue::Long(3));
+        assert_eq!(accumulated.output.len(), 1);
+        assert_eq!(accumulated.output[0], MettaValue::Long(3));
 
         // Second evaluation: !(* 3 4)
         let compiled2 = compile("!(* 3 4)").unwrap();
         accumulated = run_state(accumulated, compiled2).unwrap();
 
         // Should have both outputs
-        assert_eq!(accumulated.eval_outputs.len(), 2);
-        assert_eq!(accumulated.eval_outputs[0], MettaValue::Long(3));
-        assert_eq!(accumulated.eval_outputs[1], MettaValue::Long(12));
+        assert_eq!(accumulated.output.len(), 2);
+        assert_eq!(accumulated.output[0], MettaValue::Long(3));
+        assert_eq!(accumulated.output[1], MettaValue::Long(12));
     }
 
     #[test]
@@ -367,7 +480,7 @@ mod tests {
         accumulated = run_state(accumulated, compiled_rule).unwrap();
 
         // Rule definition returns empty list (no output)
-        assert_eq!(accumulated.eval_outputs.len(), 0);
+        assert_eq!(accumulated.output.len(), 0);
 
         // Environment should now have the rule
         assert_eq!(accumulated.environment.rule_count(), 1);
@@ -378,8 +491,8 @@ mod tests {
         accumulated = run_state(accumulated, compiled_use).unwrap();
 
         // Should have 1 output: 42 from evaluation (rule def produced no output)
-        assert_eq!(accumulated.eval_outputs.len(), 1);
-        assert_eq!(accumulated.eval_outputs[0], MettaValue::Long(42));
+        assert_eq!(accumulated.output.len(), 1);
+        assert_eq!(accumulated.output[0], MettaValue::Long(42));
     }
 
     #[test]
@@ -391,14 +504,14 @@ mod tests {
 
         // Compile multiple expressions with ! to produce outputs
         let compiled = compile("!(+ 1 2) !(* 3 4)").unwrap();
-        assert_eq!(compiled.pending_exprs.len(), 2);
+        assert_eq!(compiled.source.len(), 2);
 
         let result = run_state(accumulated, compiled).unwrap();
 
         // Should have two outputs
-        assert_eq!(result.eval_outputs.len(), 2);
-        assert_eq!(result.eval_outputs[0], MettaValue::Long(3));
-        assert_eq!(result.eval_outputs[1], MettaValue::Long(12));
+        assert_eq!(result.output.len(), 2);
+        assert_eq!(result.output[0], MettaValue::Long(3));
+        assert_eq!(result.output[1], MettaValue::Long(12));
     }
 
     #[test]
@@ -428,9 +541,9 @@ mod tests {
         ).unwrap();
 
         // Should have 2 outputs (rule definition produces no output)
-        assert_eq!(repl_state.eval_outputs.len(), 2);
-        assert_eq!(repl_state.eval_outputs[0], MettaValue::Long(21)); // triple 7
-        assert_eq!(repl_state.eval_outputs[1], MettaValue::Long(21)); // 10 + 11
+        assert_eq!(repl_state.output.len(), 2);
+        assert_eq!(repl_state.output[0], MettaValue::Long(21)); // triple 7
+        assert_eq!(repl_state.output[1], MettaValue::Long(21)); // 10 + 11
 
         // Environment should have accumulated rules
         // Note: rule_count() may not be exactly 1 due to MORK Space internals
@@ -450,8 +563,8 @@ mod tests {
         let result = run_state(accumulated, compiled).unwrap();
 
         // Should have one error output
-        assert_eq!(result.eval_outputs.len(), 1);
-        match &result.eval_outputs[0] {
+        assert_eq!(result.output.len(), 1);
+        match &result.output[0] {
             MettaValue::Error(msg, _) => {
                 assert_eq!(msg, "test error");
             }
@@ -468,9 +581,9 @@ mod tests {
         let json = metta_state_to_json(&state);
 
         // Verify JSON structure
-        assert!(json.contains(r#""pending_exprs":"#));
+        assert!(json.contains(r#""source":"#));
         assert!(json.contains(r#""environment":"#));
-        assert!(json.contains(r#""eval_outputs":"#));
+        assert!(json.contains(r#""output":"#));
         assert!(json.contains(r#""type":"sexpr""#));
         assert!(json.contains(r#""facts_count":0"#));
     }
@@ -495,10 +608,10 @@ mod tests {
         state = run_state(state, c).unwrap();
 
         // All outputs should be preserved in order
-        assert_eq!(state.eval_outputs.len(), 3);
-        assert_eq!(state.eval_outputs[0], MettaValue::Long(3));
-        assert_eq!(state.eval_outputs[1], MettaValue::Long(12));
-        assert_eq!(state.eval_outputs[2], MettaValue::Long(5));
+        assert_eq!(state.output.len(), 3);
+        assert_eq!(state.output[0], MettaValue::Long(3));
+        assert_eq!(state.output[1], MettaValue::Long(12));
+        assert_eq!(state.output[2], MettaValue::Long(5));
     }
 
     #[test]
@@ -530,7 +643,7 @@ mod tests {
         // quadruple 3 = double (double 3) = double 6 = 12
         // Index 0: first rule definition produced no output, second rule at index 0? No, both rules produce no output
         // So the first actual output is the result of !(quadruple 3)
-        assert_eq!(state.eval_outputs[0], MettaValue::Long(12));
+        assert_eq!(state.output[0], MettaValue::Long(12));
     }
 
     #[test]
@@ -549,12 +662,12 @@ mod tests {
         let result2 = run_state(accum2, compiled).unwrap();
 
         // Both should produce same result
-        assert_eq!(result1.eval_outputs[0], MettaValue::Long(30));
-        assert_eq!(result2.eval_outputs[0], MettaValue::Long(30));
+        assert_eq!(result1.output[0], MettaValue::Long(30));
+        assert_eq!(result2.output[0], MettaValue::Long(30));
 
         // Both should have same output count
-        assert_eq!(result1.eval_outputs.len(), 1);
-        assert_eq!(result2.eval_outputs.len(), 1);
+        assert_eq!(result1.output.len(), 1);
+        assert_eq!(result2.output.len(), 1);
     }
 
     #[test]
@@ -571,14 +684,14 @@ mod tests {
         for i in 1..=5 {
             let src = format!("!(+ {} {})", i, i);
             state = run_state(state, compile(&src).unwrap()).unwrap();
-            counts.push(state.eval_outputs.len());
+            counts.push(state.output.len());
         }
 
         // Output count should increase monotonically
         assert_eq!(counts, vec![1, 2, 3, 4, 5]);
 
         // Each output should be preserved
-        for (i, output) in state.eval_outputs.iter().enumerate() {
+        for (i, output) in state.output.iter().enumerate() {
             let expected = (i + 1) * 2;
             assert_eq!(*output, MettaValue::Long(expected as i64));
         }
@@ -596,11 +709,11 @@ mod tests {
         let result = run_state(empty, compiled).unwrap();
 
         // Should have exactly one output
-        assert_eq!(result.eval_outputs.len(), 1);
-        assert_eq!(result.eval_outputs[0], MettaValue::Long(12));
+        assert_eq!(result.output.len(), 1);
+        assert_eq!(result.output[0], MettaValue::Long(12));
 
         // Pending should be empty (all evaluated)
-        assert_eq!(result.pending_exprs.len(), 0);
+        assert_eq!(result.source.len(), 0);
     }
 
     #[test]
@@ -637,9 +750,9 @@ mod tests {
         ).unwrap();
 
         // Should have 2 outputs: 6 + 4 (rule defs produce no output)
-        assert!(state.eval_outputs.len() >= 2);
-        assert_eq!(state.eval_outputs[state.eval_outputs.len() - 2], MettaValue::Long(6));
-        assert_eq!(state.eval_outputs[state.eval_outputs.len() - 1], MettaValue::Long(4));
+        assert!(state.output.len() >= 2);
+        assert_eq!(state.output[state.output.len() - 2], MettaValue::Long(6));
+        assert_eq!(state.output[state.output.len() - 1], MettaValue::Long(4));
     }
 
     #[test]
@@ -669,7 +782,7 @@ mod tests {
             compile("!(double 5)").unwrap()
         ).unwrap();
         // Rule def produced no output, so first output is at index 0
-        assert_eq!(state_a.eval_outputs[0], MettaValue::Long(10));
+        assert_eq!(state_a.output[0], MettaValue::Long(10));
 
         // State B should have triple, not double
         state_b = run_state(
@@ -677,6 +790,125 @@ mod tests {
             compile("!(triple 5)").unwrap()
         ).unwrap();
         // Rule def produced no output, so first output is at index 0
-        assert_eq!(state_b.eval_outputs[0], MettaValue::Long(15));
+        assert_eq!(state_b.output[0], MettaValue::Long(15));
+    }
+
+    // Async Parallel Evaluation Tests
+    #[cfg(feature = "async")]
+    mod async_tests {
+        use super::*;
+        use crate::backend::compile::compile;
+        use crate::backend::types::MettaState;
+
+        #[tokio::test]
+        async fn test_run_state_async_simple() {
+            let accumulated = MettaState::new_empty();
+            let compiled = compile("!(+ 10 5)").unwrap();
+
+            let result = run_state_async(accumulated, compiled).await.unwrap();
+
+            assert_eq!(result.output.len(), 1);
+            assert_eq!(result.output[0], MettaValue::Long(15));
+            assert_eq!(result.source.len(), 0);
+        }
+
+        #[tokio::test]
+        async fn test_run_state_async_parallel_eval_exprs() {
+            // Test that multiple eval expressions run in parallel
+            let accumulated = MettaState::new_empty();
+
+            // These should run in parallel (all are independent eval exprs)
+            let compiled = compile("!(+ 1 2) !(* 3 4) !(- 10 5)").unwrap();
+            assert_eq!(compiled.source.len(), 3);
+
+            let result = run_state_async(accumulated, compiled).await.unwrap();
+
+            // All outputs should be present in original order
+            assert_eq!(result.output.len(), 3);
+            assert_eq!(result.output[0], MettaValue::Long(3));
+            assert_eq!(result.output[1], MettaValue::Long(12));
+            assert_eq!(result.output[2], MettaValue::Long(5));
+        }
+
+        #[tokio::test]
+        async fn test_run_state_async_preserves_rule_ordering() {
+            // Test that rule definitions execute sequentially
+            let mut state = MettaState::new_empty();
+
+            // Define rule
+            let rule_compiled = compile("(= (double $x) (* $x 2))").unwrap();
+            state = run_state_async(state, rule_compiled).await.unwrap();
+
+            assert_eq!(state.environment.rule_count(), 1);
+
+            // Use rule in parallel eval exprs
+            let eval_compiled = compile("!(double 5) !(double 10)").unwrap();
+            state = run_state_async(state, eval_compiled).await.unwrap();
+
+            assert_eq!(state.output.len(), 2);
+            assert_eq!(state.output[0], MettaValue::Long(10));
+            assert_eq!(state.output[1], MettaValue::Long(20));
+        }
+
+        #[tokio::test]
+        async fn test_run_state_async_mixed_rules_and_evals() {
+            // Test mixed rule definitions and evaluations
+            let mut state = MettaState::new_empty();
+
+            // Define first rule, eval, define second rule, eval
+            let compiled = compile(
+                "(= (inc $x) (+ $x 1)) !(inc 5) (= (dec $x) (- $x 1)) !(dec 10)"
+            ).unwrap();
+
+            state = run_state_async(state, compiled).await.unwrap();
+
+            // Should have 2 outputs: 6 and 9
+            assert_eq!(state.output.len(), 2);
+            assert_eq!(state.output[0], MettaValue::Long(6));
+            assert_eq!(state.output[1], MettaValue::Long(9));
+
+            // Should have both rules
+            assert_eq!(state.environment.rule_count(), 2);
+        }
+
+        #[tokio::test]
+        async fn test_run_state_async_output_ordering() {
+            // Verify output ordering is preserved even with parallelism
+            let accumulated = MettaState::new_empty();
+
+            // Large batch of eval expressions
+            let mut src = String::new();
+            for i in 1..=10 {
+                src.push_str(&format!("!(+ {} {}) ", i, i));
+            }
+
+            let compiled = compile(&src).unwrap();
+            let result = run_state_async(accumulated, compiled).await.unwrap();
+
+            // Outputs should be in order: 2, 4, 6, 8, ..., 20
+            assert_eq!(result.output.len(), 10);
+            for (i, output) in result.output.iter().enumerate() {
+                let expected = ((i + 1) * 2) as i64;
+                assert_eq!(*output, MettaValue::Long(expected));
+            }
+        }
+
+        #[tokio::test]
+        async fn test_run_state_async_vs_sync_equivalence() {
+            // Verify async produces same results as sync
+            let accumulated_sync = MettaState::new_empty();
+            let accumulated_async = MettaState::new_empty();
+
+            let src = "(= (triple $x) (* $x 3)) !(triple 4) !(triple 7) !(+ 1 1)";
+            let compiled_sync = compile(src).unwrap();
+            let compiled_async = compile(src).unwrap();
+
+            let result_sync = run_state(accumulated_sync, compiled_sync).unwrap();
+            let result_async = run_state_async(accumulated_async, compiled_async).await.unwrap();
+
+            // Both should produce same outputs
+            assert_eq!(result_sync.output, result_async.output);
+            assert_eq!(result_sync.environment.rule_count(), result_async.environment.rule_count());
+        }
     }
 }

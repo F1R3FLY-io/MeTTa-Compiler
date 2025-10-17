@@ -6,7 +6,9 @@
 //   env' = union env_i
 //   return fold over rules & grounded functions (emptyset, env')
 
-use crate::backend::types::{MettaValue, Environment, Bindings, EvalResult};
+use crate::backend::types::{MettaValue, Environment, Bindings, EvalResult, Rule};
+use crate::backend::mork_convert::{metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext};
+use mork_bytestring::Expr;
 
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)
@@ -18,17 +20,11 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
         }
 
         // For atoms: add bare symbols to MORK Space, then return as-is
-        MettaValue::Atom(ref name) => {
-            // Only add non-variable atoms to MORK Space
-            // Variables start with $, &, or '
-            // Wildcards are _
-            if !name.starts_with('$') && !name.starts_with('&') && !name.starts_with('\'') && name != "_" {
-                let mut new_env = env.clone();
-                new_env.add_to_space(&value);
-                (vec![value], new_env)
-            } else {
-                (vec![value], env)
-            }
+        MettaValue::Atom(_) => {
+            // Atoms evaluate to themselves without being stored in the space
+            // Only rules (via =), type assertions (via :), and unmatched s-expressions
+            // are stored in the MORK space
+            (vec![value], env)
         }
 
         // For other ground types, return as-is
@@ -61,7 +57,6 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                     let mut new_env = env.clone();
 
                     // Add rule using add_rule (stores in both rule_cache and MORK Space)
-                    use crate::backend::types::Rule;
                     new_env.add_rule(Rule { lhs, rhs });
 
                     // Return empty list (rule definitions don't produce output)
@@ -393,61 +388,88 @@ fn eval_catch(args: &[MettaValue], env: Environment) -> EvalResult {
 
 /// Try to evaluate a built-in operation
 /// Dispatches directly to built-in functions without going through Rholang interpreter
+/// Uses operator symbols (+, -, *, etc.) instead of normalized names
 fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaValue> {
     match op {
-        "add" => eval_binary_arithmetic(args, |a, b| a + b),
-        "sub" => eval_binary_arithmetic(args, |a, b| a - b),
-        "mul" => eval_binary_arithmetic(args, |a, b| a * b),
-        "div" => eval_binary_arithmetic(args, |a, b| a / b),
-        "lt" => eval_comparison(args, |a, b| a < b),
-        "lte" => eval_comparison(args, |a, b| a <= b),
-        "gt" => eval_comparison(args, |a, b| a > b),
-        "gte" => eval_comparison(args, |a, b| a >= b),
-        "eq" => eval_comparison(args, |a, b| a == b),
-        "neq" => eval_comparison(args, |a, b| a != b),
+        "+" => eval_binary_arithmetic(args, |a, b| a + b),
+        "-" => eval_binary_arithmetic(args, |a, b| a - b),
+        "*" => eval_binary_arithmetic(args, |a, b| a * b),
+        "/" => eval_binary_arithmetic(args, |a, b| a / b),
+        "<" => eval_comparison(args, |a, b| a < b),
+        "<=" => eval_comparison(args, |a, b| a <= b),
+        ">" => eval_comparison(args, |a, b| a > b),
+        ">=" => eval_comparison(args, |a, b| a >= b),
+        "==" => eval_comparison(args, |a, b| a == b),
+        "!=" => eval_comparison(args, |a, b| a != b),
         _ => None,
     }
 }
 
-/// Evaluate a binary arithmetic operation
+/// Evaluate a binary arithmetic operation with strict type checking
 fn eval_binary_arithmetic<F>(args: &[MettaValue], op: F) -> Option<MettaValue>
 where
     F: Fn(i64, i64) -> i64,
 {
     if args.len() != 2 {
-        return None;
+        return Some(MettaValue::Error(
+            format!("Arithmetic operation requires exactly 2 arguments, got {}", args.len()),
+            Box::new(MettaValue::Nil)
+        ));
     }
 
     let a = match &args[0] {
         MettaValue::Long(n) => *n,
-        _ => return None,
+        other => {
+            return Some(MettaValue::Error(
+                format!("{:?}", other),
+                Box::new(MettaValue::Atom("BadType".to_string()))
+            ));
+        }
     };
 
     let b = match &args[1] {
         MettaValue::Long(n) => *n,
-        _ => return None,
+        other => {
+            return Some(MettaValue::Error(
+                format!("{:?}", other),
+                Box::new(MettaValue::Atom("BadType".to_string()))
+            ));
+        }
     };
 
     Some(MettaValue::Long(op(a, b)))
 }
 
-/// Evaluate a comparison operation
+/// Evaluate a comparison operation with strict type checking
 fn eval_comparison<F>(args: &[MettaValue], op: F) -> Option<MettaValue>
 where
     F: Fn(i64, i64) -> bool,
 {
     if args.len() != 2 {
-        return None;
+        return Some(MettaValue::Error(
+            format!("Comparison operation requires exactly 2 arguments, got {}", args.len()),
+            Box::new(MettaValue::Nil)
+        ));
     }
 
     let a = match &args[0] {
         MettaValue::Long(n) => *n,
-        _ => return None,
+        other => {
+            return Some(MettaValue::Error(
+                format!("{:?}", other),
+                Box::new(MettaValue::Atom("BadType".to_string()))
+            ));
+        }
     };
 
     let b = match &args[1] {
         MettaValue::Long(n) => *n,
-        _ => return None,
+        other => {
+            return Some(MettaValue::Error(
+                format!("{:?}", other),
+                Box::new(MettaValue::Atom("BadType".to_string()))
+            ));
+        }
     };
 
     Some(MettaValue::Bool(op(a, b)))
@@ -572,25 +594,11 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
             // Sum specificity of all items
             items.iter().map(|item| pattern_specificity(item)).sum()
         }
+        // Errors: use specificity of details
         MettaValue::Error(_, details) => pattern_specificity(details),
+        // Types: use specificity of inner type
         MettaValue::Type(t) => pattern_specificity(t),
     }
-}
-
-/// Try to find a rule in the environment that matches the given expression
-/// Returns Some((rhs, bindings)) if a match is found
-///
-/// This implementation attempts to use MORK's query_multi for O(k) pattern matching where k = matching rules.
-/// Falls back to O(n) iteration if query_multi cannot be used.
-/// Rules are tried in order of specificity (more specific first).
-fn try_match_rule(expr: &MettaValue, env: &Environment) -> Option<(MettaValue, Bindings)> {
-    // Try query_multi optimization first
-    if let Some(result) = try_match_rule_query_multi(expr, env) {
-        return Some(result);
-    }
-
-    // Fall back to iteration-based approach
-    try_match_rule_iterative(expr, env)
 }
 
 /// Find ALL rules in the environment that match the given expression
@@ -609,73 +617,11 @@ fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue,
     try_match_all_rules_iterative(expr, env)
 }
 
-/// Try pattern matching using MORK's query_multi (O(k) where k = matching rules)
-fn try_match_rule_query_multi(expr: &MettaValue, env: &Environment) -> Option<(MettaValue, Bindings)> {
-    use crate::backend::mork_convert::{metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext};
-    use mork_bytestring::Expr;
-    use std::collections::BTreeMap;
-
-    // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
-    // This will find all rules where the LHS matches our expression
-    let space = env.space.borrow();
-
-    // Convert expression to MORK format for querying
-    let mut ctx = ConversionContext::new();
-    let expr_bytes = match metta_to_mork_bytes(expr, &space, &mut ctx) {
-        Ok(bytes) => bytes,
-        Err(_) => return None, // Fallback to iterative if conversion fails
-    };
-
-    // Create a query pattern: (= <expr> $rhs)
-    // We need to wrap the expression in a rule pattern
-    let pattern_str = format!("(= {} $rhs)", String::from_utf8_lossy(&expr_bytes));
-    let pattern_bytes = pattern_str.as_bytes();
-
-    // Parse the pattern using MORK's parser
-    let mut parse_buffer = vec![0u8; 4096];
-    let mut pdp = mork::space::ParDataParser::new(&space.sm);
-    use mork_frontend::bytestring_parser::Parser;
-    let mut ez = mork_bytestring::ExprZipper::new(Expr { ptr: parse_buffer.as_mut_ptr() });
-    let mut context = mork_frontend::bytestring_parser::Context::new(pattern_bytes);
-
-    if pdp.sexpr(&mut context, &mut ez).is_err() {
-        return None; // Fallback if parsing fails
-    }
-
-    let pattern_expr = Expr { ptr: parse_buffer.as_ptr().cast_mut() };
-
-    // Collect matches using query_multi
-    let mut matches: Vec<(MettaValue, Bindings, usize)> = Vec::new();
-
-    mork::space::Space::query_multi(&space.btm, pattern_expr, |result, _matched_expr| {
-        if let Err((bindings, _, _, _)) = result {
-            // Convert MORK bindings to our format
-            if let Ok(our_bindings) = mork_bindings_to_metta(&bindings, &ctx, &space) {
-                // Extract the RHS from bindings
-                if let Some(rhs) = our_bindings.get("$rhs") {
-                    let specificity = pattern_specificity(&rhs);
-                    matches.push((rhs.clone(), our_bindings, specificity));
-                }
-            }
-        }
-        true // Continue searching for all matches
-    });
-
-    // Sort by specificity and return best match
-    matches.sort_by_key(|(_, _, spec)| *spec);
-    matches.into_iter().next().map(|(rhs, bindings, _)| (rhs, bindings))
-    // space will be dropped automatically here
-}
-
 /// Try pattern matching using MORK's query_multi to find ALL matching rules (O(k) where k = matching rules)
 fn try_match_all_rules_query_multi(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
-    use crate::backend::mork_convert::{metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext};
-    use mork_bytestring::Expr;
-    use std::collections::BTreeMap;
-
     // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
     // This will find all rules where the LHS matches our expression
-    let space = env.space.borrow();
+    let space = env.space.lock().unwrap();
 
     // Convert expression to MORK format for querying
     let mut ctx = ConversionContext::new();
@@ -723,51 +669,8 @@ fn try_match_all_rules_query_multi(expr: &MettaValue, env: &Environment) -> Vec<
     // space will be dropped automatically here
 }
 
-/// Fallback: Try pattern matching using iteration (O(n) where n = total rules)
-fn try_match_rule_iterative(expr: &MettaValue, env: &Environment) -> Option<(MettaValue, Bindings)> {
-    use crate::backend::types::Rule;
-
-    // Try to extract head symbol for filtering
-    let target_head = get_head_symbol(expr);
-
-    // Collect all matching rules
-    let mut matching_rules: Vec<Rule> = Vec::new();
-
-    // First pass: collect rules with matching head symbol
-    if let Some(ref head) = target_head {
-        for rule in env.iter_rules() {
-            if let Some(rule_head) = rule.lhs.get_head_symbol() {
-                if &rule_head == head {
-                    matching_rules.push(rule);
-                }
-            }
-        }
-    }
-
-    // Second pass: collect rules without a head symbol (e.g., variable patterns)
-    for rule in env.iter_rules() {
-        if rule.lhs.get_head_symbol().is_none() {
-            matching_rules.push(rule);
-        }
-    }
-
-    // Sort rules by specificity (more specific first)
-    matching_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
-
-    // Try each rule in order of specificity
-    for rule in matching_rules {
-        if let Some(bindings) = pattern_match(&rule.lhs, expr) {
-            return Some((rule.rhs.clone(), bindings));
-        }
-    }
-
-    None
-}
-
 /// Fallback: Try pattern matching using iteration to find ALL matching rules (O(n) where n = total rules)
 fn try_match_all_rules_iterative(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
-    use crate::backend::types::Rule;
-
     // Try to extract head symbol for filtering
     let target_head = get_head_symbol(expr);
 
@@ -796,21 +699,30 @@ fn try_match_all_rules_iterative(expr: &MettaValue, env: &Environment) -> Vec<(M
     matching_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
 
     // Collect ALL matching rules, tracking LHS specificity
-    let mut matches: Vec<(MettaValue, Bindings, usize)> = Vec::new();
+    let mut matches: Vec<(MettaValue, Bindings, usize, Rule)> = Vec::new();
     for rule in matching_rules {
         if let Some(bindings) = pattern_match(&rule.lhs, expr) {
             let lhs_specificity = pattern_specificity(&rule.lhs);
-            matches.push((rule.rhs.clone(), bindings, lhs_specificity));
+            matches.push((rule.rhs.clone(), bindings, lhs_specificity, rule));
         }
     }
 
     // Find the best (lowest) specificity
-    if let Some(best_spec) = matches.iter().map(|(_, _, spec)| *spec).min() {
-        // Return only matches with the best specificity
-        matches.into_iter()
-            .filter(|(_, _, spec)| *spec == best_spec)
-            .map(|(rhs, bindings, _)| (rhs, bindings))
-            .collect()
+    if let Some(best_spec) = matches.iter().map(|(_, _, spec, _)| *spec).min() {
+        // Filter to only matches with the best specificity
+        let best_matches: Vec<_> = matches.into_iter()
+            .filter(|(_, _, spec, _)| *spec == best_spec)
+            .collect();
+
+        // Duplicate results based on rule count
+        let mut final_matches = Vec::new();
+        for (rhs, bindings, _, rule) in best_matches {
+            let count = env.get_rule_count(&rule);
+            for _ in 0..count {
+                final_matches.push((rhs.clone(), bindings.clone()));
+            }
+        }
+        final_matches
     } else {
         Vec::new()
     }
@@ -843,7 +755,6 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
 
             // Look up type in environment
             env.get_type(name)
-                .cloned()
                 .unwrap_or_else(|| MettaValue::Atom("Undefined".to_string()))
         }
 
@@ -855,12 +766,12 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
 
             // Get the operator/function
             if let Some(MettaValue::Atom(op)) = items.first() {
-                // Check for built-in operators
+                // Check for built-in operators (using symbols, not normalized names)
                 match op.as_str() {
-                    "add" | "sub" | "mul" | "div" => {
+                    "+" | "-" | "*" | "/" => {
                         return MettaValue::Atom("Number".to_string());
                     }
-                    "lt" | "lte" | "gt" | "gte" | "eq" | "neq" => {
+                    "<" | "<=" | ">" | ">=" | "==" | "!=" => {
                         return MettaValue::Atom("Bool".to_string());
                     }
                     "->" => {
@@ -871,7 +782,7 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
                         // Look up function type in environment
                         if let Some(func_type) = env.get_type(op) {
                             // If it's an arrow type, extract return type
-                            if let MettaValue::SExpr(type_items) = func_type {
+                            if let MettaValue::SExpr(ref type_items) = func_type {
                                 if let Some(MettaValue::Atom(arrow)) = type_items.first() {
                                     if arrow == "->" && type_items.len() > 1 {
                                         // Return type is last element
@@ -879,7 +790,7 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
                                     }
                                 }
                             }
-                            return func_type.clone();
+                            return func_type;
                         }
                     }
                 }
@@ -960,7 +871,7 @@ mod tests {
     fn test_eval_builtin_add() {
         let env = Environment::new();
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
+            MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(2),
         ]);
@@ -973,7 +884,7 @@ mod tests {
     fn test_eval_builtin_comparison() {
         let env = Environment::new();
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("lt".to_string()),
+            MettaValue::Atom("<".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(2),
         ]);
@@ -995,12 +906,12 @@ mod tests {
     #[test]
     fn test_pattern_match_sexpr() {
         let pattern = MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
+            MettaValue::Atom("+".to_string()),
             MettaValue::Atom("$x".to_string()),
             MettaValue::Long(2),
         ]);
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
+            MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(2),
         ]);
@@ -1021,7 +932,7 @@ mod tests {
                 MettaValue::Atom("$x".to_string()),
             ]),
             rhs: MettaValue::SExpr(vec![
-                MettaValue::Atom("mul".to_string()),
+                MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
@@ -1063,7 +974,7 @@ mod tests {
 
         // (+ (error "fail" 42) 10)
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
+            MettaValue::Atom("+".to_string()),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("error".to_string()),
                 MettaValue::String("fail".to_string()),
@@ -1093,7 +1004,7 @@ mod tests {
             MettaValue::Atom("error".to_string()),
             MettaValue::String("my error".to_string()),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ]),
@@ -1126,12 +1037,12 @@ mod tests {
             MettaValue::Atom("if".to_string()),
             MettaValue::Bool(true),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ]),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(3),
                 MettaValue::Long(4),
             ]),
@@ -1151,12 +1062,12 @@ mod tests {
             MettaValue::Atom("if".to_string()),
             MettaValue::Bool(false),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ]),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(3),
                 MettaValue::Long(4),
             ]),
@@ -1175,7 +1086,7 @@ mod tests {
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("if".to_string()),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("lt".to_string()),
+                MettaValue::Atom("<".to_string()),
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ]),
@@ -1220,7 +1131,7 @@ mod tests {
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("quote".to_string()),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ]),
@@ -1229,11 +1140,11 @@ mod tests {
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
 
-        // Should be the unevaluated s-expression with "add" not evaluated to 3
+        // Should be the unevaluated s-expression with "+" not evaluated to 3
         match &results[0] {
             MettaValue::SExpr(items) => {
                 assert_eq!(items.len(), 3);
-                assert_eq!(items[0], MettaValue::Atom("add".to_string()));
+                assert_eq!(items[0], MettaValue::Atom("+".to_string()));
             }
             _ => panic!("Expected SExpr"),
         }
@@ -1329,7 +1240,7 @@ mod tests {
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("catch".to_string()),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ]),
@@ -1348,7 +1259,7 @@ mod tests {
         // (+ 10 (catch (error "fail" 0) 5))
         // The error should be caught and replaced with 5, so result is 15
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
+            MettaValue::Atom("+".to_string()),
             MettaValue::Long(10),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("catch".to_string()),
@@ -1377,7 +1288,7 @@ mod tests {
             MettaValue::SExpr(vec![
                 MettaValue::Atom("quote".to_string()),
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("add".to_string()),
+                    MettaValue::Atom("+".to_string()),
                     MettaValue::Long(1),
                     MettaValue::Long(2),
                 ]),
@@ -1418,7 +1329,7 @@ mod tests {
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("is-error".to_string()),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ]),
@@ -1481,7 +1392,7 @@ mod tests {
             rhs: MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("eq".to_string()),
+                    MettaValue::Atom("==".to_string()),
                     MettaValue::Atom("$y".to_string()),
                     MettaValue::Long(0),
                 ]),
@@ -1491,7 +1402,7 @@ mod tests {
                     MettaValue::Atom("$y".to_string()),
                 ]),
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("div".to_string()),
+                    MettaValue::Atom("/".to_string()),
                     MettaValue::Atom("$x".to_string()),
                     MettaValue::Atom("$y".to_string()),
                 ]),
@@ -1544,7 +1455,7 @@ mod tests {
         // Environment should have the type assertion
         assert_eq!(
             new_env.get_type("x"),
-            Some(&MettaValue::Atom("Number".to_string()))
+            Some(MettaValue::Atom("Number".to_string()))
         );
     }
 
@@ -1602,7 +1513,7 @@ mod tests {
         let get_type_add = MettaValue::SExpr(vec![
             MettaValue::Atom("get-type".to_string()),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ]),
@@ -1614,7 +1525,7 @@ mod tests {
         let get_type_lt = MettaValue::SExpr(vec![
             MettaValue::Atom("get-type".to_string()),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("lt".to_string()),
+                MettaValue::Atom("<".to_string()),
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ]),
@@ -1668,6 +1579,7 @@ mod tests {
         let mut env = Environment::new();
 
         // (: add (-> Number Number Number))
+        // Using a user-defined function name instead of builtin "+"
         let arrow_type = MettaValue::SExpr(vec![
             MettaValue::Atom(":".to_string()),
             MettaValue::Atom("add".to_string()),
@@ -1692,7 +1604,7 @@ mod tests {
             MettaValue::Atom("Number".to_string()),
             MettaValue::Atom("Number".to_string()),
         ]);
-        assert_eq!(env.get_type("add"), Some(&arrow_type_expected));
+        assert_eq!(env.get_type("add"), Some(arrow_type_expected));
     }
 
     #[test]
@@ -1719,7 +1631,7 @@ mod tests {
                 MettaValue::Atom("$x".to_string()),
             ]),
             rhs: MettaValue::SExpr(vec![
-                MettaValue::Atom("mul".to_string()),
+                MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
@@ -1757,10 +1669,10 @@ mod tests {
         // From c1_grounded_basic.metta: (+ 2 (* 3 5))
         let env = Environment::new();
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
+            MettaValue::Atom("+".to_string()),
             MettaValue::Long(2),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("mul".to_string()),
+                MettaValue::Atom("*".to_string()),
                 MettaValue::Long(3),
                 MettaValue::Long(5),
             ]),
@@ -1774,13 +1686,13 @@ mod tests {
         // From c1_grounded_basic.metta: (< 4 (+ 2 (* 3 5)))
         let env = Environment::new();
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("lt".to_string()),
+            MettaValue::Atom("<".to_string()),
             MettaValue::Long(4),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(2),
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("mul".to_string()),
+                    MettaValue::Atom("*".to_string()),
                     MettaValue::Long(3),
                     MettaValue::Long(5),
                 ]),
@@ -1795,10 +1707,10 @@ mod tests {
         // From c1_grounded_basic.metta: (== 4 (+ 2 2))
         let env = Environment::new();
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("eq".to_string()),
+            MettaValue::Atom("==".to_string()),
             MettaValue::Long(4),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(2),
                 MettaValue::Long(2),
             ]),
@@ -1815,7 +1727,7 @@ mod tests {
         // (== (A B) (A B)) should be supported via pattern matching
         // For now we test that equal atoms are equal
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("eq".to_string()),
+            MettaValue::Atom("==".to_string()),
             MettaValue::Long(42),
             MettaValue::Long(42),
         ]);
@@ -1825,47 +1737,85 @@ mod tests {
 
     #[test]
     fn test_factorial_recursive() {
-        // From c1_grounded_basic.metta: factorial example
+        // From c1_grounded_basic.metta: factorial example with if guard
+        // (= (fact $n) (if (> $n 0) (* $n (fact (- $n 1))) 1))
         let mut env = Environment::new();
 
-        // (= (fact 0) 1)
-        let rule1 = Rule {
-            lhs: MettaValue::SExpr(vec![
-                MettaValue::Atom("fact".to_string()),
-                MettaValue::Long(0),
-            ]),
-            rhs: MettaValue::Long(1),
-        };
-        env.add_rule(rule1);
-
-        // (= (fact $n) (* $n (fact (- $n 1))))
-        let rule2 = Rule {
+        let rule = Rule {
             lhs: MettaValue::SExpr(vec![
                 MettaValue::Atom("fact".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
             rhs: MettaValue::SExpr(vec![
-                MettaValue::Atom("mul".to_string()),
-                MettaValue::Atom("$n".to_string()),
+                MettaValue::Atom("if".to_string()),
+                // Condition: (> $n 0)
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("fact".to_string()),
+                    MettaValue::Atom(">".to_string()),
+                    MettaValue::Atom("$n".to_string()),
+                    MettaValue::Long(0),
+                ]),
+                // Then branch: (* $n (fact (- $n 1)))
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("*".to_string()),
+                    MettaValue::Atom("$n".to_string()),
                     MettaValue::SExpr(vec![
-                        MettaValue::Atom("sub".to_string()),
-                        MettaValue::Atom("$n".to_string()),
-                        MettaValue::Long(1),
+                        MettaValue::Atom("fact".to_string()),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("-".to_string()),
+                            MettaValue::Atom("$n".to_string()),
+                            MettaValue::Long(1),
+                        ]),
                     ]),
                 ]),
+                // Else branch: 1
+                MettaValue::Long(1),
             ]),
         };
-        env.add_rule(rule2);
+        env.add_rule(rule);
 
-        // Test (fact 5) = 120
+        // Test (fact 3) = 6
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("fact".to_string()),
-            MettaValue::Long(5),
+            MettaValue::Long(3),
         ]);
         let (results, _) = eval(value, env);
-        assert_eq!(results[0], MettaValue::Long(120));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(6));
+    }
+
+    #[test]
+    fn test_factorial_with_compile() {
+        // Test factorial using compile() to ensure the compiled version works
+        // This complements test_factorial_recursive which uses manual construction
+        use crate::backend::compile::compile;
+
+        let input = r#"
+            (= (fact $n) (if (> $n 0) (* $n (fact (- $n 1))) 1))
+            !(fact 0)
+            !(fact 1)
+            !(fact 2)
+            !(fact 3)
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut results = Vec::new();
+
+        for expr in state.source {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            // Collect non-empty results (skip rule definitions)
+            if !expr_results.is_empty() {
+                results.extend(expr_results);
+            }
+        }
+
+        // Should have 4 results: fact(0)=1, fact(1)=1, fact(2)=2, fact(3)=6
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0], MettaValue::Long(1)); // fact(0)
+        assert_eq!(results[1], MettaValue::Long(1)); // fact(1)
+        assert_eq!(results[2], MettaValue::Long(2)); // fact(2)
+        assert_eq!(results[3], MettaValue::Long(6)); // fact(3)
     }
 
     #[test]
@@ -1873,13 +1823,13 @@ mod tests {
         // From test_metta.py: !(+ 1 (+ 2 (+ 3 4)))
         let env = Environment::new();
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
+            MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(2),
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("add".to_string()),
+                    MettaValue::Atom("+".to_string()),
                     MettaValue::Long(3),
                     MettaValue::Long(4),
                 ]),
@@ -1898,7 +1848,7 @@ mod tests {
         let rule = Rule {
             lhs: MettaValue::SExpr(vec![MettaValue::Atom("f".to_string())]),
             rhs: MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Long(2),
                 MettaValue::Long(3),
             ]),
@@ -1925,10 +1875,10 @@ mod tests {
                 MettaValue::Atom("$c".to_string()),
             ]),
             rhs: MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Atom("$a".to_string()),
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("add".to_string()),
+                    MettaValue::Atom("+".to_string()),
                     MettaValue::Atom("$b".to_string()),
                     MettaValue::Atom("$c".to_string()),
                 ]),
@@ -1963,7 +1913,7 @@ mod tests {
                 ]),
             ]),
             rhs: MettaValue::SExpr(vec![
-                MettaValue::Atom("add".to_string()),
+                MettaValue::Atom("+".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Atom("$y".to_string()),
             ]),
@@ -2036,12 +1986,12 @@ mod tests {
             rhs: MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("lt".to_string()),
+                    MettaValue::Atom("<".to_string()),
                     MettaValue::Atom("$x".to_string()),
                     MettaValue::Long(0),
                 ]),
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("sub".to_string()),
+                    MettaValue::Atom("-".to_string()),
                     MettaValue::Long(0),
                     MettaValue::Atom("$x".to_string()),
                 ]),
@@ -2101,7 +2051,8 @@ mod tests {
 
     #[test]
     fn test_symbol_added_to_fact_database() {
-        // When a bare symbol like "Hello" is evaluated, it should be added to the fact database
+        // Bare atoms should NOT be added to the fact database
+        // Only rules, type assertions, and unmatched s-expressions are stored
         let env = Environment::new();
 
         // Evaluate the symbol "Hello"
@@ -2111,8 +2062,8 @@ mod tests {
         // Symbol should be returned unchanged
         assert_eq!(results[0], symbol);
 
-        // Symbol should be added to fact database
-        assert!(new_env.has_fact("Hello"));
+        // Bare atoms should NOT be added to fact database (this prevents pollution)
+        assert!(!new_env.has_fact("Hello"));
     }
 
     #[test]
@@ -2142,6 +2093,8 @@ mod tests {
 
     #[test]
     fn test_multiple_symbols_in_fact_database() {
+        // Bare atoms should NOT be added to fact database
+        // This test verifies that evaluating multiple atoms doesn't pollute the environment
         let env = Environment::new();
 
         // Evaluate multiple symbols
@@ -2154,10 +2107,10 @@ mod tests {
         let symbol3 = MettaValue::Atom("Baz".to_string());
         let (_, env3) = eval(symbol3, env2);
 
-        // All symbols should be in the fact database
-        assert!(env3.has_fact("Foo"));
-        assert!(env3.has_fact("Bar"));
-        assert!(env3.has_fact("Baz"));
+        // Bare atoms should NOT be in the fact database
+        assert!(!env3.has_fact("Foo"));
+        assert!(!env3.has_fact("Bar"));
+        assert!(!env3.has_fact("Baz"));
     }
 
     #[test]
@@ -2232,7 +2185,7 @@ mod tests {
 
         // Evaluate an arithmetic operation (add 1 2)
         let sexpr = MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
+            MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(2),
         ]);
@@ -2259,7 +2212,7 @@ mod tests {
                 MettaValue::Atom("$x".to_string()),
             ]),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("mul".to_string()),
+                MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
@@ -2272,6 +2225,151 @@ mod tests {
 
         // Rule definition should also be in the fact database
         assert!(new_env.has_sexpr_fact(&rule_def));
+    }
+
+    // === Type Error Tests ===
+
+    #[test]
+    fn test_arithmetic_type_error_string() {
+        let env = Environment::new();
+
+        // Test: !(+ 1 "a") should produce BadType error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+            MettaValue::String("a".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                // Error message should contain the invalid value
+                assert!(msg.contains("String"));
+                // Error details should be BadType
+                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_arithmetic_type_error_first_arg() {
+        let env = Environment::new();
+
+        // Test: !(+ "a" 1) - first argument wrong type
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::String("a".to_string()),
+            MettaValue::Long(1),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"));
+                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_arithmetic_type_error_bool() {
+        let env = Environment::new();
+
+        // Test: !(* true false) - booleans not valid for arithmetic
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("*".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Bool(false),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("Bool"));
+                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_comparison_type_error() {
+        let env = Environment::new();
+
+        // Test: !(< "a" "b") - strings not valid for comparison
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("<".to_string()),
+            MettaValue::String("a".to_string()),
+            MettaValue::String("b".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"));
+                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_arithmetic_wrong_arity() {
+        let env = Environment::new();
+
+        // Test: !(+ 1) - wrong number of arguments
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("2 arguments"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_type_error_propagation() {
+        let env = Environment::new();
+
+        // Test: !(+ 1 (+ 2 "bad")) - error should propagate from inner expression
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(2),
+                MettaValue::String("bad".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        // The error from the inner expression should propagate
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"));
+                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2293,7 +2391,7 @@ mod tests {
         // Type should be in the type database
         assert_eq!(
             new_env.get_type("x"),
-            Some(&MettaValue::Atom("Number".to_string()))
+            Some(MettaValue::Atom("Number".to_string()))
         );
 
         // Type assertion should also be in the fact database

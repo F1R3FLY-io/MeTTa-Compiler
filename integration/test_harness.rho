@@ -10,6 +10,7 @@ new stdout(`rho:io:stdout`),
     runMeTTa,
     testHarness,
     runTestSuite,
+    done1, done2, done3, done4, done5, done6, done7, done8, done9, done10, done11, done12, done13, done14, done15,
     ack in {
 
   // ===================================================================
@@ -24,7 +25,7 @@ new stdout(`rho:io:stdout`),
   contract runMeTTa(ret, src) = {
     for (@code <= src) {
       new compiledState in {
-        mettaCompile!(code, *compiledState) |
+        mettaCompile!(*compiledState, code) |
         for (@pm <- compiledState) {
           // Run compiled state against empty accumulated state
           new result in {
@@ -44,7 +45,7 @@ new stdout(`rho:io:stdout`),
    * @param src - Source channel for MeTTa code
    * @param expectedCount - Expected number of outputs (for display only)
    */
-  contract testHarness(@testName, src, @expectedCount) = {
+  contract testHarness(@testName, src, @expectedCount, done) = {
     new srcChan, resultChan in {
       stdoutAck!("Test: " ++ testName ++ "\n", *ack) |
       for (_ <- ack) {
@@ -66,7 +67,10 @@ new stdout(`rho:io:stdout`),
                 for (_ <- ack) {
                   stdoutAck!(result, *ack) |
                   for (_ <- ack) {
-                    stdoutAck!("\n\n", *ack)
+                    stdoutAck!("\n\n", *ack) |
+                    for (_ <- ack) {
+                      done!()
+                    }
                   }
                 }
               }
@@ -87,39 +91,39 @@ new stdout(`rho:io:stdout`),
     // Test 1: Basic Arithmetic
     for (_ <- ack) {
       new src in {
-        src!("(+ 1 2)") |
-        testHarness!("Basic arithmetic: (+ 1 2)", *src, 1)
+        src!("!(+ 1 2)") |
+        testHarness!("Basic arithmetic: (+ 1 2)", *src, 1, *done1)
       }
     } |
 
     // Test 2: Nested Arithmetic
-    for (_ <- ack) {
+    for (<- done1) {
       new src in {
-        src!("(+ 1 (* 2 3))") |
-        testHarness!("Nested arithmetic: (+ 1 (* 2 3))", *src, 1)
+        src!("!(+ 1 (* 2 3))") |
+        testHarness!("Nested arithmetic: (+ 1 (* 2 3))", *src, 1, *done2)
       }
     } |
 
     // Test 3: Multiple Expressions
-    for (_ <- ack) {
+    for (<- done2) {
       new src in {
-        src!("(+ 1 2)") |
-        src!("(* 3 4)") |
-        src!("(- 10 5)") |
-        testHarness!("Multiple expressions", *src, 3)
+        src!("!(+ 1 2)") |
+        src!("!(* 3 4)") |
+        src!("!(- 10 5)") |
+        testHarness!("Multiple expressions", *src, 3, *done3)
       }
     } |
 
     // Test 4: Rule Definition
-    for (_ <- ack) {
+    for (<- done3) {
       new src in {
         src!("(= (double $x) (* $x 2))") |
-        testHarness!("Rule definition: double", *src, 0)
+        testHarness!("Rule definition: double", *src, 0, *done4)
       }
     } |
 
     // Test 5: Rule Usage (Sequential)
-    for (_ <- ack) {
+    for (<- done4) {
       stdoutAck!("Test: Rule usage (sequential)\n", *ack) |
       for (_ <- ack) {
         new src1, result1, src2, result2 in {
@@ -135,7 +139,7 @@ new stdout(`rho:io:stdout`),
                 for (_ <- ack) {
                   // Step 2: Use rule (run against accumulated state)
                   new useCompiled in {
-                    mettaCompile!("!(triple 7)", *useCompiled) |
+                    mettaCompile!(*useCompiled, "!(triple 7)") |
                     for (@compiledUse <- useCompiled) {
                       new finalResult in {
                         finalResult!(accumulated1.run(compiledUse)) |
@@ -144,7 +148,10 @@ new stdout(`rho:io:stdout`),
                           for (_ <- ack) {
                             stdoutAck!(accumulated2, *ack) |
                             for (_ <- ack) {
-                              stdoutAck!("\n\n", *ack)
+                              stdoutAck!("\n\n", *ack) |
+                              for (_ <- ack) {
+                                done5!()
+                              }
                             }
                           }
                         }
@@ -160,49 +167,49 @@ new stdout(`rho:io:stdout`),
     } |
 
     // Test 6: Boolean Operations
-    for (_ <- ack) {
+    for (<- done5) {
       new src in {
-        src!("(< 1 2)") |
-        src!("(> 5 3)") |
-        src!("(== 4 4)") |
-        testHarness!("Boolean operations", *src, 3)
+        src!("!(< 1 2)") |
+        src!("!(> 5 3)") |
+        src!("!(== 4 4)") |
+        testHarness!("Boolean operations", *src, 3, *done6)
       }
     } |
 
     // Test 7: Quote and Eval
-    for (_ <- ack) {
+    for (<- done6) {
       new src in {
-        src!("(quote (+ 1 2))") |
-        testHarness!("Quote expression", *src, 1)
+        src!("!(quote (+ 1 2))") |
+        testHarness!("Quote expression", *src, 1, *done7)
       }
     } |
 
     // Test 8: Error Handling
-    for (_ <- ack) {
+    for (<- done7) {
       new src in {
-        src!("(error \"test error\" 42)") |
-        testHarness!("Error handling", *src, 1)
+        src!("!(error \"test error\" 42)") |
+        testHarness!("Error handling", *src, 1, *done8)
       }
     } |
 
     // Test 9: Catch Expression
-    for (_ <- ack) {
+    for (<- done8) {
       new src in {
-        src!("(catch (error \"test\" 0) \"recovered\")") |
-        testHarness!("Catch expression", *src, 1)
+        src!("!(catch (error \"test\" 0) \"recovered\")") |
+        testHarness!("Catch expression", *src, 1, *done9)
       }
     } |
 
     // Test 10: Conditional (if)
-    for (_ <- ack) {
+    for (<- done9) {
       new src in {
-        src!("(if (< 1 2) \"yes\" \"no\")") |
-        testHarness!("Conditional if (true case)", *src, 1)
+        src!("!(if (< 1 2) \"yes\" \"no\")") |
+        testHarness!("Conditional if (true case)", *src, 1, *done10)
       }
     } |
 
     // Test 11: Multiple Rule Definitions
-    for (_ <- ack) {
+    for (<- done10) {
       stdoutAck!("Test: Multiple rules with chaining\n", *ack) |
       for (_ <- ack) {
         new src1, result1 in {
@@ -214,7 +221,7 @@ new stdout(`rho:io:stdout`),
             for (_ <- ack) {
               // Define quadruple rule (uses double)
               new src2, useCompiled2 in {
-                mettaCompile!("(= (quadruple $x) (double (double $x)))", *useCompiled2) |
+                mettaCompile!(*useCompiled2, "(= (quadruple $x) (double (double $x)))") |
                 for (@compiled2 <- useCompiled2) {
                   new result2 in {
                     result2!(accumulated1.run(compiled2)) |
@@ -223,7 +230,7 @@ new stdout(`rho:io:stdout`),
                       for (_ <- ack) {
                         // Use quadruple rule
                         new useCompiled3 in {
-                          mettaCompile!("!(quadruple 3)", *useCompiled3) |
+                          mettaCompile!(*useCompiled3, "!(quadruple 3)") |
                           for (@compiled3 <- useCompiled3) {
                             new result3 in {
                               result3!(accumulated2.run(compiled3)) |
@@ -232,7 +239,10 @@ new stdout(`rho:io:stdout`),
                                 for (_ <- ack) {
                                   stdoutAck!(accumulated3, *ack) |
                                   for (_ <- ack) {
-                                    stdoutAck!("\n\n", *ack)
+                                    stdoutAck!("\n\n", *ack) |
+                                    for (_ <- ack) {
+                                      done11!()
+                                    }
                                   }
                                 }
                               }
@@ -251,17 +261,17 @@ new stdout(`rho:io:stdout`),
     } |
 
     // Test 12: REPL Simulation (Multiple Sequential Evaluations)
-    for (_ <- ack) {
+    for (<- done11) {
       stdoutAck!("Test: REPL simulation (accumulate multiple evaluations)\n", *ack) |
       for (_ <- ack) {
         new src1, result1 in {
-          src1!("(+ 10 5)") |
+          src1!("!(+ 10 5)") |
           runMeTTa!(*result1, *src1) |
           for (@acc1 <- result1) {
             stdoutAck!("  Input 1: (+ 10 5)\n", *ack) |
             for (_ <- ack) {
               new useCompiled2 in {
-                mettaCompile!("(* 3 4)", *useCompiled2) |
+                mettaCompile!(*useCompiled2, "!(* 3 4)") |
                 for (@compiled2 <- useCompiled2) {
                   new result2 in {
                     result2!(acc1.run(compiled2)) |
@@ -269,7 +279,7 @@ new stdout(`rho:io:stdout`),
                       stdoutAck!("  Input 2: (* 3 4)\n", *ack) |
                       for (_ <- ack) {
                         new useCompiled3 in {
-                          mettaCompile!("(- 20 10)", *useCompiled3) |
+                          mettaCompile!(*useCompiled3, "!(- 20 10)") |
                           for (@compiled3 <- useCompiled3) {
                             new result3 in {
                               result3!(acc2.run(compiled3)) |
@@ -280,7 +290,10 @@ new stdout(`rho:io:stdout`),
                                   for (_ <- ack) {
                                     stdoutAck!(acc3, *ack) |
                                     for (_ <- ack) {
-                                      stdoutAck!("\n\n", *ack)
+                                      stdoutAck!("\n\n", *ack) |
+                                      for (_ <- ack) {
+                                        done12!()
+                                      }
                                     }
                                   }
                                 }
@@ -300,32 +313,32 @@ new stdout(`rho:io:stdout`),
     } |
 
     // Test 13: Division Operations
-    for (_ <- ack) {
+    for (<- done12) {
       new src in {
-        src!("(/ 10 2)") |
-        src!("(/ 7 3)") |
-        testHarness!("Division operations", *src, 2)
+        src!("!(/ 10 2)") |
+        src!("!(/ 7 3)") |
+        testHarness!("Division operations", *src, 2, *done13)
       }
     } |
 
     // Test 14: Complex Nested Expression
-    for (_ <- ack) {
+    for (<- done13) {
       new src in {
-        src!("(+ (* 2 3) (- 10 5))") |
-        testHarness!("Complex nested: (+ (* 2 3) (- 10 5))", *src, 1)
+        src!("!(+ (* 2 3) (- 10 5))") |
+        testHarness!("Complex nested: (+ (* 2 3) (- 10 5))", *src, 1, *done14)
       }
     } |
 
     // Test 15: Type System (if available)
-    for (_ <- ack) {
+    for (<- done14) {
       new src in {
         src!("(: x Number)") |
-        testHarness!("Type assertion", *src, 0)
+        testHarness!("Type assertion", *src, 0, *done15)
       }
     } |
 
     // Final Summary
-    for (_ <- ack) {
+    for (<- done15) {
       stdoutAck!("=== Test Suite Complete ===\n", *ack)
     }
   } |

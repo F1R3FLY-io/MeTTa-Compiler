@@ -142,7 +142,10 @@ fn format_result(value: &MettaValue) -> String {
         MettaValue::String(s) => format!("\"{}\"", s),
         MettaValue::Uri(s) => format!("`{}`", s),
         MettaValue::Nil => "Nil".to_string(),
-        MettaValue::Error(msg, _) => format!("Error: {}", msg),
+        MettaValue::Error(msg, details) => {
+            // Format as (Error "msg" details) to match MeTTa spec
+            format!("(Error {} {})", msg, format_result(details))
+        },
         MettaValue::Type(t) => format!("Type({})", format_result(t)),
         MettaValue::SExpr(items) => {
             let formatted: Vec<String> = items.iter().map(format_result).collect();
@@ -182,7 +185,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
 
     // Evaluate each expression
     let mut output = String::new();
-    for sexpr in state.pending_exprs {
+    for sexpr in state.source {
         // Only output results for S-expressions, not atoms or ground types
         let should_output = matches!(sexpr, MettaValue::SExpr(_));
 
@@ -226,7 +229,7 @@ fn run_repl() {
             Ok(state) => {
                 env = env.union(&state.environment);
 
-                for sexpr in state.pending_exprs {
+                for sexpr in state.source {
                     // Only output results for S-expressions, not atoms or ground types
                     let should_output = matches!(sexpr, MettaValue::SExpr(_));
 

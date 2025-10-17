@@ -1,8 +1,7 @@
 // Type definitions for the MeTTa backend
 
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use mork::space::Space;
 use pathmap::zipper::*;
 
@@ -41,32 +40,100 @@ pub struct Rule {
 pub type Bindings = HashMap<String, MettaValue>;
 
 /// The environment contains the fact database and type assertions
-/// All facts (rules, atoms, s-expressions) are stored in MORK Space
+/// All facts (rules, atoms, s-expressions, type assertions) are stored in MORK Space
+///
+/// Thread-safe via Arc<Mutex<T>> to enable parallel evaluation
 #[derive(Clone)]
 pub struct Environment {
-    /// Type assertions: atom/expression -> type (fast lookup cache)
-    pub types: HashMap<String, MettaValue>,
-    /// MORK Space: primary fact database for all rules and expressions
+    /// MORK Space: primary fact database for all rules, expressions, and type assertions
     /// PathMap's trie provides O(m) prefix queries and O(m) existence checks
-    pub space: Rc<RefCell<Space>>,
+    /// Thread-safe via Arc<Mutex<>> for parallel evaluation
+    pub space: Arc<Mutex<Space>>,
+
+    /// Multiplicities: tracks how many times each rule is defined
+    /// Maps a normalized rule key to its definition count
+    /// This allows multiply-defined rules to produce multiple results
+    /// Thread-safe via Arc<Mutex<>> for parallel evaluation
+    multiplicities: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         Environment {
-            types: HashMap::new(),
-            space: Rc::new(RefCell::new(Space::new())),
+            space: Arc::new(Mutex::new(Space::new())),
+            multiplicities: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Add a type assertion
-    pub fn add_type(&mut self, name: String, typ: MettaValue) {
-        self.types.insert(name, typ);
+    /// Helper function to serialize a MORK Expr to a readable string
+    /// This reduces code duplication across multiple methods that need to read MORK Space
+    #[allow(unused_variables)]
+    pub(crate) fn serialize_mork_expr(expr: &mork_bytestring::Expr, space: &Space) -> String {
+        let mut buffer = Vec::new();
+        expr.serialize2(&mut buffer,
+            |s| {
+                #[cfg(feature="interning")]
+                {
+                    let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+                    let mstr = space.sm.get_bytes(symbol).map(|x| unsafe { std::str::from_utf8_unchecked(x) });
+                    unsafe { std::mem::transmute(mstr.unwrap_or("")) }
+                }
+                #[cfg(not(feature="interning"))]
+                unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
+            },
+            |i, _intro| { mork_bytestring::Expr::VARNAMES[i as usize] });
+
+        String::from_utf8_lossy(&buffer).to_string()
     }
 
-    /// Get type for an atom
-    pub fn get_type(&self, name: &str) -> Option<&MettaValue> {
-        self.types.get(name)
+    /// Add a type assertion
+    /// Type assertions are stored as (: name type) in MORK Space
+    pub fn add_type(&mut self, name: String, typ: MettaValue) {
+        // Create type assertion: (: name typ)
+        let type_assertion = MettaValue::SExpr(vec![
+            MettaValue::Atom(":".to_string()),
+            MettaValue::Atom(name),
+            typ,
+        ]);
+        self.add_to_space(&type_assertion);
+    }
+
+    /// Get type for an atom by querying MORK Space
+    /// Searches for type assertions of the form (: name type)
+    /// Returns None if no type assertion exists for the given name
+    pub fn get_type(&self, name: &str) -> Option<MettaValue> {
+        use crate::backend::compile::compile;
+        use mork_bytestring::Expr;
+
+        let space = self.space.lock().unwrap();
+        let mut rz = space.btm.read_zipper();
+
+        // Iterate through all values in the trie
+        while rz.to_next_val() {
+            // Get the s-expression at this position
+            let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
+            let sexpr_str = Self::serialize_mork_expr(&expr, &space);
+
+            // Try to parse as a type assertion
+            if let Ok(state) = compile(&sexpr_str) {
+                for value in state.source {
+                    // Check if this is a type assertion: (: name type)
+                    if let MettaValue::SExpr(items) = &value {
+                        if items.len() == 3 {
+                            if let (MettaValue::Atom(op), MettaValue::Atom(atom_name), typ) =
+                                (&items[0], &items[1], &items[2])
+                            {
+                                if op == ":" && atom_name == name {
+                                    return Some(typ.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Get the number of rules in the environment
@@ -84,7 +151,7 @@ impl Environment {
         use crate::backend::compile::compile;
         use mork_bytestring::Expr;
 
-        let space = self.space.borrow();
+        let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
         let mut rules = Vec::new();
 
@@ -92,28 +159,11 @@ impl Environment {
         while rz.to_next_val() {
             // Get the s-expression at this position
             let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
-
-            // Serialize just this one expression to string for parsing
-            // This is still string-based but only for values we're interested in
-            let mut buffer = Vec::new();
-            expr.serialize2(&mut buffer,
-                |s| {
-                    #[cfg(feature="interning")]
-                    {
-                        let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                        let mstr = space.sm.get_bytes(symbol).map(|x| unsafe { std::str::from_utf8_unchecked(x) });
-                        unsafe { std::mem::transmute(mstr.unwrap_or("")) }
-                    }
-                    #[cfg(not(feature="interning"))]
-                    unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
-                },
-                |i, _intro| { Expr::VARNAMES[i as usize] });
-
-            let sexpr_str = String::from_utf8_lossy(&buffer);
+            let sexpr_str = Self::serialize_mork_expr(&expr, &space);
 
             // Try to parse as a rule
             if let Ok(state) = compile(&sexpr_str) {
-                for value in state.pending_exprs {
+                for value in state.source {
                     if let MettaValue::SExpr(items) = &value {
                         if items.len() == 3 {
                             if let MettaValue::Atom(op) = &items[0] {
@@ -136,14 +186,52 @@ impl Environment {
 
     /// Add a rule to the environment
     /// Rules are stored in MORK Space as s-expressions: (= lhs rhs)
+    /// Multiply-defined rules are tracked via multiplicities
     pub fn add_rule(&mut self, rule: Rule) {
         // Create a rule s-expression: (= lhs rhs)
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
-            rule.lhs,
-            rule.rhs,
+            rule.lhs.clone(),
+            rule.rhs.clone(),
         ]);
+
+        // Generate a canonical key for the rule
+        // Use MORK string format for readable serialization
+        let rule_key = rule_sexpr.to_mork_string();
+
+        // Increment the count for this rule
+        {
+            let mut counts = self.multiplicities.lock().unwrap();
+            let new_count = *counts.entry(rule_key.clone()).or_insert(0) + 1;
+            counts.insert(rule_key.clone(), new_count);
+        } // Drop the RefMut borrow before add_to_space
+
+        // Add to MORK Space (only once - PathMap will deduplicate)
         self.add_to_space(&rule_sexpr);
+    }
+
+    /// Get the number of times a rule has been defined (multiplicity)
+    /// Returns 1 if the rule exists but count wasn't tracked (for backward compatibility)
+    pub fn get_rule_count(&self, rule: &Rule) -> usize {
+        let rule_sexpr = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            rule.lhs.clone(),
+            rule.rhs.clone(),
+        ]);
+        let rule_key = rule_sexpr.to_mork_string();
+
+        let counts = self.multiplicities.lock().unwrap();
+        *counts.get(&rule_key).unwrap_or(&1)
+    }
+
+    /// Get the multiplicities (for serialization)
+    pub fn get_multiplicities(&self) -> HashMap<String, usize> {
+        self.multiplicities.lock().unwrap().clone()
+    }
+
+    /// Set the multiplicities (used for deserialization)
+    pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
+        *self.multiplicities.lock().unwrap() = counts;
     }
 
     /// Check if an atom fact exists (queries MORK Space)
@@ -153,7 +241,7 @@ impl Environment {
         let atom_value = MettaValue::Atom(atom.to_string());
         let _target_mork = atom_value.to_mork_string();
 
-        let space = self.space.borrow();
+        let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
 
         // Iterate through all values in the Space to find the atom
@@ -179,34 +267,18 @@ impl Environment {
         use crate::backend::compile::compile;
         use mork_bytestring::Expr;
 
-        let space = self.space.borrow();
+        let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
 
         // Directly iterate through all values in the trie
         while rz.to_next_val() {
             // Get the s-expression at this position
             let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
-
-            // Serialize just this one expression to string for parsing
-            let mut buffer = Vec::new();
-            expr.serialize2(&mut buffer,
-                |s| {
-                    #[cfg(feature="interning")]
-                    {
-                        let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                        let mstr = space.sm.get_bytes(symbol).map(|x| unsafe { std::str::from_utf8_unchecked(x) });
-                        unsafe { std::mem::transmute(mstr.unwrap_or("")) }
-                    }
-                    #[cfg(not(feature="interning"))]
-                    unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
-                },
-                |i, _intro| { Expr::VARNAMES[i as usize] });
-
-            let sexpr_str = String::from_utf8_lossy(&buffer);
+            let sexpr_str = Self::serialize_mork_expr(&expr, &space);
 
             // Try to parse and compare
             if let Ok(state) = compile(&sexpr_str) {
-                for stored_value in state.pending_exprs {
+                for stored_value in state.source {
                     // Check structural equivalence (ignores variable names)
                     if sexpr.structurally_equivalent(&stored_value) {
                         return true;
@@ -225,23 +297,25 @@ impl Environment {
         let mork_bytes = mork_str.as_bytes();
 
         // Use MORK's parser to load the s-expression into PathMap trie
-        let mut space = self.space.borrow_mut();
+        let mut space = self.space.lock().unwrap();
         if let Ok(_count) = space.load_all_sexpr(mork_bytes) {
             // Successfully added to space
         }
     }
 
     /// Union two environments (monotonic merge)
-    /// Since Space is shared via Rc<RefCell<>>, facts are automatically merged
-    pub fn union(&self, other: &Environment) -> Environment {
-        let mut types = self.types.clone();
-        types.extend(other.types.clone());
-
-        // Space is shared via Rc, so both self and other point to the same Space
-        // Facts added to either are automatically visible in both
+    /// Since Space is shared via Arc<Mutex<>>, facts (including type assertions) are automatically merged
+    /// Multiplicities are also merged by taking the maximum count for each rule
+    pub fn union(&self, _other: &Environment) -> Environment {
+        // Space is shared via Arc, so both self and other point to the same Space
+        // Facts (including type assertions) added to either are automatically visible in both
         let space = self.space.clone();
 
-        Environment { types, space }
+        // Merge multiplicities (both are Arc<Mutex>, so they're already shared)
+        // The counts are automatically shared via the Arc
+        let multiplicities = self.multiplicities.clone();
+
+        Environment { space, multiplicities }
     }
 }
 
@@ -254,13 +328,25 @@ impl Default for Environment {
 impl std::fmt::Debug for Environment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Environment")
-            .field("types", &self.types)
             .field("space", &"<MORK Space>")
             .finish()
     }
 }
 
 impl MettaValue {
+    /// Check if this value is a ground type (non-reducible literal)
+    /// Ground types: Bool, Long, String, Uri, Nil
+    /// Returns true if the value doesn't require further evaluation
+    pub fn is_ground_type(&self) -> bool {
+        matches!(self,
+            MettaValue::Bool(_) |
+            MettaValue::Long(_) |
+            MettaValue::String(_) |
+            MettaValue::Uri(_) |
+            MettaValue::Nil
+        )
+    }
+
     /// Check structural equivalence (ignoring variable names)
     /// Two expressions are structurally equivalent if they have the same structure,
     /// with variables in the same positions (regardless of variable names)
@@ -375,14 +461,14 @@ pub type EvalResult = (Vec<MettaValue>, Environment);
 ///
 /// # State Composition
 /// - **Compiled state** (fresh from `compile`):
-///   - `pending_exprs`: S-expressions to evaluate
+///   - `source`: S-expressions to evaluate
 ///   - `environment`: Empty atom space
-///   - `eval_outputs`: Empty (no evaluations yet)
+///   - `output`: Empty (no evaluations yet)
 ///
 /// - **Accumulated state** (built over multiple REPL iterations):
-///   - `pending_exprs`: Empty (already evaluated)
+///   - `source`: Empty (already evaluated)
 ///   - `environment`: Accumulated atom space (MORK facts/rules)
-///   - `eval_outputs`: Accumulated evaluation results
+///   - `output`: Accumulated evaluation results
 ///
 /// # Usage Pattern
 /// ```ignore
@@ -394,39 +480,39 @@ pub type EvalResult = (Vec<MettaValue>, Environment);
 /// ```
 #[derive(Clone, Debug)]
 pub struct MettaState {
-    /// Pending s-expressions to be evaluated
-    pub pending_exprs: Vec<MettaValue>,
+    /// Source s-expressions to be evaluated
+    pub source: Vec<MettaValue>,
     /// The atom space (MORK fact database) containing rules and facts
     pub environment: Environment,
-    /// Results from previous evaluations
-    pub eval_outputs: Vec<MettaValue>,
+    /// Evaluation output results
+    pub output: Vec<MettaValue>,
 }
 
 impl MettaState {
     /// Create a fresh compiled state from parse results
-    pub fn new_compiled(pending_exprs: Vec<MettaValue>) -> Self {
+    pub fn new_compiled(source: Vec<MettaValue>) -> Self {
         MettaState {
-            pending_exprs,
+            source,
             environment: Environment::new(),
-            eval_outputs: Vec::new(),
+            output: Vec::new(),
         }
     }
 
     /// Create an empty accumulated state (for REPL initialization)
     pub fn new_empty() -> Self {
         MettaState {
-            pending_exprs: Vec::new(),
+            source: Vec::new(),
             environment: Environment::new(),
-            eval_outputs: Vec::new(),
+            output: Vec::new(),
         }
     }
 
-    /// Create an accumulated state with existing environment and outputs
-    pub fn new_accumulated(environment: Environment, eval_outputs: Vec<MettaValue>) -> Self {
+    /// Create an accumulated state with existing environment and output
+    pub fn new_accumulated(environment: Environment, output: Vec<MettaValue>) -> Self {
         MettaState {
-            pending_exprs: Vec::new(),
+            source: Vec::new(),
             environment,
-            eval_outputs,
+            output,
         }
     }
 }

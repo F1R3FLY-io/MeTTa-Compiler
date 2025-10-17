@@ -37,16 +37,13 @@ fn main() {
                 env = env.union(&state.environment);
 
                 // Evaluate each expression
-                for sexpr in state.pending_exprs {
-                    match eval(sexpr.clone(), env.clone()) {
-                        (results, updated_env) => {
-                            env = updated_env;
+                for sexpr in state.source {
+                    let (results, updated_env) = eval(sexpr.clone(), env.clone());
+                    env = updated_env;
 
-                            // Print results
-                            for result in results {
-                                println!("{:?}", result);
-                            }
-                        }
+                    // Print results
+                    for result in results {
+                        println!("{:?}", result);
                     }
                 }
             }

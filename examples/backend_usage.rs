@@ -23,10 +23,10 @@ fn example_arithmetic() {
     let state = compile(src).expect("Compilation failed");
 
     println!("Source: {}", src);
-    println!("Compiled: {:?}", state.pending_exprs);
+    println!("Compiled: {:?}", state.source);
 
     // Evaluate the expression
-    let (results, _new_env) = eval(state.pending_exprs[0].clone(), state.environment);
+    let (results, _new_env) = eval(state.source[0].clone(), state.environment);
     println!("Result: {:?}\n", results);
 }
 
@@ -71,11 +71,11 @@ fn example_environment() {
     let state2 = compile(src2).expect("Compilation failed");
 
     println!("Expression 1: {}", src1);
-    let (result1, env_after1) = eval(state1.pending_exprs[0].clone(), state1.environment);
+    let (result1, env_after1) = eval(state1.source[0].clone(), state1.environment);
     println!("Result 1: {:?}", result1);
 
     println!("\nExpression 2: {}", src2);
-    let (result2, env_after2) = eval(state2.pending_exprs[0].clone(), state2.environment);
+    let (result2, env_after2) = eval(state2.source[0].clone(), state2.environment);
     println!("Result 2: {:?}", result2);
 
     // Union the environments (compositional)

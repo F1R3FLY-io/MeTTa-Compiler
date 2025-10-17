@@ -5,18 +5,15 @@ new stdoutAck(`rho:io:stdoutAck`),
     mettaCompile(`rho:metta:compile`),
     ack in {
 
-  stdoutAck!("Testing MeTTa compile with PathMap Par...\n", *ack) |
+  stdoutAck!("Testing MeTTa compile with PathMap Par using !? operator...\n", *ack) |
 
   for (_ <- ack) {
-    new result in {
-      mettaCompile!("(+ 1 2)", *result) |
-      for (@par <- result) {
-        stdoutAck!("Success! Compiled state: ", *ack) |
+    for (@par <- mettaCompile!?("(+ 1 2)")) {
+      stdoutAck!("Success! Compiled state: ", *ack) |
+      for (_ <- ack) {
+        stdoutAck!(par, *ack) |
         for (_ <- ack) {
-          stdoutAck!(par, *ack) |
-          for (_ <- ack) {
-            stdoutAck!("\nTest complete!\n", *ack)
-          }
+          stdoutAck!("\nTest complete!\n", *ack)
         }
       }
     }

@@ -5,7 +5,7 @@
 //! - MORK bindings → HashMap<String, MettaValue> (for pattern match results)
 
 use std::collections::HashMap;
-use mork_bytestring::{Expr, ExprZipper, ExprEnv, Tag, item_byte};
+use mork_bytestring::{Expr, ExprZipper, ExprEnv};
 use mork::space::Space;
 use mork_frontend::bytestring_parser::Parser;
 use super::types::MettaValue;
@@ -171,6 +171,7 @@ fn write_symbol(bytes: &[u8], space: &Space, ez: &mut ExprZipper) -> Result<(), 
 ///
 /// MORK uses BTreeMap<(u8, u8), ExprEnv> where the key is (old_var, new_var).
 /// We need to convert this to HashMap<String, MettaValue> using the original variable names.
+#[allow(unused_variables)]
 pub fn mork_bindings_to_metta(
     mork_bindings: &std::collections::BTreeMap<(u8, u8), ExprEnv>,
     ctx: &ConversionContext,
@@ -207,7 +208,7 @@ pub fn mork_bindings_to_metta(
 
         // Parse back to MettaValue
         if let Ok(state) = compile(&sexpr_str) {
-            if let Some(value) = state.pending_exprs.first() {
+            if let Some(value) = state.source.first() {
                 bindings.insert(format!("${}", var_name), value.clone());
             }
         }
@@ -224,7 +225,7 @@ mod tests {
     #[test]
     fn test_simple_atom_conversion() {
         let env = Environment::new();
-        let space = env.space.borrow();
+        let space = env.space.lock().unwrap();
         let mut ctx = ConversionContext::new();
 
         let atom = MettaValue::Atom("foo".to_string());
@@ -235,7 +236,7 @@ mod tests {
     #[test]
     fn test_variable_conversion() {
         let env = Environment::new();
-        let space = env.space.borrow();
+        let space = env.space.lock().unwrap();
         let mut ctx = ConversionContext::new();
 
         // First occurrence should create NewVar
@@ -249,7 +250,7 @@ mod tests {
     #[test]
     fn test_sexpr_conversion() {
         let env = Environment::new();
-        let space = env.space.borrow();
+        let space = env.space.lock().unwrap();
         let mut ctx = ConversionContext::new();
 
         // (double $x)
@@ -265,12 +266,12 @@ mod tests {
     #[test]
     fn test_repeated_variable() {
         let env = Environment::new();
-        let space = env.space.borrow();
+        let space = env.space.lock().unwrap();
         let mut ctx = ConversionContext::new();
 
-        // (mul $x $x) - same variable twice
+        // (* $x $x) - same variable twice
         let sexpr = MettaValue::SExpr(vec![
-            MettaValue::Atom("mul".to_string()),
+            MettaValue::Atom("*".to_string()),
             MettaValue::Atom("$x".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]);

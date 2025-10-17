@@ -7,51 +7,47 @@ new stdoutAck(`rho:io:stdoutAck`),
 
   stdoutAck!("=== Testing PathMap .run() Method ===\n", *ack) |
 
-  // Test 1: Compile a rule definition
+  // Test 1: Compile a rule definition using !? operator
   for (_ <- ack) {
     stdoutAck!("Test 1: Defining a rule...\n", *ack) |
     for (_ <- ack) {
-      new compiledRule in {
-        mettaCompile!("(= (double $x) (* $x 2))", *compiledRule) |
-        for (@ruleState <- compiledRule) {
-          stdoutAck!("  Rule compiled: ", *ack) |
+      for (@ruleState <- mettaCompile!?("(= (double $x) (* $x 2))")) {
+        stdoutAck!("  Rule compiled: ", *ack) |
+        for (_ <- ack) {
+          stdoutAck!(ruleState, *ack) |
           for (_ <- ack) {
-            stdoutAck!(ruleState, *ack) |
+            stdoutAck!("\n", *ack) |
+
+            // Test 2: Run the rule against empty state using .run() method
             for (_ <- ack) {
-              stdoutAck!("\n", *ack) |
-
-              // Test 2: Run the rule against empty state using .run() method
+              stdoutAck!("Test 2: Running rule with .run() method...\n", *ack) |
               for (_ <- ack) {
-                stdoutAck!("Test 2: Running rule with .run() method...\n", *ack) |
-                for (_ <- ack) {
-                  new result in {
-                    // Call .run() method synchronously - it returns the result directly
-                    result!({||}.run(ruleState)) |
-                    for (@accumulated1 <- result) {
-                      stdoutAck!("  Accumulated state after rule: ", *ack) |
+                new result in {
+                  // Call .run() method synchronously - it returns the result directly
+                  result!({||}.run(ruleState)) |
+                  for (@accumulated1 <- result) {
+                    stdoutAck!("  Accumulated state after rule: ", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!(accumulated1, *ack) |
                       for (_ <- ack) {
-                        stdoutAck!(accumulated1, *ack) |
-                        for (_ <- ack) {
-                          stdoutAck!("\n", *ack) |
+                        stdoutAck!("\n", *ack) |
 
-                          // Test 3: Use the rule by running expression
+                        // Test 3: Use the rule by running expression
+                        for (_ <- ack) {
+                          stdoutAck!("Test 3: Using the rule...\n", *ack) |
                           for (_ <- ack) {
-                            stdoutAck!("Test 3: Using the rule...\n", *ack) |
-                            for (_ <- ack) {
-                              new compiledExpr, finalResult in {
-                                mettaCompile!("!(double 21)", *compiledExpr) |
-                                for (@exprState <- compiledExpr) {
-                                  stdoutAck!("  Expression compiled\n", *ack) |
-                                  for (_ <- ack) {
-                                    // Call .run() on accumulated state with new expression
-                                    finalResult!(accumulated1.run(exprState)) |
-                                    for (@accumulated2 <- finalResult) {
-                                      stdoutAck!("  Final accumulated state: ", *ack) |
+                            new finalResult in {
+                              for (@exprState <- mettaCompile!?("!(double 21)")) {
+                                stdoutAck!("  Expression compiled\n", *ack) |
+                                for (_ <- ack) {
+                                  // Call .run() on accumulated state with new expression
+                                  finalResult!(accumulated1.run(exprState)) |
+                                  for (@accumulated2 <- finalResult) {
+                                    stdoutAck!("  Final accumulated state: ", *ack) |
+                                    for (_ <- ack) {
+                                      stdoutAck!(accumulated2, *ack) |
                                       for (_ <- ack) {
-                                        stdoutAck!(accumulated2, *ack) |
-                                        for (_ <- ack) {
-                                          stdoutAck!("\n\n=== Test Complete! ===\n", *ack)
-                                        }
+                                        stdoutAck!("\n\n=== Test Complete! ===\n", *ack)
                                       }
                                     }
                                   }

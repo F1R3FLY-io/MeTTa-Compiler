@@ -9,16 +9,13 @@ new stdoutAck(`rho:io:stdoutAck`),
     runMeTTa,
     ack in {
 
-  // Helper: compile and run against empty state
+  // Helper: compile and run against empty state using !? operator
   contract runMeTTa(ret, @code) = {
-    new compiledState in {
-      mettaCompile!(code, *compiledState) |
-      for (@pm <- compiledState) {
-        new result in {
-          result!({||}.run(pm)) |
-          for (@rslt <- result) {
-            ret!(rslt)
-          }
+    for (@pm <- mettaCompile!?(code)) {
+      new result in {
+        result!({||}.run(pm)) |
+        for (@rslt <- result) {
+          ret!(rslt)
         }
       }
     }
@@ -62,9 +59,8 @@ new stdoutAck(`rho:io:stdoutAck`),
                                   for (_ <- ack) {
                                     stdoutAck!("\n", *ack) |
                                     for (_ <- ack) {
-                                      new c2, r1 in {
-                                        mettaCompile!("!(* 3 4)", *c2) |
-                                        for (@compiled2 <- c2) {
+                                      new r1 in {
+                                        for (@compiled2 <- mettaCompile!?("!(* 3 4)")) {
                                           r1!(s1.run(compiled2)) |
                                           for (@s2 <- r1) {
                                             stdoutAck!("After run(!(* 3 4)):\n", *ack) |
@@ -73,9 +69,8 @@ new stdoutAck(`rho:io:stdoutAck`),
                                               for (_ <- ack) {
                                                 stdoutAck!("\n", *ack) |
                                                 for (_ <- ack) {
-                                                  new c3, r2 in {
-                                                    mettaCompile!("!(- 10 5)", *c3) |
-                                                    for (@compiled3 <- c3) {
+                                                  new r2 in {
+                                                    for (@compiled3 <- mettaCompile!?("!(- 10 5)")) {
                                                       r2!(s2.run(compiled3)) |
                                                       for (@s3 <- r2) {
                                                         stdoutAck!("After run(!(- 10 5)):\n", *ack) |
@@ -95,16 +90,14 @@ new stdoutAck(`rho:io:stdoutAck`),
                                                                     for (@s1 <- r1) {
                                                                       stdoutAck!("Step 1: Define (= (double $x) (* $x 2))\n", *ack) |
                                                                       for (_ <- ack) {
-                                                                        new c2, r2 in {
-                                                                          mettaCompile!("(= (triple $x) (* $x 3))", *c2) |
-                                                                          for (@compiled2 <- c2) {
+                                                                        new r2 in {
+                                                                          for (@compiled2 <- mettaCompile!?("(= (triple $x) (* $x 3))")) {
                                                                             r2!(s1.run(compiled2)) |
                                                                             for (@s2 <- r2) {
                                                                               stdoutAck!("Step 2: Define (= (triple $x) (* $x 3))\n", *ack) |
                                                                               for (_ <- ack) {
-                                                                                new c3, r3 in {
-                                                                                  mettaCompile!("!(double 5) !(triple 5)", *c3) |
-                                                                                  for (@compiled3 <- c3) {
+                                                                                new r3 in {
+                                                                                  for (@compiled3 <- mettaCompile!?("!(double 5) !(triple 5)")) {
                                                                                     r3!(s2.run(compiled3)) |
                                                                                     for (@s3 <- r3) {
                                                                                       stdoutAck!("Step 3: Evaluate !(double 5) !(triple 5)\n", *ack) |

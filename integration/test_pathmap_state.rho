@@ -7,10 +7,8 @@ new stdoutAck(`rho:io:stdoutAck`),
     contract testPathMapState(return) = {
         stdoutAck!("=== Test 1: Define rule ===\n", *ack) |
 
-        // Step 1: Compile rule definition
-        new compiled1 in {
-            mettaCompile!("(= (double $x) (* $x 2))", *compiled1) |
-            for (@compiledState1 <- compiled1) {
+        // Step 1: Compile rule definition using !? operator
+        for (@compiledState1 <- mettaCompile!?("(= (double $x) (* $x 2))")) {
                 stdoutAck!("  Compiled rule definition\n", *ack) |
 
                 // Step 2: Run against empty accumulated state using .run() method
@@ -20,11 +18,9 @@ new stdoutAck(`rho:io:stdoutAck`),
                         for (@accumulatedState1 <- result1) {
                             stdoutAck!("  After rule definition (accumulated state)\n", *ack) |
 
-                            // Step 3: Compile usage of rule
+                            // Step 3: Compile usage of rule using !? operator
                             for (_ <- ack) {
-                                new compiled2 in {
-                                    mettaCompile!("!(double 21)", *compiled2) |
-                                    for (@compiledState2 <- compiled2) {
+                                for (@compiledState2 <- mettaCompile!?("!(double 21)")) {
                                         stdoutAck!("=== Test 2: Use the rule ===\n", *ack) |
 
                                         // Step 4: Run against accumulated state using .run() method
@@ -34,11 +30,9 @@ new stdoutAck(`rho:io:stdoutAck`),
                                                 for (@accumulatedState2 <- result2) {
                                                     stdoutAck!("  After using rule: !(double 21) -> 42\n", *ack) |
 
-                                                    // Step 5: Compile more computation
+                                                    // Step 5: Compile more computation using !? operator
                                                     for (_ <- ack) {
-                                                        new compiled3 in {
-                                                            mettaCompile!("(+ 10 11)", *compiled3) |
-                                                            for (@compiledState3 <- compiled3) {
+                                                        for (@compiledState3 <- mettaCompile!?("(+ 10 11)")) {
                                                                 stdoutAck!("=== Test 3: Additional computation ===\n", *ack) |
 
                                                                 // Step 6: Run against accumulated state
@@ -52,8 +46,6 @@ new stdoutAck(`rho:io:stdoutAck`),
                                                                             }
                                                                         }
                                                                     }
-                                                                }
-                                                            }
                                                         }
                                                     }
                                                 }

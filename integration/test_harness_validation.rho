@@ -26,7 +26,7 @@ new stdoutAck(`rho:io:stdoutAck`),
   // ===================================================================
   contract runMeTTa(ret, @code) = {
     new compiledState in {
-      mettaCompile!(code, *compiledState) |
+      mettaCompile!(*compiledState, code) |
       for (@pm <- compiledState) {
         new result in {
           result!({||}.run(pm)) |
@@ -176,7 +176,7 @@ new stdoutAck(`rho:io:stdoutAck`),
                   stdoutAck!("\n", *ack) |
                   for (_ <- ack) {
                     new useCompiled, result2 in {
-                      mettaCompile!("!(double 21)", *useCompiled) |
+                      mettaCompile!(*useCompiled, "!(double 21)") |
                       for (@compiled <- useCompiled) {
                         result2!(acc1.run(compiled)) |
                         for (@acc2 <- result2) {
@@ -210,19 +210,19 @@ new stdoutAck(`rho:io:stdoutAck`),
           // Operation 1
           runMeTTa!(*r0, "(+ 1 1)") |
           for (@a0 <- r0) {
-            mettaCompile!("(+ 2 2)", *r1) |
+            mettaCompile!(*r1, "(+ 2 2)") |
             for (@c1 <- r1) {
               r1!(a0.run(c1)) |
               for (@a1 <- r1) {
-                mettaCompile!("(+ 3 3)", *r2) |
+                mettaCompile!(*r2, "(+ 3 3)") |
                 for (@c2 <- r2) {
                   r2!(a1.run(c2)) |
                   for (@a2 <- r2) {
-                    mettaCompile!("(+ 4 4)", *r3) |
+                    mettaCompile!(*r3, "(+ 4 4)") |
                     for (@c3 <- r3) {
                       r3!(a2.run(c3)) |
                       for (@a3 <- r3) {
-                        mettaCompile!("(+ 5 5)", *r4) |
+                        mettaCompile!(*r4, "(+ 5 5)") |
                         for (@c4 <- r4) {
                           r4!(a3.run(c4)) |
                           for (@a4 <- r4) {

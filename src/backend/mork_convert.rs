@@ -172,13 +172,15 @@ fn write_symbol(bytes: &[u8], space: &Space, ez: &mut ExprZipper) -> Result<(), 
 ///
 /// MORK uses BTreeMap<(u8, u8), ExprEnv> where the key is (old_var, new_var).
 /// We need to convert this to HashMap<String, MettaValue> using the original variable names.
+///
+/// FIXED: Uses mork_expr_to_metta_value() instead of serialize2() to avoid reserved byte panic
 #[allow(unused_variables)]
 pub fn mork_bindings_to_metta(
     mork_bindings: &std::collections::BTreeMap<(u8, u8), ExprEnv>,
     ctx: &ConversionContext,
     space: &Space,
 ) -> Result<HashMap<String, MettaValue>, String> {
-    use super::compile::compile;
+    use super::types::Environment;
 
     let mut bindings = HashMap::new();
 
@@ -189,29 +191,12 @@ pub fn mork_bindings_to_metta(
         }
         let var_name = &ctx.var_names[old_var as usize];
 
-        // Serialize the ExprEnv to string
+        // Convert MORK Expr directly to MettaValue
+        // FIXED: Use mork_expr_to_metta_value() instead of serialize2()
+        // This avoids the "reserved byte" panic when bindings contain symbols with reserved bytes
         let expr = expr_env.subsexpr();
-        let mut buffer = Vec::new();
-        expr.serialize2(&mut buffer,
-            |s| {
-                #[cfg(feature="interning")]
-                {
-                    let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                    let mstr = space.sm.get_bytes(symbol).map(|x| unsafe { std::str::from_utf8_unchecked(x) });
-                    unsafe { std::mem::transmute(mstr.unwrap_or("")) }
-                }
-                #[cfg(not(feature="interning"))]
-                unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
-            },
-            |i, _intro| { Expr::VARNAMES[i as usize] });
-
-        let sexpr_str = String::from_utf8_lossy(&buffer);
-
-        // Parse back to MettaValue
-        if let Ok(state) = compile(&sexpr_str) {
-            if let Some(value) = state.source.first() {
-                bindings.insert(format!("${}", var_name), value.clone());
-            }
+        if let Ok(value) = Environment::mork_expr_to_metta_value(&expr, space) {
+            bindings.insert(format!("${}", var_name), value);
         }
     }
 

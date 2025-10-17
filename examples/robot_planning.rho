@@ -1,9 +1,10 @@
 // =====================================================================
-// Robot Planning System - Fully Dynamic with Demo 4 Restored
+// Robot Planning System - Fully Dynamic with Conditional Logic
 // =====================================================================
-// Uses MeTTa's match and let for dynamic path finding
-// Avoids MORK if+match bug using safe pattern: let to bind, then use result
+// Uses MeTTa's match + if for conditional dynamic path finding
+// NOW USING: if with match-based predicates (bug is FIXED!)
 // Demo 4: Transport ball1 from room_c to room_a with full dynamic planning
+// Includes conditional validation and optimized path selection
 // =====================================================================
 
 new stdoutAck(`rho:io:stdoutAck`),
@@ -70,31 +71,38 @@ new stdoutAck(`rho:io:stdoutAck`),
           (= (get_robot_cargo)
              (match & self (robot_carrying $item) $item))
 
-          // Check if two rooms are directly connected (returns target or empty)
+          // Check if two rooms are directly connected (returns true/false)
+          (= (is_connected $from $to)
+             (match & self (connected $from $to) true))
+
+          // Get connection if exists (returns target or empty)
           (= (directly_connected $from $to)
              (match & self (connected $from $to) $to))
 
           // ============================================================
-          // DYNAMIC PATH FINDING: Using match and let (avoiding if+match)
+          // DYNAMIC PATH FINDING: Using if + match (BUG IS FIXED!)
           // ============================================================
 
-          // 1-hop: Direct connection
+          // 1-hop: Direct connection with conditional check
           (= (find_path_1hop $from $to)
-             (let $result (directly_connected $from $to)
-                  (path $from $to)))
+             (if (is_connected $from $to)
+                 (path $from $to)
+                 ()))
 
-          // 2-hop: Through intermediate node
+          // 2-hop: Through intermediate node with conditional validation
           (= (find_path_2hop $from $to)
              (let $mid (get_neighbors $from)
-                  (let $check (directly_connected $mid $to)
-                       (path $from $mid $to))))
+                  (if (is_connected $mid $to)
+                      (path $from $mid $to)
+                      ())))
 
-          // 3-hop: Through two intermediate nodes
+          // 3-hop: Through two intermediate nodes with conditional checks
           (= (find_path_3hop $from $to)
              (let $mid1 (get_neighbors $from)
                   (let $mid2 (get_neighbors $mid1)
-                       (let $check (directly_connected $mid2 $to)
-                            (path $from $mid1 $mid2 $to)))))
+                       (if (is_connected $mid2 $to)
+                           (path $from $mid1 $mid2 $to)
+                           ()))))
 
           // Try multiple path lengths (nondeterminism finds valid paths)
           (= (find_any_path $from $to)
@@ -150,7 +158,7 @@ new stdoutAck(`rho:io:stdoutAck`),
                (steps ((navigate $a) (pickup $obj) (navigate $b) (navigate $c) (navigate $d) (putdown)))))
 
           // ============================================================
-          // VALIDATION: Check path validity
+          // VALIDATION: Check path validity with CONDITIONAL LOGIC
           // ============================================================
 
           // Check if path is multi-hop
@@ -158,16 +166,25 @@ new stdoutAck(`rho:io:stdoutAck`),
           (= (is_multihop (path $a $b $c)) true)
           (= (is_multihop (path $a $b $c $d)) true)
 
-          // Validate and tag plan
+          // Check if object exists at location (using if + match!)
+          (= (object_exists_at $obj $room)
+             (if (match & self (object_at $obj $room) true)
+                 verified
+                 not_found))
+
+          // Validate plan with conditional checks (NOW USING IF + MATCH!)
           (= (validate_plan $obj $dest)
-             (let $plan (transport_object $obj $dest)
-                  (let $route (extract_route $plan)
-                       (validated_plan $plan (is_multihop $route)))))
+             (let $obj_loc (locate $obj)
+                  (if (is_connected $obj_loc $dest)
+                      (validated (transport_object $obj $dest) direct_route_available)
+                      (let $plan (transport_object $obj $dest)
+                           (let $route (extract_route $plan)
+                                (if (is_multihop $route)
+                                    (validated $plan multihop_required)
+                                    (validated $plan direct_route)))))))
 
           // Extract route from plan (helper)
           (= (extract_route (plan $obj $route $steps)) $route)
-          (= (validated_plan $plan true) (validated $plan multihop))
-          (= (validated_plan $plan false) (validated $plan direct))
         ") |
 
         for (@code <- codeFile) {
@@ -301,9 +318,9 @@ new stdoutAck(`rho:io:stdoutAck`),
   // Demo: Full Robot Planning with Demo 4 Restored
   // ===================================================================
 
-  stdoutAck!("=== Robot Planning System - Full Dynamic with Demo 4 ===", *ack) |
+  stdoutAck!("=== Robot Planning System - NOW WITH IF + MATCH! ===", *ack) |
   for (_ <- ack) {
-    stdoutAck!("All queries dynamic using match + let (no hardcoded distances!)", *ack) |
+    stdoutAck!("Using conditional logic: if + match (BUG IS FIXED!)", *ack) |
     for (_ <- ack) {
 
       // Demo 1: Query connections
@@ -484,33 +501,46 @@ new stdoutAck(`rho:io:stdoutAck`),
 // Implementation Notes:
 // =====================================================================
 //
-// DEMO 4 RESTORED: Transport ball1 from room_c to room_a
-// -------------------------------------------------------
-// Full pipeline demonstration:
+// ✅ BUG FIX: if + match NOW WORKS!
+// ---------------------------------
+// The MORK "reserved 126" bug has been fixed! We can now use:
+//   (if (is_connected $a $b) ...) where is_connected uses match
+//
+// This enables proper conditional logic in MeTTa:
+//   - Validation with existence checks
+//   - Optimized path selection
+//   - Conditional plan generation
+//
+// DEMO 4: Transport ball1 from room_c to room_a
+// -----------------------------------------------
+// Full pipeline with CONDITIONAL VALIDATION:
 //   1. Locate ball1 → room_c (using match)
-//   2. Find path room_c → room_a → (path room_c room_b room_a) (using let+match)
+//   2. Find path room_c → room_a (using if + match for validation!)
 //   3. Build plan → complete action sequence (dynamic)
-//   4. Validate → tagged as multihop (using let, no if+match)
+//   4. Validate → uses if + match to check direct routes vs multihop
+//
+// NEW CAPABILITIES ENABLED BY BUG FIX:
+// -------------------------------------
+// 1. object_exists_at: Conditional existence checks with if + match
+// 2. validate_plan: Multi-level conditional validation
+//    - First checks if direct route exists
+//    - Then checks if multihop is required
+//    - Uses nested if + match throughout!
+// 3. find_path_*hop: Validates connections with if + is_connected
 //
 // DYNAMIC DISTANCE CALCULATION:
 // ------------------------------
 // - NO hardcoded (distance_from_a room_x) rules!
 // - Computes distance by:
-//   1. Finding path with find_any_path
+//   1. Finding path with find_any_path (using if + match!)
 //   2. Counting hops with path_hop_count
 // - Works for ANY room pair, not just from room_a
-//
-// AVOIDING MORK BUG:
-// ------------------
-// - NEVER: (if (is_connected $a $b) ...) where is_connected uses match
-// - ALWAYS: (let $result (directly_connected $a $b) ...) then use $result
-// - Pattern: let binds match results, then use them safely
 //
 // NONDETERMINISM FOR PATH FINDING:
 // ---------------------------------
 // - Multiple (= (find_any_path $from $to) ...) rules
-// - Each tries different hop count (1, 2, 3)
+// - Each tries different hop count (1, 2, 3) with conditional checks
 // - Nondeterminism automatically finds valid paths
-// - No explicit if/else needed!
+// - Now WITH proper conditional validation using if + match!
 //
 // =====================================================================

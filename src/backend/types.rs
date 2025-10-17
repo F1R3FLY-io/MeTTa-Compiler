@@ -65,10 +65,162 @@ impl Environment {
         }
     }
 
-    /// Helper function to serialize a MORK Expr to a readable string
-    /// This reduces code duplication across multiple methods that need to read MORK Space
+    /// Convert a MORK Expr directly to MettaValue without text serialization
+    /// This avoids the "reserved byte" panic that occurs in serialize2()
+    ///
+    /// The key insight: serialize2() uses byte_item() which panics on bytes 64-127.
+    /// We use maybe_byte_item() instead, which returns Result<Tag, u8> and handles reserved bytes gracefully.
+    ///
+    /// CRITICAL FIX for "reserved 114" and similar bugs during evaluation/iteration.
     #[allow(unused_variables)]
-    pub(crate) fn serialize_mork_expr(expr: &mork_bytestring::Expr, space: &Space) -> String {
+    pub(crate) fn mork_expr_to_metta_value(expr: &mork_bytestring::Expr, space: &Space) -> Result<MettaValue, String> {
+        use mork_bytestring::{maybe_byte_item, Tag};
+        use std::slice::from_raw_parts;
+
+        // Stack-based traversal to avoid recursion limits
+        #[derive(Debug)]
+        enum StackFrame {
+            Arity { remaining: u8, items: Vec<MettaValue> },
+        }
+
+        let mut stack: Vec<StackFrame> = Vec::new();
+        let mut offset = 0usize;
+        let ptr = expr.ptr;
+        let mut newvar_count = 0u8; // Track how many NewVars we've seen for proper indexing
+
+        'parsing: loop {
+            // Read the next byte and interpret as tag
+            let byte = unsafe { *ptr.byte_add(offset) };
+            let tag = match maybe_byte_item(byte) {
+                Ok(t) => t,
+                Err(reserved_byte) => {
+                    // Reserved byte encountered - this is the bug we're fixing!
+                    // Instead of panicking, return an error that calling code can handle
+                    return Err(format!("Reserved byte {} at offset {}", reserved_byte, offset));
+                }
+            };
+
+            offset += 1;
+
+            // Handle the tag and build MettaValue
+            let value = match tag {
+                Tag::NewVar => {
+                    // De Bruijn index - NewVar introduces a new variable with the next index
+                    // Use MORK's VARNAMES for proper variable names
+                    const VARNAMES: [&str; 64] = ["$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31", "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41", "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51", "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61", "x62", "x63"];
+                    let var_name = if (newvar_count as usize) < VARNAMES.len() {
+                        VARNAMES[newvar_count as usize].to_string()
+                    } else {
+                        format!("$var{}", newvar_count)
+                    };
+                    newvar_count += 1;
+                    MettaValue::Atom(var_name)
+                }
+                Tag::VarRef(i) => {
+                    // Variable reference - use MORK's VARNAMES for proper variable names
+                    // VARNAMES: ["$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", ...]
+                    const VARNAMES: [&str; 64] = ["$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31", "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41", "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51", "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61", "x62", "x63"];
+                    if (i as usize) < VARNAMES.len() {
+                        MettaValue::Atom(VARNAMES[i as usize].to_string())
+                    } else {
+                        MettaValue::Atom(format!("$var{}", i))
+                    }
+                }
+                Tag::SymbolSize(size) => {
+                    // Read symbol bytes
+                    let symbol_bytes = unsafe { from_raw_parts(ptr.byte_add(offset), size as usize) };
+                    offset += size as usize;
+
+                    // Look up symbol in symbol table if interning is enabled
+                    let symbol_str = {
+                        #[cfg(feature="interning")]
+                        {
+                            // With interning, symbols are ALWAYS stored as 8-byte i64 IDs
+                            if symbol_bytes.len() == 8 {
+                                // Convert bytes to i64, then back to bytes for symbol table lookup
+                                let symbol_id = i64::from_be_bytes(symbol_bytes.try_into().unwrap()).to_be_bytes();
+                                if let Some(actual_bytes) = space.sm.get_bytes(symbol_id) {
+                                    // Found in symbol table - use actual symbol string
+                                    String::from_utf8_lossy(actual_bytes).to_string()
+                                } else {
+                                    // Symbol ID not in table - fall back to treating as raw bytes
+                                    String::from_utf8_lossy(symbol_bytes).to_string()
+                                }
+                            } else {
+                                // Not 8 bytes - treat as raw symbol string
+                                String::from_utf8_lossy(symbol_bytes).to_string()
+                            }
+                        }
+                        #[cfg(not(feature="interning"))]
+                        {
+                            // Without interning, symbols are stored as raw UTF-8 bytes
+                            String::from_utf8_lossy(symbol_bytes).to_string()
+                        }
+                    };
+
+                    // Parse the symbol to check if it's a number or string literal
+                    if let Ok(n) = symbol_str.parse::<i64>() {
+                        MettaValue::Long(n)
+                    } else if symbol_str == "true" {
+                        MettaValue::Bool(true)
+                    } else if symbol_str == "false" {
+                        MettaValue::Bool(false)
+                    } else if symbol_str.starts_with('"') && symbol_str.ends_with('"') && symbol_str.len() >= 2 {
+                        // String literal - strip quotes
+                        MettaValue::String(symbol_str[1..symbol_str.len()-1].to_string())
+                    } else if symbol_str.starts_with('`') && symbol_str.ends_with('`') && symbol_str.len() >= 2 {
+                        // URI literal - strip backticks
+                        MettaValue::Uri(symbol_str[1..symbol_str.len()-1].to_string())
+                    } else {
+                        MettaValue::Atom(symbol_str)
+                    }
+                }
+                Tag::Arity(arity) => {
+                    if arity == 0 {
+                        // Empty s-expression
+                        MettaValue::Nil
+                    } else {
+                        // Push new frame for this s-expression
+                        stack.push(StackFrame::Arity { remaining: arity, items: Vec::new() });
+                        continue 'parsing;
+                    }
+                }
+            };
+
+            // Value is complete - add to parent or return
+            let mut value = value;  // Make value mutable for the popping loop
+            'popping: loop {
+                match stack.last_mut() {
+                    None => {
+                        // No parent - this is the final result
+                        return Ok(value);
+                    }
+                    Some(StackFrame::Arity { remaining, items }) => {
+                        items.push(value.clone());
+                        *remaining -= 1;
+
+                        if *remaining == 0 {
+                            // S-expression is complete
+                            let completed_items = items.clone();
+                            stack.pop();
+                            value = MettaValue::SExpr(completed_items);  // Mutate, don't shadow!
+                            continue 'popping;
+                        } else {
+                            // More items needed
+                            continue 'parsing;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Helper function to serialize a MORK Expr to a readable string
+    /// DEPRECATED: This uses serialize2() which panics on reserved bytes.
+    /// Use mork_expr_to_metta_value() instead for production code.
+    #[allow(dead_code)]
+    #[allow(unused_variables)]
+    fn serialize_mork_expr_old(expr: &mork_bytestring::Expr, space: &Space) -> String {
         let mut buffer = Vec::new();
         expr.serialize2(&mut buffer,
             |s| {
@@ -102,7 +254,6 @@ impl Environment {
     /// Searches for type assertions of the form (: name type)
     /// Returns None if no type assertion exists for the given name
     pub fn get_type(&self, name: &str) -> Option<MettaValue> {
-        use crate::backend::compile::compile;
         use mork_bytestring::Expr;
 
         let space = self.space.lock().unwrap();
@@ -112,20 +263,18 @@ impl Environment {
         while rz.to_next_val() {
             // Get the s-expression at this position
             let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
-            let sexpr_str = Self::serialize_mork_expr(&expr, &space);
 
-            // Try to parse as a type assertion
-            if let Ok(state) = compile(&sexpr_str) {
-                for value in state.source {
-                    // Check if this is a type assertion: (: name type)
-                    if let MettaValue::SExpr(items) = &value {
-                        if items.len() == 3 {
-                            if let (MettaValue::Atom(op), MettaValue::Atom(atom_name), typ) =
-                                (&items[0], &items[1], &items[2])
-                            {
-                                if op == ":" && atom_name == name {
-                                    return Some(typ.clone());
-                                }
+            // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
+            // This avoids the "reserved byte" panic during evaluation
+            if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                // Check if this is a type assertion: (: name type)
+                if let MettaValue::SExpr(items) = &value {
+                    if items.len() == 3 {
+                        if let (MettaValue::Atom(op), MettaValue::Atom(atom_name), typ) =
+                            (&items[0], &items[1], &items[2])
+                        {
+                            if op == ":" && atom_name == name {
+                                return Some(typ.clone());
                             }
                         }
                     }
@@ -148,7 +297,6 @@ impl Environment {
     /// Uses direct zipper traversal to avoid dump/parse overhead.
     /// This provides O(n) iteration without string serialization.
     pub fn iter_rules(&self) -> impl Iterator<Item = Rule> {
-        use crate::backend::compile::compile;
         use mork_bytestring::Expr;
 
         let space = self.space.lock().unwrap();
@@ -159,20 +307,18 @@ impl Environment {
         while rz.to_next_val() {
             // Get the s-expression at this position
             let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
-            let sexpr_str = Self::serialize_mork_expr(&expr, &space);
 
-            // Try to parse as a rule
-            if let Ok(state) = compile(&sexpr_str) {
-                for value in state.source {
-                    if let MettaValue::SExpr(items) = &value {
-                        if items.len() == 3 {
-                            if let MettaValue::Atom(op) = &items[0] {
-                                if op == "=" {
-                                    rules.push(Rule {
-                                        lhs: items[1].clone(),
-                                        rhs: items[2].clone(),
-                                    });
-                                }
+            // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
+            // This avoids the "reserved byte" panic during evaluation
+            if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                if let MettaValue::SExpr(items) = &value {
+                    if items.len() == 3 {
+                        if let MettaValue::Atom(op) = &items[0] {
+                            if op == "=" {
+                                rules.push(Rule {
+                                    lhs: items[1].clone(),
+                                    rhs: items[2].clone(),
+                                });
                             }
                         }
                     }
@@ -197,7 +343,6 @@ impl Environment {
     /// # Returns
     /// Vector of instantiated templates (MettaValue) for all matches
     pub fn match_space(&self, pattern: &MettaValue, template: &MettaValue) -> Vec<MettaValue> {
-        use crate::backend::compile::compile;
         use crate::backend::eval::{pattern_match, apply_bindings};
         use mork_bytestring::Expr;
 
@@ -209,17 +354,15 @@ impl Environment {
         while rz.to_next_val() {
             // Get the s-expression at this position
             let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
-            let sexpr_str = Self::serialize_mork_expr(&expr, &space);
 
-            // Try to parse and match (only parse once per atom)
-            if let Ok(state) = compile(&sexpr_str) {
-                for atom in state.source {
-                    // Try to match the pattern against this atom
-                    if let Some(bindings) = pattern_match(pattern, &atom) {
-                        // Apply bindings to the template
-                        let instantiated = apply_bindings(template, &bindings);
-                        results.push(instantiated);
-                    }
+            // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
+            // This avoids the "reserved byte" panic during evaluation
+            if let Ok(atom) = Self::mork_expr_to_metta_value(&expr, &space) {
+                // Try to match the pattern against this atom
+                if let Some(bindings) = pattern_match(pattern, &atom) {
+                    // Apply bindings to the template
+                    let instantiated = apply_bindings(template, &bindings);
+                    results.push(instantiated);
                 }
             }
         }
@@ -308,7 +451,6 @@ impl Environment {
     ///
     /// Uses direct zipper iteration to avoid dumping the entire Space.
     pub fn has_sexpr_fact(&self, sexpr: &MettaValue) -> bool {
-        use crate::backend::compile::compile;
         use mork_bytestring::Expr;
 
         let space = self.space.lock().unwrap();
@@ -318,15 +460,13 @@ impl Environment {
         while rz.to_next_val() {
             // Get the s-expression at this position
             let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
-            let sexpr_str = Self::serialize_mork_expr(&expr, &space);
 
-            // Try to parse and compare
-            if let Ok(state) = compile(&sexpr_str) {
-                for stored_value in state.source {
-                    // Check structural equivalence (ignores variable names)
-                    if sexpr.structurally_equivalent(&stored_value) {
-                        return true;
-                    }
+            // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
+            // This avoids the "reserved byte" panic during evaluation
+            if let Ok(stored_value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                // Check structural equivalence (ignores variable names)
+                if sexpr.structurally_equivalent(&stored_value) {
+                    return true;
                 }
             }
         }

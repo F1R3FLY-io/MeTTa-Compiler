@@ -1223,4 +1223,201 @@ mod tests {
             panic!("Expected 4 pair results");
         }
     }
+
+    #[test]
+    fn test_nondeterministic_nested_application() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        // Test that g is applied to ALL expansions of f
+        // (f) -> [1, 2, 3]
+        // (g $x) -> (* $x $x)
+        // (g (f)) should -> [1, 4, 9]
+        let input = r#"
+            (= (f) 1)
+            (= (f) 2)
+            (= (f) 3)
+            (= (g $x) (* $x $x))
+            !(g (f))
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.source {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                result = Some(expr_results);
+            }
+        }
+
+        if let Some(results) = result {
+            assert_eq!(results.len(), 3);
+            assert!(results.contains(&MettaValue::Long(1)));
+            assert!(results.contains(&MettaValue::Long(4)));
+            assert!(results.contains(&MettaValue::Long(9)));
+        } else {
+            panic!("Expected [1, 4, 9] from nondeterministic nested application");
+        }
+    }
+
+    #[test]
+    fn test_nondeterministic_cartesian_product() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        // Test Cartesian product: when BOTH operands are nondeterministic
+        // (a) -> [1, 2]
+        // (b) -> [10, 20]
+        // (+ (a) (b)) should -> [11, 21, 12, 22]
+        let input = r#"
+            (= (a) 1)
+            (= (a) 2)
+            (= (b) 10)
+            (= (b) 20)
+            !(+ (a) (b))
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.source {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                result = Some(expr_results);
+            }
+        }
+
+        if let Some(results) = result {
+            assert_eq!(results.len(), 4);
+            assert!(results.contains(&MettaValue::Long(11)));  // 1 + 10
+            assert!(results.contains(&MettaValue::Long(21)));  // 1 + 20
+            assert!(results.contains(&MettaValue::Long(12)));  // 2 + 10
+            assert!(results.contains(&MettaValue::Long(22)));  // 2 + 20
+        } else {
+            panic!("Expected Cartesian product of nondeterministic operands");
+        }
+    }
+
+    #[test]
+    fn test_nondeterministic_triple_product() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        // Test triple Cartesian product
+        // (x) -> [1, 2]
+        // (y) -> [10, 20]
+        // (z) -> [100, 200]
+        // (cons (x) (cons (y) (z))) should produce 2*2*2 = 8 results
+        let input = r#"
+            (= (x) 1)
+            (= (x) 2)
+            (= (y) 10)
+            (= (y) 20)
+            (= (z) 100)
+            (= (z) 200)
+            !(cons (x) (cons (y) (z)))
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.source {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                result = Some(expr_results);
+            }
+        }
+
+        if let Some(results) = result {
+            assert_eq!(results.len(), 8);
+        } else {
+            panic!("Expected 8 results from triple Cartesian product");
+        }
+    }
+
+    #[test]
+    fn test_nondeterministic_deeply_nested() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        // Test deeply nested nondeterministic application
+        // (f) -> [1, 2]
+        // (g $x) -> (* $x 10)
+        // (h $x) -> (+ $x 5)
+        // (h (g (f))) should -> [15, 25]
+        let input = r#"
+            (= (f) 1)
+            (= (f) 2)
+            (= (g $x) (* $x 10))
+            (= (h $x) (+ $x 5))
+            !(h (g (f)))
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.source {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                result = Some(expr_results);
+            }
+        }
+
+        if let Some(results) = result {
+            assert_eq!(results.len(), 2);
+            assert!(results.contains(&MettaValue::Long(15)));  // h(g(1)) = h(10) = 15
+            assert!(results.contains(&MettaValue::Long(25)));  // h(g(2)) = h(20) = 25
+        } else {
+            panic!("Expected [15, 25] from deeply nested nondeterministic application");
+        }
+    }
+
+    #[test]
+    fn test_nondeterministic_with_pattern_matching() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        // Test nondeterminism combined with pattern matching
+        // (color) -> [red, green, blue]
+        // (intensity $c) matches all colors and returns different values
+        let input = r#"
+            (= (color) red)
+            (= (color) green)
+            (= (color) blue)
+            (= (intensity red) 100)
+            (= (intensity green) 150)
+            (= (intensity blue) 200)
+            !(intensity (color))
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.source {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                result = Some(expr_results);
+            }
+        }
+
+        if let Some(results) = result {
+            assert_eq!(results.len(), 3);
+            assert!(results.contains(&MettaValue::Long(100)));
+            assert!(results.contains(&MettaValue::Long(150)));
+            assert!(results.contains(&MettaValue::Long(200)));
+        } else {
+            panic!("Expected [100, 150, 200] from pattern matching with nondeterminism");
+        }
+    }
 }

@@ -268,46 +268,46 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
         unified_env = unified_env.union(&e);
     }
 
-    // Flatten the results into a single evaluated expression
-    let mut evaled_items = Vec::new();
-    for results in eval_results {
-        // For now, take the first result (need to handle multiple results properly)
-        if let Some(first) = results.first() {
-            evaled_items.push(first.clone());
+    // Handle nondeterministic evaluation: generate Cartesian product of all sub-expression results
+    // When any sub-expression returns multiple results, we need to try all combinations
+    let combinations = cartesian_product(&eval_results);
+
+    // Collect all final results from all combinations
+    let mut all_final_results = Vec::new();
+
+    for evaled_items in combinations {
+        // Check if this is a grounded operation
+        if let Some(MettaValue::Atom(op)) = evaled_items.first() {
+            if let Some(result) = try_eval_builtin(op, &evaled_items[1..]) {
+                all_final_results.push(result);
+                continue; // Move to next combination
+            }
+        }
+
+        // Try to match against rules in MORK Space
+        let sexpr = MettaValue::SExpr(evaled_items.clone());
+
+        // Collect ALL matching rules with the BEST specificity (MeTTa returns multiple results)
+        // The helper function already filters to return only rules with the best specificity
+        let all_matches = try_match_all_rules(&sexpr, &unified_env);
+
+        if !all_matches.is_empty() {
+            // Evaluate all matching rule bodies (all have the same specificity)
+            for (rhs, bindings) in all_matches {
+                // Apply bindings to RHS and evaluate
+                let instantiated_rhs = apply_bindings(&rhs, &bindings);
+                let (results, _) = eval(instantiated_rhs, unified_env.clone());
+                all_final_results.extend(results);
+            }
+        } else {
+            // No rule matched, add to MORK Space and return it
+            let mut final_env = unified_env.clone();
+            final_env.add_to_space(&sexpr);
+            all_final_results.push(sexpr);
         }
     }
 
-    // Check if this is a grounded operation
-    if let Some(MettaValue::Atom(op)) = evaled_items.first() {
-        if let Some(result) = try_eval_builtin(op, &evaled_items[1..]) {
-            return (vec![result], unified_env);
-        }
-    }
-
-    // Try to match against rules in MORK Space
-    let sexpr = MettaValue::SExpr(evaled_items.clone());
-
-    // Collect ALL matching rules with the BEST specificity (MeTTa returns multiple results)
-    // The helper function already filters to return only rules with the best specificity
-    let all_matches = try_match_all_rules(&sexpr, &unified_env);
-
-    if !all_matches.is_empty() {
-        // Evaluate all matching rule bodies (all have the same specificity)
-        let mut all_results = Vec::new();
-        for (rhs, bindings) in all_matches {
-            // Apply bindings to RHS and evaluate
-            let instantiated_rhs = apply_bindings(&rhs, &bindings);
-            let (results, _) = eval(instantiated_rhs, unified_env.clone());
-            all_results.extend(results);
-        }
-        return (all_results, unified_env);
-    }
-
-    // No rule matched, add to MORK Space and return it
-    let mut final_env = unified_env;
-    final_env.add_to_space(&sexpr);
-
-    (vec![sexpr], final_env)
+    (all_final_results, unified_env)
 }
 
 /// Evaluate if control flow: (if condition then-branch else-branch)
@@ -530,6 +530,38 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
 
         _ => false,
     }
+}
+
+/// Generate Cartesian product of evaluation results for nondeterministic evaluation
+/// When sub-expressions return multiple results, we need to try all combinations
+///
+/// Example: [[a, b], [1, 2]] -> [[a, 1], [a, 2], [b, 1], [b, 2]]
+fn cartesian_product(results: &[Vec<MettaValue>]) -> Vec<Vec<MettaValue>> {
+    if results.is_empty() {
+        return vec![vec![]];
+    }
+
+    // Base case: single result list
+    if results.len() == 1 {
+        return results[0].iter()
+            .map(|item| vec![item.clone()])
+            .collect();
+    }
+
+    // Recursive case: combine first list with Cartesian product of rest
+    let first = &results[0];
+    let rest_product = cartesian_product(&results[1..]);
+
+    let mut product = Vec::new();
+    for item in first {
+        for rest_combo in &rest_product {
+            let mut combo = vec![item.clone()];
+            combo.extend(rest_combo.clone());
+            product.push(combo);
+        }
+    }
+
+    product
 }
 
 /// Apply variable bindings to a value

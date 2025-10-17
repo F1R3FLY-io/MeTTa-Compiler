@@ -165,6 +165,20 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                 }
             }
 
+            // Match: pattern matching against atom space
+            // (match <space> <pattern> <template>)
+            // Searches space for all atoms matching pattern and returns instantiated templates
+            "match" => {
+                return eval_match(&items[1..], env);
+            }
+
+            // Let: local variable binding
+            // (let $var value body) - Bind variable to value and evaluate body with that binding
+            // Supports pattern matching: (let ($x $y) (tuple 1 2) body)
+            "let" => {
+                return eval_let(&items[1..], env);
+            }
+
             // Type assertion: (: expr type)
             // Adds a type assertion to the environment
             ":" => {
@@ -386,6 +400,98 @@ fn eval_catch(args: &[MettaValue], env: Environment) -> EvalResult {
     (results, env_after_eval)
 }
 
+/// Evaluate match: (match <space-ref> <space-name> <pattern> <template>)
+/// Searches the space for all atoms matching the pattern and returns instantiated templates
+///
+/// Optimized to use Environment::match_space which performs pattern matching
+/// directly on MORK expressions without unnecessary intermediate allocations
+fn eval_match(args: &[MettaValue], env: Environment) -> EvalResult {
+    if args.len() < 4 {
+        let err = MettaValue::Error(
+            "match requires 4 arguments: &, space-name, pattern, and template".to_string(),
+            Box::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return (vec![err], env);
+    }
+
+    let space_ref = &args[0];
+    let space_name = &args[1];
+    let pattern = &args[2];
+    let template = &args[3];
+
+    // Check that first arg is & (space reference operator)
+    match space_ref {
+        MettaValue::Atom(s) if s == "&" => {
+            // Check space name (for now, only support "self")
+            match space_name {
+                MettaValue::Atom(name) if name == "self" => {
+                    // Use optimized match_space method that works directly with MORK
+                    let results = env.match_space(pattern, template);
+                    (results, env)
+                }
+                _ => {
+                    let err = MettaValue::Error(
+                        format!("match only supports 'self' as space name, got: {:?}", space_name),
+                        Box::new(MettaValue::SExpr(args.to_vec())),
+                    );
+                    (vec![err], env)
+                }
+            }
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!("match requires & as first argument, got: {:?}", space_ref),
+                Box::new(MettaValue::SExpr(args.to_vec())),
+            );
+            (vec![err], env)
+        }
+    }
+}
+
+/// Evaluate let binding: (let pattern value body)
+/// Evaluates value, binds it to pattern, and evaluates body with those bindings
+/// Supports both simple variable binding and pattern matching:
+///   - (let $x 42 body) - simple binding
+///   - (let ($a $b) (tuple 1 2) body) - destructuring pattern
+fn eval_let(args: &[MettaValue], env: Environment) -> EvalResult {
+    if args.len() < 3 {
+        let err = MettaValue::Error(
+            "let requires 3 arguments: pattern, value, and body".to_string(),
+            Box::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return (vec![err], env);
+    }
+
+    let pattern = &args[0];
+    let value_expr = &args[1];
+    let body = &args[2];
+
+    // Evaluate the value expression first
+    let (value_results, value_env) = eval(value_expr.clone(), env);
+
+    // Handle nondeterminism: if value evaluates to multiple results, try each one
+    let mut all_results = Vec::new();
+
+    for value in value_results {
+        // Try to match the pattern against the value
+        if let Some(bindings) = pattern_match(pattern, &value) {
+            // Apply bindings to the body and evaluate it
+            let instantiated_body = apply_bindings(body, &bindings);
+            let (body_results, _) = eval(instantiated_body, value_env.clone());
+            all_results.extend(body_results);
+        } else {
+            // Pattern match failed
+            let err = MettaValue::Error(
+                format!("let pattern {:?} does not match value {:?}", pattern, value),
+                Box::new(MettaValue::SExpr(args.to_vec())),
+            );
+            all_results.push(err);
+        }
+    }
+
+    (all_results, value_env)
+}
+
 /// Try to evaluate a built-in operation
 /// Dispatches directly to built-in functions without going through Rholang interpreter
 /// Uses operator symbols (+, -, *, etc.) instead of normalized names
@@ -477,7 +583,9 @@ where
 
 /// Pattern match a pattern against a value
 /// Returns bindings if successful, None otherwise
-fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
+///
+/// This is made public to support optimized match operations in Environment
+pub(crate) fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
     let mut bindings = Bindings::new();
     if pattern_match_impl(pattern, value, &mut bindings) {
         Some(bindings)
@@ -492,7 +600,8 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         (MettaValue::Atom(p), _) if p == "_" => true,
 
         // Variables (start with $, &, or ') bind to values
-        (MettaValue::Atom(p), v) if p.starts_with('$') || p.starts_with('&') || p.starts_with('\'') => {
+        // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
+        (MettaValue::Atom(p), v) if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\'')) && p != "&" => {
             // Check if variable is already bound
             if let Some(existing) = bindings.get(p) {
                 existing == v
@@ -565,9 +674,13 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Vec<Vec<MettaValue>> {
 }
 
 /// Apply variable bindings to a value
-fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaValue {
+///
+/// This is made public to support optimized match operations in Environment
+pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaValue {
     match value {
-        MettaValue::Atom(s) if s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') => {
+        // Apply bindings to variables (atoms starting with $, &, or ')
+        // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
+        MettaValue::Atom(s) if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" => {
             bindings.get(s).cloned().unwrap_or_else(|| value.clone())
         }
         MettaValue::SExpr(items) => {
@@ -589,10 +702,11 @@ fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaValue {
 fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
     match pattern {
         // For s-expressions like (double $x), extract "double"
+        // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
         MettaValue::SExpr(items) if !items.is_empty() => {
             match &items[0] {
                 MettaValue::Atom(head) if !head.starts_with('$')
-                    && !head.starts_with('&')
+                    && (!head.starts_with('&') || head == "&")
                     && !head.starts_with('\'')
                     && head != "_" => {
                     Some(head.clone())
@@ -601,8 +715,9 @@ fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
             }
         }
         // For bare atoms like foo, use the atom itself
+        // EXCEPT: standalone "&" is allowed (used in match)
         MettaValue::Atom(head) if !head.starts_with('$')
-            && !head.starts_with('&')
+            && (!head.starts_with('&') || head == "&")
             && !head.starts_with('\'')
             && head != "_" => {
             Some(head.clone())
@@ -615,12 +730,14 @@ fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
 /// More specific patterns have fewer variables
 fn pattern_specificity(pattern: &MettaValue) -> usize {
     match pattern {
-        MettaValue::Atom(s) if s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') || s == "_" => {
+        // Variables are least specific
+        // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
+        MettaValue::Atom(s) if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') || s == "_") && s != "&" => {
             1000 // Variables are least specific
         }
         MettaValue::Atom(_) | MettaValue::Bool(_) | MettaValue::Long(_)
         | MettaValue::String(_) | MettaValue::Uri(_) | MettaValue::Nil => {
-            0 // Literals are most specific
+            0 // Literals are most specific (including standalone "&")
         }
         MettaValue::SExpr(items) => {
             // Sum specificity of all items
@@ -2428,5 +2545,162 @@ mod tests {
 
         // Type assertion should also be in the fact database
         assert!(new_env.has_sexpr_fact(&type_assertion));
+    }
+
+    // === Let Binding Tests ===
+
+    #[test]
+    fn test_let_simple_binding() {
+        let env = Environment::new();
+
+        // (let $x 42 $x)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Long(42),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_let_with_expression() {
+        let env = Environment::new();
+
+        // (let $y (+ 10 5) (* $y 2))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::Atom("$y".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(10),
+                MettaValue::Long(5),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Atom("$y".to_string()),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(30));
+    }
+
+    #[test]
+    fn test_let_with_pattern_matching() {
+        let env = Environment::new();
+
+        // (let (tuple $a $b) (tuple 1 2) (+ $a $b))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("tuple".to_string()),
+                MettaValue::Atom("$a".to_string()),
+                MettaValue::Atom("$b".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("tuple".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Atom("$a".to_string()),
+                MettaValue::Atom("$b".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+    }
+
+    #[test]
+    fn test_let_nested() {
+        let env = Environment::new();
+
+        // (let $z 3 (let $w 4 (+ $z $w)))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::Atom("$z".to_string()),
+            MettaValue::Long(3),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("let".to_string()),
+                MettaValue::Atom("$w".to_string()),
+                MettaValue::Long(4),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Atom("$z".to_string()),
+                    MettaValue::Atom("$w".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(7));
+    }
+
+    #[test]
+    fn test_let_with_if() {
+        let env = Environment::new();
+
+        // (let $base 10 (if (> $base 5) (* $base 2) $base))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::Atom("$base".to_string()),
+            MettaValue::Long(10),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("if".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom(">".to_string()),
+                    MettaValue::Atom("$base".to_string()),
+                    MettaValue::Long(5),
+                ]),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("*".to_string()),
+                    MettaValue::Atom("$base".to_string()),
+                    MettaValue::Long(2),
+                ]),
+                MettaValue::Atom("$base".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(20));
+    }
+
+    #[test]
+    fn test_let_pattern_mismatch() {
+        let env = Environment::new();
+
+        // (let (foo $x) (bar 42) $x) - pattern mismatch should error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("foo".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("bar".to_string()),
+                MettaValue::Long(42),
+            ]),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("does not match"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
     }
 }

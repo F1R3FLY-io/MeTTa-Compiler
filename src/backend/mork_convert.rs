@@ -72,7 +72,8 @@ fn write_metta_value(
     match value {
         MettaValue::Atom(name) => {
             // Check if it's a variable
-            if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
+            // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
+            if (name.starts_with('$') || name.starts_with('&') || name.starts_with('\'')) && name != "&" {
                 // Variable - use De Bruijn encoding
                 let var_id = &name[1..]; // Remove prefix
                 match ctx.get_or_create_var(var_id)? {
@@ -92,7 +93,7 @@ fn write_metta_value(
                 ez.write_new_var();
                 ez.loc += 1;
             } else {
-                // Regular atom - write as symbol
+                // Regular atom - write as symbol (including standalone "&")
                 write_symbol(name.as_bytes(), space, ez)?;
             }
         }

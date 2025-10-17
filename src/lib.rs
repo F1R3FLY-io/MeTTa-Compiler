@@ -1420,4 +1420,223 @@ mod tests {
             panic!("Expected [100, 150, 200] from pattern matching with nondeterminism");
         }
     }
+
+    #[test]
+    fn test_match_basic_pattern() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (leaf1 leaf2)
+            (leaf0 leaf1)
+            !(match &self ($x leaf2) $x)
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.source {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                result = Some(expr_results);
+            }
+        }
+
+        if let Some(results) = result {
+            assert_eq!(results.len(), 1);
+            // Should match (leaf1 leaf2) with $x = leaf1
+            assert_eq!(results[0], MettaValue::Atom("leaf1".to_string()));
+        } else {
+            panic!("Expected match results");
+        }
+    }
+
+    #[test]
+    fn test_match_multiple_bindings() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (Sam is a frog)
+            (Tom is a cat)
+            (Sophia is a robot)
+            !(match &self ($who is a $what) ($who the $what))
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.source {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                result = Some(expr_results);
+            }
+        }
+
+        if let Some(results) = result {
+            assert_eq!(results.len(), 3);
+            // Should match all three facts
+            let expected = vec![
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("Sam".to_string()),
+                    MettaValue::Atom("the".to_string()),
+                    MettaValue::Atom("frog".to_string()),
+                ]),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("Tom".to_string()),
+                    MettaValue::Atom("the".to_string()),
+                    MettaValue::Atom("cat".to_string()),
+                ]),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("Sophia".to_string()),
+                    MettaValue::Atom("the".to_string()),
+                    MettaValue::Atom("robot".to_string()),
+                ]),
+            ];
+            for expected_result in expected {
+                assert!(results.contains(&expected_result));
+            }
+        } else {
+            panic!("Expected match results");
+        }
+    }
+
+    #[test]
+    fn test_match_nested_structure() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            ((nested value) result)
+            !(match &self (($x $y) result) (found $x and $y))
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.source {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                result = Some(expr_results);
+            }
+        }
+
+        if let Some(results) = result {
+            assert_eq!(results.len(), 1);
+            let expected = MettaValue::SExpr(vec![
+                MettaValue::Atom("found".to_string()),
+                MettaValue::Atom("nested".to_string()),
+                MettaValue::Atom("and".to_string()),
+                MettaValue::Atom("value".to_string()),
+            ]);
+            assert_eq!(results[0], expected);
+        } else {
+            panic!("Expected match results");
+        }
+    }
+
+    #[test]
+    fn test_match_no_results() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (foo bar)
+            !(match &self (nonexistent $x) $x)
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut last_result = Vec::new();
+
+        for (i, expr) in state.source.iter().enumerate() {
+            let (expr_results, new_env) = eval(expr.clone(), env);
+            env = new_env;
+            // Capture results from the last expression (the match)
+            if i == state.source.len() - 1 {
+                last_result = expr_results;
+            }
+        }
+
+        // Should return empty list when no matches found
+        assert!(last_result.is_empty(), "Expected empty results for no match, got: {:?}", last_result);
+    }
+
+    #[test]
+    fn test_match_with_numbers() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (number 42)
+            (number 100)
+            !(match &self (number $n) (value $n))
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut result = None;
+
+        for expr in state.source {
+            let (expr_results, new_env) = eval(expr, env);
+            env = new_env;
+            if !expr_results.is_empty() {
+                result = Some(expr_results);
+            }
+        }
+
+        if let Some(results) = result {
+            assert_eq!(results.len(), 2);
+            assert!(results.contains(&MettaValue::SExpr(vec![
+                MettaValue::Atom("value".to_string()),
+                MettaValue::Long(42),
+            ])));
+            assert!(results.contains(&MettaValue::SExpr(vec![
+                MettaValue::Atom("value".to_string()),
+                MettaValue::Long(100),
+            ])));
+        } else {
+            panic!("Expected match results");
+        }
+    }
+
+    #[test]
+    fn test_match_wildcard() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+
+        let input = r#"
+            (a b c)
+            (x y z)
+            !(match &self ($first $middle $last) (middle $middle))
+        "#;
+
+        let state = compile(input).unwrap();
+        let mut env = state.environment;
+        let mut last_result = Vec::new();
+
+        for (i, expr) in state.source.iter().enumerate() {
+            let (expr_results, new_env) = eval(expr.clone(), env);
+            env = new_env;
+            // Capture results from the last expression (the match)
+            if i == state.source.len() - 1 {
+                last_result = expr_results;
+            }
+        }
+
+        // Should match both (a b c) and (x y z), extracting middle elements
+        assert!(last_result.len() >= 2, "Expected at least 2 match results, got: {} - {:?}", last_result.len(), last_result);
+        assert!(last_result.iter().any(|r| matches!(r, MettaValue::SExpr(items)
+            if items.len() == 2 && items[0] == MettaValue::Atom("middle".to_string())
+            && items[1] == MettaValue::Atom("b".to_string()))));
+        assert!(last_result.iter().any(|r| matches!(r, MettaValue::SExpr(items)
+            if items.len() == 2 && items[0] == MettaValue::Atom("middle".to_string())
+            && items[1] == MettaValue::Atom("y".to_string()))));
+    }
 }

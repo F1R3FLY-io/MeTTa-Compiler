@@ -184,6 +184,50 @@ impl Environment {
         rules.into_iter()
     }
 
+    /// Match pattern against all atoms in the Space (optimized for match operation)
+    /// Returns all instantiated templates for atoms matching the pattern
+    ///
+    /// This is optimized to work directly with MORK expressions, avoiding
+    /// unnecessary string serialization and parsing.
+    ///
+    /// # Arguments
+    /// * `pattern` - The MeTTa pattern to match against
+    /// * `template` - The template to instantiate for each match
+    ///
+    /// # Returns
+    /// Vector of instantiated templates (MettaValue) for all matches
+    pub fn match_space(&self, pattern: &MettaValue, template: &MettaValue) -> Vec<MettaValue> {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::{pattern_match, apply_bindings};
+        use mork_bytestring::Expr;
+
+        let space = self.space.lock().unwrap();
+        let mut rz = space.btm.read_zipper();
+        let mut results = Vec::new();
+
+        // Directly iterate through all values in the trie
+        while rz.to_next_val() {
+            // Get the s-expression at this position
+            let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
+            let sexpr_str = Self::serialize_mork_expr(&expr, &space);
+
+            // Try to parse and match (only parse once per atom)
+            if let Ok(state) = compile(&sexpr_str) {
+                for atom in state.source {
+                    // Try to match the pattern against this atom
+                    if let Some(bindings) = pattern_match(pattern, &atom) {
+                        // Apply bindings to the template
+                        let instantiated = apply_bindings(template, &bindings);
+                        results.push(instantiated);
+                    }
+                }
+            }
+        }
+
+        drop(space);
+        results
+    }
+
     /// Add a rule to the environment
     /// Rules are stored in MORK Space as s-expressions: (= lhs rhs)
     /// Multiply-defined rules are tracked via multiplicities
@@ -353,14 +397,16 @@ impl MettaValue {
     pub fn structurally_equivalent(&self, other: &MettaValue) -> bool {
         match (self, other) {
             // Variables match any other variable (names don't matter)
+            // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
             (MettaValue::Atom(a), MettaValue::Atom(b))
                 if (a.starts_with('$') || a.starts_with('&') || a.starts_with('\''))
-                && (b.starts_with('$') || b.starts_with('&') || b.starts_with('\'')) => true,
+                && (b.starts_with('$') || b.starts_with('&') || b.starts_with('\''))
+                && a != "&" && b != "&" => true,
 
             // Wildcards match wildcards
             (MettaValue::Atom(a), MettaValue::Atom(b)) if a == "_" && b == "_" => true,
 
-            // Non-variable atoms must match exactly
+            // Non-variable atoms must match exactly (including standalone "&")
             (MettaValue::Atom(a), MettaValue::Atom(b)) => a == b,
 
             // Other ground types must match exactly
@@ -396,10 +442,11 @@ impl MettaValue {
     pub fn get_head_symbol(&self) -> Option<String> {
         match self {
             // For s-expressions like (double $x), extract "double"
+            // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
             MettaValue::SExpr(items) if !items.is_empty() => {
                 match &items[0] {
                     MettaValue::Atom(head) if !head.starts_with('$')
-                        && !head.starts_with('&')
+                        && (!head.starts_with('&') || head == "&")
                         && !head.starts_with('\'')
                         && head != "_" => {
                         Some(head.clone())
@@ -408,8 +455,9 @@ impl MettaValue {
                 }
             }
             // For bare atoms like foo, use the atom itself
+            // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
             MettaValue::Atom(head) if !head.starts_with('$')
-                && !head.starts_with('&')
+                && (!head.starts_with('&') || head == "&")
                 && !head.starts_with('\'')
                 && head != "_" => {
                 Some(head.clone())
@@ -424,7 +472,8 @@ impl MettaValue {
         match self {
             MettaValue::Atom(s) => {
                 // Variables need to start with $ in MORK format
-                if s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') {
+                // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
+                if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" {
                     format!("${}", &s[1..]) // Keep $ prefix, remove original prefix
                 } else if s == "_" {
                     "$".to_string() // Wildcard becomes $

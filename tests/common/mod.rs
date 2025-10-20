@@ -11,9 +11,11 @@ pub mod output_parser;
 pub mod test_specs;
 pub mod validators;
 
-// Phase 3: Collection types and query system
+// Phase 3: Collection types, query system, and configuration
 pub mod collections;
 pub mod query;
+pub mod config;
+pub mod runner;
 
 // Re-export commonly used types for convenience
 pub use output_parser::{parse_pathmap, extract_all_outputs, extract_all_outputs_as_strings, PathMapOutput, MettaValueTestExt};
@@ -22,6 +24,8 @@ pub use test_specs::{RholangTestSpec, Expectation, OutputPattern, ValidationResu
 pub use validators::validate;
 pub use collections::CollectionValue;
 pub use query::{PathMapQuery, OutputMatcher, QueryResult, ToMettaValue};
+pub use config::{TestManifest, TestFilter, TestSpec, TestConfig, TestSuiteSpec, CategorySpec};
+pub use runner::{TestRunner, TestResult};
 
 use std::env;
 use std::path::PathBuf;

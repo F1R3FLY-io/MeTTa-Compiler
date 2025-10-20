@@ -1,0 +1,228 @@
+# Integration Test Suite Configuration
+# This file defines all integration tests and their properties
+
+# Global configuration
+[config]
+# Default timeout for all tests (in seconds)
+default_timeout = 30
+
+# Maximum number of parallel tests (0 = use all available cores)
+max_parallel = 0
+
+# Path to rholang-cli (can be overridden by RHOLANG_CLI_PATH env var)
+rholang_cli = "../f1r3node/target/release/rholang-cli"
+
+# Test output verbosity (quiet, normal, verbose)
+verbosity = "normal"
+
+# ============================================================================
+# Integration Tests
+# ============================================================================
+
+[[test]]
+name = "test_basic_evaluation"
+file = "integration/test_basic_evaluation.rho"
+categories = ["basic", "arithmetic", "core"]
+timeout = 30
+enabled = true
+description = "Basic arithmetic and evaluation tests"
+
+[[test]]
+name = "test_rules"
+file = "integration/test_rules.rho"
+categories = ["basic", "rules", "core"]
+timeout = 30
+enabled = true
+description = "Rule definition and pattern matching tests"
+
+[[test]]
+name = "test_control_flow"
+file = "integration/test_control_flow.rho"
+categories = ["control-flow", "quote", "eval"]
+timeout = 30
+enabled = true
+description = "Control flow, quote, and eval tests"
+tags = ["partially-implemented"]
+
+[[test]]
+name = "test_types"
+file = "integration/test_types.rho"
+categories = ["types", "type-system"]
+timeout = 30
+enabled = true
+description = "Type system tests (get-type, check-type)"
+tags = ["partially-implemented"]
+
+[[test]]
+name = "test_repl_simulation"
+file = "integration/test_repl_simulation.rho"
+categories = ["repl", "stateful", "interactive"]
+timeout = 30
+enabled = true
+description = "REPL-like stateful evaluation tests"
+
+[[test]]
+name = "test_edge_cases"
+file = "integration/test_edge_cases.rho"
+categories = ["edge-cases", "error-handling"]
+timeout = 30
+enabled = true
+description = "Edge cases and error handling tests"
+tags = ["error-conditions"]
+
+[[test]]
+name = "test_composability"
+file = "integration/test_composability.rho"
+categories = ["composability", "stateful", "advanced"]
+timeout = 30
+enabled = true
+description = "State composition and sequential evaluation tests"
+
+[[test]]
+name = "test_pathmap_simple"
+file = "integration/test_pathmap_simple.rho"
+categories = ["pathmap", "basic"]
+timeout = 30
+enabled = true
+description = "Simple PathMap operations"
+
+[[test]]
+name = "test_pathmap_state"
+file = "integration/test_pathmap_state.rho"
+categories = ["pathmap", "stateful"]
+timeout = 30
+enabled = true
+description = "PathMap state management tests"
+
+[[test]]
+name = "test_pathmap_run_method"
+file = "integration/test_pathmap_run_method.rho"
+categories = ["pathmap", "methods"]
+timeout = 30
+enabled = true
+description = "PathMap run method tests"
+
+[[test]]
+name = "test_metta_integration"
+file = "integration/test_metta_integration.rho"
+categories = ["integration", "basic"]
+timeout = 30
+enabled = true
+description = "Basic MeTTa integration tests"
+
+# ============================================================================
+# Example Tests
+# ============================================================================
+
+[[test]]
+name = "test_example_robot_planning"
+file = "examples/robot_planning.rho"
+categories = ["examples", "demo", "advanced"]
+timeout = 60
+enabled = true
+description = "Robot planning demo with path finding and transport"
+tags = ["demo", "complex"]
+
+[[test]]
+name = "test_example_metta_rholang"
+file = "examples/metta_rholang_example.rho"
+categories = ["examples", "demo"]
+timeout = 30
+enabled = true
+description = "MeTTa-Rholang integration example"
+
+# ============================================================================
+# Test Categories
+# ============================================================================
+
+[categories]
+# Category definitions with descriptions
+
+[categories.basic]
+description = "Basic functionality tests"
+priority = 1
+
+[categories.arithmetic]
+description = "Arithmetic operations"
+priority = 1
+
+[categories.rules]
+description = "Rule definition and pattern matching"
+priority = 1
+
+[categories.types]
+description = "Type system features"
+priority = 2
+
+[categories.control-flow]
+description = "Control flow operations (if, quote, eval)"
+priority = 2
+
+[categories.repl]
+description = "REPL-like interactive evaluation"
+priority = 2
+
+[categories.stateful]
+description = "Stateful evaluation and composition"
+priority = 2
+
+[categories.pathmap]
+description = "PathMap operations"
+priority = 1
+
+[categories.edge-cases]
+description = "Edge cases and error conditions"
+priority = 3
+
+[categories.error-handling]
+description = "Error handling and resilience"
+priority = 3
+
+[categories.examples]
+description = "Example demonstrations"
+priority = 4
+
+[categories.demo]
+description = "Complex demos"
+priority = 4
+
+[categories.advanced]
+description = "Advanced features"
+priority = 3
+
+[categories.composability]
+description = "State composition and chaining"
+priority = 2
+
+# ============================================================================
+# Test Suites
+# ============================================================================
+
+[suites.core]
+description = "Core functionality tests (must pass)"
+tests = [
+    "test_basic_evaluation",
+    "test_rules",
+    "test_pathmap_simple",
+    "test_metta_integration"
+]
+
+[suites.full]
+description = "All integration tests"
+categories = ["basic", "rules", "types", "control-flow", "repl", "pathmap", "edge-cases", "composability"]
+
+[suites.quick]
+description = "Quick smoke tests"
+tests = [
+    "test_basic_evaluation",
+    "test_rules",
+    "test_pathmap_simple"
+]
+
+[suites.advanced]
+description = "Advanced feature tests"
+categories = ["advanced", "composability", "stateful"]
+
+[suites.examples]
+description = "Example demonstrations"
+categories = ["examples", "demo"]

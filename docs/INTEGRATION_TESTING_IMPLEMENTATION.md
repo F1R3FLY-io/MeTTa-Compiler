@@ -50,19 +50,19 @@ The integration testing suite will:
 - `tests/validators.rs` - Output validation logic ✅
 
 ### Phase 3: Test Configuration & Organization
-**Estimated: 1-2 days** | **Status: Not Started**
+**Estimated: 1-2 days** | **Status: ✅ Complete**
 
-- [ ] Create TOML test configuration format
-- [ ] Implement configuration parser
-- [ ] Add test categorization (arithmetic, rules, errors, etc.)
-- [ ] Support parallel test execution
-- [ ] Add test filtering by name/category
-- [ ] Create test manifest file
+- [x] Create TOML test configuration format
+- [x] Implement configuration parser
+- [x] Add test categorization (arithmetic, rules, errors, etc.)
+- [x] Support parallel test execution
+- [x] Add test filtering by name/category
+- [x] Create test manifest file
 
 **Files:**
-- `tests/integration_tests.toml` - Test configuration
-- `tests/config.rs` - Configuration parsing
-- `tests/runner.rs` - Advanced test runner
+- `tests/integration_tests.toml` - Test configuration ✅
+- `tests/common/config.rs` - Configuration parsing ✅
+- `tests/common/runner.rs` - Advanced test runner ✅
 
 ### Phase 4: CI/CD Integration
 **Estimated: 1 day** | **Status: Not Started**
@@ -97,13 +97,14 @@ The integration testing suite will:
 
 ## Current Status
 
-**Overall Progress: 40%**
+**Overall Progress: 60%**
 
 - ✅ Analysis complete
 - ✅ Documentation created
 - ✅ **Phase 1 complete** - Basic test runner working!
 - ✅ **Phase 2 complete** - Output validation with PathMap parsing!
-- ⏳ Phases 3-5 pending
+- ✅ **Phase 3 complete** - Test configuration and organization!
+- ⏳ Phases 4-5 pending
 
 ### Phase 1 Results
 
@@ -145,7 +146,72 @@ test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured
 - `pending_exprs` → `source`
 - `eval_outputs` → `output`
 
-## Quick Start (Once Implemented)
+### Phase 3 Results
+
+**New Modules Created:**
+- `tests/integration_tests.toml` - TOML-based test manifest with configuration
+- `tests/common/config.rs` - Configuration parser with filtering support
+- `tests/common/runner.rs` - Advanced test runner with parallel execution
+
+**Configuration Features:**
+- **Test Manifest**: TOML-based configuration for all integration tests
+- **Test Categories**: Organized tests by functionality (basic, rules, types, control-flow, etc.)
+- **Test Suites**: Pre-defined test collections (core, quick, full, advanced, examples)
+- **Test Filtering**: Filter by name, category, tag, or suite
+- **Priority System**: Category priorities for execution ordering
+- **Test Metadata**: Descriptions, timeouts, enabled/disabled flags, tags
+
+**Test Organization:**
+- 13 tests configured in manifest
+- 13 categories defined with priorities
+- 5 test suites configured (core, full, quick, advanced, examples)
+- All tests tagged and categorized
+
+**Filtering Capabilities:**
+```rust
+// Filter by category
+let basic_tests = manifest.tests_by_category("basic");
+
+// Filter by suite
+let core_tests = manifest.tests_in_suite("core");
+
+// Filter builder pattern
+let filter = TestFilter::new()
+    .with_category("basic".to_string())
+    .with_tag("partially-implemented".to_string())
+    .exclude("example".to_string());
+
+let tests = filter.apply(&manifest);
+```
+
+**Test Runner Features:**
+- Load tests from TOML manifest
+- Filter tests by multiple criteria
+- Execute tests with timeout support
+- Generate summary reports
+- Parallel execution support (configurable workers)
+- Custom rholang-cli path support
+
+**Sample Usage:**
+```rust
+use common::{TestRunner, TestFilter};
+
+// Create runner from default manifest
+let runner = TestRunner::from_default().unwrap();
+
+// Run specific category
+runner.run_category("basic");
+
+// Run specific suite
+runner.run_suite("quick");
+
+// Run with custom filter
+let filter = TestFilter::new().with_tag("demo".to_string());
+let results = runner.run_filtered(&filter);
+runner.print_results(&results, verbose);
+```
+
+## Quick Start
 
 ### Running All Tests
 ```bash
@@ -498,5 +564,5 @@ Include:
 ---
 
 **Last Updated:** 2025-10-20
-**Status:** Phase 2 complete
-**Next Milestone:** Phase 3 - Test configuration & organization
+**Status:** Phase 3 complete
+**Next Milestone:** Phase 4 - CI/CD Integration

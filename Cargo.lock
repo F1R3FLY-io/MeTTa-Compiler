@@ -2041,7 +2041,9 @@ dependencies = [
  "nom",
  "pathmap 0.1.0",
  "regex",
+ "serde",
  "tokio",
+ "toml",
 ]
 
 [[package]]

@@ -1,15 +1,30 @@
 // =====================================================================
-// MeTTaTron Composability Test Suite
+// MeTTa Composability Tests
 // =====================================================================
-// Comprehensive tests for .run() method composability properties
-// Based on Rust tests in rholang_integration.rs
+// Tests .run() method composability properties and state accumulation
 // =====================================================================
 
 new stdoutAck(`rho:io:stdoutAck`),
     mettaCompile(`rho:metta:compile`),
     runMeTTa,
     runTest,
+    testComplete,
+    waitForTests,
     ack in {
+
+  // ===================================================================
+  // Test Completion Counter - Waits for all 10 tests before printing summary
+  // ===================================================================
+
+  contract waitForTests(@count, summaryCh) = {
+    if (count == 10) {
+      summaryCh!(Nil)
+    } else {
+      for (_ <- testComplete) {
+        waitForTests!(count + 1, *summaryCh)
+      }
+    }
+  } |
 
   // ===================================================================
   // Helper Contract
@@ -35,6 +50,22 @@ new stdoutAck(`rho:io:stdoutAck`),
 
   stdoutAck!("=== MeTTaTron Composability Test Suite ===\n\n", *ack) |
 
+  // Trigger all tests
+  for (_ <- ack) {
+    new ret1, ret2, ret3, ret4, ret5, ret6, ret7, ret8, ret9, ret10 in {
+      runTest!(*ret1, "1") |
+      runTest!(*ret2, "2") |
+      runTest!(*ret3, "3") |
+      runTest!(*ret4, "4") |
+      runTest!(*ret5, "5") |
+      runTest!(*ret6, "6") |
+      runTest!(*ret7, "7") |
+      runTest!(*ret8, "8") |
+      runTest!(*ret9, "9") |
+      runTest!(*ret10, "10")
+    }
+  } |
+
   // -------------------------------------------------------------------
   // Test 1: Identity Property
   // Running against empty state should work like first run
@@ -51,7 +82,7 @@ new stdoutAck(`rho:io:stdoutAck`),
             for (_ <- ack) {
               stdoutAck!("\n  Expected: eval_outputs should contain [12]\n\n", *ack) |
               for (_ <- ack) {
-                ret!()
+                ret!() | testComplete!("1")
               }
             }
           }
@@ -90,7 +121,7 @@ new stdoutAck(`rho:io:stdoutAck`),
                             for (_ <- ack) {
                               stdoutAck!("\n  Expected: 3 outputs [3, 12, 5]\n\n", *ack) |
                               for (_ <- ack) {
-                                ret!()
+                                ret!() | testComplete!("2")
                               }
                             }
                           }
@@ -137,7 +168,7 @@ new stdoutAck(`rho:io:stdoutAck`),
                             for (_ <- ack) {
                               stdoutAck!("\n  Expected: 2 outputs [10, 15] (rule defs produce no output)\n\n", *ack) |
                               for (_ <- ack) {
-                                ret!()
+                                ret!() | testComplete!("3")
                               }
                             }
                           }
@@ -184,7 +215,7 @@ new stdoutAck(`rho:io:stdoutAck`),
                             for (_ <- ack) {
                               stdoutAck!("\n  Expected: quadruple 3 = double(double 3) = double 6 = 12\n\n", *ack) |
                               for (_ <- ack) {
-                                ret!()
+                                ret!() | testComplete!("4")
                               }
                             }
                           }
@@ -231,7 +262,10 @@ new stdoutAck(`rho:io:stdoutAck`),
                           for (_ <- ack) {
                             stdoutAck!(resB, *ack) |
                             for (_ <- ack) {
-                              stdoutAck!("\n  Expected: Both produce same result [30]\n\n", *ack)
+                              stdoutAck!("\n  Expected: Both produce same result [30]\n\n", *ack) |
+                              for (_ <- ack) {
+                                ret!() | testComplete!("5")
+                              }
                             }
                           }
                         }
@@ -277,7 +311,7 @@ new stdoutAck(`rho:io:stdoutAck`),
                             for (_ <- ack) {
                               stdoutAck!("\n  Expected: 3 outputs [2, 4, 6]\n\n", *ack) |
                               for (_ <- ack) {
-                                ret!()
+                                ret!() | testComplete!("6")
                               }
                             }
                           }
@@ -324,7 +358,7 @@ new stdoutAck(`rho:io:stdoutAck`),
                             for (_ <- ack) {
                               stdoutAck!("\n  Expected: 3 outputs [3, error, 10]\n\n", *ack) |
                               for (_ <- ack) {
-                                ret!()
+                                ret!() | testComplete!("7")
                               }
                             }
                           }
@@ -357,7 +391,7 @@ new stdoutAck(`rho:io:stdoutAck`),
             for (_ <- ack) {
               stdoutAck!("\n  Expected: 3 outputs from single run [3, 12, 5]\n\n", *ack) |
               for (_ <- ack) {
-                ret!()
+                ret!() | testComplete!("8")
               }
             }
           }
@@ -408,7 +442,7 @@ new stdoutAck(`rho:io:stdoutAck`),
                                     for (_ <- ack) {
                                       stdoutAck!("\n  Expected: B has [15] (only triple, rule def produces no output)\n\n", *ack) |
                                       for (_ <- ack) {
-                                        ret!()
+                                        ret!() | testComplete!("9")
                                       }
                                     }
                                   }
@@ -465,7 +499,7 @@ new stdoutAck(`rho:io:stdoutAck`),
                                     for (_ <- ack) {
                                       stdoutAck!("\n  Expected: 5 outputs [1, 2, 3, 4, 5]\n\n", *ack) |
                                       for (_ <- ack) {
-                                        ret!()
+                                        ret!() | testComplete!("10")
                                       }
                                     }
                                   }
@@ -486,40 +520,46 @@ new stdoutAck(`rho:io:stdoutAck`),
     }
   } |
 
-  // Final Summary
-  for (_ <- ack) {
-  stdoutAck!("\n=== Composability Test Suite Complete ===\n", *ack) |
-  for (_ <- ack) {
-  stdoutAck!("Tested Properties:\n", *ack) |
-  for (_ <- ack) {
-  for (<- runTest!?("1")) {
-  stdoutAck!("  ✓ Identity (empty state)\n", *ack) |
-  for (_ <- ack) {
-  for (<- runTest!?("2")) {
-  stdoutAck!("  ✓ Sequential composition\n", *ack) |
-  for (_ <- ack) {
-  for (<- runTest!?("3")) {
-  stdoutAck!("  ✓ Rule persistence\n", *ack) |
-  for (_ <- ack) {
-  for (<- runTest!?("4")) {
-  stdoutAck!("  ✓ Rule chaining\n", *ack) |
-  for (_ <- ack) {
-  for (<- runTest!?("5")) {
-  stdoutAck!("  ✓ State independence\n", *ack) |
-  for (_ <- ack) {
-  for (<- runTest!?("6")) {
-  stdoutAck!("  ✓ Monotonic accumulation\n", *ack) |
-  for (_ <- ack) {
-  for (<- runTest!?("7")) {
-  stdoutAck!("  ✓ Error resilience\n", *ack) |
-  for (_ <- ack) {
-  for (<- runTest!?("8")) {
-  stdoutAck!("  ✓ Multiple expressions\n", *ack) |
-  for (_ <- ack) {
-  for (<- runTest!?("9")) {
-  stdoutAck!("  ✓ No cross-contamination\n", *ack) |
-  for (_ <- ack) {
-  for (<- runTest!?("q0")) {
-  stdoutAck!("  ✓ Long chain stability\n", *ack)
-  }}}}}}}}}}}}}}}}}}}}}}
+  // Start the test completion counter
+  new summaryCh in {
+    waitForTests!(0, *summaryCh) |
+
+    // Final Summary - Wait for all tests to complete before printing
+    for (_ <- summaryCh) {
+      stdoutAck!("\n=== Composability Test Suite Complete ===\n", *ack) |
+      for (_ <- ack) {
+        stdoutAck!("Tested Properties:\n", *ack) |
+        for (_ <- ack) {
+          stdoutAck!("  ✓ Identity (empty state)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  ✓ Sequential composition\n", *ack) |
+            for (_ <- ack) {
+              stdoutAck!("  ✓ Rule persistence\n", *ack) |
+              for (_ <- ack) {
+                stdoutAck!("  ✓ Rule chaining\n", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("  ✓ State independence\n", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("  ✓ Monotonic accumulation\n", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!("  ✓ Error resilience\n", *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!("  ✓ Multiple expressions\n", *ack) |
+                        for (_ <- ack) {
+                          stdoutAck!("  ✓ No cross-contamination\n", *ack) |
+                          for (_ <- ack) {
+                            stdoutAck!("  ✓ Long chain stability\n", *ack)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }

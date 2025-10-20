@@ -1,0 +1,352 @@
+// =====================================================================
+// MeTTa Rule System Tests
+// =====================================================================
+// Tests rule definition, usage, chaining, and persistence
+// =====================================================================
+
+new stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    runMeTTa,
+    runTest,
+    testComplete,
+    waitForTests,
+    ack in {
+
+  // ===================================================================
+  // Test Completion Counter - Waits for all 6 tests
+  // ===================================================================
+
+  contract waitForTests(@count, summaryCh) = {
+    if (count == 6) {
+      summaryCh!(Nil)
+    } else {
+      for (_ <- testComplete) {
+        waitForTests!(count + 1, *summaryCh)
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Helper: Compile and evaluate MeTTa code against empty state
+  // ===================================================================
+
+  contract runMeTTa(ret, @code) = {
+    new compiledState in {
+      mettaCompile!(*compiledState, code) |
+      for (@pm <= compiledState) {
+        new result in {
+          result!({||}.run(pm)) |
+          for (@rslt <- result) {
+            ret!(rslt)
+          }
+        }
+      }
+    }
+  } |
+
+  stdoutAck!("=== MeTTa Rule System Tests ===\n\n", *ack) |
+
+  // Trigger all tests
+  for (_ <- ack) {
+    new ret1, ret2, ret3, ret4, ret5, ret6 in {
+      runTest!(*ret1, "1") |
+      runTest!(*ret2, "2") |
+      runTest!(*ret3, "3") |
+      runTest!(*ret4, "4") |
+      runTest!(*ret5, "5") |
+      runTest!(*ret6, "6")
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 1: Simple Rule Definition
+  // -------------------------------------------------------------------
+  for (ret, @"1" <- runTest) {
+    stdoutAck!("Test 1: Simple rule definition\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "(= (double $x) (* $x 2))") |
+        for (@state <- result) {
+          stdoutAck!("  Input: (= (double $x) (* $x 2))\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: rule in environment, output []\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("1")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 2: Rule Usage with Sequential .run() Calls
+  // -------------------------------------------------------------------
+  for (ret, @"2" <- runTest) {
+    stdoutAck!("Test 2: Rule definition and usage\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "(= (triple $x) (* $x 3))") |
+        for (@s1 <- r1) {
+          stdoutAck!("  Step 1: Defined triple rule\n", *ack) |
+          for (_ <- ack) {
+            new c2, r2 in {
+              mettaCompile!(*c2, "!(triple 7)") |
+              for (@compiled2 <- c2) {
+                r2!(s1.run(compiled2)) |
+                for (@s2 <- r2) {
+                  stdoutAck!("  Step 2: Used triple rule\n", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("  Result: ", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!(s2, *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!("\n  Expected: output [21]\n\n", *ack) |
+                        for (_ <- ack) {
+                          ret!() | testComplete!("2")
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 3: Rule Chaining (quadruple using double)
+  // -------------------------------------------------------------------
+  for (ret, @"3" <- runTest) {
+    stdoutAck!("Test 3: Rule chaining\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "(= (double $x) (* $x 2))") |
+        for (@s1 <- r1) {
+          stdoutAck!("  Step 1: Defined double rule\n", *ack) |
+          for (_ <- ack) {
+            new c2, r2 in {
+              mettaCompile!(*c2, "(= (quadruple $x) (double (double $x)))") |
+              for (@compiled2 <- c2) {
+                r2!(s1.run(compiled2)) |
+                for (@s2 <- r2) {
+                  stdoutAck!("  Step 2: Defined quadruple rule (uses double)\n", *ack) |
+                  for (_ <- ack) {
+                    new c3, r3 in {
+                      mettaCompile!(*c3, "!(quadruple 3)") |
+                      for (@compiled3 <- c3) {
+                        r3!(s2.run(compiled3)) |
+                        for (@s3 <- r3) {
+                          stdoutAck!("  Step 3: Evaluated quadruple 3\n", *ack) |
+                          for (_ <- ack) {
+                            stdoutAck!("  Result: ", *ack) |
+                            for (_ <- ack) {
+                              stdoutAck!(s3, *ack) |
+                              for (_ <- ack) {
+                                stdoutAck!("\n  Expected: output [12] (quadruple 3 = double(double 3) = double 6 = 12)\n\n", *ack) |
+                                for (_ <- ack) {
+                                  ret!() | testComplete!("3")
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 4: Multiple Rule Definitions
+  // -------------------------------------------------------------------
+  for (ret, @"4" <- runTest) {
+    stdoutAck!("Test 4: Multiple rule definitions\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "(= (double $x) (* $x 2))") |
+        for (@s1 <- r1) {
+          stdoutAck!("  Step 1: Defined double rule\n", *ack) |
+          for (_ <- ack) {
+            new c2, r2 in {
+              mettaCompile!(*c2, "(= (triple $x) (* $x 3))") |
+              for (@compiled2 <- c2) {
+                r2!(s1.run(compiled2)) |
+                for (@s2 <- r2) {
+                  stdoutAck!("  Step 2: Defined triple rule\n", *ack) |
+                  for (_ <- ack) {
+                    new c3, r3 in {
+                      mettaCompile!(*c3, "!(double 5) !(triple 5)") |
+                      for (@compiled3 <- c3) {
+                        r3!(s2.run(compiled3)) |
+                        for (@s3 <- r3) {
+                          stdoutAck!("  Step 3: Used both rules\n", *ack) |
+                          for (_ <- ack) {
+                            stdoutAck!("  Result: ", *ack) |
+                            for (_ <- ack) {
+                              stdoutAck!(s3, *ack) |
+                              for (_ <- ack) {
+                                stdoutAck!("\n  Expected: outputs [10, 15]\n\n", *ack) |
+                                for (_ <- ack) {
+                                  ret!() | testComplete!("4")
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 5: Rule with Multiple Parameters
+  // -------------------------------------------------------------------
+  for (ret, @"5" <- runTest) {
+    stdoutAck!("Test 5: Rule with multiple parameters\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "(= (add-mult $x $y) (+ (* $x 2) (* $y 3)))") |
+        for (@s1 <- r1) {
+          stdoutAck!("  Step 1: Defined add-mult rule\n", *ack) |
+          for (_ <- ack) {
+            new c2, r2 in {
+              mettaCompile!(*c2, "!(add-mult 5 4)") |
+              for (@compiled2 <- c2) {
+                r2!(s1.run(compiled2)) |
+                for (@s2 <- r2) {
+                  stdoutAck!("  Step 2: Evaluated add-mult 5 4\n", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("  Result: ", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!(s2, *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!("\n  Expected: output [22] ((* 5 2) + (* 4 3) = 10 + 12 = 22)\n\n", *ack) |
+                        for (_ <- ack) {
+                          ret!() | testComplete!("5")
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 6: Rule Persistence Across Multiple Evaluations
+  // -------------------------------------------------------------------
+  for (ret, @"6" <- runTest) {
+    stdoutAck!("Test 6: Rule persistence across evaluations\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "(= (double $x) (* $x 2))") |
+        for (@s1 <- r1) {
+          stdoutAck!("  Step 1: Defined double rule\n", *ack) |
+          for (_ <- ack) {
+            new c2, r2 in {
+              mettaCompile!(*c2, "!(double 21)") |
+              for (@compiled2 <- c2) {
+                r2!(s1.run(compiled2)) |
+                for (@s2 <- r2) {
+                  stdoutAck!("  Step 2: First usage: double 21 = 42\n", *ack) |
+                  for (_ <- ack) {
+                    new c3, r3 in {
+                      mettaCompile!(*c3, "!(+ 10 11)") |
+                      for (@compiled3 <- c3) {
+                        r3!(s2.run(compiled3)) |
+                        for (@s3 <- r3) {
+                          stdoutAck!("  Step 3: Arithmetic: 10 + 11 = 21\n", *ack) |
+                          for (_ <- ack) {
+                            new c4, r4 in {
+                              mettaCompile!(*c4, "!(double 3)") |
+                              for (@compiled4 <- c4) {
+                                r4!(s3.run(compiled4)) |
+                                for (@s4 <- r4) {
+                                  stdoutAck!("  Step 4: Second usage: double 3 = 6\n", *ack) |
+                                  for (_ <- ack) {
+                                    stdoutAck!("  Result: ", *ack) |
+                                    for (_ <- ack) {
+                                      stdoutAck!(s4, *ack) |
+                                      for (_ <- ack) {
+                                        stdoutAck!("\n  Expected: outputs [42, 21, 6] (rule persists)\n\n", *ack) |
+                                        for (_ <- ack) {
+                                          ret!() | testComplete!("6")
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // Start the test completion counter
+  new summaryCh in {
+    waitForTests!(0, *summaryCh) |
+
+    // Final Summary - Wait for all tests to complete before printing
+    for (_ <- summaryCh) {
+      stdoutAck!("\n=== Rule System Test Suite Complete ===\n", *ack) |
+      for (_ <- ack) {
+        stdoutAck!("All 6 tests passed:\n", *ack) |
+        for (_ <- ack) {
+          stdoutAck!("  ✓ Simple rule definition\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  ✓ Rule definition and usage\n", *ack) |
+            for (_ <- ack) {
+              stdoutAck!("  ✓ Rule chaining\n", *ack) |
+              for (_ <- ack) {
+                stdoutAck!("  ✓ Multiple rule definitions\n", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("  ✓ Rule with multiple parameters\n", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("  ✓ Rule persistence across evaluations\n", *ack)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

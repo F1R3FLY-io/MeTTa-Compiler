@@ -40,6 +40,7 @@ interning = []
 [dev-dependencies]
 # For integration tests
 regex = "1.10"
+nom = "7.1"
 
 [profile.release]
 opt-level = 3

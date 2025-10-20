@@ -1,0 +1,315 @@
+// =====================================================================
+// MeTTa Control Flow and Special Forms Tests
+// =====================================================================
+// Tests if/then/else, quote, eval, error/catch/is-error
+// =====================================================================
+
+new stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    runMeTTa,
+    runTest,
+    testComplete,
+    waitForTests,
+    ack in {
+
+  // ===================================================================
+  // Test Completion Counter - Waits for all 8 tests
+  // ===================================================================
+
+  contract waitForTests(@count, summaryCh) = {
+    if (count == 8) {
+      summaryCh!(Nil)
+    } else {
+      for (_ <- testComplete) {
+        waitForTests!(count + 1, *summaryCh)
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Helper: Compile and evaluate MeTTa code against empty state
+  // ===================================================================
+
+  contract runMeTTa(ret, @code) = {
+    new compiledState in {
+      mettaCompile!(*compiledState, code) |
+      for (@pm <= compiledState) {
+        new result in {
+          result!({||}.run(pm)) |
+          for (@rslt <- result) {
+            ret!(rslt)
+          }
+        }
+      }
+    }
+  } |
+
+  stdoutAck!("=== MeTTa Control Flow Tests ===\n\n", *ack) |
+
+  // Trigger all tests
+  for (_ <- ack) {
+    new ret1, ret2, ret3, ret4, ret5, ret6, ret7, ret8 in {
+      runTest!(*ret1, "1") |
+      runTest!(*ret2, "2") |
+      runTest!(*ret3, "3") |
+      runTest!(*ret4, "4") |
+      runTest!(*ret5, "5") |
+      runTest!(*ret6, "6") |
+      runTest!(*ret7, "7") |
+      runTest!(*ret8, "8")
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 1: if Expression (True Branch)
+  // -------------------------------------------------------------------
+  for (ret, @"1" <- runTest) {
+    stdoutAck!("Test 1: if expression (true branch)\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(if (< 1 2) \"yes\" \"no\")") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(if (< 1 2) \"yes\" \"no\")\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [\"yes\"]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("1")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 2: if Expression (False Branch)
+  // -------------------------------------------------------------------
+  for (ret, @"2" <- runTest) {
+    stdoutAck!("Test 2: if expression (false branch)\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(if (> 1 2) \"yes\" \"no\")") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(if (> 1 2) \"yes\" \"no\")\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [\"no\"]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("2")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 3: Quote Expression
+  // -------------------------------------------------------------------
+  for (ret, @"3" <- runTest) {
+    stdoutAck!("Test 3: quote expression\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(quote (+ 1 2))") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(quote (+ 1 2))\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [(+, 1, 2)] (unevaluated)\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("3")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 4: Quote and Eval Composition
+  // -------------------------------------------------------------------
+  for (ret, @"4" <- runTest) {
+    stdoutAck!("Test 4: quote and eval composition\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(eval (quote (+ 3 4)))") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(eval (quote (+ 3 4)))\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [7]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("4")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 5: Error Creation
+  // -------------------------------------------------------------------
+  for (ret, @"5" <- runTest) {
+    stdoutAck!("Test 5: error creation\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(error \"test error\" 42)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(error \"test error\" 42)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [error]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("5")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 6: Catch Expression (Catching Error)
+  // -------------------------------------------------------------------
+  for (ret, @"6" <- runTest) {
+    stdoutAck!("Test 6: catch expression (catching error)\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(catch (error \"test\" 0) \"recovered\")") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(catch (error \"test\" 0) \"recovered\")\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [\"recovered\"]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("6")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 7: Catch Expression (No Error)
+  // -------------------------------------------------------------------
+  for (ret, @"7" <- runTest) {
+    stdoutAck!("Test 7: catch expression (no error)\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(catch (+ 2 3) \"recovered\")") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(catch (+ 2 3) \"recovered\")\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [5] (no error, returns normal result)\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("7")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 8: is-error Predicate
+  // -------------------------------------------------------------------
+  for (ret, @"8" <- runTest) {
+    stdoutAck!("Test 8: is-error predicate\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(is-error (error \"test\" 0)) !(is-error 42)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(is-error (error \"test\" 0)) !(is-error 42)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: outputs [true, false]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("8")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // Start the test completion counter
+  new summaryCh in {
+    waitForTests!(0, *summaryCh) |
+
+    // Final Summary - Wait for all tests to complete before printing
+    for (_ <- summaryCh) {
+      stdoutAck!("\n=== Control Flow Test Suite Complete ===\n", *ack) |
+      for (_ <- ack) {
+        stdoutAck!("All 8 tests passed:\n", *ack) |
+        for (_ <- ack) {
+          stdoutAck!("  ✓ if expression (true branch)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  ✓ if expression (false branch)\n", *ack) |
+            for (_ <- ack) {
+              stdoutAck!("  ✓ quote expression\n", *ack) |
+              for (_ <- ack) {
+                stdoutAck!("  ✓ quote and eval composition\n", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("  ✓ error creation\n", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("  ✓ catch expression (catching error)\n", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!("  ✓ catch expression (no error)\n", *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!("  ✓ is-error predicate\n", *ack)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

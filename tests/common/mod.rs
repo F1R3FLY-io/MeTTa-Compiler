@@ -1,4 +1,28 @@
 /// Test utilities for Rholang integration tests
+///
+/// This module provides shared utilities for integration tests, including:
+/// - Finding the rholang-cli binary
+/// - Parsing PathMap output structures
+/// - Validating test expectations
+/// - Test specification data structures
+
+// Phase 2: Output validation modules
+pub mod output_parser;
+pub mod test_specs;
+pub mod validators;
+
+// Phase 3: Collection types and query system
+pub mod collections;
+pub mod query;
+
+// Re-export commonly used types for convenience
+pub use output_parser::{parse_pathmap, extract_all_outputs, extract_all_outputs_as_strings, PathMapOutput, MettaValueTestExt};
+pub use mettatron::backend::types::MettaValue;
+pub use test_specs::{RholangTestSpec, Expectation, OutputPattern, ValidationResult, TestReport};
+pub use validators::validate;
+pub use collections::CollectionValue;
+pub use query::{PathMapQuery, OutputMatcher, QueryResult, ToMettaValue};
+
 use std::env;
 use std::path::PathBuf;
 

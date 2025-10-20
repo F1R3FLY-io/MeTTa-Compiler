@@ -1,0 +1,151 @@
+name: Nightly Tests
+
+on:
+  schedule:
+    # Run at 2 AM UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+jobs:
+  comprehensive-tests:
+    name: Comprehensive Nightly Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 1
+
+    - name: Checkout dependencies
+      run: |
+        cd ../
+        git clone --depth=1 https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+        git clone --depth=1 https://github.com/F1R3FLY-io/MORK.git MORK
+        git clone --depth=1 https://github.com/F1R3FLY-io/PathMap.git PathMap
+
+    - name: Install Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+
+    - name: Build all components
+      run: |
+        echo "::group::Building MeTTaTron"
+        cargo build --release --verbose
+        echo "::endgroup::"
+
+        echo "::group::Building rholang-cli"
+        cd ../f1r3node/rholang
+        cargo build --release --bin rholang-cli --verbose
+        echo "::endgroup::"
+
+    - name: Run all tests with verbose output
+      run: |
+        echo "::group::Unit tests"
+        cargo test --lib --verbose -- --nocapture
+        echo "::endgroup::"
+
+        echo "::group::Integration tests"
+        cargo test --test rholang_integration --verbose -- --nocapture
+        echo "::endgroup::"
+
+    - name: Run tests by category
+      run: |
+        echo "::group::Basic tests"
+        cargo test --test rholang_integration test_basic_evaluation -- --nocapture
+        echo "::endgroup::"
+
+        echo "::group::Control flow tests"
+        cargo test --test rholang_integration test_control_flow -- --nocapture
+        echo "::endgroup::"
+
+        echo "::group::Type system tests"
+        cargo test --test rholang_integration test_types -- --nocapture
+        echo "::endgroup::"
+
+        echo "::group::Composability tests"
+        cargo test --test rholang_integration test_composability -- --nocapture
+        echo "::endgroup::"
+
+    - name: Run performance benchmarks
+      run: |
+        echo "::group::Performance tests"
+        # Run with timing info
+        time cargo test --release --test rholang_integration -- --nocapture
+        echo "::endgroup::"
+
+    - name: Upload comprehensive logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: nightly-test-logs
+        path: |
+          target/
+          integration/
+          tests/
+        retention-days: 14
+
+    - name: Create issue on failure
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const title = '🌙 Nightly tests failed on ' + new Date().toISOString().split('T')[0];
+          const body = `The nightly test suite has failed.
+
+          **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Please investigate and fix the failing tests.`;
+
+          // Check if issue already exists
+          const issues = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            labels: 'nightly-failure'
+          });
+
+          if (issues.data.length === 0) {
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['nightly-failure', 'automated']
+            });
+          }
+
+  test-coverage:
+    name: Test Coverage Report
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Install Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+
+    - name: Install tarpaulin
+      run: cargo install cargo-tarpaulin
+
+    - name: Generate coverage report
+      run: |
+        cargo tarpaulin --verbose --workspace --timeout 300 --out Xml
+
+    - name: Upload coverage to codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: ./cobertura.xml
+        fail_ci_if_error: false

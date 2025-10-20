@@ -101,8 +101,7 @@ impl TestManifest {
         let content = std::fs::read_to_string(path.as_ref())
             .map_err(|e| format!("Failed to read manifest file: {}", e))?;
 
-        toml::from_str(&content)
-            .map_err(|e| format!("Failed to parse TOML: {}", e))
+        toml::from_str(&content).map_err(|e| format!("Failed to parse TOML: {}", e))
     }
 
     /// Load test manifest from default location (tests/integration_tests.toml)
@@ -150,7 +149,11 @@ impl TestManifest {
 
         // Add tests by name
         for test_name in &suite.tests {
-            if let Some(test) = self.tests.iter().find(|t| &t.name == test_name && t.enabled) {
+            if let Some(test) = self
+                .tests
+                .iter()
+                .find(|t| &t.name == test_name && t.enabled)
+            {
                 tests.push(test);
             }
         }
@@ -174,7 +177,9 @@ impl TestManifest {
 
     /// Get all categories sorted by priority
     pub fn categories_by_priority(&self) -> Vec<(String, &CategorySpec)> {
-        let mut categories: Vec<_> = self.categories.iter()
+        let mut categories: Vec<_> = self
+            .categories
+            .iter()
             .map(|(name, spec)| (name.clone(), spec))
             .collect();
         categories.sort_by_key(|(_, spec)| spec.priority);
@@ -289,7 +294,10 @@ impl TestFilter {
         // Apply exclusions
         if !self.exclude.is_empty() {
             tests.retain(|test| {
-                !self.exclude.iter().any(|pattern| test.name.contains(pattern))
+                !self
+                    .exclude
+                    .iter()
+                    .any(|pattern| test.name.contains(pattern))
             });
         }
 
@@ -304,7 +312,11 @@ mod tests {
     #[test]
     fn test_load_manifest() {
         let manifest = TestManifest::load_default();
-        assert!(manifest.is_ok(), "Failed to load manifest: {:?}", manifest.err());
+        assert!(
+            manifest.is_ok(),
+            "Failed to load manifest: {:?}",
+            manifest.err()
+        );
 
         let manifest = manifest.unwrap();
         assert!(!manifest.tests.is_empty(), "No tests found in manifest");
@@ -329,8 +341,7 @@ mod tests {
     fn test_test_filter() {
         let manifest = TestManifest::load_default().unwrap();
 
-        let filter = TestFilter::new()
-            .with_category("basic".to_string());
+        let filter = TestFilter::new().with_category("basic".to_string());
 
         let tests = filter.apply(&manifest);
         assert!(!tests.is_empty(), "Filter returned no tests");

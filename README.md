@@ -1,5 +1,9 @@
 # MeTTaTron
 
+[![Integration Tests](https://github.com/F1R3FLY-io/MeTTa-Compiler/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/F1R3FLY-io/MeTTa-Compiler/actions/workflows/integration-tests.yml)
+[![Nightly Tests](https://github.com/F1R3FLY-io/MeTTa-Compiler/actions/workflows/nightly-tests.yml/badge.svg)](https://github.com/F1R3FLY-io/MeTTa-Compiler/actions/workflows/nightly-tests.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 A MeTTa language evaluator with lazy evaluation, pattern matching, and special forms.
 
 ## Overview
@@ -25,8 +29,14 @@ MeTTaTron is a direct evaluator for the MeTTa language featuring lazy evaluation
 
 ## Prerequisites
 
-- Rust toolchain (1.70 or later)
+- Rust nightly toolchain (required by dependencies)
 - Cargo (comes with Rust)
+
+**Installing Rust Nightly:**
+```bash
+rustup install nightly
+rustup default nightly
+```
 
 ## Installation
 
@@ -37,6 +47,8 @@ git clone https://github.com/F1R3FLY-io/MeTTa-Compiler.git
 cd MeTTa-Compiler
 cargo build --release
 ```
+
+**Note:** The project requires Rust nightly due to dependencies (MORK, PathMap, gxhash) that use unstable features.
 
 The compiled binary will be available at `./target/release/mettatron`
 
@@ -711,8 +723,10 @@ Contributions are welcome! Please ensure:
 
 1. Code compiles without warnings: `cargo build --release`
 2. All tests pass: `cargo test`
-3. Code is formatted: `cargo fmt`
-4. Code is linted: `cargo clippy`
+3. Code is formatted: `cargo fmt -- --check` (do NOT use `--all`)
+4. Code is linted: `cargo clippy --all-targets --all-features -- -D warnings`
+
+**Note:** Use `cargo fmt` (without `--all`) to avoid formatting external path dependencies (MORK, PathMap, f1r3node).
 
 ## Support
 

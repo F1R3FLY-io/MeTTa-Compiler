@@ -1,13 +1,17 @@
 /// Output validation logic for integration tests
 ///
 /// Validates test outputs against expectations using various validation strategies.
-
-use super::output_parser::{parse_pathmap, PathMapOutput, MettaValueTestExt};
+use super::output_parser::{parse_pathmap, MettaValueTestExt, PathMapOutput};
 use super::test_specs::{Expectation, OutputPattern, ValidationResult};
 use regex::Regex;
 
 /// Validate test output against an expectation
-pub fn validate(stdout: &str, stderr: &str, exit_code: i32, expectation: &Expectation) -> ValidationResult {
+pub fn validate(
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+    expectation: &Expectation,
+) -> ValidationResult {
     match &expectation.pattern {
         OutputPattern::Contains { text } => validate_contains(stdout, text),
         OutputPattern::Regex { pattern } => validate_regex(stdout, pattern),
@@ -79,7 +83,10 @@ fn validate_outputs(stdout: &str, expected_values: &[String]) -> ValidationResul
     // Check if expected values are present (using matches_str for flexible comparison)
     for expected in expected_values {
         if !actual_outputs.iter().any(|v| v.matches_str(expected)) {
-            let actual_strs: Vec<String> = actual_outputs.iter().map(|v| v.to_display_string()).collect();
+            let actual_strs: Vec<String> = actual_outputs
+                .iter()
+                .map(|v| v.to_display_string())
+                .collect();
             return ValidationResult::fail(format!(
                 "Expected output '{}' not found. Actual outputs: {:?}",
                 expected, actual_strs
@@ -197,7 +204,10 @@ pub fn validate_environment_persistence(pathmaps: &[PathMapOutput]) -> Validatio
 }
 
 /// Validate source field handling
-pub fn validate_source_handling(pathmaps: &[PathMapOutput], expected_empty: bool) -> ValidationResult {
+pub fn validate_source_handling(
+    pathmaps: &[PathMapOutput],
+    expected_empty: bool,
+) -> ValidationResult {
     if pathmaps.is_empty() {
         return ValidationResult::fail("No PathMap structures found".to_string());
     }

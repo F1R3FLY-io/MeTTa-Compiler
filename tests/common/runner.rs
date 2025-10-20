@@ -1,12 +1,12 @@
 // Advanced test runner with async parallel execution and filtering
 
-use super::config::{TestConfig, TestManifest, TestFilter, TestSpec, VerbosityLevel};
+use super::config::{TestConfig, TestFilter, TestManifest, TestSpec, VerbosityLevel};
 use super::test_specs::{TestReport, ValidationResult};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::sync::Mutex;
-use std::sync::Arc;
 
 /// Test execution result
 #[derive(Debug, Clone)]
@@ -98,10 +98,7 @@ impl TestRunner {
 
         // Execute with timeout
         let output_result = if test.timeout > 0 {
-            tokio::time::timeout(
-                Duration::from_secs(test.timeout),
-                cmd.output()
-            ).await
+            tokio::time::timeout(Duration::from_secs(test.timeout), cmd.output()).await
         } else {
             Ok(cmd.output().await)
         };
@@ -164,7 +161,11 @@ impl TestRunner {
     }
 
     /// Run tests with filter, optionally parallel
-    pub async fn run_filtered_with_config(&self, filter: &TestFilter, parallel: bool) -> Vec<TestResult> {
+    pub async fn run_filtered_with_config(
+        &self,
+        filter: &TestFilter,
+        parallel: bool,
+    ) -> Vec<TestResult> {
         let tests = filter.apply(&self.manifest);
 
         if tests.is_empty() {
@@ -175,9 +176,11 @@ impl TestRunner {
         }
 
         if self.verbosity != VerbosityLevel::Quiet {
-            println!("Running {} test(s) with {} worker(s)...\n",
-                     tests.len(),
-                     if parallel { self.workers } else { 1 });
+            println!(
+                "Running {} test(s) with {} worker(s)...\n",
+                tests.len(),
+                if parallel { self.workers } else { 1 }
+            );
         }
 
         let progress = Arc::new(Mutex::new(0usize));
@@ -194,7 +197,14 @@ impl TestRunner {
                 let progress = Arc::clone(&progress);
 
                 let handle = tokio::spawn(async move {
-                    Self::run_test_standalone(&test_owned, &rholang_cli, verbosity, &progress, total).await
+                    Self::run_test_standalone(
+                        &test_owned,
+                        &rholang_cli,
+                        verbosity,
+                        &progress,
+                        total,
+                    )
+                    .await
                 });
 
                 handles.push(handle);
@@ -258,11 +268,13 @@ impl TestRunner {
             }
             VerbosityLevel::Verbose => {
                 let status = if result.success { "ok" } else { "FAILED" };
-                println!("  {} ({}ms) [{}/{}]",
-                         status,
-                         result.duration.as_millis(),
-                         current,
-                         total);
+                println!(
+                    "  {} ({}ms) [{}/{}]",
+                    status,
+                    result.duration.as_millis(),
+                    current,
+                    total
+                );
             }
         }
 
@@ -290,10 +302,7 @@ impl TestRunner {
 
         // Execute with timeout
         let output_result = if test.timeout > 0 {
-            tokio::time::timeout(
-                Duration::from_secs(test.timeout),
-                cmd.output()
-            ).await
+            tokio::time::timeout(Duration::from_secs(test.timeout), cmd.output()).await
         } else {
             Ok(cmd.output().await)
         };
@@ -319,32 +328,28 @@ impl TestRunner {
                     timed_out: false,
                 }
             }
-            Ok(Err(e)) => {
-                TestResult {
-                    name: test.name.clone(),
-                    file: test.file.clone(),
-                    success: false,
-                    stdout: String::new(),
-                    stderr: format!("Failed to execute test: {}", e),
-                    exit_code: -1,
-                    duration,
-                    report: None,
-                    timed_out: false,
-                }
-            }
-            Err(_) => {
-                TestResult {
-                    name: test.name.clone(),
-                    file: test.file.clone(),
-                    success: false,
-                    stdout: String::new(),
-                    stderr: format!("Test timed out after {}s", test.timeout),
-                    exit_code: -1,
-                    duration,
-                    report: None,
-                    timed_out: true,
-                }
-            }
+            Ok(Err(e)) => TestResult {
+                name: test.name.clone(),
+                file: test.file.clone(),
+                success: false,
+                stdout: String::new(),
+                stderr: format!("Failed to execute test: {}", e),
+                exit_code: -1,
+                duration,
+                report: None,
+                timed_out: false,
+            },
+            Err(_) => TestResult {
+                name: test.name.clone(),
+                file: test.file.clone(),
+                success: false,
+                stdout: String::new(),
+                stderr: format!("Test timed out after {}s", test.timeout),
+                exit_code: -1,
+                duration,
+                report: None,
+                timed_out: true,
+            },
         };
 
         // Update progress
@@ -367,11 +372,13 @@ impl TestRunner {
             }
             VerbosityLevel::Verbose => {
                 let status = if result.success { "ok" } else { "FAILED" };
-                println!("  {} ({}ms) [{}/{}]",
-                         status,
-                         result.duration.as_millis(),
-                         current,
-                         total);
+                println!(
+                    "  {} ({}ms) [{}/{}]",
+                    status,
+                    result.duration.as_millis(),
+                    current,
+                    total
+                );
             }
         }
 
@@ -415,9 +422,7 @@ impl TestRunner {
              Total:    {}\n\
              Passed:   {} ✓\n\
              Failed:   {} ✗\n",
-            total,
-            passed,
-            failed
+            total, passed, failed
         );
 
         if timed_out > 0 {
@@ -488,7 +493,11 @@ mod tests {
     #[test]
     fn test_create_runner() {
         let result = TestRunner::from_default();
-        assert!(result.is_ok(), "Failed to create test runner: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to create test runner: {:?}",
+            result.err()
+        );
 
         let runner = result.unwrap();
         assert!(!runner.manifest().tests.is_empty());
@@ -499,8 +508,7 @@ mod tests {
     fn test_filter_tests() {
         let runner = TestRunner::from_default().unwrap();
 
-        let filter = TestFilter::new()
-            .with_category("basic".to_string());
+        let filter = TestFilter::new().with_category("basic".to_string());
 
         let tests = filter.apply(runner.manifest());
         assert!(!tests.is_empty(), "No basic tests found");

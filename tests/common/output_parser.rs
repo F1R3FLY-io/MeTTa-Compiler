@@ -2,15 +2,14 @@
 ///
 /// Parses PathMap structures from Rholang output and extracts
 /// the `source`, `environment`, and `output` fields.
-
 use mettatron::backend::types::MettaValue;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while1, is_not, escaped},
-    character::complete::{char, multispace0, digit1, one_of},
-    combinator::{map, opt, recognize, value, map_res},
+    bytes::complete::{escaped, is_not, tag, take_while1},
+    character::complete::{char, digit1, multispace0, one_of},
+    combinator::{map, map_res, opt, recognize, value},
     multi::separated_list0,
-    sequence::{delimited, preceded, tuple, pair},
+    sequence::{delimited, pair},
     IResult,
 };
 
@@ -112,10 +111,9 @@ where
 
 /// Parse an integer literal directly into MettaValue::Long
 fn parse_integer(input: &str) -> IResult<&str, MettaValue> {
-    map_res(
-        recognize(pair(opt(char('-')), digit1)),
-        |s: &str| s.parse::<i64>().map(MettaValue::Long)
-    )(input)
+    map_res(recognize(pair(opt(char('-')), digit1)), |s: &str| {
+        s.parse::<i64>().map(MettaValue::Long)
+    })(input)
 }
 
 /// Parse a boolean literal directly into MettaValue::Bool
@@ -132,9 +130,9 @@ fn parse_string_literal(input: &str) -> IResult<&str, MettaValue> {
         delimited(
             char('"'),
             escaped(is_not("\\\""), '\\', one_of("\"\\")),
-            char('"')
+            char('"'),
         ),
-        |s: &str| MettaValue::String(s.to_string())
+        |s: &str| MettaValue::String(s.to_string()),
     )(input)
 }
 
@@ -149,8 +147,20 @@ fn parse_nil(input: &str) -> IResult<&str, MettaValue> {
 /// Parse a symbol/atom
 fn parse_symbol(input: &str) -> IResult<&str, MettaValue> {
     map(
-        take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '-' || c == '+' || c == '*' || c == '/' || c == '<' || c == '>' || c == '=' || c == '!' || c == '?'),
-        |s: &str| MettaValue::Atom(s.to_string())
+        take_while1(|c: char| {
+            c.is_alphanumeric()
+                || c == '_'
+                || c == '-'
+                || c == '+'
+                || c == '*'
+                || c == '/'
+                || c == '<'
+                || c == '>'
+                || c == '='
+                || c == '!'
+                || c == '?'
+        }),
+        |s: &str| MettaValue::Atom(s.to_string()),
     )(input)
 }
 
@@ -159,11 +169,8 @@ fn parse_tuple(input: &str) -> IResult<&str, MettaValue> {
     map(
         delimited(
             char('('),
-            separated_list0(
-                ws(char(',')),
-                ws(parse_metta_value_recursive)
-            ),
-            char(')')
+            separated_list0(ws(char(',')), ws(parse_metta_value_recursive)),
+            char(')'),
         ),
         |elements| {
             if elements.is_empty() {
@@ -171,18 +178,18 @@ fn parse_tuple(input: &str) -> IResult<&str, MettaValue> {
             } else {
                 MettaValue::SExpr(elements)
             }
-        }
+        },
     )(input)
 }
 
 /// Parse any MettaValue using direct nom combinators (recursive for nested structures)
 fn parse_metta_value_recursive(input: &str) -> IResult<&str, MettaValue> {
     alt((
-        parse_boolean,     // Must come before symbol to catch true/false
+        parse_boolean, // Must come before symbol to catch true/false
         parse_integer,
         parse_string_literal,
         parse_nil,
-        parse_tuple,       // Recursively parse tuples
+        parse_tuple, // Recursively parse tuples
         parse_symbol,
     ))(input)
 }
@@ -206,22 +213,25 @@ fn parse_sexpr_string(input: &str) -> IResult<&str, String> {
     }
 
     if depth == 0 {
-        let content = &input[..pos-1];
+        let content = &input[..pos - 1];
         let rest = &input[pos..];
         Ok((rest, format!("({})", content)))
     } else {
-        Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Eof)))
+        Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Eof,
+        )))
     }
 }
 
 /// Parse any MettaValue using direct nom combinators (top-level, non-recursive for simple values)
 fn parse_metta_value(input: &str) -> IResult<&str, MettaValue> {
     alt((
-        parse_boolean,     // Must come before symbol to catch true/false
+        parse_boolean, // Must come before symbol to catch true/false
         parse_integer,
         parse_string_literal,
         parse_nil,
-        parse_tuple,       // Now parses tuples recursively
+        parse_tuple, // Now parses tuples recursively
         map(parse_sexpr_string, |s| {
             // Fallback: store as atom if tuple parser fails
             MettaValue::Atom(s)
@@ -234,11 +244,8 @@ fn parse_metta_value(input: &str) -> IResult<&str, MettaValue> {
 fn array_of_values(input: &str) -> IResult<&str, Vec<MettaValue>> {
     delimited(
         char('['),
-        separated_list0(
-            ws(char(',')),
-            ws(parse_metta_value)
-        ),
-        char(']')
+        separated_list0(ws(char(',')), ws(parse_metta_value)),
+        char(']'),
     )(input)
 }
 
@@ -250,8 +257,8 @@ fn tuple_value(input: &str) -> IResult<&str, String> {
     let mut depth = 1;
     let mut pos = 0;
     let chars: Vec<char> = input.chars().collect();
-    let mut brace_depth = 0;  // Track {|...|} nesting
-    let mut in_string = false;  // Track if we're inside a quoted string
+    let mut brace_depth = 0; // Track {|...|} nesting
+    let mut in_string = false; // Track if we're inside a quoted string
     let mut prev_char = '\0';
 
     while pos < chars.len() && (depth > 0 || brace_depth > 0) {
@@ -296,11 +303,14 @@ fn tuple_value(input: &str) -> IResult<&str, String> {
     }
 
     if depth == 0 {
-        let content = &input[..pos-1];
+        let content = &input[..pos - 1];
         let rest = &input[pos..];
         Ok((rest, content.to_string()))
     } else {
-        Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Eof)))
+        Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Eof,
+        )))
     }
 }
 
@@ -318,7 +328,7 @@ fn quoted_string(input: &str) -> IResult<&str, &str> {
         // End quote found (not escaped)
         if current_char == '"' && prev_char != '\\' {
             let content = &input[..pos];
-            let rest = &input[pos+1..];
+            let rest = &input[pos + 1..];
             return Ok((rest, content));
         }
 
@@ -327,7 +337,10 @@ fn quoted_string(input: &str) -> IResult<&str, &str> {
     }
 
     // No closing quote found
-    Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+    Err(nom::Err::Error(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::Tag,
+    )))
 }
 
 /// Parse a simple token (like `...` or placeholders)
@@ -358,7 +371,9 @@ fn field_tuple<'a>(field_name: &'a str) -> impl FnMut(&'a str) -> IResult<&'a st
 }
 
 /// Parse source or output array field (returns Vec<MettaValue>)
-fn array_field<'a>(field_name: &'a str) -> impl FnMut(&'a str) -> IResult<&'a str, Vec<MettaValue>> {
+fn array_field<'a>(
+    field_name: &'a str,
+) -> impl FnMut(&'a str) -> IResult<&'a str, Vec<MettaValue>> {
     move |input: &'a str| {
         let (input, _) = ws(char('('))(input)?;
         let (input, _) = ws(char('"'))(input)?;
@@ -418,11 +433,14 @@ fn pathmap_structure(input: &str) -> IResult<&str, PathMapOutput> {
     let (input, _) = ws(char(')'))(remaining)?;
     let (input, _) = ws(tag("|}"))(input)?;
 
-    Ok((input, PathMapOutput {
-        source,
-        environment,
-        output,
-    }))
+    Ok((
+        input,
+        PathMapOutput {
+            source,
+            environment,
+            output,
+        },
+    ))
 }
 
 // ============================================================================
@@ -538,7 +556,8 @@ mod tests {
 
     #[test]
     fn test_parse_nested_expressions() {
-        let output = r#"{|(("source", [(+ 1 (* 2 3))]), ("environment", "..."), ("output", [(+ 1 6)]))|}  "#;
+        let output =
+            r#"{|(("source", [(+ 1 (* 2 3))]), ("environment", "..."), ("output", [(+ 1 6)]))|}  "#;
         let result = parse_pathmap(output);
 
         assert_eq!(result.len(), 1);

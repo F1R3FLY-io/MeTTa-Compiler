@@ -369,3 +369,160 @@ See `.github/workflows/integration-tests.yml` for CI configuration (coming in Ph
 - [Testing Guide](../integration/TESTING_GUIDE.md) - Testing approach
 - [Test Harness README](../integration/TEST_HARNESS_README.md) - Test harness documentation
 - [Rholang Integration](../integration/RHOLANG_INTEGRATION.md) - Rholang integration details
+
+## Phase 3: Test Configuration & Organization
+
+### TOML-Based Configuration
+
+Phase 3 introduces a powerful TOML-based test configuration system that allows for flexible test organization, filtering, and execution.
+
+#### Configuration File
+
+All tests are configured in `tests/integration_tests.toml`:
+
+```toml
+# Global configuration
+[config]
+default_timeout = 30
+max_parallel = 0  # 0 = use all cores
+rholang_cli = "../f1r3node/target/release/rholang-cli"
+verbosity = "normal"
+
+# Individual test
+[[test]]
+name = "test_basic_evaluation"
+file = "integration/test_basic_evaluation.rho"
+categories = ["basic", "arithmetic", "core"]
+timeout = 30
+enabled = true
+description = "Basic arithmetic and evaluation tests"
+
+# Test categories
+[categories.basic]
+description = "Basic functionality tests"
+priority = 1
+
+# Test suites
+[suites.core]
+description = "Core functionality tests (must pass)"
+tests = ["test_basic_evaluation", "test_rules"]
+```
+
+### Using the Test Configuration
+
+#### Load Manifest
+
+```rust
+use common::TestManifest;
+
+// Load from default location (tests/integration_tests.toml)
+let manifest = TestManifest::load_default().unwrap();
+
+// Access configuration
+println!("Default timeout: {}s", manifest.config.default_timeout);
+println!("Total tests: {}", manifest.tests.len());
+```
+
+#### Filter Tests
+
+```rust
+use common::TestFilter;
+
+// Filter by category
+let basic_tests = manifest.tests_by_category("basic");
+
+// Filter by suite
+let core_tests = manifest.tests_in_suite("core");
+
+// Filter by tag
+let demo_tests = manifest.tests_by_tag("demo");
+
+// Custom filter with builder pattern
+let filter = TestFilter::new()
+    .with_category("basic".to_string())
+    .with_tag("core".to_string())
+    .exclude("example".to_string());
+
+let filtered_tests = filter.apply(&manifest);
+```
+
+### Test Runner
+
+The TestRunner provides advanced test execution capabilities:
+
+```rust
+use common::TestRunner;
+
+// Create runner from manifest
+let runner = TestRunner::from_default().unwrap();
+
+// Run all tests
+let results = runner.run_all();
+
+// Run specific category
+let results = runner.run_category("basic");
+
+// Run specific suite
+let results = runner.run_suite("quick");
+
+// Run with custom filter
+let filter = TestFilter::new()
+    .with_category("advanced".to_string());
+let results = runner.run_filtered(&filter);
+
+// Print summary
+runner.print_results(&results, verbose: false);
+```
+
+### Test Categories
+
+Tests are organized into the following categories:
+
+- **basic** - Basic functionality (priority 1)
+- **arithmetic** - Arithmetic operations (priority 1)
+- **rules** - Pattern matching and rules (priority 1)
+- **types** - Type system features (priority 2)
+- **control-flow** - Control flow operations (priority 2)
+- **repl** - REPL-like evaluation (priority 2)
+- **stateful** - Stateful composition (priority 2)
+- **pathmap** - PathMap operations (priority 1)
+- **edge-cases** - Edge cases and errors (priority 3)
+- **examples** - Demonstration examples (priority 4)
+- **advanced** - Advanced features (priority 3)
+
+### Test Suites
+
+Pre-defined test suites:
+
+- **core** - Core functionality (must pass)
+- **quick** - Quick smoke tests
+- **full** - All integration tests
+- **advanced** - Advanced feature tests
+- **examples** - Example demonstrations
+
+### Running Tests by Configuration
+
+```bash
+# The standard cargo test command still works
+cargo test --test rholang_integration
+
+# But you can now programmatically filter in your test code
+# See test_phase3_filtering for examples
+```
+
+### Environment Variables
+
+- `RHOLANG_CLI_PATH` - Override rholang-cli location
+- `RUST_LOG` - Set log level (e.g., `RUST_LOG=debug`)
+
+### Test Organization Best Practices
+
+1. **Categorize new tests** - Add appropriate categories in the TOML manifest
+2. **Use meaningful tags** - Tag tests that share characteristics (e.g., "partially-implemented")
+3. **Set appropriate timeouts** - Long-running tests should have higher timeouts
+4. **Add to suites** - Include tests in relevant suites for batch execution
+5. **Update descriptions** - Keep test descriptions clear and concise
+
+### See Also
+
+- [Phase 3 Implementation](../docs/INTEGRATION_TESTING_IMPLEMENTATION.md#phase-3-test-configuration--organization) - Full Phase 3 details

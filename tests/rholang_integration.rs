@@ -1193,3 +1193,96 @@ fn test_all_test_files_exist() {
         );
     }
 }
+
+// ============================================================================
+// Phase 3: Configuration and Filtering Tests
+// ============================================================================
+
+#[test]
+fn test_phase3_config_load() {
+    use common::TestManifest;
+
+    // Test loading the manifest
+    let manifest = TestManifest::load_default();
+    assert!(manifest.is_ok(), "Failed to load manifest: {:?}", manifest.err());
+
+    let manifest = manifest.unwrap();
+
+    // Verify manifest structure
+    assert!(!manifest.tests.is_empty(), "No tests found in manifest");
+    assert!(!manifest.categories.is_empty(), "No categories found");
+    assert!(!manifest.suites.is_empty(), "No suites found");
+
+    // Check specific tests exist
+    let test_names: Vec<_> = manifest.tests.iter().map(|t| t.name.as_str()).collect();
+    assert!(test_names.contains(&"test_basic_evaluation"));
+    assert!(test_names.contains(&"test_rules"));
+    assert!(test_names.contains(&"test_control_flow"));
+}
+
+#[test]
+fn test_phase3_filtering() {
+    use common::{TestManifest, TestFilter};
+
+    let manifest = TestManifest::load_default().unwrap();
+
+    // Test category filtering
+    let basic_tests = manifest.tests_by_category("basic");
+    assert!(!basic_tests.is_empty(), "No basic tests found");
+    println!("Basic tests: {:?}", basic_tests.iter().map(|t| &t.name).collect::<Vec<_>>());
+
+    // Test suite filtering
+    let core_tests = manifest.tests_in_suite("core");
+    assert!(!core_tests.is_empty(), "No tests in 'core' suite");
+    println!("Core suite tests: {:?}", core_tests.iter().map(|t| &t.name).collect::<Vec<_>>());
+
+    // Test filter builder
+    let filter = TestFilter::new()
+        .with_category("basic".to_string());
+
+    let filtered = filter.apply(&manifest);
+    assert!(!filtered.is_empty(), "Filter returned no tests");
+}
+
+#[test]
+fn test_phase3_test_runner() {
+    use common::TestRunner;
+
+    // Create runner from default manifest
+    let runner = TestRunner::from_default();
+    assert!(runner.is_ok(), "Failed to create runner: {:?}", runner.err());
+
+    let runner = runner.unwrap();
+
+    // Verify runner has access to manifest
+    let manifest = runner.manifest();
+    assert!(!manifest.tests.is_empty());
+
+    // The runner methods are tested but not actually executed here
+    // to avoid running actual tests during unit test phase
+    println!("Runner created successfully with {} tests", manifest.tests.len());
+}
+
+#[test]
+fn test_phase3_categories() {
+    use common::TestManifest;
+
+    let manifest = TestManifest::load_default().unwrap();
+
+    // Get categories by priority
+    let categories = manifest.categories_by_priority();
+    assert!(!categories.is_empty());
+
+    // Verify priority ordering
+    for i in 1..categories.len() {
+        assert!(
+            categories[i - 1].1.priority <= categories[i].1.priority,
+            "Categories not sorted by priority"
+        );
+    }
+
+    println!("Categories (by priority):");
+    for (name, spec) in categories.iter().take(5) {
+        println!("  {} (priority {}): {}", name, spec.priority, spec.description);
+    }
+}

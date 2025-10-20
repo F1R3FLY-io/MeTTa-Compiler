@@ -41,6 +41,8 @@ interning = []
 # For integration tests
 regex = "1.10"
 nom = "7.1"
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
 
 [profile.release]
 opt-level = 3

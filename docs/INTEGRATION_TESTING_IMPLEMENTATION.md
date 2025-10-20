@@ -151,7 +151,7 @@ test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured
 **New Modules Created:**
 - `tests/integration_tests.toml` - TOML-based test manifest with configuration
 - `tests/common/config.rs` - Configuration parser with filtering support
-- `tests/common/runner.rs` - Advanced test runner with parallel execution
+- `tests/common/runner.rs` - Advanced async test runner with Tokio-based parallel execution
 
 **Configuration Features:**
 - **Test Manifest**: TOML-based configuration for all integration tests
@@ -160,6 +160,12 @@ test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured
 - **Test Filtering**: Filter by name, category, tag, or suite
 - **Priority System**: Category priorities for execution ordering
 - **Test Metadata**: Descriptions, timeouts, enabled/disabled flags, tags
+- **Async Execution**: Tokio-based I/O-bound concurrency for efficient test execution
+
+**Implementation Details:**
+- **Tokio over Rayon**: Uses Tokio's async runtime instead of Rayon's thread pools because test execution is I/O-bound (spawning external processes), not CPU-bound
+- **Timeout Enforcement**: Uses `tokio::time::timeout` for per-test timeout support
+- **Concurrent Process Execution**: Can handle hundreds of concurrent test processes efficiently
 
 **Test Organization:**
 - 13 tests configured in manifest
@@ -187,29 +193,36 @@ let tests = filter.apply(&manifest);
 **Test Runner Features:**
 - Load tests from TOML manifest
 - Filter tests by multiple criteria
-- Execute tests with timeout support
+- Execute tests with timeout support (using `tokio::time::timeout`)
 - Generate summary reports
-- Parallel execution support (configurable workers)
+- Async parallel execution with Tokio (configurable workers)
 - Custom rholang-cli path support
+- I/O-bound concurrency for running external processes
 
 **Sample Usage:**
 ```rust
 use common::{TestRunner, TestFilter};
 
-// Create runner from default manifest
-let runner = TestRunner::from_default().unwrap();
+// All test execution is async
+#[tokio::test]
+async fn run_tests() {
+    // Create runner from default manifest
+    let runner = TestRunner::from_default().unwrap();
 
-// Run specific category
-runner.run_category("basic");
+    // Run specific category
+    let results = runner.run_category("basic").await;
 
-// Run specific suite
-runner.run_suite("quick");
+    // Run specific suite
+    let results = runner.run_suite("quick").await;
 
-// Run with custom filter
-let filter = TestFilter::new().with_tag("demo".to_string());
-let results = runner.run_filtered(&filter);
-runner.print_results(&results, verbose);
+    // Run with custom filter
+    let filter = TestFilter::new().with_tag("demo".to_string());
+    let results = runner.run_filtered(&filter).await;
+    runner.print_results(&results, verbose);
+}
 ```
+
+**Why Tokio?** The test runner executes external processes (rholang-cli), which is I/O-bound work. Tokio's async runtime is significantly more efficient than thread-based parallelism (like Rayon) for this use case, as it can handle hundreds of concurrent process executions with minimal overhead and resource usage.
 
 ## Quick Start
 
@@ -376,21 +389,23 @@ pub enum OutputPattern {
 
 ```toml
 [dev-dependencies]
-# Test execution
-assert_cmd = "2.0"
-predicates = "3.0"
-
-# Output parsing
+# Output parsing and test structure
 regex = "1.10"
+nom = "7.1"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 
 # Configuration
 toml = "0.8"
 
-# Utilities
-tempfile = "3.8"
+# Async test execution (I/O-bound concurrency)
+tokio = { version = "1", features = ["rt-multi-thread", "process", "time", "sync", "macros"] }
 ```
+
+**Why these dependencies?**
+- **tokio**: Async runtime for efficient I/O-bound test execution (external process spawning)
+- **toml/serde**: TOML-based test configuration parsing
+- **regex/nom**: Output parsing and validation
+- **No rayon**: Rayon is for CPU-bound parallelism; our tests are I/O-bound
 
 ### External Requirements
 

@@ -5,7 +5,7 @@
 //! - MORK bindings → HashMap<String, MettaValue> (for pattern match results)
 
 use std::collections::HashMap;
-use mork_bytestring::{Expr, ExprZipper, ExprEnv};
+use mork_expr::{Expr, ExprZipper, ExprEnv};
 use mork::space::Space;
 use mork_frontend::bytestring_parser::Parser;
 use super::types::MettaValue;

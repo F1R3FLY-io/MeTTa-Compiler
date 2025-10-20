@@ -38,6 +38,8 @@ async = ["tokio"]
 interning = []
 
 [dev-dependencies]
+# For integration tests
+regex = "1.10"
 
 [profile.release]
 opt-level = 3

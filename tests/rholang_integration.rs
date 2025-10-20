@@ -1286,3 +1286,29 @@ fn test_phase3_categories() {
         println!("  {} (priority {}): {}", name, spec.priority, spec.description);
     }
 }
+
+/// Test async runner execution (demonstrates Tokio integration)
+#[tokio::test]
+async fn test_async_runner() {
+    use common::{TestRunner, TestFilter};
+
+    // Create runner
+    let runner = TestRunner::from_default();
+    assert!(runner.is_ok(), "Failed to create runner");
+    let runner = runner.unwrap();
+
+    // Run a small subset of tests using async API
+    let filter = TestFilter::new()
+        .with_category("basic".to_string());
+
+    // This now uses Tokio's async runtime for I/O-bound concurrency
+    let results = runner.run_filtered(&filter).await;
+
+    // Verify we got results
+    assert!(!results.is_empty(), "Should have run at least one test");
+
+    // Print summary
+    println!("Async runner executed {} tests", results.len());
+    let passed = results.iter().filter(|r| r.success).count();
+    println!("  {} passed, {} failed", passed, results.len() - passed);
+}

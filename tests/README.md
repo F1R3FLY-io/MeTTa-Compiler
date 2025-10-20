@@ -448,7 +448,7 @@ let filtered_tests = filter.apply(&manifest);
 
 ### Test Runner
 
-The TestRunner provides advanced test execution capabilities:
+The TestRunner provides advanced async test execution capabilities using Tokio:
 
 ```rust
 use common::TestRunner;
@@ -456,23 +456,29 @@ use common::TestRunner;
 // Create runner from manifest
 let runner = TestRunner::from_default().unwrap();
 
-// Run all tests
-let results = runner.run_all();
+// All test execution is async (requires Tokio runtime)
+#[tokio::test]
+async fn run_tests() {
+    // Run all tests
+    let results = runner.run_all().await;
 
-// Run specific category
-let results = runner.run_category("basic");
+    // Run specific category
+    let results = runner.run_category("basic").await;
 
-// Run specific suite
-let results = runner.run_suite("quick");
+    // Run specific suite
+    let results = runner.run_suite("quick").await;
 
-// Run with custom filter
-let filter = TestFilter::new()
-    .with_category("advanced".to_string());
-let results = runner.run_filtered(&filter);
+    // Run with custom filter
+    let filter = TestFilter::new()
+        .with_category("advanced".to_string());
+    let results = runner.run_filtered(&filter).await;
 
-// Print summary
-runner.print_results(&results, verbose: false);
+    // Print summary
+    runner.print_results(&results, verbose: false);
+}
 ```
+
+**Why Tokio?** The test runner executes external processes (rholang-cli), which is I/O-bound work. Tokio's async runtime is more efficient than thread pools for this use case, allowing hundreds of concurrent tests with minimal overhead.
 
 ### Test Categories
 

@@ -23,8 +23,8 @@ path = "src/main.rs"
 pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }
-# MORK bytestring - S-expression representation used by MORK
-mork-bytestring = { path = "../MORK/experiments/expr/bytestring" }
+# MORK expr - S-expression representation used by MORK (formerly mork-bytestring)
+mork-expr = { path = "../MORK/expr" }
 # MORK frontend - Parser for MORK s-expressions
 mork-frontend = { path = "../MORK/frontend" }
 # Models - Rholang protobuf models for PathMap Par integration
@@ -43,6 +43,7 @@ regex = "1.10"
 nom = "7.1"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "process", "time", "sync", "macros"] }
 
 [profile.release]
 opt-level = 3

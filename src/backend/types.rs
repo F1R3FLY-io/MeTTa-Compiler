@@ -73,8 +73,8 @@ impl Environment {
     ///
     /// CRITICAL FIX for "reserved 114" and similar bugs during evaluation/iteration.
     #[allow(unused_variables)]
-    pub(crate) fn mork_expr_to_metta_value(expr: &mork_bytestring::Expr, space: &Space) -> Result<MettaValue, String> {
-        use mork_bytestring::{maybe_byte_item, Tag};
+    pub(crate) fn mork_expr_to_metta_value(expr: &mork_expr::Expr, space: &Space) -> Result<MettaValue, String> {
+        use mork_expr::{maybe_byte_item, Tag};
         use std::slice::from_raw_parts;
 
         // Stack-based traversal to avoid recursion limits
@@ -220,7 +220,7 @@ impl Environment {
     /// Use mork_expr_to_metta_value() instead for production code.
     #[allow(dead_code)]
     #[allow(unused_variables)]
-    fn serialize_mork_expr_old(expr: &mork_bytestring::Expr, space: &Space) -> String {
+    fn serialize_mork_expr_old(expr: &mork_expr::Expr, space: &Space) -> String {
         let mut buffer = Vec::new();
         expr.serialize2(&mut buffer,
             |s| {
@@ -233,7 +233,7 @@ impl Environment {
                 #[cfg(not(feature="interning"))]
                 unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
             },
-            |i, _intro| { mork_bytestring::Expr::VARNAMES[i as usize] });
+            |i, _intro| { mork_expr::Expr::VARNAMES[i as usize] });
 
         String::from_utf8_lossy(&buffer).to_string()
     }
@@ -254,7 +254,7 @@ impl Environment {
     /// Searches for type assertions of the form (: name type)
     /// Returns None if no type assertion exists for the given name
     pub fn get_type(&self, name: &str) -> Option<MettaValue> {
-        use mork_bytestring::Expr;
+        use mork_expr::Expr;
 
         let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
@@ -297,7 +297,7 @@ impl Environment {
     /// Uses direct zipper traversal to avoid dump/parse overhead.
     /// This provides O(n) iteration without string serialization.
     pub fn iter_rules(&self) -> impl Iterator<Item = Rule> {
-        use mork_bytestring::Expr;
+        use mork_expr::Expr;
 
         let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
@@ -344,7 +344,7 @@ impl Environment {
     /// Vector of instantiated templates (MettaValue) for all matches
     pub fn match_space(&self, pattern: &MettaValue, template: &MettaValue) -> Vec<MettaValue> {
         use crate::backend::eval::{pattern_match, apply_bindings};
-        use mork_bytestring::Expr;
+        use mork_expr::Expr;
 
         let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
@@ -451,7 +451,7 @@ impl Environment {
     ///
     /// Uses direct zipper iteration to avoid dumping the entire Space.
     pub fn has_sexpr_fact(&self, sexpr: &MettaValue) -> bool {
-        use mork_bytestring::Expr;
+        use mork_expr::Expr;
 
         let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
@@ -482,7 +482,7 @@ impl Environment {
 
         // Use MORK's parser to load the s-expression into PathMap trie
         let mut space = self.space.lock().unwrap();
-        if let Ok(_count) = space.load_all_sexpr(mork_bytes) {
+        if let Ok(_count) = space.load_all_sexpr_impl(mork_bytes, true) {
             // Successfully added to space
         }
     }

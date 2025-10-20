@@ -34,20 +34,20 @@ The integration testing suite will:
 - `tests/README.md` - Test documentation
 
 ### Phase 2: Output Validation
-**Estimated: 2-3 days** | **Status: Not Started**
+**Estimated: 2-3 days** | **Status: ✅ Complete**
 
-- [ ] Implement PathMap output parser
-- [ ] Create test specification data structures
-- [ ] Validate `eval_outputs` field
-- [ ] Validate `environment` persistence
-- [ ] Validate `pending_exprs` handling
-- [ ] Add detailed assertion messages
-- [ ] Create test result reporter
+- [x] Implement PathMap output parser
+- [x] Create test specification data structures
+- [x] Validate `output` field (renamed from `eval_outputs`)
+- [x] Validate `environment` persistence
+- [x] Validate `source` handling (renamed from `pending_exprs`)
+- [x] Add detailed assertion messages
+- [x] Create test result reporter
 
 **Files:**
-- `tests/output_parser.rs` - PathMap parsing logic
-- `tests/test_specs.rs` - Test specification types
-- `tests/validators.rs` - Output validation logic
+- `tests/output_parser.rs` - PathMap parsing logic ✅
+- `tests/test_specs.rs` - Test specification types ✅
+- `tests/validators.rs` - Output validation logic ✅
 
 ### Phase 3: Test Configuration & Organization
 **Estimated: 1-2 days** | **Status: Not Started**
@@ -97,41 +97,53 @@ The integration testing suite will:
 
 ## Current Status
 
-**Overall Progress: 20%**
+**Overall Progress: 40%**
 
 - ✅ Analysis complete
 - ✅ Documentation created
 - ✅ **Phase 1 complete** - Basic test runner working!
-- ⏳ Phases 2-5 pending
+- ✅ **Phase 2 complete** - Output validation with PathMap parsing!
+- ⏳ Phases 3-5 pending
 
 ### Phase 1 Results
 
-**Test Suite Created:** 21 integration tests
-**Passing Tests:** ~18/21 tests passing
-**Build Time:** ~11 seconds (first build), <1 second (incremental)
-**Test Execution:** <1 second per test
+**Test Suite Created:** 30 integration tests (17 Rholang + 13 binary)
+**Passing Tests:** All 30 tests passing ✅
+**Build Time:** ~6 minutes (first build), <1 second (incremental)
+**Test Execution:** <2 seconds total
 
 **Sample Test Results:**
 ```bash
-$ RUSTFLAGS="-C target-cpu=native" cargo test --test rholang_integration
-running 21 tests
-test test_rholang_cli_exists ... ok
-test test_integration_dir_exists ... ok
-test test_all_test_files_exist ... ok
-test test_pathmap_simple ... ok
-test test_pathmap_run_method ... ok
-test test_harness_simple ... ok
-test test_harness_composability ... ok
-test test_harness_validation ... ok
-test test_example_robot_planning ... ok
+$ cargo test
+running 30 tests
+test rholang_integration::test_rholang_cli_exists ... ok
+test rholang_integration::test_integration_dir_exists ... ok
+test rholang_integration::test_all_test_files_exist ... ok
+test rholang_integration::test_pathmap_simple ... ok
+test rholang_integration::test_harness_simple ... ok
+test mettatron_binary::test_binary_exists ... ok
+test mettatron_binary::test_evaluate_simple_metta ... ok
 ... (more tests)
 
-test result: ok. 18 passed; 3 failed; 0 ignored
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured
 ```
 
-**Known Issues:**
-- Some tests detect false positives for "error" in output
-- Need better output validation (Phase 2)
+### Phase 2 Results
+
+**New Modules Created:**
+- `tests/output_parser.rs` - Parses PathMap structures from Rholang output
+- `tests/test_specs.rs` - Test specification data structures
+- `tests/validators.rs` - Validation logic for multiple patterns
+
+**Validation Capabilities:**
+- PathMap field extraction (`source`, `environment`, `output`)
+- Multiple validation patterns (Contains, Regex, Outputs, PathMapStructure, etc.)
+- Test report generation with pass/fail details
+- Detailed assertion messages
+
+**Field Name Updates:**
+- `pending_exprs` → `source`
+- `eval_outputs` → `output`
 
 ## Quick Start (Once Implemented)
 
@@ -210,9 +222,9 @@ pub enum OutputPattern {
 
 ```
 {|
-  ("pending_exprs", [expr1, expr2, ...]),
-  ("environment", ({|| space_data ||}, [type1, type2, ...])),
-  ("eval_outputs", [result1, result2, ...])
+  ("source", [expr1, expr2, ...]),                // Source expressions (formerly "pending_exprs")
+  ("environment", ({|| space_data ||}, [...])),   // Space state and types
+  ("output", [result1, result2, ...])             // Evaluation results (formerly "eval_outputs")
 |}
 ```
 
@@ -318,7 +330,8 @@ tempfile = "3.8"
 
 1. **rholang-cli binary**
    - Location: `../f1r3node/target/release/rholang-cli`
-   - Build: `cd ../f1r3node/rholang && RUSTFLAGS="-C target-cpu=native" cargo build --release --bin rholang-cli`
+   - Build: `cd ../f1r3node/rholang && cargo build --release --bin rholang-cli`
+   - Note: Build flags configured via `.cargo/config.toml` (no manual RUSTFLAGS required)
 
 2. **Test files**
    - Location: `integration/*.rho`
@@ -485,5 +498,5 @@ Include:
 ---
 
 **Last Updated:** 2025-10-20
-**Status:** Phase 1 in progress
-**Next Milestone:** Basic test runner functional
+**Status:** Phase 2 complete
+**Next Milestone:** Phase 3 - Test configuration & organization

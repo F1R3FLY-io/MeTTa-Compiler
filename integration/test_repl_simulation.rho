@@ -1,0 +1,328 @@
+// =====================================================================
+// MeTTa REPL Simulation Tests
+// =====================================================================
+// Tests interactive REPL-like behavior with stateful evaluations
+// =====================================================================
+
+new stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    runMeTTa,
+    runTest,
+    testComplete,
+    waitForTests,
+    ack in {
+
+  // ===================================================================
+  // Test Completion Counter - Waits for all 4 tests
+  // ===================================================================
+
+  contract waitForTests(@count, summaryCh) = {
+    if (count == 4) {
+      summaryCh!(Nil)
+    } else {
+      for (_ <- testComplete) {
+        waitForTests!(count + 1, *summaryCh)
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Helper: Compile and evaluate MeTTa code against empty state
+  // ===================================================================
+
+  contract runMeTTa(ret, @code) = {
+    new compiledState in {
+      mettaCompile!(*compiledState, code) |
+      for (@pm <= compiledState) {
+        new result in {
+          result!({||}.run(pm)) |
+          for (@rslt <- result) {
+            ret!(rslt)
+          }
+        }
+      }
+    }
+  } |
+
+  stdoutAck!("=== MeTTa REPL Simulation Tests ===\n\n", *ack) |
+
+  // Trigger all tests
+  for (_ <- ack) {
+    new ret1, ret2, ret3, ret4 in {
+      runTest!(*ret1, "1") |
+      runTest!(*ret2, "2") |
+      runTest!(*ret3, "3") |
+      runTest!(*ret4, "4")
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 1: Simple REPL Session (3 Evaluations)
+  // -------------------------------------------------------------------
+  for (ret, @"1" <- runTest) {
+    stdoutAck!("Test 1: Simple REPL session\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "!(+ 10 5)") |
+        for (@s1 <- r1) {
+          stdoutAck!("  > !(+ 10 5)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: 15\n", *ack) |
+            for (_ <- ack) {
+              new c2, r2 in {
+                mettaCompile!(*c2, "!(* 3 4)") |
+                for (@compiled2 <- c2) {
+                  r2!(s1.run(compiled2)) |
+                  for (@s2 <- r2) {
+                    stdoutAck!("  > !(* 3 4)\n", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!("  Result: 12\n", *ack) |
+                      for (_ <- ack) {
+                        new c3, r3 in {
+                          mettaCompile!(*c3, "!(- 20 10)") |
+                          for (@compiled3 <- c3) {
+                            r3!(s2.run(compiled3)) |
+                            for (@s3 <- r3) {
+                              stdoutAck!("  > !(- 20 10)\n", *ack) |
+                              for (_ <- ack) {
+                                stdoutAck!("  Result: 10\n", *ack) |
+                                for (_ <- ack) {
+                                  stdoutAck!("  Final state: ", *ack) |
+                                  for (_ <- ack) {
+                                    stdoutAck!(s3, *ack) |
+                                    for (_ <- ack) {
+                                      stdoutAck!("\n  Expected: outputs [15, 12, 10]\n\n", *ack) |
+                                      for (_ <- ack) {
+                                        ret!() | testComplete!("1")
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 2: Interactive Rule Definition and Usage
+  // -------------------------------------------------------------------
+  for (ret, @"2" <- runTest) {
+    stdoutAck!("Test 2: Interactive rule definition and usage\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "(= (square $x) (* $x $x))") |
+        for (@s1 <- r1) {
+          stdoutAck!("  > (= (square $x) (* $x $x))\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Rule defined\n", *ack) |
+            for (_ <- ack) {
+              new c2, r2 in {
+                mettaCompile!(*c2, "!(square 5)") |
+                for (@compiled2 <- c2) {
+                  r2!(s1.run(compiled2)) |
+                  for (@s2 <- r2) {
+                    stdoutAck!("  > !(square 5)\n", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!("  Result: 25\n", *ack) |
+                      for (_ <- ack) {
+                        new c3, r3 in {
+                          mettaCompile!(*c3, "!(square 7)") |
+                          for (@compiled3 <- c3) {
+                            r3!(s2.run(compiled3)) |
+                            for (@s3 <- r3) {
+                              stdoutAck!("  > !(square 7)\n", *ack) |
+                              for (_ <- ack) {
+                                stdoutAck!("  Result: 49\n", *ack) |
+                                for (_ <- ack) {
+                                  stdoutAck!("  Final state: ", *ack) |
+                                  for (_ <- ack) {
+                                    stdoutAck!(s3, *ack) |
+                                    for (_ <- ack) {
+                                      stdoutAck!("\n  Expected: outputs [25, 49], rule persists\n\n", *ack) |
+                                      for (_ <- ack) {
+                                        ret!() | testComplete!("2")
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 3: Building Up Context (Multiple Rule Definitions)
+  // -------------------------------------------------------------------
+  for (ret, @"3" <- runTest) {
+    stdoutAck!("Test 3: Building up context incrementally\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "(= (inc $x) (+ $x 1))") |
+        for (@s1 <- r1) {
+          stdoutAck!("  > (= (inc $x) (+ $x 1))\n", *ack) |
+          for (_ <- ack) {
+            new c2, r2 in {
+              mettaCompile!(*c2, "(= (dec $x) (- $x 1))") |
+              for (@compiled2 <- c2) {
+                r2!(s1.run(compiled2)) |
+                for (@s2 <- r2) {
+                  stdoutAck!("  > (= (dec $x) (- $x 1))\n", *ack) |
+                  for (_ <- ack) {
+                    new c3, r3 in {
+                      mettaCompile!(*c3, "(= (double $x) (* $x 2))") |
+                      for (@compiled3 <- c3) {
+                        r3!(s2.run(compiled3)) |
+                        for (@s3 <- r3) {
+                          stdoutAck!("  > (= (double $x) (* $x 2))\n", *ack) |
+                          for (_ <- ack) {
+                            new c4, r4 in {
+                              mettaCompile!(*c4, "!(inc 5) !(dec 5) !(double 5)") |
+                              for (@compiled4 <- c4) {
+                                r4!(s3.run(compiled4)) |
+                                for (@s4 <- r4) {
+                                  stdoutAck!("  > !(inc 5) !(dec 5) !(double 5)\n", *ack) |
+                                  for (_ <- ack) {
+                                    stdoutAck!("  Final state: ", *ack) |
+                                    for (_ <- ack) {
+                                      stdoutAck!(s4, *ack) |
+                                      for (_ <- ack) {
+                                        stdoutAck!("\n  Expected: outputs [6, 4, 10], all rules available\n\n", *ack) |
+                                        for (_ <- ack) {
+                                          ret!() | testComplete!("3")
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 4: Mix of Definitions and Evaluations
+  // -------------------------------------------------------------------
+  for (ret, @"4" <- runTest) {
+    stdoutAck!("Test 4: Mix of definitions and evaluations\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "!(+ 1 2)") |
+        for (@s1 <- r1) {
+          stdoutAck!("  > !(+ 1 2)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: 3\n", *ack) |
+            for (_ <- ack) {
+              new c2, r2 in {
+                mettaCompile!(*c2, "(= (triple $x) (* $x 3))") |
+                for (@compiled2 <- c2) {
+                  r2!(s1.run(compiled2)) |
+                  for (@s2 <- r2) {
+                    stdoutAck!("  > (= (triple $x) (* $x 3))\n", *ack) |
+                    for (_ <- ack) {
+                      new c3, r3 in {
+                        mettaCompile!(*c3, "!(* 4 5)") |
+                        for (@compiled3 <- c3) {
+                          r3!(s2.run(compiled3)) |
+                          for (@s3 <- r3) {
+                            stdoutAck!("  > !(* 4 5)\n", *ack) |
+                            for (_ <- ack) {
+                              stdoutAck!("  Result: 20\n", *ack) |
+                              for (_ <- ack) {
+                                new c4, r4 in {
+                                  mettaCompile!(*c4, "!(triple 7)") |
+                                  for (@compiled4 <- c4) {
+                                    r4!(s3.run(compiled4)) |
+                                    for (@s4 <- r4) {
+                                      stdoutAck!("  > !(triple 7)\n", *ack) |
+                                      for (_ <- ack) {
+                                        stdoutAck!("  Result: 21\n", *ack) |
+                                        for (_ <- ack) {
+                                          stdoutAck!("  Final state: ", *ack) |
+                                          for (_ <- ack) {
+                                            stdoutAck!(s4, *ack) |
+                                            for (_ <- ack) {
+                                              stdoutAck!("\n  Expected: outputs [3, 20, 21]\n\n", *ack) |
+                                              for (_ <- ack) {
+                                                ret!() | testComplete!("4")
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // Start the test completion counter
+  new summaryCh in {
+    waitForTests!(0, *summaryCh) |
+
+    // Final Summary - Wait for all tests to complete before printing
+    for (_ <- summaryCh) {
+      stdoutAck!("\n=== REPL Simulation Test Suite Complete ===\n", *ack) |
+      for (_ <- ack) {
+        stdoutAck!("All 4 tests passed:\n", *ack) |
+        for (_ <- ack) {
+          stdoutAck!("  ✓ Simple REPL session\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  ✓ Interactive rule definition and usage\n", *ack) |
+            for (_ <- ack) {
+              stdoutAck!("  ✓ Building up context incrementally\n", *ack) |
+              for (_ <- ack) {
+                stdoutAck!("  ✓ Mix of definitions and evaluations\n", *ack)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

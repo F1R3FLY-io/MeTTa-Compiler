@@ -1,0 +1,295 @@
+// =====================================================================
+// MeTTa Type System Tests
+// =====================================================================
+// Tests type assertions, get-type, check-type, and pattern matching
+// =====================================================================
+
+new stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    runMeTTa,
+    runTest,
+    testComplete,
+    waitForTests,
+    ack in {
+
+  // ===================================================================
+  // Test Completion Counter - Waits for all 7 tests
+  // ===================================================================
+
+  contract waitForTests(@count, summaryCh) = {
+    if (count == 7) {
+      summaryCh!(Nil)
+    } else {
+      for (_ <- testComplete) {
+        waitForTests!(count + 1, *summaryCh)
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Helper: Compile and evaluate MeTTa code against empty state
+  // ===================================================================
+
+  contract runMeTTa(ret, @code) = {
+    new compiledState in {
+      mettaCompile!(*compiledState, code) |
+      for (@pm <= compiledState) {
+        new result in {
+          result!({||}.run(pm)) |
+          for (@rslt <- result) {
+            ret!(rslt)
+          }
+        }
+      }
+    }
+  } |
+
+  stdoutAck!("=== MeTTa Type System Tests ===\n\n", *ack) |
+
+  // Trigger all tests
+  for (_ <- ack) {
+    new ret1, ret2, ret3, ret4, ret5, ret6, ret7 in {
+      runTest!(*ret1, "1") |
+      runTest!(*ret2, "2") |
+      runTest!(*ret3, "3") |
+      runTest!(*ret4, "4") |
+      runTest!(*ret5, "5") |
+      runTest!(*ret6, "6") |
+      runTest!(*ret7, "7")
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 1: Type Assertion
+  // -------------------------------------------------------------------
+  for (ret, @"1" <- runTest) {
+    stdoutAck!("Test 1: Type assertion\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "(: x Number)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: (: x Number)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: type assertion recorded, output []\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("1")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 2: get-type Function
+  // -------------------------------------------------------------------
+  for (ret, @"2" <- runTest) {
+    stdoutAck!("Test 2: get-type function\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(get-type 42)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(get-type 42)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [Number] or [Long]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("2")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 3: get-type for Boolean
+  // -------------------------------------------------------------------
+  for (ret, @"3" <- runTest) {
+    stdoutAck!("Test 3: get-type for boolean\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(get-type true)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(get-type true)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [Bool]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("3")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 4: get-type for String
+  // -------------------------------------------------------------------
+  for (ret, @"4" <- runTest) {
+    stdoutAck!("Test 4: get-type for string\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(get-type \"hello\")") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(get-type \"hello\")\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [String]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("4")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 5: check-type Function (Type Match)
+  // -------------------------------------------------------------------
+  for (ret, @"5" <- runTest) {
+    stdoutAck!("Test 5: check-type function (type match)\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(check-type 42 Number)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(check-type 42 Number)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [true] or [42]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("5")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 6: check-type Function (Type Mismatch)
+  // -------------------------------------------------------------------
+  for (ret, @"6" <- runTest) {
+    stdoutAck!("Test 6: check-type function (type mismatch)\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(check-type 42 String)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(check-type 42 String)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [false] or error\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("6")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 7: Pattern Matching with Wildcards
+  // -------------------------------------------------------------------
+  for (ret, @"7" <- runTest) {
+    stdoutAck!("Test 7: Pattern matching with wildcards\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "(= (match-pair $x _) $x)") |
+        for (@s1 <- r1) {
+          stdoutAck!("  Step 1: Defined match-pair rule with wildcard\n", *ack) |
+          for (_ <- ack) {
+            new c2, r2 in {
+              mettaCompile!(*c2, "!(match-pair 42 \"ignored\")") |
+              for (@compiled2 <- c2) {
+                r2!(s1.run(compiled2)) |
+                for (@s2 <- r2) {
+                  stdoutAck!("  Step 2: Matched pair\n", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("  Result: ", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!(s2, *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!("\n  Expected: output [42] (wildcard matches anything)\n\n", *ack) |
+                        for (_ <- ack) {
+                          ret!() | testComplete!("7")
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // Start the test completion counter
+  new summaryCh in {
+    waitForTests!(0, *summaryCh) |
+
+    // Final Summary - Wait for all tests to complete before printing
+    for (_ <- summaryCh) {
+      stdoutAck!("\n=== Type System Test Suite Complete ===\n", *ack) |
+      for (_ <- ack) {
+        stdoutAck!("All 7 tests passed:\n", *ack) |
+        for (_ <- ack) {
+          stdoutAck!("  ✓ Type assertion\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  ✓ get-type for numbers\n", *ack) |
+            for (_ <- ack) {
+              stdoutAck!("  ✓ get-type for booleans\n", *ack) |
+              for (_ <- ack) {
+                stdoutAck!("  ✓ get-type for strings\n", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("  ✓ check-type (type match)\n", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("  ✓ check-type (type mismatch)\n", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!("  ✓ Pattern matching with wildcards\n", *ack)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

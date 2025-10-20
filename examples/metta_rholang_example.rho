@@ -71,7 +71,7 @@ in {
   stdoutAck!("=== Example 5: Compiler Service ===", *ack) |
   for (_ <- ack) {
     // Create a reusable compiler contract using !? operator
-    contract @"compileAndPrint"(source) = {
+    contract @"compileAndPrint"(@source) = {
       for (@result <- mettaCompile!?(source)) {
         stdoutAck!("Compiled: ", *ack) |
         for (_ <- ack) {
@@ -91,7 +91,7 @@ in {
   // ===================================================================
   stdoutAck!("=== Example 6: PathMap Results ===", *ack) |
   for (_ <- ack) {
-    contract @"compileAndCheck"(source, @success, @error) = {
+    contract @"compileAndCheck"(@source, success, error) = {
       for (@result <- mettaCompile!?(source)) {
         // result is now a PathMap Par
         // You can inspect it or pass it to other contracts
@@ -122,21 +122,23 @@ in {
 // Expected Output
 // =====================================================================
 // === Example 1: Simple Arithmetic ===
-// {|("pending_exprs", []), ("environment", ...), ("eval_outputs", [3])|}
+// {|("source", [("+", 1, 2)]), ("environment", ...), ("output", [])|}
+// Note: To evaluate, use {||}.run(compiledResult)
 //
 // === Example 2: Rule Definition ===
-// {|("pending_exprs", []), ("environment", ...), ("eval_outputs", [])|}
+// {|("source", [("=", ...)]), ("environment", ...), ("output", [])|}
 //
 // === Example 3: Nested Expression ===
-// {|("pending_exprs", []), ("environment", ...), ("eval_outputs", [7])|}
+// {|("source", [("+", 1, ("*", 2, 3))]), ("environment", ...), ("output", [])|}
 //
 // === Example 4: Syntax Error ===
-// (Error "Parse error: ..." ...)
+// {|("source", []), ("environment", ...), ("output", [("error", "Unexpected EOF", Nil)])|}
 //
 // === Example 5: Compiler Service ===
-// Compiled: {|...|}
-// Compiled: {|...|}
-// Compiled: {|...|}
+// Compiled: {|("source", [("+", 1, 2)]), ...|}
+// Compiled: {|("source", [("*", 3, 4)]), ...|}
+// Compiled: {|("source", [("<", 5, 10)]), ...|}
 //
 // === Example 6: PathMap Results ===
-// Success (PathMap): {|("pending_exprs", []), ("environment", ...), ("eval_outputs", [3])|}
+// Success (PathMap): {|("source", [("+", 1, 2)]), ("environment", ...), ("output", [])|}
+// Note: To get evaluated results, use .run() method

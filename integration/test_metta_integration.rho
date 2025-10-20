@@ -6,7 +6,6 @@
 
 new stdout(`rho:io:stdout`), stdoutAck(`rho:io:stdoutAck`),
     mettaCompile(`rho:metta:compile`),
-    mettaCompileSync(`rho:metta:compile:sync`),
     ack in {
 
   stdoutAck!("=== Testing MeTTa Integration (PathMap Par) ===\n", *ack) |

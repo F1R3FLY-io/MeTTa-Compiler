@@ -2,7 +2,6 @@
 ///
 /// Defines expectations for Rholang test execution, including
 /// expected outputs, environment state, and PathMap structure.
-
 use std::path::PathBuf;
 
 /// Specification for a Rholang integration test
@@ -68,12 +67,7 @@ impl Expectation {
 
     /// Expect stdout contains specific text
     pub fn contains<S: Into<String>>(description: S, text: S) -> Self {
-        Expectation::new(
-            description,
-            OutputPattern::Contains {
-                text: text.into(),
-            },
-        )
+        Expectation::new(description, OutputPattern::Contains { text: text.into() })
     }
 
     /// Expect stdout matches regex

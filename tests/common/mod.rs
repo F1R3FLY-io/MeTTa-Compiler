@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports)]
+
 /// Test utilities for Rholang integration tests
 ///
 /// This module provides shared utilities for integration tests, including:
@@ -5,7 +7,6 @@
 /// - Parsing PathMap output structures
 /// - Validating test expectations
 /// - Test specification data structures
-
 // Phase 2: Output validation modules
 pub mod output_parser;
 pub mod test_specs;
@@ -13,19 +14,22 @@ pub mod validators;
 
 // Phase 3: Collection types, query system, and configuration
 pub mod collections;
-pub mod query;
 pub mod config;
+pub mod query;
 pub mod runner;
 
 // Re-export commonly used types for convenience
-pub use output_parser::{parse_pathmap, extract_all_outputs, extract_all_outputs_as_strings, PathMapOutput, MettaValueTestExt};
-pub use mettatron::backend::types::MettaValue;
-pub use test_specs::{RholangTestSpec, Expectation, OutputPattern, ValidationResult, TestReport};
-pub use validators::validate;
 pub use collections::CollectionValue;
-pub use query::{PathMapQuery, OutputMatcher, QueryResult, ToMettaValue};
-pub use config::{TestManifest, TestFilter, TestSpec, TestConfig, TestSuiteSpec, CategorySpec};
-pub use runner::{TestRunner, TestResult};
+pub use config::{CategorySpec, TestConfig, TestFilter, TestManifest, TestSpec, TestSuiteSpec};
+pub use mettatron::backend::types::MettaValue;
+pub use output_parser::{
+    extract_all_outputs, extract_all_outputs_as_strings, parse_pathmap, MettaValueTestExt,
+    PathMapOutput,
+};
+pub use query::{OutputMatcher, PathMapQuery, QueryResult, ToMettaValue};
+pub use runner::{TestResult, TestRunner};
+pub use test_specs::{Expectation, OutputPattern, RholangTestSpec, TestReport, ValidationResult};
+pub use validators::validate;
 
 use std::env;
 use std::path::PathBuf;
@@ -142,10 +146,10 @@ mod tests {
     #[test]
     fn test_find_rholang_cli() {
         // This test will pass if rholang-cli is found, skip otherwise
-        if let Ok(_) = std::panic::catch_unwind(|| {
+        if std::panic::catch_unwind(|| {
             let cli = find_rholang_cli();
             assert!(cli.exists());
-        }) {
+        }).is_ok() {
             // Success
         } else {
             eprintln!("Skipping test_find_rholang_cli: rholang-cli not found");
@@ -176,7 +180,9 @@ mod tests {
     #[test]
     fn test_contains_error() {
         // These should be detected as errors
-        assert!(contains_error("Errors received during evaluation: something went wrong"));
+        assert!(contains_error(
+            "Errors received during evaluation: something went wrong"
+        ));
         assert!(contains_error("error in: /path/to/file.rho"));
         assert!(contains_error("ParserError(\"Parse failed\")"));
         assert!(contains_error("FAIL"));
@@ -185,7 +191,7 @@ mod tests {
         // These should NOT be detected as errors (false positives we want to avoid)
         assert!(!contains_error("Test passed successfully"));
         assert!(!contains_error("Expected: eval_outputs should be [12]"));
-        assert!(!contains_error("Test: Error creation"));  // Test name containing "error"
-        assert!(!contains_error("(error \"test\" 42)"));     // MeTTa error expression
+        assert!(!contains_error("Test: Error creation")); // Test name containing "error"
+        assert!(!contains_error("(error \"test\" 42)")); // MeTTa error expression
     }
 }

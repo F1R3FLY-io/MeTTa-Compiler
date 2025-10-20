@@ -1,18 +1,29 @@
+#![allow(dead_code, unused_imports)]
+
 /// Rholang Integration Tests
 ///
 /// Tests the MeTTa-Rholang integration by executing .rho files
 /// and validating their output.
-
 mod common;
 
-use std::process::Command;
 use common::{
-    find_rholang_cli, integration_dir, contains_error, extract_eval_outputs,
+    contains_error,
+    extract_eval_outputs,
+    find_rholang_cli,
+    integration_dir,
     // Phase 2: New validation infrastructure
-    parse_pathmap, validate, Expectation, ValidationResult, MettaValue, MettaValueTestExt,
+    parse_pathmap,
+    validate,
+    Expectation,
+    MettaValue,
+    MettaValueTestExt,
+    OutputMatcher,
     // Phase 3: Query and matching framework
-    PathMapQuery, OutputMatcher, ToMettaValue,
+    PathMapQuery,
+    ToMettaValue,
+    ValidationResult,
 };
+use std::process::Command;
 
 /// Helper to run a Rholang test file
 fn run_rho_test(filename: &str) -> (bool, String, String) {
@@ -56,10 +67,16 @@ fn assert_test_passed(filename: &str) {
         eprintln!("Exit code: {}", exit_code);
 
         if success_result.is_fail() {
-            eprintln!("\nExit code validation failed: {}", success_result.failure_reason().unwrap());
+            eprintln!(
+                "\nExit code validation failed: {}",
+                success_result.failure_reason().unwrap()
+            );
         }
         if no_errors_result.is_fail() {
-            eprintln!("\nError validation failed: {}", no_errors_result.failure_reason().unwrap());
+            eprintln!(
+                "\nError validation failed: {}",
+                no_errors_result.failure_reason().unwrap()
+            );
         }
 
         eprintln!("\n=== STDOUT ===\n{}", stdout);
@@ -79,11 +96,24 @@ fn test_basic_evaluation() {
 
     // Validate success and completion
     assert!(
-        validate(&stdout, &stderr, exit_code, &Expectation::success("exits cleanly")).is_pass(),
-        "Test failed with exit code {}", exit_code
+        validate(
+            &stdout,
+            &stderr,
+            exit_code,
+            &Expectation::success("exits cleanly")
+        )
+        .is_pass(),
+        "Test failed with exit code {}",
+        exit_code
     );
     assert!(
-        validate(&stdout, &stderr, exit_code, &Expectation::no_errors("no errors")).is_pass(),
+        validate(
+            &stdout,
+            &stderr,
+            exit_code,
+            &Expectation::no_errors("no errors")
+        )
+        .is_pass(),
         "Test output contains error indicators"
     );
 
@@ -99,50 +129,64 @@ fn test_basic_evaluation() {
     // rather than assuming a specific order
 
     // Test 1: Basic addition !(+ 1 2) → [3]
-    let has_addition = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[3i64])
-    });
+    let has_addition = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[3i64]));
     assert!(has_addition, "Expected output [3] for basic addition test");
 
     // Test 2: Basic subtraction !(- 10 3) → [7]
-    let has_subtraction = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[7i64])
-    });
-    assert!(has_subtraction, "Expected output [7] for basic subtraction test");
+    let has_subtraction = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[7i64]));
+    assert!(
+        has_subtraction,
+        "Expected output [7] for basic subtraction test"
+    );
 
     // Test 3: Basic multiplication !(* 4 5) → [20]
-    let has_multiplication = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[20i64])
-    });
-    assert!(has_multiplication, "Expected output [20] for basic multiplication test");
+    let has_multiplication = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[20i64]));
+    assert!(
+        has_multiplication,
+        "Expected output [20] for basic multiplication test"
+    );
 
     // Test 4: Basic division !(/ 20 4) → [5]
-    let has_division = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[5i64])
-    });
+    let has_division = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[5i64]));
     assert!(has_division, "Expected output [5] for basic division test");
 
     // Test 5: Nested arithmetic !(+ 1 (* 2 3)) → [7]
     // This will also match Test 2, so check it exists (already verified above)
 
     // Test 6: Complex nested !(+ (* 2 3) (- 10 5)) → [11]
-    let has_complex = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[11i64])
-    });
-    assert!(has_complex, "Expected output [11] for complex nested expression test");
+    let has_complex = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[11i64]));
+    assert!(
+        has_complex,
+        "Expected output [11] for complex nested expression test"
+    );
 
     // Test 7: Multiple expressions → [3, 12, 5]
-    let has_multiple = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[3i64, 12i64, 5i64])
-    });
-    assert!(has_multiple, "Expected outputs [3, 12, 5] for multiple expressions test");
+    let has_multiple = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[3i64, 12i64, 5i64]));
+    assert!(
+        has_multiple,
+        "Expected outputs [3, 12, 5] for multiple expressions test"
+    );
 
     // Test 8: Boolean comparisons → [true, true, true]
     let has_booleans = pathmaps.iter().any(|pm| {
-        pm.output.len() == 3 &&
-        pm.output.iter().all(|v| v.to_display_string() == "true")
+        pm.output.len() == 3 && pm.output.iter().all(|v| v.to_display_string() == "true")
     });
-    assert!(has_booleans, "Expected outputs [true, true, true] for boolean comparisons test");
+    assert!(
+        has_booleans,
+        "Expected outputs [true, true, true] for boolean comparisons test"
+    );
 }
 
 #[test]
@@ -152,11 +196,24 @@ fn test_rules() {
 
     // Validate success and completion
     assert!(
-        validate(&stdout, &stderr, exit_code, &Expectation::success("exits cleanly")).is_pass(),
-        "Test failed with exit code {}", exit_code
+        validate(
+            &stdout,
+            &stderr,
+            exit_code,
+            &Expectation::success("exits cleanly")
+        )
+        .is_pass(),
+        "Test failed with exit code {}",
+        exit_code
     );
     assert!(
-        validate(&stdout, &stderr, exit_code, &Expectation::no_errors("no errors")).is_pass(),
+        validate(
+            &stdout,
+            &stderr,
+            exit_code,
+            &Expectation::no_errors("no errors")
+        )
+        .is_pass(),
         "Test output contains error indicators"
     );
 
@@ -169,41 +226,55 @@ fn test_rules() {
     );
 
     // Test 1: Simple rule definition → [] (empty output)
-    let has_empty_rule = pathmaps.iter().any(|pm| {
-        pm.output.is_empty() && pm.has_environment()
-    });
-    assert!(has_empty_rule, "Expected PathMap with empty output and environment (rule definition)");
+    let has_empty_rule = pathmaps
+        .iter()
+        .any(|pm| pm.output.is_empty() && pm.has_environment());
+    assert!(
+        has_empty_rule,
+        "Expected PathMap with empty output and environment (rule definition)"
+    );
 
     // Test 2: Rule usage !(triple 7) → [21]
-    let has_triple = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[21i64])
-    });
+    let has_triple = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[21i64]));
     assert!(has_triple, "Expected output [21] for triple 7 test");
 
     // Test 3: Rule chaining !(quadruple 3) → [12]
-    let has_quadruple = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[12i64]) &&
-        pm.has_environment()
-    });
-    assert!(has_quadruple, "Expected output [12] for quadruple 3 test with rules in environment");
+    let has_quadruple = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[12i64]) && pm.has_environment());
+    assert!(
+        has_quadruple,
+        "Expected output [12] for quadruple 3 test with rules in environment"
+    );
 
     // Test 4: Multiple rule definitions !(double 5) !(triple 5) → [10, 15]
-    let has_both_rules = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[10i64, 15i64])
-    });
-    assert!(has_both_rules, "Expected outputs [10, 15] for double and triple test");
+    let has_both_rules = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[10i64, 15i64]));
+    assert!(
+        has_both_rules,
+        "Expected outputs [10, 15] for double and triple test"
+    );
 
     // Test 5: Rule with multiple parameters !(add-mult 5 4) → [22]
-    let has_multi_param = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[22i64])
-    });
-    assert!(has_multi_param, "Expected output [22] for add-mult 5 4 test");
+    let has_multi_param = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[22i64]));
+    assert!(
+        has_multi_param,
+        "Expected output [22] for add-mult 5 4 test"
+    );
 
     // Test 6: Rule persistence → [42, 21, 6]
-    let has_persistence = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[42i64, 21i64, 6i64])
-    });
-    assert!(has_persistence, "Expected outputs [42, 21, 6] for rule persistence test");
+    let has_persistence = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[42i64, 21i64, 6i64]));
+    assert!(
+        has_persistence,
+        "Expected outputs [42, 21, 6] for rule persistence test"
+    );
 }
 
 #[test]
@@ -219,25 +290,35 @@ fn test_control_flow() {
     report.exit_code = Some(exit_code);
 
     // Validation 1: Clean exit
-    let exits_cleanly = validate(&stdout, &stderr, exit_code, &Expectation::success("exits cleanly"));
+    let exits_cleanly = validate(
+        &stdout,
+        &stderr,
+        exit_code,
+        &Expectation::success("exits cleanly"),
+    );
     report.add_result(
         "Process exits cleanly",
         if exits_cleanly.is_pass() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail(format!("Exit code: {}", exit_code))
-        }
+        },
     );
 
     // Validation 2: No errors
-    let no_errors = validate(&stdout, &stderr, exit_code, &Expectation::no_errors("no errors"));
+    let no_errors = validate(
+        &stdout,
+        &stderr,
+        exit_code,
+        &Expectation::no_errors("no errors"),
+    );
     report.add_result(
         "No error indicators in output",
         if no_errors.is_pass() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Output contains error indicators")
-        }
+        },
     );
 
     // Validation 3: PathMaps present
@@ -247,8 +328,11 @@ fn test_control_flow() {
         if pathmaps.len() >= 8 {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(format!("Expected at least 8 PathMaps, got {}", pathmaps.len()))
-        }
+            ValidationResult::fail(format!(
+                "Expected at least 8 PathMaps, got {}",
+                pathmaps.len()
+            ))
+        },
     );
 
     // Actual outputs based on current implementation:
@@ -273,20 +357,20 @@ fn test_control_flow() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected quoted s-expression not found")
-        }
+        },
     );
 
     // Validation 5: quote and eval composition !(eval (quote (+ 3 4))) → [7]
-    let has_eval_quote = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[7i64])
-    });
+    let has_eval_quote = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[7i64]));
     report.add_result(
         "Eval/quote composition produces [7]",
         if has_eval_quote {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected output [7] not found")
-        }
+        },
     );
 
     // Validation 6: Verify all 8 tests ran (count empty PathMaps for unimplemented features)
@@ -296,8 +380,11 @@ fn test_control_flow() {
         if empty_count >= 6 {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(format!("Expected at least 6 empty PathMaps, got {}", empty_count))
-        }
+            ValidationResult::fail(format!(
+                "Expected at least 6 empty PathMaps, got {}",
+                empty_count
+            ))
+        },
     );
 
     // Validation 7: Test suite completion message
@@ -307,7 +394,7 @@ fn test_control_flow() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected completion message not found")
-        }
+        },
     );
 
     // Assert all validations passed and print report
@@ -326,25 +413,35 @@ fn test_types() {
     report.exit_code = Some(exit_code);
 
     // Validation 1: Clean exit
-    let exits_cleanly = validate(&stdout, &stderr, exit_code, &Expectation::success("exits cleanly"));
+    let exits_cleanly = validate(
+        &stdout,
+        &stderr,
+        exit_code,
+        &Expectation::success("exits cleanly"),
+    );
     report.add_result(
         "Process exits cleanly",
         if exits_cleanly.is_pass() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail(format!("Exit code: {}", exit_code))
-        }
+        },
     );
 
     // Validation 2: No errors
-    let no_errors = validate(&stdout, &stderr, exit_code, &Expectation::no_errors("no errors"));
+    let no_errors = validate(
+        &stdout,
+        &stderr,
+        exit_code,
+        &Expectation::no_errors("no errors"),
+    );
     report.add_result(
         "No error indicators in output",
         if no_errors.is_pass() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Output contains error indicators")
-        }
+        },
     );
 
     // Validation 3: PathMaps present
@@ -354,8 +451,11 @@ fn test_types() {
         if pathmaps.len() >= 7 {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(format!("Expected at least 7 PathMaps, got {}", pathmaps.len()))
-        }
+            ValidationResult::fail(format!(
+                "Expected at least 7 PathMaps, got {}",
+                pathmaps.len()
+            ))
+        },
     );
 
     // Actual outputs based on current implementation:
@@ -372,55 +472,55 @@ fn test_types() {
     // features that do work: get-type for numbers/booleans and check-type.
 
     // Validation 4: get-type for number → ["Number"]
-    let has_number_type = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&["Number"])
-    });
+    let has_number_type = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&["Number"]));
     report.add_result(
         "get-type for number returns \"Number\"",
         if has_number_type {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected output [\"Number\"] not found")
-        }
+        },
     );
 
     // Validation 5: get-type for boolean → ["Bool"]
-    let has_bool_type = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&["Bool"])
-    });
+    let has_bool_type = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&["Bool"]));
     report.add_result(
         "get-type for boolean returns \"Bool\"",
         if has_bool_type {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected output [\"Bool\"] not found")
-        }
+        },
     );
 
     // Validation 6: check-type match → [true]
-    let has_check_match = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[true])
-    });
+    let has_check_match = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[true]));
     report.add_result(
         "check-type match returns true",
         if has_check_match {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected output [true] not found")
-        }
+        },
     );
 
     // Validation 7: check-type mismatch → [false]
-    let has_check_mismatch = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[false])
-    });
+    let has_check_mismatch = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[false]));
     report.add_result(
         "check-type mismatch returns false",
         if has_check_mismatch {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected output [false] not found")
-        }
+        },
     );
 
     // Validation 8: Verify tests ran (count empty PathMaps for unimplemented features)
@@ -430,8 +530,11 @@ fn test_types() {
         if empty_count >= 3 {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(format!("Expected at least 3 empty PathMaps, got {}", empty_count))
-        }
+            ValidationResult::fail(format!(
+                "Expected at least 3 empty PathMaps, got {}",
+                empty_count
+            ))
+        },
     );
 
     // Validation 9: Test suite completion message
@@ -441,7 +544,7 @@ fn test_types() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected completion message not found")
-        }
+        },
     );
 
     // Assert all validations passed and print report
@@ -460,25 +563,35 @@ fn test_repl_simulation() {
     report.exit_code = Some(exit_code);
 
     // Validation 1: Clean exit
-    let exits_cleanly = validate(&stdout, &stderr, exit_code, &Expectation::success("exits cleanly"));
+    let exits_cleanly = validate(
+        &stdout,
+        &stderr,
+        exit_code,
+        &Expectation::success("exits cleanly"),
+    );
     report.add_result(
         "Process exits cleanly",
         if exits_cleanly.is_pass() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail(format!("Exit code: {}", exit_code))
-        }
+        },
     );
 
     // Validation 2: No errors
-    let no_errors = validate(&stdout, &stderr, exit_code, &Expectation::no_errors("no errors"));
+    let no_errors = validate(
+        &stdout,
+        &stderr,
+        exit_code,
+        &Expectation::no_errors("no errors"),
+    );
     report.add_result(
         "No error indicators in output",
         if no_errors.is_pass() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Output contains error indicators")
-        }
+        },
     );
 
     // Validation 3: PathMaps present
@@ -488,60 +601,63 @@ fn test_repl_simulation() {
         if pathmaps.len() >= 4 {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(format!("Expected at least 4 PathMaps, got {}", pathmaps.len()))
-        }
+            ValidationResult::fail(format!(
+                "Expected at least 4 PathMaps, got {}",
+                pathmaps.len()
+            ))
+        },
     );
 
     // Validation 4: Simple REPL session → [15, 12, 10]
-    let has_repl_session = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[15i64, 12i64, 10i64])
-    });
+    let has_repl_session = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[15i64, 12i64, 10i64]));
     report.add_result(
         "Simple REPL session produces [15, 12, 10]",
         if has_repl_session {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected outputs [15, 12, 10] not found")
-        }
+        },
     );
 
     // Validation 5: Interactive rule definition → [25, 49]
-    let has_square = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[25i64, 49i64])
-    });
+    let has_square = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[25i64, 49i64]));
     report.add_result(
         "Interactive rule definition (square) produces [25, 49]",
         if has_square {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected outputs [25, 49] not found")
-        }
+        },
     );
 
     // Validation 6: Building up context → [6, 4, 10]
-    let has_incremental = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[6i64, 4i64, 10i64])
-    });
+    let has_incremental = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[6i64, 4i64, 10i64]));
     report.add_result(
         "Incremental context building produces [6, 4, 10]",
         if has_incremental {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected outputs [6, 4, 10] not found")
-        }
+        },
     );
 
     // Validation 7: Mix of definitions and evaluations → [3, 20, 21]
-    let has_mixed = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[3i64, 20i64, 21i64])
-    });
+    let has_mixed = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[3i64, 20i64, 21i64]));
     report.add_result(
         "Mixed definitions/evaluations produce [3, 20, 21]",
         if has_mixed {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected outputs [3, 20, 21] not found")
-        }
+        },
     );
 
     // Validation 8: REPL-related content
@@ -551,7 +667,7 @@ fn test_repl_simulation() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected REPL-related content not found")
-        }
+        },
     );
 
     // Assert all validations passed and print report
@@ -574,10 +690,8 @@ fn test_edge_cases() {
     // but still expect the test suite to complete
 
     // Validation 1: Test suite completion
-    let completion_check = Expectation::contains(
-        "test completion",
-        "Edge Cases Test Suite Complete"
-    );
+    let completion_check =
+        Expectation::contains("test completion", "Edge Cases Test Suite Complete");
     let completion_result = validate(&stdout, &stderr, exit_code, &completion_check);
     report.add_result(
         "Test suite completes despite error conditions",
@@ -585,7 +699,7 @@ fn test_edge_cases() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Test suite completion message not found")
-        }
+        },
     );
 
     // Validation 2: PathMaps present
@@ -595,8 +709,11 @@ fn test_edge_cases() {
         if pathmaps.len() >= 6 {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(format!("Expected at least 6 PathMaps, got {}", pathmaps.len()))
-        }
+            ValidationResult::fail(format!(
+                "Expected at least 6 PathMaps, got {}",
+                pathmaps.len()
+            ))
+        },
     );
 
     // Validation 3: Syntax error (unmatched parenthesis) → error s-expression
@@ -612,20 +729,18 @@ fn test_edge_cases() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected error s-expression not found")
-        }
+        },
     );
 
     // Validation 4: Empty input → [] (empty output)
-    let has_empty = pathmaps.iter().any(|pm| {
-        pm.output.is_empty()
-    });
+    let has_empty = pathmaps.iter().any(|pm| pm.output.is_empty());
     report.add_result(
         "Empty input produces empty output",
         if has_empty {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected PathMap with empty output not found")
-        }
+        },
     );
 
     // Validation 5: Undefined function → unevaluated expression (undefined-func, 1, 2)
@@ -638,15 +753,17 @@ fn test_edge_cases() {
         if has_undefined {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected unevaluated expression (undefined-func, 1, 2) not found")
-        }
+            ValidationResult::fail(
+                "Expected unevaluated expression (undefined-func, 1, 2) not found",
+            )
+        },
     );
 
     // Validation 6: Error resilience → [3, error(...), 10]
     let has_error_resilience_outputs = pathmaps.iter().any(|pm| {
         use common::PathMapQuery;
-        pm.output.iter().any(|v| matches!(v, MettaValue::Long(3))) &&
-        pm.output.iter().any(|v| matches!(v, MettaValue::Long(10)))
+        pm.output.iter().any(|v| matches!(v, MettaValue::Long(3)))
+            && pm.output.iter().any(|v| matches!(v, MettaValue::Long(10)))
     });
     report.add_result(
         "Error resilience: evaluation continues after error [3, ..., 10]",
@@ -654,15 +771,14 @@ fn test_edge_cases() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected outputs [3, ..., 10] not found")
-        }
+        },
     );
 
     // Validation 7: Pattern matching with no match → unevaluated (only-zero, 5)
     let has_no_match = pathmaps.iter().any(|pm| {
         use common::PathMapQuery;
-        pm.query_sexpr("only-zero").exists(|v| {
-            v.to_display_string().contains("5")
-        })
+        pm.query_sexpr("only-zero")
+            .exists(|v| v.to_display_string().contains("5"))
     });
     report.add_result(
         "Pattern matching with no match returns unevaluated expression",
@@ -670,7 +786,7 @@ fn test_edge_cases() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected unevaluated expression (only-zero, 5) not found")
-        }
+        },
     );
 
     // Assert all validations passed and print report
@@ -689,7 +805,8 @@ fn test_composability() {
     report.exit_code = Some(exit_code);
 
     // Validation 1: Test completion
-    let completion_check = Expectation::contains("test completion", "Composability Test Suite Complete");
+    let completion_check =
+        Expectation::contains("test completion", "Composability Test Suite Complete");
     let completion_result = validate(&stdout, &stderr, exit_code, &completion_check);
     report.add_result(
         "Test suite completion message present",
@@ -697,7 +814,7 @@ fn test_composability() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Test suite completion message not found")
-        }
+        },
     );
 
     // Validation 2: No errors
@@ -709,7 +826,7 @@ fn test_composability() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Output contains error indicators")
-        }
+        },
     );
 
     // Validation 3: PathMaps present
@@ -719,105 +836,108 @@ fn test_composability() {
         if pathmaps.len() >= 10 {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(format!("Expected at least 10 PathMaps, got {}", pathmaps.len()))
-        }
+            ValidationResult::fail(format!(
+                "Expected at least 10 PathMaps, got {}",
+                pathmaps.len()
+            ))
+        },
     );
 
     // Validation 4: Identity composition → [12]
-    let has_identity = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[12i64])
-    });
+    let has_identity = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[12i64]));
     report.add_result(
         "Identity composition produces [12]",
         if has_identity {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected output [12] not found")
-        }
+        },
     );
 
     // Validation 5: Sequential composition → [30]
-    let has_sequential = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[30i64])
-    });
+    let has_sequential = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[30i64]));
     report.add_result(
         "Sequential composition produces [30]",
         if has_sequential {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected output [30] not found")
-        }
+        },
     );
 
     // Validation 6: State accumulation → [3, 12, 5]
-    let has_accumulation = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[3i64, 12i64, 5i64])
-    });
+    let has_accumulation = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[3i64, 12i64, 5i64]));
     report.add_result(
         "State accumulation produces [3, 12, 5]",
         if has_accumulation {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected outputs [3, 12, 5] not found")
-        }
+        },
     );
 
     // Validation 7: Multiple evaluations → [10, 15]
-    let has_multiple = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[10i64, 15i64])
-    });
+    let has_multiple = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[10i64, 15i64]));
     report.add_result(
         "Multiple evaluations produce [10, 15]",
         if has_multiple {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected outputs [10, 15] not found")
-        }
+        },
     );
 
     // Validation 8: Nested composition → [2, 4, 6]
-    let has_nested = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[2i64, 4i64, 6i64])
-    });
+    let has_nested = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[2i64, 4i64, 6i64]));
     report.add_result(
         "Nested composition produces [2, 4, 6]",
         if has_nested {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected outputs [2, 4, 6] not found")
-        }
+        },
     );
 
     // Validation 9: Mixed operations → [3, 10]
-    let has_mixed = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[3i64, 10i64])
-    });
+    let has_mixed = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[3i64, 10i64]));
     report.add_result(
         "Mixed operations produce [3, 10]",
         if has_mixed {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected outputs [3, 10] not found")
-        }
+        },
     );
 
     // Validation 10: Sequential state → [1, 2, 3, 4, 5]
-    let has_sequential_state = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[1i64, 2i64, 3i64, 4i64, 5i64])
-    });
+    let has_sequential_state = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[1i64, 2i64, 3i64, 4i64, 5i64]));
     report.add_result(
         "Sequential state produces [1, 2, 3, 4, 5]",
         if has_sequential_state {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected outputs [1, 2, 3, 4, 5] not found")
-        }
+        },
     );
 
     // Validation 11: Final composition → [10] or [15]
     let has_final = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&[10i64]) ||
-        OutputMatcher::new(pm).assert_outputs_eq(&[15i64])
+        OutputMatcher::new(pm).assert_outputs_eq(&[10i64])
+            || OutputMatcher::new(pm).assert_outputs_eq(&[15i64])
     });
     report.add_result(
         "Final composition produces [10] or [15]",
@@ -825,7 +945,7 @@ fn test_composability() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected output [10] or [15] not found")
-        }
+        },
     );
 
     // Validation 12: Environment persistence (rule persistence)
@@ -836,7 +956,7 @@ fn test_composability() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected some PathMaps with environment data")
-        }
+        },
     );
 
     // Assert all validations passed and print report
@@ -859,25 +979,35 @@ fn test_example_robot_planning() {
     report.exit_code = Some(exit_code);
 
     // Validation 1: Clean exit
-    let exits_cleanly = validate(&stdout, &stderr, exit_code, &Expectation::success("exits cleanly"));
+    let exits_cleanly = validate(
+        &stdout,
+        &stderr,
+        exit_code,
+        &Expectation::success("exits cleanly"),
+    );
     report.add_result(
         "Process exits cleanly",
         if exits_cleanly.is_pass() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail(format!("Exit code: {}", exit_code))
-        }
+        },
     );
 
     // Validation 2: No errors
-    let no_errors = validate(&stdout, &stderr, exit_code, &Expectation::no_errors("no errors"));
+    let no_errors = validate(
+        &stdout,
+        &stderr,
+        exit_code,
+        &Expectation::no_errors("no errors"),
+    );
     report.add_result(
         "No error indicators in output",
         if no_errors.is_pass() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Output contains error indicators")
-        }
+        },
     );
 
     // Validation 3: PathMaps present
@@ -887,8 +1017,11 @@ fn test_example_robot_planning() {
         if pathmaps.len() >= 9 {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(format!("Expected at least 9 PathMaps, got {}", pathmaps.len()))
-        }
+            ValidationResult::fail(format!(
+                "Expected at least 9 PathMaps, got {}",
+                pathmaps.len()
+            ))
+        },
     );
 
     // Validation 4: Demo execution messages
@@ -898,7 +1031,7 @@ fn test_example_robot_planning() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected demo execution messages not found")
-        }
+        },
     );
 
     // Validation 5: Completion message
@@ -908,14 +1041,14 @@ fn test_example_robot_planning() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected completion message not found")
-        }
+        },
     );
 
     // Validation 6: Demo 1 - Get neighbors of room_a [room_b, room_e]
     let demo1_neighbors = pathmaps.iter().find(|pm| {
-        OutputMatcher::new(pm).assert_outputs_contain("room_b") &&
-        OutputMatcher::new(pm).assert_outputs_contain("room_e") &&
-        pm.output.len() == 2
+        OutputMatcher::new(pm).assert_outputs_contain("room_b")
+            && OutputMatcher::new(pm).assert_outputs_contain("room_e")
+            && pm.output.len() == 2
     });
     report.add_result(
         "Demo 1: neighbors of room_a [room_b, room_e]",
@@ -923,30 +1056,31 @@ fn test_example_robot_planning() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected neighbors output not found")
-        }
+        },
     );
 
     // Validation 7: Demo 2 - Where is ball1? [room_c]
-    let demo2_location = pathmaps.iter().find(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&["room_c"])
-    });
+    let demo2_location = pathmaps
+        .iter()
+        .find(|pm| OutputMatcher::new(pm).assert_outputs_eq(&["room_c"]));
     report.add_result(
         "Demo 2: location of ball1 [room_c]",
         if demo2_location.is_some() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected location output [room_c] not found")
-        }
+        },
     );
 
     // Validation 8: Demo 3 - Find path from room_c to room_a
     let demo3_paths = pathmaps.iter().find(|pm| {
         use common::PathMapQuery;
         let path_results = pm.query_all_sexpr("path");
-        !path_results.is_empty() && path_results.exists(|v| {
-            let s = v.to_display_string();
-            s.contains("room_c") && s.contains("room_b") && s.contains("room_a")
-        })
+        !path_results.is_empty()
+            && path_results.exists(|v| {
+                let s = v.to_display_string();
+                s.contains("room_c") && s.contains("room_b") && s.contains("room_a")
+            })
     });
     report.add_result(
         "Demo 3: paths from room_c to room_a with path structures",
@@ -954,30 +1088,35 @@ fn test_example_robot_planning() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected path structures not found")
-        }
+        },
     );
 
     // Validation 9: Demo 4 Step 1 - Locate ball1 (at least 2 instances of [room_c])
-    let demo4_step1 = pathmaps.iter().filter(|pm| {
-        OutputMatcher::new(pm).assert_outputs_eq(&["room_c"])
-    }).count();
+    let demo4_step1 = pathmaps
+        .iter()
+        .filter(|pm| OutputMatcher::new(pm).assert_outputs_eq(&["room_c"]))
+        .count();
     report.add_result(
         "Demo 4 Step 1: locate ball1 [room_c] (appears 2+ times)",
         if demo4_step1 >= 2 {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(format!("Expected at least 2 PathMaps with [room_c], got {}", demo4_step1))
-        }
+            ValidationResult::fail(format!(
+                "Expected at least 2 PathMaps with [room_c], got {}",
+                demo4_step1
+            ))
+        },
     );
 
     // Validation 10: Demo 4 Step 3 - Build complete transport plan for ball1
     let demo4_plan = pathmaps.iter().find(|pm| {
         use common::PathMapQuery;
         let ball1_outputs = pm.filter_contains("ball1");
-        !ball1_outputs.is_empty() && ball1_outputs.exists(|v| {
-            let s = v.to_display_string();
-            s.contains("build_plan") && s.contains("plan")
-        })
+        !ball1_outputs.is_empty()
+            && ball1_outputs.exists(|v| {
+                let s = v.to_display_string();
+                s.contains("build_plan") && s.contains("plan")
+            })
     });
     report.add_result(
         "Demo 4 Step 3: complete transport plan for ball1",
@@ -985,7 +1124,7 @@ fn test_example_robot_planning() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected transport plan for ball1 not found")
-        }
+        },
     );
 
     // Validation 11: Demo 4 Step 4 - Validated plan with multihop_required
@@ -1001,7 +1140,7 @@ fn test_example_robot_planning() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected validated plan with multihop_required not found")
-        }
+        },
     );
 
     // Validation 12: Demo 4 - ball1 transport steps sequence
@@ -1012,9 +1151,9 @@ fn test_example_robot_planning() {
         vec!["navigate", "room_a"],
         vec!["putdown"],
     ];
-    let has_ball1_steps = pathmaps.iter().any(|pm| {
-        OutputMatcher::new(pm).match_steps_sequence(&ball1_steps_2hop)
-    });
+    let has_ball1_steps = pathmaps
+        .iter()
+        .any(|pm| OutputMatcher::new(pm).match_steps_sequence(&ball1_steps_2hop));
     report.add_result(
         "Demo 4: ball1 transport steps [navigate(room_c), pickup(ball1), navigate(room_b), navigate(room_a), putdown]",
         if has_ball1_steps {
@@ -1028,9 +1167,11 @@ fn test_example_robot_planning() {
     let demo5_hop_counts = pathmaps.iter().find(|pm| {
         use common::PathMapQuery;
         let hop_count_expr = pm.query_descendant("path_hop_count");
-        !hop_count_expr.is_empty() && pm.output.iter().any(|v| {
-            matches!(v, MettaValue::Long(2) | MettaValue::Long(3))
-        })
+        !hop_count_expr.is_empty()
+            && pm
+                .output
+                .iter()
+                .any(|v| matches!(v, MettaValue::Long(2) | MettaValue::Long(3)))
     });
     report.add_result(
         "Demo 5: path hop counts [2, 3]",
@@ -1038,7 +1179,7 @@ fn test_example_robot_planning() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected path hop counts not found")
-        }
+        },
     );
 
     // Validation 14: Demo 6 - Transport plan for box2
@@ -1054,7 +1195,7 @@ fn test_example_robot_planning() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected transport plan for box2 not found")
-        }
+        },
     );
 
     // Validation 15: Demo 6 - box2 transport steps (via room_c OR via room_a->room_e)
@@ -1075,7 +1216,8 @@ fn test_example_robot_planning() {
     ];
     let has_box2_steps = pathmaps.iter().any(|pm| {
         let matcher = OutputMatcher::new(pm);
-        matcher.match_steps_sequence(&box2_steps_via_c) || matcher.match_steps_sequence(&box2_steps_via_a_e)
+        matcher.match_steps_sequence(&box2_steps_via_c)
+            || matcher.match_steps_sequence(&box2_steps_via_a_e)
     });
     report.add_result(
         "Demo 6: box2 transport steps (via room_c OR via room_a->room_e)",
@@ -1083,7 +1225,7 @@ fn test_example_robot_planning() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Expected exact steps sequence for box2 not found")
-        }
+        },
     );
 
     // Validation 16: No errors in PathMap outputs
@@ -1099,7 +1241,7 @@ fn test_example_robot_planning() {
             ValidationResult::pass()
         } else {
             ValidationResult::fail("Some PathMaps contain errors in outputs")
-        }
+        },
     );
 
     // Assert all validations passed and print report
@@ -1113,11 +1255,24 @@ fn test_example_metta_rholang() {
 
     // Validate success and no errors
     assert!(
-        validate(&stdout, &stderr, exit_code, &Expectation::success("exits cleanly")).is_pass(),
-        "Test failed with exit code {}", exit_code
+        validate(
+            &stdout,
+            &stderr,
+            exit_code,
+            &Expectation::success("exits cleanly")
+        )
+        .is_pass(),
+        "Test failed with exit code {}",
+        exit_code
     );
     assert!(
-        validate(&stdout, &stderr, exit_code, &Expectation::no_errors("no errors")).is_pass(),
+        validate(
+            &stdout,
+            &stderr,
+            exit_code,
+            &Expectation::no_errors("no errors")
+        )
+        .is_pass(),
         "Test output contains error indicators"
     );
 
@@ -1155,11 +1310,7 @@ fn test_example_metta_rholang() {
 #[test]
 fn test_rholang_cli_exists() {
     let cli = find_rholang_cli();
-    assert!(
-        cli.exists(),
-        "rholang-cli not found at: {}",
-        cli.display()
-    );
+    assert!(cli.exists(), "rholang-cli not found at: {}", cli.display());
 }
 
 #[test]
@@ -1186,11 +1337,7 @@ fn test_all_test_files_exist() {
 
     for file in test_files {
         let path = integration_dir().join(file);
-        assert!(
-            path.exists(),
-            "Test file not found: {}",
-            path.display()
-        );
+        assert!(path.exists(), "Test file not found: {}", path.display());
     }
 }
 
@@ -1204,7 +1351,11 @@ fn test_phase3_config_load() {
 
     // Test loading the manifest
     let manifest = TestManifest::load_default();
-    assert!(manifest.is_ok(), "Failed to load manifest: {:?}", manifest.err());
+    assert!(
+        manifest.is_ok(),
+        "Failed to load manifest: {:?}",
+        manifest.err()
+    );
 
     let manifest = manifest.unwrap();
 
@@ -1222,23 +1373,28 @@ fn test_phase3_config_load() {
 
 #[test]
 fn test_phase3_filtering() {
-    use common::{TestManifest, TestFilter};
+    use common::{TestFilter, TestManifest};
 
     let manifest = TestManifest::load_default().unwrap();
 
     // Test category filtering
     let basic_tests = manifest.tests_by_category("basic");
     assert!(!basic_tests.is_empty(), "No basic tests found");
-    println!("Basic tests: {:?}", basic_tests.iter().map(|t| &t.name).collect::<Vec<_>>());
+    println!(
+        "Basic tests: {:?}",
+        basic_tests.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
 
     // Test suite filtering
     let core_tests = manifest.tests_in_suite("core");
     assert!(!core_tests.is_empty(), "No tests in 'core' suite");
-    println!("Core suite tests: {:?}", core_tests.iter().map(|t| &t.name).collect::<Vec<_>>());
+    println!(
+        "Core suite tests: {:?}",
+        core_tests.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
 
     // Test filter builder
-    let filter = TestFilter::new()
-        .with_category("basic".to_string());
+    let filter = TestFilter::new().with_category("basic".to_string());
 
     let filtered = filter.apply(&manifest);
     assert!(!filtered.is_empty(), "Filter returned no tests");
@@ -1250,7 +1406,11 @@ fn test_phase3_test_runner() {
 
     // Create runner from default manifest
     let runner = TestRunner::from_default();
-    assert!(runner.is_ok(), "Failed to create runner: {:?}", runner.err());
+    assert!(
+        runner.is_ok(),
+        "Failed to create runner: {:?}",
+        runner.err()
+    );
 
     let runner = runner.unwrap();
 
@@ -1260,7 +1420,10 @@ fn test_phase3_test_runner() {
 
     // The runner methods are tested but not actually executed here
     // to avoid running actual tests during unit test phase
-    println!("Runner created successfully with {} tests", manifest.tests.len());
+    println!(
+        "Runner created successfully with {} tests",
+        manifest.tests.len()
+    );
 }
 
 #[test]
@@ -1283,14 +1446,17 @@ fn test_phase3_categories() {
 
     println!("Categories (by priority):");
     for (name, spec) in categories.iter().take(5) {
-        println!("  {} (priority {}): {}", name, spec.priority, spec.description);
+        println!(
+            "  {} (priority {}): {}",
+            name, spec.priority, spec.description
+        );
     }
 }
 
 /// Test async runner execution (demonstrates Tokio integration)
 #[tokio::test]
 async fn test_async_runner() {
-    use common::{TestRunner, TestFilter};
+    use common::{TestFilter, TestRunner};
 
     // Create runner
     let runner = TestRunner::from_default();
@@ -1298,8 +1464,7 @@ async fn test_async_runner() {
     let runner = runner.unwrap();
 
     // Run a small subset of tests using async API
-    let filter = TestFilter::new()
-        .with_category("basic".to_string());
+    let filter = TestFilter::new().with_category("basic".to_string());
 
     // This now uses Tokio's async runtime for I/O-bound concurrency
     let results = runner.run_filtered(&filter).await;

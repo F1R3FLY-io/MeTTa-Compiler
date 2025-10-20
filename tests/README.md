@@ -28,7 +28,34 @@ cargo test --test rholang_integration test_arithmetic_operations
 cargo test --test rholang_integration -- --nocapture --test-threads=1
 ```
 
+### Formatting and Linting
+
+**Check formatting (same as CI):**
+```bash
+cargo fmt -- --check
+```
+
+**Apply formatting:**
+```bash
+cargo fmt
+```
+
+**Run linter:**
+```bash
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+**Note:** Do NOT use `cargo fmt --all` as it will include path dependencies (MORK, PathMap, f1r3node) which are external projects. The CI only checks MeTTa-Compiler formatting.
+
 ## Prerequisites
+
+**Rust Nightly Required:**
+```bash
+rustup install nightly
+rustup default nightly
+```
+
+The project requires Rust nightly due to dependencies (MORK, PathMap, gxhash) that use unstable features.
 
 ### 1. Build mettatron
 ```bash
@@ -353,14 +380,41 @@ cargo test --test rholang_integration test_my_feature
 
 ## Continuous Integration
 
-See `.github/workflows/integration-tests.yml` for CI configuration (coming in Phase 4).
+Integration tests run automatically on GitHub Actions for:
+- **Push events** to `main`, `develop`, and `dylon/*` branches
+- **Pull requests** to `main` and `develop`
+- **Manual triggers** via workflow dispatch
+- **Nightly runs** at 2 AM UTC (comprehensive test suite)
+
+### Workflows
+
+#### Integration Tests (`integration-tests.yml`)
+- Uses shallow clones (`--depth=1`) for fast dependency checkout
+- Builds MeTTaTron and rholang-cli with Rust nightly
+- Runs unit tests and integration tests
+- Uploads test artifacts on failure
+- Runs linting and formatting checks
+- Generates test report summary
+
+#### Nightly Tests (`nightly-tests.yml`)
+- Uses shallow clones (`--depth=1`) for fast dependency checkout
+- Comprehensive test suite with verbose output
+- Tests organized by category
+- Performance benchmarks
+- Test coverage reports
+- Auto-creates GitHub issues on failure
+
+### Status Badges
+
+[![Integration Tests](https://github.com/F1R3FLY-io/MeTTa-Compiler/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/F1R3FLY-io/MeTTa-Compiler/actions/workflows/integration-tests.yml)
+[![Nightly Tests](https://github.com/F1R3FLY-io/MeTTa-Compiler/actions/workflows/nightly-tests.yml/badge.svg)](https://github.com/F1R3FLY-io/MeTTa-Compiler/actions/workflows/nightly-tests.yml)
 
 ## Implementation Status
 
 - ✅ **Phase 1 Complete**: Basic test runner
 - ✅ **Phase 2 Complete**: Output validation with PathMap parsing
-- ⏳ **Phase 3**: Test configuration & organization
-- ⏳ **Phase 4**: CI/CD integration
+- ✅ **Phase 3 Complete**: Test configuration & organization
+- ✅ **Phase 4 Complete**: CI/CD integration
 - ⏳ **Phase 5**: Enhanced features (benchmarking, HTML reports)
 
 ## References

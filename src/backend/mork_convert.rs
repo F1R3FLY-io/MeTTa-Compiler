@@ -4,13 +4,14 @@
 //! - MettaValue → MORK Expr (for pattern queries)
 //! - MORK bindings → HashMap<String, MettaValue> (for pattern match results)
 
-use std::collections::HashMap;
-use mork_expr::{Expr, ExprZipper, ExprEnv};
-use mork::space::Space;
-use mork_frontend::bytestring_parser::Parser;
 use super::types::MettaValue;
+use mork::space::Space;
+use mork_expr::{Expr, ExprEnv, ExprZipper};
+use mork_frontend::bytestring_parser::Parser;
+use std::collections::HashMap;
 
 /// Context for tracking variables during MettaValue → Expr conversion
+#[derive(Default)]
 pub struct ConversionContext {
     /// Maps variable names to their De Bruijn indices
     pub var_map: HashMap<String, u8>,
@@ -54,7 +55,9 @@ pub fn metta_to_mork_bytes(
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
     let mut buffer = vec![0u8; 4096];
-    let expr = Expr { ptr: buffer.as_mut_ptr() };
+    let expr = Expr {
+        ptr: buffer.as_mut_ptr(),
+    };
     let mut ez = ExprZipper::new(expr);
 
     write_metta_value(value, space, ctx, &mut ez)?;
@@ -73,7 +76,9 @@ fn write_metta_value(
         MettaValue::Atom(name) => {
             // Check if it's a variable
             // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            if (name.starts_with('$') || name.starts_with('&') || name.starts_with('\'')) && name != "&" {
+            if (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
+                && name != "&"
+            {
                 // Variable - use De Bruijn encoding
                 let var_id = &name[1..]; // Remove prefix
                 match ctx.get_or_create_var(var_id)? {

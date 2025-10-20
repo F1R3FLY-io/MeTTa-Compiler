@@ -65,19 +65,19 @@ The integration testing suite will:
 - `tests/common/runner.rs` - Advanced test runner ✅
 
 ### Phase 4: CI/CD Integration
-**Estimated: 1 day** | **Status: Not Started**
+**Estimated: 1 day** | **Status: ✅ Complete**
 
-- [ ] Create GitHub Actions workflow
-- [ ] Add build steps for MeTTaTron
-- [ ] Add build steps for rholang-cli
-- [ ] Configure test execution
-- [ ] Upload test artifacts on failure
-- [ ] Add status badges to README
-- [ ] Configure automated reporting
+- [x] Create GitHub Actions workflow
+- [x] Add build steps for MeTTaTron
+- [x] Add build steps for rholang-cli
+- [x] Configure test execution
+- [x] Upload test artifacts on failure
+- [x] Add status badges to README
+- [x] Configure automated reporting
 
 **Files:**
-- `.github/workflows/integration-tests.yml`
-- `.github/workflows/nightly-tests.yml` (optional)
+- `.github/workflows/integration-tests.yml` ✅
+- `.github/workflows/nightly-tests.yml` ✅
 
 ### Phase 5: Enhanced Features
 **Estimated: 2-3 days** | **Status: Not Started**
@@ -97,14 +97,15 @@ The integration testing suite will:
 
 ## Current Status
 
-**Overall Progress: 60%**
+**Overall Progress: 80%**
 
 - ✅ Analysis complete
 - ✅ Documentation created
 - ✅ **Phase 1 complete** - Basic test runner working!
 - ✅ **Phase 2 complete** - Output validation with PathMap parsing!
 - ✅ **Phase 3 complete** - Test configuration and organization!
-- ⏳ Phases 4-5 pending
+- ✅ **Phase 4 complete** - CI/CD integration with GitHub Actions!
+- ⏳ Phase 5 pending
 
 ### Phase 1 Results
 
@@ -223,6 +224,51 @@ async fn run_tests() {
 ```
 
 **Why Tokio?** The test runner executes external processes (rholang-cli), which is I/O-bound work. Tokio's async runtime is significantly more efficient than thread-based parallelism (like Rayon) for this use case, as it can handle hundreds of concurrent process executions with minimal overhead and resource usage.
+
+### Phase 4 Results
+
+**CI/CD Workflows Created:**
+- `.github/workflows/integration-tests.yml` - Main integration test workflow
+- `.github/workflows/nightly-tests.yml` - Comprehensive nightly test suite
+
+**Integration Tests Workflow:**
+- **Triggers**: Push to `main`/`develop`/`dylon/*`, PRs, manual dispatch
+- **Rust Toolchain**: Nightly (required by MORK/PathMap/gxhash)
+- **Dependencies**: Shallow clones (`--depth=1`) of f1r3node, MORK, and PathMap
+- **Jobs**:
+  - `integration-tests` - Builds and tests both MeTTaTron and rholang-cli
+  - `lint` - Runs cargo fmt and clippy
+  - `test-report` - Generates test summary
+- **Caching**: Cargo registry, index, and build artifacts
+- **Artifacts**: Test results on failure, binaries on success
+- **Estimated Runtime**: ~5-10 minutes (faster with shallow clones)
+
+**Nightly Tests Workflow:**
+- **Schedule**: 2 AM UTC daily
+- **Rust Toolchain**: Nightly
+- **Dependencies**: Shallow clones (`--depth=1`) of f1r3node, MORK, and PathMap
+- **Features**:
+  - Comprehensive test suite with verbose output
+  - Tests organized by category
+  - Performance benchmarks
+  - Test coverage reports with tarpaulin
+  - Auto-creates GitHub issues on failure
+- **Estimated Runtime**: ~30-60 minutes (faster with shallow clones)
+
+**Status Badges:**
+- Integration Tests badge added to README.md
+- Nightly Tests badge added to README.md
+- License badge added to README.md
+
+**Benefits:**
+- ✅ Automated testing on every push/PR
+- ✅ Early detection of regressions
+- ✅ Validates both MeTTaTron and rholang-cli builds
+- ✅ Ensures MORK and PathMap integration works
+- ✅ Comprehensive nightly testing
+- ✅ Automatic issue creation for failures
+- ✅ Test coverage tracking
+- ✅ Fast CI runs with shallow clones (only latest commit, not full history)
 
 ## Quick Start
 
@@ -421,15 +467,22 @@ tokio = { version = "1", features = ["rt-multi-thread", "process", "time", "sync
 ## Test Execution Environment
 
 ### Local Development
-- Rust toolchain 1.70+
+- **Rust nightly toolchain** (required by MORK/PathMap/gxhash dependencies)
 - rholang-cli built and available
 - All integration test files present
 
+**Installing Rust Nightly:**
+```bash
+rustup install nightly
+rustup default nightly
+```
+
 ### CI/CD Environment
 - Ubuntu latest
-- Rust stable toolchain
-- Submodule checkout (f1r3node)
+- **Rust nightly toolchain** (configured in GitHub Actions workflows)
+- Automatic checkout of MORK, PathMap, and f1r3node dependencies
 - Build artifacts uploaded on failure
+- Cargo caching for faster builds
 
 ## Output Formats
 
@@ -579,5 +632,5 @@ Include:
 ---
 
 **Last Updated:** 2025-10-20
-**Status:** Phase 3 complete
-**Next Milestone:** Phase 4 - CI/CD Integration
+**Status:** Phase 4 complete - CI/CD integration with GitHub Actions
+**Next Milestone:** Phase 5 - Enhanced Features (benchmarking, HTML reports)

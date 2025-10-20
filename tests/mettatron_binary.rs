@@ -2,7 +2,6 @@
 ///
 /// Tests the standalone mettatron binary to ensure it works correctly
 /// with various command-line options and MeTTa files.
-
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -26,7 +25,11 @@ fn find_mettatron_binary() -> PathBuf {
 
     panic!(
         "mettatron binary not found. Build it first:\n  cargo build --release\nTried:\n{}",
-        candidates.iter().map(|p| format!("  - {}", p.display())).collect::<Vec<_>>().join("\n")
+        candidates
+            .iter()
+            .map(|p| format!("  - {}", p.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -50,10 +53,7 @@ fn test_binary_exists() {
         use std::os::unix::fs::PermissionsExt;
         let metadata = fs::metadata(&binary).expect("Failed to get binary metadata");
         let permissions = metadata.permissions();
-        assert!(
-            permissions.mode() & 0o111 != 0,
-            "Binary is not executable"
-        );
+        assert!(permissions.mode() & 0o111 != 0, "Binary is not executable");
     }
 }
 
@@ -257,8 +257,7 @@ fn test_output_to_file() {
         output_file.display()
     );
 
-    let contents = fs::read_to_string(&output_file)
-        .expect("Failed to read output file");
+    let contents = fs::read_to_string(&output_file).expect("Failed to read output file");
 
     assert!(!contents.is_empty(), "Output file is empty");
 
@@ -284,7 +283,9 @@ fn test_stdin_input() {
     // Write simple MeTTa expression to stdin
     {
         let stdin = child.stdin.as_mut().expect("Failed to open stdin");
-        stdin.write_all(b"(+ 1 2)\n").expect("Failed to write to stdin");
+        stdin
+            .write_all(b"(+ 1 2)\n")
+            .expect("Failed to write to stdin");
     }
 
     let output = child.wait_with_output().expect("Failed to read output");
@@ -317,10 +318,7 @@ fn test_nonexistent_file() {
         .expect("Failed to execute binary");
 
     // Should fail for nonexistent file
-    assert!(
-        !output.status.success(),
-        "Should fail for nonexistent file"
-    );
+    assert!(!output.status.success(), "Should fail for nonexistent file");
 }
 
 #[test]
@@ -335,7 +333,8 @@ fn test_invalid_metta_syntax() {
 
     {
         let mut file = fs::File::create(&temp_file).expect("Failed to create temp file");
-        file.write_all(b"(+ 1 2").expect("Failed to write to temp file"); // Missing closing paren
+        file.write_all(b"(+ 1 2")
+            .expect("Failed to write to temp file"); // Missing closing paren
     }
 
     let output = Command::new(&binary)
@@ -354,10 +353,7 @@ fn test_invalid_metta_syntax() {
         || stderr.contains("error")
         || stderr.contains("Error");
 
-    assert!(
-        has_error,
-        "Should report error for invalid syntax"
-    );
+    assert!(has_error, "Should report error for invalid syntax");
 
     // Clean up
     let _ = fs::remove_file(&temp_file);
@@ -376,7 +372,9 @@ fn test_all_metta_examples() {
         .expect("Failed to read examples directory")
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
-            entry.path().extension()
+            entry
+                .path()
+                .extension()
                 .and_then(|ext| ext.to_str())
                 .map(|ext| ext == "metta")
                 .unwrap_or(false)

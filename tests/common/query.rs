@@ -1,3 +1,6 @@
+#![allow(clippy::collapsible_match)]
+
+use super::output_parser::PathMapOutput;
 /// Query and matching system for PathMap outputs
 ///
 /// Provides XQuery-inspired path-based queries and type-coercing matchers
@@ -19,9 +22,7 @@
 ///
 /// - `as_atom()`, `as_string()`, `as_i64()`, `as_bool()` - Extract typed values
 /// - `as_sexpr()` - Extract nested s-expression elements
-
 use mettatron::backend::types::MettaValue;
-use super::output_parser::PathMapOutput;
 
 /// Query result that can contain multiple values
 #[derive(Debug, Clone, PartialEq)]
@@ -110,9 +111,8 @@ impl QueryResult {
     where
         F: Fn(&MettaValue) -> bool,
     {
-        let filtered: Vec<MettaValue> = self.as_vec().into_iter()
-            .filter(|v| predicate(v))
-            .collect();
+        let filtered: Vec<MettaValue> =
+            self.as_vec().into_iter().filter(|v| predicate(v)).collect();
 
         match filtered.len() {
             0 => QueryResult::Empty,
@@ -228,7 +228,9 @@ impl PathMapQuery for PathMapOutput {
     where
         F: Fn(&MettaValue) -> bool,
     {
-        let results: Vec<MettaValue> = self.output.iter()
+        let results: Vec<MettaValue> = self
+            .output
+            .iter()
             .filter(|v| predicate(v))
             .cloned()
             .collect();
@@ -263,7 +265,8 @@ impl PathMapQuery for PathMapOutput {
     }
 
     fn outputs_as_i64_seq(&self) -> Vec<i64> {
-        self.output.iter()
+        self.output
+            .iter()
             .filter_map(|v| match v {
                 MettaValue::Long(n) => Some(*n),
                 _ => None,
@@ -279,11 +282,10 @@ impl PathMapQuery for PathMapOutput {
             return false;
         }
 
-        self.output.iter()
+        self.output
+            .iter()
             .zip(expected.iter())
-            .all(|(actual, expected_val)| {
-                actual == &expected_val.clone().to_metta_value()
-            })
+            .all(|(actual, expected_val)| actual == &expected_val.clone().to_metta_value())
     }
 
     // ========================================================================
@@ -300,7 +302,9 @@ impl PathMapQuery for PathMapOutput {
     }
 
     fn query_all_sexpr(&self, head: &str) -> QueryResult {
-        let results: Vec<MettaValue> = self.output.iter()
+        let results: Vec<MettaValue> = self
+            .output
+            .iter()
             .filter(|v| Self::has_head(v, head))
             .cloned()
             .collect();
@@ -344,7 +348,9 @@ impl PathMapQuery for PathMapOutput {
     }
 
     fn filter_contains(&self, text: &str) -> QueryResult {
-        let results: Vec<MettaValue> = self.output.iter()
+        let results: Vec<MettaValue> = self
+            .output
+            .iter()
             .filter(|v| Self::contains_text(v, text))
             .cloned()
             .collect();
@@ -430,7 +436,8 @@ impl PathMapOutput {
 
         // Navigate deeper
         if let MettaValue::SExpr(elements) = value {
-            for element in elements.iter().skip(1) {  // Skip the head
+            for element in elements.iter().skip(1) {
+                // Skip the head
                 if let Some(found) = Self::navigate_path(element, &path[1..]) {
                     return Some(found);
                 }
@@ -444,9 +451,7 @@ impl PathMapOutput {
     fn contains_text(value: &MettaValue, text: &str) -> bool {
         match value {
             MettaValue::Atom(s) | MettaValue::String(s) => s.contains(text),
-            MettaValue::SExpr(elements) => {
-                elements.iter().any(|e| Self::contains_text(e, text))
-            }
+            MettaValue::SExpr(elements) => elements.iter().any(|e| Self::contains_text(e, text)),
             _ => false,
         }
     }
@@ -550,9 +555,10 @@ impl<'a> OutputMatcher<'a> {
 
     /// Find an s-expression in outputs that starts with a specific head
     pub fn find_sexpr_with_head(&self, head: &str) -> Option<&MettaValue> {
-        self.pathmap.output.iter().find(|v| {
-            Self::sexpr_has_head(v, head)
-        })
+        self.pathmap
+            .output
+            .iter()
+            .find(|v| Self::sexpr_has_head(v, head))
     }
 
     /// Check if a value is an s-expression with a specific head
@@ -619,13 +625,16 @@ impl<'a> OutputMatcher<'a> {
             return false;
         }
 
-        steps.iter().zip(expected.iter()).all(|(actual_step, expected_step)| {
-            if let MettaValue::SExpr(step_elements) = actual_step {
-                Self::match_step_tuple(step_elements, expected_step)
-            } else {
-                false
-            }
-        })
+        steps
+            .iter()
+            .zip(expected.iter())
+            .all(|(actual_step, expected_step)| {
+                if let MettaValue::SExpr(step_elements) = actual_step {
+                    Self::match_step_tuple(step_elements, expected_step)
+                } else {
+                    false
+                }
+            })
     }
 
     /// Match a single step tuple like ("navigate", "room_b") or ("pickup", "box2")
@@ -634,12 +643,13 @@ impl<'a> OutputMatcher<'a> {
             return false;
         }
 
-        elements.iter().zip(expected.iter()).all(|(actual, expected_str)| {
-            match actual {
+        elements
+            .iter()
+            .zip(expected.iter())
+            .all(|(actual, expected_str)| match actual {
                 MettaValue::String(s) | MettaValue::Atom(s) => s == expected_str,
                 _ => false,
-            }
-        })
+            })
     }
 }
 
@@ -690,10 +700,7 @@ mod tests {
         let pathmap = PathMapOutput {
             source: vec![],
             environment: None,
-            output: vec![
-                MettaValue::Long(42),
-                MettaValue::Long(100),
-            ],
+            output: vec![MettaValue::Long(42), MettaValue::Long(100)],
         };
 
         let matcher = OutputMatcher::new(&pathmap);
@@ -710,7 +717,10 @@ mod tests {
         assert_eq!(42i64.to_metta_value(), MettaValue::Long(42));
         assert_eq!(42i32.to_metta_value(), MettaValue::Long(42));
         assert_eq!(true.to_metta_value(), MettaValue::Bool(true));
-        assert_eq!("hello".to_metta_value(), MettaValue::String("hello".to_string()));
+        assert_eq!(
+            "hello".to_metta_value(),
+            MettaValue::String("hello".to_string())
+        );
     }
 
     #[test]
@@ -745,7 +755,10 @@ mod tests {
         // Query first plan
         let result = pathmap.query_sexpr("plan");
         assert!(!result.is_empty());
-        assert_eq!(result.as_sexpr().unwrap()[0], MettaValue::String("plan".to_string()));
+        assert_eq!(
+            result.as_sexpr().unwrap()[0],
+            MettaValue::String("plan".to_string())
+        );
 
         // Query all (should find one)
         let result = pathmap.query_all_sexpr("plan");

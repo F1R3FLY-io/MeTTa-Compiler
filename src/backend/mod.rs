@@ -5,11 +5,11 @@
 // - `eval`: Lazy evaluation with direct dispatch to Rholang interpreter built-ins
 // - `run`: PathMap method to execute s-expressions (will be in Rholang)
 
-pub mod types;
 pub mod compile;
 pub mod eval;
 pub mod mork_convert;
+pub mod types;
 
-pub use types::*;
 pub use compile::compile;
 pub use eval::eval;
+pub use types::*;

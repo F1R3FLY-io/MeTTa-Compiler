@@ -68,6 +68,7 @@ section = "devel"
 priority = "optional"
 assets = [
     ["target/release/mettatron", "usr/bin/", "755"],
+    ["target/release/rholang-cli", "usr/bin/", "755"],
     ["target/release/libmettatron.so", "usr/lib/", "644"],
     ["target/release/libmettatron.rlib", "usr/lib/", "644"],
     ["README.md", "usr/share/doc/mettatron/", "644"],
@@ -80,6 +81,7 @@ assets = [
 license = "Apache-2.0"
 assets = [
     { source = "target/release/mettatron", dest = "/usr/bin/mettatron", mode = "755" },
+    { source = "target/release/rholang-cli", dest = "/usr/bin/rholang-cli", mode = "755" },
     { source = "target/release/libmettatron.so", dest = "/usr/lib64/libmettatron.so", mode = "644" },
     { source = "target/release/libmettatron.rlib", dest = "/usr/lib64/libmettatron.rlib", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/mettatron/README.md", mode = "644", doc = true },

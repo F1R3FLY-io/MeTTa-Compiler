@@ -1,0 +1,167 @@
+name: Publish Package Repositories
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  publish-apt-repo:
+    name: Update APT Repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout packages repository
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/mettatron-apt
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: gh-pages
+
+      - name: Download .deb package
+        run: |
+          # Download the latest .deb from releases
+          gh release download --repo F1R3FLY-io/MeTTa-Compiler --pattern '*.deb' --dir pool/main/m/mettatron/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install aptly
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aptly gnupg
+
+      - name: Create/Update APT repository
+        run: |
+          # Initialize aptly if needed
+          if [ ! -f ~/.aptly.conf ]; then
+            cat > ~/.aptly.conf <<EOF
+          {
+            "rootDir": "$PWD/.aptly",
+            "downloadConcurrency": 4,
+            "downloadSpeedLimit": 0,
+            "architectures": ["amd64", "arm64"],
+            "dependencyFollowSuggests": false,
+            "dependencyFollowRecommends": false,
+            "dependencyFollowAllVariants": false,
+            "dependencyFollowSource": false,
+            "dependencyVerboseResolve": false,
+            "gpgDisableSign": false,
+            "gpgDisableVerify": false,
+            "gpgProvider": "gpg",
+            "downloadSourcePackages": false,
+            "skipLegacyPool": true,
+            "ppaDistributorID": "ubuntu",
+            "ppaCodename": "",
+            "skipContentsPublishing": false,
+            "FileSystemPublishEndpoints": {},
+            "S3PublishEndpoints": {},
+            "SwiftPublishEndpoints": {}
+          }
+          EOF
+          fi
+
+          # Create or update repository
+          aptly repo create -distribution=stable -component=main mettatron || true
+          aptly repo add mettatron pool/main/m/mettatron/*.deb
+          aptly publish repo -skip-signing mettatron
+
+      - name: Commit and push
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .
+          git commit -m "Update repository with latest packages" || true
+          git push
+
+  publish-yum-repo:
+    name: Update YUM Repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout packages repository
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/mettatron-yum
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: gh-pages
+
+      - name: Download .rpm package
+        run: |
+          mkdir -p rpms
+          gh release download --repo F1R3FLY-io/MeTTa-Compiler --pattern '*.rpm' --dir rpms/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install createrepo
+        run: sudo apt-get update && sudo apt-get install -y createrepo-c
+
+      - name: Create/Update YUM repository
+        run: |
+          mkdir -p repodata
+          createrepo_c .
+
+      - name: Commit and push
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .
+          git commit -m "Update repository with latest packages" || true
+          git push
+
+  publish-pacman-repo:
+    name: Update Pacman Repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout packages repository
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/mettatron-arch
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: gh-pages
+
+      - name: Download Arch package
+        run: |
+          mkdir -p x86_64
+          # For Arch, we'll build from PKGBUILD on user's machine
+          # Just host the PKGBUILD file
+          curl -o PKGBUILD https://raw.githubusercontent.com/F1R3FLY-io/MeTTa-Compiler/main/packaging/arch/PKGBUILD
+
+      - name: Commit and push
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .
+          git commit -m "Update PKGBUILD" || true
+          git push
+
+  update-homebrew-tap:
+    name: Update Homebrew Tap
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/homebrew-mettatron
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update formula
+        run: |
+          curl -o Formula/mettatron.rb https://raw.githubusercontent.com/F1R3FLY-io/MeTTa-Compiler/main/packaging/homebrew/mettatron.rb
+
+          # Update SHA256 and version from latest release
+          VERSION=$(gh release view --repo F1R3FLY-io/MeTTa-Compiler --json tagName -q .tagName | sed 's/v//')
+          sed -i "s/v0.1.0/v$VERSION/" Formula/mettatron.rb
+
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit and push
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .
+          git commit -m "Update formula to latest release" || true
+          git push

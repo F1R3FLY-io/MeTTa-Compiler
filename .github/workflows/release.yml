@@ -1,0 +1,322 @@
+name: Release Builds and Packaging
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.1.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-matrix:
+    name: Build ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: mettatron-linux-x86_64
+            use_cross: false
+
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            rustflags: ""
+            artifact_name: mettatron-linux-arm64
+            use_cross: false
+
+          - name: macOS x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: mettatron-macos-x86_64
+            use_cross: false
+
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            rustflags: ""
+            artifact_name: mettatron-macos-arm64
+            use_cross: false
+
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: mettatron-windows-x86_64
+            use_cross: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout dependencies (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd ../
+          git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+          git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
+          git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
+
+      - name: Checkout dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd ..\
+          git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+          git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
+          git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
+
+      - name: Install protobuf compiler (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install protobuf compiler (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          target: ${{ matrix.platform.target }}
+
+      - name: Build MeTTaTron
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: cargo build --release --target ${{ matrix.platform.target }} --verbose
+
+      - name: Build rholang-cli (Unix)
+        if: runner.os != 'Windows'
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          cd ../f1r3node/rholang
+          cargo build --release --bin rholang-cli --target ${{ matrix.platform.target }} --verbose
+
+      - name: Build rholang-cli (Windows)
+        if: runner.os == 'Windows'
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          cd ..\f1r3node\rholang
+          cargo build --release --bin rholang-cli --target ${{ matrix.platform.target }} --verbose
+
+      - name: Prepare binaries (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.platform.target }}/release/mettatron dist/
+          cp ../f1r3node/target/${{ matrix.platform.target }}/release/rholang-cli dist/
+          chmod +x dist/*
+
+      - name: Prepare binaries (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir dist
+          copy target\${{ matrix.platform.target }}\release\mettatron.exe dist\
+          copy ..\f1r3node\target\${{ matrix.platform.target }}\release\rholang-cli.exe dist\
+
+      - name: Create tarball (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          tar czf ../${{ matrix.platform.artifact_name }}.tar.gz *
+          cd ..
+
+      - name: Create zip archive
+        run: |
+          cd dist
+          7z a ../${{ matrix.platform.artifact_name }}.zip *
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: |
+            ${{ matrix.platform.artifact_name }}.tar.gz
+            ${{ matrix.platform.artifact_name }}.zip
+          retention-days: 30
+
+  package-deb:
+    name: Create .deb package
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux x86_64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: mettatron-linux-x86_64
+
+      - name: Extract binaries
+        run: tar xzf mettatron-linux-x86_64.tar.gz
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Create .deb package
+        run: cargo deb --no-build --no-strip
+
+      - name: Upload .deb package
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: target/debian/*.deb
+          retention-days: 30
+
+  package-rpm:
+    name: Create .rpm package
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux x86_64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: mettatron-linux-x86_64
+
+      - name: Extract binaries
+        run: tar xzf mettatron-linux-x86_64.tar.gz
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+
+      - name: Create .rpm package
+        run: cargo generate-rpm
+
+      - name: Upload .rpm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package
+          path: target/generate-rpm/*.rpm
+          retention-days: 30
+
+  package-macos-dmg:
+    name: Create macOS .dmg installer
+    needs: build-matrix
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download macOS build (ARM64)
+        uses: actions/download-artifact@v4
+        with:
+          name: mettatron-macos-arm64
+
+      - name: Extract binaries
+        run: tar xzf mettatron-macos-arm64.tar.gz
+
+      - name: Create .dmg
+        run: |
+          mkdir -p dmg-contents
+          cp mettatron dmg-contents/
+          cp rholang-cli dmg-contents/
+          hdiutil create -volname "MeTTaTron" -srcfolder dmg-contents -ov -format UDZO mettatron-macos.dmg
+
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: mettatron-macos.dmg
+          retention-days: 30
+
+  package-windows-installer:
+    name: Create Windows installer
+    needs: build-matrix
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: mettatron-windows-x86_64
+
+      - name: Extract binaries
+        run: |
+          7z x mettatron-windows-x86_64.zip -odist
+
+      - name: Install WiX
+        run: dotnet tool install --global wix
+
+      - name: Create installer configuration
+        run: |
+          echo '<?xml version="1.0" encoding="UTF-8"?>' > installer.wxs
+          echo '<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">' >> installer.wxs
+          echo '  <Product Id="*" Name="MeTTaTron" Language="1033" Version="0.1.0" Manufacturer="F1R3FLY.io" UpgradeCode="PUT-GUID-HERE">' >> installer.wxs
+          echo '    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />' >> installer.wxs
+          echo '    <MediaTemplate EmbedCab="yes" />' >> installer.wxs
+          echo '    <Directory Id="TARGETDIR" Name="SourceDir">' >> installer.wxs
+          echo '      <Directory Id="ProgramFilesFolder">' >> installer.wxs
+          echo '        <Directory Id="INSTALLFOLDER" Name="MeTTaTron" />' >> installer.wxs
+          echo '      </Directory>' >> installer.wxs
+          echo '    </Directory>' >> installer.wxs
+          echo '    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">' >> installer.wxs
+          echo '      <Component Id="mettatron.exe">' >> installer.wxs
+          echo '        <File Source="dist\mettatron.exe" KeyPath="yes" />' >> installer.wxs
+          echo '      </Component>' >> installer.wxs
+          echo '      <Component Id="rholang_cli.exe">' >> installer.wxs
+          echo '        <File Source="dist\rholang-cli.exe" KeyPath="yes" />' >> installer.wxs
+          echo '      </Component>' >> installer.wxs
+          echo '    </ComponentGroup>' >> installer.wxs
+          echo '    <Feature Id="ProductFeature" Title="MeTTaTron" Level="1">' >> installer.wxs
+          echo '      <ComponentGroupRef Id="ProductComponents" />' >> installer.wxs
+          echo '    </Feature>' >> installer.wxs
+          echo '  </Product>' >> installer.wxs
+          echo '</Wix>' >> installer.wxs
+
+      # Note: WiX build would go here, but requires proper configuration
+      # For now, we'll just package as zip
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/*
+          retention-days: 30
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-matrix, package-deb, package-rpm, package-macos-dmg, package-windows-installer]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            */mettatron-*
+            debian-package/*.deb
+            rpm-package/*.rpm
+            macos-dmg/*.dmg
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -6,8 +6,11 @@
 //   env' = union env_i
 //   return fold over rules & grounded functions (emptyset, env')
 
-use crate::backend::types::{MettaValue, Environment, Bindings, EvalResult, Rule};
-use crate::backend::mork_convert::{metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext};
+use crate::backend::environment::Environment;
+use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
+use crate::backend::mork_convert::{
+    metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext,
+};
 use mork_bytestring::Expr;
 
 /// Evaluate a MettaValue in the given environment
@@ -15,9 +18,7 @@ use mork_bytestring::Expr;
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
     match value {
         // Errors propagate immediately without further evaluation
-        MettaValue::Error(_, _) => {
-            (vec![value], env)
-        }
+        MettaValue::Error(_, _) => (vec![value], env),
 
         // For atoms: add bare symbols to MORK Space, then return as-is
         MettaValue::Atom(_) => {
@@ -28,11 +29,12 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
         }
 
         // For other ground types, return as-is
-        MettaValue::Bool(_) | MettaValue::Long(_)
-        | MettaValue::String(_) | MettaValue::Uri(_) | MettaValue::Nil
-        | MettaValue::Type(_) => {
-            (vec![value], env)
-        }
+        MettaValue::Bool(_)
+        | MettaValue::Long(_)
+        | MettaValue::String(_)
+        | MettaValue::Uri(_)
+        | MettaValue::Nil
+        | MettaValue::Type(_) => (vec![value], env),
 
         // For s-expressions, evaluate elements and apply rules/built-ins
         MettaValue::SExpr(items) => eval_sexpr(items, env),
@@ -61,7 +63,7 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 
                     // Return empty list (rule definitions don't produce output)
                     return (vec![], new_env);
-                } else{
+                } else {
                     let err = MettaValue::Error(
                         "= requires exactly two arguments: lhs and rhs".to_string(),
                         Box::new(MettaValue::SExpr(items)),
@@ -431,7 +433,10 @@ fn eval_match(args: &[MettaValue], env: Environment) -> EvalResult {
                 }
                 _ => {
                     let err = MettaValue::Error(
-                        format!("match only supports 'self' as space name, got: {:?}", space_name),
+                        format!(
+                            "match only supports 'self' as space name, got: {:?}",
+                            space_name
+                        ),
                         Box::new(MettaValue::SExpr(args.to_vec())),
                     );
                     (vec![err], env)
@@ -518,8 +523,11 @@ where
 {
     if args.len() != 2 {
         return Some(MettaValue::Error(
-            format!("Arithmetic operation requires exactly 2 arguments, got {}", args.len()),
-            Box::new(MettaValue::Nil)
+            format!(
+                "Arithmetic operation requires exactly 2 arguments, got {}",
+                args.len()
+            ),
+            Box::new(MettaValue::Nil),
         ));
     }
 
@@ -528,7 +536,7 @@ where
         other => {
             return Some(MettaValue::Error(
                 format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string()))
+                Box::new(MettaValue::Atom("BadType".to_string())),
             ));
         }
     };
@@ -538,7 +546,7 @@ where
         other => {
             return Some(MettaValue::Error(
                 format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string()))
+                Box::new(MettaValue::Atom("BadType".to_string())),
             ));
         }
     };
@@ -553,8 +561,11 @@ where
 {
     if args.len() != 2 {
         return Some(MettaValue::Error(
-            format!("Comparison operation requires exactly 2 arguments, got {}", args.len()),
-            Box::new(MettaValue::Nil)
+            format!(
+                "Comparison operation requires exactly 2 arguments, got {}",
+                args.len()
+            ),
+            Box::new(MettaValue::Nil),
         ));
     }
 
@@ -563,7 +574,7 @@ where
         other => {
             return Some(MettaValue::Error(
                 format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string()))
+                Box::new(MettaValue::Atom("BadType".to_string())),
             ));
         }
     };
@@ -573,7 +584,7 @@ where
         other => {
             return Some(MettaValue::Error(
                 format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string()))
+                Box::new(MettaValue::Atom("BadType".to_string())),
             ));
         }
     };
@@ -601,7 +612,9 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
 
         // Variables (start with $, &, or ') bind to values
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-        (MettaValue::Atom(p), v) if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\'')) && p != "&" => {
+        (MettaValue::Atom(p), v)
+            if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\'')) && p != "&" =>
+        {
             // Check if variable is already bound
             if let Some(existing) = bindings.get(p) {
                 existing == v
@@ -652,9 +665,7 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Vec<Vec<MettaValue>> {
 
     // Base case: single result list
     if results.len() == 1 {
-        return results[0].iter()
-            .map(|item| vec![item.clone()])
-            .collect();
+        return results[0].iter().map(|item| vec![item.clone()]).collect();
     }
 
     // Recursive case: combine first list with Cartesian product of rest
@@ -680,11 +691,14 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
     match value {
         // Apply bindings to variables (atoms starting with $, &, or ')
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-        MettaValue::Atom(s) if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" => {
+        MettaValue::Atom(s)
+            if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" =>
+        {
             bindings.get(s).cloned().unwrap_or_else(|| value.clone())
         }
         MettaValue::SExpr(items) => {
-            let new_items: Vec<_> = items.iter()
+            let new_items: Vec<_> = items
+                .iter()
                 .map(|item| apply_bindings(item, bindings))
                 .collect();
             MettaValue::SExpr(new_items)
@@ -703,23 +717,25 @@ fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
     match pattern {
         // For s-expressions like (double $x), extract "double"
         // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
-        MettaValue::SExpr(items) if !items.is_empty() => {
-            match &items[0] {
-                MettaValue::Atom(head) if !head.starts_with('$')
+        MettaValue::SExpr(items) if !items.is_empty() => match &items[0] {
+            MettaValue::Atom(head)
+                if !head.starts_with('$')
                     && (!head.starts_with('&') || head == "&")
                     && !head.starts_with('\'')
-                    && head != "_" => {
-                    Some(head.clone())
-                }
-                _ => None,
+                    && head != "_" =>
+            {
+                Some(head.clone())
             }
-        }
+            _ => None,
+        },
         // For bare atoms like foo, use the atom itself
         // EXCEPT: standalone "&" is allowed (used in match)
-        MettaValue::Atom(head) if !head.starts_with('$')
-            && (!head.starts_with('&') || head == "&")
-            && !head.starts_with('\'')
-            && head != "_" => {
+        MettaValue::Atom(head)
+            if !head.starts_with('$')
+                && (!head.starts_with('&') || head == "&")
+                && !head.starts_with('\'')
+                && head != "_" =>
+        {
             Some(head.clone())
         }
         _ => None,
@@ -732,11 +748,18 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
     match pattern {
         // Variables are least specific
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-        MettaValue::Atom(s) if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') || s == "_") && s != "&" => {
+        MettaValue::Atom(s)
+            if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') || s == "_")
+                && s != "&" =>
+        {
             1000 // Variables are least specific
         }
-        MettaValue::Atom(_) | MettaValue::Bool(_) | MettaValue::Long(_)
-        | MettaValue::String(_) | MettaValue::Uri(_) | MettaValue::Nil => {
+        MettaValue::Atom(_)
+        | MettaValue::Bool(_)
+        | MettaValue::Long(_)
+        | MettaValue::String(_)
+        | MettaValue::Uri(_)
+        | MettaValue::Nil => {
             0 // Literals are most specific (including standalone "&")
         }
         MettaValue::SExpr(items) => {
@@ -767,7 +790,10 @@ fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue,
 }
 
 /// Try pattern matching using MORK's query_multi to find ALL matching rules (O(k) where k = matching rules)
-fn try_match_all_rules_query_multi(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
+fn try_match_all_rules_query_multi(
+    expr: &MettaValue,
+    env: &Environment,
+) -> Vec<(MettaValue, Bindings)> {
     // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
     // This will find all rules where the LHS matches our expression
     let space = env.space.lock().unwrap();
@@ -787,14 +813,18 @@ fn try_match_all_rules_query_multi(expr: &MettaValue, env: &Environment) -> Vec<
     let mut parse_buffer = vec![0u8; 4096];
     let mut pdp = mork::space::ParDataParser::new(&space.sm);
     use mork_frontend::bytestring_parser::Parser;
-    let mut ez = mork_bytestring::ExprZipper::new(Expr { ptr: parse_buffer.as_mut_ptr() });
+    let mut ez = mork_bytestring::ExprZipper::new(Expr {
+        ptr: parse_buffer.as_mut_ptr(),
+    });
     let mut context = mork_frontend::bytestring_parser::Context::new(pattern_bytes);
 
     if pdp.sexpr(&mut context, &mut ez).is_err() {
         return Vec::new(); // Fallback if parsing fails
     }
 
-    let pattern_expr = Expr { ptr: parse_buffer.as_ptr().cast_mut() };
+    let pattern_expr = Expr {
+        ptr: parse_buffer.as_ptr().cast_mut(),
+    };
 
     // Collect ALL matches using query_multi
     // Note: All matches from query_multi will have the same LHS pattern (since we're querying for it)
@@ -819,7 +849,10 @@ fn try_match_all_rules_query_multi(expr: &MettaValue, env: &Environment) -> Vec<
 }
 
 /// Fallback: Try pattern matching using iteration to find ALL matching rules (O(n) where n = total rules)
-fn try_match_all_rules_iterative(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
+fn try_match_all_rules_iterative(
+    expr: &MettaValue,
+    env: &Environment,
+) -> Vec<(MettaValue, Bindings)> {
     // Try to extract head symbol for filtering
     let target_head = get_head_symbol(expr);
 
@@ -859,7 +892,8 @@ fn try_match_all_rules_iterative(expr: &MettaValue, env: &Environment) -> Vec<(M
     // Find the best (lowest) specificity
     if let Some(best_spec) = matches.iter().map(|(_, _, spec, _)| *spec).min() {
         // Filter to only matches with the best specificity
-        let best_matches: Vec<_> = matches.into_iter()
+        let best_matches: Vec<_> = matches
+            .into_iter()
             .filter(|(_, _, spec, _)| *spec == best_spec)
             .collect();
 
@@ -991,7 +1025,10 @@ fn types_match(actual: &MettaValue, expected: &MettaValue) -> bool {
             if a_items.len() != e_items.len() {
                 return false;
             }
-            a_items.iter().zip(e_items.iter()).all(|(a, e)| types_match(a, e))
+            a_items
+                .iter()
+                .zip(e_items.iter())
+                .all(|(a, e)| types_match(a, e))
         }
 
         // Nil matches Nil
@@ -1005,7 +1042,7 @@ fn types_match(actual: &MettaValue, expected: &MettaValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::types::Rule;
+    use crate::backend::models::Rule;
 
     #[test]
     fn test_eval_atom() {
@@ -1106,10 +1143,7 @@ mod tests {
         let env = Environment::new();
 
         // Create an error
-        let error = MettaValue::Error(
-            "test error".to_string(),
-            Box::new(MettaValue::Long(42)),
-        );
+        let error = MettaValue::Error("test error".to_string(), Box::new(MettaValue::Long(42)));
 
         // Errors should propagate unchanged
         let (results, _) = eval(error.clone(), env);
@@ -2477,10 +2511,7 @@ mod tests {
         let env = Environment::new();
 
         // Test: !(+ 1) - wrong number of arguments
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-        ]);
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("+".to_string()), MettaValue::Long(1)]);
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);

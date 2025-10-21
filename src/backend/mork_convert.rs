@@ -4,11 +4,11 @@
 //! - MettaValue → MORK Expr (for pattern queries)
 //! - MORK bindings → HashMap<String, MettaValue> (for pattern match results)
 
-use std::collections::HashMap;
-use mork_bytestring::{Expr, ExprZipper, ExprEnv};
+use super::models::MettaValue;
 use mork::space::Space;
+use mork_bytestring::{Expr, ExprEnv, ExprZipper};
 use mork_frontend::bytestring_parser::Parser;
-use super::types::MettaValue;
+use std::collections::HashMap;
 
 /// Context for tracking variables during MettaValue → Expr conversion
 pub struct ConversionContext {
@@ -54,7 +54,9 @@ pub fn metta_to_mork_bytes(
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
     let mut buffer = vec![0u8; 4096];
-    let expr = Expr { ptr: buffer.as_mut_ptr() };
+    let expr = Expr {
+        ptr: buffer.as_mut_ptr(),
+    };
     let mut ez = ExprZipper::new(expr);
 
     write_metta_value(value, space, ctx, &mut ez)?;
@@ -73,7 +75,9 @@ fn write_metta_value(
         MettaValue::Atom(name) => {
             // Check if it's a variable
             // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            if (name.starts_with('$') || name.starts_with('&') || name.starts_with('\'')) && name != "&" {
+            if (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
+                && name != "&"
+            {
                 // Variable - use De Bruijn encoding
                 let var_id = &name[1..]; // Remove prefix
                 match ctx.get_or_create_var(var_id)? {
@@ -180,7 +184,7 @@ pub fn mork_bindings_to_metta(
     ctx: &ConversionContext,
     space: &Space,
 ) -> Result<HashMap<String, MettaValue>, String> {
-    use super::types::Environment;
+    use super::environment::Environment;
 
     let mut bindings = HashMap::new();
 
@@ -206,7 +210,7 @@ pub fn mork_bindings_to_metta(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::types::Environment;
+    use crate::backend::environment::Environment;
 
     #[test]
     fn test_simple_atom_conversion() {

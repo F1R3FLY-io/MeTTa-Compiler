@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>mettatron</id>
+    <version>0.1.0</version>
+    <packageSourceUrl>https://github.com/F1R3FLY-io/MeTTa-Compiler</packageSourceUrl>
+    <owners>F1R3FLY.io</owners>
+    <title>MeTTaTron</title>
+    <authors>F1R3FLY.io</authors>
+    <projectUrl>https://github.com/F1R3FLY-io/MeTTa-Compiler</projectUrl>
+    <copyright>2024 F1R3FLY.io</copyright>
+    <licenseUrl>https://github.com/F1R3FLY-io/MeTTa-Compiler/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/F1R3FLY-io/MeTTa-Compiler</projectSourceUrl>
+    <docsUrl>https://github.com/F1R3FLY-io/MeTTa-Compiler/blob/main/README.md</docsUrl>
+    <bugTrackerUrl>https://github.com/F1R3FLY-io/MeTTa-Compiler/issues</bugTrackerUrl>
+    <tags>metta evaluator lisp pattern-matching compiler</tags>
+    <summary>MeTTa language evaluator with lazy evaluation and pattern matching</summary>
+    <description>
+MeTTaTron is a MeTTa language evaluator with lazy evaluation and pattern matching.
+MeTTa is a language with LISP-like S-expression syntax supporting rules, control flow,
+type assertions, and grounded functions.
+
+Features:
+- Lazy evaluation
+- Pattern matching
+- Type system
+- S-expression syntax
+- Rule-based programming
+    </description>
+    <releaseNotes>https://github.com/F1R3FLY-io/MeTTa-Compiler/releases</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

@@ -50,3 +50,31 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+# Debian package metadata
+[package.metadata.deb]
+maintainer = "F1R3FLY.io <noreply@f1r3fly.io>"
+copyright = "2024, F1R3FLY.io <noreply@f1r3fly.io>"
+license-file = ["LICENSE", "4"]
+extended-description = """\
+MeTTaTron is a MeTTa language evaluator with lazy evaluation and pattern matching.
+MeTTa is a language with LISP-like S-expression syntax supporting rules, control flow,
+type assertions, and grounded functions."""
+depends = "$auto"
+section = "devel"
+priority = "optional"
+assets = [
+    ["target/release/mettatron", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/mettatron/", "644"],
+    ["LICENSE", "usr/share/doc/mettatron/", "644"],
+    ["examples/*", "usr/share/doc/mettatron/examples/", "644"],
+]
+
+# RPM package metadata
+[package.metadata.generate-rpm]
+license = "Apache-2.0"
+assets = [
+    { source = "target/release/mettatron", dest = "/usr/bin/mettatron", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/mettatron/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/doc/mettatron/LICENSE", mode = "644", doc = true },
+]

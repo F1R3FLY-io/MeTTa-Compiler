@@ -9,7 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
-  RUSTFLAGS: "-C target-cpu=native"
+  RUSTFLAGS: "-C target-feature=+aes,+sse2"
 
 jobs:
   comprehensive-tests:

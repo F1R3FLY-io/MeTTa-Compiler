@@ -58,7 +58,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
         }
         MettaValue::SExpr(items) => {
             // Convert S-expressions to Rholang tuples (more semantically appropriate than lists)
-            let item_pars: Vec<Par> = items.iter().map(|v| metta_value_to_par(v)).collect();
+            let item_pars: Vec<Par> = items.iter().map(metta_value_to_par).collect();
 
             Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple {
@@ -100,7 +100,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
 
 /// Convert a vector of MettaValues to a Rholang List Par
 pub fn metta_values_to_list_par(values: &[MettaValue]) -> Par {
-    let item_pars: Vec<Par> = values.iter().map(|v| metta_value_to_par(v)).collect();
+    let item_pars: Vec<Par> = values.iter().map(metta_value_to_par).collect();
 
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EListBody(EList {
@@ -155,7 +155,7 @@ pub fn environment_to_par(env: &Environment) -> Par {
         ));
 
         // Backup symbols to temp file
-        if let Err(_) = space.backup_symbols(&temp_path) {
+        if space.backup_symbols(&temp_path).is_err() {
             // If backup fails, use empty bytes
             Vec::new()
         } else {
@@ -371,7 +371,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
             Some(ExprInstance::EListBody(list)) => {
                 // Lists are also converted to S-expressions for compatibility
                 let items: Result<Vec<MettaValue>, String> =
-                    list.ps.iter().map(|p| par_to_metta_value(p)).collect();
+                    list.ps.iter().map(par_to_metta_value).collect();
                 Ok(MettaValue::SExpr(items?))
             }
             Some(ExprInstance::ETupleBody(tuple)) => {
@@ -409,32 +409,30 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
                                 _ => {
                                     // Unknown tag, treat as regular S-expr
                                     let items: Result<Vec<MettaValue>, String> =
-                                        tuple.ps.iter().map(|p| par_to_metta_value(p)).collect();
+                                        tuple.ps.iter().map(par_to_metta_value).collect();
                                     Ok(MettaValue::SExpr(items?))
                                 }
                             }
                         } else {
                             // First element is an atom, not a tag - it's a regular S-expr
                             let items: Result<Vec<MettaValue>, String> =
-                                tuple.ps.iter().map(|p| par_to_metta_value(p)).collect();
+                                tuple.ps.iter().map(par_to_metta_value).collect();
                             Ok(MettaValue::SExpr(items?))
                         }
                     } else {
                         // First element is not a string - it's a regular S-expr
                         let items: Result<Vec<MettaValue>, String> =
-                            tuple.ps.iter().map(|p| par_to_metta_value(p)).collect();
+                            tuple.ps.iter().map(par_to_metta_value).collect();
                         Ok(MettaValue::SExpr(items?))
                     }
                 } else {
                     // Small tuple, treat as S-expr
                     let items: Result<Vec<MettaValue>, String> =
-                        tuple.ps.iter().map(|p| par_to_metta_value(p)).collect();
+                        tuple.ps.iter().map(par_to_metta_value).collect();
                     Ok(MettaValue::SExpr(items?))
                 }
             }
-            _ => Err(format!(
-                "Unsupported Par expression type for MettaValue conversion"
-            )),
+            _ => Err("Unsupported Par expression type for MettaValue conversion".to_string()),
         }
     } else {
         Err("Par has no expressions to convert".to_string())
@@ -718,7 +716,7 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                     let source = if let Some(expr) = pending_par.exprs.first() {
                         if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
                             let exprs: Result<Vec<MettaValue>, String> =
-                                list.ps.iter().map(|p| par_to_metta_value(p)).collect();
+                                list.ps.iter().map(par_to_metta_value).collect();
                             exprs?
                         } else {
                             return Err("Expected EListBody for source".to_string());
@@ -736,7 +734,7 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                     let output = if let Some(expr) = outputs_par.exprs.first() {
                         if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
                             let outputs: Result<Vec<MettaValue>, String> =
-                                list.ps.iter().map(|p| par_to_metta_value(p)).collect();
+                                list.ps.iter().map(par_to_metta_value).collect();
                             outputs?
                         } else {
                             return Err("Expected EListBody for output".to_string());
@@ -825,7 +823,7 @@ mod tests {
                     .and_then(|e| e.expr_instance.as_ref())
                 {
                     println!("Space dump has {} bytes", dump_bytes.len());
-                    assert!(dump_bytes.len() > 0, "Space dump should not be empty");
+                    assert!(!dump_bytes.is_empty(), "Space dump should not be empty");
                 } else {
                     panic!("Expected GByteArray for space dump");
                 }
@@ -1377,7 +1375,7 @@ mod tests {
         let (results, _) = eval(query, env2);
 
         println!("Query returned {} results", results.len());
-        assert!(results.len() > 0, "Should find the connected fact");
+        assert!(!results.is_empty(), "Should find the connected fact");
 
         println!("✓ Deserialized Environment can be used for evaluation!");
     }

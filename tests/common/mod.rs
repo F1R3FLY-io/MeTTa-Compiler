@@ -149,7 +149,9 @@ mod tests {
         if std::panic::catch_unwind(|| {
             let cli = find_rholang_cli();
             assert!(cli.exists());
-        }).is_ok() {
+        })
+        .is_ok()
+        {
             // Success
         } else {
             eprintln!("Skipping test_find_rholang_cli: rholang-cli not found");

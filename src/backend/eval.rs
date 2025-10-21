@@ -764,7 +764,7 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         }
         MettaValue::SExpr(items) => {
             // Sum specificity of all items
-            items.iter().map(|item| pattern_specificity(item)).sum()
+            items.iter().map(pattern_specificity).sum()
         }
         // Errors: use specificity of details
         MettaValue::Error(_, details) => pattern_specificity(details),

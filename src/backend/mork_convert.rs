@@ -11,6 +11,7 @@ use mork_frontend::bytestring_parser::Parser;
 use std::collections::HashMap;
 
 /// Context for tracking variables during MettaValue → Expr conversion
+#[derive(Default)]
 pub struct ConversionContext {
     /// Maps variable names to their De Bruijn indices
     pub var_map: HashMap<String, u8>,

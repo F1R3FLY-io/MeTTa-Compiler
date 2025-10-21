@@ -10,7 +10,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  RUSTFLAGS: "-C target-cpu=native"
+  RUSTFLAGS: "-C target-feature=+aes,+sse2"
 
 jobs:
   integration-tests:

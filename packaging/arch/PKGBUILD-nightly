@@ -36,6 +36,10 @@ build() {
     export RUSTUP_TOOLCHAIN=nightly
     export CARGO_TARGET_DIR=target
     cargo build --release --locked
+
+    # Build rholang-cli
+    cd "$srcdir/f1r3node/rholang"
+    cargo build --release --bin rholang-cli --locked
 }
 
 check() {
@@ -52,7 +56,12 @@ package() {
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 
+    # Install rholang-cli
+    cd "$srcdir/f1r3node"
+    install -Dm755 "target/release/rholang-cli" "$pkgdir/usr/bin/rholang-cli"
+
     # Install examples
+    cd "$srcdir/mettatron"
     mkdir -p "$pkgdir/usr/share/doc/$pkgname/examples"
     cp -r examples/* "$pkgdir/usr/share/doc/$pkgname/examples/"
 }

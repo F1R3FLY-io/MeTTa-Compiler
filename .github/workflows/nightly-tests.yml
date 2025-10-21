@@ -360,6 +360,7 @@ jobs:
 
           package() {
               install -Dm755 "/build/binaries/mettatron" "$pkgdir/usr/bin/mettatron"
+              install -Dm755 "/build/binaries/rholang-cli" "$pkgdir/usr/bin/rholang-cli"
               install -Dm644 "/build/binaries/libmettatron.so" "$pkgdir/usr/lib/libmettatron.so"
               install -Dm644 "/build/binaries/libmettatron.rlib" "$pkgdir/usr/lib/libmettatron.rlib"
           }

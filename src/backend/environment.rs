@@ -263,6 +263,7 @@ impl Environment {
     /// Get type for an atom by querying MORK Space
     /// Searches for type assertions of the form (: name type)
     /// Returns None if no type assertion exists for the given name
+    #[allow(clippy::collapsible_match)]
     pub fn get_type(&self, name: &str) -> Option<MettaValue> {
         use mork_expr::Expr;
 
@@ -308,6 +309,7 @@ impl Environment {
     ///
     /// Uses direct zipper traversal to avoid dump/parse overhead.
     /// This provides O(n) iteration without string serialization.
+    #[allow(clippy::collapsible_match)]
     pub fn iter_rules(&self) -> impl Iterator<Item = Rule> {
         use mork_expr::Expr;
 
@@ -450,7 +452,7 @@ impl Environment {
         // Iterate through all values in the Space to find the atom
         // This is O(n) but correct for now
         // TODO: Use indexed lookup for O(1) query
-        while rz.to_next_val() {
+        if rz.to_next_val() {
             // Get the path as a string representation
             // We need to check if this path matches our target atom
             // For now, we'll do a simple presence check

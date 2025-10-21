@@ -1,4 +1,4 @@
-name: Nightly Tests
+name: Nightly Tests and Builds
 
 on:
   schedule:
@@ -8,159 +8,372 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
-  RUSTFLAGS: "-C target-feature=+aes,+sse2"
 
 jobs:
-  comprehensive-tests:
-    name: Comprehensive Nightly Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+  build-and-test-matrix:
+    name: Build & Test ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: mettatron-linux-x86_64
+
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            rustflags: "-C target-feature=+aes,+neon"
+            artifact_name: mettatron-linux-arm64
+
+          - name: macOS x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: mettatron-macos-x86_64
+
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            rustflags: "-C target-feature=+aes,+neon"
+            artifact_name: mettatron-macos-arm64
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-        fetch-depth: 1
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-    - name: Checkout f1r3node dependency
-      run: |
-        cd ../
-        git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+      - name: Checkout dependencies (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd ../
+          git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+          git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
+          git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
 
-    - name: Checkout MORK dependency
-      run: |
-        cd ../
-        git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
+      - name: Install protobuf compiler (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-    - name: Checkout PathMap dependency
-      run: |
-        cd ../
-        git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
+      - name: Install protobuf compiler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
 
-    - name: Install protobuf compiler
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          target: ${{ matrix.platform.target }}
 
-    - name: Install Rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
-      with:
-        toolchain: nightly
+      - name: Build MeTTaTron
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          echo "::group::Building MeTTaTron"
+          cargo build --release --target ${{ matrix.platform.target }} --verbose
+          ls -lh target/${{ matrix.platform.target }}/release/mettatron*
+          echo "::endgroup::"
 
-    - name: Build all components
-      run: |
-        echo "::group::Building MeTTaTron"
-        cargo build --release --verbose
-        echo "::endgroup::"
+      - name: Build rholang-cli (Unix)
+        if: runner.os != 'Windows'
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          echo "::group::Building rholang-cli"
+          cd ../f1r3node/rholang
+          cargo build --release --bin rholang-cli --target ${{ matrix.platform.target }} --verbose
+          ls -lh ../../f1r3node/target/${{ matrix.platform.target }}/release/rholang-cli*
+          echo "::endgroup::"
 
-        echo "::group::Building rholang-cli"
-        cd ../f1r3node/rholang
-        cargo build --release --bin rholang-cli --verbose
-        echo "::endgroup::"
+      - name: Run unit tests
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          echo "::group::Unit tests"
+          cargo test --lib --target ${{ matrix.platform.target }} --verbose -- --nocapture
+          echo "::endgroup::"
 
-    - name: Run all tests with verbose output
-      run: |
-        echo "::group::Unit tests"
-        cargo test --lib --verbose -- --nocapture
-        echo "::endgroup::"
+      - name: Run integration tests
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          echo "::group::Integration tests"
+          cargo test --test rholang_integration --target ${{ matrix.platform.target }} --verbose -- --nocapture
+          echo "::endgroup::"
 
-        echo "::group::Integration tests"
-        cargo test --test rholang_integration --verbose -- --nocapture
-        echo "::endgroup::"
+      - name: Run categorized tests
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          echo "::group::Basic tests"
+          cargo test --test rholang_integration test_basic_evaluation --target ${{ matrix.platform.target }} -- --nocapture
+          echo "::endgroup::"
 
-    - name: Run tests by category
-      run: |
-        echo "::group::Basic tests"
-        cargo test --test rholang_integration test_basic_evaluation -- --nocapture
-        echo "::endgroup::"
+          echo "::group::Control flow tests"
+          cargo test --test rholang_integration test_control_flow --target ${{ matrix.platform.target }} -- --nocapture
+          echo "::endgroup::"
 
-        echo "::group::Control flow tests"
-        cargo test --test rholang_integration test_control_flow -- --nocapture
-        echo "::endgroup::"
+          echo "::group::Type system tests"
+          cargo test --test rholang_integration test_types --target ${{ matrix.platform.target }} -- --nocapture
+          echo "::endgroup::"
 
-        echo "::group::Type system tests"
-        cargo test --test rholang_integration test_types -- --nocapture
-        echo "::endgroup::"
+          echo "::group::Composability tests"
+          cargo test --test rholang_integration test_composability --target ${{ matrix.platform.target }} -- --nocapture
+          echo "::endgroup::"
 
-        echo "::group::Composability tests"
-        cargo test --test rholang_integration test_composability -- --nocapture
-        echo "::endgroup::"
+      - name: Prepare binaries (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.platform.target }}/release/mettatron dist/
+          cp ../f1r3node/target/${{ matrix.platform.target }}/release/rholang-cli dist/
+          chmod +x dist/*
 
-    - name: Run performance benchmarks
-      run: |
-        echo "::group::Performance tests"
-        # Run with timing info
-        time cargo test --release --test rholang_integration -- --nocapture
-        echo "::endgroup::"
+      - name: Create tarball (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          tar czf ../${{ matrix.platform.artifact_name }}.tar.gz *
+          cd ..
 
-    - name: Upload comprehensive logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: nightly-test-logs
-        path: |
-          target/
-          integration/
-          tests/
-        retention-days: 14
+      - name: Create zip archive
+        run: |
+          cd dist
+          7z a ../${{ matrix.platform.artifact_name }}.zip *
 
-    - name: Create issue on failure
-      if: failure()
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const title = '🌙 Nightly tests failed on ' + new Date().toISOString().split('T')[0];
-          const body = `The nightly test suite has failed.
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: |
+            ${{ matrix.platform.artifact_name }}.tar.gz
+            ${{ matrix.platform.artifact_name }}.zip
+          retention-days: 14
 
-          **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.platform.artifact_name }}
+          path: |
+            target/${{ matrix.platform.target }}/debug/
+            integration/*.rho
+            tests/*.rs
+          retention-days: 7
 
-          Please investigate and fix the failing tests.`;
+  package-deb:
+    name: Create .deb package (nightly)
+    needs: build-and-test-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-          // Check if issue already exists
-          const issues = await github.rest.issues.listForRepo({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            state: 'open',
-            labels: 'nightly-failure'
-          });
+      - name: Download Linux x86_64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: mettatron-linux-x86_64
 
-          if (issues.data.length === 0) {
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: title,
-              body: body,
-              labels: ['nightly-failure', 'automated']
-            });
-          }
+      - name: Extract binaries
+        run: |
+          tar xzf mettatron-linux-x86_64.tar.gz
+          mkdir -p target/release
+          mv mettatron target/release/
+          mv rholang-cli target/release/
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Create .deb package
+        run: cargo deb --no-build --no-strip
+
+      - name: Upload .deb package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-debian-package
+          path: target/debian/*.deb
+          retention-days: 14
+
+  package-rpm:
+    name: Create .rpm package (nightly)
+    needs: build-and-test-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux x86_64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: mettatron-linux-x86_64
+
+      - name: Extract binaries
+        run: |
+          tar xzf mettatron-linux-x86_64.tar.gz
+          mkdir -p target/release
+          mv mettatron target/release/
+          mv rholang-cli target/release/
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+
+      - name: Create .rpm package
+        run: cargo generate-rpm
+
+      - name: Upload .rpm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-rpm-package
+          path: target/generate-rpm/*.rpm
+          retention-days: 14
+
+  package-macos-dmg:
+    name: Create macOS .dmg installer (nightly)
+    needs: build-and-test-matrix
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download macOS build (ARM64)
+        uses: actions/download-artifact@v4
+        with:
+          name: mettatron-macos-arm64
+
+      - name: Extract binaries
+        run: tar xzf mettatron-macos-arm64.tar.gz
+
+      - name: Create .dmg
+        run: |
+          mkdir -p dmg-contents
+          cp mettatron dmg-contents/
+          cp rholang-cli dmg-contents/
+          hdiutil create -volname "MeTTaTron Nightly" -srcfolder dmg-contents -ov -format UDZO mettatron-macos-nightly.dmg
+
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-macos-dmg
+          path: mettatron-macos-nightly.dmg
+          retention-days: 14
 
   test-coverage:
     name: Test Coverage Report
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-    - name: Install Rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
-      with:
-        toolchain: nightly
+      - name: Checkout dependencies
+        run: |
+          cd ../
+          git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+          git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
+          git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
 
-    - name: Install tarpaulin
-      run: cargo install cargo-tarpaulin
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-    - name: Generate coverage report
-      run: |
-        cargo tarpaulin --verbose --workspace --timeout 300 --out Xml
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
 
-    - name: Upload coverage to codecov
-      uses: codecov/codecov-action@v4
-      with:
-        files: ./cobertura.xml
-        fail_ci_if_error: false
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Generate coverage report
+        run: cargo tarpaulin --verbose --workspace --timeout 300 --out Xml
+
+      - name: Upload coverage to codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./cobertura.xml
+          fail_ci_if_error: false
+
+  create-nightly-summary:
+    name: Create Nightly Build Summary
+    needs: [build-and-test-matrix, package-deb, package-rpm, package-macos-dmg, test-coverage]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Nightly Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Matrix Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Platform | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Linux x86_64 | ${{ needs.build-and-test-matrix.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Linux ARM64 | ${{ needs.build-and-test-matrix.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| macOS x86_64 | ${{ needs.build-and-test-matrix.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| macOS ARM64 | ${{ needs.build-and-test-matrix.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Packaging Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Debian (.deb) | ${{ needs.package-deb.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| RPM (.rpm) | ${{ needs.package-rpm.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| macOS (.dmg) | ${{ needs.package-macos-dmg.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Coverage | ${{ needs.test-coverage.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.build-and-test-matrix.result }}" == "success" ] && \
+             [ "${{ needs.package-deb.result }}" == "success" ] && \
+             [ "${{ needs.package-rpm.result }}" == "success" ] && \
+             [ "${{ needs.package-macos-dmg.result }}" == "success" ]; then
+            echo "✅ All nightly builds and packages succeeded!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Some nightly builds or packages failed. Please review the logs." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Create issue on failure
+        if: failure() || needs.build-and-test-matrix.result == 'failure' || needs.package-deb.result == 'failure' || needs.package-rpm.result == 'failure' || needs.package-macos-dmg.result == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🌙 Nightly builds failed on ' + new Date().toISOString().split('T')[0];
+            const body = `The nightly build suite has failed.
+
+            **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            **Status:**
+            - Build Matrix: ${{ needs.build-and-test-matrix.result }}
+            - Debian Package: ${{ needs.package-deb.result }}
+            - RPM Package: ${{ needs.package-rpm.result }}
+            - macOS DMG: ${{ needs.package-macos-dmg.result }}
+            - Test Coverage: ${{ needs.test-coverage.result }}
+
+            Please investigate and fix the failing builds.`;
+
+            // Check if issue already exists
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'nightly-failure'
+            });
+
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['nightly-failure', 'automated']
+              });
+            }

@@ -82,18 +82,36 @@ mettatron --version
 
 ## Arch Linux (Pacman/AUR)
 
-### Option 1: Build from AUR
+### Option 1: Install from repository (recommended)
+
+Add the MeTTaTron repository to `/etc/pacman.conf`:
 
 ```bash
-# Clone the PKGBUILD
-git clone https://github.com/F1R3FLY-io/mettatron-arch.git
-cd mettatron-arch
+sudo tee -a /etc/pacman.conf <<EOF
+
+[mettatron]
+SigLevel = Optional TrustAll
+Server = https://f1r3fly-io.github.io/mettatron-arch/\$arch
+EOF
+```
+
+Update package database and install:
+
+```bash
+sudo pacman -Sy mettatron
+```
+
+### Option 2: Build from PKGBUILD
+
+```bash
+# Download PKGBUILD
+curl -O https://f1r3fly-io.github.io/mettatron-arch/PKGBUILD
 
 # Build and install
 makepkg -si
 ```
 
-### Option 2: Use an AUR helper (e.g., yay)
+### Option 3: Use an AUR helper (e.g., yay)
 
 ```bash
 yay -S mettatron

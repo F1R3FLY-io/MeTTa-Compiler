@@ -367,6 +367,11 @@ jobs:
           sed -i "s/__VERSION__/${GITHUB_REF_NAME#v}/" build-context/PKGBUILD
           sed -i "s/__ARCH__/${{ matrix.arch.name }}/" build-context/PKGBUILD
 
+          # Debug: Show PKGBUILD content after substitution
+          echo "=== PKGBUILD for ${{ matrix.arch.name }} after sed ==="
+          cat build-context/PKGBUILD
+          echo "=== End PKGBUILD ==="
+
           # Run build in container
           mkdir -p output
           docker run --rm \
@@ -375,6 +380,11 @@ jobs:
             -v "$PWD/build-arch-pkg.sh:/build-arch-pkg.sh" \
             archlinux:latest \
             /build-arch-pkg.sh
+
+          # Debug: Show what package was created
+          echo "=== Packages created for ${{ matrix.arch.name }} ==="
+          ls -la output/
+          echo "=== End package list ==="
 
       - name: Upload Arch package
         uses: actions/upload-artifact@v4

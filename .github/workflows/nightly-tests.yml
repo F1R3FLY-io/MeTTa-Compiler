@@ -23,12 +23,29 @@ jobs:
         submodules: recursive
         fetch-depth: 1
 
-    - name: Checkout dependencies
-      run: |
-        cd ../
-        git clone --depth=1 https://github.com/F1R3FLY-io/f1r3node.git f1r3node
-        git clone --depth=1 https://github.com/F1R3FLY-io/MORK.git MORK
-        git clone --depth=1 https://github.com/F1R3FLY-io/PathMap.git PathMap
+    - name: Checkout f1r3node dependency
+      uses: actions/checkout@v4
+      with:
+        repository: F1R3FLY-io/f1r3node
+        path: ../f1r3node
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 1
+
+    - name: Checkout MORK dependency
+      uses: actions/checkout@v4
+      with:
+        repository: F1R3FLY-io/MORK
+        path: ../MORK
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 1
+
+    - name: Checkout PathMap dependency
+      uses: actions/checkout@v4
+      with:
+        repository: F1R3FLY-io/PathMap
+        path: ../PathMap
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 1
 
     - name: Install Rust toolchain
       uses: actions-rust-lang/setup-rust-toolchain@v1

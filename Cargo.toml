@@ -1,6 +1,6 @@
 [package]
 name = "mettatron"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["F1R3FLY.io"]
 description = "MeTTaTron - MeTTa language evaluator with lazy evaluation and pattern matching"

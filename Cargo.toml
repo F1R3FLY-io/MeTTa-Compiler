@@ -33,11 +33,11 @@ tokio = { version = "1", features = ["rt", "sync"], optional = true }
 # PathMap - Trie-map library used by MORK
 # Unix/Linux/macOS: Use jemalloc for better performance
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
+pathmap = { path = "../PathMap", default-features = false, features = ["jemalloc", "arena_compact", "nightly", "serialization", "graft_root_vals", "slim_ptrs"] }
 
 # Windows: Disable jemalloc (not compatible with Windows build tools)
 [target.'cfg(target_os = "windows")'.dependencies]
-pathmap = { path = "../PathMap", features = ["arena_compact"] }
+pathmap = { path = "../PathMap", default-features = false, features = ["arena_compact", "nightly", "serialization", "graft_root_vals", "slim_ptrs"] }
 
 [features]
 default = ["interning", "async"]

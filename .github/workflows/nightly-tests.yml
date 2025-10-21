@@ -23,35 +23,12 @@ jobs:
         submodules: recursive
         fetch-depth: 1
 
-    - name: Checkout f1r3node dependency
-      uses: actions/checkout@v4
-      with:
-        repository: F1R3FLY-io/f1r3node
-        path: .deps/f1r3node
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 1
-
-    - name: Checkout MORK dependency
-      uses: actions/checkout@v4
-      with:
-        repository: F1R3FLY-io/MORK
-        path: .deps/MORK
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 1
-
-    - name: Checkout PathMap dependency
-      uses: actions/checkout@v4
-      with:
-        repository: F1R3FLY-io/PathMap
-        path: .deps/PathMap
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 1
-
-    - name: Move dependencies to parent directory
+    - name: Checkout dependencies
       run: |
-        mv .deps/f1r3node ../f1r3node
-        mv .deps/MORK ../MORK
-        mv .deps/PathMap ../PathMap
+        cd ../
+        git clone --depth=1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/F1R3FLY-io/f1r3node.git f1r3node
+        git clone --depth=1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/F1R3FLY-io/MORK.git MORK
+        git clone --depth=1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/F1R3FLY-io/PathMap.git PathMap
 
     - name: Install Rust toolchain
       uses: actions-rust-lang/setup-rust-toolchain@v1

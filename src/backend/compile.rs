@@ -7,7 +7,7 @@
 //
 // Operator symbols like +, -, * are preserved as-is (not normalized to add, sub, mul)
 
-use crate::backend::types::{MettaValue, MettaState};
+use crate::backend::models::{MettaState, MettaValue};
 use crate::sexpr::{Lexer, Parser, SExpr};
 
 /// Compile MeTTa source code into a MettaState ready for evaluation
@@ -277,10 +277,7 @@ mod tests {
         let state = compile(src).unwrap();
 
         assert_eq!(state.source.len(), 1);
-        assert_eq!(
-            state.source[0],
-            MettaValue::Atom("'quoted".to_string())
-        );
+        assert_eq!(state.source[0], MettaValue::Atom("'quoted".to_string()));
     }
 
     #[test]

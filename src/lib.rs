@@ -1,3 +1,8 @@
+pub mod backend;
+pub mod config;
+pub mod ffi;
+pub mod pathmap_par_integration;
+pub mod rholang_integration;
 /// MeTTaTron - MeTTa Evaluator Library
 ///
 /// This library provides a complete MeTTa language evaluator with lazy evaluation,
@@ -60,38 +65,27 @@
 /// - **Pattern Matching**: Automatic variable binding in rule application
 /// - **Error Propagation**: First error stops evaluation immediately
 /// - **Environment**: Monotonic rule storage with union operations
-
 pub mod sexpr;
-pub mod backend;
-pub mod rholang_integration;
-pub mod pathmap_par_integration;
-pub mod ffi;
-pub mod config;
 
-pub use sexpr::{Lexer, Parser, SExpr, Token};
 pub use backend::{
-    compile, eval,
-    types::{MettaValue, Environment, Rule, MettaState},
+    compile,
+    environment::Environment,
+    eval,
+    models::{MettaState, MettaValue, Rule},
 };
-pub use rholang_integration::{
-    run_state,
-    metta_state_to_json,
-    compile_to_state_json,
-};
+pub use rholang_integration::{compile_to_state_json, metta_state_to_json, run_state};
+pub use sexpr::{Lexer, Parser, SExpr, Token};
 
 // Export run_state_async when async feature is enabled (which is by default)
 #[cfg(feature = "async")]
 pub use rholang_integration::run_state_async;
 
 pub use pathmap_par_integration::{
-    metta_value_to_par,
-    metta_state_to_pathmap_par,
-    metta_error_to_par,
-    par_to_metta_value,
+    metta_error_to_par, metta_state_to_pathmap_par, metta_value_to_par, par_to_metta_value,
     pathmap_par_to_metta_state,
 };
 
-pub use config::{EvalConfig, configure_eval, get_eval_config};
+pub use config::{configure_eval, get_eval_config, EvalConfig};
 
 #[cfg(test)]
 mod tests {
@@ -1294,10 +1288,10 @@ mod tests {
 
         if let Some(results) = result {
             assert_eq!(results.len(), 4);
-            assert!(results.contains(&MettaValue::Long(11)));  // 1 + 10
-            assert!(results.contains(&MettaValue::Long(21)));  // 1 + 20
-            assert!(results.contains(&MettaValue::Long(12)));  // 2 + 10
-            assert!(results.contains(&MettaValue::Long(22)));  // 2 + 20
+            assert!(results.contains(&MettaValue::Long(11))); // 1 + 10
+            assert!(results.contains(&MettaValue::Long(21))); // 1 + 20
+            assert!(results.contains(&MettaValue::Long(12))); // 2 + 10
+            assert!(results.contains(&MettaValue::Long(22))); // 2 + 20
         } else {
             panic!("Expected Cartesian product of nondeterministic operands");
         }
@@ -1374,8 +1368,8 @@ mod tests {
 
         if let Some(results) = result {
             assert_eq!(results.len(), 2);
-            assert!(results.contains(&MettaValue::Long(15)));  // h(g(1)) = h(10) = 15
-            assert!(results.contains(&MettaValue::Long(25)));  // h(g(2)) = h(20) = 25
+            assert!(results.contains(&MettaValue::Long(15))); // h(g(1)) = h(10) = 15
+            assert!(results.contains(&MettaValue::Long(25))); // h(g(2)) = h(20) = 25
         } else {
             panic!("Expected [15, 25] from deeply nested nondeterministic application");
         }
@@ -1565,7 +1559,11 @@ mod tests {
         }
 
         // Should return empty list when no matches found
-        assert!(last_result.is_empty(), "Expected empty results for no match, got: {:?}", last_result);
+        assert!(
+            last_result.is_empty(),
+            "Expected empty results for no match, got: {:?}",
+            last_result
+        );
     }
 
     #[test]
@@ -1631,11 +1629,20 @@ mod tests {
         }
 
         // Should match both (a b c) and (x y z), extracting middle elements
-        assert!(last_result.len() >= 2, "Expected at least 2 match results, got: {} - {:?}", last_result.len(), last_result);
-        assert!(last_result.iter().any(|r| matches!(r, MettaValue::SExpr(items)
+        assert!(
+            last_result.len() >= 2,
+            "Expected at least 2 match results, got: {} - {:?}",
+            last_result.len(),
+            last_result
+        );
+        assert!(last_result
+            .iter()
+            .any(|r| matches!(r, MettaValue::SExpr(items)
             if items.len() == 2 && items[0] == MettaValue::Atom("middle".to_string())
             && items[1] == MettaValue::Atom("b".to_string()))));
-        assert!(last_result.iter().any(|r| matches!(r, MettaValue::SExpr(items)
+        assert!(last_result
+            .iter()
+            .any(|r| matches!(r, MettaValue::SExpr(items)
             if items.len() == 2 && items[0] == MettaValue::Atom("middle".to_string())
             && items[1] == MettaValue::Atom("y".to_string()))));
     }

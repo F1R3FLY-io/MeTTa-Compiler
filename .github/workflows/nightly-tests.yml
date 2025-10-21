@@ -343,13 +343,17 @@ jobs:
 
           # Modify PKGBUILD to use pre-built binaries instead of building from source
           # Keep pkgname, provides, conflicts from PKGBUILD-nightly but skip git operations
-          cat > build-context/PKGBUILD <<'PKGBUILD_EOF'
+          # Use unquoted heredoc to allow variable substitution
+          ARCH_NAME="${{ matrix.arch.name }}"
+          PKG_VERSION="$(date +%Y%m%d)"
+
+          cat > build-context/PKGBUILD <<PKGBUILD_EOF
           # Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
           pkgname=mettatron-nightly
-          pkgver=$(date +%Y%m%d)
+          pkgver=${PKG_VERSION}
           pkgrel=1
           pkgdesc="MeTTa language evaluator with lazy evaluation and pattern matching (nightly build)"
-          arch=('${{ matrix.arch.name }}')
+          arch=('${ARCH_NAME}')
           url="https://github.com/F1R3FLY-io/MeTTa-Compiler"
           license=('Apache')
           depends=('gcc-libs')
@@ -359,10 +363,10 @@ jobs:
           sha256sums=()
 
           package() {
-              install -Dm755 "/build/binaries/mettatron" "$pkgdir/usr/bin/mettatron"
-              install -Dm755 "/build/binaries/rholang-cli" "$pkgdir/usr/bin/rholang-cli"
-              install -Dm644 "/build/binaries/libmettatron.so" "$pkgdir/usr/lib/libmettatron.so"
-              install -Dm644 "/build/binaries/libmettatron.rlib" "$pkgdir/usr/lib/libmettatron.rlib"
+              install -Dm755 "/build/binaries/mettatron" "\$pkgdir/usr/bin/mettatron"
+              install -Dm755 "/build/binaries/rholang-cli" "\$pkgdir/usr/bin/rholang-cli"
+              install -Dm644 "/build/binaries/libmettatron.so" "\$pkgdir/usr/lib/libmettatron.so"
+              install -Dm644 "/build/binaries/libmettatron.rlib" "\$pkgdir/usr/lib/libmettatron.rlib"
           }
           PKGBUILD_EOF
 

@@ -19,8 +19,6 @@ name = "mettatron"
 path = "src/main.rs"
 
 [dependencies]
-# PathMap - Trie-map library used by MORK
-pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }
 # MORK expr - S-expression representation used by MORK (formerly mork-bytestring)
@@ -31,6 +29,15 @@ mork-frontend = { path = "../MORK/frontend" }
 models = { path = "../f1r3node/models" }
 # Tokio - Async runtime for parallel evaluation (optional)
 tokio = { version = "1", features = ["rt", "sync"], optional = true }
+
+# PathMap - Trie-map library used by MORK
+# Unix/Linux/macOS: Use jemalloc for better performance
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
+
+# Windows: Disable jemalloc (not compatible with Windows build tools)
+[target.'cfg(target_os = "windows")'.dependencies]
+pathmap = { path = "../PathMap", features = ["arena_compact"] }
 
 [features]
 default = ["interning", "async"]

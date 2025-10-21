@@ -95,14 +95,19 @@ Server = https://f1r3fly-io.github.io/mettatron-arch/\$arch
 EOF
 ```
 
-Update package database and install:
+Update package database and install stable or nightly:
 
 ```bash
+# Stable release
 sudo pacman -Sy mettatron
+
+# Nightly builds (conflicts with mettatron, use one or the other)
+sudo pacman -Sy mettatron-nightly
 ```
 
 ### Option 2: Build from PKGBUILD
 
+**Stable release:**
 ```bash
 # Download PKGBUILD
 curl -O https://f1r3fly-io.github.io/mettatron-arch/PKGBUILD
@@ -111,10 +116,23 @@ curl -O https://f1r3fly-io.github.io/mettatron-arch/PKGBUILD
 makepkg -si
 ```
 
+**Nightly builds:**
+```bash
+# Download nightly PKGBUILD
+curl -O https://f1r3fly-io.github.io/mettatron-arch/PKGBUILD-nightly
+
+# Build and install
+makepkg -p PKGBUILD-nightly -si
+```
+
 ### Option 3: Use an AUR helper (e.g., yay)
 
 ```bash
+# Stable
 yay -S mettatron
+
+# Nightly
+yay -S mettatron-nightly
 ```
 
 ### Verify installation

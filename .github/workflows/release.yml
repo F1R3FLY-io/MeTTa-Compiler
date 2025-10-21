@@ -377,7 +377,10 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            */mettatron-*
+            mettatron-linux-*/*.tar.gz
+            mettatron-linux-*/*.zip
+            mettatron-macos-*/*.tar.gz
+            mettatron-macos-*/*.zip
             debian-package/*.deb
             rpm-package/*.rpm
             macos-dmg/*.dmg

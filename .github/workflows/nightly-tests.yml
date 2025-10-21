@@ -318,22 +318,25 @@ jobs:
 
           chmod +x build-arch-pkg.sh
 
-          # Prepare PKGBUILD with pre-built binaries
+          # Prepare PKGBUILD with pre-built binaries from PKGBUILD-nightly template
           mkdir -p build-context
-          cp packaging/arch/PKGBUILD build-context/
+          cp packaging/arch/PKGBUILD-nightly build-context/PKGBUILD
           cp -r binaries build-context/
 
           # Modify PKGBUILD to use pre-built binaries instead of building from source
+          # Keep pkgname, provides, conflicts from PKGBUILD-nightly but skip git operations
           cat > build-context/PKGBUILD <<'PKGBUILD_EOF'
           # Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
-          pkgname=mettatron
-          pkgver=nightly
+          pkgname=mettatron-nightly
+          pkgver=$(date +%Y%m%d)
           pkgrel=1
           pkgdesc="MeTTa language evaluator with lazy evaluation and pattern matching (nightly build)"
           arch=('${{ matrix.arch.name }}')
           url="https://github.com/F1R3FLY-io/MeTTa-Compiler"
           license=('Apache')
           depends=('gcc-libs')
+          provides=('mettatron')
+          conflicts=('mettatron')
           source=()
           sha256sums=()
 

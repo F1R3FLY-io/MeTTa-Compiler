@@ -343,17 +343,13 @@ jobs:
 
           # Modify PKGBUILD to use pre-built binaries instead of building from source
           # Keep pkgname, provides, conflicts from PKGBUILD-nightly but skip git operations
-          # Use unquoted heredoc to allow variable substitution
-          ARCH_NAME="${{ matrix.arch.name }}"
-          PKG_VERSION="$(date +%Y%m%d)"
-
-          cat > build-context/PKGBUILD <<PKGBUILD_EOF
+          cat > build-context/PKGBUILD <<'PKGBUILD_EOF'
           # Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
           pkgname=mettatron-nightly
-          pkgver=${PKG_VERSION}
+          pkgver=__VERSION__
           pkgrel=1
           pkgdesc="MeTTa language evaluator with lazy evaluation and pattern matching (nightly build)"
-          arch=('${ARCH_NAME}')
+          arch=('__ARCH__')
           url="https://github.com/F1R3FLY-io/MeTTa-Compiler"
           license=('Apache')
           depends=('gcc-libs')
@@ -363,12 +359,16 @@ jobs:
           sha256sums=()
 
           package() {
-              install -Dm755 "/build/binaries/mettatron" "\$pkgdir/usr/bin/mettatron"
-              install -Dm755 "/build/binaries/rholang-cli" "\$pkgdir/usr/bin/rholang-cli"
-              install -Dm644 "/build/binaries/libmettatron.so" "\$pkgdir/usr/lib/libmettatron.so"
-              install -Dm644 "/build/binaries/libmettatron.rlib" "\$pkgdir/usr/lib/libmettatron.rlib"
+              install -Dm755 "/build/binaries/mettatron" "$pkgdir/usr/bin/mettatron"
+              install -Dm755 "/build/binaries/rholang-cli" "$pkgdir/usr/bin/rholang-cli"
+              install -Dm644 "/build/binaries/libmettatron.so" "$pkgdir/usr/lib/libmettatron.so"
+              install -Dm644 "/build/binaries/libmettatron.rlib" "$pkgdir/usr/lib/libmettatron.rlib"
           }
           PKGBUILD_EOF
+
+          # Replace placeholders
+          sed -i "s/__VERSION__/$(date +%Y%m%d)/" build-context/PKGBUILD
+          sed -i "s/__ARCH__/${{ matrix.arch.name }}/" build-context/PKGBUILD
 
           # Run build in container
           mkdir -p output

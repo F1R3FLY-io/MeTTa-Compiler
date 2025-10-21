@@ -1,6 +1,8 @@
 # Installing MeTTaTron
 
-MeTTaTron is available for Linux (x86_64 and ARM64), macOS (x86_64 and ARM64), and Windows (x86_64).
+MeTTaTron is available for Linux (x86_64 and ARM64) and macOS (x86_64 and ARM64).
+
+**Note:** Windows support is currently disabled due to jemalloc incompatibility in the MORK dependency. Windows builds require changes to upstream dependencies (MORK and/or PathMap).
 
 ## Table of Contents
 
@@ -8,7 +10,7 @@ MeTTaTron is available for Linux (x86_64 and ARM64), macOS (x86_64 and ARM64), a
 - [RedHat/Fedora/CentOS (YUM/DNF)](#redhatfedoracentos-yumdnf)
 - [Arch Linux (Pacman/AUR)](#arch-linux-pacmanaur)
 - [macOS (Homebrew)](#macos-homebrew)
-- [Windows (Chocolatey)](#windows-chocolatey)
+- [Windows Support](#windows-support)
 - [Generic Installation (All Platforms)](#generic-installation)
 - [Building from Source](#building-from-source)
 
@@ -127,19 +129,29 @@ mettatron --version
 
 ---
 
-## Windows (Chocolatey)
+## Windows Support
 
-### Install
+**Windows is not currently supported** due to dependency compatibility issues.
 
-```powershell
-choco install mettatron
-```
+### Why Windows is Not Supported
 
-### Verify installation
+The MORK dependency uses PathMap with jemalloc enabled, which requires Unix build tools (configure, sh) that are not available on Windows. To enable Windows support, one of the following changes is needed:
 
-```powershell
-mettatron --version
-```
+1. Update MORK's workspace to use platform-specific PathMap features (exclude jemalloc on Windows)
+2. Update PathMap to support Windows-compatible allocators
+3. Build with WSL (Windows Subsystem for Linux) as a workaround
+
+### Workaround: Use WSL
+
+You can run MeTTaTron on Windows using WSL (Windows Subsystem for Linux):
+
+1. Install WSL: https://learn.microsoft.com/en-us/windows/wsl/install
+2. Install Ubuntu in WSL
+3. Follow the [Ubuntu/Debian installation instructions](#ubuntudebian-apt) within WSL
+
+### Future Windows Support
+
+Windows native support via Chocolatey is planned once the dependency issues are resolved. Package configuration is already prepared in `packaging/chocolatey/`.
 
 ---
 
@@ -153,7 +165,8 @@ Visit the [releases page](https://github.com/F1R3FLY-io/MeTTa-Compiler/releases)
 - **Linux ARM64**: `mettatron-linux-arm64.tar.gz`
 - **macOS x86_64**: `mettatron-macos-x86_64.tar.gz`
 - **macOS ARM64** (Apple Silicon): `mettatron-macos-arm64.tar.gz`
-- **Windows x86_64**: `mettatron-windows-x86_64.zip`
+
+**Note:** Windows binaries are not currently available. See [Windows Support](#windows-support) for details.
 
 ### Extract and install (Unix/Linux/macOS)
 
@@ -169,15 +182,6 @@ sudo mv rholang-cli /usr/local/bin/
 sudo chmod +x /usr/local/bin/mettatron
 sudo chmod +x /usr/local/bin/rholang-cli
 ```
-
-### Extract and install (Windows)
-
-1. Extract the `.zip` file
-2. Add the extracted directory to your PATH:
-   - Open "Environment Variables" in System Properties
-   - Edit the `Path` variable
-   - Add the directory containing `mettatron.exe`
-3. Restart your terminal
 
 ### Verify installation
 
@@ -266,12 +270,6 @@ sudo pacman -R mettatron
 ```bash
 brew uninstall mettatron
 brew untap f1r3fly-io/mettatron
-```
-
-### Windows (Chocolatey)
-
-```powershell
-choco uninstall mettatron
 ```
 
 ### Manual installation

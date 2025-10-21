@@ -133,9 +133,19 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist
+          # Copy binary
           cp target/${{ matrix.platform.target }}/release/mettatron dist/
           cp ../f1r3node/target/${{ matrix.platform.target }}/release/rholang-cli dist/
-          chmod +x dist/*
+
+          # Copy libraries
+          cp target/${{ matrix.platform.target }}/release/libmettatron.rlib dist/
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cp target/${{ matrix.platform.target }}/release/libmettatron.so dist/
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cp target/${{ matrix.platform.target }}/release/libmettatron.dylib dist/
+          fi
+
+          chmod +x dist/mettatron dist/rholang-cli
 
       - name: Prepare binaries (Windows)
         if: runner.os == 'Windows'
@@ -143,6 +153,8 @@ jobs:
           mkdir dist
           copy target\${{ matrix.platform.target }}\release\mettatron.exe dist\
           copy ..\f1r3node\target\${{ matrix.platform.target }}\release\rholang-cli.exe dist\
+          copy target\${{ matrix.platform.target }}\release\mettatron.dll dist\
+          copy target\${{ matrix.platform.target }}\release\libmettatron.rlib dist\
 
       - name: Create tarball (Unix)
         if: runner.os != 'Windows'
@@ -252,6 +264,8 @@ jobs:
           mkdir -p dmg-contents
           cp mettatron dmg-contents/
           cp rholang-cli dmg-contents/
+          cp libmettatron.dylib dmg-contents/
+          cp libmettatron.rlib dmg-contents/
           hdiutil create -volname "MeTTaTron" -srcfolder dmg-contents -ov -format UDZO mettatron-macos.dmg
 
       - name: Upload .dmg
@@ -287,6 +301,8 @@ jobs:
           mkdir -p binaries
           mv mettatron binaries/
           mv rholang-cli binaries/
+          mv libmettatron.so binaries/
+          mv libmettatron.rlib binaries/
 
       - name: Build Arch package in container
         run: |
@@ -337,6 +353,8 @@ jobs:
 
           package() {
               install -Dm755 "/build/binaries/mettatron" "$pkgdir/usr/bin/mettatron"
+              install -Dm644 "/build/binaries/libmettatron.so" "$pkgdir/usr/lib/libmettatron.so"
+              install -Dm644 "/build/binaries/libmettatron.rlib" "$pkgdir/usr/lib/libmettatron.rlib"
           }
           PKGBUILD_EOF
 

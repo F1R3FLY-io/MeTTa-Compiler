@@ -2,7 +2,7 @@
 ///
 /// Provides type-safe collection handling for sets, lists, tuples, and maps
 /// parsed from Rholang PathMap output.
-use mettatron::backend::types::MettaValue;
+use mettatron::backend::models::MettaValue;
 
 /// Collection value types that extend MettaValue with collection semantics
 #[derive(Debug, Clone, PartialEq)]

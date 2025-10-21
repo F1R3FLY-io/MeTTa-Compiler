@@ -22,7 +22,7 @@ use super::output_parser::PathMapOutput;
 ///
 /// - `as_atom()`, `as_string()`, `as_i64()`, `as_bool()` - Extract typed values
 /// - `as_sexpr()` - Extract nested s-expression elements
-use mettatron::backend::types::MettaValue;
+use mettatron::backend::models::MettaValue;
 
 /// Query result that can contain multiple values
 #[derive(Debug, Clone, PartialEq)]

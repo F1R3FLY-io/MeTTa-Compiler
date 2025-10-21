@@ -2,7 +2,7 @@
 ///
 /// Parses PathMap structures from Rholang output and extracts
 /// the `source`, `environment`, and `output` fields.
-use mettatron::backend::types::MettaValue;
+use mettatron::backend::models::MettaValue;
 use nom::{
     branch::alt,
     bytes::complete::{escaped, is_not, tag, take_while1},

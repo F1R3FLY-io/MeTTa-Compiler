@@ -261,6 +261,100 @@ jobs:
           path: mettatron-macos.dmg
           retention-days: 30
 
+  package-arch:
+    name: Create Arch Linux packages
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch:
+          - name: x86_64
+            artifact: mettatron-linux-x86_64
+          - name: aarch64
+            artifact: mettatron-linux-arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.arch.artifact }}
+
+      - name: Extract binaries
+        run: |
+          tar xzf ${{ matrix.arch.artifact }}.tar.gz
+          mkdir -p binaries
+          mv mettatron binaries/
+          mv rholang-cli binaries/
+
+      - name: Build Arch package in container
+        run: |
+          # Create a build script
+          cat > build-arch-pkg.sh <<'EOF'
+          #!/bin/bash
+          set -e
+
+          # Install required packages
+          pacman -Sy --noconfirm base-devel git
+
+          # Create build user (makepkg won't run as root)
+          useradd -m builder
+          chown -R builder:builder /build
+
+          # Build as non-root user
+          cd /build
+          su builder -c "makepkg --nodeps --skipinteg"
+
+          # Copy package to output
+          cp *.pkg.tar.zst /output/
+          EOF
+
+          chmod +x build-arch-pkg.sh
+
+          # Prepare PKGBUILD with pre-built binaries
+          mkdir -p build-context
+          cp packaging/arch/PKGBUILD build-context/
+          cp -r binaries build-context/
+
+          # Modify PKGBUILD to use pre-built binaries instead of building from source
+          cat > build-context/PKGBUILD <<'PKGBUILD_EOF'
+          # Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
+          pkgname=mettatron
+          pkgver=${GITHUB_REF_NAME#v}
+          pkgrel=1
+          pkgdesc="MeTTa language evaluator with lazy evaluation and pattern matching"
+          arch=('${{ matrix.arch.name }}')
+          url="https://github.com/F1R3FLY-io/MeTTa-Compiler"
+          license=('Apache')
+          depends=('gcc-libs')
+          source=()
+          sha256sums=()
+
+          package() {
+              install -Dm755 "/build/binaries/mettatron" "$pkgdir/usr/bin/mettatron"
+          }
+          PKGBUILD_EOF
+
+          # Replace version placeholder
+          sed -i "s/\${GITHUB_REF_NAME#v}/${GITHUB_REF_NAME#v}/" build-context/PKGBUILD
+
+          # Run build in container
+          mkdir -p output
+          docker run --rm \
+            -v "$PWD/build-context:/build" \
+            -v "$PWD/output:/output" \
+            -v "$PWD/build-arch-pkg.sh:/build-arch-pkg.sh" \
+            archlinux:latest \
+            /build-arch-pkg.sh
+
+      - name: Upload Arch package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package-${{ matrix.arch.name }}
+          path: output/*.pkg.tar.zst
+          retention-days: 30
+
   # Windows installer job disabled - Windows support postponed
   # See release.yml build-matrix section for details on Windows support
   #
@@ -272,7 +366,7 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [build-matrix, package-deb, package-rpm, package-macos-dmg]
+    needs: [build-matrix, package-deb, package-rpm, package-macos-dmg, package-arch]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -287,6 +381,7 @@ jobs:
             debian-package/*.deb
             rpm-package/*.rpm
             macos-dmg/*.dmg
+            arch-package-*/*.pkg.tar.zst
           draft: false
           prerelease: false
         env:

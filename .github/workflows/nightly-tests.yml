@@ -267,6 +267,97 @@ jobs:
           path: mettatron-macos-nightly.dmg
           retention-days: 14
 
+  package-arch:
+    name: Create Arch Linux packages (nightly)
+    needs: build-and-test-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch:
+          - name: x86_64
+            artifact: mettatron-linux-x86_64
+          - name: aarch64
+            artifact: mettatron-linux-arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.arch.artifact }}
+
+      - name: Extract binaries
+        run: |
+          tar xzf ${{ matrix.arch.artifact }}.tar.gz
+          mkdir -p binaries
+          mv mettatron binaries/
+          mv rholang-cli binaries/
+
+      - name: Build Arch package in container
+        run: |
+          # Create a build script
+          cat > build-arch-pkg.sh <<'EOF'
+          #!/bin/bash
+          set -e
+
+          # Install required packages
+          pacman -Sy --noconfirm base-devel git
+
+          # Create build user (makepkg won't run as root)
+          useradd -m builder
+          chown -R builder:builder /build
+
+          # Build as non-root user
+          cd /build
+          su builder -c "makepkg --nodeps --skipinteg"
+
+          # Copy package to output
+          cp *.pkg.tar.zst /output/
+          EOF
+
+          chmod +x build-arch-pkg.sh
+
+          # Prepare PKGBUILD with pre-built binaries
+          mkdir -p build-context
+          cp packaging/arch/PKGBUILD build-context/
+          cp -r binaries build-context/
+
+          # Modify PKGBUILD to use pre-built binaries instead of building from source
+          cat > build-context/PKGBUILD <<'PKGBUILD_EOF'
+          # Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
+          pkgname=mettatron
+          pkgver=nightly
+          pkgrel=1
+          pkgdesc="MeTTa language evaluator with lazy evaluation and pattern matching (nightly build)"
+          arch=('${{ matrix.arch.name }}')
+          url="https://github.com/F1R3FLY-io/MeTTa-Compiler"
+          license=('Apache')
+          depends=('gcc-libs')
+          source=()
+          sha256sums=()
+
+          package() {
+              install -Dm755 "/build/binaries/mettatron" "$pkgdir/usr/bin/mettatron"
+          }
+          PKGBUILD_EOF
+
+          # Run build in container
+          mkdir -p output
+          docker run --rm \
+            -v "$PWD/build-context:/build" \
+            -v "$PWD/output:/output" \
+            -v "$PWD/build-arch-pkg.sh:/build-arch-pkg.sh" \
+            archlinux:latest \
+            /build-arch-pkg.sh
+
+      - name: Upload Arch package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-arch-package-${{ matrix.arch.name }}
+          path: output/*.pkg.tar.zst
+          retention-days: 14
+
   test-coverage:
     name: Test Coverage Report
     runs-on: ubuntu-latest
@@ -305,7 +396,7 @@ jobs:
 
   create-nightly-summary:
     name: Create Nightly Build Summary
-    needs: [build-and-test-matrix, package-deb, package-rpm, package-macos-dmg, test-coverage]
+    needs: [build-and-test-matrix, package-deb, package-rpm, package-macos-dmg, package-arch, test-coverage]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -328,6 +419,7 @@ jobs:
           echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Debian (.deb) | ${{ needs.package-deb.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| RPM (.rpm) | ${{ needs.package-rpm.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Arch (.pkg.tar.zst) | ${{ needs.package-arch.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| macOS (.dmg) | ${{ needs.package-macos-dmg.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Coverage | ${{ needs.test-coverage.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -335,6 +427,7 @@ jobs:
           if [ "${{ needs.build-and-test-matrix.result }}" == "success" ] && \
              [ "${{ needs.package-deb.result }}" == "success" ] && \
              [ "${{ needs.package-rpm.result }}" == "success" ] && \
+             [ "${{ needs.package-arch.result }}" == "success" ] && \
              [ "${{ needs.package-macos-dmg.result }}" == "success" ]; then
             echo "✅ All nightly builds and packages succeeded!" >> $GITHUB_STEP_SUMMARY
           else
@@ -342,7 +435,7 @@ jobs:
           fi
 
       - name: Create issue on failure
-        if: failure() || needs.build-and-test-matrix.result == 'failure' || needs.package-deb.result == 'failure' || needs.package-rpm.result == 'failure' || needs.package-macos-dmg.result == 'failure'
+        if: failure() || needs.build-and-test-matrix.result == 'failure' || needs.package-deb.result == 'failure' || needs.package-rpm.result == 'failure' || needs.package-arch.result == 'failure' || needs.package-macos-dmg.result == 'failure'
         uses: actions/github-script@v7
         with:
           script: |
@@ -355,6 +448,7 @@ jobs:
             - Build Matrix: ${{ needs.build-and-test-matrix.result }}
             - Debian Package: ${{ needs.package-deb.result }}
             - RPM Package: ${{ needs.package-rpm.result }}
+            - Arch Package: ${{ needs.package-arch.result }}
             - macOS DMG: ${{ needs.package-macos-dmg.result }}
             - Test Coverage: ${{ needs.test-coverage.result }}
 

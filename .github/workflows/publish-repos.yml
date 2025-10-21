@@ -122,19 +122,87 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: gh-pages
 
-      - name: Download Arch package
+      - name: Download Arch packages
         run: |
-          mkdir -p x86_64
-          # For Arch, we'll build from PKGBUILD on user's machine
-          # Just host the PKGBUILD file
+          # Create directories for each architecture
+          mkdir -p x86_64 aarch64
+
+          # Download .pkg.tar.zst packages from latest release
+          gh release download --repo F1R3FLY-io/MeTTa-Compiler --pattern '*-x86_64-*.pkg.tar.zst' --dir x86_64/ || true
+          gh release download --repo F1R3FLY-io/MeTTa-Compiler --pattern '*-aarch64-*.pkg.tar.zst' --dir aarch64/ || true
+
+          # Also download PKGBUILD for users who want to build from source
           curl -o PKGBUILD https://raw.githubusercontent.com/F1R3FLY-io/MeTTa-Compiler/main/packaging/arch/PKGBUILD
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install pacman tools
+        run: |
+          # Install pacman-package-manager for repo-add command
+          sudo apt-get update
+          # We need to use a container or install from AUR - let's use Docker
+          docker pull archlinux:latest
+
+      - name: Create repository databases
+        run: |
+          # Create repo database for x86_64
+          if [ -n "$(ls -A x86_64/*.pkg.tar.zst 2>/dev/null)" ]; then
+            docker run --rm \
+              -v "$PWD/x86_64:/repo" \
+              archlinux:latest \
+              bash -c "cd /repo && repo-add mettatron.db.tar.gz *.pkg.tar.zst"
+          fi
+
+          # Create repo database for aarch64
+          if [ -n "$(ls -A aarch64/*.pkg.tar.zst 2>/dev/null)" ]; then
+            docker run --rm \
+              -v "$PWD/aarch64:/repo" \
+              archlinux:latest \
+              bash -c "cd /repo && repo-add mettatron.db.tar.gz *.pkg.tar.zst"
+          fi
+
+      - name: Create README
+        run: |
+          cat > README.md <<'EOF'
+          # MeTTaTron Arch Linux Repository
+
+          ## Installation
+
+          ### Option 1: Install from repository (recommended)
+
+          Add the repository to your `/etc/pacman.conf`:
+
+          ```ini
+          [mettatron]
+          SigLevel = Optional TrustAll
+          Server = https://f1r3fly-io.github.io/mettatron-arch/$arch
+          ```
+
+          Then install:
+
+          ```bash
+          sudo pacman -Sy mettatron
+          ```
+
+          ### Option 2: Build from PKGBUILD
+
+          ```bash
+          curl -O https://f1r3fly-io.github.io/mettatron-arch/PKGBUILD
+          makepkg -si
+          ```
+
+          ## Supported Architectures
+
+          - x86_64
+          - aarch64 (ARM64)
+          EOF
 
       - name: Commit and push
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add .
-          git commit -m "Update PKGBUILD" || true
+          git commit -m "Update Arch repository with latest packages" || true
           git push
 
   update-homebrew-tap:

@@ -128,11 +128,15 @@ jobs:
           mkdir -p x86_64 aarch64
 
           # Download .pkg.tar.zst packages from latest release
-          gh release download --repo F1R3FLY-io/MeTTa-Compiler --pattern '*-x86_64-*.pkg.tar.zst' --dir x86_64/ || true
-          gh release download --repo F1R3FLY-io/MeTTa-Compiler --pattern '*-aarch64-*.pkg.tar.zst' --dir aarch64/ || true
+          # Arch package naming: pkgname-pkgver-pkgrel-arch.pkg.tar.zst
+          # e.g., mettatron-0.1.0-1-x86_64.pkg.tar.zst or mettatron-nightly-20250121-1-x86_64.pkg.tar.zst
+          gh release download --repo F1R3FLY-io/MeTTa-Compiler --pattern 'mettatron*-x86_64.pkg.tar.zst' --dir x86_64/ || true
+          gh release download --repo F1R3FLY-io/MeTTa-Compiler --pattern 'mettatron*-aarch64.pkg.tar.zst' --dir aarch64/ || true
 
-          # Also download PKGBUILD for users who want to build from source
+          # Also download PKGBUILD for users who want to build from source (release version)
           curl -o PKGBUILD https://raw.githubusercontent.com/F1R3FLY-io/MeTTa-Compiler/main/packaging/arch/PKGBUILD
+          # And PKGBUILD-nightly for nightly builds
+          curl -o PKGBUILD-nightly https://raw.githubusercontent.com/F1R3FLY-io/MeTTa-Compiler/main/packaging/arch/PKGBUILD-nightly
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -178,23 +182,39 @@ jobs:
           Server = https://f1r3fly-io.github.io/mettatron-arch/$arch
           ```
 
-          Then install:
+          Then install stable or nightly:
 
           ```bash
+          # Stable release
           sudo pacman -Sy mettatron
+
+          # Nightly builds (conflicts with mettatron)
+          sudo pacman -Sy mettatron-nightly
           ```
 
           ### Option 2: Build from PKGBUILD
 
+          **Stable release:**
           ```bash
           curl -O https://f1r3fly-io.github.io/mettatron-arch/PKGBUILD
           makepkg -si
+          ```
+
+          **Nightly builds:**
+          ```bash
+          curl -O https://f1r3fly-io.github.io/mettatron-arch/PKGBUILD-nightly
+          makepkg -p PKGBUILD-nightly -si
           ```
 
           ## Supported Architectures
 
           - x86_64
           - aarch64 (ARM64)
+
+          ## Packages
+
+          - `mettatron` - Stable releases from tagged versions
+          - `mettatron-nightly` - Nightly builds (provides and conflicts with `mettatron`)
           EOF
 
       - name: Commit and push

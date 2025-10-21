@@ -1,19 +1,27 @@
 # Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
-# NOTE: This PKGBUILD is for tagged releases. For nightly builds, see PKGBUILD-nightly
-pkgname=mettatron
-pkgver=0.1.0
+# NOTE: This PKGBUILD is for nightly builds. For tagged releases, see PKGBUILD
+pkgname=mettatron-nightly
+pkgver=r0.0.0
 pkgrel=1
-pkgdesc="MeTTa language evaluator with lazy evaluation and pattern matching"
+pkgdesc="MeTTa language evaluator with lazy evaluation and pattern matching (nightly builds)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/F1R3FLY-io/MeTTa-Compiler"
 license=('Apache')
 depends=('gcc-libs')
 makedepends=('rust' 'cargo' 'git' 'protobuf')
-source=("mettatron::git+https://github.com/F1R3FLY-io/MeTTa-Compiler.git#tag=v${pkgver}"
+provides=('mettatron')
+conflicts=('mettatron')
+source=("mettatron::git+https://github.com/F1R3FLY-io/MeTTa-Compiler.git"
         "f1r3node::git+https://github.com/F1R3FLY-io/f1r3node.git#branch=dylon/mettatron"
         "MORK::git+https://github.com/trueagi-io/MORK.git#branch=main"
         "PathMap::git+https://github.com/Adam-Vandervorst/PathMap.git#branch=master")
 sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+pkgver() {
+    cd "$srcdir/mettatron"
+    # Use commit count and short hash for version
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
 
 prepare() {
     cd "$srcdir"

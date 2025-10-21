@@ -21,7 +21,7 @@ pub mod runner;
 // Re-export commonly used types for convenience
 pub use collections::CollectionValue;
 pub use config::{CategorySpec, TestConfig, TestFilter, TestManifest, TestSpec, TestSuiteSpec};
-pub use mettatron::backend::types::MettaValue;
+pub use mettatron::backend::models::MettaValue;
 pub use output_parser::{
     extract_all_outputs, extract_all_outputs_as_strings, parse_pathmap, MettaValueTestExt,
     PathMapOutput,

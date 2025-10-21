@@ -6,10 +6,11 @@
 //   env' = union env_i
 //   return fold over rules & grounded functions (emptyset, env')
 
+use crate::backend::environment::Environment;
+use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
 use crate::backend::mork_convert::{
     metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext,
 };
-use crate::backend::types::{Bindings, Environment, EvalResult, MettaValue, Rule};
 use mork_expr::Expr;
 
 /// Evaluate a MettaValue in the given environment
@@ -763,7 +764,7 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         }
         MettaValue::SExpr(items) => {
             // Sum specificity of all items
-            items.iter().map(pattern_specificity).sum()
+            items.iter().map(|item| pattern_specificity(item)).sum()
         }
         // Errors: use specificity of details
         MettaValue::Error(_, details) => pattern_specificity(details),
@@ -1041,7 +1042,7 @@ fn types_match(actual: &MettaValue, expected: &MettaValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::types::Rule;
+    use crate::backend::models::Rule;
 
     #[test]
     fn test_eval_atom() {

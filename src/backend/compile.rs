@@ -7,7 +7,7 @@
 //
 // Operator symbols like +, -, * are preserved as-is (not normalized to add, sub, mul)
 
-use crate::backend::types::{MettaState, MettaValue};
+use crate::backend::models::{MettaState, MettaValue};
 use crate::sexpr::{Lexer, Parser, SExpr};
 
 /// Compile MeTTa source code into a MettaState ready for evaluation

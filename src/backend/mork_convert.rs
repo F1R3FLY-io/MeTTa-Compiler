@@ -4,14 +4,13 @@
 //! - MettaValue → MORK Expr (for pattern queries)
 //! - MORK bindings → HashMap<String, MettaValue> (for pattern match results)
 
-use super::types::MettaValue;
+use super::models::MettaValue;
 use mork::space::Space;
 use mork_expr::{Expr, ExprEnv, ExprZipper};
 use mork_frontend::bytestring_parser::Parser;
 use std::collections::HashMap;
 
 /// Context for tracking variables during MettaValue → Expr conversion
-#[derive(Default)]
 pub struct ConversionContext {
     /// Maps variable names to their De Bruijn indices
     pub var_map: HashMap<String, u8>,
@@ -185,7 +184,7 @@ pub fn mork_bindings_to_metta(
     ctx: &ConversionContext,
     space: &Space,
 ) -> Result<HashMap<String, MettaValue>, String> {
-    use super::types::Environment;
+    use super::environment::Environment;
 
     let mut bindings = HashMap::new();
 
@@ -199,7 +198,7 @@ pub fn mork_bindings_to_metta(
         // Convert MORK Expr directly to MettaValue
         // FIXED: Use mork_expr_to_metta_value() instead of serialize2()
         // This avoids the "reserved byte" panic when bindings contain symbols with reserved bytes
-        let expr = expr_env.subsexpr();
+        let expr: Expr = expr_env.subsexpr();
         if let Ok(value) = Environment::mork_expr_to_metta_value(&expr, space) {
             bindings.insert(format!("${}", var_name), value);
         }
@@ -211,7 +210,7 @@ pub fn mork_bindings_to_metta(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::types::Environment;
+    use crate::backend::environment::Environment;
 
     #[test]
     fn test_simple_atom_conversion() {

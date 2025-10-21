@@ -68,8 +68,10 @@ pub mod rholang_integration;
 pub mod sexpr;
 
 pub use backend::{
-    compile, eval,
-    types::{Environment, MettaState, MettaValue, Rule},
+    compile,
+    environment::Environment,
+    eval,
+    models::{MettaState, MettaValue, Rule},
 };
 pub use rholang_integration::{compile_to_state_json, metta_state_to_json, run_state};
 pub use sexpr::{Lexer, Parser, SExpr, Token};

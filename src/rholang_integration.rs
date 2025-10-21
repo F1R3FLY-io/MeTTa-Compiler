@@ -1,6 +1,6 @@
 /// Rholang integration module
 /// Provides conversion between MeTTa types and Rholang Par types
-use crate::backend::types::{MettaState, MettaValue};
+use crate::backend::models::{MettaState, MettaValue};
 
 /// Convert MettaValue to a JSON-like string representation
 /// This can be parsed by Rholang to reconstruct the value
@@ -15,7 +15,7 @@ pub fn metta_value_to_rholang_string(value: &MettaValue) -> String {
         MettaValue::SExpr(items) => {
             let items_json: Vec<String> = items
                 .iter()
-                .map(metta_value_to_rholang_string)
+                .map(|v| metta_value_to_rholang_string(v))
                 .collect();
             format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
         }
@@ -74,13 +74,13 @@ pub fn metta_state_to_json(state: &MettaState) -> String {
     let pending_json: Vec<String> = state
         .source
         .iter()
-        .map(metta_value_to_rholang_string)
+        .map(|expr| metta_value_to_rholang_string(expr))
         .collect();
 
     let outputs_json: Vec<String> = state
         .output
         .iter()
-        .map(metta_value_to_rholang_string)
+        .map(|output| metta_value_to_rholang_string(output))
         .collect();
 
     // For environment, we'll serialize facts count as a placeholder
@@ -228,7 +228,7 @@ pub async fn run_state_async(
 #[cfg(feature = "async")]
 async fn evaluate_batch_parallel(
     batch: Vec<(usize, MettaValue, bool)>,
-    env: crate::backend::types::Environment,
+    env: crate::backend::environment::Environment,
 ) -> Vec<(usize, Vec<MettaValue>, bool)> {
     use crate::backend::eval::eval;
     use tokio::task;
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_metta_state_to_json() {
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         let state = MettaState::new_compiled(vec![MettaValue::Long(42)]);
 
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn test_run_state_simple_arithmetic() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Start with empty accumulated state
         let accumulated = MettaState::new_empty();
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn test_run_state_accumulates_outputs() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Start with empty state
         let mut accumulated = MettaState::new_empty();
@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn test_run_state_rule_persistence() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Start with empty state
         let mut accumulated = MettaState::new_empty();
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn test_run_state_multiple_expressions() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         let accumulated = MettaState::new_empty();
 
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn test_run_state_repl_simulation() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Simulate a REPL session
         let mut repl_state = MettaState::new_empty();
@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn test_run_state_error_handling() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         let accumulated = MettaState::new_empty();
 
@@ -592,7 +592,7 @@ mod tests {
     #[test]
     fn test_composability_sequential_runs() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: s.run(a).run(b).run(c) should accumulate all results
         let mut state = MettaState::new_empty();
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn test_composability_rule_chaining() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Rules defined in earlier runs are available in later runs
         let mut state = MettaState::new_empty();
@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn test_composability_state_independence() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Each compile is independent, run merges them
         let accum1 = MettaState::new_empty();
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn test_composability_monotonic_accumulation() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Outputs never decrease, only accumulate
         let mut state = MettaState::new_empty();
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn test_composability_empty_state_identity() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Running against empty state should work like first run
         let empty = MettaState::new_empty();
@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn test_composability_environment_union() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Environments properly union across runs
         let mut state = MettaState::new_empty();
@@ -743,7 +743,7 @@ mod tests {
     #[test]
     fn test_composability_no_cross_contamination() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Independent state chains don't affect each other
         let mut state_a = MettaState::new_empty();
@@ -771,7 +771,7 @@ mod tests {
     mod async_tests {
         use super::*;
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         #[tokio::test]
         async fn test_run_state_async_simple() {

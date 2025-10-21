@@ -116,6 +116,10 @@ jobs:
           tests/*.rs
         retention-days: 7
 
+    - name: Copy rholang-cli to workspace
+      if: success()
+      run: cp ../f1r3node/target/release/rholang-cli target/release/
+
     - name: Upload binaries
       if: success()
       uses: actions/upload-artifact@v4
@@ -123,7 +127,7 @@ jobs:
         name: mettatron-binaries
         path: |
           target/release/mettatron
-          ../f1r3node/target/release/rholang-cli
+          target/release/rholang-cli
         retention-days: 30
 
   lint:

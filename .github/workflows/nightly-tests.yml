@@ -26,17 +26,17 @@ jobs:
     - name: Checkout f1r3node dependency
       run: |
         cd ../
-        git clone --depth=1 https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+        git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
 
     - name: Checkout MORK dependency
       run: |
         cd ../
-        git clone --depth=1 https://github.com/trueagi-io/MORK.git MORK
+        git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
 
     - name: Checkout PathMap dependency
       run: |
         cd ../
-        git clone --depth=1 https://github.com/Adam-Vandervorst/PathMap.git PathMap
+        git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
 
     - name: Install Rust toolchain
       uses: actions-rust-lang/setup-rust-toolchain@v1

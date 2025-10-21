@@ -1,5 +1,6 @@
-use mettatron::backend::types::{Environment, MettaValue};
+use mettatron::backend::environment::Environment;
 use mettatron::backend::eval::eval;
+use mettatron::backend::models::MettaValue;
 
 fn main() {
     let env = Environment::new();
@@ -47,7 +48,10 @@ fn main() {
     println!("Checking has_sexpr_fact with original rule_def:");
     let found_original = new_env.has_sexpr_fact(&rule_def);
     println!("  Found: {}", found_original);
-    assert!(found_original, "Should find rule with original variable names");
+    assert!(
+        found_original,
+        "Should find rule with original variable names"
+    );
 
     // Try to find with modified variable names ($a instead of $x)
     let modified_rule_def = MettaValue::SExpr(vec![
@@ -66,7 +70,10 @@ fn main() {
     println!("\nChecking has_sexpr_fact with $a instead of $x:");
     let found_modified = new_env.has_sexpr_fact(&modified_rule_def);
     println!("  Found: {}", found_modified);
-    assert!(found_modified, "Should find rule even with different variable names (structural equivalence)");
+    assert!(
+        found_modified,
+        "Should find rule even with different variable names (structural equivalence)"
+    );
 
     println!("\n✓ All assertions passed! Zipper-based implementation works correctly.");
 }

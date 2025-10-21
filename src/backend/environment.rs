@@ -1,43 +1,9 @@
-// Type definitions for the MeTTa backend
-
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use mork::space::Space;
 use pathmap::zipper::*;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-/// Represents a MeTTa value as an s-expression
-/// S-expressions are nested lists with textual operator names
-#[derive(Debug, Clone, PartialEq)]
-pub enum MettaValue {
-    /// An atom (symbol, variable, or literal)
-    Atom(String),
-    /// A boolean literal
-    Bool(bool),
-    /// An integer literal
-    Long(i64),
-    /// A string literal
-    String(String),
-    /// A URI literal
-    Uri(String),
-    /// An s-expression (list of values)
-    SExpr(Vec<MettaValue>),
-    /// Nil/empty
-    Nil,
-    /// An error with message and details
-    Error(String, Box<MettaValue>),
-    /// A type (first-class types as atoms)
-    Type(Box<MettaValue>),
-}
-
-/// Represents a pattern matching rule: (= lhs rhs)
-#[derive(Debug, Clone)]
-pub struct Rule {
-    pub lhs: MettaValue,
-    pub rhs: MettaValue,
-}
-
-/// Variable bindings for pattern matching
-pub type Bindings = HashMap<String, MettaValue>;
+use super::{MettaValue, Rule};
 
 /// The environment contains the fact database and type assertions
 /// All facts (rules, atoms, s-expressions, type assertions) are stored in MORK Space
@@ -73,14 +39,20 @@ impl Environment {
     ///
     /// CRITICAL FIX for "reserved 114" and similar bugs during evaluation/iteration.
     #[allow(unused_variables)]
-    pub(crate) fn mork_expr_to_metta_value(expr: &mork_bytestring::Expr, space: &Space) -> Result<MettaValue, String> {
+    pub(crate) fn mork_expr_to_metta_value(
+        expr: &mork_bytestring::Expr,
+        space: &Space,
+    ) -> Result<MettaValue, String> {
         use mork_bytestring::{maybe_byte_item, Tag};
         use std::slice::from_raw_parts;
 
         // Stack-based traversal to avoid recursion limits
         #[derive(Debug)]
         enum StackFrame {
-            Arity { remaining: u8, items: Vec<MettaValue> },
+            Arity {
+                remaining: u8,
+                items: Vec<MettaValue>,
+            },
         }
 
         let mut stack: Vec<StackFrame> = Vec::new();
@@ -96,7 +68,10 @@ impl Environment {
                 Err(reserved_byte) => {
                     // Reserved byte encountered - this is the bug we're fixing!
                     // Instead of panicking, return an error that calling code can handle
-                    return Err(format!("Reserved byte {} at offset {}", reserved_byte, offset));
+                    return Err(format!(
+                        "Reserved byte {} at offset {}",
+                        reserved_byte, offset
+                    ));
                 }
             };
 
@@ -107,7 +82,15 @@ impl Environment {
                 Tag::NewVar => {
                     // De Bruijn index - NewVar introduces a new variable with the next index
                     // Use MORK's VARNAMES for proper variable names
-                    const VARNAMES: [&str; 64] = ["$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31", "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41", "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51", "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61", "x62", "x63"];
+                    const VARNAMES: [&str; 64] = [
+                        "$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", "x11",
+                        "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21",
+                        "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31",
+                        "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41",
+                        "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51",
+                        "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61",
+                        "x62", "x63",
+                    ];
                     let var_name = if (newvar_count as usize) < VARNAMES.len() {
                         VARNAMES[newvar_count as usize].to_string()
                     } else {
@@ -119,7 +102,15 @@ impl Environment {
                 Tag::VarRef(i) => {
                     // Variable reference - use MORK's VARNAMES for proper variable names
                     // VARNAMES: ["$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", ...]
-                    const VARNAMES: [&str; 64] = ["$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31", "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41", "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51", "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61", "x62", "x63"];
+                    const VARNAMES: [&str; 64] = [
+                        "$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", "x11",
+                        "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21",
+                        "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31",
+                        "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41",
+                        "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51",
+                        "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61",
+                        "x62", "x63",
+                    ];
                     if (i as usize) < VARNAMES.len() {
                         MettaValue::Atom(VARNAMES[i as usize].to_string())
                     } else {
@@ -128,17 +119,20 @@ impl Environment {
                 }
                 Tag::SymbolSize(size) => {
                     // Read symbol bytes
-                    let symbol_bytes = unsafe { from_raw_parts(ptr.byte_add(offset), size as usize) };
+                    let symbol_bytes =
+                        unsafe { from_raw_parts(ptr.byte_add(offset), size as usize) };
                     offset += size as usize;
 
                     // Look up symbol in symbol table if interning is enabled
                     let symbol_str = {
-                        #[cfg(feature="interning")]
+                        #[cfg(feature = "interning")]
                         {
                             // With interning, symbols are ALWAYS stored as 8-byte i64 IDs
                             if symbol_bytes.len() == 8 {
                                 // Convert bytes to i64, then back to bytes for symbol table lookup
-                                let symbol_id = i64::from_be_bytes(symbol_bytes.try_into().unwrap()).to_be_bytes();
+                                let symbol_id =
+                                    i64::from_be_bytes(symbol_bytes.try_into().unwrap())
+                                        .to_be_bytes();
                                 if let Some(actual_bytes) = space.sm.get_bytes(symbol_id) {
                                     // Found in symbol table - use actual symbol string
                                     String::from_utf8_lossy(actual_bytes).to_string()
@@ -151,7 +145,7 @@ impl Environment {
                                 String::from_utf8_lossy(symbol_bytes).to_string()
                             }
                         }
-                        #[cfg(not(feature="interning"))]
+                        #[cfg(not(feature = "interning"))]
                         {
                             // Without interning, symbols are stored as raw UTF-8 bytes
                             String::from_utf8_lossy(symbol_bytes).to_string()
@@ -165,12 +159,18 @@ impl Environment {
                         MettaValue::Bool(true)
                     } else if symbol_str == "false" {
                         MettaValue::Bool(false)
-                    } else if symbol_str.starts_with('"') && symbol_str.ends_with('"') && symbol_str.len() >= 2 {
+                    } else if symbol_str.starts_with('"')
+                        && symbol_str.ends_with('"')
+                        && symbol_str.len() >= 2
+                    {
                         // String literal - strip quotes
-                        MettaValue::String(symbol_str[1..symbol_str.len()-1].to_string())
-                    } else if symbol_str.starts_with('`') && symbol_str.ends_with('`') && symbol_str.len() >= 2 {
+                        MettaValue::String(symbol_str[1..symbol_str.len() - 1].to_string())
+                    } else if symbol_str.starts_with('`')
+                        && symbol_str.ends_with('`')
+                        && symbol_str.len() >= 2
+                    {
                         // URI literal - strip backticks
-                        MettaValue::Uri(symbol_str[1..symbol_str.len()-1].to_string())
+                        MettaValue::Uri(symbol_str[1..symbol_str.len() - 1].to_string())
                     } else {
                         MettaValue::Atom(symbol_str)
                     }
@@ -181,14 +181,17 @@ impl Environment {
                         MettaValue::Nil
                     } else {
                         // Push new frame for this s-expression
-                        stack.push(StackFrame::Arity { remaining: arity, items: Vec::new() });
+                        stack.push(StackFrame::Arity {
+                            remaining: arity,
+                            items: Vec::new(),
+                        });
                         continue 'parsing;
                     }
                 }
             };
 
             // Value is complete - add to parent or return
-            let mut value = value;  // Make value mutable for the popping loop
+            let mut value = value; // Make value mutable for the popping loop
             'popping: loop {
                 match stack.last_mut() {
                     None => {
@@ -203,7 +206,7 @@ impl Environment {
                             // S-expression is complete
                             let completed_items = items.clone();
                             stack.pop();
-                            value = MettaValue::SExpr(completed_items);  // Mutate, don't shadow!
+                            value = MettaValue::SExpr(completed_items); // Mutate, don't shadow!
                             continue 'popping;
                         } else {
                             // More items needed
@@ -222,18 +225,25 @@ impl Environment {
     #[allow(unused_variables)]
     fn serialize_mork_expr_old(expr: &mork_bytestring::Expr, space: &Space) -> String {
         let mut buffer = Vec::new();
-        expr.serialize2(&mut buffer,
+        expr.serialize2(
+            &mut buffer,
             |s| {
-                #[cfg(feature="interning")]
+                #[cfg(feature = "interning")]
                 {
                     let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                    let mstr = space.sm.get_bytes(symbol).map(|x| unsafe { std::str::from_utf8_unchecked(x) });
+                    let mstr = space
+                        .sm
+                        .get_bytes(symbol)
+                        .map(|x| unsafe { std::str::from_utf8_unchecked(x) });
                     unsafe { std::mem::transmute(mstr.unwrap_or("")) }
                 }
-                #[cfg(not(feature="interning"))]
-                unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
+                #[cfg(not(feature = "interning"))]
+                unsafe {
+                    std::mem::transmute(std::str::from_utf8_unchecked(s))
+                }
             },
-            |i, _intro| { mork_bytestring::Expr::VARNAMES[i as usize] });
+            |i, _intro| mork_bytestring::Expr::VARNAMES[i as usize],
+        );
 
         String::from_utf8_lossy(&buffer).to_string()
     }
@@ -262,7 +272,9 @@ impl Environment {
         // Iterate through all values in the trie
         while rz.to_next_val() {
             // Get the s-expression at this position
-            let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
+            let expr = Expr {
+                ptr: rz.path().as_ptr().cast_mut(),
+            };
 
             // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
             // This avoids the "reserved byte" panic during evaluation
@@ -306,7 +318,9 @@ impl Environment {
         // Directly iterate through all values in the trie
         while rz.to_next_val() {
             // Get the s-expression at this position
-            let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
+            let expr = Expr {
+                ptr: rz.path().as_ptr().cast_mut(),
+            };
 
             // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
             // This avoids the "reserved byte" panic during evaluation
@@ -343,7 +357,7 @@ impl Environment {
     /// # Returns
     /// Vector of instantiated templates (MettaValue) for all matches
     pub fn match_space(&self, pattern: &MettaValue, template: &MettaValue) -> Vec<MettaValue> {
-        use crate::backend::eval::{pattern_match, apply_bindings};
+        use crate::backend::eval::{apply_bindings, pattern_match};
         use mork_bytestring::Expr;
 
         let space = self.space.lock().unwrap();
@@ -353,7 +367,9 @@ impl Environment {
         // Directly iterate through all values in the trie
         while rz.to_next_val() {
             // Get the s-expression at this position
-            let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
+            let expr = Expr {
+                ptr: rz.path().as_ptr().cast_mut(),
+            };
 
             // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
             // This avoids the "reserved byte" panic during evaluation
@@ -459,7 +475,9 @@ impl Environment {
         // Directly iterate through all values in the trie
         while rz.to_next_val() {
             // Get the s-expression at this position
-            let expr = Expr { ptr: rz.path().as_ptr().cast_mut() };
+            let expr = Expr {
+                ptr: rz.path().as_ptr().cast_mut(),
+            };
 
             // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
             // This avoids the "reserved byte" panic during evaluation
@@ -499,7 +517,10 @@ impl Environment {
         // The counts are automatically shared via the Arc
         let multiplicities = self.multiplicities.clone();
 
-        Environment { space, multiplicities }
+        Environment {
+            space,
+            multiplicities,
+        }
     }
 }
 
@@ -514,194 +535,5 @@ impl std::fmt::Debug for Environment {
         f.debug_struct("Environment")
             .field("space", &"<MORK Space>")
             .finish()
-    }
-}
-
-impl MettaValue {
-    /// Check if this value is a ground type (non-reducible literal)
-    /// Ground types: Bool, Long, String, Uri, Nil
-    /// Returns true if the value doesn't require further evaluation
-    pub fn is_ground_type(&self) -> bool {
-        matches!(self,
-            MettaValue::Bool(_) |
-            MettaValue::Long(_) |
-            MettaValue::String(_) |
-            MettaValue::Uri(_) |
-            MettaValue::Nil
-        )
-    }
-
-    /// Check structural equivalence (ignoring variable names)
-    /// Two expressions are structurally equivalent if they have the same structure,
-    /// with variables in the same positions (regardless of variable names)
-    pub fn structurally_equivalent(&self, other: &MettaValue) -> bool {
-        match (self, other) {
-            // Variables match any other variable (names don't matter)
-            // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            (MettaValue::Atom(a), MettaValue::Atom(b))
-                if (a.starts_with('$') || a.starts_with('&') || a.starts_with('\''))
-                && (b.starts_with('$') || b.starts_with('&') || b.starts_with('\''))
-                && a != "&" && b != "&" => true,
-
-            // Wildcards match wildcards
-            (MettaValue::Atom(a), MettaValue::Atom(b)) if a == "_" && b == "_" => true,
-
-            // Non-variable atoms must match exactly (including standalone "&")
-            (MettaValue::Atom(a), MettaValue::Atom(b)) => a == b,
-
-            // Other ground types must match exactly
-            (MettaValue::Bool(a), MettaValue::Bool(b)) => a == b,
-            (MettaValue::Long(a), MettaValue::Long(b)) => a == b,
-            (MettaValue::String(a), MettaValue::String(b)) => a == b,
-            (MettaValue::Uri(a), MettaValue::Uri(b)) => a == b,
-            (MettaValue::Nil, MettaValue::Nil) => true,
-
-            // S-expressions must have same structure
-            (MettaValue::SExpr(a_items), MettaValue::SExpr(b_items)) => {
-                if a_items.len() != b_items.len() {
-                    return false;
-                }
-                a_items.iter().zip(b_items.iter())
-                    .all(|(a, b)| a.structurally_equivalent(b))
-            }
-
-            // Errors must have same message and equivalent details
-            (MettaValue::Error(a_msg, a_details), MettaValue::Error(b_msg, b_details)) => {
-                a_msg == b_msg && a_details.structurally_equivalent(b_details)
-            }
-
-            // Types must be structurally equivalent
-            (MettaValue::Type(a), MettaValue::Type(b)) => a.structurally_equivalent(b),
-
-            _ => false,
-        }
-    }
-
-    /// Extract the head symbol from a pattern for indexing
-    /// Returns None if the pattern doesn't have a clear head symbol
-    pub fn get_head_symbol(&self) -> Option<String> {
-        match self {
-            // For s-expressions like (double $x), extract "double"
-            // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
-            MettaValue::SExpr(items) if !items.is_empty() => {
-                match &items[0] {
-                    MettaValue::Atom(head) if !head.starts_with('$')
-                        && (!head.starts_with('&') || head == "&")
-                        && !head.starts_with('\'')
-                        && head != "_" => {
-                        Some(head.clone())
-                    }
-                    _ => None,
-                }
-            }
-            // For bare atoms like foo, use the atom itself
-            // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
-            MettaValue::Atom(head) if !head.starts_with('$')
-                && (!head.starts_with('&') || head == "&")
-                && !head.starts_with('\'')
-                && head != "_" => {
-                Some(head.clone())
-            }
-            _ => None,
-        }
-    }
-
-    /// Convert MettaValue to MORK s-expression string format
-    /// This format can be parsed by MORK's parser
-    pub fn to_mork_string(&self) -> String {
-        match self {
-            MettaValue::Atom(s) => {
-                // Variables need to start with $ in MORK format
-                // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-                if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" {
-                    format!("${}", &s[1..]) // Keep $ prefix, remove original prefix
-                } else if s == "_" {
-                    "$".to_string() // Wildcard becomes $
-                } else {
-                    s.clone()
-                }
-            }
-            MettaValue::Bool(b) => b.to_string(),
-            MettaValue::Long(n) => n.to_string(),
-            MettaValue::String(s) => format!("\"{}\"", s),
-            MettaValue::Uri(s) => format!("`{}`", s),
-            MettaValue::SExpr(items) => {
-                let inner = items
-                    .iter()
-                    .map(|v| v.to_mork_string())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!("({})", inner)
-            }
-            MettaValue::Nil => "()".to_string(),
-            MettaValue::Error(msg, details) => {
-                format!("(error \"{}\" {})", msg, details.to_mork_string())
-            }
-            MettaValue::Type(t) => t.to_mork_string(),
-        }
-    }
-}
-
-/// Result of evaluation: (result, new_environment)
-pub type EvalResult = (Vec<MettaValue>, Environment);
-
-/// MeTTa compilation/evaluation state for PathMap-based REPL integration
-/// This structure represents the state of a MeTTa computation session.
-///
-/// # State Composition
-/// - **Compiled state** (fresh from `compile`):
-///   - `source`: S-expressions to evaluate
-///   - `environment`: Empty atom space
-///   - `output`: Empty (no evaluations yet)
-///
-/// - **Accumulated state** (built over multiple REPL iterations):
-///   - `source`: Empty (already evaluated)
-///   - `environment`: Accumulated atom space (MORK facts/rules)
-///   - `output`: Accumulated evaluation results
-///
-/// # Usage Pattern
-/// ```ignore
-/// // Compile MeTTa source
-/// let compiled_state = compile(source)?;
-///
-/// // Run against accumulated state
-/// let new_accumulated = accumulated_state.run(&compiled_state)?;
-/// ```
-#[derive(Clone, Debug)]
-pub struct MettaState {
-    /// Source s-expressions to be evaluated
-    pub source: Vec<MettaValue>,
-    /// The atom space (MORK fact database) containing rules and facts
-    pub environment: Environment,
-    /// Evaluation output results
-    pub output: Vec<MettaValue>,
-}
-
-impl MettaState {
-    /// Create a fresh compiled state from parse results
-    pub fn new_compiled(source: Vec<MettaValue>) -> Self {
-        MettaState {
-            source,
-            environment: Environment::new(),
-            output: Vec::new(),
-        }
-    }
-
-    /// Create an empty accumulated state (for REPL initialization)
-    pub fn new_empty() -> Self {
-        MettaState {
-            source: Vec::new(),
-            environment: Environment::new(),
-            output: Vec::new(),
-        }
-    }
-
-    /// Create an accumulated state with existing environment and output
-    pub fn new_accumulated(environment: Environment, output: Vec<MettaValue>) -> Self {
-        MettaState {
-            source: Vec::new(),
-            environment,
-            output,
-        }
     }
 }

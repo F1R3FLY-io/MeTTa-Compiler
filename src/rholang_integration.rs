@@ -1,7 +1,6 @@
 /// Rholang integration module
 /// Provides conversion between MeTTa types and Rholang Par types
-
-use crate::backend::types::{MettaValue, MettaState};
+use crate::backend::models::{MettaState, MettaValue};
 
 /// Convert MettaValue to a JSON-like string representation
 /// This can be parsed by Rholang to reconstruct the value
@@ -14,7 +13,8 @@ pub fn metta_value_to_rholang_string(value: &MettaValue) -> String {
         MettaValue::Uri(s) => format!(r#"{{"type":"uri","value":"{}"}}"#, escape_json(s)),
         MettaValue::Nil => r#"{"type":"nil"}"#.to_string(),
         MettaValue::SExpr(items) => {
-            let items_json: Vec<String> = items.iter()
+            let items_json: Vec<String> = items
+                .iter()
                 .map(|v| metta_value_to_rholang_string(v))
                 .collect();
             format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
@@ -27,7 +27,10 @@ pub fn metta_value_to_rholang_string(value: &MettaValue) -> String {
             )
         }
         MettaValue::Type(t) => {
-            format!(r#"{{"type":"metatype","value":{}}}"#, metta_value_to_rholang_string(t))
+            format!(
+                r#"{{"type":"metatype","value":{}}}"#,
+                metta_value_to_rholang_string(t)
+            )
         }
     }
 }
@@ -68,11 +71,15 @@ pub fn compile_safe(src: &str) -> String {
 /// }
 /// ```
 pub fn metta_state_to_json(state: &MettaState) -> String {
-    let pending_json: Vec<String> = state.source.iter()
+    let pending_json: Vec<String> = state
+        .source
+        .iter()
         .map(|expr| metta_value_to_rholang_string(expr))
         .collect();
 
-    let outputs_json: Vec<String> = state.output.iter()
+    let outputs_json: Vec<String> = state
+        .output
+        .iter()
         .map(|output| metta_value_to_rholang_string(output))
         .collect();
 
@@ -114,7 +121,10 @@ pub fn compile_to_state_safe(src: &str) -> String {
 /// - Empty source (all evaluated)
 /// - Updated environment (merged with new rules/facts)
 /// - Extended output (accumulated results)
-pub fn run_state(accumulated_state: MettaState, compiled_state: MettaState) -> Result<MettaState, String> {
+pub fn run_state(
+    accumulated_state: MettaState,
+    compiled_state: MettaState,
+) -> Result<MettaState, String> {
     use crate::backend::eval::eval;
 
     // Start with accumulated environment
@@ -218,7 +228,7 @@ pub async fn run_state_async(
 #[cfg(feature = "async")]
 async fn evaluate_batch_parallel(
     batch: Vec<(usize, MettaValue, bool)>,
-    env: crate::backend::types::Environment,
+    env: crate::backend::environment::Environment,
 ) -> Vec<(usize, Vec<MettaValue>, bool)> {
     use crate::backend::eval::eval;
     use tokio::task;
@@ -394,11 +404,9 @@ mod tests {
 
     #[test]
     fn test_metta_state_to_json() {
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
-        let state = MettaState::new_compiled(vec![
-            MettaValue::Long(42)
-        ]);
+        let state = MettaState::new_compiled(vec![MettaValue::Long(42)]);
 
         let json = metta_state_to_json(&state);
 
@@ -423,7 +431,7 @@ mod tests {
     #[test]
     fn test_run_state_simple_arithmetic() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Start with empty accumulated state
         let accumulated = MettaState::new_empty();
@@ -445,7 +453,7 @@ mod tests {
     #[test]
     fn test_run_state_accumulates_outputs() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Start with empty state
         let mut accumulated = MettaState::new_empty();
@@ -469,7 +477,7 @@ mod tests {
     #[test]
     fn test_run_state_rule_persistence() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Start with empty state
         let mut accumulated = MettaState::new_empty();
@@ -498,7 +506,7 @@ mod tests {
     #[test]
     fn test_run_state_multiple_expressions() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         let accumulated = MettaState::new_empty();
 
@@ -517,28 +525,19 @@ mod tests {
     #[test]
     fn test_run_state_repl_simulation() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Simulate a REPL session
         let mut repl_state = MettaState::new_empty();
 
         // Input 1: Define a rule
-        repl_state = run_state(
-            repl_state,
-            compile("(= (triple $x) (* $x 3))").unwrap()
-        ).unwrap();
+        repl_state = run_state(repl_state, compile("(= (triple $x) (* $x 3))").unwrap()).unwrap();
 
         // Input 2: Use the rule
-        repl_state = run_state(
-            repl_state,
-            compile("!(triple 7)").unwrap()
-        ).unwrap();
+        repl_state = run_state(repl_state, compile("!(triple 7)").unwrap()).unwrap();
 
         // Input 3: Simple arithmetic with ! to produce output
-        repl_state = run_state(
-            repl_state,
-            compile("!(+ 10 11)").unwrap()
-        ).unwrap();
+        repl_state = run_state(repl_state, compile("!(+ 10 11)").unwrap()).unwrap();
 
         // Should have 2 outputs (rule definition produces no output)
         assert_eq!(repl_state.output.len(), 2);
@@ -554,7 +553,7 @@ mod tests {
     #[test]
     fn test_run_state_error_handling() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         let accumulated = MettaState::new_empty();
 
@@ -593,7 +592,7 @@ mod tests {
     #[test]
     fn test_composability_sequential_runs() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: s.run(a).run(b).run(c) should accumulate all results
         let mut state = MettaState::new_empty();
@@ -617,28 +616,23 @@ mod tests {
     #[test]
     fn test_composability_rule_chaining() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Rules defined in earlier runs are available in later runs
         let mut state = MettaState::new_empty();
 
         // Define first rule: double
-        state = run_state(
-            state,
-            compile("(= (double $x) (* $x 2))").unwrap()
-        ).unwrap();
+        state = run_state(state, compile("(= (double $x) (* $x 2))").unwrap()).unwrap();
 
         // Define second rule that uses first: quadruple uses double
         state = run_state(
             state,
-            compile("(= (quadruple $x) (double (double $x)))").unwrap()
-        ).unwrap();
+            compile("(= (quadruple $x) (double (double $x)))").unwrap(),
+        )
+        .unwrap();
 
         // Use both rules
-        state = run_state(
-            state,
-            compile("!(quadruple 3)").unwrap()
-        ).unwrap();
+        state = run_state(state, compile("!(quadruple 3)").unwrap()).unwrap();
 
         // quadruple 3 = double (double 3) = double 6 = 12
         // Index 0: first rule definition produced no output, second rule at index 0? No, both rules produce no output
@@ -649,7 +643,7 @@ mod tests {
     #[test]
     fn test_composability_state_independence() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Each compile is independent, run merges them
         let accum1 = MettaState::new_empty();
@@ -673,7 +667,7 @@ mod tests {
     #[test]
     fn test_composability_monotonic_accumulation() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Outputs never decrease, only accumulate
         let mut state = MettaState::new_empty();
@@ -700,7 +694,7 @@ mod tests {
     #[test]
     fn test_composability_empty_state_identity() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Running against empty state should work like first run
         let empty = MettaState::new_empty();
@@ -719,24 +713,18 @@ mod tests {
     #[test]
     fn test_composability_environment_union() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Environments properly union across runs
         let mut state = MettaState::new_empty();
 
         // Add first rule
-        state = run_state(
-            state,
-            compile("(= (inc $x) (+ $x 1))").unwrap()
-        ).unwrap();
+        state = run_state(state, compile("(= (inc $x) (+ $x 1))").unwrap()).unwrap();
 
         let rules_after_first = state.environment.rule_count();
 
         // Add second rule
-        state = run_state(
-            state,
-            compile("(= (dec $x) (- $x 1))").unwrap()
-        ).unwrap();
+        state = run_state(state, compile("(= (dec $x) (- $x 1))").unwrap()).unwrap();
 
         let rules_after_second = state.environment.rule_count();
 
@@ -744,10 +732,7 @@ mod tests {
         assert!(rules_after_second >= rules_after_first);
 
         // Both rules should work
-        state = run_state(
-            state,
-            compile("!(inc 5) !(dec 5)").unwrap()
-        ).unwrap();
+        state = run_state(state, compile("!(inc 5) !(dec 5)").unwrap()).unwrap();
 
         // Should have 2 outputs: 6 + 4 (rule defs produce no output)
         assert!(state.output.len() >= 2);
@@ -758,37 +743,25 @@ mod tests {
     #[test]
     fn test_composability_no_cross_contamination() {
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         // Test: Independent state chains don't affect each other
         let mut state_a = MettaState::new_empty();
         let mut state_b = MettaState::new_empty();
 
         // State A: Define rule "double"
-        state_a = run_state(
-            state_a,
-            compile("(= (double $x) (* $x 2))").unwrap()
-        ).unwrap();
+        state_a = run_state(state_a, compile("(= (double $x) (* $x 2))").unwrap()).unwrap();
 
         // State B: Define rule "triple"
-        state_b = run_state(
-            state_b,
-            compile("(= (triple $x) (* $x 3))").unwrap()
-        ).unwrap();
+        state_b = run_state(state_b, compile("(= (triple $x) (* $x 3))").unwrap()).unwrap();
 
         // State A should have double, not triple
-        state_a = run_state(
-            state_a,
-            compile("!(double 5)").unwrap()
-        ).unwrap();
+        state_a = run_state(state_a, compile("!(double 5)").unwrap()).unwrap();
         // Rule def produced no output, so first output is at index 0
         assert_eq!(state_a.output[0], MettaValue::Long(10));
 
         // State B should have triple, not double
-        state_b = run_state(
-            state_b,
-            compile("!(triple 5)").unwrap()
-        ).unwrap();
+        state_b = run_state(state_b, compile("!(triple 5)").unwrap()).unwrap();
         // Rule def produced no output, so first output is at index 0
         assert_eq!(state_b.output[0], MettaValue::Long(15));
     }
@@ -798,7 +771,7 @@ mod tests {
     mod async_tests {
         use super::*;
         use crate::backend::compile::compile;
-        use crate::backend::types::MettaState;
+        use crate::backend::models::MettaState;
 
         #[tokio::test]
         async fn test_run_state_async_simple() {
@@ -856,9 +829,8 @@ mod tests {
             let mut state = MettaState::new_empty();
 
             // Define first rule, eval, define second rule, eval
-            let compiled = compile(
-                "(= (inc $x) (+ $x 1)) !(inc 5) (= (dec $x) (- $x 1)) !(dec 10)"
-            ).unwrap();
+            let compiled =
+                compile("(= (inc $x) (+ $x 1)) !(inc 5) (= (dec $x) (- $x 1)) !(dec 10)").unwrap();
 
             state = run_state_async(state, compiled).await.unwrap();
 
@@ -904,11 +876,16 @@ mod tests {
             let compiled_async = compile(src).unwrap();
 
             let result_sync = run_state(accumulated_sync, compiled_sync).unwrap();
-            let result_async = run_state_async(accumulated_async, compiled_async).await.unwrap();
+            let result_async = run_state_async(accumulated_async, compiled_async)
+                .await
+                .unwrap();
 
             // Both should produce same outputs
             assert_eq!(result_sync.output, result_async.output);
-            assert_eq!(result_sync.environment.rule_count(), result_async.environment.rule_count());
+            assert_eq!(
+                result_sync.environment.rule_count(),
+                result_async.environment.rule_count()
+            );
         }
     }
 }

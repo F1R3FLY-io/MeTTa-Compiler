@@ -1083,12 +1083,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
 
 [[package]]
-name = "fast-slice-utils"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7f7bedd5e26edc56da9d5e5d224a60a87a034bcca4a3413251bd7802d715fe4"
-
-[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2338,7 +2332,6 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "dyn-clone",
- "fast-slice-utils",
  "gxhash 3.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libz-ng-sys",
  "local-or-heap",

@@ -1,10 +1,10 @@
+use crate::backend::environment::Environment;
 /// PathMap Par Integration Module
 ///
 /// Provides conversion between MeTTa types and Rholang PathMap-based Par types.
 /// This module enables MettaState to be represented as Rholang EPathMap structures.
-
-use crate::backend::types::{MettaValue, MettaState, Environment};
-use models::rhoapi::{Par, Expr, expr::ExprInstance, EPathMap, EList, ETuple};
+use crate::backend::models::{MettaState, MettaValue};
+use models::rhoapi::{expr::ExprInstance, EList, EPathMap, ETuple, Expr, Par};
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
 
 /// Helper function to create a Par with a string value
@@ -31,7 +31,7 @@ fn create_uri_par(uri: String) -> Par {
 // Magic numbers for MeTTa Environment byte arrays
 // These identify byte arrays as MeTTa-specific data for the pretty-printer
 const METTA_MULTIPLICITIES_MAGIC: &[u8] = b"MTTM"; // MeTTa Multiplicities
-const METTA_SPACE_MAGIC: &[u8] = b"MTTS";          // MeTTa Space
+const METTA_SPACE_MAGIC: &[u8] = b"MTTS"; // MeTTa Space
 
 /// Convert a MettaValue to a Rholang Par object
 pub fn metta_value_to_par(value: &MettaValue) -> Par {
@@ -40,30 +40,25 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
             // Atoms are plain strings (no quotes)
             create_string_par(s.clone())
         }
-        MettaValue::Bool(b) => {
-            Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::GBool(*b)),
-            }])
-        }
-        MettaValue::Long(n) => {
-            create_int_par(*n)
-        }
+        MettaValue::Bool(b) => Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GBool(*b)),
+        }]),
+        MettaValue::Long(n) => create_int_par(*n),
         MettaValue::String(s) => {
             // Strings are quoted with escaped quotes to distinguish from atoms
-            create_string_par(format!("\"{}\"", s.replace("\\", "\\\\").replace("\"", "\\\"")))
+            create_string_par(format!(
+                "\"{}\"",
+                s.replace("\\", "\\\\").replace("\"", "\\\"")
+            ))
         }
-        MettaValue::Uri(s) => {
-            create_uri_par(s.clone())
-        }
+        MettaValue::Uri(s) => create_uri_par(s.clone()),
         MettaValue::Nil => {
             // Represent Nil as empty Par
             Par::default()
         }
         MettaValue::SExpr(items) => {
             // Convert S-expressions to Rholang tuples (more semantically appropriate than lists)
-            let item_pars: Vec<Par> = items.iter()
-                .map(|v| metta_value_to_par(v))
-                .collect();
+            let item_pars: Vec<Par> = items.iter().map(|v| metta_value_to_par(v)).collect();
 
             Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple {
@@ -105,9 +100,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
 
 /// Convert a vector of MettaValues to a Rholang List Par
 pub fn metta_values_to_list_par(values: &[MettaValue]) -> Par {
-    let item_pars: Vec<Par> = values.iter()
-        .map(|v| metta_value_to_par(v))
-        .collect();
+    let item_pars: Vec<Par> = values.iter().map(|v| metta_value_to_par(v)).collect();
 
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EListBody(EList {
@@ -151,9 +144,15 @@ pub fn environment_to_par(env: &Environment) -> Par {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         // Create unique temp file for symbol table (include timestamp to avoid parallel test collisions)
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)
-            .unwrap_or_default().as_nanos();
-        let temp_path = std::env::temp_dir().join(format!("metta_symbols_{}_{}.bin", std::process::id(), timestamp));
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temp_path = std::env::temp_dir().join(format!(
+            "metta_symbols_{}_{}.bin",
+            std::process::id(),
+            timestamp
+        ));
 
         // Backup symbols to temp file
         if let Err(_) = space.backup_symbols(&temp_path) {
@@ -190,7 +189,7 @@ pub fn environment_to_par(env: &Environment) -> Par {
     }
 
     // Write the actual count at the beginning
-    all_paths_data[count_offset..count_offset+8].copy_from_slice(&path_count.to_be_bytes());
+    all_paths_data[count_offset..count_offset + 8].copy_from_slice(&path_count.to_be_bytes());
 
     drop(rz);
     drop(space);
@@ -242,7 +241,10 @@ pub fn environment_to_par(env: &Environment) -> Par {
 
     let multiplicities_tuple = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-            ps: vec![create_string_par("multiplicities".to_string()), multiplicities_emap],
+            ps: vec![
+                create_string_par("multiplicities".to_string()),
+                multiplicities_emap,
+            ],
             locally_free: Vec::new(),
             connective_used: false,
         })),
@@ -354,7 +356,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
                 // Check if it's a quoted string (starts and ends with ")
                 if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
                     // It's a string - unescape and remove quotes
-                    let unescaped = s[1..s.len()-1]
+                    let unescaped = s[1..s.len() - 1]
                         .replace("\\\"", "\"")
                         .replace("\\\\", "\\");
                     Ok(MettaValue::String(unescaped))
@@ -368,16 +370,17 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
             Some(ExprInstance::GUri(u)) => Ok(MettaValue::Uri(u.clone())),
             Some(ExprInstance::EListBody(list)) => {
                 // Lists are also converted to S-expressions for compatibility
-                let items: Result<Vec<MettaValue>, String> = list.ps.iter()
-                    .map(|p| par_to_metta_value(p))
-                    .collect();
+                let items: Result<Vec<MettaValue>, String> =
+                    list.ps.iter().map(|p| par_to_metta_value(p)).collect();
                 Ok(MettaValue::SExpr(items?))
             }
             Some(ExprInstance::ETupleBody(tuple)) => {
                 // Check if it's a tagged structure (error, type)
                 // Tagged structures have string tag as first element
                 if tuple.ps.len() >= 2 {
-                    if let Some(ExprInstance::GString(tag)) = tuple.ps[0].exprs.first()
+                    if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                        .exprs
+                        .first()
                         .and_then(|e| e.expr_instance.as_ref())
                     {
                         // Check if the tag looks like a quoted string (for distinguishing from atoms)
@@ -405,35 +408,33 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
                                 }
                                 _ => {
                                     // Unknown tag, treat as regular S-expr
-                                    let items: Result<Vec<MettaValue>, String> = tuple.ps.iter()
-                                        .map(|p| par_to_metta_value(p))
-                                        .collect();
+                                    let items: Result<Vec<MettaValue>, String> =
+                                        tuple.ps.iter().map(|p| par_to_metta_value(p)).collect();
                                     Ok(MettaValue::SExpr(items?))
                                 }
                             }
                         } else {
                             // First element is an atom, not a tag - it's a regular S-expr
-                            let items: Result<Vec<MettaValue>, String> = tuple.ps.iter()
-                                .map(|p| par_to_metta_value(p))
-                                .collect();
+                            let items: Result<Vec<MettaValue>, String> =
+                                tuple.ps.iter().map(|p| par_to_metta_value(p)).collect();
                             Ok(MettaValue::SExpr(items?))
                         }
                     } else {
                         // First element is not a string - it's a regular S-expr
-                        let items: Result<Vec<MettaValue>, String> = tuple.ps.iter()
-                            .map(|p| par_to_metta_value(p))
-                            .collect();
+                        let items: Result<Vec<MettaValue>, String> =
+                            tuple.ps.iter().map(|p| par_to_metta_value(p)).collect();
                         Ok(MettaValue::SExpr(items?))
                     }
                 } else {
                     // Small tuple, treat as S-expr
-                    let items: Result<Vec<MettaValue>, String> = tuple.ps.iter()
-                        .map(|p| par_to_metta_value(p))
-                        .collect();
+                    let items: Result<Vec<MettaValue>, String> =
+                        tuple.ps.iter().map(|p| par_to_metta_value(p)).collect();
                     Ok(MettaValue::SExpr(items?))
                 }
             }
-            _ => Err(format!("Unsupported Par expression type for MettaValue conversion"))
+            _ => Err(format!(
+                "Unsupported Par expression type for MettaValue conversion"
+            )),
         }
     } else {
         Err("Par has no expressions to convert".to_string())
@@ -452,7 +453,10 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
     if let Some(expr) = par.exprs.first() {
         if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
             if tuple.ps.len() != 2 {
-                return Err(format!("Expected 2 elements in environment tuple, got {}", tuple.ps.len()));
+                return Err(format!(
+                    "Expected 2 elements in environment tuple, got {}",
+                    tuple.ps.len()
+                ));
             }
 
             // Helper to extract value from (tag, value) tuple
@@ -485,20 +489,26 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
             if let Some(expr) = multiplicities_par.exprs.first() {
                 if let Some(ExprInstance::GByteArray(mult_bytes)) = &expr.expr_instance {
                     // Read format: [magic: 4 bytes "MTTM"][count: 8 bytes][key1_len: 4 bytes][key1_bytes][value1: 8 bytes]...
-                    if mult_bytes.len() >= 12 {  // 4 bytes magic + 8 bytes count minimum
+                    if mult_bytes.len() >= 12 {
+                        // 4 bytes magic + 8 bytes count minimum
                         let mut offset = 0;
 
                         // Check and skip magic number if present
-                        if mult_bytes.len() >= 4 && &mult_bytes[0..4] == METTA_MULTIPLICITIES_MAGIC {
+                        if mult_bytes.len() >= 4 && &mult_bytes[0..4] == METTA_MULTIPLICITIES_MAGIC
+                        {
                             offset += 4; // Skip magic number
                         }
 
                         // Read count
                         let count = u64::from_be_bytes([
-                            mult_bytes[offset], mult_bytes[offset+1],
-                            mult_bytes[offset+2], mult_bytes[offset+3],
-                            mult_bytes[offset+4], mult_bytes[offset+5],
-                            mult_bytes[offset+6], mult_bytes[offset+7],
+                            mult_bytes[offset],
+                            mult_bytes[offset + 1],
+                            mult_bytes[offset + 2],
+                            mult_bytes[offset + 3],
+                            mult_bytes[offset + 4],
+                            mult_bytes[offset + 5],
+                            mult_bytes[offset + 6],
+                            mult_bytes[offset + 7],
                         ]);
                         offset += 8;
 
@@ -510,8 +520,10 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
 
                             // Read key length
                             let key_len = u32::from_be_bytes([
-                                mult_bytes[offset], mult_bytes[offset+1],
-                                mult_bytes[offset+2], mult_bytes[offset+3],
+                                mult_bytes[offset],
+                                mult_bytes[offset + 1],
+                                mult_bytes[offset + 2],
+                                mult_bytes[offset + 3],
                             ]) as usize;
                             offset += 4;
 
@@ -520,16 +532,20 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
                             }
 
                             // Read key bytes
-                            let key_bytes = &mult_bytes[offset..offset+key_len];
+                            let key_bytes = &mult_bytes[offset..offset + key_len];
                             let key = String::from_utf8_lossy(key_bytes).to_string();
                             offset += key_len;
 
                             // Read value
                             let value = u64::from_be_bytes([
-                                mult_bytes[offset], mult_bytes[offset+1],
-                                mult_bytes[offset+2], mult_bytes[offset+3],
-                                mult_bytes[offset+4], mult_bytes[offset+5],
-                                mult_bytes[offset+6], mult_bytes[offset+7],
+                                mult_bytes[offset],
+                                mult_bytes[offset + 1],
+                                mult_bytes[offset + 2],
+                                mult_bytes[offset + 3],
+                                mult_bytes[offset + 4],
+                                mult_bytes[offset + 5],
+                                mult_bytes[offset + 6],
+                                mult_bytes[offset + 7],
                             ]) as usize;
                             offset += 8;
 
@@ -554,40 +570,53 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
                 let mut space = env.space.lock().unwrap();
                 if !space_dump_bytes.is_empty() {
                     // Read format: [magic: 4 bytes "MTTS"][sym_table_len: 8 bytes][sym_table_bytes][num_paths: 8 bytes][path1_len: 4 bytes][path1_bytes]...
-                    if space_dump_bytes.len() >= 12 {  // 4 bytes magic + 8 bytes sym_table_len minimum
+                    if space_dump_bytes.len() >= 12 {
+                        // 4 bytes magic + 8 bytes sym_table_len minimum
                         let mut offset = 0;
 
                         // Check and skip magic number if present
-                        if space_dump_bytes.len() >= 4 && &space_dump_bytes[0..4] == METTA_SPACE_MAGIC {
+                        if space_dump_bytes.len() >= 4
+                            && &space_dump_bytes[0..4] == METTA_SPACE_MAGIC
+                        {
                             offset += 4; // Skip magic number
                         }
 
                         // Read symbol table length
                         let sym_len = u64::from_be_bytes([
-                            space_dump_bytes[offset], space_dump_bytes[offset+1],
-                            space_dump_bytes[offset+2], space_dump_bytes[offset+3],
-                            space_dump_bytes[offset+4], space_dump_bytes[offset+5],
-                            space_dump_bytes[offset+6], space_dump_bytes[offset+7],
+                            space_dump_bytes[offset],
+                            space_dump_bytes[offset + 1],
+                            space_dump_bytes[offset + 2],
+                            space_dump_bytes[offset + 3],
+                            space_dump_bytes[offset + 4],
+                            space_dump_bytes[offset + 5],
+                            space_dump_bytes[offset + 6],
+                            space_dump_bytes[offset + 7],
                         ]) as usize;
                         offset += 8;
 
                         // Restore symbol table if present
                         if sym_len > 0 && offset + sym_len <= space_dump_bytes.len() {
-                            use std::io::Write;
                             use std::fs;
+                            use std::io::Write;
                             use std::time::{SystemTime, UNIX_EPOCH};
 
-                            let symbol_table_bytes = &space_dump_bytes[offset..offset+sym_len];
+                            let symbol_table_bytes = &space_dump_bytes[offset..offset + sym_len];
                             offset += sym_len;
 
                             // Write symbol table to temp file (unique name to avoid collisions)
-                            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)
-                                .unwrap_or_default().as_nanos();
-                            let temp_path = std::env::temp_dir().join(format!("metta_symbols_restore_{}_{}.bin", std::process::id(), timestamp));
+                            let timestamp = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_nanos();
+                            let temp_path = std::env::temp_dir().join(format!(
+                                "metta_symbols_restore_{}_{}.bin",
+                                std::process::id(),
+                                timestamp
+                            ));
                             if let Ok(mut file) = fs::File::create(&temp_path) {
                                 if file.write_all(symbol_table_bytes).is_ok() {
                                     drop(file); // Close file before restoring
-                                    // Restore symbols from temp file
+                                                // Restore symbols from temp file
                                     let _ = space.restore_symbols(&temp_path);
                                     // Clean up temp file
                                     let _ = fs::remove_file(&temp_path);
@@ -598,10 +627,14 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
                         // Read path count
                         if offset + 8 <= space_dump_bytes.len() {
                             let path_count = u64::from_be_bytes([
-                                space_dump_bytes[offset], space_dump_bytes[offset+1],
-                                space_dump_bytes[offset+2], space_dump_bytes[offset+3],
-                                space_dump_bytes[offset+4], space_dump_bytes[offset+5],
-                                space_dump_bytes[offset+6], space_dump_bytes[offset+7],
+                                space_dump_bytes[offset],
+                                space_dump_bytes[offset + 1],
+                                space_dump_bytes[offset + 2],
+                                space_dump_bytes[offset + 3],
+                                space_dump_bytes[offset + 4],
+                                space_dump_bytes[offset + 5],
+                                space_dump_bytes[offset + 6],
+                                space_dump_bytes[offset + 7],
                             ]);
                             offset += 8;
 
@@ -613,8 +646,10 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
 
                                 // Read path length
                                 let len = u32::from_be_bytes([
-                                    space_dump_bytes[offset], space_dump_bytes[offset+1],
-                                    space_dump_bytes[offset+2], space_dump_bytes[offset+3],
+                                    space_dump_bytes[offset],
+                                    space_dump_bytes[offset + 1],
+                                    space_dump_bytes[offset + 2],
+                                    space_dump_bytes[offset + 3],
                                 ]) as usize;
                                 offset += 4;
 
@@ -623,7 +658,7 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
                                 }
 
                                 // Get raw path bytes and insert directly into PathMap
-                                let path_bytes = &space_dump_bytes[offset..offset+len];
+                                let path_bytes = &space_dump_bytes[offset..offset + len];
                                 space.btm.insert(path_bytes, ());
                                 offset += len;
                             }
@@ -648,7 +683,10 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
         if let Some(ExprInstance::EPathmapBody(pathmap)) = &expr.expr_instance {
             // The PathMap should contain a single ETuple with three named field tuples
             if pathmap.ps.len() != 1 {
-                return Err(format!("Expected 1 element (ETuple) in PathMap, got {}", pathmap.ps.len()));
+                return Err(format!(
+                    "Expected 1 element (ETuple) in PathMap, got {}",
+                    pathmap.ps.len()
+                ));
             }
 
             // Extract the ETuple from the PathMap
@@ -657,7 +695,10 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                 if let Some(ExprInstance::ETupleBody(state_tuple)) = &expr.expr_instance {
                     // The tuple should have 3 named field tuples
                     if state_tuple.ps.len() != 3 {
-                        return Err(format!("Expected 3 named fields in state tuple, got {}", state_tuple.ps.len()));
+                        return Err(format!(
+                            "Expected 3 named fields in state tuple, got {}",
+                            state_tuple.ps.len()
+                        ));
                     }
 
                     // Helper to extract value from (tag, value) tuple
@@ -676,9 +717,8 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                     let pending_par = extract_tuple_value(&state_tuple.ps[0])?;
                     let source = if let Some(expr) = pending_par.exprs.first() {
                         if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
-                            let exprs: Result<Vec<MettaValue>, String> = list.ps.iter()
-                                .map(|p| par_to_metta_value(p))
-                                .collect();
+                            let exprs: Result<Vec<MettaValue>, String> =
+                                list.ps.iter().map(|p| par_to_metta_value(p)).collect();
                             exprs?
                         } else {
                             return Err("Expected EListBody for source".to_string());
@@ -695,9 +735,8 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                     let outputs_par = extract_tuple_value(&state_tuple.ps[2])?;
                     let output = if let Some(expr) = outputs_par.exprs.first() {
                         if let Some(ExprInstance::EListBody(list)) = &expr.expr_instance {
-                            let outputs: Result<Vec<MettaValue>, String> = list.ps.iter()
-                                .map(|p| par_to_metta_value(p))
-                                .collect();
+                            let outputs: Result<Vec<MettaValue>, String> =
+                                list.ps.iter().map(|p| par_to_metta_value(p)).collect();
                             outputs?
                         } else {
                             return Err("Expected EListBody for output".to_string());
@@ -728,7 +767,7 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::types::Rule;
+    use crate::backend::models::Rule;
 
     #[test]
     fn test_environment_serialization_roundtrip() {
@@ -758,16 +797,33 @@ mod tests {
         // Check that the serialized Par is an ETuple with 2 named field tuples
         assert_eq!(par.exprs.len(), 1);
         if let Some(ExprInstance::ETupleBody(env_tuple)) = par.exprs[0].expr_instance.as_ref() {
-            assert_eq!(env_tuple.ps.len(), 2, "Expected ETuple with 2 fields (space, multiplicities), got {}", env_tuple.ps.len());
+            assert_eq!(
+                env_tuple.ps.len(),
+                2,
+                "Expected ETuple with 2 fields (space, multiplicities), got {}",
+                env_tuple.ps.len()
+            );
 
             // Check field 0: ("space", <GByteArray>)
-            if let Some(ExprInstance::ETupleBody(tuple)) = env_tuple.ps[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            if let Some(ExprInstance::ETupleBody(tuple)) = env_tuple.ps[0]
+                .exprs
+                .first()
+                .and_then(|e| e.expr_instance.as_ref())
+            {
                 // Verify tag
-                if let Some(ExprInstance::GString(tag)) = tuple.ps[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                    .exprs
+                    .first()
+                    .and_then(|e| e.expr_instance.as_ref())
+                {
                     assert_eq!(tag, "space");
                 }
                 // Verify space dump is a GByteArray and not empty
-                if let Some(ExprInstance::GByteArray(dump_bytes)) = tuple.ps[1].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                if let Some(ExprInstance::GByteArray(dump_bytes)) = tuple.ps[1]
+                    .exprs
+                    .first()
+                    .and_then(|e| e.expr_instance.as_ref())
+                {
                     println!("Space dump has {} bytes", dump_bytes.len());
                     assert!(dump_bytes.len() > 0, "Space dump should not be empty");
                 } else {
@@ -778,15 +834,33 @@ mod tests {
             }
 
             // Check field 1: ("multiplicities", <GByteArray>)
-            if let Some(ExprInstance::ETupleBody(tuple)) = env_tuple.ps[1].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-                if let Some(ExprInstance::GString(tag)) = tuple.ps[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            if let Some(ExprInstance::ETupleBody(tuple)) = env_tuple.ps[1]
+                .exprs
+                .first()
+                .and_then(|e| e.expr_instance.as_ref())
+            {
+                if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                    .exprs
+                    .first()
+                    .and_then(|e| e.expr_instance.as_ref())
+                {
                     assert_eq!(tag, "multiplicities");
                 }
                 // Verify it's a GByteArray
-                if let Some(ExprInstance::GByteArray(mult_bytes)) = tuple.ps[1].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-                    println!("Multiplicities is a GByteArray with {} bytes", mult_bytes.len());
+                if let Some(ExprInstance::GByteArray(mult_bytes)) = tuple.ps[1]
+                    .exprs
+                    .first()
+                    .and_then(|e| e.expr_instance.as_ref())
+                {
+                    println!(
+                        "Multiplicities is a GByteArray with {} bytes",
+                        mult_bytes.len()
+                    );
                     // Should have at least 8 bytes for the count
-                    assert!(mult_bytes.len() >= 8, "Multiplicities byte array should have at least 8 bytes for count");
+                    assert!(
+                        mult_bytes.len() >= 8,
+                        "Multiplicities byte array should have at least 8 bytes for count"
+                    );
                 } else {
                     panic!("Expected GByteArray for multiplicities");
                 }
@@ -797,10 +871,17 @@ mod tests {
 
         // Deserialize
         let deserialized_env = par_to_environment(&par).expect("Failed to deserialize");
-        println!("Deserialized environment has {} rules", deserialized_env.rule_count());
+        println!(
+            "Deserialized environment has {} rules",
+            deserialized_env.rule_count()
+        );
 
         // Verify deserialized environment
-        assert_eq!(deserialized_env.rule_count(), 1, "Expected 1 rule after deserialization");
+        assert_eq!(
+            deserialized_env.rule_count(),
+            1,
+            "Expected 1 rule after deserialization"
+        );
 
         // Note: MORK uses De Bruijn indexing which can cause variable renaming (e.g., $x -> $a)
         // The important part is that the structure is preserved, not the exact variable names
@@ -914,9 +995,7 @@ mod tests {
 
     #[test]
     fn test_metta_state_to_pathmap_par() {
-        let state = MettaState::new_compiled(vec![
-            MettaValue::Long(42)
-        ]);
+        let state = MettaState::new_compiled(vec![MettaValue::Long(42)]);
 
         let par = metta_state_to_pathmap_par(&state);
 
@@ -929,8 +1008,16 @@ mod tests {
             assert_eq!(pathmap.ps.len(), 1);
 
             // The element should be an ETuple with 3 named field tuples
-            if let Some(ExprInstance::ETupleBody(state_tuple)) = pathmap.ps[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-                assert_eq!(state_tuple.ps.len(), 3, "Expected ETuple with 3 named fields (source, environment, output)");
+            if let Some(ExprInstance::ETupleBody(state_tuple)) = pathmap.ps[0]
+                .exprs
+                .first()
+                .and_then(|e| e.expr_instance.as_ref())
+            {
+                assert_eq!(
+                    state_tuple.ps.len(),
+                    3,
+                    "Expected ETuple with 3 named fields (source, environment, output)"
+                );
             } else {
                 panic!("Expected ETupleBody for state");
             }
@@ -950,8 +1037,16 @@ mod tests {
             assert_eq!(pathmap.ps.len(), 1);
 
             // Extract the state tuple
-            if let Some(ExprInstance::ETupleBody(state_tuple)) = pathmap.ps[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-                assert_eq!(state_tuple.ps.len(), 3, "Expected ETuple with 3 named fields (source, environment, output)");
+            if let Some(ExprInstance::ETupleBody(state_tuple)) = pathmap.ps[0]
+                .exprs
+                .first()
+                .and_then(|e| e.expr_instance.as_ref())
+            {
+                assert_eq!(
+                    state_tuple.ps.len(),
+                    3,
+                    "Expected ETuple with 3 named fields (source, environment, output)"
+                );
 
                 // Check that output contains the error
                 // Field 2 should be ("output", [error_value])
@@ -959,7 +1054,11 @@ mod tests {
                     if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
                         assert_eq!(tuple.ps.len(), 2, "Expected (tag, value) tuple");
                         // First element should be "output" tag
-                        if let Some(ExprInstance::GString(tag)) = tuple.ps[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                        if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                            .exprs
+                            .first()
+                            .and_then(|e| e.expr_instance.as_ref())
+                        {
                             assert_eq!(tag, "output");
                         } else {
                             panic!("Expected GString tag");
@@ -989,15 +1088,16 @@ mod tests {
         // Add expression with reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("connected".to_string()),
-            MettaValue::Atom("room_y".to_string()),  // Contains 'y' = 121 (reserved)
-            MettaValue::Atom("room_z".to_string()),  // Contains 'z' = 122 (reserved)
+            MettaValue::Atom("room_y".to_string()), // Contains 'y' = 121 (reserved)
+            MettaValue::Atom("room_z".to_string()), // Contains 'z' = 122 (reserved)
         ]));
 
         // Serialize to Par
         let par = environment_to_par(&env);
 
         // Deserialize back
-        let env2 = par_to_environment(&par).expect("Round-trip with reserved bytes 'y' and 'z' failed");
+        let env2 =
+            par_to_environment(&par).expect("Round-trip with reserved bytes 'y' and 'z' failed");
 
         // Verify Space contents are preserved
         // MORK uses De Bruijn indexing so we check structure, not exact strings
@@ -1018,8 +1118,8 @@ mod tests {
         // Add expression with tilde (the problematic reserved byte)
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("test".to_string()),
-            MettaValue::Atom("room~a".to_string()),  // Contains '~' = 126 (RESERVED!)
-            MettaValue::Atom("room~b".to_string()),  // Contains '~' = 126 (RESERVED!)
+            MettaValue::Atom("room~a".to_string()), // Contains '~' = 126 (RESERVED!)
+            MettaValue::Atom("room~b".to_string()), // Contains '~' = 126 (RESERVED!)
         ]));
 
         // Get initial iter count
@@ -1030,13 +1130,17 @@ mod tests {
         let par = environment_to_par(&env);
 
         // Deserialize back - this used to panic with "reserved 126"
-        let env2 = par_to_environment(&par).expect("Round-trip with reserved byte '~' (126) failed");
+        let env2 =
+            par_to_environment(&par).expect("Round-trip with reserved byte '~' (126) failed");
 
         // The key test: it didn't panic! The bug is fixed.
         // Verify Space is not empty - exact structure may vary due to MORK normalization
         let final_count = env2.iter_rules().count();
         println!("Deserialized space has {} rules", final_count);
-        assert_eq!(final_count, initial_count, "Space contents should be preserved");
+        assert_eq!(
+            final_count, initial_count,
+            "Space contents should be preserved"
+        );
 
         println!("✓ Reserved byte '~' (126) round-trip successfully - bug is FIXED!");
     }
@@ -1049,13 +1153,13 @@ mod tests {
         // Add multiple expressions with various reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("path".to_string()),
-            MettaValue::Atom("room_x".to_string()),  // 'x' = 120
-            MettaValue::Atom("room_y".to_string()),  // 'y' = 121 (reserved)
+            MettaValue::Atom("room_x".to_string()), // 'x' = 120
+            MettaValue::Atom("room_y".to_string()), // 'y' = 121 (reserved)
         ]));
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("connected".to_string()),
-            MettaValue::Atom("room~a".to_string()),  // '~' = 126 (reserved)
-            MettaValue::Atom("room_z".to_string()),  // 'z' = 122 (reserved)
+            MettaValue::Atom("room~a".to_string()), // '~' = 126 (reserved)
+            MettaValue::Atom("room_z".to_string()), // 'z' = 122 (reserved)
         ]));
 
         let initial_count = env.iter_rules().count();
@@ -1080,7 +1184,10 @@ mod tests {
         println!("After 3rd round-trip: {} rules", count4);
 
         // The key test: multiple round-trips don't panic and preserve data
-        assert_eq!(count4, initial_count, "Rule count should be stable across round-trips");
+        assert_eq!(
+            count4, initial_count,
+            "Rule count should be stable across round-trips"
+        );
 
         println!("✓ Multiple round-trips with reserved bytes successful - NO PANICS!");
     }
@@ -1093,8 +1200,8 @@ mod tests {
         // Add fact with reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("connected".to_string()),
-            MettaValue::Atom("room_y".to_string()),  // 'y' = 121 (reserved)
-            MettaValue::Atom("room_z".to_string()),  // 'z' = 122 (reserved)
+            MettaValue::Atom("room_y".to_string()), // 'y' = 121 (reserved)
+            MettaValue::Atom("room_z".to_string()), // 'z' = 122 (reserved)
         ]));
 
         // Add rule that uses match (the pattern that triggered the bug)
@@ -1123,7 +1230,8 @@ mod tests {
 
         // Deserialize back (this is what happens when receiving from Rholang)
         // This used to panic with "reserved 121" or "reserved 122"
-        let env2 = par_to_environment(&par).expect("Round-trip with rules and reserved bytes failed");
+        let env2 =
+            par_to_environment(&par).expect("Round-trip with rules and reserved bytes failed");
 
         // Verify both the fact and the rule are preserved
         assert!(env2.has_sexpr_fact(&MettaValue::SExpr(vec![
@@ -1146,9 +1254,9 @@ mod tests {
         // '@' = 64, 'A' = 65, ..., 'Z' = 90, ..., 'z' = 122, '{' = 123, '~' = 126, DEL = 127
         env.add_to_space(&MettaValue::SExpr(vec![
             MettaValue::Atom("test".to_string()),
-            MettaValue::Atom("ABC".to_string()),    // A=65, B=66, C=67 (all reserved)
-            MettaValue::Atom("xyz".to_string()),    // x=120, y=121, z=122 (last two reserved)
-            MettaValue::Atom("@~".to_string()),     // @=64, ~=126 (both reserved)
+            MettaValue::Atom("ABC".to_string()), // A=65, B=66, C=67 (all reserved)
+            MettaValue::Atom("xyz".to_string()), // x=120, y=121, z=122 (last two reserved)
+            MettaValue::Atom("@~".to_string()),  // @=64, ~=126 (both reserved)
         ]));
 
         let initial_count = env.iter_rules().count();
@@ -1158,12 +1266,16 @@ mod tests {
         let par = environment_to_par(&env);
 
         // Deserialize back - should handle ALL reserved bytes without panic
-        let env2 = par_to_environment(&par).expect("Round-trip with multiple reserved bytes failed");
+        let env2 =
+            par_to_environment(&par).expect("Round-trip with multiple reserved bytes failed");
 
         // The critical test: it didn't panic! All reserved bytes handled.
         let final_count = env2.iter_rules().count();
         println!("Deserialized space has {} rules", final_count);
-        assert_eq!(final_count, initial_count, "Space contents should be preserved");
+        assert_eq!(
+            final_count, initial_count,
+            "Space contents should be preserved"
+        );
 
         println!("✓ All bytes in reserved range (64-127) handled correctly - NO PANIC!");
     }
@@ -1177,21 +1289,21 @@ mod tests {
 
         // Add facts with 'o' (111) - the specific byte that triggered the demo failure
         env.add_to_space(&MettaValue::SExpr(vec![
-            MettaValue::Atom("connected".to_string()),  // 'o' = 111, 'n' = 110 (reserved bytes!)
-            MettaValue::Atom("room_a".to_string()),     // 'o' = 111 (RESERVED!)
-            MettaValue::Atom("room_b".to_string()),     // 'o' = 111, 'b' = 98 (reserved!)
+            MettaValue::Atom("connected".to_string()), // 'o' = 111, 'n' = 110 (reserved bytes!)
+            MettaValue::Atom("room_a".to_string()),    // 'o' = 111 (RESERVED!)
+            MettaValue::Atom("room_b".to_string()),    // 'o' = 111, 'b' = 98 (reserved!)
         ]));
 
         env.add_to_space(&MettaValue::SExpr(vec![
-            MettaValue::Atom("object_at".to_string()),  // 'o' = 111, 'b' = 98 (RESERVED!)
-            MettaValue::Atom("robot".to_string()),      // 'o' = 111, 'b' = 98 (RESERVED!)
-            MettaValue::Atom("room_a".to_string()),     // 'o' = 111 (RESERVED!)
+            MettaValue::Atom("object_at".to_string()), // 'o' = 111, 'b' = 98 (RESERVED!)
+            MettaValue::Atom("robot".to_string()),     // 'o' = 111, 'b' = 98 (RESERVED!)
+            MettaValue::Atom("room_a".to_string()),    // 'o' = 111 (RESERVED!)
         ]));
 
         // Add a rule that uses match (pattern from robot_planning.rho)
         let rule = Rule {
             lhs: MettaValue::SExpr(vec![
-                MettaValue::Atom("is_connected".to_string()),  // 'o' = 111, 'n' = 110 (RESERVED!)
+                MettaValue::Atom("is_connected".to_string()), // 'o' = 111, 'n' = 110 (RESERVED!)
                 MettaValue::Atom("$from".to_string()),
                 MettaValue::Atom("$to".to_string()),
             ]),
@@ -1200,7 +1312,7 @@ mod tests {
                 MettaValue::Atom("&".to_string()),
                 MettaValue::Atom("self".to_string()),
                 MettaValue::SExpr(vec![
-                    MettaValue::Atom("connected".to_string()),  // 'o' = 111, 'n' = 110 (RESERVED!)
+                    MettaValue::Atom("connected".to_string()), // 'o' = 111, 'n' = 110 (RESERVED!)
                     MettaValue::Atom("$from".to_string()),
                     MettaValue::Atom("$to".to_string()),
                 ]),
@@ -1217,15 +1329,21 @@ mod tests {
         let par = environment_to_par(&env);
 
         // Deserialize back (if we get here, the bug is fixed!)
-        let env2 = par_to_environment(&par)
-            .expect("REGRESSION: Round-trip with 'o' (111) in symbols failed - the bug has returned!");
+        let env2 = par_to_environment(&par).expect(
+            "REGRESSION: Round-trip with 'o' (111) in symbols failed - the bug has returned!",
+        );
 
         // Verify data is preserved
         let final_count = env2.iter_rules().count();
         println!("Deserialized space has {} rules", final_count);
-        assert_eq!(final_count, initial_count, "Space contents should be preserved");
+        assert_eq!(
+            final_count, initial_count,
+            "Space contents should be preserved"
+        );
 
-        println!("✓ REGRESSION TEST PASSED: robot_planning.rho symbols with 'o' (111) work correctly!");
+        println!(
+            "✓ REGRESSION TEST PASSED: robot_planning.rho symbols with 'o' (111) work correctly!"
+        );
     }
 
     #[test]
@@ -1238,9 +1356,9 @@ mod tests {
 
         // Add facts with 'o' (111) - reserved byte
         env.add_to_space(&MettaValue::SExpr(vec![
-            MettaValue::Atom("connected".to_string()),  // 'o' = 111
-            MettaValue::Atom("room_a".to_string()),     // 'o' = 111
-            MettaValue::Atom("room_b".to_string()),     // 'o' = 111
+            MettaValue::Atom("connected".to_string()), // 'o' = 111
+            MettaValue::Atom("room_a".to_string()),    // 'o' = 111
+            MettaValue::Atom("room_b".to_string()),    // 'o' = 111
         ]));
 
         // Serialize and deserialize

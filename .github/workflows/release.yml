@@ -310,8 +310,9 @@ jobs:
 
       - name: Build Arch package in container
         run: |
-          # Create a build script
-          cat > build-arch-pkg.sh <<'EOF'
+          # Create a build script with architecture override
+          ARCH_NAME="${{ matrix.arch.name }}"
+          cat > build-arch-pkg.sh <<EOF
           #!/bin/bash
           set -e
 
@@ -322,14 +323,14 @@ jobs:
           useradd -m builder
           chown -R builder:builder /build
 
-          # Build as non-root user
+          # Build as non-root user with CARCH override
           cd /build
-          su builder -c "makepkg --nodeps --skipinteg --ignorearch"
+          su builder -c "CARCH=${ARCH_NAME} makepkg --nodeps --skipinteg --ignorearch"
 
           # Copy package to output (exclude debug packages)
           for pkg in *.pkg.tar.zst; do
-            if [[ ! "$pkg" =~ -debug- ]]; then
-              cp "$pkg" /output/
+            if [[ ! "\$pkg" =~ -debug- ]]; then
+              cp "\$pkg" /output/
             fi
           done
           EOF

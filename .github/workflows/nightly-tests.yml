@@ -312,8 +312,12 @@ jobs:
           cd /build
           su builder -c "makepkg --nodeps --skipinteg --ignorearch"
 
-          # Copy package to output
-          cp *.pkg.tar.zst /output/
+          # Copy package to output (exclude debug packages)
+          for pkg in *.pkg.tar.zst; do
+            if [[ ! "$pkg" =~ -debug- ]]; then
+              cp "$pkg" /output/
+            fi
+          done
           EOF
 
           chmod +x build-arch-pkg.sh

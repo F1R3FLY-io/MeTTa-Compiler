@@ -1,5 +1,6 @@
+use mettatron::backend::environment::Environment;
 use mettatron::backend::eval::eval;
-use mettatron::backend::types::{Environment, MettaValue};
+use mettatron::backend::models::MettaValue;
 
 fn main() {
     let env = Environment::new();

@@ -6,10 +6,12 @@
 // - `run`: PathMap method to execute s-expressions (will be in Rholang)
 
 pub mod compile;
+pub mod environment;
 pub mod eval;
+pub mod models;
 pub mod mork_convert;
-pub mod types;
 
 pub use compile::compile;
+pub use environment::Environment;
 pub use eval::eval;
-pub use types::*;
+pub use models::*;

@@ -5,11 +5,6 @@ on:
     # Run at 2 AM UTC every day
     - cron: '0 2 * * *'
   workflow_dispatch:
-  push:
-    branches:
-      - dylon/mettatron-ci
-    paths:
-      - '.github/workflows/nightly-tests.yml'
 
 permissions:
   contents: write
@@ -111,14 +106,18 @@ jobs:
       - name: Run integration tests
         env:
           RUSTFLAGS: ${{ matrix.platform.rustflags }}
+          RHOLANG_CLI_PATH: ${{ github.workspace }}/../f1r3node/target/${{ matrix.platform.target }}/release/rholang-cli
         run: |
           echo "::group::Integration tests"
+          echo "RHOLANG_CLI_PATH=$RHOLANG_CLI_PATH"
+          ls -lh "$RHOLANG_CLI_PATH" || echo "rholang-cli not found at expected path"
           cargo test --test rholang_integration --target ${{ matrix.platform.target }} --verbose -- --nocapture
           echo "::endgroup::"
 
       - name: Run categorized tests
         env:
           RUSTFLAGS: ${{ matrix.platform.rustflags }}
+          RHOLANG_CLI_PATH: ${{ github.workspace }}/../f1r3node/target/${{ matrix.platform.target }}/release/rholang-cli
         run: |
           echo "::group::Basic tests"
           cargo test --test rholang_integration test_basic_evaluation --target ${{ matrix.platform.target }} -- --nocapture
@@ -419,7 +418,17 @@ jobs:
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
 
+      - name: Build rholang-cli for tests
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2"
+        run: |
+          cd ../f1r3node/rholang
+          cargo build --release --bin rholang-cli --verbose
+          ls -lh ../target/release/rholang-cli
+
       - name: Generate coverage report
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2"
         run: cargo tarpaulin --verbose --workspace --timeout 300 --out Xml
 
       - name: Upload coverage to codecov

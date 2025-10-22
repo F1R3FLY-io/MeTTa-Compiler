@@ -61,6 +61,10 @@ cargo run -- examples/simple.metta
 
 No external parser generators or C toolchain required.
 
+**Note:** Build flags are configured automatically via `.cargo/config.toml`.
+The project requires CPU features (AES, SSE2) for dependencies like `gxhash`.
+These are enabled by default through `target-cpu=native` configuration.
+
 ## Architecture
 
 ### Evaluation Pipeline

@@ -40,10 +40,10 @@ impl Environment {
     /// CRITICAL FIX for "reserved 114" and similar bugs during evaluation/iteration.
     #[allow(unused_variables)]
     pub(crate) fn mork_expr_to_metta_value(
-        expr: &mork_bytestring::Expr,
+        expr: &mork_expr::Expr,
         space: &Space,
     ) -> Result<MettaValue, String> {
-        use mork_bytestring::{maybe_byte_item, Tag};
+        use mork_expr::{maybe_byte_item, Tag};
         use std::slice::from_raw_parts;
 
         // Stack-based traversal to avoid recursion limits
@@ -223,7 +223,7 @@ impl Environment {
     /// Use mork_expr_to_metta_value() instead for production code.
     #[allow(dead_code)]
     #[allow(unused_variables)]
-    fn serialize_mork_expr_old(expr: &mork_bytestring::Expr, space: &Space) -> String {
+    fn serialize_mork_expr_old(expr: &mork_expr::Expr, space: &Space) -> String {
         let mut buffer = Vec::new();
         expr.serialize2(
             &mut buffer,
@@ -242,7 +242,7 @@ impl Environment {
                     std::mem::transmute(std::str::from_utf8_unchecked(s))
                 }
             },
-            |i, _intro| mork_bytestring::Expr::VARNAMES[i as usize],
+            |i, _intro| mork_expr::Expr::VARNAMES[i as usize],
         );
 
         String::from_utf8_lossy(&buffer).to_string()
@@ -263,8 +263,9 @@ impl Environment {
     /// Get type for an atom by querying MORK Space
     /// Searches for type assertions of the form (: name type)
     /// Returns None if no type assertion exists for the given name
+    #[allow(clippy::collapsible_match)]
     pub fn get_type(&self, name: &str) -> Option<MettaValue> {
-        use mork_bytestring::Expr;
+        use mork_expr::Expr;
 
         let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
@@ -308,8 +309,9 @@ impl Environment {
     ///
     /// Uses direct zipper traversal to avoid dump/parse overhead.
     /// This provides O(n) iteration without string serialization.
+    #[allow(clippy::collapsible_match)]
     pub fn iter_rules(&self) -> impl Iterator<Item = Rule> {
-        use mork_bytestring::Expr;
+        use mork_expr::Expr;
 
         let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
@@ -358,7 +360,7 @@ impl Environment {
     /// Vector of instantiated templates (MettaValue) for all matches
     pub fn match_space(&self, pattern: &MettaValue, template: &MettaValue) -> Vec<MettaValue> {
         use crate::backend::eval::{apply_bindings, pattern_match};
-        use mork_bytestring::Expr;
+        use mork_expr::Expr;
 
         let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
@@ -450,7 +452,7 @@ impl Environment {
         // Iterate through all values in the Space to find the atom
         // This is O(n) but correct for now
         // TODO: Use indexed lookup for O(1) query
-        while rz.to_next_val() {
+        if rz.to_next_val() {
             // Get the path as a string representation
             // We need to check if this path matches our target atom
             // For now, we'll do a simple presence check
@@ -467,7 +469,7 @@ impl Environment {
     ///
     /// Uses direct zipper iteration to avoid dumping the entire Space.
     pub fn has_sexpr_fact(&self, sexpr: &MettaValue) -> bool {
-        use mork_bytestring::Expr;
+        use mork_expr::Expr;
 
         let space = self.space.lock().unwrap();
         let mut rz = space.btm.read_zipper();
@@ -500,7 +502,7 @@ impl Environment {
 
         // Use MORK's parser to load the s-expression into PathMap trie
         let mut space = self.space.lock().unwrap();
-        if let Ok(_count) = space.load_all_sexpr(mork_bytes) {
+        if let Ok(_count) = space.load_all_sexpr_impl(mork_bytes, true) {
             // Successfully added to space
         }
     }

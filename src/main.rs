@@ -145,7 +145,7 @@ fn format_result(value: &MettaValue) -> String {
         MettaValue::Error(msg, details) => {
             // Format as (Error "msg" details) to match MeTTa spec
             format!("(Error {} {})", msg, format_result(details))
-        },
+        }
         MettaValue::Type(t) => format!("Type({})", format_result(t)),
         MettaValue::SExpr(items) => {
             let formatted: Vec<String> = items.iter().map(format_result).collect();
@@ -233,15 +233,12 @@ fn run_repl() {
                     // Only output results for S-expressions, not atoms or ground types
                     let should_output = matches!(sexpr, MettaValue::SExpr(_));
 
-                    match eval(sexpr.clone(), env.clone()) {
-                        (results, updated_env) => {
-                            env = updated_env;
+                    let (results, updated_env) = eval(sexpr.clone(), env.clone());
+                    env = updated_env;
 
-                            // Print results with list notation (only for S-expressions)
-                            if should_output && !results.is_empty() {
-                                println!("{}", format_results(&results));
-                            }
-                        }
+                    // Print results with list notation (only for S-expressions)
+                    if should_output && !results.is_empty() {
+                        println!("{}", format_results(&results));
                     }
                 }
             }

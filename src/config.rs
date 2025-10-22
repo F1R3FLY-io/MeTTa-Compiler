@@ -162,23 +162,21 @@ impl EvalConfig {
 /// ```rust
 /// use mettatron::config::{EvalConfig, configure_eval};
 ///
-/// fn main() {
-///     // Option 1: Use preset configuration
-///     configure_eval(EvalConfig::cpu_optimized());
+/// // Option 1: Use preset configuration
+/// configure_eval(EvalConfig::cpu_optimized());
 ///
-///     // Or Option 2: Custom configuration (choose one, not both!)
-///     // configure_eval(EvalConfig {
-///     //     max_blocking_threads: 256,
-///     //     batch_size_hint: 64,
-///     // });
+/// // Or Option 2: Custom configuration (choose one, not both!)
+/// // configure_eval(EvalConfig {
+/// //     max_blocking_threads: 256,
+/// //     batch_size_hint: 64,
+/// // });
 ///
-///     // Now start your application
-///     // ...
-/// }
+/// // Now start your application
+/// // ...
 /// ```
 pub fn configure_eval(config: EvalConfig) {
     EVAL_CONFIG.set(config).expect(
-        "EvalConfig can only be set once. Call configure_eval() before any async evaluation."
+        "EvalConfig can only be set once. Call configure_eval() before any async evaluation.",
     );
 }
 

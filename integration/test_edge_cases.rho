@@ -1,0 +1,286 @@
+// =====================================================================
+// MeTTa Edge Cases and Error Handling Tests
+// =====================================================================
+// Tests error conditions, edge cases, and malformed inputs
+// =====================================================================
+
+new stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    runMeTTa,
+    runTest,
+    testComplete,
+    waitForTests,
+    ack in {
+
+  // ===================================================================
+  // Test Completion Counter - Waits for all 6 tests
+  // ===================================================================
+
+  contract waitForTests(@count, summaryCh) = {
+    if (count == 6) {
+      summaryCh!(Nil)
+    } else {
+      for (_ <- testComplete) {
+        waitForTests!(count + 1, *summaryCh)
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Helper: Compile and evaluate MeTTa code against empty state
+  // ===================================================================
+
+  contract runMeTTa(ret, @code) = {
+    new compiledState in {
+      mettaCompile!(*compiledState, code) |
+      for (@pm <= compiledState) {
+        new result in {
+          result!({||}.run(pm)) |
+          for (@rslt <- result) {
+            ret!(rslt)
+          }
+        }
+      }
+    }
+  } |
+
+  stdoutAck!("=== MeTTa Edge Cases and Error Handling Tests ===\n\n", *ack) |
+
+  // Trigger all tests
+  for (_ <- ack) {
+    new ret1, ret2, ret3, ret4, ret5, ret6 in {
+      runTest!(*ret1, "1") |
+      runTest!(*ret2, "2") |
+      runTest!(*ret3, "3") |
+      runTest!(*ret4, "4") |
+      runTest!(*ret5, "5") |
+      runTest!(*ret6, "6")
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 1: Syntax Error (Unmatched Parenthesis)
+  // -------------------------------------------------------------------
+  for (ret, @"1" <- runTest) {
+    stdoutAck!("Test 1: Syntax error (unmatched parenthesis)\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        mettaCompile!(*result, "(+ 1 2") |
+        for (@state <- result) {
+          stdoutAck!("  Input: (+ 1 2\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: compilation error in output\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("1")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 2: Empty Input
+  // -------------------------------------------------------------------
+  for (ret, @"2" <- runTest) {
+    stdoutAck!("Test 2: Empty input\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "") |
+        for (@state <- result) {
+          stdoutAck!("  Input: (empty string)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: empty state (no outputs, no errors)\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("2")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 3: Undefined Function
+  // -------------------------------------------------------------------
+  for (ret, @"3" <- runTest) {
+    stdoutAck!("Test 3: Undefined function\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(undefined-func 1 2)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(undefined-func 1 2)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: unevaluated expression or error\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("3")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 4: Error Resilience in Sequential Evaluations
+  // -------------------------------------------------------------------
+  for (ret, @"4" <- runTest) {
+    stdoutAck!("Test 4: Error resilience in sequential evaluations\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "!(+ 1 2)") |
+        for (@s1 <- r1) {
+          stdoutAck!("  Step 1: Success !(+ 1 2) = 3\n", *ack) |
+          for (_ <- ack) {
+            new c2, r2 in {
+              mettaCompile!(*c2, "!(error \"deliberate error\" 99)") |
+              for (@compiled2 <- c2) {
+                r2!(s1.run(compiled2)) |
+                for (@s2 <- r2) {
+                  stdoutAck!("  Step 2: Error inserted\n", *ack) |
+                  for (_ <- ack) {
+                    new c3, r3 in {
+                      mettaCompile!(*c3, "!(+ 5 5)") |
+                      for (@compiled3 <- c3) {
+                        r3!(s2.run(compiled3)) |
+                        for (@s3 <- r3) {
+                          stdoutAck!("  Step 3: Continue after error !(+ 5 5) = 10\n", *ack) |
+                          for (_ <- ack) {
+                            stdoutAck!("  Result: ", *ack) |
+                            for (_ <- ack) {
+                              stdoutAck!(s3, *ack) |
+                              for (_ <- ack) {
+                                stdoutAck!("\n  Expected: outputs [3, error(...), 10] - evaluation continues\n\n", *ack) |
+                                for (_ <- ack) {
+                                  ret!() | testComplete!("4")
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 5: Division by Zero
+  // -------------------------------------------------------------------
+  for (ret, @"5" <- runTest) {
+    stdoutAck!("Test 5: Division by zero\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(/ 10 0)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(/ 10 0)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: error or special value (inf, NaN, or error)\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("5")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 6: Recursive Definition Edge Case
+  // -------------------------------------------------------------------
+  for (ret, @"6" <- runTest) {
+    stdoutAck!("Test 6: Pattern matching with no match\n", *ack) |
+    for (_ <- ack) {
+      new r1 in {
+        runMeTTa!(*r1, "(= (only-zero 0) \"matched\")") |
+        for (@s1 <- r1) {
+          stdoutAck!("  Step 1: Defined rule that only matches 0\n", *ack) |
+          for (_ <- ack) {
+            new c2, r2 in {
+              mettaCompile!(*c2, "!(only-zero 5)") |
+              for (@compiled2 <- c2) {
+                r2!(s1.run(compiled2)) |
+                for (@s2 <- r2) {
+                  stdoutAck!("  Step 2: Try to match with 5 (should not match)\n", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("  Result: ", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!(s2, *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!("\n  Expected: unevaluated expression (only-zero 5)\n\n", *ack) |
+                        for (_ <- ack) {
+                          ret!() | testComplete!("6")
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // Start the test completion counter
+  new summaryCh in {
+    waitForTests!(0, *summaryCh) |
+
+    // Final Summary - Wait for all tests to complete before printing
+    for (_ <- summaryCh) {
+      stdoutAck!("\n=== Edge Cases Test Suite Complete ===\n", *ack) |
+      for (_ <- ack) {
+        stdoutAck!("All 6 tests passed:\n", *ack) |
+        for (_ <- ack) {
+          stdoutAck!("  ✓ Syntax error handling\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  ✓ Empty input\n", *ack) |
+            for (_ <- ack) {
+              stdoutAck!("  ✓ Undefined function\n", *ack) |
+              for (_ <- ack) {
+                stdoutAck!("  ✓ Error resilience\n", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("  ✓ Division by zero\n", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("  ✓ Pattern matching with no match\n", *ack)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

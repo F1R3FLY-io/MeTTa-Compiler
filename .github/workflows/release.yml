@@ -1,0 +1,612 @@
+name: Release Builds and Packaging
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-matrix:
+    name: Build ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: mettatron-linux-x86_64
+            use_cross: false
+
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            rustflags: "-C target-feature=+aes,+neon"
+            artifact_name: mettatron-linux-arm64
+            use_cross: false
+
+          - name: macOS x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            rustflags: "-C target-feature=+aes,+sse2"
+            artifact_name: mettatron-macos-x86_64
+            use_cross: false
+
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            rustflags: "-C target-feature=+aes,+neon"
+            artifact_name: mettatron-macos-arm64
+            use_cross: false
+
+          # Windows is currently disabled due to jemalloc incompatibility
+          # MORK's workspace Cargo.toml enables jemalloc for PathMap, which
+          # requires Unix build tools (configure, sh) not available on Windows.
+          # To enable Windows support, either:
+          # 1. Update MORK to use platform-specific PathMap features, OR
+          # 2. Update PathMap to support Windows-compatible allocators
+          #
+          # - name: Windows x86_64
+          #   os: windows-latest
+          #   target: x86_64-pc-windows-msvc
+          #   rustflags: "-C target-feature=+aes,+sse2"
+          #   artifact_name: mettatron-windows-x86_64
+          #   use_cross: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout dependencies (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd ../
+          git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+          git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
+          git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
+
+      - name: Checkout dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd ..\
+          git clone --depth=1 --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git f1r3node
+          git clone --depth=1 --branch main https://github.com/trueagi-io/MORK.git MORK
+          git clone --depth=1 --branch master https://github.com/Adam-Vandervorst/PathMap.git PathMap
+
+      - name: Install protobuf compiler (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install protobuf compiler (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          target: ${{ matrix.platform.target }}
+
+      - name: Build MeTTaTron
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: cargo build --release --target ${{ matrix.platform.target }} --verbose
+
+      - name: Build rholang-cli (Unix)
+        if: runner.os != 'Windows'
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          cd ../f1r3node/rholang
+          cargo build --release --bin rholang-cli --target ${{ matrix.platform.target }} --verbose
+
+      - name: Build rholang-cli (Windows)
+        if: runner.os == 'Windows'
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          cd ..\f1r3node\rholang
+          cargo build --release --bin rholang-cli --target ${{ matrix.platform.target }} --verbose
+
+      - name: Prepare binaries (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          # Copy binary
+          cp target/${{ matrix.platform.target }}/release/mettatron dist/
+          cp ../f1r3node/target/${{ matrix.platform.target }}/release/rholang-cli dist/
+
+          # Copy libraries
+          cp target/${{ matrix.platform.target }}/release/libmettatron.rlib dist/
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cp target/${{ matrix.platform.target }}/release/libmettatron.so dist/
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cp target/${{ matrix.platform.target }}/release/libmettatron.dylib dist/
+          fi
+
+          chmod +x dist/mettatron dist/rholang-cli
+
+      - name: Prepare binaries (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir dist
+          copy target\${{ matrix.platform.target }}\release\mettatron.exe dist\
+          copy ..\f1r3node\target\${{ matrix.platform.target }}\release\rholang-cli.exe dist\
+          copy target\${{ matrix.platform.target }}\release\mettatron.dll dist\
+          copy target\${{ matrix.platform.target }}\release\libmettatron.rlib dist\
+
+      - name: Create tarball (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          tar czf ../${{ matrix.platform.artifact_name }}.tar.gz *
+          cd ..
+
+      - name: Create zip archive
+        run: |
+          cd dist
+          7z a ../${{ matrix.platform.artifact_name }}.zip *
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: |
+            ${{ matrix.platform.artifact_name }}.tar.gz
+            ${{ matrix.platform.artifact_name }}.zip
+          retention-days: 30
+
+  package-deb:
+    name: Create .deb package
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux x86_64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: mettatron-linux-x86_64
+
+      - name: Extract binaries
+        run: |
+          tar xzf mettatron-linux-x86_64.tar.gz
+          mkdir -p target/release
+          mv mettatron target/release/
+          mv rholang-cli target/release/
+          mv libmettatron.so target/release/
+          mv libmettatron.rlib target/release/
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Create .deb package
+        run: cargo deb --no-build --no-strip
+
+      - name: Upload .deb package
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: target/debian/*.deb
+          retention-days: 30
+
+  package-rpm:
+    name: Create .rpm package
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux x86_64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: mettatron-linux-x86_64
+
+      - name: Extract binaries
+        run: |
+          tar xzf mettatron-linux-x86_64.tar.gz
+          mkdir -p target/release
+          mv mettatron target/release/
+          mv rholang-cli target/release/
+          mv libmettatron.so target/release/
+          mv libmettatron.rlib target/release/
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+
+      - name: Create .rpm package
+        run: cargo generate-rpm
+
+      - name: Upload .rpm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package
+          path: target/generate-rpm/*.rpm
+          retention-days: 30
+
+  package-macos-dmg:
+    name: Create macOS .dmg installer
+    needs: build-matrix
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download macOS build (ARM64)
+        uses: actions/download-artifact@v4
+        with:
+          name: mettatron-macos-arm64
+
+      - name: Extract binaries
+        run: tar xzf mettatron-macos-arm64.tar.gz
+
+      - name: Create .dmg
+        run: |
+          mkdir -p dmg-contents
+          cp mettatron dmg-contents/
+          cp rholang-cli dmg-contents/
+          cp libmettatron.dylib dmg-contents/
+          cp libmettatron.rlib dmg-contents/
+          hdiutil create -volname "MeTTaTron" -srcfolder dmg-contents -ov -format UDZO mettatron-macos.dmg
+
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: mettatron-macos.dmg
+          retention-days: 30
+
+  package-arch:
+    name: Create Arch Linux packages
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch:
+          - name: x86_64
+            artifact: mettatron-linux-x86_64
+          - name: aarch64
+            artifact: mettatron-linux-arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.arch.artifact }}
+
+      - name: Extract binaries
+        run: |
+          tar xzf ${{ matrix.arch.artifact }}.tar.gz
+          mkdir -p binaries
+          mv mettatron binaries/
+          mv rholang-cli binaries/
+          mv libmettatron.so binaries/
+          mv libmettatron.rlib binaries/
+
+      - name: Build Arch package in container
+        run: |
+          # Create a build script with architecture override
+          ARCH_NAME="${{ matrix.arch.name }}"
+          cat > build-arch-pkg.sh <<EOF
+          #!/bin/bash
+          set -e
+
+          # Install required packages
+          pacman -Sy --noconfirm base-devel git
+
+          # Create build user (makepkg won't run as root)
+          useradd -m builder
+          chown -R builder:builder /build
+
+          # Build as non-root user with CARCH override
+          cd /build
+          su builder -c "CARCH=${ARCH_NAME} makepkg --nodeps --skipinteg --ignorearch"
+
+          # Copy package to output (exclude debug packages)
+          for pkg in *.pkg.tar.zst; do
+            if [[ ! "\$pkg" =~ -debug- ]]; then
+              cp "\$pkg" /output/
+            fi
+          done
+          EOF
+
+          chmod +x build-arch-pkg.sh
+
+          # Prepare PKGBUILD with pre-built binaries
+          mkdir -p build-context
+          cp packaging/arch/PKGBUILD build-context/
+          cp -r binaries build-context/
+
+          # Modify PKGBUILD to use pre-built binaries instead of building from source
+          cat > build-context/PKGBUILD <<'PKGBUILD_EOF'
+          # Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
+          pkgname=mettatron
+          pkgver=__VERSION__
+          pkgrel=1
+          pkgdesc="MeTTa language evaluator with lazy evaluation and pattern matching"
+          arch=('__ARCH__')
+          url="https://github.com/F1R3FLY-io/MeTTa-Compiler"
+          license=('Apache')
+          depends=('gcc-libs')
+          source=()
+          sha256sums=()
+
+          package() {
+              install -Dm755 "/build/binaries/mettatron" "$pkgdir/usr/bin/mettatron"
+              install -Dm755 "/build/binaries/rholang-cli" "$pkgdir/usr/bin/rholang-cli"
+              install -Dm644 "/build/binaries/libmettatron.so" "$pkgdir/usr/lib/libmettatron.so"
+              install -Dm644 "/build/binaries/libmettatron.rlib" "$pkgdir/usr/lib/libmettatron.rlib"
+          }
+          PKGBUILD_EOF
+
+          # Replace placeholders
+          sed -i "s/__VERSION__/${GITHUB_REF_NAME#v}/" build-context/PKGBUILD
+          sed -i "s/__ARCH__/${{ matrix.arch.name }}/" build-context/PKGBUILD
+
+          # Debug: Show PKGBUILD content after substitution
+          echo "=== PKGBUILD for ${{ matrix.arch.name }} after sed ==="
+          cat build-context/PKGBUILD
+          echo "=== End PKGBUILD ==="
+
+          # Run build in container
+          mkdir -p output
+          docker run --rm \
+            -v "$PWD/build-context:/build" \
+            -v "$PWD/output:/output" \
+            -v "$PWD/build-arch-pkg.sh:/build-arch-pkg.sh" \
+            archlinux:latest \
+            /build-arch-pkg.sh
+
+          # Debug: Show what package was created
+          echo "=== Packages created for ${{ matrix.arch.name }} ==="
+          ls -la output/
+          echo "=== End package list ==="
+
+      - name: Upload Arch package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package-${{ matrix.arch.name }}
+          path: output/*.pkg.tar.zst
+          retention-days: 30
+
+  # Windows installer job disabled - Windows support postponed
+  # See release.yml build-matrix section for details on Windows support
+  #
+  # package-windows-installer:
+  #   name: Create Windows installer
+  #   needs: build-matrix
+  #   runs-on: windows-latest
+  #   ...
+
+  test-deb-package:
+    name: Sanity Check - Debian Package
+    needs: package-deb
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download .deb package
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-package
+
+      - name: Install package
+        run: |
+          sudo dpkg -i *.deb || true
+          sudo apt-get install -f -y
+
+      - name: Verify installation
+        run: |
+          which mettatron
+          which rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          ldd $(which mettatron)
+          ldd $(which rholang-cli)
+          ls -lh /usr/lib/libmettatron.so
+          ls -lh /usr/lib/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
+  test-rpm-package:
+    name: Sanity Check - RPM Package
+    needs: package-rpm
+    runs-on: ubuntu-latest
+    container: fedora:40
+    steps:
+      - name: Download .rpm package
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-package
+
+      - name: Install package
+        run: |
+          dnf install -y *.rpm
+
+      - name: Verify installation
+        run: |
+          command -v mettatron
+          command -v rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          ldd $(command -v mettatron)
+          ldd $(command -v rholang-cli)
+          ls -lh /usr/lib64/libmettatron.so
+          ls -lh /usr/lib64/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
+  test-arch-package:
+    name: Sanity Check - Arch Package (${{ matrix.arch }})
+    needs: package-arch
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Only test x86_64 - aarch64 requires cross-architecture setup
+        arch: [x86_64]
+    container: archlinux:latest
+    steps:
+      - name: Download Arch package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-package-${{ matrix.arch }}
+
+      - name: Install package
+        run: |
+          pacman -Sy --noconfirm
+          pacman -U --noconfirm *.pkg.tar.zst
+
+      - name: Verify installation
+        run: |
+          command -v mettatron
+          command -v rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          ldd $(command -v mettatron) || true
+          ldd $(command -v rholang-cli) || true
+          ls -lh /usr/lib/libmettatron.so
+          ls -lh /usr/lib/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
+  test-macos-dmg:
+    name: Sanity Check - macOS DMG
+    needs: package-macos-dmg
+    runs-on: macos-latest
+    steps:
+      - name: Download DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+
+      - name: Mount and install DMG
+        run: |
+          hdiutil attach *.dmg
+          sudo cp /Volumes/MeTTaTron/mettatron /usr/local/bin/
+          sudo cp /Volumes/MeTTaTron/rholang-cli /usr/local/bin/
+          sudo mkdir -p /usr/local/lib
+          sudo cp /Volumes/MeTTaTron/libmettatron.dylib /usr/local/lib/
+          sudo cp /Volumes/MeTTaTron/libmettatron.rlib /usr/local/lib/
+          hdiutil detach /Volumes/MeTTaTron || true
+
+      - name: Verify installation
+        run: |
+          which mettatron
+          which rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          otool -L $(which mettatron)
+          otool -L $(which rholang-cli)
+          ls -lh /usr/local/lib/libmettatron.dylib
+          ls -lh /usr/local/lib/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-matrix, package-deb, package-rpm, package-macos-dmg, package-arch, test-deb-package, test-rpm-package, test-arch-package, test-macos-dmg]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            mettatron-linux-*/*.tar.gz
+            mettatron-linux-*/*.zip
+            mettatron-macos-*/*.tar.gz
+            mettatron-macos-*/*.zip
+            debian-package/*.deb
+            rpm-package/*.rpm
+            macos-dmg/*.dmg
+            arch-package-*/*.pkg.tar.zst
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

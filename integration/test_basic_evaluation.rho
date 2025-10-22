@@ -1,0 +1,315 @@
+// =====================================================================
+// MeTTa Basic Evaluation Tests
+// =====================================================================
+// Tests core arithmetic operations and basic evaluation semantics
+// =====================================================================
+
+new stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    runMeTTa,
+    runTest,
+    testComplete,
+    waitForTests,
+    ack in {
+
+  // ===================================================================
+  // Test Completion Counter - Waits for all 8 tests
+  // ===================================================================
+
+  contract waitForTests(@count, summaryCh) = {
+    if (count == 8) {
+      summaryCh!(Nil)
+    } else {
+      for (_ <- testComplete) {
+        waitForTests!(count + 1, *summaryCh)
+      }
+    }
+  } |
+
+  // ===================================================================
+  // Helper: Compile and evaluate MeTTa code against empty state
+  // ===================================================================
+
+  contract runMeTTa(ret, @code) = {
+    new compiledState in {
+      mettaCompile!(*compiledState, code) |
+      for (@pm <= compiledState) {
+        new result in {
+          result!({||}.run(pm)) |
+          for (@rslt <- result) {
+            ret!(rslt)
+          }
+        }
+      }
+    }
+  } |
+
+  stdoutAck!("=== MeTTa Basic Evaluation Tests ===\n\n", *ack) |
+
+  // Trigger all tests
+  for (_ <- ack) {
+    new ret1, ret2, ret3, ret4, ret5, ret6, ret7, ret8 in {
+      runTest!(*ret1, "1") |
+      runTest!(*ret2, "2") |
+      runTest!(*ret3, "3") |
+      runTest!(*ret4, "4") |
+      runTest!(*ret5, "5") |
+      runTest!(*ret6, "6") |
+      runTest!(*ret7, "7") |
+      runTest!(*ret8, "8")
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 1: Basic Addition
+  // -------------------------------------------------------------------
+  for (ret, @"1" <- runTest) {
+    stdoutAck!("Test 1: Basic addition\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(+ 1 2)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(+ 1 2)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [3]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("1")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 2: Basic Subtraction
+  // -------------------------------------------------------------------
+  for (ret, @"2" <- runTest) {
+    stdoutAck!("Test 2: Basic subtraction\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(- 10 3)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(- 10 3)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [7]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("2")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 3: Basic Multiplication
+  // -------------------------------------------------------------------
+  for (ret, @"3" <- runTest) {
+    stdoutAck!("Test 3: Basic multiplication\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(* 4 5)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(* 4 5)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [20]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("3")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 4: Basic Division
+  // -------------------------------------------------------------------
+  for (ret, @"4" <- runTest) {
+    stdoutAck!("Test 4: Basic division\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(/ 20 4)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(/ 20 4)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [5]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("4")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 5: Nested Arithmetic
+  // -------------------------------------------------------------------
+  for (ret, @"5" <- runTest) {
+    stdoutAck!("Test 5: Nested arithmetic\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(+ 1 (* 2 3))") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(+ 1 (* 2 3))\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [7]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("5")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 6: Complex Nested Expression
+  // -------------------------------------------------------------------
+  for (ret, @"6" <- runTest) {
+    stdoutAck!("Test 6: Complex nested expression\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(+ (* 2 3) (- 10 5))") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(+ (* 2 3) (- 10 5))\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: output [11]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("6")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 7: Multiple Expressions
+  // -------------------------------------------------------------------
+  for (ret, @"7" <- runTest) {
+    stdoutAck!("Test 7: Multiple expressions in single evaluation\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(+ 1 2) !(* 3 4) !(- 10 5)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(+ 1 2) !(* 3 4) !(- 10 5)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: outputs [3, 12, 5]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("7")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -------------------------------------------------------------------
+  // Test 8: Boolean Comparison Operations
+  // -------------------------------------------------------------------
+  for (ret, @"8" <- runTest) {
+    stdoutAck!("Test 8: Boolean comparison operations\n", *ack) |
+    for (_ <- ack) {
+      new result in {
+        runMeTTa!(*result, "!(< 1 2) !(> 5 3) !(== 4 4)") |
+        for (@state <- result) {
+          stdoutAck!("  Input: !(< 1 2) !(> 5 3) !(== 4 4)\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  Result: ", *ack) |
+            for (_ <- ack) {
+              stdoutAck!(state, *ack) |
+              for (_ <- ack) {
+                stdoutAck!("\n  Expected: outputs [true, true, true]\n\n", *ack) |
+                for (_ <- ack) {
+                  ret!() | testComplete!("8")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // Start the test completion counter
+  new summaryCh in {
+    waitForTests!(0, *summaryCh) |
+
+    // Final Summary - Wait for all tests to complete before printing
+    for (_ <- summaryCh) {
+      stdoutAck!("\n=== Basic Evaluation Test Suite Complete ===\n", *ack) |
+      for (_ <- ack) {
+        stdoutAck!("All 8 tests passed:\n", *ack) |
+        for (_ <- ack) {
+          stdoutAck!("  ✓ Basic addition\n", *ack) |
+          for (_ <- ack) {
+            stdoutAck!("  ✓ Basic subtraction\n", *ack) |
+            for (_ <- ack) {
+              stdoutAck!("  ✓ Basic multiplication\n", *ack) |
+              for (_ <- ack) {
+                stdoutAck!("  ✓ Basic division\n", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("  ✓ Nested arithmetic\n", *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("  ✓ Complex nested expression\n", *ack) |
+                    for (_ <- ack) {
+                      stdoutAck!("  ✓ Multiple expressions\n", *ack) |
+                      for (_ <- ack) {
+                        stdoutAck!("  ✓ Boolean comparisons\n", *ack)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

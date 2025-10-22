@@ -13,10 +13,7 @@ pub fn metta_value_to_rholang_string(value: &MettaValue) -> String {
         MettaValue::Uri(s) => format!(r#"{{"type":"uri","value":"{}"}}"#, escape_json(s)),
         MettaValue::Nil => r#"{"type":"nil"}"#.to_string(),
         MettaValue::SExpr(items) => {
-            let items_json: Vec<String> = items
-                .iter()
-                .map(|v| metta_value_to_rholang_string(v))
-                .collect();
+            let items_json: Vec<String> = items.iter().map(metta_value_to_rholang_string).collect();
             format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
         }
         MettaValue::Error(msg, details) => {
@@ -74,13 +71,13 @@ pub fn metta_state_to_json(state: &MettaState) -> String {
     let pending_json: Vec<String> = state
         .source
         .iter()
-        .map(|expr| metta_value_to_rholang_string(expr))
+        .map(metta_value_to_rholang_string)
         .collect();
 
     let outputs_json: Vec<String> = state
         .output
         .iter()
-        .map(|output| metta_value_to_rholang_string(output))
+        .map(metta_value_to_rholang_string)
         .collect();
 
     // For environment, we'll serialize facts count as a placeholder

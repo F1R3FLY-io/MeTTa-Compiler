@@ -6,11 +6,12 @@
 
 use super::models::MettaValue;
 use mork::space::Space;
-use mork_bytestring::{Expr, ExprEnv, ExprZipper};
+use mork_expr::{Expr, ExprEnv, ExprZipper};
 use mork_frontend::bytestring_parser::Parser;
 use std::collections::HashMap;
 
 /// Context for tracking variables during MettaValue → Expr conversion
+#[derive(Default)]
 pub struct ConversionContext {
     /// Maps variable names to their De Bruijn indices
     pub var_map: HashMap<String, u8>,
@@ -198,7 +199,7 @@ pub fn mork_bindings_to_metta(
         // Convert MORK Expr directly to MettaValue
         // FIXED: Use mork_expr_to_metta_value() instead of serialize2()
         // This avoids the "reserved byte" panic when bindings contain symbols with reserved bytes
-        let expr = expr_env.subsexpr();
+        let expr: Expr = expr_env.subsexpr();
         if let Ok(value) = Environment::mork_expr_to_metta_value(&expr, space) {
             bindings.insert(format!("${}", var_name), value);
         }

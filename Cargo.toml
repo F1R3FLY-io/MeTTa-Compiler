@@ -1,6 +1,6 @@
 [package]
 name = "mettatron"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 authors = ["F1R3FLY.io"]
 description = "MeTTaTron - MeTTa language evaluator with lazy evaluation and pattern matching"
@@ -19,12 +19,10 @@ name = "mettatron"
 path = "src/main.rs"
 
 [dependencies]
-# PathMap - Trie-map library used by MORK
-pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }
-# MORK bytestring - S-expression representation used by MORK
-mork-bytestring = { path = "../MORK/experiments/expr/bytestring" }
+# MORK expr - S-expression representation used by MORK (formerly mork-bytestring)
+mork-expr = { path = "../MORK/expr" }
 # MORK frontend - Parser for MORK s-expressions
 mork-frontend = { path = "../MORK/frontend" }
 # Models - Rholang protobuf models for PathMap Par integration
@@ -32,15 +30,61 @@ models = { path = "../f1r3node/models" }
 # Tokio - Async runtime for parallel evaluation (optional)
 tokio = { version = "1", features = ["rt", "sync"], optional = true }
 
+# PathMap - Trie-map library used by MORK
+# Note: Windows is not currently supported due to jemalloc incompatibility
+# MORK's workspace enables jemalloc which requires Unix build tools
+pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
+
 [features]
 default = ["interning", "async"]
 async = ["tokio"]
 interning = []
 
 [dev-dependencies]
+# For integration tests
+regex = "1.10"
+nom = "7.1"
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "process", "time", "sync", "macros"] }
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+# Debian package metadata
+[package.metadata.deb]
+maintainer = "F1R3FLY.io <noreply@f1r3fly.io>"
+copyright = "2024, F1R3FLY.io <noreply@f1r3fly.io>"
+license-file = ["LICENSE", "4"]
+extended-description = """\
+MeTTaTron is a MeTTa language evaluator with lazy evaluation and pattern matching.
+MeTTa is a language with LISP-like S-expression syntax supporting rules, control flow,
+type assertions, and grounded functions."""
+depends = "$auto"
+section = "devel"
+priority = "optional"
+assets = [
+    ["target/release/mettatron", "usr/bin/", "755"],
+    ["target/release/rholang-cli", "usr/bin/", "755"],
+    ["target/release/libmettatron.so", "usr/lib/", "644"],
+    ["target/release/libmettatron.rlib", "usr/lib/", "644"],
+    ["README.md", "usr/share/doc/mettatron/", "644"],
+    ["LICENSE", "usr/share/doc/mettatron/", "644"],
+    ["examples/*", "usr/share/doc/mettatron/examples/", "644"],
+]
+
+# RPM package metadata
+[package.metadata.generate-rpm]
+license = "Apache-2.0"
+assets = [
+    { source = "target/release/mettatron", dest = "/usr/bin/mettatron", mode = "755" },
+    { source = "target/release/rholang-cli", dest = "/usr/bin/rholang-cli", mode = "755" },
+    { source = "target/release/libmettatron.so", dest = "/usr/lib64/libmettatron.so", mode = "644" },
+    { source = "target/release/libmettatron.rlib", dest = "/usr/lib64/libmettatron.rlib", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/mettatron/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/doc/mettatron/LICENSE", mode = "644", doc = true },
+]
+

@@ -1,5 +1,9 @@
 # TODO Analysis
 
+> **Note:** The issues documented in this analysis are now tracked as GitHub issues:
+> - Binary format querying: [Issue #13](https://github.com/F1R3FLY-io/MeTTa-Compiler/issues/13)
+> - Pattern matching optimization: [Issue #12](https://github.com/F1R3FLY-io/MeTTa-Compiler/issues/12)
+
 ## Summary
 
 Out of **9 TODOs** in the codebase, **3 were completed** (removed as redundant), **5 are blocked** by the binary format issue, and **1 requires external dependency**.

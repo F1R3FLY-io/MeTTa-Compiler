@@ -13,6 +13,35 @@ use crate::backend::mork_convert::{
 };
 use mork_bytestring::Expr;
 
+macro_rules! require_args {
+    ($op:expr, $items:expr, $expected:expr, $env:expr) => {
+        if $items.len() < $expected + 1 {
+            let err = MettaValue::Error(
+                format!(
+                    "{} requires exactly {} argument{}",
+                    $op,
+                    $expected,
+                    if $expected == 1 { "" } else { "s" }
+                ),
+                Box::new(MettaValue::SExpr($items.to_vec())),
+            );
+            return (vec![err], $env);
+        }
+    };
+}
+
+macro_rules! require_one_arg {
+    ($op:expr, $items:expr, $env:expr) => {
+        require_args!($op, $items, 1, $env)
+    };
+}
+
+macro_rules! require_two_args {
+    ($op:expr, $items:expr, $env:expr) => {
+        require_args!($op, $items, 2, $env)
+    };
+}
+
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
@@ -52,51 +81,30 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
         match op.as_str() {
             // Rule definition: (= lhs rhs) - add to MORK Space and rule cache
             "=" => {
-                if items.len() >= 3 {
-                    let lhs = items[1].clone();
-                    let rhs = items[2].clone();
+                require_two_args!("=", items, env);
 
-                    let mut new_env = env.clone();
+                let lhs = items[1].clone();
+                let rhs = items[2].clone();
+                let mut new_env = env.clone();
 
-                    // Add rule using add_rule (stores in both rule_cache and MORK Space)
-                    new_env.add_rule(Rule { lhs, rhs });
+                // Add rule using add_rule (stores in both rule_cache and MORK Space)
+                new_env.add_rule(Rule { lhs, rhs });
 
-                    // Return empty list (rule definitions don't produce output)
-                    return (vec![], new_env);
-                } else {
-                    let err = MettaValue::Error(
-                        "= requires exactly two arguments: lhs and rhs".to_string(),
-                        Box::new(MettaValue::SExpr(items)),
-                    );
-                    return (vec![err], env);
-                }
+                // Return empty list (rule definitions don't produce output)
+                return (vec![], new_env);
             }
 
             // Evaluation: ! expr - force evaluation
             "!" => {
-                if items.len() >= 2 {
-                    // Evaluate the expression after !
-                    return eval(items[1].clone(), env);
-                } else {
-                    let err = MettaValue::Error(
-                        "! requires exactly one argument to evaluate".to_string(),
-                        Box::new(MettaValue::SExpr(items)),
-                    );
-                    return (vec![err], env);
-                }
+                require_one_arg!("!", items, env);
+                // Evaluate the expression after !
+                return eval(items[1].clone(), env);
             }
 
             // Quote: return argument unevaluated
             "quote" => {
-                if items.len() >= 2 {
-                    return (vec![items[1].clone()], env);
-                } else {
-                    let err = MettaValue::Error(
-                        "quote requires exactly one argument".to_string(),
-                        Box::new(MettaValue::SExpr(items)),
-                    );
-                    return (vec![err], env);
-                }
+                require_one_arg!("quote", items, env);
+                return (vec![items[1].clone()], env);
             }
 
             // If: conditional evaluation - only evaluate chosen branch
@@ -130,40 +138,28 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
             // Eval: force evaluation of quoted expressions
             // (eval expr) - complementary to quote
             "eval" => {
-                if items.len() >= 2 {
-                    // First evaluate the argument to get the expression
-                    let (arg_results, arg_env) = eval(items[1].clone(), env);
-                    if let Some(expr) = arg_results.first() {
-                        // Then evaluate the result
-                        return eval(expr.clone(), arg_env);
-                    } else {
-                        return (vec![MettaValue::Nil], arg_env);
-                    }
+                require_one_arg!("eval", items, env);
+
+                // First evaluate the argument to get the expression
+                let (arg_results, arg_env) = eval(items[1].clone(), env);
+                if let Some(expr) = arg_results.first() {
+                    // Then evaluate the result
+                    return eval(expr.clone(), arg_env);
                 } else {
-                    let err = MettaValue::Error(
-                        "eval requires exactly one argument".to_string(),
-                        Box::new(MettaValue::SExpr(items)),
-                    );
-                    return (vec![err], env);
+                    return (vec![MettaValue::Nil], arg_env);
                 }
             }
 
             // Is-error: check if value is an error (for error recovery)
             "is-error" => {
-                if items.len() >= 2 {
-                    let (results, new_env) = eval(items[1].clone(), env);
-                    if let Some(first) = results.first() {
-                        let is_err = matches!(first, MettaValue::Error(_, _));
-                        return (vec![MettaValue::Bool(is_err)], new_env);
-                    } else {
-                        return (vec![MettaValue::Bool(false)], new_env);
-                    }
+                require_one_arg!("is-error", items, env);
+
+                let (results, new_env) = eval(items[1].clone(), env);
+                if let Some(first) = results.first() {
+                    let is_err = matches!(first, MettaValue::Error(_, _));
+                    return (vec![MettaValue::Bool(is_err)], new_env);
                 } else {
-                    let err = MettaValue::Error(
-                        "is-error requires exactly one argument".to_string(),
-                        Box::new(MettaValue::SExpr(items)),
-                    );
-                    return (vec![err], env);
+                    return (vec![MettaValue::Bool(false)], new_env);
                 }
             }
 
@@ -184,75 +180,56 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
             // Type assertion: (: expr type)
             // Adds a type assertion to the environment
             ":" => {
-                if items.len() >= 3 {
-                    let expr = &items[1];
-                    let typ = items[2].clone();
+                require_two_args!(":", items, env);
 
-                    // Extract name from expression (atom or first element of sexpr)
-                    let name = match expr {
-                        MettaValue::Atom(s) => s.clone(),
-                        MettaValue::SExpr(expr_items) if !expr_items.is_empty() => {
-                            if let MettaValue::Atom(s) = &expr_items[0] {
-                                s.clone()
-                            } else {
-                                format!("{:?}", expr)
-                            }
+                let expr = &items[1];
+                let typ = items[2].clone();
+
+                // Extract name from expression
+                let name = match expr {
+                    MettaValue::Atom(s) => s.clone(),
+                    MettaValue::SExpr(expr_items) if !expr_items.is_empty() => {
+                        if let MettaValue::Atom(s) = &expr_items[0] {
+                            s.clone()
+                        } else {
+                            format!("{:?}", expr)
                         }
-                        _ => format!("{:?}", expr),
-                    };
+                    }
+                    _ => format!("{:?}", expr),
+                };
 
-                    let mut new_env = env.clone();
-                    new_env.add_type(name, typ);
+                let mut new_env = env.clone();
+                new_env.add_type(name, typ);
 
-                    // Add the type assertion to MORK Space
-                    let type_expr = MettaValue::SExpr(items);
-                    new_env.add_to_space(&type_expr);
+                // Add the type assertion to MORK Space
+                let type_expr = MettaValue::SExpr(items);
+                new_env.add_to_space(&type_expr);
 
-                    // Return empty list (type assertions don't produce output)
-                    return (vec![], new_env);
-                } else {
-                    let err = MettaValue::Error(
-                        ": requires 2 arguments: expression and type".to_string(),
-                        Box::new(MettaValue::SExpr(items)),
-                    );
-                    return (vec![err], env);
-                }
+                return (vec![], new_env);
             }
 
             // get-type: return the type of an expression
             // (get-type expr) -> Type
             "get-type" => {
-                if items.len() >= 2 {
-                    let expr = &items[1];
-                    let typ = infer_type(expr, &env);
-                    return (vec![typ], env);
-                } else {
-                    let err = MettaValue::Error(
-                        "get-type requires exactly one argument".to_string(),
-                        Box::new(MettaValue::SExpr(items)),
-                    );
-                    return (vec![err], env);
-                }
+                require_one_arg!("get-type", items, env);
+
+                let expr = &items[1];
+                let typ = infer_type(expr, &env);
+                return (vec![typ], env);
             }
 
             // check-type: check if expression has expected type
             // (check-type expr expected-type) -> Bool
             "check-type" => {
-                if items.len() >= 3 {
-                    let expr = &items[1];
-                    let expected = &items[2];
+                require_two_args!("check-type", items, env);
 
-                    let actual = infer_type(expr, &env);
-                    let matches = types_match(&actual, expected);
+                let expr = &items[1];
+                let expected = &items[2];
 
-                    return (vec![MettaValue::Bool(matches)], env);
-                } else {
-                    let err = MettaValue::Error(
-                        "check-type requires 2 arguments: expression and expected type".to_string(),
-                        Box::new(MettaValue::SExpr(items)),
-                    );
-                    return (vec![err], env);
-                }
+                let actual = infer_type(expr, &env);
+                let matches = types_match(&actual, expected);
+
+                return (vec![MettaValue::Bool(matches)], env);
             }
 
             _ => {} // Fall through to normal evaluation
@@ -2730,6 +2707,174 @@ mod tests {
         match &results[0] {
             MettaValue::Error(msg, _) => {
                 assert!(msg.contains("does not match"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_quote_missing_argument() {
+        let env = Environment::new();
+
+        // (quote) - missing argument
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("quote".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("quote"));
+                assert!(msg.contains("argument")); // Just check for "argument" - flexible
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_eval_missing_argument() {
+        let env = Environment::new();
+
+        // (eval) - missing argument
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("eval".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("eval"));
+                assert!(msg.contains("requires exactly 1 argument")); // Changed
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_exclaim_missing_argument() {
+        let env = Environment::new();
+
+        // (!) - missing argument
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("!".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("!"));
+                assert!(msg.contains("requires exactly 1 argument")); // Changed
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_equals_missing_arguments() {
+        let env = Environment::new();
+
+        // (=) - missing both arguments
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("=".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("="));
+                assert!(msg.contains("requires exactly 2 arguments")); // Changed (note plural)
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_equals_missing_one_argument() {
+        let env = Environment::new();
+
+        // (= lhs) - missing rhs
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::Atom("lhs".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("="));
+                assert!(msg.contains("requires exactly 2 arguments")); // Changed
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_type_assertion_missing_arguments() {
+        let env = Environment::new();
+
+        // (:) - missing both arguments
+        let value = MettaValue::SExpr(vec![MettaValue::Atom(":".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains(":"));
+                assert!(msg.contains("requires exactly 2 arguments")); // Changed
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_get_type_missing_argument() {
+        let env = Environment::new();
+
+        // (get-type) - missing argument
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("get-type".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("get-type"));
+                assert!(msg.contains("requires exactly 1 argument")); // Changed
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_check_type_missing_arguments() {
+        let env = Environment::new();
+
+        // (check-type x) - missing type argument
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("check-type".to_string()),
+            MettaValue::Atom("x".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("check-type"));
+                assert!(msg.contains("requires exactly 2 arguments")); // Changed
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_is_error_missing_argument() {
+        let env = Environment::new();
+
+        // (is-error) - missing argument
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("is-error".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("is-error"));
+                assert!(msg.contains("requires exactly 1 argument")); // Changed
             }
             other => panic!("Expected Error, got {:?}", other),
         }

@@ -1,0 +1,67 @@
+# Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
+# NOTE: This PKGBUILD is for nightly builds. For tagged releases, see PKGBUILD
+pkgname=mettatron-nightly
+pkgver=r0.0.0
+pkgrel=1
+pkgdesc="MeTTa language evaluator with lazy evaluation and pattern matching (nightly builds)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/F1R3FLY-io/MeTTa-Compiler"
+license=('Apache')
+depends=('gcc-libs')
+makedepends=('rust' 'cargo' 'git' 'protobuf')
+provides=('mettatron')
+conflicts=('mettatron')
+source=("mettatron::git+https://github.com/F1R3FLY-io/MeTTa-Compiler.git"
+        "f1r3node::git+https://github.com/F1R3FLY-io/f1r3node.git#branch=dylon/mettatron"
+        "MORK::git+https://github.com/trueagi-io/MORK.git#branch=main"
+        "PathMap::git+https://github.com/Adam-Vandervorst/PathMap.git#branch=master")
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+pkgver() {
+    cd "$srcdir/mettatron"
+    # Use commit count and short hash for version
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+    cd "$srcdir"
+    # Link dependencies to expected locations
+    ln -sf "$srcdir/f1r3node" "$srcdir/mettatron/../f1r3node"
+    ln -sf "$srcdir/MORK" "$srcdir/mettatron/../MORK"
+    ln -sf "$srcdir/PathMap" "$srcdir/mettatron/../PathMap"
+}
+
+build() {
+    cd "$srcdir/mettatron"
+    export RUSTUP_TOOLCHAIN=nightly
+    export CARGO_TARGET_DIR=target
+    cargo build --release --locked
+
+    # Build rholang-cli
+    cd "$srcdir/f1r3node/rholang"
+    cargo build --release --bin rholang-cli --locked
+}
+
+check() {
+    cd "$srcdir/mettatron"
+    export RUSTUP_TOOLCHAIN=nightly
+    cargo test --release --locked
+}
+
+package() {
+    cd "$srcdir/mettatron"
+    install -Dm755 "target/release/mettatron" "$pkgdir/usr/bin/mettatron"
+    install -Dm644 "target/release/libmettatron.so" "$pkgdir/usr/lib/libmettatron.so"
+    install -Dm644 "target/release/libmettatron.rlib" "$pkgdir/usr/lib/libmettatron.rlib"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+    # Install rholang-cli
+    cd "$srcdir/f1r3node"
+    install -Dm755 "target/release/rholang-cli" "$pkgdir/usr/bin/rholang-cli"
+
+    # Install examples
+    cd "$srcdir/mettatron"
+    mkdir -p "$pkgdir/usr/share/doc/$pkgname/examples"
+    cp -r examples/* "$pkgdir/usr/share/doc/$pkgname/examples/"
+}

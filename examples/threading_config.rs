@@ -2,7 +2,7 @@
 //!
 //! Demonstrates how to configure MeTTaTron's threading model for different workloads.
 
-use mettatron::config::{EvalConfig, configure_eval};
+use mettatron::config::EvalConfig;
 use mettatron::{compile, run_state_async, MettaState};
 
 #[tokio::main]
@@ -64,7 +64,9 @@ async fn demo_default_config() {
     "#;
 
     let compiled = compile(src).expect("Failed to compile");
-    let result = run_state_async(state, compiled).await.expect("Failed to evaluate");
+    let result = run_state_async(state, compiled)
+        .await
+        .expect("Failed to evaluate");
 
     println!("  Results: {:?}", result.output);
 }
@@ -74,9 +76,9 @@ async fn demo_cpu_optimized() {
     // Note: Can only call configure_eval once, so this example shows what you would do
     // In a real application, you'd call this once at startup
 
-    let config = EvalConfig::cpu_optimized();
+    let _config = EvalConfig::cpu_optimized();
     println!("  Configuration created (not applied - already configured)");
-    println!("  In real app, call configure_eval(config) before any async operations");
+    println!("  In real app, call configure_eval(_config) before any async operations");
 
     let state = MettaState::new_empty();
 
@@ -90,7 +92,9 @@ async fn demo_cpu_optimized() {
     "#;
 
     let compiled = compile(src).expect("Failed to compile");
-    let result = run_state_async(state, compiled).await.expect("Failed to evaluate");
+    let result = run_state_async(state, compiled)
+        .await
+        .expect("Failed to evaluate");
 
     println!("  Results: {:?}", result.output);
 }
@@ -109,7 +113,9 @@ async fn demo_memory_optimized() {
     "#;
 
     let compiled = compile(src).expect("Failed to compile");
-    let result = run_state_async(state, compiled).await.expect("Failed to evaluate");
+    let result = run_state_async(state, compiled)
+        .await
+        .expect("Failed to evaluate");
 
     println!("  Results: {:?}", result.output);
 }
@@ -127,7 +133,9 @@ async fn demo_throughput_optimized() {
     }
 
     let compiled = compile(&src).expect("Failed to compile");
-    let result = run_state_async(state, compiled).await.expect("Failed to evaluate");
+    let result = run_state_async(state, compiled)
+        .await
+        .expect("Failed to evaluate");
 
     println!("  Results count: {} expressions", result.output.len());
 }
@@ -152,7 +160,9 @@ async fn demo_custom_config() {
     "#;
 
     let compiled = compile(src).expect("Failed to compile");
-    let result = run_state_async(state, compiled).await.expect("Failed to evaluate");
+    let result = run_state_async(state, compiled)
+        .await
+        .expect("Failed to evaluate");
 
     println!("  Results: {:?}", result.output);
 }

@@ -1,6 +1,5 @@
 /// FFI layer for Rholang integration
 /// Provides C-compatible functions for calling from Rholang
-
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 

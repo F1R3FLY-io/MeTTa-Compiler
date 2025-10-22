@@ -1,0 +1,367 @@
+# Installing MeTTaTron
+
+MeTTaTron is available for Linux (x86_64 and ARM64) and macOS (x86_64 and ARM64).
+
+**Note:** Windows support is currently disabled due to jemalloc incompatibility in the MORK dependency. Windows builds require changes to upstream dependencies (MORK and/or PathMap).
+
+## Table of Contents
+
+- [Ubuntu/Debian (APT)](#ubuntudebian-apt)
+- [RedHat/Fedora/CentOS (YUM/DNF)](#redhatfedoracentos-yumdnf)
+- [Arch Linux (Pacman/AUR)](#arch-linux-pacmanaur)
+- [macOS (Homebrew)](#macos-homebrew)
+- [Windows Support](#windows-support)
+- [Generic Installation (All Platforms)](#generic-installation)
+- [Building from Source](#building-from-source)
+
+---
+
+## Ubuntu/Debian (APT)
+
+### Add the repository
+
+```bash
+# Add repository key
+curl -fsSL https://f1r3fly-io.github.io/mettatron-apt/KEY.gpg | sudo gpg --dearmor -o /usr/share/keyrings/mettatron-archive-keyring.gpg
+
+# Add repository to sources
+echo "deb [signed-by=/usr/share/keyrings/mettatron-archive-keyring.gpg] https://f1r3fly-io.github.io/mettatron-apt stable main" | sudo tee /etc/apt/sources.list.d/mettatron.list
+
+# Update package list
+sudo apt update
+```
+
+### Install
+
+```bash
+sudo apt install mettatron
+```
+
+### Verify installation
+
+```bash
+mettatron --version
+```
+
+---
+
+## RedHat/Fedora/CentOS (YUM/DNF)
+
+### Add the repository
+
+```bash
+# Create repository file
+sudo tee /etc/yum.repos.d/mettatron.repo <<EOF
+[mettatron]
+name=MeTTaTron Repository
+baseurl=https://f1r3fly-io.github.io/mettatron-yum
+enabled=1
+gpgcheck=0
+EOF
+```
+
+### Install
+
+**For RHEL/CentOS:**
+```bash
+sudo yum install mettatron
+```
+
+**For Fedora:**
+```bash
+sudo dnf install mettatron
+```
+
+### Verify installation
+
+```bash
+mettatron --version
+```
+
+---
+
+## Arch Linux (Pacman/AUR)
+
+### Option 1: Install from repository (recommended)
+
+Add the MeTTaTron repository to `/etc/pacman.conf`:
+
+```bash
+sudo tee -a /etc/pacman.conf <<EOF
+
+[mettatron]
+SigLevel = Optional TrustAll
+Server = https://f1r3fly-io.github.io/mettatron-arch/\$arch
+EOF
+```
+
+Update package database and install stable or nightly:
+
+```bash
+# Stable release
+sudo pacman -Sy mettatron
+
+# Nightly builds (conflicts with mettatron, use one or the other)
+sudo pacman -Sy mettatron-nightly
+```
+
+### Option 2: Build from PKGBUILD
+
+**Stable release:**
+```bash
+# Download PKGBUILD
+curl -O https://f1r3fly-io.github.io/mettatron-arch/PKGBUILD
+
+# Build and install
+makepkg -si
+```
+
+**Nightly builds:**
+```bash
+# Download nightly PKGBUILD
+curl -O https://f1r3fly-io.github.io/mettatron-arch/PKGBUILD-nightly
+
+# Build and install
+makepkg -p PKGBUILD-nightly -si
+```
+
+### Option 3: Use an AUR helper (e.g., yay)
+
+```bash
+# Stable
+yay -S mettatron
+
+# Nightly
+yay -S mettatron-nightly
+```
+
+### Verify installation
+
+```bash
+mettatron --version
+```
+
+---
+
+## macOS (Homebrew)
+
+### Add the tap
+
+```bash
+brew tap f1r3fly-io/mettatron
+```
+
+### Install
+
+```bash
+brew install mettatron
+```
+
+### Verify installation
+
+```bash
+mettatron --version
+```
+
+---
+
+## Windows Support
+
+**Windows is not currently supported** due to dependency compatibility issues.
+
+### Why Windows is Not Supported
+
+The MORK dependency uses PathMap with jemalloc enabled, which requires Unix build tools (configure, sh) that are not available on Windows. To enable Windows support, one of the following changes is needed:
+
+1. Update MORK's workspace to use platform-specific PathMap features (exclude jemalloc on Windows)
+2. Update PathMap to support Windows-compatible allocators
+3. Build with WSL (Windows Subsystem for Linux) as a workaround
+
+### Workaround: Use WSL
+
+You can run MeTTaTron on Windows using WSL (Windows Subsystem for Linux):
+
+1. Install WSL: https://learn.microsoft.com/en-us/windows/wsl/install
+2. Install Ubuntu in WSL
+3. Follow the [Ubuntu/Debian installation instructions](#ubuntudebian-apt) within WSL
+
+### Future Windows Support
+
+Windows native support via Chocolatey is planned once the dependency issues are resolved. Package configuration is already prepared in `packaging/chocolatey/`.
+
+---
+
+## Generic Installation
+
+### Download prebuilt binaries
+
+Visit the [releases page](https://github.com/F1R3FLY-io/MeTTa-Compiler/releases) and download the appropriate archive for your platform:
+
+- **Linux x86_64**: `mettatron-linux-x86_64.tar.gz`
+- **Linux ARM64**: `mettatron-linux-arm64.tar.gz`
+- **macOS x86_64**: `mettatron-macos-x86_64.tar.gz`
+- **macOS ARM64** (Apple Silicon): `mettatron-macos-arm64.tar.gz`
+
+**Note:** Windows binaries are not currently available. See [Windows Support](#windows-support) for details.
+
+### Extract and install (Unix/Linux/macOS)
+
+```bash
+# Extract the archive
+tar xzf mettatron-*.tar.gz
+
+# Move binaries to a directory in your PATH
+sudo mv mettatron /usr/local/bin/
+sudo mv rholang-cli /usr/local/bin/
+
+# Make executable
+sudo chmod +x /usr/local/bin/mettatron
+sudo chmod +x /usr/local/bin/rholang-cli
+```
+
+### Verify installation
+
+```bash
+mettatron --version
+```
+
+---
+
+## Building from Source
+
+### Prerequisites
+
+- **Rust** (nightly toolchain)
+- **Cargo** (comes with Rust)
+- **protobuf compiler** (protoc)
+- **Git**
+
+### Clone the repositories
+
+```bash
+# Create a workspace directory
+mkdir mettatron-workspace
+cd mettatron-workspace
+
+# Clone MeTTa-Compiler
+git clone https://github.com/F1R3FLY-io/MeTTa-Compiler.git
+
+# Clone dependencies
+git clone --branch dylon/mettatron https://github.com/F1R3FLY-io/f1r3node.git
+git clone --branch main https://github.com/trueagi-io/MORK.git
+git clone --branch master https://github.com/Adam-Vandervorst/PathMap.git
+```
+
+### Build
+
+```bash
+cd MeTTa-Compiler
+cargo build --release
+```
+
+### Install
+
+```bash
+# The binary will be at target/release/mettatron
+sudo cp target/release/mettatron /usr/local/bin/
+
+# Optionally install rholang-cli
+cd ../f1r3node/rholang
+cargo build --release --bin rholang-cli
+sudo cp ../../f1r3node/target/release/rholang-cli /usr/local/bin/
+```
+
+### Verify installation
+
+```bash
+mettatron --version
+```
+
+---
+
+## Uninstallation
+
+### Ubuntu/Debian (APT)
+
+```bash
+sudo apt remove mettatron
+sudo rm /etc/apt/sources.list.d/mettatron.list
+```
+
+### RedHat/Fedora/CentOS
+
+```bash
+sudo yum remove mettatron  # or: sudo dnf remove mettatron
+sudo rm /etc/yum.repos.d/mettatron.repo
+```
+
+### Arch Linux
+
+```bash
+sudo pacman -R mettatron
+```
+
+### macOS (Homebrew)
+
+```bash
+brew uninstall mettatron
+brew untap f1r3fly-io/mettatron
+```
+
+### Manual installation
+
+```bash
+sudo rm /usr/local/bin/mettatron
+sudo rm /usr/local/bin/rholang-cli
+```
+
+---
+
+## Troubleshooting
+
+### Linux: "protoc: command not found"
+
+Install the protobuf compiler:
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install protobuf-compiler
+```
+
+**Fedora:**
+```bash
+sudo dnf install protobuf-compiler
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S protobuf
+```
+
+### macOS: "protoc: command not found"
+
+```bash
+brew install protobuf
+```
+
+### Windows: Build errors
+
+Ensure you have:
+1. Visual Studio Build Tools installed
+2. protoc in your PATH (install via `choco install protoc`)
+
+### CPU feature errors (AES/SSE2 required)
+
+MeTTaTron requires a CPU with AES and SSE2 support. Most CPUs from 2010 onwards have these features.
+
+To check:
+- **Linux**: `grep -E 'aes|sse2' /proc/cpuinfo`
+- **macOS**: `sysctl machdep.cpu.features`
+- **Windows**: Use CPU-Z or similar tool
+
+---
+
+## Getting Help
+
+- **Issues**: https://github.com/F1R3FLY-io/MeTTa-Compiler/issues
+- **Documentation**: https://github.com/F1R3FLY-io/MeTTa-Compiler/blob/main/README.md

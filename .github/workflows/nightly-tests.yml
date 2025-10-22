@@ -209,6 +209,8 @@ jobs:
           mkdir -p target/release
           mv mettatron target/release/
           mv rholang-cli target/release/
+          mv libmettatron.so target/release/
+          mv libmettatron.rlib target/release/
 
       - name: Install cargo-deb
         run: cargo install cargo-deb
@@ -242,6 +244,8 @@ jobs:
           mkdir -p target/release
           mv mettatron target/release/
           mv rholang-cli target/release/
+          mv libmettatron.so target/release/
+          mv libmettatron.rlib target/release/
 
       - name: Install cargo-generate-rpm
         run: cargo install cargo-generate-rpm

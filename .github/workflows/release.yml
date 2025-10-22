@@ -403,9 +403,191 @@ jobs:
   #   runs-on: windows-latest
   #   ...
 
+  test-deb-package:
+    name: Sanity Check - Debian Package
+    needs: package-deb
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download .deb package
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-package
+
+      - name: Install package
+        run: |
+          sudo dpkg -i *.deb || true
+          sudo apt-get install -f -y
+
+      - name: Verify installation
+        run: |
+          which mettatron
+          which rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          ldd $(which mettatron)
+          ldd $(which rholang-cli)
+          ls -lh /usr/lib/libmettatron.so
+          ls -lh /usr/lib/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
+  test-rpm-package:
+    name: Sanity Check - RPM Package
+    needs: package-rpm
+    runs-on: ubuntu-latest
+    container: fedora:40
+    steps:
+      - name: Download .rpm package
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-package
+
+      - name: Install package
+        run: |
+          dnf install -y *.rpm
+
+      - name: Verify installation
+        run: |
+          command -v mettatron
+          command -v rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          ldd $(command -v mettatron)
+          ldd $(command -v rholang-cli)
+          ls -lh /usr/lib64/libmettatron.so
+          ls -lh /usr/lib64/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
+  test-arch-package:
+    name: Sanity Check - Arch Package (${{ matrix.arch }})
+    needs: package-arch
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Only test x86_64 - aarch64 requires cross-architecture setup
+        arch: [x86_64]
+    container: archlinux:latest
+    steps:
+      - name: Download Arch package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-package-${{ matrix.arch }}
+
+      - name: Install package
+        run: |
+          pacman -Sy --noconfirm
+          pacman -U --noconfirm *.pkg.tar.zst
+
+      - name: Verify installation
+        run: |
+          command -v mettatron
+          command -v rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          ldd $(command -v mettatron) || true
+          ldd $(command -v rholang-cli) || true
+          ls -lh /usr/lib/libmettatron.so
+          ls -lh /usr/lib/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
+  test-macos-dmg:
+    name: Sanity Check - macOS DMG
+    needs: package-macos-dmg
+    runs-on: macos-latest
+    steps:
+      - name: Download DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+
+      - name: Mount and install DMG
+        run: |
+          hdiutil attach *.dmg
+          sudo cp /Volumes/MeTTaTron/mettatron /usr/local/bin/
+          sudo cp /Volumes/MeTTaTron/rholang-cli /usr/local/bin/
+          sudo mkdir -p /usr/local/lib
+          sudo cp /Volumes/MeTTaTron/libmettatron.dylib /usr/local/lib/
+          sudo cp /Volumes/MeTTaTron/libmettatron.rlib /usr/local/lib/
+          hdiutil detach /Volumes/MeTTaTron || true
+
+      - name: Verify installation
+        run: |
+          which mettatron
+          which rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          otool -L $(which mettatron)
+          otool -L $(which rholang-cli)
+          ls -lh /usr/local/lib/libmettatron.dylib
+          ls -lh /usr/local/lib/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
   create-release:
     name: Create GitHub Release
-    needs: [build-matrix, package-deb, package-rpm, package-macos-dmg, package-arch]
+    needs: [build-matrix, package-deb, package-rpm, package-macos-dmg, package-arch, test-deb-package, test-rpm-package, test-arch-package, test-macos-dmg]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:

@@ -447,7 +447,7 @@ jobs:
     name: Sanity Check - RPM Package
     needs: package-rpm
     runs-on: ubuntu-latest
-    container: almalinux:9
+    container: fedora:40
     steps:
       - name: Download .rpm package
         uses: actions/download-artifact@v4
@@ -492,7 +492,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [x86_64, aarch64]
+        # Only test x86_64 - aarch64 requires cross-architecture setup
+        arch: [x86_64]
     container: archlinux:latest
     steps:
       - name: Download Arch package
@@ -507,14 +508,14 @@ jobs:
 
       - name: Verify installation
         run: |
-          which mettatron
-          which rholang-cli
+          command -v mettatron
+          command -v rholang-cli
           mettatron --version || mettatron --help || echo "No version flag, continuing..."
 
       - name: Check shared libraries
         run: |
-          ldd $(which mettatron) || true
-          ldd $(which rholang-cli) || true
+          ldd $(command -v mettatron) || true
+          ldd $(command -v rholang-cli) || true
           ls -lh /usr/lib/libmettatron.so
           ls -lh /usr/lib/libmettatron.rlib
 
@@ -546,12 +547,11 @@ jobs:
       - name: Mount and install DMG
         run: |
           hdiutil attach *.dmg
-          MOUNT_POINT=$(hdiutil info | grep "/Volumes/MeTTaTron" | awk '{print $1}')
-          sudo cp /Volumes/MeTTaTron/mettatron /usr/local/bin/
-          sudo cp /Volumes/MeTTaTron/rholang-cli /usr/local/bin/
-          sudo cp /Volumes/MeTTaTron/libmettatron.dylib /usr/local/lib/
-          sudo cp /Volumes/MeTTaTron/libmettatron.rlib /usr/local/lib/
-          hdiutil detach /Volumes/MeTTaTron || true
+          sudo cp "/Volumes/MeTTaTron Nightly/mettatron" /usr/local/bin/
+          sudo cp "/Volumes/MeTTaTron Nightly/rholang-cli" /usr/local/bin/
+          sudo cp "/Volumes/MeTTaTron Nightly/libmettatron.dylib" /usr/local/lib/
+          sudo cp "/Volumes/MeTTaTron Nightly/libmettatron.rlib" /usr/local/lib/
+          hdiutil detach "/Volumes/MeTTaTron Nightly" || true
 
       - name: Verify installation
         run: |
@@ -660,8 +660,10 @@ jobs:
           echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Debian (.deb) | ${{ needs.test-deb-package.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| RPM (.rpm) | ${{ needs.test-rpm-package.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Arch (.pkg.tar.zst) | ${{ needs.test-arch-package.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Arch x86_64 (.pkg.tar.zst) | ${{ needs.test-arch-package.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| macOS (.dmg) | ${{ needs.test-macos-dmg.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "_Note: Arch aarch64 package is built but not sanity-checked (requires cross-architecture test setup)_" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Coverage" >> $GITHUB_STEP_SUMMARY
           echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY

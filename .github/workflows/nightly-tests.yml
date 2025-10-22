@@ -5,11 +5,6 @@ on:
     # Run at 2 AM UTC every day
     - cron: '0 2 * * *'
   workflow_dispatch:
-  push:
-    branches:
-      - dylon/mettatron-ci
-    paths:
-      - '.github/workflows/nightly-tests.yml'
 
 permissions:
   contents: write
@@ -485,6 +480,24 @@ jobs:
           else
             echo "❌ Some nightly builds or packages failed. Please review the logs." >> $GITHUB_STEP_SUMMARY
           fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Download Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Platform Binaries:**" >> $GITHUB_STEP_SUMMARY
+          echo "- [Linux x86_64 (.tar.gz, .zip)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Linux ARM64 (.tar.gz, .zip)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "- [macOS x86_64 (.tar.gz, .zip)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "- [macOS ARM64 (.tar.gz, .zip)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Packages:**" >> $GITHUB_STEP_SUMMARY
+          echo "- [Debian Package (.deb)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "- [RPM Package (.rpm)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Arch Package x86_64 (.pkg.tar.zst)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Arch Package aarch64 (.pkg.tar.zst)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "- [macOS DMG Installer (.dmg)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** All artifacts are retained for 14 days and are accessible to repository collaborators." >> $GITHUB_STEP_SUMMARY
 
       - name: Create issue on failure
         if: failure() || needs.build-and-test-matrix.result == 'failure' || needs.package-deb.result == 'failure' || needs.package-rpm.result == 'failure' || needs.package-arch.result == 'failure' || needs.package-macos-dmg.result == 'failure'

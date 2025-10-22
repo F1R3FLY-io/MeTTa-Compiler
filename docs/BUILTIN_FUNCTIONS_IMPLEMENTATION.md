@@ -30,13 +30,13 @@ This document tracks the implementation status of MeTTa built-in functions in Me
 - [ ] **`evalc`** - Evaluates atom in specific space context
   - Reference: [stdlib.metta:63-69](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L63-L69)
 
-- [ ] **`function`** - Evaluates until `(return <result>)`
+- [x] **`function`** - Evaluates until `(return <result>)`
   - Reference: [stdlib.metta:49-54](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L49-L54)
 
-- [ ] **`return`** - Returns value from function expressions
+- [x] **`return`** - Returns value from function expressions
   - Reference: [stdlib.metta:42-47](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L42-L47)
 
-- [ ] **`chain`** - Evaluates first arg, binds to variable, evaluates third arg
+- [x] **`chain`** - Evaluates first arg, binds to variable, evaluates third arg
   - Reference: [stdlib.metta:71-78](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L71-L78)
 
 - [ ] **`unify`** - Pattern matches two args, returns third if matched, fourth otherwise

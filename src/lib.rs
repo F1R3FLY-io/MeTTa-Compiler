@@ -1,6 +1,5 @@
 pub mod backend;
 pub mod config;
-pub mod ffi;
 pub mod pathmap_par_integration;
 pub mod rholang_integration;
 /// MeTTaTron - MeTTa Evaluator Library
@@ -73,7 +72,7 @@ pub use backend::{
     eval,
     models::{MettaState, MettaValue, Rule},
 };
-pub use rholang_integration::{compile_to_state_json, metta_state_to_json, run_state};
+pub use rholang_integration::{metta_state_to_json, run_state};
 pub use sexpr::{Lexer, Parser, SExpr, Token};
 
 // Export run_state_async when async feature is enabled (which is by default)

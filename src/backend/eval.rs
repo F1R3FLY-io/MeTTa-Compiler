@@ -11,7 +11,7 @@ use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
 use crate::backend::mork_convert::{
     metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext,
 };
-use mork_bytestring::Expr;
+use mork_expr::Expr;
 
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)
@@ -764,7 +764,7 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         }
         MettaValue::SExpr(items) => {
             // Sum specificity of all items
-            items.iter().map(|item| pattern_specificity(item)).sum()
+            items.iter().map(pattern_specificity).sum()
         }
         // Errors: use specificity of details
         MettaValue::Error(_, details) => pattern_specificity(details),
@@ -813,7 +813,7 @@ fn try_match_all_rules_query_multi(
     let mut parse_buffer = vec![0u8; 4096];
     let mut pdp = mork::space::ParDataParser::new(&space.sm);
     use mork_frontend::bytestring_parser::Parser;
-    let mut ez = mork_bytestring::ExprZipper::new(Expr {
+    let mut ez = mork_expr::ExprZipper::new(Expr {
         ptr: parse_buffer.as_mut_ptr(),
     });
     let mut context = mork_frontend::bytestring_parser::Context::new(pattern_bytes);
@@ -832,7 +832,7 @@ fn try_match_all_rules_query_multi(
     let mut matches: Vec<(MettaValue, Bindings)> = Vec::new();
 
     mork::space::Space::query_multi(&space.btm, pattern_expr, |result, _matched_expr| {
-        if let Err((bindings, _, _, _)) = result {
+        if let Err(bindings) = result {
             // Convert MORK bindings to our format
             if let Ok(our_bindings) = mork_bindings_to_metta(&bindings, &ctx, &space) {
                 // Extract the RHS from bindings

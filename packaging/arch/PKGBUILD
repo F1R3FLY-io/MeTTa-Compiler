@@ -1,7 +1,7 @@
 # Maintainer: F1R3FLY.io <noreply@f1r3fly.io>
 # NOTE: This PKGBUILD is for tagged releases. For nightly builds, see PKGBUILD-nightly
 pkgname=mettatron
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="MeTTa language evaluator with lazy evaluation and pattern matching"
 arch=('x86_64' 'aarch64')

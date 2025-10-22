@@ -42,6 +42,12 @@ macro_rules! require_two_args {
     };
 }
 
+macro_rules! require_three_args {
+    ($op:expr, $items:expr, $env:expr) => {
+        require_args!($op, $items, 3, $env)
+    };
+}
+
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
@@ -232,6 +238,34 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                     .collect();
 
                 return (return_results, arg_env);
+            }
+
+            // Evaluates first argument, binds it to the variable (second argument) and
+            // then evaluates third argument which contains (or not) mentioned variable
+            "chain" => {
+                require_three_args!("chain", items, env);
+
+                let expr = &items[1];
+                let var = &items[2];
+                let body = &items[3];
+
+                let (expr_results, expr_env) = eval(expr.clone(), env);
+                for result in &expr_results {
+                    if matches!(result, MettaValue::Error(_, _)) {
+                        return (vec![result.clone()], expr_env);
+                    }
+                }
+
+                let mut all_results = Vec::new();
+                for value in expr_results {
+                    if let Some(bindings) = pattern_match(var, &value) {
+                        let instantiated_body = apply_bindings(body, &bindings);
+                        let (body_results, _) = eval(instantiated_body, expr_env.clone());
+                        all_results.extend(body_results);
+                    }
+                }
+
+                return (all_results, expr_env);
             }
 
             // Is-error: check if value is an error (for error recovery)
@@ -1386,7 +1420,327 @@ mod tests {
         assert_eq!(results[0], MettaValue::Long(81));
     }
 
-    // -------------- -------------- -------------- -------------- --------------
+    #[test]
+    fn test_chain_basic() {
+        let env = Environment::new();
+
+        // (chain (+ 1 2) $x (* $x 2)) should bind 3 to $x, then evaluate (* 3 2) = 6
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("chain".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(6));
+    }
+
+    #[test]
+    fn test_chain_with_return() {
+        let env = Environment::new();
+
+        // (chain 42 $x (return (* $x 3))) should bind 42 to $x, then return (* 42 3) = 126 wrapped in return
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("chain".to_string()),
+            MettaValue::Long(42),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("return".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("*".to_string()),
+                    MettaValue::Atom("$x".to_string()),
+                    MettaValue::Long(3),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        // Should return a return expression: (return 126)
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], MettaValue::Atom("return".to_string()));
+                assert_eq!(items[1], MettaValue::Long(126));
+            }
+            other => panic!("Expected SExpr with return, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_chain_with_function_and_return() {
+        let mut env = Environment::new();
+
+        // Define a simple increment rule: (= (inc $x) (+ $x 1))
+        let inc_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("inc".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Long(1),
+            ]),
+        };
+        env.add_rule(inc_rule);
+
+        // Define computation that uses chain: (= (compute $n) (chain (inc $n) $result (return $result)))
+        let compute_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("compute".to_string()),
+                MettaValue::Atom("$n".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("chain".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("inc".to_string()),
+                    MettaValue::Atom("$n".to_string()),
+                ]),
+                MettaValue::Atom("$result".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("return".to_string()),
+                    MettaValue::Atom("$result".to_string()),
+                ]),
+            ]),
+        };
+        env.add_rule(compute_rule);
+
+        // Test: (function (compute 5)) should increment 5 to 6, bind to $result, then return 6
+        let test = MettaValue::SExpr(vec![
+            MettaValue::Atom("function".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("compute".to_string()),
+                MettaValue::Long(5),
+            ]),
+        ]);
+
+        let (results, _) = eval(test, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(6));
+    }
+
+    #[test]
+    fn test_chain_variable_scoping() {
+        let env = Environment::new();
+
+        // (chain 10 $x (chain 20 $y (+ $x $y))) - nested chains with different variables
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("chain".to_string()),
+            MettaValue::Long(10),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("chain".to_string()),
+                MettaValue::Long(20),
+                MettaValue::Atom("$y".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Atom("$x".to_string()),
+                    MettaValue::Atom("$y".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(30));
+    }
+
+    #[test]
+    fn test_chain_complex_computation_pipeline() {
+        let mut env = Environment::new();
+
+        // Define helper functions for computation pipeline
+        // (= (double $x) (* $x 2))
+        let double_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("double".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Long(2),
+            ]),
+        };
+
+        // (= (square $x) (* $x $x))
+        let square_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("square".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+        };
+
+        // Complex chained computation: (= (complex-calc $n)
+        //   (chain (+ $n 3) $step1
+        //     (chain (double $step1) $step2
+        //       (chain (square $step2) $result
+        //         (return $result)))))
+        let complex_calc_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("complex-calc".to_string()),
+                MettaValue::Atom("$n".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("chain".to_string()),
+                // Step 1: (+ $n 3)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Atom("$n".to_string()),
+                    MettaValue::Long(3),
+                ]),
+                MettaValue::Atom("$step1".to_string()),
+                // Nested chain: Step 2: (double $step1)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("chain".to_string()),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("double".to_string()),
+                        MettaValue::Atom("$step1".to_string()),
+                    ]),
+                    MettaValue::Atom("$step2".to_string()),
+                    // Nested chain: Step 3: (square $step2)
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("chain".to_string()),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("square".to_string()),
+                            MettaValue::Atom("$step2".to_string()),
+                        ]),
+                        MettaValue::Atom("$result".to_string()),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("return".to_string()),
+                            MettaValue::Atom("$result".to_string()),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        };
+
+        env.add_rule(double_rule);
+        env.add_rule(square_rule);
+        env.add_rule(complex_calc_rule);
+
+        // Test: (function (complex-calc 2))
+        // Should: 2 + 3 = 5, double(5) = 10, square(10) = 100, return 100
+        let test = MettaValue::SExpr(vec![
+            MettaValue::Atom("function".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("complex-calc".to_string()),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(test, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(100));
+    }
+
+    #[test]
+    fn test_chain_conditional_branching_with_function() {
+        let mut env = Environment::new();
+
+        // Define conditional computation with early termination
+        // (= (process-number $n)
+        //   (chain (> $n 10) $is-large
+        //     (if $is-large
+        //         (return $n)
+        //         (chain (* $n $n) $squared
+        //           (chain (+ $squared 1) $incremented
+        //             (return $incremented))))))
+        let process_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("process-number".to_string()),
+                MettaValue::Atom("$n".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("chain".to_string()),
+                // Check if $n > 10
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom(">".to_string()),
+                    MettaValue::Atom("$n".to_string()),
+                    MettaValue::Long(10),
+                ]),
+                MettaValue::Atom("$is-large".to_string()),
+                // Conditional processing
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("if".to_string()),
+                    MettaValue::Atom("$is-large".to_string()),
+                    // If large: return as-is
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("return".to_string()),
+                        MettaValue::Atom("$n".to_string()),
+                    ]),
+                    // If small: square and increment
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("chain".to_string()),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("*".to_string()),
+                            MettaValue::Atom("$n".to_string()),
+                            MettaValue::Atom("$n".to_string()),
+                        ]),
+                        MettaValue::Atom("$squared".to_string()),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("chain".to_string()),
+                            MettaValue::SExpr(vec![
+                                MettaValue::Atom("+".to_string()),
+                                MettaValue::Atom("$squared".to_string()),
+                                MettaValue::Long(1),
+                            ]),
+                            MettaValue::Atom("$incremented".to_string()),
+                            MettaValue::SExpr(vec![
+                                MettaValue::Atom("return".to_string()),
+                                MettaValue::Atom("$incremented".to_string()),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        };
+
+        env.add_rule(process_rule);
+
+        // Test case 1: Small number (3) -> 3² + 1 = 10
+        let test1 = MettaValue::SExpr(vec![
+            MettaValue::Atom("function".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("process-number".to_string()),
+                MettaValue::Long(3),
+            ]),
+        ]);
+
+        let (results1, env1) = eval(test1, env);
+        assert_eq!(results1.len(), 1);
+        assert_eq!(results1[0], MettaValue::Long(10));
+
+        // Test case 2: Large number (15) -> return 15 (early termination)
+        let test2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("function".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("process-number".to_string()),
+                MettaValue::Long(15),
+            ]),
+        ]);
+
+        let (results2, _) = eval(test2, env1);
+        assert_eq!(results2.len(), 1);
+        assert_eq!(results2[0], MettaValue::Long(15));
+    }
 
     #[test]
     fn test_eval_atom() {

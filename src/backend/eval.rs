@@ -150,6 +150,90 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                 }
             }
 
+            // Function: creates an evaluation loop that continues
+            // until it encounters a return value
+            "function" => {
+                require_one_arg!("function", items, env);
+
+                let mut current_expr = items[1].clone();
+                let mut current_env = env;
+                const MAX_ITERATIONS: usize = 1000;
+
+                for iteration_count in 1..=MAX_ITERATIONS {
+                    let (results, new_env) = eval(current_expr.clone(), current_env);
+                    current_env = new_env;
+
+                    if results.is_empty() {
+                        return (vec![MettaValue::Nil], current_env);
+                    }
+
+                    let (final_results, continue_exprs): (Vec<_>, Vec<_>) = results
+                        .into_iter()
+                        .partition(|result| matches!(
+                            result,
+                            MettaValue::SExpr(items)
+                                if items.len() == 2 && items[0] == MettaValue::Atom("return".to_string())
+                        ));
+
+                    if !final_results.is_empty() {
+                        let returns: Vec<_> = final_results
+                            .into_iter()
+                            .map(|r| match r {
+                                MettaValue::SExpr(items) => items[1].clone(),
+                                _ => unreachable!("partition guarantees return expressions"),
+                            })
+                            .collect();
+                        return (returns, current_env);
+                    }
+
+                    if continue_exprs.is_empty() {
+                        return (vec![MettaValue::Nil], current_env);
+                    }
+
+                    let next_expr = &continue_exprs[0];
+                    if current_expr == *next_expr {
+                        return (continue_exprs, current_env);
+                    }
+
+                    current_expr = continue_exprs[0].clone();
+                    if iteration_count == MAX_ITERATIONS {
+                        return (
+                            vec![MettaValue::Error(
+                                format!(
+                                    "function exceeded maximum iterations ({})",
+                                    MAX_ITERATIONS
+                                ),
+                                Box::new(current_expr),
+                            )],
+                            current_env,
+                        );
+                    }
+                }
+
+                unreachable!("Loop should always return within MAX_ITERATIONS")
+            }
+
+            // Return: signals termination from a function evaluation loop
+            "return" => {
+                require_one_arg!("return", items, env);
+
+                let (arg_results, arg_env) = eval(items[1].clone(), env);
+                for result in &arg_results {
+                    if matches!(result, MettaValue::Error(_, _)) {
+                        return (vec![result.clone()], arg_env);
+                    }
+                }
+
+                let return_results = arg_results
+                    .into_iter()
+                    .map(|result| {
+                        MettaValue::SExpr(vec![MettaValue::Atom("return".to_string()), result])
+                    })
+                    .collect();
+
+                return (return_results, arg_env);
+            }
+
             // Is-error: check if value is an error (for error recovery)
             "is-error" => {
                 require_one_arg!("is-error", items, env);
@@ -1020,6 +1104,289 @@ fn types_match(actual: &MettaValue, expected: &MettaValue) -> bool {
 mod tests {
     use super::*;
     use crate::backend::models::Rule;
+
+    #[test]
+    fn test_function_factorial_with_return() {
+        let mut env = Environment::new();
+
+        // Define factorial rule that only uses return for base case
+        let factorial_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("factorial".to_string()),
+                MettaValue::Atom("$n".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("if".to_string()),
+                // Condition: (== $n 0)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("==".to_string()),
+                    MettaValue::Atom("$n".to_string()),
+                    MettaValue::Long(0),
+                ]),
+                // Then branch: (return 1)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("return".to_string()),
+                    MettaValue::Long(1),
+                ]),
+                // Else branch: (factorial-helper $n 1)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("factorial-helper".to_string()),
+                    MettaValue::Atom("$n".to_string()),
+                    MettaValue::Long(1),
+                ]),
+            ]),
+        };
+
+        // (= (factorial-helper $n $acc)
+        //      (if (== $n 0)
+        //          (return $acc)
+        //          (factorial-helper (- $n 1) (* $n $acc))))
+        let helper_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("factorial-helper".to_string()),
+                MettaValue::Atom("$n".to_string()),
+                MettaValue::Atom("$acc".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("if".to_string()),
+                // Condition: (== $n 0)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("==".to_string()),
+                    MettaValue::Atom("$n".to_string()),
+                    MettaValue::Long(0),
+                ]),
+                // Then branch: (return $acc)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("return".to_string()),
+                    MettaValue::Atom("$acc".to_string()),
+                ]),
+                // Else branch: (factorial-helper (- $n 1) (* $n $acc))
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("factorial-helper".to_string()),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("-".to_string()),
+                        MettaValue::Atom("$n".to_string()),
+                        MettaValue::Long(1),
+                    ]),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("*".to_string()),
+                        MettaValue::Atom("$n".to_string()),
+                        MettaValue::Atom("$acc".to_string()),
+                    ]),
+                ]),
+            ]),
+        };
+
+        env.add_rule(factorial_rule);
+        env.add_rule(helper_rule);
+
+        // Test factorial(3) = 6
+        let test_factorial_3 = MettaValue::SExpr(vec![
+            MettaValue::Atom("function".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("factorial".to_string()),
+                MettaValue::Long(3),
+            ]),
+        ]);
+        let (results, _) = eval(test_factorial_3, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(6));
+
+        // Test factorial(4) = 24
+        let test_factorial_4 = MettaValue::SExpr(vec![
+            MettaValue::Atom("function".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("factorial".to_string()),
+                MettaValue::Long(4),
+            ]),
+        ]);
+        let (results, _) = eval(test_factorial_4, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(24));
+    }
+
+    #[test]
+    fn test_function_fibonacci_with_return() {
+        let mut env = Environment::new();
+
+        // Use tail-recursive fibonacci with accumulator
+        // (= (fib $n) (fib-helper $n 0 1))
+        let fib_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("fib".to_string()),
+                MettaValue::Atom("$n".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("fib-helper".to_string()),
+                MettaValue::Atom("$n".to_string()),
+                MettaValue::Long(0),
+                MettaValue::Long(1),
+            ]),
+        };
+
+        // (= (fib-helper $n $a $b)
+        //    (if (== $n 0)
+        //        (return $a)
+        //        (fib-helper (- $n 1) $b (+ $a $b))))
+        let fib_helper_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("fib-helper".to_string()),
+                MettaValue::Atom("$n".to_string()),
+                MettaValue::Atom("$a".to_string()),
+                MettaValue::Atom("$b".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("if".to_string()),
+                // Condition: (== $n 0)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("==".to_string()),
+                    MettaValue::Atom("$n".to_string()),
+                    MettaValue::Long(0),
+                ]),
+                // Then branch: (return $a)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("return".to_string()),
+                    MettaValue::Atom("$a".to_string()),
+                ]),
+                // Else branch: (fib-helper (- $n 1) $b (+ $a $b))
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("fib-helper".to_string()),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("-".to_string()),
+                        MettaValue::Atom("$n".to_string()),
+                        MettaValue::Long(1),
+                    ]),
+                    MettaValue::Atom("$b".to_string()),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("+".to_string()),
+                        MettaValue::Atom("$a".to_string()),
+                        MettaValue::Atom("$b".to_string()),
+                    ]),
+                ]),
+            ]),
+        };
+
+        env.add_rule(fib_rule);
+        env.add_rule(fib_helper_rule);
+
+        // Test fib(0) = 0
+        let test_fib_0 = MettaValue::SExpr(vec![
+            MettaValue::Atom("function".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("fib".to_string()),
+                MettaValue::Long(0),
+            ]),
+        ]);
+        let (results, env) = eval(test_fib_0, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(0));
+
+        // Test fib(6) = 8
+        let test_fib_6 = MettaValue::SExpr(vec![
+            MettaValue::Atom("function".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("fib".to_string()),
+                MettaValue::Long(6),
+            ]),
+        ]);
+        let (results, _) = eval(test_fib_6, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(8));
+    }
+
+    #[test]
+    fn test_function_power_with_return() {
+        let mut env = Environment::new();
+
+        // Use tail-recursive power with accumulator
+        // (= (power $base $exp) (power-helper $base $exp 1))
+        let power_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("power".to_string()),
+                MettaValue::Atom("$base".to_string()),
+                MettaValue::Atom("$exp".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("power-helper".to_string()),
+                MettaValue::Atom("$base".to_string()),
+                MettaValue::Atom("$exp".to_string()),
+                MettaValue::Long(1),
+            ]),
+        };
+
+        // (= (power-helper $base $exp $acc)
+        //    (if (== $exp 0)
+        //        (return $acc)
+        //        (power-helper $base (- $exp 1) (* $acc $base))))
+        let power_helper_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("power-helper".to_string()),
+                MettaValue::Atom("$base".to_string()),
+                MettaValue::Atom("$exp".to_string()),
+                MettaValue::Atom("$acc".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("if".to_string()),
+                // Condition: (== $exp 0)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("==".to_string()),
+                    MettaValue::Atom("$exp".to_string()),
+                    MettaValue::Long(0),
+                ]),
+                // Then branch: (return $acc)
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("return".to_string()),
+                    MettaValue::Atom("$acc".to_string()),
+                ]),
+                // Else branch: (power-helper $base (- $exp 1) (* $acc $base))
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("power-helper".to_string()),
+                    MettaValue::Atom("$base".to_string()),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("-".to_string()),
+                        MettaValue::Atom("$exp".to_string()),
+                        MettaValue::Long(1),
+                    ]),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("*".to_string()),
+                        MettaValue::Atom("$acc".to_string()),
+                        MettaValue::Atom("$base".to_string()),
+                    ]),
+                ]),
+            ]),
+        };
+
+        env.add_rule(power_rule);
+        env.add_rule(power_helper_rule);
+
+        // Test power(2, 0) = 1
+        let test_power_2_0 = MettaValue::SExpr(vec![
+            MettaValue::Atom("function".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("power".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(0),
+            ]),
+        ]);
+        let (results, env) = eval(test_power_2_0, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(1));
+
+        // Test power(3, 4) = 81
+        let test_power_3_4 = MettaValue::SExpr(vec![
+            MettaValue::Atom("function".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("power".to_string()),
+                MettaValue::Long(3),
+                MettaValue::Long(4),
+            ]),
+        ]);
+        let (results, _) = eval(test_power_3_4, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(81));
+    }
+
+    // -------------- -------------- -------------- -------------- --------------
 
     #[test]
     fn test_eval_atom() {

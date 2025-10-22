@@ -513,8 +513,8 @@ This document provides a comprehensive reference of the implementation status of
 ## Summary Statistics
 
 - **Total Functions:** 147
-- **Implemented:** 22 (15.0%)
-- **Not Implemented:** 125 (85.0%)
+- **Implemented:** 26 (17.7%)
+- **Not Implemented:** 121 (82.3%)
 
 ## Implementation Notes
 

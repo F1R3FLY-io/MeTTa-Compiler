@@ -1,6 +1,8 @@
 # MeTTa Built-in Functions Implementation TODO
 
-This document tracks the implementation status of MeTTa built-in functions in MeTTaTron against the official Hyperon implementation.
+> **Note:** Implementation work for these functions is now tracked in GitHub issues. See the [Built-in Functions Epic (#14)](https://github.com/F1R3FLY-io/MeTTa-Compiler/issues/14) and its sub-issues (#15-23) for task assignments and progress tracking.
+
+This document provides a comprehensive reference of the implementation status of MeTTa built-in functions in MeTTaTron against the official Hyperon implementation.
 
 **Reference Repository:** https://github.com/trueagi-io/hyperon-experimental
 

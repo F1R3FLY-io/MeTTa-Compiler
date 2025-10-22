@@ -400,6 +400,187 @@ jobs:
           path: output/*.pkg.tar.zst
           retention-days: 14
 
+  test-deb-package:
+    name: Sanity Check - Debian Package
+    needs: package-deb
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download .deb package
+        uses: actions/download-artifact@v4
+        with:
+          name: nightly-debian-package
+
+      - name: Install package
+        run: |
+          sudo dpkg -i *.deb || true
+          sudo apt-get install -f -y
+
+      - name: Verify installation
+        run: |
+          which mettatron
+          which rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          ldd $(which mettatron)
+          ldd $(which rholang-cli)
+          ls -lh /usr/lib/libmettatron.so
+          ls -lh /usr/lib/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
+  test-rpm-package:
+    name: Sanity Check - RPM Package
+    needs: package-rpm
+    runs-on: ubuntu-latest
+    container: almalinux:9
+    steps:
+      - name: Download .rpm package
+        uses: actions/download-artifact@v4
+        with:
+          name: nightly-rpm-package
+
+      - name: Install package
+        run: |
+          dnf install -y *.rpm
+
+      - name: Verify installation
+        run: |
+          which mettatron
+          which rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          ldd $(which mettatron)
+          ldd $(which rholang-cli)
+          ls -lh /usr/lib64/libmettatron.so
+          ls -lh /usr/lib64/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
+  test-arch-package:
+    name: Sanity Check - Arch Package (${{ matrix.arch }})
+    needs: package-arch
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    container: archlinux:latest
+    steps:
+      - name: Download Arch package
+        uses: actions/download-artifact@v4
+        with:
+          name: nightly-arch-package-${{ matrix.arch }}
+
+      - name: Install package
+        run: |
+          pacman -Sy --noconfirm
+          pacman -U --noconfirm *.pkg.tar.zst
+
+      - name: Verify installation
+        run: |
+          which mettatron
+          which rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          ldd $(which mettatron) || true
+          ldd $(which rholang-cli) || true
+          ls -lh /usr/lib/libmettatron.so
+          ls -lh /usr/lib/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
+  test-macos-dmg:
+    name: Sanity Check - macOS DMG
+    needs: package-macos-dmg
+    runs-on: macos-latest
+    steps:
+      - name: Download DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: nightly-macos-dmg
+
+      - name: Mount and install DMG
+        run: |
+          hdiutil attach *.dmg
+          MOUNT_POINT=$(hdiutil info | grep "/Volumes/MeTTaTron" | awk '{print $1}')
+          sudo cp /Volumes/MeTTaTron/mettatron /usr/local/bin/
+          sudo cp /Volumes/MeTTaTron/rholang-cli /usr/local/bin/
+          sudo cp /Volumes/MeTTaTron/libmettatron.dylib /usr/local/lib/
+          sudo cp /Volumes/MeTTaTron/libmettatron.rlib /usr/local/lib/
+          hdiutil detach /Volumes/MeTTaTron || true
+
+      - name: Verify installation
+        run: |
+          which mettatron
+          which rholang-cli
+          mettatron --version || mettatron --help || echo "No version flag, continuing..."
+
+      - name: Check shared libraries
+        run: |
+          otool -L $(which mettatron)
+          otool -L $(which rholang-cli)
+          ls -lh /usr/local/lib/libmettatron.dylib
+          ls -lh /usr/local/lib/libmettatron.rlib
+
+      - name: Create test MeTTa file
+        run: |
+          cat > test.metta <<'EOF'
+          ; Simple test
+          (= (fact 0) 1)
+          (= (fact $n) (* $n (fact (- $n 1))))
+          !(fact 5)
+          EOF
+
+      - name: Run basic functionality test
+        run: |
+          mettatron test.metta > output.txt
+          cat output.txt
+          grep -q "120" output.txt || (echo "Expected output '120' not found"; exit 1)
+
   test-coverage:
     name: Test Coverage Report
     runs-on: ubuntu-latest
@@ -448,7 +629,7 @@ jobs:
 
   create-nightly-summary:
     name: Create Nightly Build Summary
-    needs: [build-and-test-matrix, package-deb, package-rpm, package-macos-dmg, package-arch, test-coverage]
+    needs: [build-and-test-matrix, package-deb, package-rpm, package-macos-dmg, package-arch, test-deb-package, test-rpm-package, test-arch-package, test-macos-dmg, test-coverage]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -473,39 +654,61 @@ jobs:
           echo "| RPM (.rpm) | ${{ needs.package-rpm.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Arch (.pkg.tar.zst) | ${{ needs.package-arch.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| macOS (.dmg) | ${{ needs.package-macos-dmg.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Coverage | ${{ needs.test-coverage.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Package Sanity Checks" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Debian (.deb) | ${{ needs.test-deb-package.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| RPM (.rpm) | ${{ needs.test-rpm-package.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Arch (.pkg.tar.zst) | ${{ needs.test-arch-package.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| macOS (.dmg) | ${{ needs.test-macos-dmg.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Coverage Report | ${{ needs.test-coverage.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ needs.build-and-test-matrix.result }}" == "success" ] && \
              [ "${{ needs.package-deb.result }}" == "success" ] && \
              [ "${{ needs.package-rpm.result }}" == "success" ] && \
              [ "${{ needs.package-arch.result }}" == "success" ] && \
-             [ "${{ needs.package-macos-dmg.result }}" == "success" ]; then
-            echo "✅ All nightly builds and packages succeeded!" >> $GITHUB_STEP_SUMMARY
+             [ "${{ needs.package-macos-dmg.result }}" == "success" ] && \
+             [ "${{ needs.test-deb-package.result }}" == "success" ] && \
+             [ "${{ needs.test-rpm-package.result }}" == "success" ] && \
+             [ "${{ needs.test-arch-package.result }}" == "success" ] && \
+             [ "${{ needs.test-macos-dmg.result }}" == "success" ]; then
+            echo "✅ All nightly builds, packages, and sanity checks succeeded!" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ Some nightly builds or packages failed. Please review the logs." >> $GITHUB_STEP_SUMMARY
+            echo "❌ Some nightly builds, packages, or sanity checks failed. Please review the logs." >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Download Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Download Artifacts" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Platform Binaries:**" >> $GITHUB_STEP_SUMMARY
-          echo "- [Linux x86_64 (.tar.gz, .zip)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
-          echo "- [Linux ARM64 (.tar.gz, .zip)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
-          echo "- [macOS x86_64 (.tar.gz, .zip)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
-          echo "- [macOS ARM64 (.tar.gz, .zip)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "[**View all artifacts for this run →**](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Packages:**" >> $GITHUB_STEP_SUMMARY
-          echo "- [Debian Package (.deb)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
-          echo "- [RPM Package (.rpm)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
-          echo "- [Arch Package x86_64 (.pkg.tar.zst)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
-          echo "- [Arch Package aarch64 (.pkg.tar.zst)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
-          echo "- [macOS DMG Installer (.dmg)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "**Available artifacts:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Platform binaries: Linux x86_64, Linux ARM64, macOS x86_64, macOS ARM64 (.tar.gz, .zip)" >> $GITHUB_STEP_SUMMARY
+          echo "- Debian package (.deb)" >> $GITHUB_STEP_SUMMARY
+          echo "- RPM package (.rpm)" >> $GITHUB_STEP_SUMMARY
+          echo "- Arch packages x86_64 and aarch64 (.pkg.tar.zst)" >> $GITHUB_STEP_SUMMARY
+          echo "- macOS DMG installer (.dmg)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Note:** All artifacts are retained for 14 days and are accessible to repository collaborators." >> $GITHUB_STEP_SUMMARY
 
       - name: Create issue on failure
-        if: failure() || needs.build-and-test-matrix.result == 'failure' || needs.package-deb.result == 'failure' || needs.package-rpm.result == 'failure' || needs.package-arch.result == 'failure' || needs.package-macos-dmg.result == 'failure'
+        if: |
+          failure() ||
+          needs.build-and-test-matrix.result == 'failure' ||
+          needs.package-deb.result == 'failure' ||
+          needs.package-rpm.result == 'failure' ||
+          needs.package-arch.result == 'failure' ||
+          needs.package-macos-dmg.result == 'failure' ||
+          needs.test-deb-package.result == 'failure' ||
+          needs.test-rpm-package.result == 'failure' ||
+          needs.test-arch-package.result == 'failure' ||
+          needs.test-macos-dmg.result == 'failure'
         uses: actions/github-script@v7
         with:
           script: |
@@ -514,12 +717,22 @@ jobs:
 
             **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-            **Status:**
+            **Build Status:**
             - Build Matrix: ${{ needs.build-and-test-matrix.result }}
+
+            **Packaging Status:**
             - Debian Package: ${{ needs.package-deb.result }}
             - RPM Package: ${{ needs.package-rpm.result }}
             - Arch Package: ${{ needs.package-arch.result }}
             - macOS DMG: ${{ needs.package-macos-dmg.result }}
+
+            **Sanity Checks:**
+            - Debian Test: ${{ needs.test-deb-package.result }}
+            - RPM Test: ${{ needs.test-rpm-package.result }}
+            - Arch Test: ${{ needs.test-arch-package.result }}
+            - macOS Test: ${{ needs.test-macos-dmg.result }}
+
+            **Coverage:**
             - Test Coverage: ${{ needs.test-coverage.result }}
 
             Please investigate and fix the failing builds.`;

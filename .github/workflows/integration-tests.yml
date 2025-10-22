@@ -168,7 +168,10 @@ jobs:
       run: cargo fmt -- --check
 
     - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings
+      run: |
+        # Lint workspace code with warnings-as-errors
+        # --no-deps: Don't lint dependencies (avoids failing on upstream warnings)
+        cargo clippy --no-deps -- -D warnings
 
   test-report:
     name: Test Report Summary

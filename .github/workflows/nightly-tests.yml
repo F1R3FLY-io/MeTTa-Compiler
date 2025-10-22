@@ -460,14 +460,14 @@ jobs:
 
       - name: Verify installation
         run: |
-          which mettatron
-          which rholang-cli
+          command -v mettatron
+          command -v rholang-cli
           mettatron --version || mettatron --help || echo "No version flag, continuing..."
 
       - name: Check shared libraries
         run: |
-          ldd $(which mettatron)
-          ldd $(which rholang-cli)
+          ldd $(command -v mettatron)
+          ldd $(command -v rholang-cli)
           ls -lh /usr/lib64/libmettatron.so
           ls -lh /usr/lib64/libmettatron.rlib
 
@@ -549,6 +549,7 @@ jobs:
           hdiutil attach *.dmg
           sudo cp "/Volumes/MeTTaTron Nightly/mettatron" /usr/local/bin/
           sudo cp "/Volumes/MeTTaTron Nightly/rholang-cli" /usr/local/bin/
+          sudo mkdir -p /usr/local/lib
           sudo cp "/Volumes/MeTTaTron Nightly/libmettatron.dylib" /usr/local/lib/
           sudo cp "/Volumes/MeTTaTron Nightly/libmettatron.rlib" /usr/local/lib/
           hdiutil detach "/Volumes/MeTTaTron Nightly" || true

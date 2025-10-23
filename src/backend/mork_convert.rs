@@ -113,6 +113,11 @@ fn write_metta_value(
             write_symbol(s.as_bytes(), space, ez)?;
         }
 
+        MettaValue::Float(f) => {
+            let s = f.to_string();
+            write_symbol(s.as_bytes(), space, ez)?;
+        }
+
         MettaValue::String(s) => {
             // MORK uses quoted strings
             let quoted = format!("\"{}\"", s);

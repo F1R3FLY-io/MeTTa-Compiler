@@ -10,6 +10,7 @@ pub enum Token {
     Symbol(String),
     String(String),
     Integer(i64),
+    Float(f64),
     Dot,
     Exclaim,
     Question,
@@ -40,6 +41,7 @@ impl fmt::Display for Token {
             Token::Symbol(s) => write!(f, "{}", s),
             Token::String(s) => write!(f, "\"{}\"", s),
             Token::Integer(i) => write!(f, "{}", i),
+            Token::Float(fl) => write!(f, "{}", fl),
             Token::Dot => write!(f, "."),
             Token::Exclaim => write!(f, "!"),
             Token::Question => write!(f, "?"),
@@ -62,6 +64,11 @@ impl fmt::Display for Token {
     }
 }
 
+/// Hand-written lexer for MeTTa
+///
+/// **DEPRECATED**: Use `TreeSitterMettaParser` instead for better error recovery,
+/// incremental parsing, and full MeTTa language support.
+#[deprecated(since = "0.1.2", note = "Use TreeSitterMettaParser instead")]
 pub struct Lexer {
     input: Vec<char>,
     pos: usize,
@@ -194,6 +201,64 @@ impl Lexer {
             }
         }
         result.parse().unwrap_or(0)
+    }
+
+    /// Read a number (integer or float) starting from current position
+    /// Returns either Token::Integer or Token::Float
+    fn read_number_token(&mut self) -> Token {
+        let mut result = String::new();
+
+        // Read integer part
+        while let Some(ch) = self.current() {
+            if ch.is_numeric() {
+                result.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        // Check for decimal point
+        if self.current() == Some('.') && self.peek(1).map(|c| c.is_numeric()).unwrap_or(false) {
+            result.push('.');
+            self.advance();
+
+            // Read fractional part
+            while let Some(ch) = self.current() {
+                if ch.is_numeric() {
+                    result.push(ch);
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+
+            // Check for scientific notation (e or E)
+            if matches!(self.current(), Some('e') | Some('E')) {
+                result.push(self.current().unwrap());
+                self.advance();
+
+                // Optional sign
+                if matches!(self.current(), Some('+') | Some('-')) {
+                    result.push(self.current().unwrap());
+                    self.advance();
+                }
+
+                // Exponent digits
+                while let Some(ch) = self.current() {
+                    if ch.is_numeric() {
+                        result.push(ch);
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            Token::Float(result.parse().unwrap_or(0.0))
+        } else {
+            Token::Integer(result.parse().unwrap_or(0))
+        }
     }
 
     fn read_symbol(&mut self) -> String {
@@ -344,8 +409,12 @@ impl Lexer {
                     self.advance();
                     Ok(Token::Arrow)
                 } else if self.current().map(|c| c.is_numeric()).unwrap_or(false) {
-                    let num = self.read_number();
-                    Ok(Token::Integer(-num))
+                    // Read number (could be int or float) and negate it
+                    match self.read_number_token() {
+                        Token::Integer(n) => Ok(Token::Integer(-n)),
+                        Token::Float(f) => Ok(Token::Float(-f)),
+                        _ => unreachable!(),
+                    }
                 } else {
                     let mut sym = String::from("-");
                     while let Some(ch) = self.current() {
@@ -360,8 +429,7 @@ impl Lexer {
                 }
             }
             Some(ch) if ch.is_numeric() => {
-                let num = self.read_number();
-                Ok(Token::Integer(num))
+                Ok(self.read_number_token())
             }
             Some(_) => {
                 let sym = self.read_symbol();
@@ -389,23 +457,38 @@ impl Lexer {
     }
 }
 
-/// S-expression AST
+/// MeTTa IR - Enhanced intermediate representation for MeTTa expressions
+///
+/// Represents the abstract syntax of MeTTa code with semantic distinctions
+/// for different atom types. This IR is used by both the hand-written parser
+/// and the Tree-Sitter parser to provide a unified representation.
 #[derive(Debug, Clone, PartialEq)]
-pub enum SExpr {
+pub enum MettaExpr {
+    /// Symbolic atom (identifiers, operators, variables, etc.)
     Atom(String),
+    /// String literal
     String(String),
+    /// Integer literal
     Integer(i64),
-    List(Vec<SExpr>),
-    Quoted(Box<SExpr>),
+    /// Floating point literal (supports scientific notation)
+    Float(f64),
+    /// List/expression (including special forms like type annotations and rules)
+    List(Vec<MettaExpr>),
+    /// Quoted expression (prevents evaluation)
+    Quoted(Box<MettaExpr>),
 }
 
-impl fmt::Display for SExpr {
+/// Type alias for backward compatibility
+pub type SExpr = MettaExpr;
+
+impl fmt::Display for MettaExpr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            SExpr::Atom(s) => write!(f, "{}", s),
-            SExpr::String(s) => write!(f, "\"{}\"", s),
-            SExpr::Integer(i) => write!(f, "{}", i),
-            SExpr::List(items) => {
+            MettaExpr::Atom(s) => write!(f, "{}", s),
+            MettaExpr::String(s) => write!(f, "\"{}\"", s),
+            MettaExpr::Integer(i) => write!(f, "{}", i),
+            MettaExpr::Float(fl) => write!(f, "{}", fl),
+            MettaExpr::List(items) => {
                 write!(f, "(")?;
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
@@ -415,11 +498,16 @@ impl fmt::Display for SExpr {
                 }
                 write!(f, ")")
             }
-            SExpr::Quoted(expr) => write!(f, "'{}", expr),
+            MettaExpr::Quoted(expr) => write!(f, "'{}", expr),
         }
     }
 }
 
+/// Hand-written parser for MeTTa
+///
+/// **DEPRECATED**: Use `TreeSitterMettaParser` instead for better error recovery,
+/// incremental parsing, and full MeTTa language support.
+#[deprecated(since = "0.1.2", note = "Use TreeSitterMettaParser instead")]
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -501,7 +589,12 @@ impl Parser {
             Token::Integer(i) => {
                 let num = *i;
                 self.advance();
-                Ok(SExpr::Integer(num))
+                Ok(MettaExpr::Integer(num))
+            }
+            Token::Float(f) => {
+                let num = *f;
+                self.advance();
+                Ok(MettaExpr::Float(num))
             }
             Token::Dot => {
                 self.advance();

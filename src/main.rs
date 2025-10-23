@@ -1,6 +1,5 @@
 /// MeTTaTron - MeTTa Evaluator CLI
 use mettatron::backend::*;
-use mettatron::sexpr::*;
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -139,6 +138,7 @@ fn format_result(value: &MettaValue) -> String {
         MettaValue::Atom(s) => s.clone(),
         MettaValue::Bool(b) => b.to_string(),
         MettaValue::Long(n) => n.to_string(),
+        MettaValue::Float(f) => f.to_string(),
         MettaValue::String(s) => format!("\"{}\"", s),
         MettaValue::Uri(s) => format!("`{}`", s),
         MettaValue::Nil => "Nil".to_string(),
@@ -163,15 +163,11 @@ fn format_results(results: &[MettaValue]) -> String {
 }
 
 fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
-    // Lexical analysis
-    let mut lexer = Lexer::new(input);
-    let tokens = lexer
-        .tokenize()
-        .map_err(|e| format!("Lexical error: {}", e))?;
-
     if options.show_sexpr {
-        let mut parser = Parser::new(tokens);
-        let sexprs = parser.parse().map_err(|e| format!("Parse error: {}", e))?;
+        // Parse with Tree-Sitter and show S-expressions
+        let mut parser = mettatron::TreeSitterMettaParser::new()
+            .map_err(|e| format!("Failed to initialize parser: {}", e))?;
+        let sexprs = parser.parse(input)?;
         let mut output = String::new();
         for sexpr in sexprs {
             output.push_str(&format!("{}\n", sexpr));

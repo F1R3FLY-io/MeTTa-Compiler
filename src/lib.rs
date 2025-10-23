@@ -2,6 +2,7 @@ pub mod backend;
 pub mod config;
 pub mod pathmap_par_integration;
 pub mod rholang_integration;
+pub mod tree_sitter_parser;
 /// MeTTaTron - MeTTa Evaluator Library
 ///
 /// This library provides a complete MeTTa language evaluator with lazy evaluation,
@@ -74,6 +75,7 @@ pub use backend::{
 };
 pub use rholang_integration::{metta_state_to_json, run_state};
 pub use sexpr::{Lexer, Parser, SExpr, Token};
+pub use tree_sitter_parser::TreeSitterMettaParser;
 
 // Export run_state_async when async feature is enabled (which is by default)
 #[cfg(feature = "async")]

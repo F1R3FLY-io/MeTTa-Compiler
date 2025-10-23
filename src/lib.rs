@@ -73,7 +73,7 @@ pub use backend::{
     eval,
     models::{MettaState, MettaValue, Rule},
 };
-pub use rholang_integration::{metta_state_to_json, run_state};
+pub use rholang_integration::{compile_safe, metta_state_to_json, run_state};
 pub use ir::{MettaExpr, SExpr};
 pub use tree_sitter_parser::TreeSitterMettaParser;
 

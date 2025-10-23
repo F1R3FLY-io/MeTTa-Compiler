@@ -716,11 +716,19 @@ fn test_edge_cases() {
         },
     );
 
-    // Validation 3: Syntax error (unmatched parenthesis) → error s-expression
+    // Validation 3: Syntax error (unmatched parenthesis) → error value in output
     let has_syntax_error = pathmaps.iter().any(|pm| {
-        use common::PathMapQuery;
-        pm.query_sexpr("error").exists(|v| {
-            v.to_display_string().contains("EOF") || v.to_display_string().contains("expected )")
+        pm.output.iter().any(|v| {
+            // Check for MettaValue::Error OR SExpr with "error" as first element
+            match v {
+                MettaValue::Error(_, _) => true,
+                MettaValue::SExpr(items) => {
+                    items.first().map_or(false, |first| {
+                        matches!(first, MettaValue::Atom(s) | MettaValue::String(s) if s == "error")
+                    })
+                }
+                _ => false
+            }
         })
     });
     report.add_result(

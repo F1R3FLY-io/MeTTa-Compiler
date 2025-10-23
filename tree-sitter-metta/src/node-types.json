@@ -12,6 +12,10 @@
           "named": true
         },
         {
+          "type": "float_literal",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -131,6 +135,14 @@
         {
           "type": "punctuation_operator",
           "named": true
+        },
+        {
+          "type": "rule_definition_operator",
+          "named": true
+        },
+        {
+          "type": "type_annotation_operator",
+          "named": true
         }
       ]
     }
@@ -227,6 +239,10 @@
     "named": true
   },
   {
+    "type": "float_literal",
+    "named": true
+  },
+  {
     "type": "identifier",
     "named": true
   },
@@ -256,7 +272,15 @@
     "named": true
   },
   {
+    "type": "rule_definition_operator",
+    "named": true
+  },
+  {
     "type": "string_literal",
+    "named": true
+  },
+  {
+    "type": "type_annotation_operator",
     "named": true
   },
   {

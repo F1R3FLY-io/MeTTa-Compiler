@@ -9,6 +9,7 @@ pub fn metta_value_to_rholang_string(value: &MettaValue) -> String {
         MettaValue::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
         MettaValue::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
         MettaValue::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
+        MettaValue::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
         MettaValue::String(s) => format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s)),
         MettaValue::Uri(s) => format!(r#"{{"type":"uri","value":"{}"}}"#, escape_json(s)),
         MettaValue::Nil => r#"{"type":"nil"}"#.to_string(),

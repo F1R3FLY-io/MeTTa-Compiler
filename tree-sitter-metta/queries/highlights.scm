@@ -7,6 +7,7 @@
 ; Literals
 (string_literal) @string
 (integer_literal) @number
+(float_literal) @number.float
 (boolean_literal) @boolean
 
 ; Variables (pattern variables)
@@ -22,6 +23,8 @@
 (arrow_operator) @operator
 (comparison_operator) @operator
 (assignment_operator) @operator
+(type_annotation_operator) @operator.type
+(rule_definition_operator) @keyword.operator
 (arithmetic_operator) @operator
 (logic_operator) @operator
 (punctuation_operator) @punctuation.delimiter

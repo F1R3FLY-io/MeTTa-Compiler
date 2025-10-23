@@ -8,6 +8,8 @@ pub enum MettaValue {
     Bool(bool),
     /// An integer literal
     Long(i64),
+    /// A floating point literal
+    Float(f64),
     /// A string literal
     String(String),
     /// A URI literal
@@ -24,13 +26,14 @@ pub enum MettaValue {
 
 impl MettaValue {
     /// Check if this value is a ground type (non-reducible literal)
-    /// Ground types: Bool, Long, String, Uri, Nil
+    /// Ground types: Bool, Long, Float, String, Uri, Nil
     /// Returns true if the value doesn't require further evaluation
     pub fn is_ground_type(&self) -> bool {
         matches!(
             self,
             MettaValue::Bool(_)
                 | MettaValue::Long(_)
+                | MettaValue::Float(_)
                 | MettaValue::String(_)
                 | MettaValue::Uri(_)
                 | MettaValue::Nil
@@ -137,6 +140,7 @@ impl MettaValue {
             }
             MettaValue::Bool(b) => b.to_string(),
             MettaValue::Long(n) => n.to_string(),
+            MettaValue::Float(f) => f.to_string(),
             MettaValue::String(s) => format!("\"{}\"", s),
             MettaValue::Uri(s) => format!("`{}`", s),
             MettaValue::SExpr(items) => {

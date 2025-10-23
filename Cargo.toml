@@ -35,6 +35,10 @@ tokio = { version = "1", features = ["rt", "sync"], optional = true }
 # MORK's workspace enables jemalloc which requires Unix build tools
 pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
 
+# Tree-sitter - Parser for LSP support
+tree-sitter = "0.25"
+tree-sitter-metta = { path = "tree-sitter-metta" }
+
 [features]
 default = ["interning", "async"]
 async = ["tokio"]

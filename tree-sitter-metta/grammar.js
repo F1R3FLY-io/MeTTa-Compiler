@@ -48,15 +48,16 @@ module.exports = grammar({
     quote_prefix: $ => '\'',
 
     // Atomic expressions (decomposed by semantic type)
+    // Order matters: more specific patterns first
     atom_expression: $ => choice(
       $.variable,
       $.wildcard,
-      $.identifier,
+      $.boolean_literal,  // Must come before identifier
       $.operator,
       $.string_literal,
       $.float_literal,
       $.integer_literal,
-      $.boolean_literal,
+      $.identifier,
     ),
 
     // Variables: $var (for pattern variables)
@@ -69,8 +70,8 @@ module.exports = grammar({
     // Wildcard pattern
     wildcard: $ => '_',
 
-    // Boolean literals
-    boolean_literal: $ => choice('True', 'False'),
+    // Boolean literals (higher precedence than identifier)
+    boolean_literal: $ => token(prec(3, choice('True', 'False'))),
 
     // Regular identifiers (no special prefix)
     identifier: $ => token(prec(2, choice(
@@ -92,20 +93,20 @@ module.exports = grammar({
       $.logic_operator,
     ),
 
-    // Arrow operators: ->, <-, <=, <<-
-    arrow_operator: $ => token(choice(
+    // Arrow operators: ->, <-, <=, <<- (higher precedence than single-char operators)
+    arrow_operator: $ => token(prec(2, choice(
       '->',
       '<-',
       '<=',
       '<<-',
-    )),
+    ))),
 
-    // Comparison operators: ==, >, <
-    comparison_operator: $ => token(choice(
+    // Comparison operators: ==, >, < (single char has lower precedence)
+    comparison_operator: $ => token(prec(1, choice(
       '==',
       '>',
       '<',
-    )),
+    ))),
 
     // Assignment operator: =
     assignment_operator: $ => '=',

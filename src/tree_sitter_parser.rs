@@ -3,7 +3,7 @@
 /// Converts Tree-Sitter parse trees with decomposed semantic node types
 /// into the existing SExpr AST used by MeTTaTron's backend.
 
-use crate::sexpr::SExpr;
+use crate::ir::SExpr;
 use tree_sitter::{Node, Parser};
 
 /// Parser that uses Tree-Sitter with semantic node type decomposition

@@ -65,7 +65,7 @@ pub mod tree_sitter_parser;
 /// - **Pattern Matching**: Automatic variable binding in rule application
 /// - **Error Propagation**: First error stops evaluation immediately
 /// - **Environment**: Monotonic rule storage with union operations
-pub mod sexpr;
+pub mod ir;
 
 pub use backend::{
     compile,
@@ -74,7 +74,7 @@ pub use backend::{
     models::{MettaState, MettaValue, Rule},
 };
 pub use rholang_integration::{metta_state_to_json, run_state};
-pub use sexpr::{Lexer, Parser, SExpr, Token};
+pub use ir::{MettaExpr, SExpr};
 pub use tree_sitter_parser::TreeSitterMettaParser;
 
 // Export run_state_async when async feature is enabled (which is by default)

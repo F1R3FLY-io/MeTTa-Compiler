@@ -44,6 +44,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
             expr_instance: Some(ExprInstance::GBool(*b)),
         }]),
         MettaValue::Long(n) => create_int_par(*n),
+        MettaValue::Float(f) => create_string_par(f.to_string()),
         MettaValue::String(s) => {
             // Strings are quoted with escaped quotes to distinguish from atoms
             create_string_par(format!(

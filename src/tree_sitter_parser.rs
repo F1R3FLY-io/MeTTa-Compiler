@@ -29,6 +29,12 @@ impl TreeSitterMettaParser {
             .ok_or_else(|| "Failed to parse source".to_string())?;
 
         let root = tree.root_node();
+
+        // Check for syntax errors in the parse tree
+        if root.has_error() {
+            return Err(self.format_syntax_error(&root, source));
+        }
+
         self.convert_source_file(root, source)
     }
 
@@ -161,6 +167,7 @@ impl TreeSitterMettaParser {
 
             // All operator types (already decomposed by grammar)
             "operator" | "arrow_operator" | "comparison_operator" | "assignment_operator"
+            | "type_annotation_operator" | "rule_definition_operator"
             | "punctuation_operator" | "arithmetic_operator" | "logic_operator" => {
                 Ok(vec![SExpr::Atom(text)])
             }
@@ -169,6 +176,14 @@ impl TreeSitterMettaParser {
             "string_literal" => {
                 let unquoted = self.unescape_string(&text)?;
                 Ok(vec![SExpr::String(unquoted)])
+            }
+
+            // Float literal: parse to f64
+            "float_literal" => {
+                let num = text
+                    .parse::<f64>()
+                    .map_err(|e| format!("Invalid float '{}': {}", text, e))?;
+                Ok(vec![SExpr::Float(num)])
             }
 
             // Integer literal: parse to i64
@@ -188,6 +203,50 @@ impl TreeSitterMettaParser {
         let start = node.start_byte();
         let end = node.end_byte();
         Ok(source[start..end].to_string())
+    }
+
+    /// Format a syntax error message from the parse tree
+    fn format_syntax_error(&self, node: &Node, source: &str) -> String {
+        // Find the first ERROR node
+        let mut cursor = node.walk();
+        if self.find_error_node(&mut cursor) {
+            let error_node = cursor.node();
+            let start = error_node.start_position();
+            let end = error_node.end_position();
+
+            // Extract the problematic text
+            let error_text = &source[error_node.start_byte()..error_node.end_byte()];
+
+            return format!(
+                "Syntax error at line {}, column {}: unexpected '{}'",
+                start.row + 1,
+                start.column + 1,
+                error_text
+            );
+        }
+
+        "Syntax error in source code".to_string()
+    }
+
+    /// Find the first ERROR node in the tree
+    fn find_error_node(&self, cursor: &mut tree_sitter::TreeCursor) -> bool {
+        if cursor.node().is_error() || cursor.node().is_missing() {
+            return true;
+        }
+
+        if cursor.goto_first_child() {
+            loop {
+                if self.find_error_node(cursor) {
+                    return true;
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            cursor.goto_parent();
+        }
+
+        false
     }
 
     /// Unescape string literal (remove quotes and process escapes)
@@ -241,8 +300,9 @@ mod tests {
         let result = parser.parse("$x").unwrap();
         assert_eq!(result, vec![SExpr::Atom("$x".to_string())]);
 
+        // & is now an operator (space reference), not a variable prefix
         let result = parser.parse("&y").unwrap();
-        assert_eq!(result, vec![SExpr::Atom("&y".to_string())]);
+        assert_eq!(result, vec![SExpr::Atom("&".to_string()), SExpr::Atom("y".to_string())]);
 
         // Wildcard
         let result = parser.parse("_").unwrap();
@@ -420,6 +480,73 @@ mod tests {
                 SExpr::Atom("+".to_string()),
                 SExpr::Integer(1),
                 SExpr::Integer(2),
+            ])]
+        );
+    }
+
+    #[test]
+    fn test_parse_floats() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Simple float
+        let result = parser.parse("3.14").unwrap();
+        assert_eq!(result, vec![SExpr::Float(3.14)]);
+
+        // Negative float
+        let result = parser.parse("-2.5").unwrap();
+        assert_eq!(result, vec![SExpr::Float(-2.5)]);
+
+        // Scientific notation
+        let result = parser.parse("1.0e10").unwrap();
+        assert_eq!(result, vec![SExpr::Float(1.0e10)]);
+
+        let result = parser.parse("-1.5e-3").unwrap();
+        assert_eq!(result, vec![SExpr::Float(-1.5e-3)]);
+
+        // In expressions
+        let result = parser.parse("(+ 3.14 2.71)").unwrap();
+        assert_eq!(
+            result,
+            vec![SExpr::List(vec![
+                SExpr::Atom("+".to_string()),
+                SExpr::Float(3.14),
+                SExpr::Float(2.71),
+            ])]
+        );
+    }
+
+    #[test]
+    fn test_parse_type_annotation() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Type annotation: (: Socrates Entity)
+        let result = parser.parse("(: Socrates Entity)").unwrap();
+        assert_eq!(
+            result,
+            vec![SExpr::List(vec![
+                SExpr::Atom(":".to_string()),
+                SExpr::Atom("Socrates".to_string()),
+                SExpr::Atom("Entity".to_string()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn test_parse_rule_definition() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Rule definition: (:= (Add $x Z) $x)
+        let result = parser.parse("(:= (Add $x Z) $x)").unwrap();
+        assert_eq!(
+            result,
+            vec![SExpr::List(vec![
+                SExpr::Atom(":=".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("Add".to_string()),
+                    SExpr::Atom("$x".to_string()),
+                    SExpr::Atom("Z".to_string()),
+                ]),
+                SExpr::Atom("$x".to_string()),
             ])]
         );
     }

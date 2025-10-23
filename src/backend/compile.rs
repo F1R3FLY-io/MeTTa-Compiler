@@ -8,17 +8,16 @@
 // Operator symbols like +, -, * are preserved as-is (not normalized to add, sub, mul)
 
 use crate::backend::models::{MettaState, MettaValue};
-use crate::sexpr::{Lexer, Parser, SExpr};
+use crate::sexpr::MettaExpr;
+use crate::tree_sitter_parser::TreeSitterMettaParser;
 
 /// Compile MeTTa source code into a MettaState ready for evaluation
 /// Returns a compiled state with pending expressions and empty environment
 pub fn compile(src: &str) -> Result<MettaState, String> {
-    // Parse the source into s-expressions
-    let mut lexer = Lexer::new(src);
-    let tokens = lexer.tokenize()?;
-
-    let mut parser = Parser::new(tokens);
-    let sexprs = parser.parse()?;
+    // Parse the source into s-expressions using Tree-Sitter
+    let mut parser = TreeSitterMettaParser::new()
+        .map_err(|e| format!("Failed to initialize parser: {}", e))?;
+    let sexprs = parser.parse(src)?;
 
     // Convert s-expressions to MettaValue representation
     let mut metta_values = Vec::new();
@@ -29,11 +28,11 @@ pub fn compile(src: &str) -> Result<MettaState, String> {
     Ok(MettaState::new_compiled(metta_values))
 }
 
-/// Convert an SExpr to a MettaValue
+/// Convert a MettaExpr (SExpr) to a MettaValue
 /// Operator symbols are preserved as-is (no normalization)
-fn sexpr_to_metta_value(sexpr: &SExpr) -> Result<MettaValue, String> {
+fn sexpr_to_metta_value(sexpr: &MettaExpr) -> Result<MettaValue, String> {
     match sexpr {
-        SExpr::Atom(s) => {
+        MettaExpr::Atom(s) => {
             // Parse literals
             if s == "true" {
                 Ok(MettaValue::Bool(true))
@@ -44,9 +43,10 @@ fn sexpr_to_metta_value(sexpr: &SExpr) -> Result<MettaValue, String> {
                 Ok(MettaValue::Atom(s.clone()))
             }
         }
-        SExpr::String(s) => Ok(MettaValue::String(s.clone())),
-        SExpr::Integer(n) => Ok(MettaValue::Long(*n)),
-        SExpr::List(items) => {
+        MettaExpr::String(s) => Ok(MettaValue::String(s.clone())),
+        MettaExpr::Integer(n) => Ok(MettaValue::Long(*n)),
+        MettaExpr::Float(f) => Ok(MettaValue::Float(*f)),
+        MettaExpr::List(items) => {
             if items.is_empty() {
                 Ok(MettaValue::Nil)
             } else {
@@ -57,7 +57,7 @@ fn sexpr_to_metta_value(sexpr: &SExpr) -> Result<MettaValue, String> {
                 Ok(MettaValue::SExpr(values))
             }
         }
-        SExpr::Quoted(expr) => {
+        MettaExpr::Quoted(expr) => {
             // For quoted expressions, wrap in a quote operator
             let inner = sexpr_to_metta_value(expr)?;
             Ok(MettaValue::SExpr(vec![
@@ -277,7 +277,14 @@ mod tests {
         let state = compile(src).unwrap();
 
         assert_eq!(state.source.len(), 1);
-        assert_eq!(state.source[0], MettaValue::Atom("'quoted".to_string()));
+        // Tree-Sitter parser treats 'quoted as a prefixed expression: (' quoted)
+        assert_eq!(
+            state.source[0],
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("'".to_string()),
+                MettaValue::Atom("quoted".to_string())
+            ])
+        );
     }
 
     #[test]

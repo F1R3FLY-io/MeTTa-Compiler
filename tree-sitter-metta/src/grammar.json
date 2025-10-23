@@ -141,6 +141,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "float_literal"
+        },
+        {
+          "type": "SYMBOL",
           "name": "integer_literal"
         },
         {
@@ -152,46 +156,15 @@
     "variable": {
       "type": "TOKEN",
       "content": {
-        "type": "CHOICE",
+        "type": "SEQ",
         "members": [
           {
-            "type": "SEQ",
-            "members": [
-              {
-                "type": "STRING",
-                "value": "$"
-              },
-              {
-                "type": "PATTERN",
-                "value": "[a-zA-Z0-9_'\\-+*/&]*"
-              }
-            ]
+            "type": "STRING",
+            "value": "$"
           },
           {
-            "type": "SEQ",
-            "members": [
-              {
-                "type": "STRING",
-                "value": "&"
-              },
-              {
-                "type": "PATTERN",
-                "value": "[a-zA-Z0-9_'\\-+*/&]+"
-              }
-            ]
-          },
-          {
-            "type": "SEQ",
-            "members": [
-              {
-                "type": "STRING",
-                "value": "'"
-              },
-              {
-                "type": "PATTERN",
-                "value": "[a-zA-Z0-9_'\\-+*/&]+"
-              }
-            ]
+            "type": "PATTERN",
+            "value": "[a-zA-Z0-9_'\\-+*/&]*"
           }
         ]
       }
@@ -247,6 +220,14 @@
         {
           "type": "SYMBOL",
           "name": "assignment_operator"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "type_annotation_operator"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "rule_definition_operator"
         },
         {
           "type": "SYMBOL",
@@ -310,15 +291,19 @@
       "type": "STRING",
       "value": "="
     },
+    "type_annotation_operator": {
+      "type": "STRING",
+      "value": ":"
+    },
+    "rule_definition_operator": {
+      "type": "STRING",
+      "value": ":="
+    },
     "punctuation_operator": {
       "type": "TOKEN",
       "content": {
         "type": "CHOICE",
         "members": [
-          {
-            "type": "STRING",
-            "value": ":"
-          },
           {
             "type": "STRING",
             "value": ";"
@@ -334,6 +319,10 @@
           {
             "type": "STRING",
             "value": "@"
+          },
+          {
+            "type": "STRING",
+            "value": "&"
           },
           {
             "type": "STRING",
@@ -437,6 +426,75 @@
             "value": "\""
           }
         ]
+      }
+    },
+    "float_literal": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 4,
+        "content": {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "-"
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
+            },
+            {
+              "type": "PATTERN",
+              "value": "\\d+"
+            },
+            {
+              "type": "STRING",
+              "value": "."
+            },
+            {
+              "type": "PATTERN",
+              "value": "\\d+"
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SEQ",
+                  "members": [
+                    {
+                      "type": "PATTERN",
+                      "value": "[eE]"
+                    },
+                    {
+                      "type": "CHOICE",
+                      "members": [
+                        {
+                          "type": "PATTERN",
+                          "value": "[+-]"
+                        },
+                        {
+                          "type": "BLANK"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "PATTERN",
+                      "value": "\\d+"
+                    }
+                  ]
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
+            }
+          ]
+        }
       }
     },
     "integer_literal": {

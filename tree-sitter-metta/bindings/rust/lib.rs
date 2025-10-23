@@ -27,6 +27,7 @@ pub mod node_types {
     pub const WILDCARD: &str = "wildcard";
     pub const IDENTIFIER: &str = "identifier";
     pub const STRING_LITERAL: &str = "string_literal";
+    pub const FLOAT_LITERAL: &str = "float_literal";
     pub const INTEGER_LITERAL: &str = "integer_literal";
     pub const BOOLEAN_LITERAL: &str = "boolean_literal";
 
@@ -35,6 +36,8 @@ pub mod node_types {
     pub const ARROW_OPERATOR: &str = "arrow_operator";
     pub const COMPARISON_OPERATOR: &str = "comparison_operator";
     pub const ASSIGNMENT_OPERATOR: &str = "assignment_operator";
+    pub const TYPE_ANNOTATION_OPERATOR: &str = "type_annotation_operator";
+    pub const RULE_DEFINITION_OPERATOR: &str = "rule_definition_operator";
     pub const PUNCTUATION_OPERATOR: &str = "punctuation_operator";
     pub const ARITHMETIC_OPERATOR: &str = "arithmetic_operator";
     pub const LOGIC_OPERATOR: &str = "logic_operator";

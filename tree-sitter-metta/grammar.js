@@ -54,16 +54,17 @@ module.exports = grammar({
       $.identifier,
       $.operator,
       $.string_literal,
+      $.float_literal,
       $.integer_literal,
       $.boolean_literal,
     ),
 
-    // Variables: $var, &var, 'var (but not standalone ' which is quote_prefix)
-    variable: $ => token(choice(
-      seq('$', /[a-zA-Z0-9_'\-+*/&]*/),
-      seq('&', /[a-zA-Z0-9_'\-+*/&]+/),  // & must be followed by chars to be a variable
-      seq('\'', /[a-zA-Z0-9_'\-+*/&]+/), // ' must be followed by chars to be a variable
-    )),
+    // Variables: $var (for pattern variables)
+    // Note: & is an operator (space reference), not a variable prefix
+    // Note: 'var is handled by quote_prefix in prefixed_expression
+    variable: $ => token(
+      seq('$', /[a-zA-Z0-9_'\-+*/&]*/)
+    ),
 
     // Wildcard pattern
     wildcard: $ => '_',
@@ -84,6 +85,8 @@ module.exports = grammar({
       $.arrow_operator,
       $.comparison_operator,
       $.assignment_operator,
+      $.type_annotation_operator,
+      $.rule_definition_operator,
       $.punctuation_operator,
       $.arithmetic_operator,
       $.logic_operator,
@@ -107,13 +110,20 @@ module.exports = grammar({
     // Assignment operator: =
     assignment_operator: $ => '=',
 
-    // Punctuation operators: :, ;, |, ,, @, ., ...
+    // Type annotation operator: :
+    type_annotation_operator: $ => ':',
+
+    // Rule definition operator: :=
+    rule_definition_operator: $ => ':=',
+
+    // Punctuation operators: ;, |, ,, @, &, ., ...
+    // Note: : is now separate as type_annotation_operator
     punctuation_operator: $ => token(choice(
-      ':',
       ';',
       '|',
       ',',
       '@',
+      '&',
       '...',
       '.',
     )),
@@ -144,7 +154,17 @@ module.exports = grammar({
       '"'
     )),
 
-    // Integer literals (with optional minus) - highest precedence to match before identifier
+    // Float literals (with optional minus) - highest precedence to match before integer
+    // Supports: 3.14, -2.5, 1.0e10, -1.5e-3, 2.0E+5
+    float_literal: $ => token(prec(4, seq(
+      optional('-'),
+      /\d+/,
+      '.',
+      /\d+/,
+      optional(seq(/[eE]/, optional(/[+-]/), /\d+/))
+    ))),
+
+    // Integer literals (with optional minus) - high precedence to match before identifier
     integer_literal: $ => token(prec(3, seq(
       optional('-'),
       /\d+/

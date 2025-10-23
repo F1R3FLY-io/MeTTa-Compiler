@@ -8,7 +8,7 @@
 // Operator symbols like +, -, * are preserved as-is (not normalized to add, sub, mul)
 
 use crate::backend::models::{MettaState, MettaValue};
-use crate::sexpr::MettaExpr;
+use crate::ir::MettaExpr;
 use crate::tree_sitter_parser::TreeSitterMettaParser;
 
 /// Compile MeTTa source code into a MettaState ready for evaluation

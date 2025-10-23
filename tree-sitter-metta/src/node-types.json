@@ -43,11 +43,6 @@
     }
   },
   {
-    "type": "boolean_literal",
-    "named": true,
-    "fields": {}
-  },
-  {
     "type": "brace_list",
     "named": true,
     "fields": {},
@@ -206,14 +201,6 @@
     "named": false
   },
   {
-    "type": "False",
-    "named": false
-  },
-  {
-    "type": "True",
-    "named": false
-  },
-  {
     "type": "arithmetic_operator",
     "named": true
   },
@@ -229,6 +216,10 @@
     "type": "block_comment",
     "named": true,
     "extra": true
+  },
+  {
+    "type": "boolean_literal",
+    "named": true
   },
   {
     "type": "comparison_operator",

@@ -129,7 +129,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "identifier"
+          "name": "boolean_literal"
         },
         {
           "type": "SYMBOL",
@@ -149,7 +149,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "boolean_literal"
+          "name": "identifier"
         }
       ]
     },
@@ -174,17 +174,24 @@
       "value": "_"
     },
     "boolean_literal": {
-      "type": "CHOICE",
-      "members": [
-        {
-          "type": "STRING",
-          "value": "True"
-        },
-        {
-          "type": "STRING",
-          "value": "False"
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 3,
+        "content": {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "True"
+            },
+            {
+              "type": "STRING",
+              "value": "False"
+            }
+          ]
         }
-      ]
+      }
     },
     "identifier": {
       "type": "TOKEN",
@@ -246,45 +253,53 @@
     "arrow_operator": {
       "type": "TOKEN",
       "content": {
-        "type": "CHOICE",
-        "members": [
-          {
-            "type": "STRING",
-            "value": "->"
-          },
-          {
-            "type": "STRING",
-            "value": "<-"
-          },
-          {
-            "type": "STRING",
-            "value": "<="
-          },
-          {
-            "type": "STRING",
-            "value": "<<-"
-          }
-        ]
+        "type": "PREC",
+        "value": 2,
+        "content": {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "->"
+            },
+            {
+              "type": "STRING",
+              "value": "<-"
+            },
+            {
+              "type": "STRING",
+              "value": "<="
+            },
+            {
+              "type": "STRING",
+              "value": "<<-"
+            }
+          ]
+        }
       }
     },
     "comparison_operator": {
       "type": "TOKEN",
       "content": {
-        "type": "CHOICE",
-        "members": [
-          {
-            "type": "STRING",
-            "value": "=="
-          },
-          {
-            "type": "STRING",
-            "value": ">"
-          },
-          {
-            "type": "STRING",
-            "value": "<"
-          }
-        ]
+        "type": "PREC",
+        "value": 1,
+        "content": {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "=="
+            },
+            {
+              "type": "STRING",
+              "value": ">"
+            },
+            {
+              "type": "STRING",
+              "value": "<"
+            }
+          ]
+        }
       }
     },
     "assignment_operator": {

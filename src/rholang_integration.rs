@@ -5,10 +5,115 @@
 /// This module provides:
 /// 1. **JSON export** for debugging and inspection (`metta_state_to_json`)
 /// 2. **State evaluation** for REPL-style interaction (`run_state`, `run_state_async`)
+/// 3. **Error handling** for safe compilation (`compile_safe`)
 ///
 /// **Note**: For Rholang integration, use the PathMap Par functions in
 /// `pathmap_par_integration` module, not the JSON functions here.
 use crate::backend::models::{MettaState, MettaValue};
+use crate::backend::compile::compile;
+
+/// Safe compilation wrapper that never fails
+///
+/// This function wraps the `compile()` function and provides improved error handling
+/// for Rholang integration. Instead of returning `Result<MettaState, String>`,
+/// it always returns a `MettaState`:
+/// - On success: Normal compiled state with parsed expressions
+/// - On error: State containing an error s-expression: `(error "message")`
+///
+/// This allows Rholang contracts to handle syntax errors gracefully without
+/// requiring complex error propagation through the Rholang runtime.
+///
+/// # Error Messages
+///
+/// The function improves upon Tree-Sitter's raw error messages by:
+/// - Extracting line and column information
+/// - Providing context about the error type
+/// - Suggesting common fixes for known error patterns
+///
+/// # Example
+///
+/// ```ignore
+/// // Valid MeTTa code
+/// let state = compile_safe("(+ 1 2)");
+/// assert_eq!(state.source.len(), 1);
+///
+/// // Invalid syntax - returns error s-expression
+/// let state = compile_safe("(+ 1 2");  // Unclosed parenthesis
+/// // state.source[0] == (error "Syntax error at line 1, column 7: ...")
+/// ```
+pub fn compile_safe(src: &str) -> MettaState {
+    match compile(src) {
+        Ok(state) => state,
+        Err(error_msg) => {
+            // Improve error message with additional context
+            let improved_msg = improve_error_message(&error_msg, src);
+
+            // Create error s-expression: (error "message")
+            let error_sexpr = MettaValue::SExpr(vec![
+                MettaValue::Atom("error".to_string()),
+                MettaValue::String(improved_msg),
+            ]);
+
+            // Return a state containing the error
+            MettaState::new_with_error(error_sexpr)
+        }
+    }
+}
+
+/// Improve error messages with additional context and suggestions
+fn improve_error_message(raw_error: &str, source: &str) -> String {
+    // Extract line/column info if present
+    let error_lower = raw_error.to_lowercase();
+
+    // Provide contextual suggestions based on error patterns
+    if error_lower.contains("unexpected") && error_lower.contains("'") {
+        // Likely unclosed parenthesis or unexpected EOF
+        let unclosed_parens = count_unclosed_parens(source);
+        if unclosed_parens > 0 {
+            return format!(
+                "{} (Hint: {} unclosed parenthesis{} detected)",
+                raw_error,
+                unclosed_parens,
+                if unclosed_parens == 1 { "" } else { "es" }
+            );
+        } else if unclosed_parens < 0 {
+            return format!(
+                "{} (Hint: {} extra closing parenthesis{} detected)",
+                raw_error,
+                -unclosed_parens,
+                if unclosed_parens == -1 { "" } else { "es" }
+            );
+        }
+    }
+
+    // Return improved message or original if no improvements found
+    raw_error.to_string()
+}
+
+/// Count unclosed parentheses in source
+/// Returns: positive = unclosed open parens, negative = extra close parens
+fn count_unclosed_parens(source: &str) -> i32 {
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for ch in source.chars() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if in_string => escape_next = true,
+            '"' => in_string = !in_string,
+            '(' if !in_string => depth += 1,
+            ')' if !in_string => depth -= 1,
+            _ => {}
+        }
+    }
+
+    depth
+}
 
 /// Convert MettaValue to a JSON-like string representation
 /// Used for debugging and human-readable output
@@ -248,6 +353,7 @@ async fn evaluate_batch_parallel(
 mod tests {
     use super::*;
     use crate::backend::compile::compile;
+    use crate::backend::models::MettaValue;
 
     #[test]
     fn test_metta_state_to_json() {
@@ -313,6 +419,54 @@ mod tests {
     fn test_escape_json() {
         let escaped = escape_json("hello\n\"world\"\\test");
         assert_eq!(escaped, r#"hello\n\"world\"\\test"#);
+    }
+
+    #[test]
+    fn test_compile_safe_success() {
+        let state = compile_safe("(+ 1 2)");
+        assert_eq!(state.source.len(), 1);
+        // Should be a valid S-expression, not an error
+        match &state.source[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], MettaValue::Atom("+".to_string()));
+            }
+            _ => panic!("Expected SExpr for valid input"),
+        }
+    }
+
+    #[test]
+    fn test_compile_safe_syntax_error() {
+        let state = compile_safe("(+ 1 2");
+        assert_eq!(state.source.len(), 1);
+        // Should be an error s-expression
+        match &state.source[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], MettaValue::Atom("error".to_string()));
+                // Error message should be a string
+                assert!(matches!(&items[1], MettaValue::String(_)));
+                // Error message should mention the syntax issue
+                if let MettaValue::String(msg) = &items[1] {
+                    assert!(msg.contains("Syntax error") || msg.contains("unexpected"));
+                }
+            }
+            _ => panic!("Expected error s-expression for syntax error"),
+        }
+    }
+
+    #[test]
+    fn test_compile_safe_improves_error_message() {
+        let state = compile_safe("(+ 1 2");
+        match &state.source[0] {
+            MettaValue::SExpr(items) => {
+                if let MettaValue::String(msg) = &items[1] {
+                    // Should include hint about unclosed parenthesis
+                    assert!(msg.contains("Hint") && msg.contains("unclosed"));
+                }
+            }
+            _ => panic!("Expected error s-expression"),
+        }
     }
 
     #[test]

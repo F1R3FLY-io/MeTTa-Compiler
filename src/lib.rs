@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod config;
 pub mod pathmap_par_integration;
+pub mod repl;
 pub mod rholang_integration;
 pub mod tree_sitter_parser;
 /// MeTTaTron - MeTTa Evaluator Library
@@ -87,6 +88,11 @@ pub use pathmap_par_integration::{
 };
 
 pub use config::{configure_eval, get_eval_config, EvalConfig};
+
+// Export commonly used REPL components
+pub use repl::{
+    MettaHelper, PatternHistory, QueryHighlighter, ReplStateMachine, SmartIndenter,
+};
 
 #[cfg(test)]
 mod tests {

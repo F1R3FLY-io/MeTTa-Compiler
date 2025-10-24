@@ -39,6 +39,11 @@ pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
 tree-sitter = "0.25"
 tree-sitter-metta = { path = "tree-sitter-metta" }
 
+# REPL dependencies
+rustyline = "14.0"
+dirs = "5.0"
+regex = "1.11"
+
 [features]
 default = ["interning", "async"]
 async = ["tokio"]

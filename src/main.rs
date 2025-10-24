@@ -1,5 +1,9 @@
 /// MeTTaTron - MeTTa Evaluator CLI
 use mettatron::backend::*;
+use mettatron::repl::{MettaHelper, QueryHighlighter};
+use rustyline::error::ReadlineError;
+use rustyline::history::DefaultHistory;
+use rustyline::Editor;
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -197,53 +201,120 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     Ok(output)
 }
 
+/// Check if stdout is a TTY (for conditional color output)
+fn is_stdout_tty() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal()
+}
+
+/// Create a colorized prompt for the REPL
+fn create_prompt(line_num: usize) -> String {
+    if is_stdout_tty() {
+        format!("\x1b[36mmetta\x1b[97m[{}]\x1b[35m>\x1b[0m ", line_num)
+    } else {
+        format!("metta[{}]> ", line_num)
+    }
+}
+
+/// Apply syntax highlighting to output text
+fn highlight_output(text: &str, highlighter: Option<&QueryHighlighter>) -> String {
+    if !is_stdout_tty() {
+        return text.to_string();
+    }
+    match highlighter {
+        Some(h) => {
+            use rustyline::highlight::Highlighter;
+            h.highlight(text, text.len()).to_string()
+        }
+        None => text.to_string(),
+    }
+}
+
 fn run_repl() {
     println!("MeTTaTron REPL v{}", VERSION);
-    println!("Enter MeTTa expressions. Type 'exit' or 'quit' to exit.\n");
+    println!("Enter MeTTa expressions. Type 'exit' or 'quit' to exit.");
+    println!("Multi-line input: Press ENTER on incomplete expressions to continue.\n");
+
+    // Create rustyline editor with MettaHelper
+    let mut editor: Editor<MettaHelper, DefaultHistory> = Editor::new().unwrap();
+    let helper = MettaHelper::new().expect("Failed to create MettaHelper");
+    editor.set_helper(Some(helper));
+
+    // Create output highlighter
+    let output_highlighter = QueryHighlighter::new().ok();
 
     let mut env = Environment::new();
     let mut line_num = 1;
 
     loop {
-        print!("metta[{}]> ", line_num);
-        io::stdout().flush().unwrap();
+        let prompt = create_prompt(line_num);
+        let readline = editor.readline(&prompt);
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        let input = input.trim();
+        match readline {
+            Ok(input) => {
+                let input = input.trim();
 
-        if input == "exit" || input == "quit" {
-            println!("Goodbye!");
-            break;
-        }
+                if input == "exit" || input == "quit" {
+                    println!("Goodbye!");
+                    break;
+                }
 
-        if input.is_empty() {
-            continue;
-        }
+                if input.is_empty() {
+                    continue;
+                }
 
-        match compile(input) {
-            Ok(state) => {
-                env = env.union(&state.environment);
+                // Add to history
+                editor.add_history_entry(input).ok();
 
-                for sexpr in state.source {
-                    // Only output results for S-expressions, not atoms or ground types
-                    let should_output = matches!(sexpr, MettaValue::SExpr(_));
+                // Add to helper's history for inline hints
+                if let Some(helper) = editor.helper_mut() {
+                    helper.add_to_history(input.to_string());
+                }
 
-                    let (results, updated_env) = eval(sexpr.clone(), env.clone());
-                    env = updated_env;
+                match compile(input) {
+                    Ok(state) => {
+                        env = env.union(&state.environment);
 
-                    // Print results with list notation (only for S-expressions)
-                    if should_output && !results.is_empty() {
-                        println!("{}", format_results(&results));
+                        for sexpr in state.source {
+                            // Only output results for S-expressions, not atoms or ground types
+                            let should_output = matches!(sexpr, MettaValue::SExpr(_));
+
+                            let (results, updated_env) = eval(sexpr.clone(), env.clone());
+                            env = updated_env;
+
+                            // Print results with syntax highlighting (only for S-expressions)
+                            if should_output && !results.is_empty() {
+                                let output = format_results(&results);
+                                let highlighted = highlight_output(&output, output_highlighter.as_ref());
+                                println!("{}", highlighted);
+                            }
+                        }
+
+                        // Update completions with newly defined functions
+                        if let Some(helper) = editor.helper_mut() {
+                            helper.update_from_environment(&env);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
                     }
                 }
+
+                line_num += 1;
             }
-            Err(e) => {
-                eprintln!("Error: {}", e);
+            Err(ReadlineError::Interrupted) => {
+                println!("^C");
+                continue;
+            }
+            Err(ReadlineError::Eof) => {
+                println!("^D");
+                break;
+            }
+            Err(err) => {
+                eprintln!("Error: {:?}", err);
+                break;
             }
         }
-
-        line_num += 1;
     }
 }
 

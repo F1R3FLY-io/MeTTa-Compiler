@@ -58,10 +58,10 @@ This document provides a comprehensive reference of the implementation status of
   - Location: `src/backend/eval.rs:101`
   - Reference: [stdlib.metta:510-519](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L510-L519)
 
-- [ ] **`case`** - Pattern matching with multiple conditions
+- [x] **`case`** - Pattern matching with multiple conditions
   - Reference: [stdlib.metta:1193-1204](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1193-L1204)
 
-- [ ] **`switch`** - Similar to case but handles Empty differently
+- [x] **`switch`** - Similar to case but handles Empty differently
   - Reference: [stdlib.metta:339-347](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L339-L347)
 
 ## Variable Binding

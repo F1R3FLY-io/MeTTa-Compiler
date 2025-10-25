@@ -3,7 +3,7 @@
 /// Converts Tree-Sitter parse trees with decomposed semantic node types
 /// into the existing SExpr AST used by MeTTaTron's backend.
 
-use crate::ir::SExpr;
+use crate::ir::{Position, SExpr, Span};
 use tree_sitter::{Node, Parser};
 
 /// Parser that uses Tree-Sitter with semantic node type decomposition
@@ -88,13 +88,15 @@ impl TreeSitterMettaParser {
             }
         }
 
-        Ok(vec![SExpr::List(items)])
+        let span = self.node_span(node);
+        Ok(vec![SExpr::List(items, Some(span))])
     }
 
     /// Convert brace_list: {expr expr ...}
     /// Matches sexpr.rs behavior: prepend "{}" atom
     fn convert_brace_list(&self, node: Node, source: &str) -> Result<Vec<SExpr>, String> {
-        let mut items = vec![SExpr::Atom("{}".to_string())];
+        let span = self.node_span(node);
+        let mut items = vec![SExpr::Atom("{}".to_string(), Some(span))];
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
@@ -103,21 +105,32 @@ impl TreeSitterMettaParser {
             }
         }
 
-        Ok(vec![SExpr::List(items)])
+        Ok(vec![SExpr::List(items, Some(span))])
     }
 
     /// Convert prefixed_expression: !expr, ?expr, 'expr
     /// Matches sexpr.rs behavior: convert !(expr) to (! expr)
     fn convert_prefixed_expression(&self, node: Node, source: &str) -> Result<Vec<SExpr>, String> {
+        let span = self.node_span(node);
         let mut cursor = node.walk();
         let mut prefix = None;
+        let mut prefix_span = None;
         let mut argument = None;
 
         for child in node.children(&mut cursor) {
             match child.kind() {
-                "exclaim_prefix" => prefix = Some("!"),
-                "question_prefix" => prefix = Some("?"),
-                "quote_prefix" => prefix = Some("'"),
+                "exclaim_prefix" => {
+                    prefix = Some("!");
+                    prefix_span = Some(self.node_span(child));
+                }
+                "question_prefix" => {
+                    prefix = Some("?");
+                    prefix_span = Some(self.node_span(child));
+                }
+                "quote_prefix" => {
+                    prefix = Some("'");
+                    prefix_span = Some(self.node_span(child));
+                }
                 _ if child.is_named() => {
                     argument = Some(self.convert_expression(child, source)?);
                 }
@@ -125,11 +138,11 @@ impl TreeSitterMettaParser {
             }
         }
 
-        match (prefix, argument) {
-            (Some(p), Some(args)) => {
-                let mut items = vec![SExpr::Atom(p.to_string())];
+        match (prefix, prefix_span, argument) {
+            (Some(p), Some(p_span), Some(args)) => {
+                let mut items = vec![SExpr::Atom(p.to_string(), Some(p_span))];
                 items.extend(args);
-                Ok(vec![SExpr::List(items)])
+                Ok(vec![SExpr::List(items, Some(span))])
             }
             _ => Err("Invalid prefixed expression".to_string()),
         }
@@ -151,31 +164,32 @@ impl TreeSitterMettaParser {
     /// Convert specific atom types (decomposed for semantics)
     fn convert_atom(&self, node: Node, source: &str) -> Result<Vec<SExpr>, String> {
         let text = self.node_text(node, source)?;
+        let span = self.node_span(node);
 
         match node.kind() {
             // Variables: $var, &var, 'var
-            "variable" => Ok(vec![SExpr::Atom(text)]),
+            "variable" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
             // Wildcard: _
-            "wildcard" => Ok(vec![SExpr::Atom(text)]),
+            "wildcard" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
             // Identifiers: regular names
-            "identifier" => Ok(vec![SExpr::Atom(text)]),
+            "identifier" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
             // Boolean literals
-            "boolean_literal" => Ok(vec![SExpr::Atom(text)]),
+            "boolean_literal" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
             // All operator types (already decomposed by grammar)
             "operator" | "arrow_operator" | "comparison_operator" | "assignment_operator"
             | "type_annotation_operator" | "rule_definition_operator"
             | "punctuation_operator" | "arithmetic_operator" | "logic_operator" => {
-                Ok(vec![SExpr::Atom(text)])
+                Ok(vec![SExpr::Atom(text, Some(span))])
             }
 
             // String literal: remove quotes and process escapes
             "string_literal" => {
                 let unquoted = self.unescape_string(&text)?;
-                Ok(vec![SExpr::String(unquoted)])
+                Ok(vec![SExpr::String(unquoted, Some(span))])
             }
 
             // Float literal: parse to f64
@@ -183,7 +197,7 @@ impl TreeSitterMettaParser {
                 let num = text
                     .parse::<f64>()
                     .map_err(|e| format!("Invalid float '{}': {}", text, e))?;
-                Ok(vec![SExpr::Float(num)])
+                Ok(vec![SExpr::Float(num, Some(span))])
             }
 
             // Integer literal: parse to i64
@@ -191,7 +205,7 @@ impl TreeSitterMettaParser {
                 let num = text
                     .parse::<i64>()
                     .map_err(|e| format!("Invalid integer '{}': {}", text, e))?;
-                Ok(vec![SExpr::Integer(num)])
+                Ok(vec![SExpr::Integer(num, Some(span))])
             }
 
             _ => Err(format!("Unknown atom kind: {}", node.kind())),
@@ -280,6 +294,19 @@ impl TreeSitterMettaParser {
 
         Ok(result)
     }
+
+    /// Extract span information from a Tree-Sitter node
+    fn node_span(&self, node: Node) -> Span {
+        let start_pos = node.start_position();
+        let end_pos = node.end_position();
+
+        Span::new(
+            Position::new(start_pos.row, start_pos.column),
+            Position::new(end_pos.row, end_pos.column),
+            node.start_byte(),
+            node.end_byte(),
+        )
+    }
 }
 
 impl Default for TreeSitterMettaParser {
@@ -291,30 +318,54 @@ impl Default for TreeSitterMettaParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Helper function to strip spans from MettaExpr for testing
+    /// This allows tests to compare parsed results without worrying about position information
+    fn strip_spans(expr: &SExpr) -> SExpr {
+        match expr {
+            SExpr::Atom(s, _) => SExpr::Atom(s.clone(), None),
+            SExpr::String(s, _) => SExpr::String(s.clone(), None),
+            SExpr::Integer(n, _) => SExpr::Integer(*n, None),
+            SExpr::Float(f, _) => SExpr::Float(*f, None),
+            SExpr::List(items, _) => {
+                let stripped_items = items.iter().map(strip_spans).collect();
+                SExpr::List(stripped_items, None)
+            }
+            SExpr::Quoted(expr, _) => {
+                SExpr::Quoted(Box::new(strip_spans(expr)), None)
+            }
+        }
+    }
+
+    /// Helper to strip spans from a vec of expressions
+    fn strip_spans_vec(exprs: &[SExpr]) -> Vec<SExpr> {
+        exprs.iter().map(strip_spans).collect()
+    }
+
+
 
     #[test]
     fn test_parse_simple_atoms() {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // Variables
-        let result = parser.parse("$x").unwrap();
-        assert_eq!(result, vec![SExpr::Atom("$x".to_string())]);
+        let result = strip_spans_vec(&parser.parse("$x").unwrap());
+        assert_eq!(result, vec![SExpr::Atom("$x".to_string(), None)]);
 
         // & is now an operator (space reference), not a variable prefix
-        let result = parser.parse("&y").unwrap();
-        assert_eq!(result, vec![SExpr::Atom("&".to_string()), SExpr::Atom("y".to_string())]);
+        let result = strip_spans_vec(&parser.parse("&y").unwrap());
+        assert_eq!(result, vec![SExpr::Atom("&".to_string(), None), SExpr::Atom("y".to_string(), None)]);
 
         // Wildcard
-        let result = parser.parse("_").unwrap();
-        assert_eq!(result, vec![SExpr::Atom("_".to_string())]);
+        let result = strip_spans_vec(&parser.parse("_").unwrap());
+        assert_eq!(result, vec![SExpr::Atom("_".to_string(), None)]);
 
         // Identifier
-        let result = parser.parse("foo").unwrap();
-        assert_eq!(result, vec![SExpr::Atom("foo".to_string())]);
+        let result = strip_spans_vec(&parser.parse("foo").unwrap());
+        assert_eq!(result, vec![SExpr::Atom("foo".to_string(), None)]);
 
         // Operators
-        let result = parser.parse("=").unwrap();
-        assert_eq!(result, vec![SExpr::Atom("=".to_string())]);
+        let result = strip_spans_vec(&parser.parse("=").unwrap());
+        assert_eq!(result, vec![SExpr::Atom("=".to_string(), None)]);
     }
 
     #[test]
@@ -322,19 +373,19 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // Integer
-        let result = parser.parse("42").unwrap();
-        assert_eq!(result, vec![SExpr::Integer(42)]);
+        let result = strip_spans_vec(&parser.parse("42").unwrap());
+        assert_eq!(result, vec![SExpr::Integer(42, None)]);
 
-        let result = parser.parse("-17").unwrap();
-        assert_eq!(result, vec![SExpr::Integer(-17)]);
+        let result = strip_spans_vec(&parser.parse("-17").unwrap());
+        assert_eq!(result, vec![SExpr::Integer(-17, None)]);
 
         // String
-        let result = parser.parse(r#""hello""#).unwrap();
-        assert_eq!(result, vec![SExpr::String("hello".to_string())]);
+        let result = strip_spans_vec(&parser.parse(r#""hello""#).unwrap());
+        assert_eq!(result, vec![SExpr::String("hello".to_string(), None)]);
 
         // String with escapes
-        let result = parser.parse(r#""hello\nworld""#).unwrap();
-        assert_eq!(result, vec![SExpr::String("hello\nworld".to_string())]);
+        let result = strip_spans_vec(&parser.parse(r#""hello\nworld""#).unwrap());
+        assert_eq!(result, vec![SExpr::String("hello\nworld".to_string(), None)]);
     }
 
     #[test]
@@ -342,29 +393,29 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // Simple list
-        let result = parser.parse("(+ 1 2)").unwrap();
+        let result = strip_spans_vec(&parser.parse("(+ 1 2)").unwrap());
         assert_eq!(
             result,
             vec![SExpr::List(vec![
-                SExpr::Atom("+".to_string()),
-                SExpr::Integer(1),
-                SExpr::Integer(2),
-            ])]
+                SExpr::Atom("+".to_string(), None),
+                SExpr::Integer(1, None),
+                SExpr::Integer(2, None),
+            ], None)]
         );
 
         // Nested list
-        let result = parser.parse("(+ (* 2 3) 4)").unwrap();
+        let result = strip_spans_vec(&parser.parse("(+ (* 2 3) 4)").unwrap());
         assert_eq!(
             result,
             vec![SExpr::List(vec![
-                SExpr::Atom("+".to_string()),
+                SExpr::Atom("+".to_string(), None),
                 SExpr::List(vec![
-                    SExpr::Atom("*".to_string()),
-                    SExpr::Integer(2),
-                    SExpr::Integer(3),
-                ]),
-                SExpr::Integer(4),
-            ])]
+                    SExpr::Atom("*".to_string(), None),
+                    SExpr::Integer(2, None),
+                    SExpr::Integer(3, None),
+                ], None),
+                SExpr::Integer(4, None),
+            ], None)]
         );
     }
 
@@ -373,27 +424,27 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // ! prefix
-        let result = parser.parse("!(+ 1 2)").unwrap();
+        let result = strip_spans_vec(&parser.parse("!(+ 1 2)").unwrap());
         assert_eq!(
             result,
             vec![SExpr::List(vec![
-                SExpr::Atom("!".to_string()),
+                SExpr::Atom("!".to_string(), None),
                 SExpr::List(vec![
-                    SExpr::Atom("+".to_string()),
-                    SExpr::Integer(1),
-                    SExpr::Integer(2),
-                ])
-            ])]
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ], None)
+            ], None)]
         );
 
         // ? prefix
-        let result = parser.parse("?query").unwrap();
+        let result = strip_spans_vec(&parser.parse("?query").unwrap());
         assert_eq!(
             result,
             vec![SExpr::List(vec![
-                SExpr::Atom("?".to_string()),
-                SExpr::Atom("query".to_string()),
-            ])]
+                SExpr::Atom("?".to_string(), None),
+                SExpr::Atom("query".to_string(), None),
+            ], None)]
         );
     }
 
@@ -402,15 +453,15 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // Brace list with {} atom prepended
-        let result = parser.parse("{a b c}").unwrap();
+        let result = strip_spans_vec(&parser.parse("{a b c}").unwrap());
         assert_eq!(
             result,
             vec![SExpr::List(vec![
-                SExpr::Atom("{}".to_string()),
-                SExpr::Atom("a".to_string()),
-                SExpr::Atom("b".to_string()),
-                SExpr::Atom("c".to_string()),
-            ])]
+                SExpr::Atom("{}".to_string(), None),
+                SExpr::Atom("a".to_string(), None),
+                SExpr::Atom("b".to_string(), None),
+                SExpr::Atom("c".to_string(), None),
+            ], None)]
         );
     }
 
@@ -418,23 +469,23 @@ mod tests {
     fn test_parse_multiple_expressions() {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
-        let result = parser.parse("(= (double $x) (* $x 2)) !(double 21)").unwrap();
+        let result = strip_spans_vec(&parser.parse("(= (double $x) (* $x 2)) !(double 21)").unwrap());
         assert_eq!(result.len(), 2);
 
         // First: (= (double $x) (* $x 2))
         match &result[0] {
-            SExpr::List(items) => {
+            SExpr::List(items, _) => {
                 assert_eq!(items.len(), 3);
-                assert_eq!(items[0], SExpr::Atom("=".to_string()));
+                assert_eq!(items[0], SExpr::Atom("=".to_string(), None));
             }
             _ => panic!("Expected list"),
         }
 
         // Second: !(double 21)
         match &result[1] {
-            SExpr::List(items) => {
+            SExpr::List(items, _) => {
                 assert_eq!(items.len(), 2);
-                assert_eq!(items[0], SExpr::Atom("!".to_string()));
+                assert_eq!(items[0], SExpr::Atom("!".to_string(), None));
             }
             _ => panic!("Expected list"),
         }
@@ -445,7 +496,7 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // Line comments should be ignored
-        let result = parser
+        let result = strip_spans_vec(&parser
             .parse(
                 r#"
             ; This is a comment
@@ -453,34 +504,34 @@ mod tests {
             (+ 1 2)
             "#,
             )
-            .unwrap();
+            .unwrap());
 
         assert_eq!(
             result,
             vec![SExpr::List(vec![
-                SExpr::Atom("+".to_string()),
-                SExpr::Integer(1),
-                SExpr::Integer(2),
-            ])]
+                SExpr::Atom("+".to_string(), None),
+                SExpr::Integer(1, None),
+                SExpr::Integer(2, None),
+            ], None)]
         );
 
         // Block comments
-        let result = parser
+        let result = strip_spans_vec(&parser
             .parse(
                 r#"
             /* Block comment */
             (+ 1 2)
             "#,
             )
-            .unwrap();
+            .unwrap());
 
         assert_eq!(
             result,
             vec![SExpr::List(vec![
-                SExpr::Atom("+".to_string()),
-                SExpr::Integer(1),
-                SExpr::Integer(2),
-            ])]
+                SExpr::Atom("+".to_string(), None),
+                SExpr::Integer(1, None),
+                SExpr::Integer(2, None),
+            ], None)]
         );
     }
 
@@ -489,29 +540,29 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // Simple float
-        let result = parser.parse("3.14").unwrap();
-        assert_eq!(result, vec![SExpr::Float(3.14)]);
+        let result = strip_spans_vec(&parser.parse("3.14").unwrap());
+        assert_eq!(result, vec![SExpr::Float(3.14, None)]);
 
         // Negative float
-        let result = parser.parse("-2.5").unwrap();
-        assert_eq!(result, vec![SExpr::Float(-2.5)]);
+        let result = strip_spans_vec(&parser.parse("-2.5").unwrap());
+        assert_eq!(result, vec![SExpr::Float(-2.5, None)]);
 
         // Scientific notation
-        let result = parser.parse("1.0e10").unwrap();
-        assert_eq!(result, vec![SExpr::Float(1.0e10)]);
+        let result = strip_spans_vec(&parser.parse("1.0e10").unwrap());
+        assert_eq!(result, vec![SExpr::Float(1.0e10, None)]);
 
-        let result = parser.parse("-1.5e-3").unwrap();
-        assert_eq!(result, vec![SExpr::Float(-1.5e-3)]);
+        let result = strip_spans_vec(&parser.parse("-1.5e-3").unwrap());
+        assert_eq!(result, vec![SExpr::Float(-1.5e-3, None)]);
 
         // In expressions
-        let result = parser.parse("(+ 3.14 2.71)").unwrap();
+        let result = strip_spans_vec(&parser.parse("(+ 3.14 2.71)").unwrap());
         assert_eq!(
             result,
             vec![SExpr::List(vec![
-                SExpr::Atom("+".to_string()),
-                SExpr::Float(3.14),
-                SExpr::Float(2.71),
-            ])]
+                SExpr::Atom("+".to_string(), None),
+                SExpr::Float(3.14, None),
+                SExpr::Float(2.71, None),
+            ], None)]
         );
     }
 
@@ -520,14 +571,14 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // Type annotation: (: Socrates Entity)
-        let result = parser.parse("(: Socrates Entity)").unwrap();
+        let result = strip_spans_vec(&parser.parse("(: Socrates Entity)").unwrap());
         assert_eq!(
             result,
             vec![SExpr::List(vec![
-                SExpr::Atom(":".to_string()),
-                SExpr::Atom("Socrates".to_string()),
-                SExpr::Atom("Entity".to_string()),
-            ])]
+                SExpr::Atom(":".to_string(), None),
+                SExpr::Atom("Socrates".to_string(), None),
+                SExpr::Atom("Entity".to_string(), None),
+            ], None)]
         );
     }
 
@@ -536,18 +587,18 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // Rule definition: (:= (Add $x Z) $x)
-        let result = parser.parse("(:= (Add $x Z) $x)").unwrap();
+        let result = strip_spans_vec(&parser.parse("(:= (Add $x Z) $x)").unwrap());
         assert_eq!(
             result,
             vec![SExpr::List(vec![
-                SExpr::Atom(":=".to_string()),
+                SExpr::Atom(":=".to_string(), None),
                 SExpr::List(vec![
-                    SExpr::Atom("Add".to_string()),
-                    SExpr::Atom("$x".to_string()),
-                    SExpr::Atom("Z".to_string()),
-                ]),
-                SExpr::Atom("$x".to_string()),
-            ])]
+                    SExpr::Atom("Add".to_string(), None),
+                    SExpr::Atom("$x".to_string(), None),
+                    SExpr::Atom("Z".to_string(), None),
+                ], None),
+                SExpr::Atom("$x".to_string(), None),
+            ], None)]
         );
     }
 }

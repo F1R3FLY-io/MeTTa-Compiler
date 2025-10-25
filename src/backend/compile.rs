@@ -30,9 +30,10 @@ pub fn compile(src: &str) -> Result<MettaState, String> {
 
 /// Convert a MettaExpr (SExpr) to a MettaValue
 /// Operator symbols are preserved as-is (no normalization)
+/// Position information is discarded during conversion (used only for LSP/tooling)
 fn sexpr_to_metta_value(sexpr: &MettaExpr) -> Result<MettaValue, String> {
     match sexpr {
-        MettaExpr::Atom(s) => {
+        MettaExpr::Atom(s, _span) => {
             // Parse literals
             if s == "true" {
                 Ok(MettaValue::Bool(true))
@@ -43,10 +44,10 @@ fn sexpr_to_metta_value(sexpr: &MettaExpr) -> Result<MettaValue, String> {
                 Ok(MettaValue::Atom(s.clone()))
             }
         }
-        MettaExpr::String(s) => Ok(MettaValue::String(s.clone())),
-        MettaExpr::Integer(n) => Ok(MettaValue::Long(*n)),
-        MettaExpr::Float(f) => Ok(MettaValue::Float(*f)),
-        MettaExpr::List(items) => {
+        MettaExpr::String(s, _span) => Ok(MettaValue::String(s.clone())),
+        MettaExpr::Integer(n, _span) => Ok(MettaValue::Long(*n)),
+        MettaExpr::Float(f, _span) => Ok(MettaValue::Float(*f)),
+        MettaExpr::List(items, _span) => {
             if items.is_empty() {
                 Ok(MettaValue::Nil)
             } else {
@@ -57,7 +58,7 @@ fn sexpr_to_metta_value(sexpr: &MettaExpr) -> Result<MettaValue, String> {
                 Ok(MettaValue::SExpr(values))
             }
         }
-        MettaExpr::Quoted(expr) => {
+        MettaExpr::Quoted(expr, _span) => {
             // For quoted expressions, wrap in a quote operator
             let inner = sexpr_to_metta_value(expr)?;
             Ok(MettaValue::SExpr(vec![

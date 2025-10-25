@@ -75,7 +75,7 @@ pub use backend::{
     models::{MettaState, MettaValue, Rule},
 };
 pub use rholang_integration::{compile_safe, metta_state_to_json, run_state};
-pub use ir::{MettaExpr, SExpr};
+pub use ir::{MettaExpr, Position, SExpr, Span};
 pub use tree_sitter_parser::TreeSitterMettaParser;
 
 // Export run_state_async when async feature is enabled (which is by default)

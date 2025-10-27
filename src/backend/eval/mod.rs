@@ -6,6 +6,17 @@
 //   env' = union env_i
 //   return fold over rules & grounded functions (emptyset, env')
 
+#[macro_use]
+mod macros;
+
+mod bindings;
+mod control_flow;
+mod core;
+mod errors;
+mod evaluation;
+mod matching;
+mod types;
+
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
 use crate::backend::mork_convert::{
@@ -13,40 +24,7 @@ use crate::backend::mork_convert::{
 };
 use mork_expr::Expr;
 
-macro_rules! require_args {
-    ($op:expr, $items:expr, $expected:expr, $env:expr) => {
-        if $items.len() < $expected + 1 {
-            let err = MettaValue::Error(
-                format!(
-                    "{} requires exactly {} argument{}",
-                    $op,
-                    $expected,
-                    if $expected == 1 { "" } else { "s" }
-                ),
-                Box::new(MettaValue::SExpr($items.to_vec())),
-            );
-            return (vec![err], $env);
-        }
-    };
-}
-
-macro_rules! require_one_arg {
-    ($op:expr, $items:expr, $env:expr) => {
-        require_args!($op, $items, 1, $env)
-    };
-}
-
-macro_rules! require_two_args {
-    ($op:expr, $items:expr, $env:expr) => {
-        require_args!($op, $items, 2, $env)
-    };
-}
-
-macro_rules! require_three_args {
-    ($op:expr, $items:expr, $env:expr) => {
-        require_args!($op, $items, 3, $env)
-    };
-}
+pub(super) type EvalOutput = (Vec<MettaValue>, Environment);
 
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)
@@ -86,26 +64,10 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     if let Some(MettaValue::Atom(op)) = items.first() {
         match op.as_str() {
             // Rule definition: (= lhs rhs) - add to MORK Space and rule cache
-            "=" => {
-                require_two_args!("=", items, env);
-
-                let lhs = items[1].clone();
-                let rhs = items[2].clone();
-                let mut new_env = env.clone();
-
-                // Add rule using add_rule (stores in both rule_cache and MORK Space)
-                new_env.add_rule(Rule { lhs, rhs });
-
-                // Return empty list (rule definitions don't produce output)
-                return (vec![], new_env);
-            }
+            "=" => return core::eval_add(items, env),
 
             // Evaluation: ! expr - force evaluation
-            "!" => {
-                require_one_arg!("!", items, env);
-                // Evaluate the expression after !
-                return eval(items[1].clone(), env);
-            }
+            "!" => return evaluation::force_eval(items, env),
 
             // Quote: return argument unevaluated
             "quote" => {
@@ -119,21 +81,7 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
             }
 
             // Error construction
-            "error" => {
-                if items.len() >= 2 {
-                    let msg = match &items[1] {
-                        MettaValue::String(s) => s.clone(),
-                        MettaValue::Atom(s) => s.clone(),
-                        other => format!("{:?}", other),
-                    };
-                    let details = if items.len() > 2 {
-                        items[2].clone()
-                    } else {
-                        MettaValue::Nil
-                    };
-                    return (vec![MettaValue::Error(msg, Box::new(details))], env);
-                }
-            }
+            "error" => return errors::eval_error(items, env),
 
             // Catch: error recovery - (catch expr default)
             // If expr evaluates to error, return default instead
@@ -143,102 +91,14 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 
             // Eval: force evaluation of quoted expressions
             // (eval expr) - complementary to quote
-            "eval" => {
-                require_one_arg!("eval", items, env);
-
-                // First evaluate the argument to get the expression
-                let (arg_results, arg_env) = eval(items[1].clone(), env);
-                if let Some(expr) = arg_results.first() {
-                    // Then evaluate the result
-                    return eval(expr.clone(), arg_env);
-                } else {
-                    return (vec![MettaValue::Nil], arg_env);
-                }
-            }
+            "eval" => return evaluation::eval_eval(items, env),
 
             // Function: creates an evaluation loop that continues
             // until it encounters a return value
-            "function" => {
-                require_one_arg!("function", items, env);
-
-                let mut current_expr = items[1].clone();
-                let mut current_env = env;
-                const MAX_ITERATIONS: usize = 1000;
-
-                for iteration_count in 1..=MAX_ITERATIONS {
-                    let (results, new_env) = eval(current_expr.clone(), current_env);
-                    current_env = new_env;
-
-                    if results.is_empty() {
-                        return (vec![MettaValue::Nil], current_env);
-                    }
-
-                    let (final_results, continue_exprs): (Vec<_>, Vec<_>) = results
-                        .into_iter()
-                        .partition(|result| matches!(
-                            result,
-                            MettaValue::SExpr(items)
-                                if items.len() == 2 && items[0] == MettaValue::Atom("return".to_string())
-                        ));
-
-                    if !final_results.is_empty() {
-                        let returns: Vec<_> = final_results
-                            .into_iter()
-                            .map(|r| match r {
-                                MettaValue::SExpr(items) => items[1].clone(),
-                                _ => unreachable!("partition guarantees return expressions"),
-                            })
-                            .collect();
-                        return (returns, current_env);
-                    }
-
-                    if continue_exprs.is_empty() {
-                        return (vec![MettaValue::Nil], current_env);
-                    }
-
-                    let next_expr = &continue_exprs[0];
-                    if current_expr == *next_expr {
-                        return (continue_exprs, current_env);
-                    }
-
-                    current_expr = continue_exprs[0].clone();
-                    if iteration_count == MAX_ITERATIONS {
-                        return (
-                            vec![MettaValue::Error(
-                                format!(
-                                    "function exceeded maximum iterations ({})",
-                                    MAX_ITERATIONS
-                                ),
-                                Box::new(current_expr),
-                            )],
-                            current_env,
-                        );
-                    }
-                }
-
-                unreachable!("Loop should always return within MAX_ITERATIONS")
-            }
+            "function" => return evaluation::eval_function(items, env),
 
             // Return: signals termination from a function evaluation loop
-            "return" => {
-                require_one_arg!("return", items, env);
-
-                let (arg_results, arg_env) = eval(items[1].clone(), env);
-                for result in &arg_results {
-                    if matches!(result, MettaValue::Error(_, _)) {
-                        return (vec![result.clone()], arg_env);
-                    }
-                }
-
-                let return_results = arg_results
-                    .into_iter()
-                    .map(|result| {
-                        MettaValue::SExpr(vec![MettaValue::Atom("return".to_string()), result])
-                    })
-                    .collect();
-
-                return (return_results, arg_env);
-            }
+            "return" => return evaluation::eval_return(items, env),
 
             // Evaluates first argument, binds it to the variable (second argument) and
             // then evaluates third argument which contains (or not) mentioned variable
@@ -269,17 +129,7 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
             }
 
             // Is-error: check if value is an error (for error recovery)
-            "is-error" => {
-                require_one_arg!("is-error", items, env);
-
-                let (results, new_env) = eval(items[1].clone(), env);
-                if let Some(first) = results.first() {
-                    let is_err = matches!(first, MettaValue::Error(_, _));
-                    return (vec![MettaValue::Bool(is_err)], new_env);
-                } else {
-                    return (vec![MettaValue::Bool(false)], new_env);
-                }
-            }
+            "is-error" => return errors::eval_if_error(items, env),
 
             // Match: pattern matching against atom space
             // (match <space> <pattern> <template>)
@@ -355,6 +205,8 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                 return eval_let(&items[1..], env);
             }
 
+            // -- -- -- -- -- -- -- -- types -- -- -- -- -- -- -- --
+
             // Type assertion: (: expr type)
             // Adds a type assertion to the environment
             ":" => {
@@ -410,7 +262,8 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                 return (vec![MettaValue::Bool(matches)], env);
             }
 
-            _ => {} // Fall through to normal evaluation
+            // Fall through to normal evaluation
+            _ => {}
         }
     }
 

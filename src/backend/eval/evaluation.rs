@@ -1,5 +1,5 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::{MettaValue, Rule};
+use crate::backend::models::MettaValue;
 
 use super::{apply_bindings, eval, pattern_match, EvalOutput};
 
@@ -12,9 +12,9 @@ pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalOutput 
     let (arg_results, arg_env) = eval(items[1].clone(), env);
     if let Some(expr) = arg_results.first() {
         // Then evaluate the result
-        return eval(expr.clone(), arg_env);
+        eval(expr.clone(), arg_env)
     } else {
-        return (vec![MettaValue::Nil], arg_env);
+        (vec![MettaValue::Nil], arg_env)
     }
 }
 
@@ -136,6 +136,7 @@ pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalOutput
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Rule;
 
     #[test]
     fn test_force_eval_missing_argument() {

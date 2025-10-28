@@ -81,7 +81,7 @@ pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalOutput 
         }
     }
 
-    return (final_results, atom_env);
+    (final_results, atom_env)
 }
 
 /// Difference between `switch` and `case` is a way how they interpret `Empty` result.
@@ -90,14 +90,14 @@ pub(super) fn eval_switch(items: Vec<MettaValue>, env: Environment) -> EvalOutpu
     require_two_args!("switch", items, env);
     let atom = items[1].clone();
     let cases = items[2].clone();
-    return eval_switch_minimal(atom, cases, env);
+    eval_switch_minimal(atom, cases, env)
 }
 
 pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
     require_two_args!("switch-minimal", items, env);
     let atom = items[1].clone();
     let cases = items[2].clone();
-    return eval_switch_minimal(atom, cases, env);
+    eval_switch_minimal(atom, cases, env)
 }
 
 /// This function is being called inside switch function to test one of the cases and it
@@ -106,7 +106,7 @@ pub(super) fn eval_switch_internal_handler(items: Vec<MettaValue>, env: Environm
     require_two_args!("switch-internal", items, env);
     let atom = items[1].clone();
     let cases = items[2].clone();
-    return eval_switch_internal(atom, cases, env);
+    eval_switch_internal(atom, cases, env)
 }
 
 /// Helper function to implement switch-minimal logic

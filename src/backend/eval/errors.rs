@@ -30,9 +30,9 @@ pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalOut
     let (results, new_env) = eval(items[1].clone(), env);
     if let Some(first) = results.first() {
         let is_err = matches!(first, MettaValue::Error(_, _));
-        return (vec![MettaValue::Bool(is_err)], new_env);
+        (vec![MettaValue::Bool(is_err)], new_env)
     } else {
-        return (vec![MettaValue::Bool(false)], new_env);
+        (vec![MettaValue::Bool(false)], new_env)
     }
 }
 

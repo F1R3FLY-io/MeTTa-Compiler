@@ -15,7 +15,7 @@ pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
     new_env.add_rule(Rule { lhs, rhs });
 
     // Return empty list (rule definitions don't produce output)
-    return (vec![], new_env);
+    (vec![], new_env)
 }
 
 /// Evaluate match: (match <space-ref> <space-name> <pattern> <template>)

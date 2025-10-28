@@ -31,7 +31,7 @@ pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> E
     let type_expr = MettaValue::SExpr(items);
     new_env.add_to_space(&type_expr);
 
-    return (vec![], new_env);
+    (vec![], new_env)
 }
 
 /// get-type: return the type of an expression
@@ -41,7 +41,7 @@ pub(super) fn eval_get_type(items: Vec<MettaValue>, env: Environment) -> EvalOut
 
     let expr = &items[1];
     let typ = infer_type(expr, &env);
-    return (vec![typ], env);
+    (vec![typ], env)
 }
 
 /// check-type: check if expression has expected type
@@ -55,7 +55,7 @@ pub(super) fn eval_check_type(items: Vec<MettaValue>, env: Environment) -> EvalO
     let actual = infer_type(expr, &env);
     let matches = types_match(&actual, expected);
 
-    return (vec![MettaValue::Bool(matches)], env);
+    (vec![MettaValue::Bool(matches)], env)
 }
 
 /// Infer the type of an expression

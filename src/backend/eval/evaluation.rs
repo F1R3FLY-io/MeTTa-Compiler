@@ -22,7 +22,7 @@ pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalOutput 
 pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
     require_one_arg!("!", items, env);
     // Evaluate the expression after !
-    return eval(items[1].clone(), env);
+    eval(items[1].clone(), env)
 }
 
 /// Function: creates an evaluation loop that continues
@@ -102,7 +102,7 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalOutpu
         .map(|result| MettaValue::SExpr(vec![MettaValue::Atom("return".to_string()), result]))
         .collect();
 
-    return (return_results, arg_env);
+    (return_results, arg_env)
 }
 
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
@@ -130,7 +130,7 @@ pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalOutput
         }
     }
 
-    return (all_results, expr_env);
+    (all_results, expr_env)
 }
 
 #[cfg(test)]

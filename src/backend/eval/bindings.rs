@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn test_let_with_mixed_pattern_elements() {
         let env = Environment::new();
-  
+
         // Pattern with mix of literals and variables
         // (let (mixed 42 $x "literal" $y) (mixed 42 100 "literal" 200) (+ $x $y))
         let mixed_pattern = MettaValue::SExpr(vec![
@@ -500,11 +500,11 @@ mod tests {
                 MettaValue::Atom("$y".to_string()),
             ]),
         ]);
-  
+
         let (results, _) = eval(mixed_pattern, env.clone());
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Long(300)); // 100 + 200
-  
+
         // Test failure case where literal doesn't match
         // (let (mixed 42 $x "literal" $y) (mixed 43 100 "literal" 200) (+ $x $y))
         let mixed_fail = MettaValue::SExpr(vec![
@@ -529,7 +529,7 @@ mod tests {
                 MettaValue::Atom("$y".to_string()),
             ]),
         ]);
-  
+
         let (results, _) = eval(mixed_fail, env);
         assert_eq!(results.len(), 1);
         match &results[0] {

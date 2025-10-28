@@ -9,6 +9,7 @@ pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalOutput
     (vec![items[1].clone()], env)
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::eval;

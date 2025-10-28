@@ -203,6 +203,185 @@ mod tests {
     }
 
     #[test]
+    fn test_catch_with_successful_expression() {
+        let env = Environment::new();
+
+        // Test catch where expression succeeds (no error)
+        // (catch (+ 2 3) (error "should not reach" nil))
+        let catch_success = MettaValue::SExpr(vec![
+            MettaValue::Atom("catch".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("error".to_string()),
+                MettaValue::String("should not reach".to_string()),
+                MettaValue::Nil,
+            ]),
+        ]);
+
+        let (results, _) = eval(catch_success, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(5)); // Successful result, not the error
+    }
+
+    #[test]
+    fn test_error_propagation_through_complex_nested_expressions() {
+        let env = Environment::new();
+
+        // Test error propagation through deeply nested arithmetic
+        // (+ 1 (* 2 (/ 6 (- 4 (error "deep" nil)))))
+        let deep_nested = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Long(2),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("/".to_string()),
+                    MettaValue::Long(6),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("-".to_string()),
+                        MettaValue::Long(4),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("error".to_string()),
+                            MettaValue::String("deep".to_string()),
+                            MettaValue::Nil,
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(deep_nested, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert_eq!(msg, "deep");
+            }
+            _ => panic!("Expected error to propagate up"),
+        }
+    }
+
+    #[test]
+    fn test_multiple_errors_in_expression() {
+        let env = Environment::new();
+
+        // Test expression with multiple errors - first one should win
+        // (+ (error "first" nil) (error "second" nil))
+        let multiple_errors = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("error".to_string()),
+                MettaValue::String("first".to_string()),
+                MettaValue::Nil,
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("error".to_string()),
+                MettaValue::String("second".to_string()),
+                MettaValue::Nil,
+            ]),
+        ]);
+
+        let (results, _) = eval(multiple_errors, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert_eq!(msg, "first"); // First error encountered should propagate
+            }
+            _ => panic!("Expected error to propagate"),
+        }
+    }
+
+    #[test]
+    fn test_is_error_with_catch_combinations() {
+        let env = Environment::new();
+
+        // Test is-error applied to catch results
+        // (is-error (catch (+ 1 2) "default"))
+        let is_error_catch_success = MettaValue::SExpr(vec![
+            MettaValue::Atom("is-error".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("catch".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Long(1),
+                    MettaValue::Long(2),
+                ]),
+                MettaValue::String("default".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(is_error_catch_success, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false)); // Catch succeeded, no error
+
+        // (is-error (catch (error "fail" nil) "recovered"))
+        let is_error_catch_recovery = MettaValue::SExpr(vec![
+            MettaValue::Atom("is-error".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("catch".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("error".to_string()),
+                    MettaValue::String("fail".to_string()),
+                    MettaValue::Nil,
+                ]),
+                MettaValue::String("recovered".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(is_error_catch_recovery, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false)); // Catch recovered, no error
+    }
+
+    #[test]
+    fn test_error_in_conditional_expressions() {
+        let env = Environment::new();
+
+        // Test error in if condition
+        // (if (error "condition-error" nil) "then" "else")
+        let error_in_condition = MettaValue::SExpr(vec![
+            MettaValue::Atom("if".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("error".to_string()),
+                MettaValue::String("condition-error".to_string()),
+                MettaValue::Nil,
+            ]),
+            MettaValue::String("then".to_string()),
+            MettaValue::String("else".to_string()),
+        ]);
+
+        let (results, _) = eval(error_in_condition, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert_eq!(msg, "condition-error");
+            }
+            _ => panic!("Expected error to propagate from condition"),
+        }
+
+        // Test error in then branch (should not be evaluated due to lazy evaluation)
+        // (if false (error "then-error" nil) "else")
+        let error_in_then = MettaValue::SExpr(vec![
+            MettaValue::Atom("if".to_string()),
+            MettaValue::Bool(false),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("error".to_string()),
+                MettaValue::String("then-error".to_string()),
+                MettaValue::Nil,
+            ]),
+            MettaValue::String("else".to_string()),
+        ]);
+
+        let (results, _) = eval(error_in_then, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("else".to_string())); // No error due to lazy eval
+    }
+
+    #[test]
     fn test_catch_with_error() {
         let env = Environment::new();
 
@@ -267,6 +446,185 @@ mod tests {
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Long(15));
+    }
+
+    #[test]
+    fn test_error_construction_variants() {
+        let env = Environment::new();
+
+        // Test error with just a message (no details)
+        let error_msg_only = MettaValue::SExpr(vec![
+            MettaValue::Atom("error".to_string()),
+            MettaValue::String("simple error".to_string()),
+        ]);
+        let (results, _) = eval(error_msg_only, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert_eq!(msg, "simple error");
+                assert_eq!(**details, MettaValue::Nil);
+            }
+            _ => panic!("Expected error"),
+        }
+
+        // Test error with atom as message
+        let error_atom_msg = MettaValue::SExpr(vec![
+            MettaValue::Atom("error".to_string()),
+            MettaValue::Atom("BadType".to_string()),
+            MettaValue::Long(42),
+        ]);
+        let (results, _) = eval(error_atom_msg, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert_eq!(msg, "BadType");
+                assert_eq!(**details, MettaValue::Long(42));
+            }
+            _ => panic!("Expected error"),
+        }
+
+        // Test error with complex S-expression as details
+        let error_complex_details = MettaValue::SExpr(vec![
+            MettaValue::Atom("error".to_string()),
+            MettaValue::String("complex error".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("context".to_string()),
+                MettaValue::String("function".to_string()),
+                MettaValue::Atom("add".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("args".to_string()),
+                    MettaValue::Long(1),
+                    MettaValue::String("not-a-number".to_string()),
+                ]),
+            ]),
+        ]);
+        let (results, _) = eval(error_complex_details, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert_eq!(msg, "complex error");
+                match details.as_ref() {
+                    MettaValue::SExpr(items) => {
+                        assert_eq!(items.len(), 4);
+                        assert_eq!(items[0], MettaValue::Atom("context".to_string()));
+                    }
+                    _ => panic!("Expected S-expression as details"),
+                }
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_is_error_with_various_types() {
+        let env = Environment::new();
+
+        // Test is-error with different MettaValue types
+        let test_cases = vec![
+            (MettaValue::Long(42), false),
+            (MettaValue::Bool(true), false),
+            (MettaValue::String("hello".to_string()), false),
+            (MettaValue::Nil, false),
+            (
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Long(1),
+                    MettaValue::Long(2),
+                ]),
+                false,
+            ),
+            (
+                MettaValue::Error("test".to_string(), Box::new(MettaValue::Nil)),
+                true,
+            ),
+        ];
+
+        for (test_value, expected) in test_cases {
+            let is_error_test =
+                MettaValue::SExpr(vec![MettaValue::Atom("is-error".to_string()), test_value]);
+            let (results, _) = eval(is_error_test, env.clone());
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0], MettaValue::Bool(expected));
+        }
+    }
+
+    #[test]
+    fn test_is_error_with_empty_results() {
+        let mut env = Environment::new();
+
+        // Create a rule that returns empty: (= (returns-empty) ())
+        use crate::backend::models::Rule;
+        let empty_rule = Rule {
+            lhs: MettaValue::SExpr(vec![MettaValue::Atom("returns-empty".to_string())]),
+            rhs: MettaValue::SExpr(vec![]),
+        };
+        env.add_rule(empty_rule);
+
+        // Test is-error with expression that returns empty
+        let is_error_empty = MettaValue::SExpr(vec![
+            MettaValue::Atom("is-error".to_string()),
+            MettaValue::SExpr(vec![MettaValue::Atom("returns-empty".to_string())]),
+        ]);
+        let (results, _) = eval(is_error_empty, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false)); // Empty is not an error
+    }
+
+    #[test]
+    fn test_catch_with_nested_errors() {
+        let env = Environment::new();
+
+        // Test catch with nested error construction
+        // (catch (error "outer" (error "inner" 42)) "recovered")
+        let nested_catch = MettaValue::SExpr(vec![
+            MettaValue::Atom("catch".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("error".to_string()),
+                MettaValue::String("outer".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("error".to_string()),
+                    MettaValue::String("inner".to_string()),
+                    MettaValue::Long(42),
+                ]),
+            ]),
+            MettaValue::String("recovered".to_string()),
+        ]);
+
+        let (results, _) = eval(nested_catch, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("recovered".to_string()));
+    }
+
+    #[test]
+    fn test_catch_missing_arguments() {
+        let env = Environment::new();
+
+        // Test catch with only one argument
+        let catch_one_arg = MettaValue::SExpr(vec![
+            MettaValue::Atom("catch".to_string()),
+            MettaValue::Long(42),
+        ]);
+        let (results, _) = eval(catch_one_arg, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("catch"));
+                assert!(msg.contains("2 arguments"));
+            }
+            _ => panic!("Expected error for missing arguments"),
+        }
+
+        // Test catch with no arguments
+        let catch_no_args = MettaValue::SExpr(vec![MettaValue::Atom("catch".to_string())]);
+        let (results, _) = eval(catch_no_args, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("catch"));
+                assert!(msg.contains("2 arguments"));
+            }
+            _ => panic!("Expected error for missing arguments"),
+        }
     }
 
     #[test]

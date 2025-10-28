@@ -184,4 +184,710 @@ fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environme
     (vec![err], env)
 }
 
-// TODO -> tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::models::Rule;
+
+    #[test]
+    fn test_if_true_branch() {
+        let env = Environment::new();
+
+        // (if true (+ 1 2) (+ 3 4))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("if".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(3),
+                MettaValue::Long(4),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3)); // 1 + 2
+    }
+
+    #[test]
+    fn test_if_false_branch() {
+        let env = Environment::new();
+
+        // (if false (+ 1 2) (+ 3 4))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("if".to_string()),
+            MettaValue::Bool(false),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(3),
+                MettaValue::Long(4),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(7)); // 3 + 4
+    }
+
+    #[test]
+    fn test_if_with_comparison() {
+        let env = Environment::new();
+
+        // (if (< 1 2) "yes" "no")
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("if".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("<".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::String("yes".to_string()),
+            MettaValue::String("no".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("yes".to_string()));
+    }
+
+    #[test]
+    fn test_if_only_evaluates_chosen_branch() {
+        let env = Environment::new();
+
+        // (if true 1 (error "should not evaluate"))
+        // The error in the else branch should not be evaluated
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("if".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Long(1),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("error".to_string()),
+                MettaValue::String("should not evaluate".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(1)); // No error!
+    }
+
+    #[test]
+    fn test_switch_basic() {
+        let env = Environment::new();
+
+        // (switch 42 ((42 "found") (43 "not found")))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            MettaValue::Long(42),
+            MettaValue::SExpr(vec![
+                // First case: (42 "found")
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(42),
+                    MettaValue::String("found".to_string()),
+                ]),
+                // Second case: (43 "not found")
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(43),
+                    MettaValue::String("not found".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("found".to_string()));
+    }
+
+    #[test]
+    fn test_switch_with_variables() {
+        let env = Environment::new();
+
+        // (switch 42 (($x (+ $x 10))))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            MettaValue::Long(42),
+            MettaValue::SExpr(vec![
+                // Case: ($x (+ $x 10))
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("$x".to_string()),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("+".to_string()),
+                        MettaValue::Atom("$x".to_string()),
+                        MettaValue::Long(10),
+                    ]),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(52)); // 42 + 10
+    }
+
+    #[test]
+    fn test_switch_no_match() {
+        let env = Environment::new();
+
+        // (switch 50 ((42 "found") (43 "not found")))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            MettaValue::Long(50),
+            MettaValue::SExpr(vec![
+                // First case: (42 "found")
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(42),
+                    MettaValue::String("found".to_string()),
+                ]),
+                // Second case: (43 "not found")
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(43),
+                    MettaValue::String("not found".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Atom("NotReducible".to_string()));
+    }
+
+    #[test]
+    fn test_switch_with_sexpr_pattern() {
+        let env = Environment::new();
+
+        // (switch (foo 42) (((foo $x) (+ $x 1)) ((bar $y) (+ $y 2))))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("foo".to_string()),
+                MettaValue::Long(42),
+            ]),
+            MettaValue::SExpr(vec![
+                // First case: ((foo $x) (+ $x 1))
+                MettaValue::SExpr(vec![
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("foo".to_string()),
+                        MettaValue::Atom("$x".to_string()),
+                    ]),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("+".to_string()),
+                        MettaValue::Atom("$x".to_string()),
+                        MettaValue::Long(1),
+                    ]),
+                ]),
+                // Second case: ((bar $y) (+ $y 2))
+                MettaValue::SExpr(vec![
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("bar".to_string()),
+                        MettaValue::Atom("$y".to_string()),
+                    ]),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("+".to_string()),
+                        MettaValue::Atom("$y".to_string()),
+                        MettaValue::Long(2),
+                    ]),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(43)); // 42 + 1
+    }
+
+    #[test]
+    fn test_case_basic() {
+        let env = Environment::new();
+
+        // (case 42 ((42 "found") (43 "not found")))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("case".to_string()),
+            MettaValue::Long(42),
+            MettaValue::SExpr(vec![
+                // First case: (42 "found")
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(42),
+                    MettaValue::String("found".to_string()),
+                ]),
+                // Second case: (43 "not found")
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(43),
+                    MettaValue::String("not found".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("found".to_string()));
+    }
+
+    #[test]
+    fn test_case_with_evaluation() {
+        let env = Environment::new();
+
+        // (case (+ 1 2) ((3 "three") (4 "four")))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("case".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::SExpr(vec![
+                // First case: (3 "three")
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(3),
+                    MettaValue::String("three".to_string()),
+                ]),
+                // Second case: (4 "four")
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(4),
+                    MettaValue::String("four".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("three".to_string()));
+    }
+
+    #[test]
+    fn test_case_with_empty_result() {
+        let mut env = Environment::new();
+
+        // First define a rule that returns empty: (= (empty-result) ())
+        let empty_rule = Rule {
+            lhs: MettaValue::SExpr(vec![MettaValue::Atom("empty-result".to_string())]),
+            rhs: MettaValue::SExpr(vec![]),
+        };
+        env.add_rule(empty_rule);
+
+        // (case (empty-result) ((Empty "was empty") (42 "was forty-two")))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("case".to_string()),
+            MettaValue::SExpr(vec![MettaValue::Atom("empty-result".to_string())]),
+            MettaValue::SExpr(vec![
+                // First case: (Empty "was empty")
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("Empty".to_string()),
+                    MettaValue::String("was empty".to_string()),
+                ]),
+                // Second case: (42 "was forty-two")
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(42),
+                    MettaValue::String("was forty-two".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("was empty".to_string()));
+    }
+
+    #[test]
+    fn test_switch_first_match_wins() {
+        let env = Environment::new();
+
+        // (switch 42 (($x "first") (42 "second")))
+        // Should match the first case ($x matches anything)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            MettaValue::Long(42),
+            MettaValue::SExpr(vec![
+                // First case: ($x "first") - variable matches anything
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("$x".to_string()),
+                    MettaValue::String("first".to_string()),
+                ]),
+                // Second case: (42 "second") - literal match
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(42),
+                    MettaValue::String("second".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("first".to_string()));
+    }
+
+    #[test]
+    fn test_switch_empty_cases() {
+        let env = Environment::new();
+
+        // (switch 42 ())
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            MettaValue::Long(42),
+            MettaValue::SExpr(vec![]), // Empty cases
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Atom("NotReducible".to_string()));
+    }
+
+    #[test]
+    fn test_switch_with_wildcard() {
+        let env = Environment::new();
+
+        // (switch 42 ((100 "hundred") (_ "anything else")))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            MettaValue::Long(42),
+            MettaValue::SExpr(vec![
+                // First case: (100 "hundred")
+                MettaValue::SExpr(vec![
+                    MettaValue::Long(100),
+                    MettaValue::String("hundred".to_string()),
+                ]),
+                // Second case: (_ "anything else") - wildcard
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("_".to_string()),
+                    MettaValue::String("anything else".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("anything else".to_string()));
+    }
+
+    #[test]
+    fn test_switch_missing_arguments() {
+        let env = Environment::new();
+
+        // (switch) - missing both arguments
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("switch".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("switch"));
+                assert!(msg.contains("requires exactly 2 arguments"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_case_missing_arguments() {
+        let env = Environment::new();
+
+        // (case 42) - missing cases argument
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("case".to_string()),
+            MettaValue::Long(42),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("case"));
+                assert!(msg.contains("requires exactly 2 arguments"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_switch_malformed_case() {
+        let env = Environment::new();
+
+        // (switch 42 ((42))) - case missing template
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            MettaValue::Long(42),
+            MettaValue::SExpr(vec![
+                // Malformed case: (42) - missing template
+                MettaValue::SExpr(vec![MettaValue::Long(42)]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("pattern-template pair"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_switch_with_complex_patterns() {
+        let env = Environment::new();
+
+        // (switch (add 10 20) (((add $x $y) (+ $x $y $x)) ((mul $a $b) (* $a $b))))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("add".to_string()),
+                MettaValue::Long(10),
+                MettaValue::Long(20),
+            ]),
+            MettaValue::SExpr(vec![
+                // First case: ((add $x $y) (+ $x $y $x))
+                MettaValue::SExpr(vec![
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("add".to_string()),
+                        MettaValue::Atom("$x".to_string()),
+                        MettaValue::Atom("$y".to_string()),
+                    ]),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("+".to_string()),
+                        MettaValue::Atom("$x".to_string()),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("+".to_string()),
+                            MettaValue::Atom("$y".to_string()),
+                            MettaValue::Atom("$x".to_string()),
+                        ]),
+                    ]),
+                ]),
+                // Second case: ((mul $a $b) (* $a $b))
+                MettaValue::SExpr(vec![
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("mul".to_string()),
+                        MettaValue::Atom("$a".to_string()),
+                        MettaValue::Atom("$b".to_string()),
+                    ]),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("*".to_string()),
+                        MettaValue::Atom("$a".to_string()),
+                        MettaValue::Atom("$b".to_string()),
+                    ]),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(40)); // 10 + (20 + 10) = 40
+    }
+
+    #[test]
+    fn test_switch_vs_case_empty_handling() {
+        let mut env = Environment::new();
+
+        // Define a rule that can return Empty: (= (maybe-empty $x) (if (== $x 0) () $x))
+        let maybe_empty_rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("maybe-empty".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("if".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("==".to_string()),
+                    MettaValue::Atom("$x".to_string()),
+                    MettaValue::Long(0),
+                ]),
+                MettaValue::SExpr(vec![]), // Empty s-expression
+                MettaValue::Atom("$x".to_string()),
+            ]),
+        };
+        env.add_rule(maybe_empty_rule);
+
+        // Test switch: does NOT evaluate first argument
+        // (switch (maybe-empty 0) (((maybe-empty $y) "matched") (Empty "was empty")))
+        let switch_test = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("maybe-empty".to_string()),
+                MettaValue::Long(0),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::SExpr(vec![
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("maybe-empty".to_string()),
+                        MettaValue::Atom("$y".to_string()),
+                    ]),
+                    MettaValue::String("matched".to_string()),
+                ]),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("Empty".to_string()),
+                    MettaValue::String("was empty".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (switch_results, env2) = eval(switch_test, env.clone());
+        assert_eq!(switch_results.len(), 1);
+        assert_eq!(switch_results[0], MettaValue::String("matched".to_string()));
+
+        // Test case: DOES evaluate first argument
+        // (case (maybe-empty 0) (((maybe-empty $y) "matched") (Empty "was empty")))
+        let case_test = MettaValue::SExpr(vec![
+            MettaValue::Atom("case".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("maybe-empty".to_string()),
+                MettaValue::Long(0),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::SExpr(vec![
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("maybe-empty".to_string()),
+                        MettaValue::Atom("$y".to_string()),
+                    ]),
+                    MettaValue::String("matched".to_string()),
+                ]),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("Empty".to_string()),
+                    MettaValue::String("was empty".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (case_results, _) = eval(case_test, env2);
+        assert_eq!(case_results.len(), 1);
+        assert_eq!(case_results[0], MettaValue::String("was empty".to_string()));
+    }
+
+    #[test]
+    fn test_switch_case_with_nested_pattern_matching_and_variable_scoping() {
+        let env = Environment::new();
+
+        // Test complex nested pattern matching with variable consistency
+        // Create a test structure directly in the test
+        let test_structure = MettaValue::SExpr(vec![
+            MettaValue::Atom("complex".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("nested".to_string()),
+                MettaValue::Long(5),
+                MettaValue::Long(5), // Same value as previous - should match same variable
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("nested".to_string()),
+                MettaValue::Long(5), // Same again
+                MettaValue::Long(7), // Different value
+            ]),
+        ]);
+
+        // Test switch with pattern that requires variable consistency
+        let complex_switch = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            test_structure,
+            MettaValue::SExpr(vec![
+                // Case 1: Pattern with variable consistency requirement
+                // ((complex (nested $x $x) (nested $x $y)) (+ $x $y))
+                MettaValue::SExpr(vec![
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("complex".to_string()),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("nested".to_string()),
+                            MettaValue::Atom("$x".to_string()),
+                            MettaValue::Atom("$x".to_string()), // Must match same value
+                        ]),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("nested".to_string()),
+                            MettaValue::Atom("$x".to_string()), // Must match same $x as above
+                            MettaValue::Atom("$y".to_string()), // Can be different
+                        ]),
+                    ]),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("+".to_string()),
+                        MettaValue::Atom("$x".to_string()),
+                        MettaValue::Atom("$y".to_string()),
+                    ]),
+                ]),
+                // Case 2: Different pattern that shouldn't match
+                MettaValue::SExpr(vec![
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("complex".to_string()),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("nested".to_string()),
+                            MettaValue::Atom("$a".to_string()),
+                            MettaValue::Atom("$b".to_string()), // Different variables
+                        ]),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("nested".to_string()),
+                            MettaValue::Atom("$c".to_string()),
+                            MettaValue::Atom("$d".to_string()),
+                        ]),
+                    ]),
+                    MettaValue::String("different pattern".to_string()),
+                ]),
+                // Case 3: Fallback
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("_".to_string()),
+                    MettaValue::String("no match".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(complex_switch, env.clone());
+        assert_eq!(results.len(), 1);
+        // Structure: (complex (nested 5 5) (nested 5 7))
+        // Pattern: (complex (nested $x $x) (nested $x $y))
+        // Bindings: $x=5, $y=7, result is 5+7=12
+        assert_eq!(results[0], MettaValue::Long(12));
+
+        // Test 2: Variable consistency failure case
+        let test_structure_inconsistent = MettaValue::SExpr(vec![
+            MettaValue::Atom("complex".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("nested".to_string()),
+                MettaValue::Long(5),
+                MettaValue::Long(3), // Different values
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("nested".to_string()),
+                MettaValue::Long(5),
+                MettaValue::Long(7),
+            ]),
+        ]);
+
+        let complex_switch_fail = MettaValue::SExpr(vec![
+            MettaValue::Atom("switch".to_string()),
+            test_structure_inconsistent,
+            MettaValue::SExpr(vec![
+                // Same pattern as before - should NOT match because first nested has (5,3) not (5,5)
+                MettaValue::SExpr(vec![
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("complex".to_string()),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("nested".to_string()),
+                            MettaValue::Atom("$x".to_string()),
+                            MettaValue::Atom("$x".to_string()), // Would require 5=3, which is false
+                        ]),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("nested".to_string()),
+                            MettaValue::Atom("$x".to_string()),
+                            MettaValue::Atom("$y".to_string()),
+                        ]),
+                    ]),
+                    MettaValue::String("should not match".to_string()),
+                ]),
+                // Fallback should match
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("_".to_string()),
+                    MettaValue::String("fallback matched".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results2, _) = eval(complex_switch_fail, env);
+        assert_eq!(results2.len(), 1);
+        assert_eq!(
+            results2[0],
+            MettaValue::String("fallback matched".to_string())
+        );
+    }
+}

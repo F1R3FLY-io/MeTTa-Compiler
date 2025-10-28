@@ -185,3 +185,346 @@ fn types_match(actual: &MettaValue, expected: &MettaValue) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::models::Rule;
+    use crate::eval;
+
+    #[test]
+    fn test_type_assertion_missing_arguments() {
+        let env = Environment::new();
+
+        // (:) - missing both arguments
+        let value = MettaValue::SExpr(vec![MettaValue::Atom(":".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains(":"));
+                assert!(msg.contains("requires exactly 2 arguments")); // Changed
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_get_type_missing_argument() {
+        let env = Environment::new();
+
+        // (get-type) - missing argument
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("get-type".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("get-type"));
+                assert!(msg.contains("requires exactly 1 argument")); // Changed
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_check_type_missing_arguments() {
+        let env = Environment::new();
+
+        // (check-type x) - missing type argument
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("check-type".to_string()),
+            MettaValue::Atom("x".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("check-type"));
+                assert!(msg.contains("requires exactly 2 arguments")); // Changed
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_type_assertion() {
+        let env = Environment::new();
+
+        // (: x Number)
+        let type_assertion = MettaValue::SExpr(vec![
+            MettaValue::Atom(":".to_string()),
+            MettaValue::Atom("x".to_string()),
+            MettaValue::Atom("Number".to_string()),
+        ]);
+
+        let (result, new_env) = eval(type_assertion, env);
+
+        // Type assertion should return empty list
+        assert!(result.is_empty());
+
+        // Environment should have the type assertion
+        assert_eq!(
+            new_env.get_type("x"),
+            Some(MettaValue::Atom("Number".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_get_type_ground_types() {
+        let env = Environment::new();
+
+        // (get-type 42) -> Number
+        let get_type_long = MettaValue::SExpr(vec![
+            MettaValue::Atom("get-type".to_string()),
+            MettaValue::Long(42),
+        ]);
+        let (result, _) = eval(get_type_long, env.clone());
+        assert_eq!(result[0], MettaValue::Atom("Number".to_string()));
+
+        // (get-type true) -> Bool
+        let get_type_bool = MettaValue::SExpr(vec![
+            MettaValue::Atom("get-type".to_string()),
+            MettaValue::Bool(true),
+        ]);
+        let (result, _) = eval(get_type_bool, env.clone());
+        assert_eq!(result[0], MettaValue::Atom("Bool".to_string()));
+
+        // (get-type "hello") -> String
+        let get_type_string = MettaValue::SExpr(vec![
+            MettaValue::Atom("get-type".to_string()),
+            MettaValue::String("hello".to_string()),
+        ]);
+        let (result, _) = eval(get_type_string, env);
+        assert_eq!(result[0], MettaValue::Atom("String".to_string()));
+    }
+
+    #[test]
+    fn test_get_type_with_assertion() {
+        let mut env = Environment::new();
+
+        // Add type assertion: (: foo Number)
+        env.add_type("foo".to_string(), MettaValue::Atom("Number".to_string()));
+
+        // (get-type foo) -> Number
+        let get_type = MettaValue::SExpr(vec![
+            MettaValue::Atom("get-type".to_string()),
+            MettaValue::Atom("foo".to_string()),
+        ]);
+
+        let (result, _) = eval(get_type, env);
+        assert_eq!(result[0], MettaValue::Atom("Number".to_string()));
+    }
+
+    #[test]
+    fn test_get_type_builtin_operations() {
+        let env = Environment::new();
+
+        // (get-type (add 1 2)) -> Number
+        let get_type_add = MettaValue::SExpr(vec![
+            MettaValue::Atom("get-type".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+        ]);
+        let (result, _) = eval(get_type_add, env.clone());
+        assert_eq!(result[0], MettaValue::Atom("Number".to_string()));
+
+        // (get-type (lt 1 2)) -> Bool
+        let get_type_lt = MettaValue::SExpr(vec![
+            MettaValue::Atom("get-type".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("<".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+        ]);
+        let (result, _) = eval(get_type_lt, env);
+        assert_eq!(result[0], MettaValue::Atom("Bool".to_string()));
+    }
+
+    #[test]
+    fn test_check_type() {
+        let mut env = Environment::new();
+
+        // Add type assertion: (: x Number)
+        env.add_type("x".to_string(), MettaValue::Atom("Number".to_string()));
+
+        // (check-type x Number) -> true
+        let check_type_match = MettaValue::SExpr(vec![
+            MettaValue::Atom("check-type".to_string()),
+            MettaValue::Atom("x".to_string()),
+            MettaValue::Atom("Number".to_string()),
+        ]);
+        let (result, _) = eval(check_type_match, env.clone());
+        assert_eq!(result[0], MettaValue::Bool(true));
+
+        // (check-type x String) -> false
+        let check_type_mismatch = MettaValue::SExpr(vec![
+            MettaValue::Atom("check-type".to_string()),
+            MettaValue::Atom("x".to_string()),
+            MettaValue::Atom("String".to_string()),
+        ]);
+        let (result, _) = eval(check_type_mismatch, env);
+        assert_eq!(result[0], MettaValue::Bool(false));
+    }
+
+    #[test]
+    fn test_check_type_with_type_variables() {
+        let env = Environment::new();
+
+        // (check-type 42 $t) -> true (type variable matches anything)
+        let check_type_var = MettaValue::SExpr(vec![
+            MettaValue::Atom("check-type".to_string()),
+            MettaValue::Long(42),
+            MettaValue::Atom("$t".to_string()),
+        ]);
+        let (result, _) = eval(check_type_var, env);
+        assert_eq!(result[0], MettaValue::Bool(true));
+    }
+
+    #[test]
+    fn test_arrow_type_assertion() {
+        let mut env = Environment::new();
+
+        // (: add (-> Number Number Number))
+        // Using a user-defined function name instead of builtin "+"
+        let arrow_type = MettaValue::SExpr(vec![
+            MettaValue::Atom(":".to_string()),
+            MettaValue::Atom("add".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("->".to_string()),
+                MettaValue::Atom("Number".to_string()),
+                MettaValue::Atom("Number".to_string()),
+                MettaValue::Atom("Number".to_string()),
+            ]),
+        ]);
+
+        let (result, new_env) = eval(arrow_type, env);
+        env = new_env;
+
+        // Should return empty list
+        assert!(result.is_empty());
+
+        // Get the type back
+        let arrow_type_expected = MettaValue::SExpr(vec![
+            MettaValue::Atom("->".to_string()),
+            MettaValue::Atom("Number".to_string()),
+            MettaValue::Atom("Number".to_string()),
+            MettaValue::Atom("Number".to_string()),
+        ]);
+        assert_eq!(env.get_type("add"), Some(arrow_type_expected));
+    }
+
+    #[test]
+    fn test_integration_with_rules_and_types() {
+        let mut env = Environment::new();
+
+        // Add type assertion: (: double (-> Number Number))
+        let type_assertion = MettaValue::SExpr(vec![
+            MettaValue::Atom(":".to_string()),
+            MettaValue::Atom("double".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("->".to_string()),
+                MettaValue::Atom("Number".to_string()),
+                MettaValue::Atom("Number".to_string()),
+            ]),
+        ]);
+        let (_, new_env) = eval(type_assertion, env);
+        env = new_env;
+
+        // Add rule: (= (double $x) (mul $x 2))
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("double".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Long(2),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // Check type of double
+        let get_type = MettaValue::SExpr(vec![
+            MettaValue::Atom("get-type".to_string()),
+            MettaValue::Atom("double".to_string()),
+        ]);
+        let (result, _) = eval(get_type, env.clone());
+
+        let expected_type = MettaValue::SExpr(vec![
+            MettaValue::Atom("->".to_string()),
+            MettaValue::Atom("Number".to_string()),
+            MettaValue::Atom("Number".to_string()),
+        ]);
+        assert_eq!(result[0], expected_type);
+
+        // Evaluate (double 5) -> 10
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("double".to_string()),
+            MettaValue::Long(5),
+        ]);
+        let (result, _) = eval(value, env);
+        assert_eq!(result[0], MettaValue::Long(10));
+    }
+
+    #[test]
+    fn test_type_assertion_added_to_fact_database() {
+        let env = Environment::new();
+
+        // Define a type assertion: (: x Number)
+        let type_assertion = MettaValue::SExpr(vec![
+            MettaValue::Atom(":".to_string()),
+            MettaValue::Atom("x".to_string()),
+            MettaValue::Atom("Number".to_string()),
+        ]);
+
+        let (result, new_env) = eval(type_assertion.clone(), env);
+
+        // Type assertion should return empty list
+        assert!(result.is_empty());
+
+        // Type should be in the type database
+        assert_eq!(
+            new_env.get_type("x"),
+            Some(MettaValue::Atom("Number".to_string()))
+        );
+
+        // Type assertion should also be in the fact database
+        assert!(new_env.has_sexpr_fact(&type_assertion));
+    }
+
+    #[test]
+    fn test_type_error_propagation() {
+        let env = Environment::new();
+
+        // Test: !(+ 1 (+ 2 "bad")) - error should propagate from inner expression
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(2),
+                MettaValue::String("bad".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        // The error from the inner expression should propagate
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"));
+                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+}

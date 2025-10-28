@@ -1,7 +1,7 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{MettaValue, Rule};
 
-use super::{eval, EvalOutput};
+use super::{apply_bindings, eval, pattern_match, EvalOutput};
 
 /// Eval: force evaluation of quoted expressions
 /// (eval expr) - complementary to quote
@@ -103,4 +103,32 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalOutpu
         .collect();
 
     return (return_results, arg_env);
+}
+
+/// Subsequently tests multiple pattern-matching conditions (second argument) for the
+/// given value (first argument)
+pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+    require_three_args!("chain", items, env);
+
+    let expr = &items[1];
+    let var = &items[2];
+    let body = &items[3];
+
+    let (expr_results, expr_env) = eval(expr.clone(), env);
+    for result in &expr_results {
+        if matches!(result, MettaValue::Error(_, _)) {
+            return (vec![result.clone()], expr_env);
+        }
+    }
+
+    let mut all_results = Vec::new();
+    for value in expr_results {
+        if let Some(bindings) = pattern_match(var, &value) {
+            let instantiated_body = apply_bindings(body, &bindings);
+            let (body_results, _) = eval(instantiated_body, expr_env.clone());
+            all_results.extend(body_results);
+        }
+    }
+
+    return (all_results, expr_env);
 }

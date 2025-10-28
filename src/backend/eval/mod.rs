@@ -11,10 +11,11 @@ mod macros;
 
 mod bindings;
 mod control_flow;
-mod core;
 mod errors;
 mod evaluation;
 mod matching;
+mod quoting;
+mod space;
 mod types;
 
 use crate::backend::environment::Environment;
@@ -64,30 +65,26 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     if let Some(MettaValue::Atom(op)) = items.first() {
         match op.as_str() {
             // Rule definition: (= lhs rhs) - add to MORK Space and rule cache
-            "=" => return core::eval_add(items, env),
+            "=" => return space::eval_add(items, env),
 
             // Evaluation: ! expr - force evaluation
             "!" => return evaluation::force_eval(items, env),
 
             // Quote: return argument unevaluated
-            "quote" => {
-                require_one_arg!("quote", items, env);
-                return (vec![items[1].clone()], env);
-            }
+            "quote" => return quoting::eval_quote(items, env),
 
             // If: conditional evaluation - only evaluate chosen branch
-            "if" => {
-                return eval_if(&items[1..], env);
-            }
+            "if" => return control_flow::eval_if(items, env),
 
             // Error construction
             "error" => return errors::eval_error(items, env),
 
+            // Is-error: check if value is an error (for error recovery)
+            "is-error" => return errors::eval_if_error(items, env),
+
             // Catch: error recovery - (catch expr default)
             // If expr evaluates to error, return default instead
-            "catch" => {
-                return eval_catch(&items[1..], env);
-            }
+            "catch" => return errors::eval_catch(items, env),
 
             // Eval: force evaluation of quoted expressions
             // (eval expr) - complementary to quote
@@ -102,165 +99,43 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 
             // Evaluates first argument, binds it to the variable (second argument) and
             // then evaluates third argument which contains (or not) mentioned variable
-            "chain" => {
-                require_three_args!("chain", items, env);
-
-                let expr = &items[1];
-                let var = &items[2];
-                let body = &items[3];
-
-                let (expr_results, expr_env) = eval(expr.clone(), env);
-                for result in &expr_results {
-                    if matches!(result, MettaValue::Error(_, _)) {
-                        return (vec![result.clone()], expr_env);
-                    }
-                }
-
-                let mut all_results = Vec::new();
-                for value in expr_results {
-                    if let Some(bindings) = pattern_match(var, &value) {
-                        let instantiated_body = apply_bindings(body, &bindings);
-                        let (body_results, _) = eval(instantiated_body, expr_env.clone());
-                        all_results.extend(body_results);
-                    }
-                }
-
-                return (all_results, expr_env);
-            }
-
-            // Is-error: check if value is an error (for error recovery)
-            "is-error" => return errors::eval_if_error(items, env),
+            "chain" => return evaluation::eval_chain(items, env),
 
             // Match: pattern matching against atom space
             // (match <space> <pattern> <template>)
             // Searches space for all atoms matching pattern and returns instantiated templates
-            "match" => {
-                return eval_match(&items[1..], env);
-            }
+            "match" => return space::eval_match(items, env),
 
             // Subsequently tests multiple pattern-matching conditions (second argument) for the
             // given value (first argument)
-            "case" => {
-                require_two_args!("case", items, env);
-
-                let atom = items[1].clone();
-                let cases = items[2].clone();
-
-                let (atom_results, atom_env) = eval(atom, env);
-                let mut final_results = Vec::new();
-
-                for atom_result in atom_results {
-                    let is_empty = match &atom_result {
-                        MettaValue::Nil => true,
-                        MettaValue::SExpr(items) if items.is_empty() => true,
-                        _ => false,
-                    };
-
-                    if is_empty {
-                        let switch_result = eval_switch_minimal(
-                            MettaValue::Atom("Empty".to_string()),
-                            cases.clone(),
-                            atom_env.clone(),
-                        );
-                        final_results.extend(switch_result.0);
-                    } else {
-                        let switch_result =
-                            eval_switch_minimal(atom_result, cases.clone(), atom_env.clone());
-                        final_results.extend(switch_result.0);
-                    }
-                }
-
-                return (final_results, atom_env);
-            }
+            "case" => return control_flow::eval_case(items, env),
 
             // Difference between `switch` and `case` is a way how they interpret `Empty` result.
             // case interprets first argument inside itself and then manually checks whether result is empty.
-            "switch" => {
-                require_two_args!("switch", items, env);
-                let atom = items[1].clone();
-                let cases = items[2].clone();
-                return eval_switch_minimal(atom, cases, env);
-            }
+            "switch" => return control_flow::eval_switch(items, env),
 
-            "switch-minimal" => {
-                require_two_args!("switch-minimal", items, env);
-                let atom = items[1].clone();
-                let cases = items[2].clone();
-                return eval_switch_minimal(atom, cases, env);
-            }
+            "switch-minimal" => return control_flow::eval_switch_minimal_handler(items, env),
 
             // This function is being called inside switch function to test one of the cases and it
             // calls switch once again if current condition is not met
-            "switch-internal" => {
-                require_two_args!("switch-internal", items, env);
-                let atom = items[1].clone();
-                let cases = items[2].clone();
-                return eval_switch_internal(atom, cases, env);
-            }
+            "switch-internal" => return control_flow::eval_switch_internal_handler(items, env),
 
             // Let: local variable binding
             // (let $var value body) - Bind variable to value and evaluate body with that binding
             // Supports pattern matching: (let ($x $y) (tuple 1 2) body)
-            "let" => {
-                return eval_let(&items[1..], env);
-            }
-
-            // -- -- -- -- -- -- -- -- types -- -- -- -- -- -- -- --
+            "let" => return bindings::eval_let(items, env),
 
             // Type assertion: (: expr type)
             // Adds a type assertion to the environment
-            ":" => {
-                require_two_args!(":", items, env);
-
-                let expr = &items[1];
-                let typ = items[2].clone();
-
-                // Extract name from expression
-                let name = match expr {
-                    MettaValue::Atom(s) => s.clone(),
-                    MettaValue::SExpr(expr_items) if !expr_items.is_empty() => {
-                        if let MettaValue::Atom(s) = &expr_items[0] {
-                            s.clone()
-                        } else {
-                            format!("{:?}", expr)
-                        }
-                    }
-                    _ => format!("{:?}", expr),
-                };
-
-                let mut new_env = env.clone();
-                new_env.add_type(name, typ);
-
-                // Add the type assertion to MORK Space
-                let type_expr = MettaValue::SExpr(items);
-                new_env.add_to_space(&type_expr);
-
-                return (vec![], new_env);
-            }
+            ":" => return types::eval_type_assertion(items, env),
 
             // get-type: return the type of an expression
             // (get-type expr) -> Type
-            "get-type" => {
-                require_one_arg!("get-type", items, env);
-
-                let expr = &items[1];
-                let typ = infer_type(expr, &env);
-                return (vec![typ], env);
-            }
+            "get-type" => return types::eval_get_type(items, env),
 
             // check-type: check if expression has expected type
             // (check-type expr expected-type) -> Bool
-            "check-type" => {
-                require_two_args!("check-type", items, env);
-
-                let expr = &items[1];
-                let expected = &items[2];
-
-                let actual = infer_type(expr, &env);
-                let matches = types_match(&actual, expected);
-
-                return (vec![MettaValue::Bool(matches)], env);
-            }
+            "check-type" => return types::eval_check_type(items, env),
 
             // Fall through to normal evaluation
             _ => {}
@@ -332,252 +207,6 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     }
 
     (all_final_results, unified_env)
-}
-
-/// Helper function to implement switch-minimal logic
-/// Handles the main switch logic by deconstructing cases and calling switch-internal
-fn eval_switch_minimal(atom: MettaValue, cases: MettaValue, env: Environment) -> EvalResult {
-    if let MettaValue::SExpr(cases_items) = cases {
-        if cases_items.is_empty() {
-            return (vec![MettaValue::Atom("NotReducible".to_string())], env);
-        }
-
-        let first_case = cases_items[0].clone();
-        let remaining_cases = if cases_items.len() > 1 {
-            MettaValue::SExpr(cases_items[1..].to_vec())
-        } else {
-            MettaValue::SExpr(vec![])
-        };
-
-        let cases_list = MettaValue::SExpr(vec![first_case, remaining_cases]);
-        return eval_switch_internal(atom, cases_list, env);
-    }
-
-    let err = MettaValue::Error(
-        "switch-minimal expects expression as second argument".to_string(),
-        Box::new(cases),
-    );
-    (vec![err], env)
-}
-
-/// Helper function to implement switch-internal logic
-/// Tests one case and recursively tries remaining cases if no match
-fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environment) -> EvalResult {
-    if let MettaValue::SExpr(cases_items) = cases_data {
-        if cases_items.len() != 2 {
-            let err = MettaValue::Error(
-                "switch-internal expects exactly 2 arguments".to_string(),
-                Box::new(MettaValue::SExpr(cases_items)),
-            );
-            return (vec![err], env);
-        }
-
-        let first_case = cases_items[0].clone();
-        let remaining_cases = cases_items[1].clone();
-
-        if let MettaValue::SExpr(case_items) = first_case {
-            if case_items.len() != 2 {
-                let err = MettaValue::Error(
-                    "switch case should be a pattern-template pair".to_string(),
-                    Box::new(MettaValue::SExpr(case_items)),
-                );
-                return (vec![err], env);
-            }
-
-            let pattern = case_items[0].clone();
-            let template = case_items[1].clone();
-
-            if let Some(bindings) = pattern_match(&pattern, &atom) {
-                let instantiated_template = apply_bindings(&template, &bindings);
-                return eval(instantiated_template, env);
-            } else {
-                return eval_switch_minimal(atom, remaining_cases, env);
-            }
-        } else {
-            let err = MettaValue::Error(
-                "switch case should be an expression".to_string(),
-                Box::new(first_case),
-            );
-            return (vec![err], env);
-        }
-    }
-
-    let err = MettaValue::Error(
-        "switch-internal expects expression argument".to_string(),
-        Box::new(cases_data),
-    );
-    (vec![err], env)
-}
-
-/// Evaluate if control flow: (if condition then-branch else-branch)
-/// Only evaluates the chosen branch (lazy evaluation)
-fn eval_if(args: &[MettaValue], env: Environment) -> EvalResult {
-    if args.len() < 3 {
-        let err = MettaValue::Error(
-            "if requires 3 arguments: condition, then-branch, else-branch".to_string(),
-            Box::new(MettaValue::SExpr(args.to_vec())),
-        );
-        return (vec![err], env);
-    }
-
-    let condition = &args[0];
-    let then_branch = &args[1];
-    let else_branch = &args[2];
-
-    // Evaluate the condition
-    let (cond_results, env_after_cond) = eval(condition.clone(), env);
-
-    // Check for error in condition
-    if let Some(first) = cond_results.first() {
-        if matches!(first, MettaValue::Error(_, _)) {
-            return (vec![first.clone()], env_after_cond);
-        }
-
-        // Check if condition is true
-        let is_true = match first {
-            MettaValue::Bool(true) => true,
-            MettaValue::Bool(false) => false,
-            // Non-boolean values: treat as true if not Nil
-            MettaValue::Nil => false,
-            _ => true,
-        };
-
-        // Evaluate only the chosen branch
-        if is_true {
-            eval(then_branch.clone(), env_after_cond)
-        } else {
-            eval(else_branch.clone(), env_after_cond)
-        }
-    } else {
-        // No result from condition - treat as false
-        eval(else_branch.clone(), env_after_cond)
-    }
-}
-
-/// Evaluate catch: error recovery mechanism
-/// (catch expr default) - if expr returns error, evaluate and return default
-/// This prevents error propagation (reduction prevention)
-fn eval_catch(args: &[MettaValue], env: Environment) -> EvalResult {
-    if args.len() < 2 {
-        let err = MettaValue::Error(
-            "catch requires 2 arguments: expr and default".to_string(),
-            Box::new(MettaValue::SExpr(args.to_vec())),
-        );
-        return (vec![err], env);
-    }
-
-    let expr = &args[0];
-    let default = &args[1];
-
-    // Evaluate the expression
-    let (results, env_after_eval) = eval(expr.clone(), env);
-
-    // Check if result is an error
-    if let Some(first) = results.first() {
-        if matches!(first, MettaValue::Error(_, _)) {
-            // Error occurred - evaluate and return default instead
-            // This PREVENTS the error from propagating further
-            return eval(default.clone(), env_after_eval);
-        }
-    }
-
-    // No error - return the result
-    (results, env_after_eval)
-}
-
-/// Evaluate match: (match <space-ref> <space-name> <pattern> <template>)
-/// Searches the space for all atoms matching the pattern and returns instantiated templates
-///
-/// Optimized to use Environment::match_space which performs pattern matching
-/// directly on MORK expressions without unnecessary intermediate allocations
-fn eval_match(args: &[MettaValue], env: Environment) -> EvalResult {
-    if args.len() < 4 {
-        let err = MettaValue::Error(
-            "match requires 4 arguments: &, space-name, pattern, and template".to_string(),
-            Box::new(MettaValue::SExpr(args.to_vec())),
-        );
-        return (vec![err], env);
-    }
-
-    let space_ref = &args[0];
-    let space_name = &args[1];
-    let pattern = &args[2];
-    let template = &args[3];
-
-    // Check that first arg is & (space reference operator)
-    match space_ref {
-        MettaValue::Atom(s) if s == "&" => {
-            // Check space name (for now, only support "self")
-            match space_name {
-                MettaValue::Atom(name) if name == "self" => {
-                    // Use optimized match_space method that works directly with MORK
-                    let results = env.match_space(pattern, template);
-                    (results, env)
-                }
-                _ => {
-                    let err = MettaValue::Error(
-                        format!(
-                            "match only supports 'self' as space name, got: {:?}",
-                            space_name
-                        ),
-                        Box::new(MettaValue::SExpr(args.to_vec())),
-                    );
-                    (vec![err], env)
-                }
-            }
-        }
-        _ => {
-            let err = MettaValue::Error(
-                format!("match requires & as first argument, got: {:?}", space_ref),
-                Box::new(MettaValue::SExpr(args.to_vec())),
-            );
-            (vec![err], env)
-        }
-    }
-}
-
-/// Evaluate let binding: (let pattern value body)
-/// Evaluates value, binds it to pattern, and evaluates body with those bindings
-/// Supports both simple variable binding and pattern matching:
-///   - (let $x 42 body) - simple binding
-///   - (let ($a $b) (tuple 1 2) body) - destructuring pattern
-fn eval_let(args: &[MettaValue], env: Environment) -> EvalResult {
-    if args.len() < 3 {
-        let err = MettaValue::Error(
-            "let requires 3 arguments: pattern, value, and body".to_string(),
-            Box::new(MettaValue::SExpr(args.to_vec())),
-        );
-        return (vec![err], env);
-    }
-
-    let pattern = &args[0];
-    let value_expr = &args[1];
-    let body = &args[2];
-
-    // Evaluate the value expression first
-    let (value_results, value_env) = eval(value_expr.clone(), env);
-
-    // Handle nondeterminism: if value evaluates to multiple results, try each one
-    let mut all_results = Vec::new();
-
-    for value in value_results {
-        // Try to match the pattern against the value
-        if let Some(bindings) = pattern_match(pattern, &value) {
-            // Apply bindings to the body and evaluate it
-            let instantiated_body = apply_bindings(body, &bindings);
-            let (body_results, _) = eval(instantiated_body, value_env.clone());
-            all_results.extend(body_results);
-        } else {
-            // Pattern match failed
-            let err = MettaValue::Error(
-                format!("let pattern {:?} does not match value {:?}", pattern, value),
-                Box::new(MettaValue::SExpr(args.to_vec())),
-            );
-            all_results.push(err);
-        }
-    }
-
-    (all_results, value_env)
 }
 
 /// Try to evaluate a built-in operation
@@ -991,134 +620,6 @@ fn try_match_all_rules_iterative(
         final_matches
     } else {
         Vec::new()
-    }
-}
-
-/// Infer the type of an expression
-/// Returns a MettaValue representing the type
-fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
-    match expr {
-        // Ground types have built-in types
-        MettaValue::Bool(_) => MettaValue::Atom("Bool".to_string()),
-        MettaValue::Long(_) => MettaValue::Atom("Number".to_string()),
-        MettaValue::String(_) => MettaValue::Atom("String".to_string()),
-        MettaValue::Uri(_) => MettaValue::Atom("URI".to_string()),
-        MettaValue::Nil => MettaValue::Atom("Nil".to_string()),
-
-        // Type values have type Type
-        MettaValue::Type(_) => MettaValue::Atom("Type".to_string()),
-
-        // Errors have Error type
-        MettaValue::Error(_, _) => MettaValue::Atom("Error".to_string()),
-
-        // For atoms, look up in environment
-        MettaValue::Atom(name) => {
-            // Check if it's a variable (starts with $, &, or ')
-            if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
-                // Type variable - return as-is wrapped in Type
-                return MettaValue::Type(Box::new(MettaValue::Atom(name.clone())));
-            }
-
-            // Look up type in environment
-            env.get_type(name)
-                .unwrap_or_else(|| MettaValue::Atom("Undefined".to_string()))
-        }
-
-        // For s-expressions, try to infer from function application
-        MettaValue::SExpr(items) => {
-            if items.is_empty() {
-                return MettaValue::Atom("Nil".to_string());
-            }
-
-            // Get the operator/function
-            if let Some(MettaValue::Atom(op)) = items.first() {
-                // Check for built-in operators (using symbols, not normalized names)
-                match op.as_str() {
-                    "+" | "-" | "*" | "/" => {
-                        return MettaValue::Atom("Number".to_string());
-                    }
-                    "<" | "<=" | ">" | ">=" | "==" | "!=" => {
-                        return MettaValue::Atom("Bool".to_string());
-                    }
-                    "->" => {
-                        // Arrow type constructor
-                        return MettaValue::Atom("Type".to_string());
-                    }
-                    _ => {
-                        // Look up function type in environment
-                        if let Some(func_type) = env.get_type(op) {
-                            // If it's an arrow type, extract return type
-                            if let MettaValue::SExpr(ref type_items) = func_type {
-                                if let Some(MettaValue::Atom(arrow)) = type_items.first() {
-                                    if arrow == "->" && type_items.len() > 1 {
-                                        // Return type is last element
-                                        return type_items.last().cloned().unwrap();
-                                    }
-                                }
-                            }
-                            return func_type;
-                        }
-                    }
-                }
-            }
-
-            // Can't infer type
-            MettaValue::Atom("Undefined".to_string())
-        }
-    }
-}
-
-/// Check if two types match
-/// Handles type variables and structural equality
-fn types_match(actual: &MettaValue, expected: &MettaValue) -> bool {
-    match (actual, expected) {
-        // Type variables match anything
-        (_, MettaValue::Atom(e)) if e.starts_with('$') => true,
-        (MettaValue::Atom(a), _) if a.starts_with('$') => true,
-
-        // Type variables in Type wrapper
-        (_, MettaValue::Type(e)) => {
-            if let MettaValue::Atom(name) = e.as_ref() {
-                if name.starts_with('$') {
-                    return true;
-                }
-            }
-            // Otherwise, unwrap and compare
-            if let MettaValue::Type(a) = actual {
-                types_match(a, e)
-            } else {
-                false
-            }
-        }
-
-        // Exact atom matches
-        (MettaValue::Atom(a), MettaValue::Atom(e)) => a == e,
-
-        // Bool matches
-        (MettaValue::Bool(a), MettaValue::Bool(e)) => a == e,
-
-        // Long matches
-        (MettaValue::Long(a), MettaValue::Long(e)) => a == e,
-
-        // String matches
-        (MettaValue::String(a), MettaValue::String(e)) => a == e,
-
-        // S-expression matches (structural equality)
-        (MettaValue::SExpr(a_items), MettaValue::SExpr(e_items)) => {
-            if a_items.len() != e_items.len() {
-                return false;
-            }
-            a_items
-                .iter()
-                .zip(e_items.iter())
-                .all(|(a, e)| types_match(a, e))
-        }
-
-        // Nil matches Nil
-        (MettaValue::Nil, MettaValue::Nil) => true,
-
-        // Default: no match
-        _ => false,
     }
 }
 

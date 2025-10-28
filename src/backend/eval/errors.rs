@@ -35,3 +35,38 @@ pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalOut
         return (vec![MettaValue::Bool(false)], new_env);
     }
 }
+
+/// Evaluate catch: error recovery mechanism
+/// (catch expr default) - if expr returns error, evaluate and return default
+/// This prevents error propagation (reduction prevention)
+pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+    let args = &items[1..];
+
+    if args.len() < 2 {
+        let err = MettaValue::Error(
+            "catch requires 2 arguments: expr and default".to_string(),
+            Box::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return (vec![err], env);
+    }
+
+    let expr = &args[0];
+    let default = &args[1];
+
+    // Evaluate the expression
+    let (results, env_after_eval) = eval(expr.clone(), env);
+
+    // Check if result is an error
+    if let Some(first) = results.first() {
+        if matches!(first, MettaValue::Error(_, _)) {
+            // Error occurred - evaluate and return default instead
+            // This PREVENTS the error from propagating further
+            return eval(default.clone(), env_after_eval);
+        }
+    }
+
+    // No error - return the result
+    (results, env_after_eval)
+}
+
+// TODO -> tests

@@ -49,4 +49,162 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
     (all_results, value_env)
 }
 
-// TODO -> types
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_let_simple_binding() {
+        let env = Environment::new();
+
+        // (let $x 42 $x)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Long(42),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_let_with_expression() {
+        let env = Environment::new();
+
+        // (let $y (+ 10 5) (* $y 2))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::Atom("$y".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(10),
+                MettaValue::Long(5),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Atom("$y".to_string()),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(30));
+    }
+
+    #[test]
+    fn test_let_with_pattern_matching() {
+        let env = Environment::new();
+
+        // (let (tuple $a $b) (tuple 1 2) (+ $a $b))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("tuple".to_string()),
+                MettaValue::Atom("$a".to_string()),
+                MettaValue::Atom("$b".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("tuple".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Atom("$a".to_string()),
+                MettaValue::Atom("$b".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+    }
+
+    #[test]
+    fn test_let_nested() {
+        let env = Environment::new();
+
+        // (let $z 3 (let $w 4 (+ $z $w)))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::Atom("$z".to_string()),
+            MettaValue::Long(3),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("let".to_string()),
+                MettaValue::Atom("$w".to_string()),
+                MettaValue::Long(4),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Atom("$z".to_string()),
+                    MettaValue::Atom("$w".to_string()),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(7));
+    }
+
+    #[test]
+    fn test_let_with_if() {
+        let env = Environment::new();
+
+        // (let $base 10 (if (> $base 5) (* $base 2) $base))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::Atom("$base".to_string()),
+            MettaValue::Long(10),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("if".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom(">".to_string()),
+                    MettaValue::Atom("$base".to_string()),
+                    MettaValue::Long(5),
+                ]),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("*".to_string()),
+                    MettaValue::Atom("$base".to_string()),
+                    MettaValue::Long(2),
+                ]),
+                MettaValue::Atom("$base".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(20));
+    }
+
+    #[test]
+    fn test_let_pattern_mismatch() {
+        let env = Environment::new();
+
+        // (let (foo $x) (bar 42) $x) - pattern mismatch should error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("foo".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("bar".to_string()),
+                MettaValue::Long(42),
+            ]),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("does not match"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+}

@@ -71,4 +71,63 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalOutput
     }
 }
 
-// TODO -> tests
+mod tests {
+    use super::*;
+    use crate::eval;
+
+    #[test]
+    fn test_add_missing_arguments() {
+        let env = Environment::new();
+
+        // (=) - missing both arguments
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("=".to_string())]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("="));
+                assert!(msg.contains("requires exactly 2 arguments")); // Changed (note plural)
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_add_missing_one_argument() {
+        let env = Environment::new();
+
+        // (= lhs) - missing rhs
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::Atom("lhs".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("="));
+                assert!(msg.contains("requires exactly 2 arguments")); // Changed
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rule_definition() {
+        let env = Environment::new();
+
+        // (= (f) 42)
+        let rule_def = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::SExpr(vec![MettaValue::Atom("f".to_string())]),
+            MettaValue::Long(42),
+        ]);
+
+        let (result, _new_env) = eval(rule_def, env);
+
+        // Rule definition should return empty list
+        assert!(result.is_empty());
+    }
+}

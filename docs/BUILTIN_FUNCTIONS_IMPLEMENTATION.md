@@ -339,13 +339,13 @@ This document provides a comprehensive reference of the implementation status of
 
 ## List Operations
 
-- [ ] **`map-atom`** - Maps function over list
+- [x] **`map-atom`** - Maps function over list
   - Reference: [stdlib.metta:467-483](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L467-L483)
 
-- [ ] **`filter-atom`** - Filters list with predicate
+- [x] **`filter-atom`** - Filters list with predicate
   - Reference: [stdlib.metta:447-465](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L447-L465)
 
-- [ ] **`foldl-atom`** - Left fold over list
+- [x] **`foldl-atom`** - Left fold over list
   - Reference: [stdlib.metta:485-504](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L485-L504)
 
 ## Testing & Assertions

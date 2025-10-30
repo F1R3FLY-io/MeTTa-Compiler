@@ -13,6 +13,7 @@ mod bindings;
 mod control_flow;
 mod errors;
 mod evaluation;
+mod list_ops;
 mod quoting;
 mod space;
 mod types;
@@ -135,6 +136,15 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
             // check-type: check if expression has expected type
             // (check-type expr expected-type) -> Bool
             "check-type" => return types::eval_check_type(items, env),
+
+            // map-atom: maps a function over a list of atoms
+            "map-atom" => return list_ops::eval_map_atom(items, env),
+
+            // filter-atom: filters a list keeping only elements that satisfy the predicate
+            "filter-atom" => return list_ops::eval_filter_atom(items, env),
+
+            // foldl-atom: folds (reduces) a list from left to right using an operation and initial value
+            "foldl-atom" => return list_ops::eval_foldl_atom(items, env),
 
             // Fall through to normal evaluation
             _ => {}

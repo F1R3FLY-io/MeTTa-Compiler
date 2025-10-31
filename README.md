@@ -108,7 +108,7 @@ metta[9]> exit
 Goodbye!
 ```
 
-See `docs/REPL_USAGE.md` for complete REPL documentation.
+See `docs/guides/REPL_GUIDE.md` for complete REPL documentation.
 
 ### Library Usage
 
@@ -530,13 +530,14 @@ MeTTa-Compiler/
 │   └── *.rho                      # Rholang integration examples
 ├── docs/                          # User documentation
 │   ├── README.md                  # Documentation index
+│   ├── ISSUE_3_SATISFACTION.md    # MVP requirements analysis
+│   ├── MVP_BACKEND_COMPLETE.md    # MVP milestone documentation
+│   ├── THREADING_MODEL.md         # Threading documentation
 │   ├── guides/                    # User guides (REPL, reduction prevention)
 │   ├── reference/                 # API and language reference
 │   ├── design/                    # Design documents
-│   ├── CONFIGURATION.md           # Configuration guide
-│   ├── THREADING_MODEL.md         # Threading documentation
-│   ├── RHOLANG_BUILD_AUTOMATION.md # Rholang parser build strategies
-│   └── BUILTIN_FUNCTIONS_IMPLEMENTATION.md # Built-in functions guide
+│   ├── testing/                   # Testing documentation
+│   └── archive/                   # Historical documents
 ├── integration/                   # Integration guides
 │   ├── README.md                  # Integration overview
 │   ├── QUICK_START.md             # Quick start guide
@@ -553,7 +554,6 @@ MeTTa-Compiler/
 ├── Cargo.toml                     # Rust project configuration
 ├── Cargo.lock                     # Dependency lock file
 ├── LICENSE                        # Apache 2.0 license
-├── RHOLANG_PARSER_NOTES.md        # Rholang parser configuration guide
 └── README.md                      # This file
 ```
 
@@ -686,7 +686,7 @@ configure_eval(EvalConfig {
 });
 ```
 
-See **`docs/THREADING_MODEL.md`** and **`docs/CONFIGURATION.md`** for detailed information.
+See **`docs/THREADING_MODEL.md`** and **`docs/guides/CONFIGURATION.md`** for detailed information.
 
 ## Documentation
 
@@ -695,15 +695,15 @@ See **`docs/THREADING_MODEL.md`** and **`docs/CONFIGURATION.md`** for detailed i
 - **`integration/QUICK_START.md`** - Quick start for Rholang integration
 
 ### User Guides
-- **`docs/guides/REPL_USAGE.md`** - Interactive REPL usage guide
+- **`docs/guides/REPL_GUIDE.md`** - Comprehensive interactive REPL guide
 - **`docs/guides/REDUCTION_PREVENTION.md`** - Comprehensive reduction prevention guide
-- **`docs/CONFIGURATION.md`** - Configuration guide
+- **`docs/guides/CONFIGURATION.md`** - Configuration guide
 - **`docs/THREADING_MODEL.md`** - Threading and parallelization documentation
 
 ### API Reference
 - **`docs/reference/BACKEND_API_REFERENCE.md`** - Complete backend API reference
 - **`docs/reference/METTA_TYPE_SYSTEM_REFERENCE.md`** - Official MeTTa type system reference
-- **`docs/reference/TYPE_SYSTEM_ANALYSIS.md`** - Type system implementation analysis
+- **`docs/reference/BUILTIN_FUNCTIONS_REFERENCE.md`** - Built-in functions catalog and status
 
 ### Design Documents
 - **`docs/design/BACKEND_IMPLEMENTATION.md`** - Backend implementation details
@@ -718,8 +718,8 @@ See **`docs/THREADING_MODEL.md`** and **`docs/CONFIGURATION.md`** for detailed i
 - **`integration/RHOLANG_INTEGRATION.md`** - Technical architecture details
 - **`integration/DEPLOYMENT_GUIDE.md`** - Deployment guide
 - **`integration/TESTING_GUIDE.md`** - Testing documentation
-- **`RHOLANG_PARSER_NOTES.md`** - Rholang parser configuration and named comments feature
-- **`docs/RHOLANG_BUILD_AUTOMATION.md`** - Build automation strategies for Rholang parser
+- **`docs/guides/RHOLANG_PARSER_NAMED_COMMENTS.md`** - Rholang parser configuration and named comments feature
+- **`docs/guides/RHOLANG_BUILD_AUTOMATION.md`** - Build automation strategies for Rholang parser
 
 ## MVP Status
 

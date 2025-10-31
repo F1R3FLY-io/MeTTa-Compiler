@@ -58,10 +58,10 @@ This document provides a comprehensive reference of the implementation status of
   - Location: `src/backend/eval.rs:101`
   - Reference: [stdlib.metta:510-519](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L510-L519)
 
-- [ ] **`case`** - Pattern matching with multiple conditions
+- [x] **`case`** - Pattern matching with multiple conditions
   - Reference: [stdlib.metta:1193-1204](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1193-L1204)
 
-- [ ] **`switch`** - Similar to case but handles Empty differently
+- [x] **`switch`** - Similar to case but handles Empty differently
   - Reference: [stdlib.metta:339-347](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L339-L347)
 
 ## Variable Binding
@@ -339,13 +339,13 @@ This document provides a comprehensive reference of the implementation status of
 
 ## List Operations
 
-- [ ] **`map-atom`** - Maps function over list
+- [x] **`map-atom`** - Maps function over list
   - Reference: [stdlib.metta:467-483](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L467-L483)
 
-- [ ] **`filter-atom`** - Filters list with predicate
+- [x] **`filter-atom`** - Filters list with predicate
   - Reference: [stdlib.metta:447-465](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L447-L465)
 
-- [ ] **`foldl-atom`** - Left fold over list
+- [x] **`foldl-atom`** - Left fold over list
   - Reference: [stdlib.metta:485-504](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L485-L504)
 
 ## Testing & Assertions

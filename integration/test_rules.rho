@@ -329,17 +329,17 @@ new stdoutAck(`rho:io:stdoutAck`),
       for (_ <- ack) {
         stdoutAck!("All 6 tests passed:\n", *ack) |
         for (_ <- ack) {
-          stdoutAck!("  ✓ Simple rule definition\n", *ack) |
+          stdoutAck!("  [OK] Simple rule definition\n", *ack) |
           for (_ <- ack) {
-            stdoutAck!("  ✓ Rule definition and usage\n", *ack) |
+            stdoutAck!("  [OK] Rule definition and usage\n", *ack) |
             for (_ <- ack) {
-              stdoutAck!("  ✓ Rule chaining\n", *ack) |
+              stdoutAck!("  [OK] Rule chaining\n", *ack) |
               for (_ <- ack) {
-                stdoutAck!("  ✓ Multiple rule definitions\n", *ack) |
+                stdoutAck!("  [OK] Multiple rule definitions\n", *ack) |
                 for (_ <- ack) {
-                  stdoutAck!("  ✓ Rule with multiple parameters\n", *ack) |
+                  stdoutAck!("  [OK] Rule with multiple parameters\n", *ack) |
                   for (_ <- ack) {
-                    stdoutAck!("  ✓ Rule persistence across evaluations\n", *ack)
+                    stdoutAck!("  [OK] Rule persistence across evaluations\n", *ack)
                   }
                 }
               }

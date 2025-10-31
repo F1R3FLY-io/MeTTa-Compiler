@@ -530,25 +530,25 @@ new stdoutAck(`rho:io:stdoutAck`),
       for (_ <- ack) {
         stdoutAck!("Tested Properties:\n", *ack) |
         for (_ <- ack) {
-          stdoutAck!("  ✓ Identity (empty state)\n", *ack) |
+          stdoutAck!("  [OK] Identity (empty state)\n", *ack) |
           for (_ <- ack) {
-            stdoutAck!("  ✓ Sequential composition\n", *ack) |
+            stdoutAck!("  [OK] Sequential composition\n", *ack) |
             for (_ <- ack) {
-              stdoutAck!("  ✓ Rule persistence\n", *ack) |
+              stdoutAck!("  [OK] Rule persistence\n", *ack) |
               for (_ <- ack) {
-                stdoutAck!("  ✓ Rule chaining\n", *ack) |
+                stdoutAck!("  [OK] Rule chaining\n", *ack) |
                 for (_ <- ack) {
-                  stdoutAck!("  ✓ State independence\n", *ack) |
+                  stdoutAck!("  [OK] State independence\n", *ack) |
                   for (_ <- ack) {
-                    stdoutAck!("  ✓ Monotonic accumulation\n", *ack) |
+                    stdoutAck!("  [OK] Monotonic accumulation\n", *ack) |
                     for (_ <- ack) {
-                      stdoutAck!("  ✓ Error resilience\n", *ack) |
+                      stdoutAck!("  [OK] Error resilience\n", *ack) |
                       for (_ <- ack) {
-                        stdoutAck!("  ✓ Multiple expressions\n", *ack) |
+                        stdoutAck!("  [OK] Multiple expressions\n", *ack) |
                         for (_ <- ack) {
-                          stdoutAck!("  ✓ No cross-contamination\n", *ack) |
+                          stdoutAck!("  [OK] No cross-contamination\n", *ack) |
                           for (_ <- ack) {
-                            stdoutAck!("  ✓ Long chain stability\n", *ack)
+                            stdoutAck!("  [OK] Long chain stability\n", *ack)
                           }
                         }
                       }

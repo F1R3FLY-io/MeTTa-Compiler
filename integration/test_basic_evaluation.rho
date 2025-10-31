@@ -286,21 +286,21 @@ new stdoutAck(`rho:io:stdoutAck`),
       for (_ <- ack) {
         stdoutAck!("All 8 tests passed:\n", *ack) |
         for (_ <- ack) {
-          stdoutAck!("  ✓ Basic addition\n", *ack) |
+          stdoutAck!("  [OK] Basic addition\n", *ack) |
           for (_ <- ack) {
-            stdoutAck!("  ✓ Basic subtraction\n", *ack) |
+            stdoutAck!("  [OK] Basic subtraction\n", *ack) |
             for (_ <- ack) {
-              stdoutAck!("  ✓ Basic multiplication\n", *ack) |
+              stdoutAck!("  [OK] Basic multiplication\n", *ack) |
               for (_ <- ack) {
-                stdoutAck!("  ✓ Basic division\n", *ack) |
+                stdoutAck!("  [OK] Basic division\n", *ack) |
                 for (_ <- ack) {
-                  stdoutAck!("  ✓ Nested arithmetic\n", *ack) |
+                  stdoutAck!("  [OK] Nested arithmetic\n", *ack) |
                   for (_ <- ack) {
-                    stdoutAck!("  ✓ Complex nested expression\n", *ack) |
+                    stdoutAck!("  [OK] Complex nested expression\n", *ack) |
                     for (_ <- ack) {
-                      stdoutAck!("  ✓ Multiple expressions\n", *ack) |
+                      stdoutAck!("  [OK] Multiple expressions\n", *ack) |
                       for (_ <- ack) {
-                        stdoutAck!("  ✓ Boolean comparisons\n", *ack)
+                        stdoutAck!("  [OK] Boolean comparisons\n", *ack)
                       }
                     }
                   }

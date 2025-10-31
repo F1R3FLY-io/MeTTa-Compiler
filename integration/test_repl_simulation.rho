@@ -311,13 +311,13 @@ new stdoutAck(`rho:io:stdoutAck`),
       for (_ <- ack) {
         stdoutAck!("All 4 tests passed:\n", *ack) |
         for (_ <- ack) {
-          stdoutAck!("  ✓ Simple REPL session\n", *ack) |
+          stdoutAck!("  [OK] Simple REPL session\n", *ack) |
           for (_ <- ack) {
-            stdoutAck!("  ✓ Interactive rule definition and usage\n", *ack) |
+            stdoutAck!("  [OK] Interactive rule definition and usage\n", *ack) |
             for (_ <- ack) {
-              stdoutAck!("  ✓ Building up context incrementally\n", *ack) |
+              stdoutAck!("  [OK] Building up context incrementally\n", *ack) |
               for (_ <- ack) {
-                stdoutAck!("  ✓ Mix of definitions and evaluations\n", *ack)
+                stdoutAck!("  [OK] Mix of definitions and evaluations\n", *ack)
               }
             }
           }

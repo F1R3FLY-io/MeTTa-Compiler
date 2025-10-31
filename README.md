@@ -24,7 +24,7 @@ MeTTaTron is a direct evaluator for the MeTTa language featuring lazy evaluation
 - **MORK/PathMap integration** - Efficient pattern matching with MORK zipper optimization
 - **REPL mode** - Interactive evaluation environment
 - **CLI and library** - Use as a command-line tool or integrate into your Rust projects
-- **Comprehensive tests** - 472 tests covering all language features
+- **Comprehensive tests** - 474 tests covering all language features
 - **Nondeterministic evaluation** - Multiply-defined patterns with Cartesian product semantics
 
 ## Prerequisites
@@ -545,7 +545,7 @@ MeTTa-Compiler/
 │   ├── TESTING_GUIDE.md           # Testing documentation
 │   ├── test_*.rho                 # Integration test files
 │   └── *.md                       # Other integration docs
-├── .claude/                       # Claude AI documentation (19 files)
+├── .claude/                       # Claude AI documentation (28 files)
 │   ├── README.md                  # Guide to AI docs
 │   ├── CLAUDE.md                  # Claude Code instructions
 │   └── *.md                       # Planning guides, status docs
@@ -623,7 +623,7 @@ new result in {
 }
 ```
 
-See **`RHOLANG_SYNC_GUIDE.md`** for complete usage patterns with the `!?` operator
+See **`integration/RHOLANG_SYNC_GUIDE.md`** for complete usage patterns with the `!?` operator
 
 ### Integration Features
 
@@ -655,7 +655,6 @@ See **`RHOLANG_SYNC_GUIDE.md`** for complete usage patterns with the `!?` operat
 - **`integration/SYNC_OPERATOR_SUMMARY.md`** - `!?` operator implementation summary
 
 **Technical Details:**
-- **`integration/RHOLANG_INTEGRATION_SUMMARY.md`** - Integration status and overview
 - **`integration/RHOLANG_INTEGRATION.md`** - Technical architecture details
 
 ## Threading and Performance

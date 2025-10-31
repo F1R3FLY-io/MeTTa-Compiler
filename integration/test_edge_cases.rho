@@ -263,17 +263,17 @@ new stdoutAck(`rho:io:stdoutAck`),
       for (_ <- ack) {
         stdoutAck!("All 6 tests passed:\n", *ack) |
         for (_ <- ack) {
-          stdoutAck!("  ✓ Syntax error handling\n", *ack) |
+          stdoutAck!("  [OK] Syntax error handling\n", *ack) |
           for (_ <- ack) {
-            stdoutAck!("  ✓ Empty input\n", *ack) |
+            stdoutAck!("  [OK] Empty input\n", *ack) |
             for (_ <- ack) {
-              stdoutAck!("  ✓ Undefined function\n", *ack) |
+              stdoutAck!("  [OK] Undefined function\n", *ack) |
               for (_ <- ack) {
-                stdoutAck!("  ✓ Error resilience\n", *ack) |
+                stdoutAck!("  [OK] Error resilience\n", *ack) |
                 for (_ <- ack) {
-                  stdoutAck!("  ✓ Division by zero\n", *ack) |
+                  stdoutAck!("  [OK] Division by zero\n", *ack) |
                   for (_ <- ack) {
-                    stdoutAck!("  ✓ Pattern matching with no match\n", *ack)
+                    stdoutAck!("  [OK] Pattern matching with no match\n", *ack)
                   }
                 }
               }

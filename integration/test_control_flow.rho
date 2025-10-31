@@ -286,21 +286,21 @@ new stdoutAck(`rho:io:stdoutAck`),
       for (_ <- ack) {
         stdoutAck!("All 8 tests passed:\n", *ack) |
         for (_ <- ack) {
-          stdoutAck!("  ✓ if expression (true branch)\n", *ack) |
+          stdoutAck!("  [OK] if expression (true branch)\n", *ack) |
           for (_ <- ack) {
-            stdoutAck!("  ✓ if expression (false branch)\n", *ack) |
+            stdoutAck!("  [OK] if expression (false branch)\n", *ack) |
             for (_ <- ack) {
-              stdoutAck!("  ✓ quote expression\n", *ack) |
+              stdoutAck!("  [OK] quote expression\n", *ack) |
               for (_ <- ack) {
-                stdoutAck!("  ✓ quote and eval composition\n", *ack) |
+                stdoutAck!("  [OK] quote and eval composition\n", *ack) |
                 for (_ <- ack) {
-                  stdoutAck!("  ✓ error creation\n", *ack) |
+                  stdoutAck!("  [OK] error creation\n", *ack) |
                   for (_ <- ack) {
-                    stdoutAck!("  ✓ catch expression (catching error)\n", *ack) |
+                    stdoutAck!("  [OK] catch expression (catching error)\n", *ack) |
                     for (_ <- ack) {
-                      stdoutAck!("  ✓ catch expression (no error)\n", *ack) |
+                      stdoutAck!("  [OK] catch expression (no error)\n", *ack) |
                       for (_ <- ack) {
-                        stdoutAck!("  ✓ is-error predicate\n", *ack)
+                        stdoutAck!("  [OK] is-error predicate\n", *ack)
                       }
                     }
                   }

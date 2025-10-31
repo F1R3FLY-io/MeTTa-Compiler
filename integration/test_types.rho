@@ -269,19 +269,19 @@ new stdoutAck(`rho:io:stdoutAck`),
       for (_ <- ack) {
         stdoutAck!("All 7 tests passed:\n", *ack) |
         for (_ <- ack) {
-          stdoutAck!("  ✓ Type assertion\n", *ack) |
+          stdoutAck!("  [OK] Type assertion\n", *ack) |
           for (_ <- ack) {
-            stdoutAck!("  ✓ get-type for numbers\n", *ack) |
+            stdoutAck!("  [OK] get-type for numbers\n", *ack) |
             for (_ <- ack) {
-              stdoutAck!("  ✓ get-type for booleans\n", *ack) |
+              stdoutAck!("  [OK] get-type for booleans\n", *ack) |
               for (_ <- ack) {
-                stdoutAck!("  ✓ get-type for strings\n", *ack) |
+                stdoutAck!("  [OK] get-type for strings\n", *ack) |
                 for (_ <- ack) {
-                  stdoutAck!("  ✓ check-type (type match)\n", *ack) |
+                  stdoutAck!("  [OK] check-type (type match)\n", *ack) |
                   for (_ <- ack) {
-                    stdoutAck!("  ✓ check-type (type mismatch)\n", *ack) |
+                    stdoutAck!("  [OK] check-type (type mismatch)\n", *ack) |
                     for (_ <- ack) {
-                      stdoutAck!("  ✓ Pattern matching with wildcards\n", *ack)
+                      stdoutAck!("  [OK] Pattern matching with wildcards\n", *ack)
                     }
                   }
                 }

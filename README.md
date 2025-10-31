@@ -24,7 +24,7 @@ MeTTaTron is a direct evaluator for the MeTTa language featuring lazy evaluation
 - **MORK/PathMap integration** - Efficient pattern matching with MORK zipper optimization
 - **REPL mode** - Interactive evaluation environment
 - **CLI and library** - Use as a command-line tool or integrate into your Rust projects
-- **Comprehensive tests** - 287 tests covering all language features
+- **Comprehensive tests** - 472 tests covering all language features
 - **Nondeterministic evaluation** - Multiply-defined patterns with Cartesian product semantics
 
 ## Prerequisites
@@ -196,8 +196,8 @@ MeTTa uses S-expression syntax similar to Lisp:
 
 ### Data Types
 
-- **Ground Types**: `Bool`, `String`, `Long`, `URI`
-- **Literals**: `true`, `false`, `42`, `"hello"`
+- **Ground Types**: `Bool`, `String`, `Long`, `Float`, `URI`
+- **Literals**: `true`, `false`, `42`, `3.14`, `"hello"`
 - **Variables**: `$x`, `&y`, `'z`
 - **Wildcards**: `_`
 - **S-expressions**: `(expr ...)`
@@ -230,6 +230,7 @@ The evaluator includes basic type system support with type assertions and type c
 **Type Inference**: `(get-type expr)`
 ```lisp
 !(get-type 42)         ; Returns: Number
+!(get-type 3.14)       ; Returns: Number
 !(get-type true)       ; Returns: Bool
 !(get-type "hello")    ; Returns: String
 !(get-type x)          ; Returns type of x from assertions
@@ -244,7 +245,7 @@ The evaluator includes basic type system support with type assertions and type c
 ```
 
 **Features**:
-- **Ground type inference**: Automatic types for Bool, Long, String, URI, Nil
+- **Ground type inference**: Automatic types for Bool, Long, Float, String, URI, Nil
 - **Type assertions**: Explicit type declarations for atoms and functions
 - **Arrow types**: Function types with `(-> ArgType... ReturnType)` syntax
 - **Type variables**: Polymorphic types with `$t`, `$a`, etc.
@@ -429,21 +430,28 @@ The evaluator consists of two main stages:
 
 ### 2. Backend Evaluation (`src/backend/`)
 
-#### Types (`src/backend/types.rs`)
+#### Models (`src/backend/models/`)
 - Core type definitions: `MettaValue`, `Environment`, `Rule`
 - Pattern matching support with variables and wildcards
+- Type system representations
 
 #### Compilation (`src/backend/compile.rs`)
 - Parses MeTTa source to `MettaValue` expressions
 - Preserves operator symbols as-is (`+` stays `+`, not normalized)
 - Returns `MettaState` with source expressions and empty environment
 
-#### Evaluation (`src/backend/eval.rs`)
-- Lazy evaluation with special forms
-- Pattern matching with variable binding (MORK/PathMap optimized)
-- Rule application with `!` operator
-- Grounded function dispatch
-- Error propagation
+#### Evaluation (`src/backend/eval/`)
+Modular evaluation engine split by functionality:
+- **`mod.rs`** - Core evaluation logic and pattern matching
+- **`evaluation.rs`** - Main eval loop and rule application
+- **`bindings.rs`** - Variable binding and unification
+- **`control_flow.rs`** - `if`, `switch`, `case` special forms
+- **`errors.rs`** - Error handling and propagation
+- **`list_ops.rs`** - List operations (cons, car, cdr, etc.)
+- **`quoting.rs`** - Quote and eval special forms
+- **`space.rs`** - Space operations and match
+- **`types.rs`** - Type inference and checking
+- **`macros.rs`** - Helper macros for evaluation
 - Async parallel evaluation support via `run_state_async`
 
 ### Evaluation Flow
@@ -496,9 +504,21 @@ MeTTa-Compiler/
 │   ├── sexpr.rs                   # Lexer and S-expression parser
 │   ├── backend/                   # Evaluation engine
 │   │   ├── mod.rs                 # Module exports
-│   │   ├── types.rs               # Core types (MettaValue, Environment, Rule)
 │   │   ├── compile.rs             # MeTTa source → MettaValue compilation
-│   │   ├── eval.rs                # Lazy evaluation with pattern matching
+│   │   ├── models/                # Type definitions
+│   │   │   ├── mod.rs
+│   │   │   └── metta_value.rs     # MettaValue enum and methods
+│   │   ├── eval/                  # Modular evaluation engine
+│   │   │   ├── mod.rs             # Core evaluation and pattern matching
+│   │   │   ├── evaluation.rs      # Main eval loop and rule application
+│   │   │   ├── bindings.rs        # Variable binding and unification
+│   │   │   ├── control_flow.rs    # if, switch, case special forms
+│   │   │   ├── errors.rs          # Error handling and propagation
+│   │   │   ├── list_ops.rs        # List operations (cons, car, cdr, etc.)
+│   │   │   ├── quoting.rs         # Quote and eval special forms
+│   │   │   ├── space.rs           # Space operations and match
+│   │   │   ├── types.rs           # Type inference and checking
+│   │   │   └── macros.rs          # Helper macros for evaluation
 │   │   └── mork_convert.rs        # MORK/PathMap conversion
 │   ├── rholang_integration.rs     # Rholang integration API (sync & async)
 │   ├── pathmap_par_integration.rs # PathMap Par conversion
@@ -514,7 +534,9 @@ MeTTa-Compiler/
 │   ├── reference/                 # API and language reference
 │   ├── design/                    # Design documents
 │   ├── CONFIGURATION.md           # Configuration guide
-│   └── THREADING_MODEL.md         # Threading documentation
+│   ├── THREADING_MODEL.md         # Threading documentation
+│   ├── RHOLANG_BUILD_AUTOMATION.md # Rholang parser build strategies
+│   └── BUILTIN_FUNCTIONS_IMPLEMENTATION.md # Built-in functions guide
 ├── integration/                   # Integration guides
 │   ├── README.md                  # Integration overview
 │   ├── QUICK_START.md             # Quick start guide
@@ -531,6 +553,7 @@ MeTTa-Compiler/
 ├── Cargo.toml                     # Rust project configuration
 ├── Cargo.lock                     # Dependency lock file
 ├── LICENSE                        # Apache 2.0 license
+├── RHOLANG_PARSER_NOTES.md        # Rholang parser configuration guide
 └── README.md                      # This file
 ```
 
@@ -696,6 +719,8 @@ See **`docs/THREADING_MODEL.md`** and **`docs/CONFIGURATION.md`** for detailed i
 - **`integration/RHOLANG_INTEGRATION.md`** - Technical architecture details
 - **`integration/DEPLOYMENT_GUIDE.md`** - Deployment guide
 - **`integration/TESTING_GUIDE.md`** - Testing documentation
+- **`RHOLANG_PARSER_NOTES.md`** - Rholang parser configuration and named comments feature
+- **`docs/RHOLANG_BUILD_AUTOMATION.md`** - Build automation strategies for Rholang parser
 
 ## MVP Status
 

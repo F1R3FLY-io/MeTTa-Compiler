@@ -421,12 +421,12 @@ cargo build --release
 
 The evaluator consists of two main stages:
 
-### 1. Lexical Analysis & S-expression Parsing (`src/sexpr.rs`)
-- Tokenizes input text
-- Parses tokens into S-expressions
+### 1. Tree-Sitter Parsing (`src/tree_sitter_parser.rs` + `src/ir.rs`)
+- Uses Tree-Sitter grammar for robust parsing
+- Converts parse trees to S-expression IR (`SExpr`)
+- Tracks source positions for error reporting
 - Handles comments: `//`, `/* */`, `;`
 - Supports special operators: `!`, `?`, `<-`, `<=`, `<<-`, etc.
-- Prefix operator handling: `!(expr)` → `(! expr)`
 
 ### 2. Backend Evaluation (`src/backend/`)
 
@@ -457,9 +457,9 @@ Modular evaluation engine split by functionality:
 ### Evaluation Flow
 
 ```
-MeTTa Source → Tokens → S-expressions → MettaValue → Evaluation Results
-                ↑                          ↑              ↑
-           sexpr.rs                  compile.rs      eval.rs
+MeTTa Source → Tree-Sitter → SExpr IR → MettaValue → Evaluation Results
+                    ↑            ↑          ↑              ↑
+           tree_sitter_parser  ir.rs  compile.rs    eval/mod.rs
 ```
 
 ## Development
@@ -501,7 +501,8 @@ MeTTa-Compiler/
 │   ├── main.rs                    # CLI and REPL implementation
 │   ├── lib.rs                     # Library exports
 │   ├── config.rs                  # Threading configuration
-│   ├── sexpr.rs                   # Lexer and S-expression parser
+│   ├── ir.rs                      # Intermediate representation (SExpr, Position, Span)
+│   ├── tree_sitter_parser.rs      # Tree-Sitter based parser
 │   ├── backend/                   # Evaluation engine
 │   │   ├── mod.rs                 # Module exports
 │   │   ├── compile.rs             # MeTTa source → MettaValue compilation
@@ -522,7 +523,7 @@ MeTTa-Compiler/
 │   │   └── mork_convert.rs        # MORK/PathMap conversion
 │   ├── rholang_integration.rs     # Rholang integration API (sync & async)
 │   ├── pathmap_par_integration.rs # PathMap Par conversion
-│   └── ffi.rs                     # C FFI layer
+│   └── environment.rs             # Environment and rule management
 ├── examples/                      # Code examples
 │   ├── README.md                  # Examples guide
 │   ├── *.metta                    # MeTTa language examples
@@ -594,12 +595,6 @@ MeTTaTron can be integrated with Rholang to provide MeTTa compilation as a syste
 - Registry code (`integration/templates/rholang_registry.rs`) - Service registration
 - JSON serialization (`src/rholang_integration.rs`) - Native Rust API
 - Complete documentation (`integration/DIRECT_RUST_INTEGRATION.md`)
-
-✅ **FFI Integration (v2) - For non-Rust languages**:
-- C FFI layer (`src/ffi.rs`) - Memory-safe C-compatible interface
-- Handler code (`integration/archive/rholang_handler_v2_ffi.rs`) - FFI handlers
-- Registry code (`integration/archive/rholang_registry_v2_ffi.rs`) - FFI service registration
-- Deployment guide (`integration/DEPLOYMENT_GUIDE.md`)
 
 ### Usage from Rholang
 

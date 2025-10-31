@@ -75,12 +75,12 @@ MeTTa Source → Tokens → S-expressions → MettaValue → Evaluation Results
 
 The evaluator consists of two main stages:
 
-1. **Lexical Analysis & S-expression Parsing** (`src/sexpr.rs`)
-   - Tokenizes input text into structured tokens
-   - Parses tokens into S-expressions
+1. **Tree-Sitter Parsing** (`src/tree_sitter_parser.rs` + `src/ir.rs`)
+   - Uses Tree-Sitter grammar for robust parsing
+   - Converts parse trees to S-expression IR (`SExpr`)
+   - Tracks source positions for error reporting
    - Handles comments: `//`, `/* */`, `;`
    - Supports special operators: `!`, `?`, `<-`, `<=`, etc.
-   - Prefix operator handling: `!(expr)` → `(! expr)`
 
 2. **Backend Evaluation** (`src/backend/`)
    - **Compilation** (`compile.rs`) - Parses MeTTa source to `MettaValue` expressions
@@ -91,10 +91,10 @@ The evaluator consists of two main stages:
 
 - **Library exports**: `src/lib.rs`
 - **CLI and REPL**: `src/main.rs`
-- **Lexer/S-expr parser**: `src/sexpr.rs`
-- **Backend evaluator**: `src/backend/` (compile.rs, eval.rs, types.rs, mod.rs)
+- **Parser and IR**: `src/tree_sitter_parser.rs`, `src/ir.rs`
+- **Backend evaluator**: `src/backend/` (compile.rs, eval/, models/, mod.rs)
 - **Rholang integration**: `src/rholang_integration.rs`
-- **FFI layer**: `src/ffi.rs`
+- **Environment**: `src/environment.rs`
 - **Project config**: `Cargo.toml`
 - **Examples**: `examples/` (*.metta files and Rust examples)
 
@@ -134,7 +134,7 @@ The evaluator consists of two main stages:
 
 ### Adding New Features
 
-1. **New MeTTa syntax**: Update `src/sexpr.rs` (tokens) and `src/backend/compile.rs` (parsing)
+1. **New MeTTa syntax**: Update Tree-Sitter grammar in `rholang-rs/metta-tree-sitter` and `src/backend/compile.rs` (parsing)
 2. **New evaluation semantics**: Update `src/backend/eval/` (evaluation logic modules)
 3. **New special forms**: Update `src/backend/eval/control_flow.rs` (add to control flow evaluation)
 4. **New grounded functions**: Update `src/backend/eval/mod.rs` (add to eval_grounded)
@@ -185,8 +185,8 @@ RUST_LOG=debug ./target/release/mettatron input.metta
 4. Add tests
 
 **Add a new operator token:**
-1. Update `Lexer` in `src/sexpr.rs` to recognize the token
-2. Update `Parser` to handle prefix/infix positioning
+1. Update Tree-Sitter grammar in `rholang-rs/metta-tree-sitter`
+2. Update parser queries if needed
 3. Map to appropriate function name in `compile()` if needed
 
 **Modify type system:**
@@ -277,10 +277,12 @@ src/
 ├── main.rs                  # CLI and REPL implementation
 ├── lib.rs                   # Public API exports
 ├── config.rs                # Threading configuration
-├── sexpr.rs                 # Lexer and S-expression parser
+├── ir.rs                    # Intermediate representation (SExpr, Position, Span)
+├── tree_sitter_parser.rs    # Tree-Sitter based parser
 ├── backend/                 # Evaluation engine
 │   ├── mod.rs              # Module exports
 │   ├── compile.rs          # MeTTa source → MettaValue
+│   ├── environment.rs      # Environment and rule management
 │   ├── models/             # Type definitions
 │   │   ├── mod.rs
 │   │   └── metta_value.rs  # MettaValue enum and methods
@@ -297,8 +299,7 @@ src/
 │   │   └── macros.rs       # Helper macros for evaluation
 │   └── mork_convert.rs     # MORK/PathMap conversion
 ├── rholang_integration.rs   # Rholang integration API (sync & async)
-├── pathmap_par_integration.rs  # PathMap Par conversion
-└── ffi.rs                   # C FFI layer
+└── pathmap_par_integration.rs  # PathMap Par conversion
 ```
 
 ## Style Guidelines

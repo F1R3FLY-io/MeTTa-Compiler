@@ -97,9 +97,7 @@ impl ReplStateMachine {
     pub fn process_event(&mut self, event: ReplEvent) -> StateTransition {
         match (&self.state, event) {
             // Ready state: accept new input
-            (ReplState::Ready, ReplEvent::LineSubmitted(line)) => {
-                self.handle_new_input(line)
-            }
+            (ReplState::Ready, ReplEvent::LineSubmitted(line)) => self.handle_new_input(line),
 
             // Continuation state: accumulate input
             (ReplState::Continuation { buffer }, ReplEvent::LineSubmitted(line)) => {

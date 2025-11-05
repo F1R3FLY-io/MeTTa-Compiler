@@ -232,7 +232,8 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalRes
             for (rhs, bindings) in all_matches {
                 // Apply bindings to RHS and evaluate
                 let instantiated_rhs = apply_bindings(&rhs, &bindings);
-                let (results, _) = eval_with_depth(instantiated_rhs, unified_env.clone(), depth + 1);
+                let (results, _) =
+                    eval_with_depth(instantiated_rhs, unified_env.clone(), depth + 1);
                 all_final_results.extend(results);
             }
         } else {

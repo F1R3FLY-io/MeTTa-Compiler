@@ -1056,28 +1056,27 @@ fn test_example_robot_planning() {
     // Exact output: two String values in any order
     let demo1_neighbors = pathmaps.iter().find(|pm| {
         pm.output.len() == 2
-            && pm.output.iter().all(|v| matches!(v, MettaValue::String(_) | MettaValue::Atom(_)))
             && pm
                 .output
                 .iter()
-                .any(|v| match v {
-                    MettaValue::String(s) | MettaValue::Atom(s) => s == "room_b",
-                    _ => false,
-                })
-            && pm
-                .output
-                .iter()
-                .any(|v| match v {
-                    MettaValue::String(s) | MettaValue::Atom(s) => s == "room_e",
-                    _ => false,
-                })
+                .all(|v| matches!(v, MettaValue::String(_) | MettaValue::Atom(_)))
+            && pm.output.iter().any(|v| match v {
+                MettaValue::String(s) | MettaValue::Atom(s) => s == "room_b",
+                _ => false,
+            })
+            && pm.output.iter().any(|v| match v {
+                MettaValue::String(s) | MettaValue::Atom(s) => s == "room_e",
+                _ => false,
+            })
     });
     report.add_result(
         "Demo 1: neighbors of room_a [room_b, room_e]",
         if demo1_neighbors.is_some() {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected exact output [String(room_b), String(room_e)] not found")
+            ValidationResult::fail(
+                "Expected exact output [String(room_b), String(room_e)] not found",
+            )
         },
     );
 
@@ -1177,9 +1176,7 @@ fn test_example_robot_planning() {
         if demo4_plan.is_some() {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(
-                "Expected exact plan S-expression structure for ball1 not found",
-            )
+            ValidationResult::fail("Expected exact plan S-expression structure for ball1 not found")
         },
     );
 
@@ -1240,10 +1237,7 @@ fn test_example_robot_planning() {
     let demo5_distance = pathmaps.iter().find(|pm| {
         !pm.output.is_empty()
             && pm.output.iter().all(|v| matches!(v, MettaValue::Long(_)))
-            && pm
-                .output
-                .iter()
-                .any(|v| matches!(v, MettaValue::Long(2)))
+            && pm.output.iter().any(|v| matches!(v, MettaValue::Long(2)))
             && !pm
                 .output
                 .iter()
@@ -1325,14 +1319,17 @@ fn test_example_robot_planning() {
     ];
     let has_box2_steps = pathmaps.iter().any(|pm| {
         let matcher = OutputMatcher::new(pm);
-        matcher.match_steps_sequence(&box2_steps_via_c) || matcher.match_steps_sequence(&box2_steps_via_a_e)
+        matcher.match_steps_sequence(&box2_steps_via_c)
+            || matcher.match_steps_sequence(&box2_steps_via_a_e)
     });
     report.add_result(
         "Demo 6: box2 transport path (2-hop or 3-hop due to nondeterminism)",
         if has_box2_steps {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected transport path for box2 not found (neither 2-hop nor 3-hop)")
+            ValidationResult::fail(
+                "Expected transport path for box2 not found (neither 2-hop nor 3-hop)",
+            )
         },
     );
 

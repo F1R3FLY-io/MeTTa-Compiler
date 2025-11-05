@@ -1,3 +1,4 @@
+use crate::backend::compile::compile;
 /// Rholang Integration Module - Evaluation Functions
 ///
 /// **PRIMARY INTEGRATION**: Use `pathmap_par_integration` module for Rholang interop
@@ -10,7 +11,6 @@
 /// **Note**: For Rholang integration, use the PathMap Par functions in
 /// `pathmap_par_integration` module, not the JSON functions here.
 use crate::backend::models::{MettaState, MettaValue};
-use crate::backend::compile::compile;
 
 /// Safe compilation wrapper that never fails
 ///

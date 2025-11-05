@@ -40,7 +40,10 @@ fn main() {
     let input5 = "(foo ; comment with (\nbar";
     let indent5 = indenter.calculate_indent(input5);
     println!("Input:  \"{}\"", input5.replace('\n', "\\n"));
-    println!("Indent: {} spaces (delimiter in comment ignored)\n", indent5);
+    println!(
+        "Indent: {} spaces (delimiter in comment ignored)\n",
+        indent5
+    );
 
     // Example 6: Mixed delimiters
     let input6 = "(foo {bar";
@@ -54,8 +57,15 @@ fn main() {
     let buffer = "(define (fibonacci n)";
     let prompt = indenter.continuation_prompt(buffer, "...> ");
     println!("Buffer: \"{}\"", buffer);
-    println!("Prompt: \"{}\" (with {} spaces)", prompt, indenter.calculate_indent(buffer));
-    println!("        {}<- continuation starts here", " ".repeat(prompt.len()));
+    println!(
+        "Prompt: \"{}\" (with {} spaces)",
+        prompt,
+        indenter.calculate_indent(buffer)
+    );
+    println!(
+        "        {}<- continuation starts here",
+        " ".repeat(prompt.len())
+    );
 
     // Example 8: Custom indent width
     println!("\nCustom Indent Width:");
@@ -64,7 +74,10 @@ fn main() {
     let input8 = "(foo (bar";
     let indent8 = indenter_4space.calculate_indent(input8);
     println!("Input:  \"{}\"", input8);
-    println!("Indent: {} spaces (4-space mode, 2 unclosed parens)", indent8);
+    println!(
+        "Indent: {} spaces (4-space mode, 2 unclosed parens)",
+        indent8
+    );
 
     println!("\nNote: The REPL has SmartIndenter integrated, accessible via:");
     println!("  helper.calculate_indent(buffer)");

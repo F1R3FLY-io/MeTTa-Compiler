@@ -15,8 +15,8 @@ use crate::tree_sitter_parser::TreeSitterMettaParser;
 /// Returns a compiled state with pending expressions and empty environment
 pub fn compile(src: &str) -> Result<MettaState, String> {
     // Parse the source into s-expressions using Tree-Sitter
-    let mut parser = TreeSitterMettaParser::new()
-        .map_err(|e| format!("Failed to initialize parser: {}", e))?;
+    let mut parser =
+        TreeSitterMettaParser::new().map_err(|e| format!("Failed to initialize parser: {}", e))?;
     let sexprs = parser.parse(src)?;
 
     // Convert s-expressions to MettaValue representation

@@ -9,16 +9,16 @@ use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 /// ANSI color codes for terminal output
 mod colors {
     pub const RESET: &str = "\x1b[0m";
-    pub const COMMENT: &str = "\x1b[90m";        // Bright black (gray)
-    pub const STRING: &str = "\x1b[32m";         // Green
-    pub const NUMBER: &str = "\x1b[33m";         // Yellow
-    pub const BOOLEAN: &str = "\x1b[35m";        // Magenta
-    pub const VARIABLE: &str = "\x1b[36m";       // Cyan
+    pub const COMMENT: &str = "\x1b[90m"; // Bright black (gray)
+    pub const STRING: &str = "\x1b[32m"; // Green
+    pub const NUMBER: &str = "\x1b[33m"; // Yellow
+    pub const BOOLEAN: &str = "\x1b[35m"; // Magenta
+    pub const VARIABLE: &str = "\x1b[36m"; // Cyan
     pub const VARIABLE_SPECIAL: &str = "\x1b[96m"; // Bright cyan
-    pub const FUNCTION: &str = "\x1b[34m";       // Blue
-    pub const OPERATOR: &str = "\x1b[91m";       // Bright red
-    pub const KEYWORD: &str = "\x1b[95m";        // Bright magenta
-    pub const PUNCTUATION: &str = "\x1b[37m";    // White
+    pub const FUNCTION: &str = "\x1b[34m"; // Blue
+    pub const OPERATOR: &str = "\x1b[91m"; // Bright red
+    pub const KEYWORD: &str = "\x1b[95m"; // Bright magenta
+    pub const PUNCTUATION: &str = "\x1b[37m"; // White
 }
 
 /// Query-based syntax highlighter using Tree-Sitter
@@ -213,7 +213,10 @@ mod tests {
 
         // Should contain ANSI codes
         assert!(highlighted.contains("\x1b["), "Expected ANSI color codes");
-        assert!(highlighted.len() > source.len(), "Expected colored output to be longer");
+        assert!(
+            highlighted.len() > source.len(),
+            "Expected colored output to be longer"
+        );
     }
 
     #[test]
@@ -223,7 +226,10 @@ mod tests {
         let highlighted = highlighter.highlight_code(source);
 
         // Should contain comment color
-        assert!(highlighted.contains(colors::COMMENT), "Expected comment highlighting");
+        assert!(
+            highlighted.contains(colors::COMMENT),
+            "Expected comment highlighting"
+        );
     }
 
     #[test]
@@ -233,7 +239,10 @@ mod tests {
         let highlighted = highlighter.highlight_code(source);
 
         // Should contain string color
-        assert!(highlighted.contains(colors::STRING), "Expected string highlighting");
+        assert!(
+            highlighted.contains(colors::STRING),
+            "Expected string highlighting"
+        );
     }
 
     #[test]
@@ -243,6 +252,9 @@ mod tests {
         let highlighted = highlighter.highlight_code(source);
 
         // Should contain variable color
-        assert!(highlighted.contains(colors::VARIABLE), "Expected variable highlighting");
+        assert!(
+            highlighted.contains(colors::VARIABLE),
+            "Expected variable highlighting"
+        );
     }
 }

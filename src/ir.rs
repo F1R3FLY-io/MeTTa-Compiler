@@ -1,7 +1,7 @@
-/// MeTTa Intermediate Representation (IR)
-///
-/// This module defines the core IR types used throughout MeTTaTron.
-/// The IR is produced by the Tree-Sitter parser and consumed by the backend evaluator.
+//! MeTTa Intermediate Representation (IR)
+//!
+//! This module defines the core IR types used throughout MeTTaTron.
+//! The IR is produced by the Tree-Sitter parser and consumed by the backend evaluator.
 
 use std::fmt;
 

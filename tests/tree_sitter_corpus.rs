@@ -2,18 +2,17 @@
 ///
 /// This test runs the Tree-Sitter corpus tests to validate the grammar.
 /// Requires tree-sitter-cli to be installed: `npm install -g tree-sitter-cli`
-
 use std::process::Command;
 
 #[test]
 fn test_tree_sitter_corpus() {
     // Check if tree-sitter CLI is available
-    let check_cli = Command::new("tree-sitter")
-        .arg("--version")
-        .output();
+    let check_cli = Command::new("tree-sitter").arg("--version").output();
 
     if check_cli.is_err() {
-        eprintln!("WARNING: tree-sitter CLI not found. Install with: npm install -g tree-sitter-cli");
+        eprintln!(
+            "WARNING: tree-sitter CLI not found. Install with: npm install -g tree-sitter-cli"
+        );
         eprintln!("Skipping Tree-Sitter corpus tests.");
         return;
     }

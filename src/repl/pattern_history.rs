@@ -292,10 +292,7 @@ mod tests {
         history.add("cmd2");
         history.add("cmd3");
 
-        let sources: Vec<String> = history
-            .iter_reverse()
-            .map(|e| e.source.clone())
-            .collect();
+        let sources: Vec<String> = history.iter_reverse().map(|e| e.source.clone()).collect();
 
         assert_eq!(sources, vec!["cmd3", "cmd2", "cmd1"]);
     }

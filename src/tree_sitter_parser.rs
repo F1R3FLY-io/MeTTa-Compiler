@@ -1,7 +1,7 @@
-/// Tree-Sitter based parser for MeTTa
-///
-/// Converts Tree-Sitter parse trees with decomposed semantic node types
-/// into the existing SExpr AST used by MeTTaTron's backend.
+//! Tree-Sitter based parser for MeTTa
+//!
+//! Converts Tree-Sitter parse trees with decomposed semantic node types
+//! into the existing SExpr AST used by MeTTaTron's backend.
 
 use crate::ir::{Position, SExpr, Span};
 use tree_sitter::{Node, Parser};
@@ -180,11 +180,15 @@ impl TreeSitterMettaParser {
             "boolean_literal" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
             // All operator types (already decomposed by grammar)
-            "operator" | "arrow_operator" | "comparison_operator" | "assignment_operator"
-            | "type_annotation_operator" | "rule_definition_operator"
-            | "punctuation_operator" | "arithmetic_operator" | "logic_operator" => {
-                Ok(vec![SExpr::Atom(text, Some(span))])
-            }
+            "operator"
+            | "arrow_operator"
+            | "comparison_operator"
+            | "assignment_operator"
+            | "type_annotation_operator"
+            | "rule_definition_operator"
+            | "punctuation_operator"
+            | "arithmetic_operator"
+            | "logic_operator" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
             // String literal: remove quotes and process escapes
             "string_literal" => {
@@ -226,7 +230,7 @@ impl TreeSitterMettaParser {
         if self.find_error_node(&mut cursor) {
             let error_node = cursor.node();
             let start = error_node.start_position();
-            let end = error_node.end_position();
+            let _end = error_node.end_position();
 
             // Extract the problematic text
             let error_text = &source[error_node.start_byte()..error_node.end_byte()];
@@ -330,9 +334,7 @@ mod tests {
                 let stripped_items = items.iter().map(strip_spans).collect();
                 SExpr::List(stripped_items, None)
             }
-            SExpr::Quoted(expr, _) => {
-                SExpr::Quoted(Box::new(strip_spans(expr)), None)
-            }
+            SExpr::Quoted(expr, _) => SExpr::Quoted(Box::new(strip_spans(expr)), None),
         }
     }
 
@@ -340,8 +342,6 @@ mod tests {
     fn strip_spans_vec(exprs: &[SExpr]) -> Vec<SExpr> {
         exprs.iter().map(strip_spans).collect()
     }
-
-
 
     #[test]
     fn test_parse_simple_atoms() {
@@ -353,7 +353,13 @@ mod tests {
 
         // & is now an operator (space reference), not a variable prefix
         let result = strip_spans_vec(&parser.parse("&y").unwrap());
-        assert_eq!(result, vec![SExpr::Atom("&".to_string(), None), SExpr::Atom("y".to_string(), None)]);
+        assert_eq!(
+            result,
+            vec![
+                SExpr::Atom("&".to_string(), None),
+                SExpr::Atom("y".to_string(), None)
+            ]
+        );
 
         // Wildcard
         let result = strip_spans_vec(&parser.parse("_").unwrap());
@@ -385,7 +391,10 @@ mod tests {
 
         // String with escapes
         let result = strip_spans_vec(&parser.parse(r#""hello\nworld""#).unwrap());
-        assert_eq!(result, vec![SExpr::String("hello\nworld".to_string(), None)]);
+        assert_eq!(
+            result,
+            vec![SExpr::String("hello\nworld".to_string(), None)]
+        );
     }
 
     #[test]
@@ -396,26 +405,35 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("(+ 1 2)").unwrap());
         assert_eq!(
             result,
-            vec![SExpr::List(vec![
-                SExpr::Atom("+".to_string(), None),
-                SExpr::Integer(1, None),
-                SExpr::Integer(2, None),
-            ], None)]
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )]
         );
 
         // Nested list
         let result = strip_spans_vec(&parser.parse("(+ (* 2 3) 4)").unwrap());
         assert_eq!(
             result,
-            vec![SExpr::List(vec![
-                SExpr::Atom("+".to_string(), None),
-                SExpr::List(vec![
-                    SExpr::Atom("*".to_string(), None),
-                    SExpr::Integer(2, None),
-                    SExpr::Integer(3, None),
-                ], None),
-                SExpr::Integer(4, None),
-            ], None)]
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::List(
+                        vec![
+                            SExpr::Atom("*".to_string(), None),
+                            SExpr::Integer(2, None),
+                            SExpr::Integer(3, None),
+                        ],
+                        None
+                    ),
+                    SExpr::Integer(4, None),
+                ],
+                None
+            )]
         );
     }
 
@@ -427,24 +445,33 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("!(+ 1 2)").unwrap());
         assert_eq!(
             result,
-            vec![SExpr::List(vec![
-                SExpr::Atom("!".to_string(), None),
-                SExpr::List(vec![
-                    SExpr::Atom("+".to_string(), None),
-                    SExpr::Integer(1, None),
-                    SExpr::Integer(2, None),
-                ], None)
-            ], None)]
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("!".to_string(), None),
+                    SExpr::List(
+                        vec![
+                            SExpr::Atom("+".to_string(), None),
+                            SExpr::Integer(1, None),
+                            SExpr::Integer(2, None),
+                        ],
+                        None
+                    )
+                ],
+                None
+            )]
         );
 
         // ? prefix
         let result = strip_spans_vec(&parser.parse("?query").unwrap());
         assert_eq!(
             result,
-            vec![SExpr::List(vec![
-                SExpr::Atom("?".to_string(), None),
-                SExpr::Atom("query".to_string(), None),
-            ], None)]
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("?".to_string(), None),
+                    SExpr::Atom("query".to_string(), None),
+                ],
+                None
+            )]
         );
     }
 
@@ -456,12 +483,15 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("{a b c}").unwrap());
         assert_eq!(
             result,
-            vec![SExpr::List(vec![
-                SExpr::Atom("{}".to_string(), None),
-                SExpr::Atom("a".to_string(), None),
-                SExpr::Atom("b".to_string(), None),
-                SExpr::Atom("c".to_string(), None),
-            ], None)]
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("{}".to_string(), None),
+                    SExpr::Atom("a".to_string(), None),
+                    SExpr::Atom("b".to_string(), None),
+                    SExpr::Atom("c".to_string(), None),
+                ],
+                None
+            )]
         );
     }
 
@@ -469,7 +499,11 @@ mod tests {
     fn test_parse_multiple_expressions() {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
-        let result = strip_spans_vec(&parser.parse("(= (double $x) (* $x 2)) !(double 21)").unwrap());
+        let result = strip_spans_vec(
+            &parser
+                .parse("(= (double $x) (* $x 2)) !(double 21)")
+                .unwrap(),
+        );
         assert_eq!(result.len(), 2);
 
         // First: (= (double $x) (* $x 2))
@@ -496,42 +530,52 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // Line comments should be ignored
-        let result = strip_spans_vec(&parser
-            .parse(
-                r#"
+        let result = strip_spans_vec(
+            &parser
+                .parse(
+                    r#"
             ; This is a comment
             // Another comment style
             (+ 1 2)
             "#,
-            )
-            .unwrap());
+                )
+                .unwrap(),
+        );
 
         assert_eq!(
             result,
-            vec![SExpr::List(vec![
-                SExpr::Atom("+".to_string(), None),
-                SExpr::Integer(1, None),
-                SExpr::Integer(2, None),
-            ], None)]
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )]
         );
 
         // Block comments
-        let result = strip_spans_vec(&parser
-            .parse(
-                r#"
+        let result = strip_spans_vec(
+            &parser
+                .parse(
+                    r#"
             /* Block comment */
             (+ 1 2)
             "#,
-            )
-            .unwrap());
+                )
+                .unwrap(),
+        );
 
         assert_eq!(
             result,
-            vec![SExpr::List(vec![
-                SExpr::Atom("+".to_string(), None),
-                SExpr::Integer(1, None),
-                SExpr::Integer(2, None),
-            ], None)]
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )]
         );
     }
 
@@ -558,11 +602,14 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("(+ 3.14 2.71)").unwrap());
         assert_eq!(
             result,
-            vec![SExpr::List(vec![
-                SExpr::Atom("+".to_string(), None),
-                SExpr::Float(3.14, None),
-                SExpr::Float(2.71, None),
-            ], None)]
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Float(3.14, None),
+                    SExpr::Float(2.71, None),
+                ],
+                None
+            )]
         );
     }
 
@@ -574,11 +621,14 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("(: Socrates Entity)").unwrap());
         assert_eq!(
             result,
-            vec![SExpr::List(vec![
-                SExpr::Atom(":".to_string(), None),
-                SExpr::Atom("Socrates".to_string(), None),
-                SExpr::Atom("Entity".to_string(), None),
-            ], None)]
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom(":".to_string(), None),
+                    SExpr::Atom("Socrates".to_string(), None),
+                    SExpr::Atom("Entity".to_string(), None),
+                ],
+                None
+            )]
         );
     }
 
@@ -590,15 +640,21 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("(:= (Add $x Z) $x)").unwrap());
         assert_eq!(
             result,
-            vec![SExpr::List(vec![
-                SExpr::Atom(":=".to_string(), None),
-                SExpr::List(vec![
-                    SExpr::Atom("Add".to_string(), None),
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom(":=".to_string(), None),
+                    SExpr::List(
+                        vec![
+                            SExpr::Atom("Add".to_string(), None),
+                            SExpr::Atom("$x".to_string(), None),
+                            SExpr::Atom("Z".to_string(), None),
+                        ],
+                        None
+                    ),
                     SExpr::Atom("$x".to_string(), None),
-                    SExpr::Atom("Z".to_string(), None),
-                ], None),
-                SExpr::Atom("$x".to_string(), None),
-            ], None)]
+                ],
+                None
+            )]
         );
     }
 }

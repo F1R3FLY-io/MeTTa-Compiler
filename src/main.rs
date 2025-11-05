@@ -285,7 +285,8 @@ fn run_repl() {
                             // Print results with syntax highlighting (only for S-expressions)
                             if should_output && !results.is_empty() {
                                 let output = format_results(&results);
-                                let highlighted = highlight_output(&output, output_highlighter.as_ref());
+                                let highlighted =
+                                    highlight_output(&output, output_highlighter.as_ref());
                                 println!("{}", highlighted);
                             }
                         }

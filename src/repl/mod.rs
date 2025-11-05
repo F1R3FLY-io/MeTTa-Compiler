@@ -7,19 +7,19 @@
 //! - PathMap-based pattern history search
 //! - Interactive history search interface
 
-pub mod query_highlighter;
-pub mod state_machine;
+pub mod config;
+pub mod helper;
+pub mod history_search;
 pub mod indenter;
 pub mod pattern_history;
-pub mod history_search;
-pub mod helper;
-pub mod config;
+pub mod query_highlighter;
+pub mod state_machine;
 
 // Re-exports for convenience
-pub use query_highlighter::QueryHighlighter;
-pub use state_machine::{ReplStateMachine, ReplState, ReplEvent, StateTransition};
+pub use config::ReplConfig;
+pub use helper::MettaHelper;
+pub use history_search::HistorySearchInterface;
 pub use indenter::SmartIndenter;
 pub use pattern_history::PatternHistory;
-pub use history_search::HistorySearchInterface;
-pub use helper::MettaHelper;
-pub use config::ReplConfig;
+pub use query_highlighter::QueryHighlighter;
+pub use state_machine::{ReplEvent, ReplState, ReplStateMachine, StateTransition};

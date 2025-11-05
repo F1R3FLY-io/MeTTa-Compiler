@@ -45,7 +45,7 @@ impl SmartIndenter {
             None => return 0, // Parse failed, no indentation
         };
 
-        let root_node = tree.root_node();
+        let _root_node = tree.root_node();
 
         // Simple heuristic: count unclosed delimiters
         let indent_level = self.count_indent_level(buffer);

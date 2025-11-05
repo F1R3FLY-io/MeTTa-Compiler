@@ -1,5 +1,5 @@
-use std::process::Command;
 use std::path::Path;
+use std::process::Command;
 
 fn main() {
     let grammar_path = "tree-sitter-metta/grammar.js";
@@ -9,9 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", grammar_path);
 
     // Check if tree-sitter CLI is available
-    let tree_sitter_check = Command::new("tree-sitter")
-        .arg("--version")
-        .output();
+    let tree_sitter_check = Command::new("tree-sitter").arg("--version").output();
 
     match tree_sitter_check {
         Ok(output) if output.status.success() => {

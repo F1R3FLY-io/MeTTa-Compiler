@@ -13,24 +13,15 @@ use rustyline::{Context, Helper};
 use std::borrow::Cow;
 
 /// Known MeTTa functions and keywords for completion
-const GROUNDED_FUNCTIONS: &[&str] = &[
-    "+", "-", "*", "/", "%",
-    "<", "<=", ">", ">=", "==", "!=",
-];
+const GROUNDED_FUNCTIONS: &[&str] = &["+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!="];
 
 const SPECIAL_FORMS: &[&str] = &[
-    "if", "match", "case", "let", "let*",
-    "quote", "unquote", "eval",
-    "error", "catch", "is-error",
+    "if", "match", "case", "let", "let*", "quote", "unquote", "eval", "error", "catch", "is-error",
 ];
 
-const TYPE_OPERATIONS: &[&str] = &[
-    ":", "get-type", "check-type",
-];
+const TYPE_OPERATIONS: &[&str] = &[":", "get-type", "check-type"];
 
-const CONTROL_FLOW: &[&str] = &[
-    "=", "!", "->",
-];
+const CONTROL_FLOW: &[&str] = &["=", "!", "->"];
 
 /// MeTTa REPL helper integrating all components
 pub struct MettaHelper {
@@ -114,7 +105,10 @@ impl MettaHelper {
                 MettaValue::SExpr(items) if !items.is_empty() => {
                     // Pattern like (fibonacci $n) -> extract "fibonacci"
                     if let MettaValue::Atom(name) = &items[0] {
-                        if !name.starts_with('$') && !name.starts_with('&') && !name.starts_with('\'') {
+                        if !name.starts_with('$')
+                            && !name.starts_with('&')
+                            && !name.starts_with('\'')
+                        {
                             // It's a function name, not a variable
                             if !self.defined_functions.contains(name) {
                                 self.defined_functions.push(name.clone());
@@ -181,9 +175,10 @@ impl Completer for MettaHelper {
         let line_before_cursor = &line[..pos];
 
         // Find the start of the current word
-        let word_start = line_before_cursor.rfind(|c: char| {
-            c.is_whitespace() || c == '(' || c == ')' || c == '{' || c == '}'
-        }).map(|i| i + 1).unwrap_or(0);
+        let word_start = line_before_cursor
+            .rfind(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '{' || c == '}')
+            .map(|i| i + 1)
+            .unwrap_or(0);
 
         let partial = &line_before_cursor[word_start..];
 
@@ -269,9 +264,7 @@ impl Validator for MettaHelper {
         let status = ReplStateMachine::check_completeness(input);
 
         match status {
-            super::state_machine::CompletenessStatus::Complete => {
-                Ok(ValidationResult::Valid(None))
-            }
+            super::state_machine::CompletenessStatus::Complete => Ok(ValidationResult::Valid(None)),
             super::state_machine::CompletenessStatus::Incomplete { .. } => {
                 Ok(ValidationResult::Incomplete)
             }
@@ -444,7 +437,8 @@ mod tests {
         assert_eq!(helper.defined_functions.len(), 0);
 
         // Define a function
-        let code = "(= (fibonacci $n) (if (< $n 2) $n (+ (fibonacci (- $n 1)) (fibonacci (- $n 2)))))";
+        let code =
+            "(= (fibonacci $n) (if (< $n 2) $n (+ (fibonacci (- $n 1)) (fibonacci (- $n 2)))))";
         let state = compile(code).unwrap();
         env = env.union(&state.environment);
 

@@ -1,0 +1,79 @@
+// Test foldl-atom with nondeterministic path finding
+// This should trigger the stack overflow issue in the old evaluator
+// but work correctly with our fixes (depth limit + Cartesian product limit)
+
+new stdoutAck(`rho:io:stdoutAck`),
+    mettaCompile(`rho:metta:compile`),
+    testAPI,
+    persistentState,
+    ack in {
+
+  // Initialize state once
+  new initState in {
+    new codeFile in {
+      codeFile!("
+        // Nondeterministic path finding - returns multiple paths
+        (= (find_path $from $to) (path $from mid1 $to))
+        (= (find_path $from $to) (path $from mid2 $to))
+        (= (find_path $from $to) (path $from mid3 $to))
+
+        // Convert path to list
+        (= (path_to_list (path $a $b $c)) ($a $b $c))
+
+        // Count list elements using foldl-atom
+        (= (count_list $list)
+           (foldl-atom $list 0 $acc $_ (+ $acc 1)))
+
+        // Count hops dynamically
+        (= (path_hop_count $path)
+           (let $waypoints (path_to_list $path)
+                (let $count (count_list $waypoints)
+                     (- $count 1))))
+      ") |
+
+      for (@code <- codeFile) {
+        for (@state <- mettaCompile!?(code)) {
+          persistentState!(state) |
+          stdoutAck!("✓ Test state initialized", *ack)
+        }
+      }
+    }
+  } |
+
+  // Test contract
+  contract testAPI(@"test_count", ret) = {
+    for (@state <- persistentState) {
+      new queryCode, queryResult in {
+        queryCode!("!(path_hop_count (find_path room_a room_c))") |
+        for (@code <- queryCode) {
+          for (@compiledQuery <- mettaCompile!?(code)) {
+            queryResult!({||}.run(state).run(compiledQuery)) |
+            for (@result <- queryResult) {
+              persistentState!(state) |
+              ret!(result)
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // Run test
+  for (_ <- ack) {
+    stdoutAck!("\nTesting foldl-atom with nondeterministic paths...", *ack) |
+    for (_ <- ack) {
+      new result in {
+        testAPI!("test_count", *result) |
+        for (@res <- result) {
+          stdoutAck!("Result: ", *ack) |
+          for (_ <- ack) {
+            stdoutAck!(res, *ack) |
+            for (_ <- ack) {
+              stdoutAck!("\n✓ Test completed successfully!", *ack)
+            }
+          }
+        }
+      }
+    }
+  }
+}

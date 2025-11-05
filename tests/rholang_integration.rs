@@ -1021,7 +1021,7 @@ fn test_example_robot_planning() {
     // Validation 3: PathMaps present
     let pathmaps = parse_pathmap(&stdout);
     report.add_result(
-        "PathMaps present (9+ demos)",
+        "PathMaps present (9 demos: D1, D2, D3, D4x4, D5, D6)",
         if pathmaps.len() >= 9 {
             ValidationResult::pass()
         } else {
@@ -1053,17 +1053,31 @@ fn test_example_robot_planning() {
     );
 
     // Validation 6: Demo 1 - Get neighbors of room_a [room_b, room_e]
+    // Exact output: two String values in any order
     let demo1_neighbors = pathmaps.iter().find(|pm| {
-        OutputMatcher::new(pm).assert_outputs_contain("room_b")
-            && OutputMatcher::new(pm).assert_outputs_contain("room_e")
-            && pm.output.len() == 2
+        pm.output.len() == 2
+            && pm.output.iter().all(|v| matches!(v, MettaValue::String(_) | MettaValue::Atom(_)))
+            && pm
+                .output
+                .iter()
+                .any(|v| match v {
+                    MettaValue::String(s) | MettaValue::Atom(s) => s == "room_b",
+                    _ => false,
+                })
+            && pm
+                .output
+                .iter()
+                .any(|v| match v {
+                    MettaValue::String(s) | MettaValue::Atom(s) => s == "room_e",
+                    _ => false,
+                })
     });
     report.add_result(
         "Demo 1: neighbors of room_a [room_b, room_e]",
         if demo1_neighbors.is_some() {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected neighbors output not found")
+            ValidationResult::fail("Expected exact output [String(room_b), String(room_e)] not found")
         },
     );
 
@@ -1080,22 +1094,29 @@ fn test_example_robot_planning() {
         },
     );
 
-    // Validation 8: Demo 3 - Find path from room_c to room_a
-    let demo3_paths = pathmaps.iter().find(|pm| {
-        use common::PathMapQuery;
-        let path_results = pm.query_all_sexpr("path");
-        !path_results.is_empty()
-            && path_results.exists(|v| {
-                let s = v.to_display_string();
-                s.contains("room_c") && s.contains("room_b") && s.contains("room_a")
-            })
+    // Validation 8: Demo 3 - Find shortest path from room_c to room_a
+    // Exact output: (path room_c room_b room_a) and possibly errors
+    let demo3_path = pathmaps.iter().find(|pm| {
+        pm.output.iter().any(|v| {
+            if let MettaValue::SExpr(exprs) = v {
+                exprs.len() == 4
+                    && matches!(&exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "path")
+                    && matches!(&exprs[1], MettaValue::String(s) | MettaValue::Atom(s) if s == "room_c")
+                    && matches!(&exprs[2], MettaValue::String(s) | MettaValue::Atom(s) if s == "room_b")
+                    && matches!(&exprs[3], MettaValue::String(s) | MettaValue::Atom(s) if s == "room_a")
+            } else {
+                false
+            }
+        })
     });
     report.add_result(
-        "Demo 3: paths from room_c to room_a with path structures",
-        if demo3_paths.is_some() {
+        "Demo 3: exact path structure (path room_c room_b room_a)",
+        if demo3_path.is_some() {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected path structures not found")
+            ValidationResult::fail(
+                "Expected exact S-expression: (path room_c room_b room_a) not found",
+            )
         },
     );
 
@@ -1117,37 +1138,76 @@ fn test_example_robot_planning() {
     );
 
     // Validation 10: Demo 4 Step 3 - Build complete transport plan for ball1
+    // Exact structure: (plan (objective (transport ball1 from room_c to room_a))
+    //                        (route (waypoints room_c room_b room_a))
+    //                        (steps (...)))
     let demo4_plan = pathmaps.iter().find(|pm| {
-        use common::PathMapQuery;
-        let ball1_outputs = pm.filter_contains("ball1");
-        !ball1_outputs.is_empty()
-            && ball1_outputs.exists(|v| {
-                let s = v.to_display_string();
-                s.contains("build_plan") && s.contains("plan")
-            })
+        pm.output.iter().any(|v| {
+            if let MettaValue::SExpr(plan_exprs) = v {
+                plan_exprs.len() == 4
+                    && matches!(&plan_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "plan")
+                    && matches!(&plan_exprs[1], MettaValue::SExpr(obj_exprs) if
+                        obj_exprs.len() >= 2 &&
+                        matches!(&obj_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "objective") &&
+                        matches!(&obj_exprs[1], MettaValue::SExpr(trans_exprs) if
+                            trans_exprs.len() >= 6 &&
+                            matches!(&trans_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "transport") &&
+                            matches!(&trans_exprs[1], MettaValue::String(s) | MettaValue::Atom(s) if s == "ball1")
+                        )
+                    )
+                    && matches!(&plan_exprs[2], MettaValue::SExpr(route_exprs) if
+                        route_exprs.len() >= 2 &&
+                        matches!(&route_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "route") &&
+                        matches!(&route_exprs[1], MettaValue::SExpr(waypoint_exprs) if
+                            waypoint_exprs.len() >= 1 &&
+                            matches!(&waypoint_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "waypoints")
+                        )
+                    )
+                    && matches!(&plan_exprs[3], MettaValue::SExpr(step_exprs) if
+                        step_exprs.len() >= 2 &&
+                        matches!(&step_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "steps")
+                    )
+            } else {
+                false
+            }
+        })
     });
     report.add_result(
-        "Demo 4 Step 3: complete transport plan for ball1",
+        "Demo 4 Step 3: exact plan structure with objective/route/steps for ball1",
         if demo4_plan.is_some() {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected transport plan for ball1 not found")
+            ValidationResult::fail(
+                "Expected exact plan S-expression structure for ball1 not found",
+            )
         },
     );
 
     // Validation 11: Demo 4 Step 4 - Validated plan with multihop_required
+    // Exact structure: (validated (plan ...) multihop_required)
     let demo4_validated = pathmaps.iter().find(|pm| {
         pm.output.iter().any(|v| {
-            let s = v.to_display_string();
-            s.contains("validated") && s.contains("multihop_required")
+            if let MettaValue::SExpr(val_exprs) = v {
+                val_exprs.len() == 3
+                    && matches!(&val_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "validated")
+                    && matches!(&val_exprs[1], MettaValue::SExpr(plan_exprs) if
+                        !plan_exprs.is_empty() &&
+                        matches!(&plan_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "plan")
+                    )
+                    && matches!(&val_exprs[2], MettaValue::String(s) | MettaValue::Atom(s) if s == "multihop_required")
+            } else {
+                false
+            }
         })
     });
     report.add_result(
-        "Demo 4 Step 4: validated plan with multihop_required flag",
+        "Demo 4 Step 4: exact validated structure (validated (plan ...) multihop_required)",
         if demo4_validated.is_some() {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected validated plan with multihop_required not found")
+            ValidationResult::fail(
+                "Expected exact S-expression: (validated (plan ...) multihop_required) not found",
+            )
         },
     );
 
@@ -1171,42 +1231,83 @@ fn test_example_robot_planning() {
         }
     );
 
-    // Validation 13: Demo 5 - Path hop counts (2 and 3)
-    let demo5_hop_counts = pathmaps.iter().find(|pm| {
-        use common::PathMapQuery;
-        let hop_count_expr = pm.query_descendant("path_hop_count");
-        !hop_count_expr.is_empty()
+    // Validation 13: Demo 5 - Minimum distance from room_a to room_d
+    // Exact output: array of Long values containing [999, 3, 999, 999, 2, 2, 2, 2]
+    // Due to nondeterminism, we verify:
+    // - All values are Long (integers)
+    // - Contains the minimum distance 2
+    // - No valid distance < 2 exists (excluding sentinel 999)
+    let demo5_distance = pathmaps.iter().find(|pm| {
+        !pm.output.is_empty()
+            && pm.output.iter().all(|v| matches!(v, MettaValue::Long(_)))
             && pm
                 .output
                 .iter()
-                .any(|v| matches!(v, MettaValue::Long(2) | MettaValue::Long(3)))
+                .any(|v| matches!(v, MettaValue::Long(2)))
+            && !pm
+                .output
+                .iter()
+                .any(|v| matches!(v, MettaValue::Long(n) if *n < 2 && *n != 999))
     });
     report.add_result(
-        "Demo 5: path hop counts [2, 3]",
-        if demo5_hop_counts.is_some() {
+        "Demo 5: array of Long values with minimum distance 2",
+        if demo5_distance.is_some() {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected path hop counts not found")
+            ValidationResult::fail(
+                "Expected array of Long values with minimum 2 not found, or invalid distance < 2 exists",
+            )
         },
     );
 
     // Validation 14: Demo 6 - Transport plan for box2
+    // Exact structure: (plan (objective (transport box2 from room_b to room_d))
+    //                        (route (waypoints ...))
+    //                        (steps (...)))
     let demo6_box2 = pathmaps.iter().find(|pm| {
         pm.output.iter().any(|v| {
-            let s = v.to_display_string();
-            s.contains("box2") && (s.contains("build_plan") || s.contains("plan"))
+            if let MettaValue::SExpr(plan_exprs) = v {
+                plan_exprs.len() == 4
+                    && matches!(&plan_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "plan")
+                    && matches!(&plan_exprs[1], MettaValue::SExpr(obj_exprs) if
+                        obj_exprs.len() >= 2 &&
+                        matches!(&obj_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "objective") &&
+                        matches!(&obj_exprs[1], MettaValue::SExpr(trans_exprs) if
+                            trans_exprs.len() >= 6 &&
+                            matches!(&trans_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "transport") &&
+                            matches!(&trans_exprs[1], MettaValue::String(s) | MettaValue::Atom(s) if s == "box2") &&
+                            matches!(&trans_exprs[3], MettaValue::String(s) | MettaValue::Atom(s) if s == "room_b") &&
+                            matches!(&trans_exprs[5], MettaValue::String(s) | MettaValue::Atom(s) if s == "room_d")
+                        )
+                    )
+                    && matches!(&plan_exprs[2], MettaValue::SExpr(route_exprs) if
+                        route_exprs.len() >= 2 &&
+                        matches!(&route_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "route")
+                    )
+                    && matches!(&plan_exprs[3], MettaValue::SExpr(step_exprs) if
+                        step_exprs.len() >= 2 &&
+                        matches!(&step_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "steps")
+                    )
+            } else {
+                false
+            }
         })
     });
     report.add_result(
-        "Demo 6: plan for transporting box2",
+        "Demo 6: exact plan structure with objective/route/steps for box2 (room_b to room_d)",
         if demo6_box2.is_some() {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected transport plan for box2 not found")
+            ValidationResult::fail(
+                "Expected exact plan S-expression structure for box2 (room_b to room_d) not found",
+            )
         },
     );
 
-    // Validation 15: Demo 6 - box2 transport steps (via room_c OR via room_a->room_e)
+    // Validation 15: Demo 6 - box2 transport steps
+    // Due to inherent nondeterminism (see LIMITATIONS in robot_planning.rho),
+    // either the 2-hop or 3-hop path may appear in output
+    // Accept either: room_b -> room_c -> room_d (5 steps) OR room_b -> room_a -> room_e -> room_d (6 steps)
     let box2_steps_via_c = vec![
         vec!["navigate", "room_b"],
         vec!["pickup", "box2"],
@@ -1224,31 +1325,40 @@ fn test_example_robot_planning() {
     ];
     let has_box2_steps = pathmaps.iter().any(|pm| {
         let matcher = OutputMatcher::new(pm);
-        matcher.match_steps_sequence(&box2_steps_via_c)
-            || matcher.match_steps_sequence(&box2_steps_via_a_e)
+        matcher.match_steps_sequence(&box2_steps_via_c) || matcher.match_steps_sequence(&box2_steps_via_a_e)
     });
     report.add_result(
-        "Demo 6: box2 transport steps (via room_c OR via room_a->room_e)",
+        "Demo 6: box2 transport path (2-hop or 3-hop due to nondeterminism)",
         if has_box2_steps {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected exact steps sequence for box2 not found")
+            ValidationResult::fail("Expected transport path for box2 not found (neither 2-hop nor 3-hop)")
         },
     );
 
-    // Validation 16: No errors in PathMap outputs
-    let no_errors_in_outputs = pathmaps.iter().all(|pm| {
+    // Validation 16: No unexpected Error values in PathMap outputs
+    // Note: Expected errors like (error no_1hop_path ...) from failed path attempts are OK
+    // We're checking for unexpected runtime errors, not intentional error returns
+    let no_unexpected_errors = pathmaps.iter().all(|pm| {
         !pm.output.iter().any(|v| {
-            let s = v.to_display_string();
-            s.contains("error") && s.contains("Error")
+            // Check for Error variant with messages indicating actual failures
+            // (as opposed to expected control-flow errors like no_1hop_path)
+            matches!(v, MettaValue::Error(msg, _) if
+                !msg.contains("no_1hop_path") &&
+                !msg.contains("no_2hop_path") &&
+                !msg.contains("no_3hop_path") &&
+                !msg.is_empty()
+            )
         })
     });
     report.add_result(
-        "All PathMaps have no errors in outputs",
-        if no_errors_in_outputs {
+        "All PathMaps have no unexpected runtime errors",
+        if no_unexpected_errors {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Some PathMaps contain errors in outputs")
+            ValidationResult::fail(
+                "Some PathMaps contain unexpected Error values (not control-flow errors)",
+            )
         },
     );
 

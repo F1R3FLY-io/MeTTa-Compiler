@@ -27,9 +27,36 @@ use mork_expr::Expr;
 
 pub(super) type EvalOutput = (Vec<MettaValue>, Environment);
 
+/// Maximum evaluation depth to prevent stack overflow
+/// This limits how deep the evaluation can recurse through nested expressions
+/// Set to 1000 to allow legitimate deep nesting while still catching runaway recursion
+const MAX_EVAL_DEPTH: usize = 1000;
+
+/// Maximum number of results in Cartesian product to prevent combinatorial explosion
+/// This limits the total number of combinations explored during nondeterministic evaluation
+const MAX_CARTESIAN_RESULTS: usize = 10000;
+
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)
+/// This is the public entry point that starts evaluation with depth tracking
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
+    eval_with_depth(value, env, 0)
+}
+
+/// Internal evaluation function with depth tracking
+/// This prevents unbounded recursion and stack overflow
+fn eval_with_depth(value: MettaValue, env: Environment, depth: usize) -> EvalResult {
+    // Check depth limit
+    if depth > MAX_EVAL_DEPTH {
+        return (
+            vec![MettaValue::Error(
+                format!("Maximum evaluation depth ({}) exceeded - possible infinite recursion or combinatorial explosion", MAX_EVAL_DEPTH),
+                Box::new(value),
+            )],
+            env,
+        );
+    }
+
     match value {
         // Errors propagate immediately without further evaluation
         MettaValue::Error(_, _) => (vec![value], env),
@@ -52,12 +79,12 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
         | MettaValue::Type(_) => (vec![value], env),
 
         // For s-expressions, evaluate elements and apply rules/built-ins
-        MettaValue::SExpr(items) => eval_sexpr(items, env),
+        MettaValue::SExpr(items) => eval_sexpr(items, env, depth),
     }
 }
 
-/// Evaluate an s-expression
-fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+/// Evaluate an s-expression with depth tracking
+fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalResult {
     if items.is_empty() {
         return (vec![MettaValue::Nil], env);
     }
@@ -158,7 +185,7 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let mut envs = Vec::new();
 
     for item in items.iter() {
-        let (results, new_env) = eval(item.clone(), env.clone());
+        let (results, new_env) = eval_with_depth(item.clone(), env.clone(), depth + 1);
 
         // Check for errors in subexpressions and propagate immediately
         if let Some(first) = results.first() {
@@ -205,7 +232,7 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
             for (rhs, bindings) in all_matches {
                 // Apply bindings to RHS and evaluate
                 let instantiated_rhs = apply_bindings(&rhs, &bindings);
-                let (results, _) = eval(instantiated_rhs, unified_env.clone());
+                let (results, _) = eval_with_depth(instantiated_rhs, unified_env.clone(), depth + 1);
                 all_final_results.extend(results);
             }
         } else {
@@ -381,6 +408,9 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
 /// When sub-expressions return multiple results, we need to try all combinations
 ///
 /// Example: [[a, b], [1, 2]] -> [[a, 1], [a, 2], [b, 1], [b, 2]]
+///
+/// This function has a built-in limit (MAX_CARTESIAN_RESULTS) to prevent combinatorial explosion.
+/// If the product would exceed this limit, it returns only the first MAX_CARTESIAN_RESULTS combinations.
 fn cartesian_product(results: &[Vec<MettaValue>]) -> Vec<Vec<MettaValue>> {
     if results.is_empty() {
         return vec![vec![]];
@@ -388,7 +418,12 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Vec<Vec<MettaValue>> {
 
     // Base case: single result list
     if results.len() == 1 {
-        return results[0].iter().map(|item| vec![item.clone()]).collect();
+        let items: Vec<Vec<MettaValue>> = results[0]
+            .iter()
+            .take(MAX_CARTESIAN_RESULTS)
+            .map(|item| vec![item.clone()])
+            .collect();
+        return items;
     }
 
     // Recursive case: combine first list with Cartesian product of rest
@@ -396,8 +431,13 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Vec<Vec<MettaValue>> {
     let rest_product = cartesian_product(&results[1..]);
 
     let mut product = Vec::new();
-    for item in first {
+    'outer: for item in first {
         for rest_combo in &rest_product {
+            // Check limit before adding more combinations
+            if product.len() >= MAX_CARTESIAN_RESULTS {
+                break 'outer;
+            }
+
             let mut combo = vec![item.clone()];
             combo.extend(rest_combo.clone());
             product.push(combo);

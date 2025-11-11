@@ -22,6 +22,10 @@ path = "src/main.rs"
 name = "rule_matching"
 harness = false
 
+[[bench]]
+name = "pattern_match"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }
@@ -74,6 +78,16 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+[profile.bench]
+inherits = "release"
+strip = false  # Keep debug symbols for profiling
+debug = true   # Enable line-level profiling
+
+[profile.profiling]
+inherits = "release"
+strip = false  # Keep debug symbols for flamegraphs
+debug = 1      # Line tables only (smaller than debug = true)
 
 # Debian package metadata
 [package.metadata.deb]

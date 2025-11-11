@@ -346,7 +346,8 @@ where
 /// Returns bindings if successful, None otherwise
 ///
 /// This is made public to support optimized match operations in Environment
-pub(crate) fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
+/// and for benchmarking the core pattern matching algorithm.
+pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
     let mut bindings = Bindings::new();
     if pattern_match_impl(pattern, value, &mut bindings) {
         Some(bindings)

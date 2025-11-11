@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
+use super::fuzzy_match::FuzzyMatcher;
 use super::{MettaValue, Rule};
 
 /// The environment contains the fact database and type assertions
@@ -41,6 +42,11 @@ pub struct Environment {
     /// Expected speedup: 3-10x for repeated pattern matching
     /// Thread-safe via Arc<Mutex<>> for parallel evaluation
     pattern_cache: Arc<Mutex<LruCache<MettaValue, Vec<u8>>>>,
+
+    /// Fuzzy matcher: Tracks known symbols for "Did you mean?" suggestions
+    /// Populated automatically as rules and functions are added to environment
+    /// Used to suggest similar symbols when encountering undefined atoms
+    fuzzy_matcher: FuzzyMatcher,
 }
 
 impl Environment {
@@ -53,6 +59,7 @@ impl Environment {
             pattern_cache: Arc::new(Mutex::new(
                 LruCache::new(NonZeroUsize::new(1000).unwrap())
             )),
+            fuzzy_matcher: FuzzyMatcher::new(),
         }
     }
 
@@ -444,9 +451,12 @@ impl Environment {
             let arity = rule.lhs.get_arity();
             let mut index = self.rule_index.lock().unwrap();
             index
-                .entry((head, arity))
+                .entry((head.clone(), arity))
                 .or_insert_with(Vec::new)
                 .push(rule);  // Move instead of clone
+
+            // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
+            self.fuzzy_matcher.insert(&head);
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
             let mut wildcards = self.wildcard_rules.lock().unwrap();
@@ -719,6 +729,42 @@ impl Environment {
         matching_rules
     }
 
+    /// Get fuzzy suggestions for a potentially misspelled symbol
+    ///
+    /// Returns a list of (symbol, distance) pairs sorted by Levenshtein distance.
+    ///
+    /// # Arguments
+    /// - `query`: The symbol to find matches for (e.g., "fibonaci")
+    /// - `max_distance`: Maximum edit distance (typically 1-2)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let suggestions = env.suggest_similar_symbols("fibonaci", 2);
+    /// // Returns: [("fibonacci", 1)]
+    /// ```
+    pub fn suggest_similar_symbols(&self, query: &str, max_distance: usize) -> Vec<(String, usize)> {
+        self.fuzzy_matcher.suggest(query, max_distance)
+    }
+
+    /// Generate a "Did you mean?" error message for an undefined symbol
+    ///
+    /// Returns None if no suggestions are found within max_distance.
+    ///
+    /// # Arguments
+    /// - `symbol`: The undefined symbol
+    /// - `max_distance`: Maximum edit distance (default: 2)
+    ///
+    /// # Example
+    /// ```ignore
+    /// if let Some(msg) = env.did_you_mean("fibonaci", 2) {
+    ///     eprintln!("Error: Undefined symbol 'fibonaci'. {}", msg);
+    /// }
+    /// // Prints: "Error: Undefined symbol 'fibonaci'. Did you mean: fibonacci?"
+    /// ```
+    pub fn did_you_mean(&self, symbol: &str, max_distance: usize) -> Option<String> {
+        self.fuzzy_matcher.did_you_mean(symbol, max_distance, 3)
+    }
+
     /// Union two environments (monotonic merge)
     /// Since Space is shared via Arc<Mutex<>>, facts (including type assertions) are automatically merged
     /// Multiplicities and rule indices are also merged via shared Arc
@@ -735,6 +781,7 @@ impl Environment {
         // The counts are automatically shared via the Arc
         let multiplicities = self.multiplicities.clone();
         let pattern_cache = self.pattern_cache.clone();
+        let fuzzy_matcher = self.fuzzy_matcher.clone();
 
         Environment {
             space,
@@ -742,6 +789,7 @@ impl Environment {
             wildcard_rules,
             multiplicities,
             pattern_cache,
+            fuzzy_matcher,
         }
     }
 }

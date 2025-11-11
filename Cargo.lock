@@ -1699,6 +1699,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
 
 [[package]]
+name = "liblevenshtein"
+version = "0.6.0"
+dependencies = [
+ "parking_lot",
+ "pathmap 0.2.0-alpha0 (git+https://github.com/Adam-Vandervorst/PathMap.git?branch=master)",
+ "rustc-hash",
+ "smallvec",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1843,6 +1854,7 @@ version = "0.1.2"
 dependencies = [
  "criterion",
  "dirs",
+ "liblevenshtein",
  "lru",
  "models",
  "mork",
@@ -1889,7 +1901,7 @@ dependencies = [
  "crypto",
  "hex",
  "itertools 0.12.1",
- "pathmap 0.2.0-alpha0 (git+https://github.com/Adam-Vandervorst/PathMap?branch=master)",
+ "pathmap 0.2.0-alpha0 (git+https://github.com/Adam-Vandervorst/PathMap.git?branch=master)",
  "proptest",
  "proptest-derive",
  "prost 0.14.1",
@@ -2203,7 +2215,7 @@ dependencies = [
 [[package]]
 name = "pathmap"
 version = "0.2.0-alpha0"
-source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#2030105926056b58c6bebded823b781413e916d0"
+source = "git+https://github.com/Adam-Vandervorst/PathMap.git?branch=master#2030105926056b58c6bebded823b781413e916d0"
 dependencies = [
  "arrayvec",
  "dyn-clone",
@@ -2866,6 +2878,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3149,6 +3167,9 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "socket2"

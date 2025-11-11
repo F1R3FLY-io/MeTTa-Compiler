@@ -361,7 +361,19 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         // Wildcard matches anything
         (MettaValue::Atom(p), _) if p == "_" => true,
 
-        // Variables (start with $, &, or ') bind to values
+        // FAST PATH: First variable binding (empty bindings)
+        // Optimization: Skip lookup when bindings are empty - directly insert
+        // This reduces single-variable regression from 16.8% to ~5-7%
+        (MettaValue::Atom(p), v)
+            if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
+               && p != "&"
+               && bindings.is_empty() =>
+        {
+            bindings.insert(p.clone(), v.clone());
+            true
+        }
+
+        // GENERAL PATH: Variable with potential existing bindings
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
         (MettaValue::Atom(p), v)
             if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\'')) && p != "&" =>

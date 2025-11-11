@@ -644,6 +644,45 @@ impl Environment {
         }
     }
 
+    /// Extract concrete prefix from a pattern for efficient trie navigation
+    /// Returns (prefix_items, has_variables) where prefix is longest concrete sequence
+    ///
+    /// Examples:
+    /// - (fibonacci 10) → ([fibonacci, 10], false) - fully concrete
+    /// - (fibonacci $n) → ([fibonacci], true) - concrete prefix, variable suffix
+    /// - ($f 10) → ([], true) - no concrete prefix
+    ///
+    /// This enables O(p + k) pattern matching instead of O(n):
+    /// - p = prefix length (typically 1-3 items)
+    /// - k = candidates matching prefix (typically << n)
+    /// - n = total entries in space
+    pub(crate) fn extract_pattern_prefix(pattern: &MettaValue) -> (Vec<MettaValue>, bool) {
+        match pattern {
+            MettaValue::SExpr(items) => {
+                let mut prefix = Vec::new();
+                let mut has_variables = false;
+
+                for item in items {
+                    if Self::contains_variables(item) {
+                        has_variables = true;
+                        break; // Stop at first variable
+                    }
+                    prefix.push(item.clone());
+                }
+
+                (prefix, has_variables)
+            }
+            // Non-s-expression patterns are treated as single-item prefix
+            _ => {
+                if Self::contains_variables(pattern) {
+                    (vec![], true)
+                } else {
+                    (vec![pattern.clone()], false)
+                }
+            }
+        }
+    }
+
     /// Add a fact to the MORK Space for pattern matching
     /// Converts the MettaValue to MORK format and stores it
     pub fn add_to_space(&mut self, value: &MettaValue) {

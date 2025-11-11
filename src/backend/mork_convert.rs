@@ -206,7 +206,7 @@ pub fn mork_bindings_to_metta(
         // This avoids the "reserved byte" panic when bindings contain symbols with reserved bytes
         let expr: Expr = expr_env.subsexpr();
         if let Ok(value) = Environment::mork_expr_to_metta_value(&expr, space) {
-            bindings.push((format!("${}", var_name), value));
+            bindings.insert(format!("${}", var_name), value);
         }
     }
 

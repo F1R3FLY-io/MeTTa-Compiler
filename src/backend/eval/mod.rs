@@ -366,11 +366,11 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         (MettaValue::Atom(p), v)
             if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\'')) && p != "&" =>
         {
-            // Check if variable is already bound (linear search for SmallVec)
-            if let Some((_, existing)) = bindings.iter().find(|(name, _)| name == p) {
+            // Check if variable is already bound (linear search for SmartBindings)
+            if let Some((_, existing)) = bindings.iter().find(|(name, _)| name.as_str() == p) {
                 existing == v
             } else {
-                bindings.push((p.clone(), v.clone()));
+                bindings.insert(p.clone(), v.clone());
                 true
             }
         }
@@ -461,7 +461,7 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
         {
             bindings
                 .iter()
-                .find(|(name, _)| name == s)
+                .find(|(name, _)| name.as_str() == s)
                 .map(|(_, val)| val.clone())
                 .unwrap_or_else(|| value.clone())
         }
@@ -607,7 +607,7 @@ fn try_match_all_rules_query_multi(
             // Convert MORK bindings to our format
             if let Ok(our_bindings) = mork_bindings_to_metta(&bindings, &ctx, &space) {
                 // Extract the RHS from bindings
-                if let Some((_, rhs)) = our_bindings.iter().find(|(name, _)| name == "$rhs") {
+                if let Some((_, rhs)) = our_bindings.iter().find(|(name, _)| name.as_str() == "$rhs") {
                     matches.push((rhs.clone(), our_bindings));
                 }
             }
@@ -720,7 +720,7 @@ mod tests {
         assert!(bindings.is_some());
         let bindings = bindings.unwrap();
         assert_eq!(
-            bindings.iter().find(|(name, _)| name == "$x").map(|(_, val)| val),
+            bindings.iter().find(|(name, _)| name.as_str() == "$x").map(|(_, val)| val),
             Some(&MettaValue::Long(42))
         );
     }
@@ -741,7 +741,7 @@ mod tests {
         assert!(bindings.is_some());
         let bindings = bindings.unwrap();
         assert_eq!(
-            bindings.iter().find(|(name, _)| name == "$x").map(|(_, val)| val),
+            bindings.iter().find(|(name, _)| name.as_str() == "$x").map(|(_, val)| val),
             Some(&MettaValue::Long(1))
         );
     }

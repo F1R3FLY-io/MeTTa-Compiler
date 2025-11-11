@@ -487,119 +487,110 @@ new stdoutAck(`rho:io:stdoutAck`),
   // ===================================================================
 
   for (_ <- ack) {
-    stdoutAck!("=== Robot Planning System - IMPROVED VERSION ===", *ack) |
+    stdoutAck!("=== Robot Planning System ===", *ack) |
     for (_ <- ack) {
-      stdoutAck!("✓ Using persistent state (initialized once, reused for all queries)", *ack) |
+
+      // Demo 1: Query connections
+      stdoutAck!("\nDemo 1: Get neighbors of room_a (dynamic match query)", *ack) |
       for (_ <- ack) {
-        stdoutAck!("✓ Using new built-ins (foldl-atom for counting, map-atom for steps)", *ack) |
-        for (_ <- ack) {
-          stdoutAck!("✓ Using error handling (catch, is-error)", *ack) |
-          for (_ <- ack) {
-
-            // Demo 1: Query connections
-            stdoutAck!("\nDemo 1: Get neighbors of room_a (dynamic match query)", *ack) |
+        new result1 in {
+          robotAPI!("all_connections", "room_a", *result1) |
+          for (@res <- result1) {
+            stdoutAck!("  Neighbors: ", *ack) |
             for (_ <- ack) {
-              new result1 in {
-                robotAPI!("all_connections", "room_a", *result1) |
-                for (@res <- result1) {
-                  stdoutAck!("  Neighbors: ", *ack) |
-                  for (_ <- ack) {
-                    stdoutAck!(res, *ack) |
-                    for (_ <- ack) {
-                      done1!()
-                    }
-                  }
-                }
-              }
-            } |
-
-            // Demo 2: Locate ball1
-            for (<- done1) {
-              stdoutAck!("\nDemo 2: Where is ball1? (dynamic match query)", *ack) |
+              stdoutAck!(res, *ack) |
               for (_ <- ack) {
-                new result2 in {
-                  robotAPI!("locate", "ball1", *result2) |
-                  for (@res <- result2) {
-                    stdoutAck!("  Location: ", *ack) |
-                    for (_ <- ack) {
-                      stdoutAck!(res, *ack) |
-                      for (_ <- ack) {
-                        done2!()
-                      }
-                    }
-                  }
-                }
+                done1!()
               }
-            } |
+            }
+          }
+        }
+      } |
 
-            // Demo 3: Find shortest path deterministically
-            for (<- done2) {
-              stdoutAck!("\nDemo 3: Find shortest path from room_c to room_a (deterministic!)", *ack) |
+      // Demo 2: Locate ball1
+      for (<- done1) {
+        stdoutAck!("\nDemo 2: Where is ball1? (dynamic match query)", *ack) |
+        for (_ <- ack) {
+          new result2 in {
+            robotAPI!("locate", "ball1", *result2) |
+            for (@res <- result2) {
+              stdoutAck!("  Location: ", *ack) |
               for (_ <- ack) {
-                new result3 in {
-                  robotAPI!("find_path", "room_c", "room_a", *result3) |
-                  for (@res <- result3) {
-                    stdoutAck!("  Shortest Path: ", *ack) |
-                    for (_ <- ack) {
-                      stdoutAck!(res, *ack) |
-                      for (_ <- ack) {
-                        stdoutAck!("  (Deterministic: always returns shortest path first!)", *ack) |
-                        for (_ <- ack) {
-                          done3!()
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            } |
-
-            // Demo 4: Transport ball1 from room_c to room_a
-            for (<- done3) {
-              stdoutAck!("\n=== DEMO 4: Transport ball1 from room_c to room_a ===", *ack) |
-              for (_ <- ack) {
-                stdoutAck!("Step 1: Locate ball1...", *ack) |
+                stdoutAck!(res, *ack) |
                 for (_ <- ack) {
-                  new result4a in {
-                    robotAPI!("locate", "ball1", *result4a) |
-                    for (@loc <- result4a) {
-                      stdoutAck!("  ball1 is at: ", *ack) |
-                      for (_ <- ack) {
-                        stdoutAck!(loc, *ack) |
-                        for (_ <- ack) {
-                          stdoutAck!("Step 2: Find path from room_c to room_a...", *ack) |
+                  done2!()
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      // Demo 3: Find shortest path deterministically
+      for (<- done2) {
+        stdoutAck!("\nDemo 3: Find shortest path from room_c to room_a (deterministic!)", *ack) |
+        for (_ <- ack) {
+          new result3 in {
+            robotAPI!("find_path", "room_c", "room_a", *result3) |
+            for (@res <- result3) {
+              stdoutAck!("  Shortest Path: ", *ack) |
+              for (_ <- ack) {
+                stdoutAck!(res, *ack) |
+                for (_ <- ack) {
+                  stdoutAck!("  (Deterministic: always returns shortest path first!)", *ack) |
+                  for (_ <- ack) {
+                    done3!()
+                  }
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      // Demo 4: Transport ball1 from room_c to room_a
+      for (<- done3) {
+        stdoutAck!("\n=== DEMO 4: Transport ball1 from room_c to room_a ===", *ack) |
+        for (_ <- ack) {
+          stdoutAck!("Step 1: Locate ball1...", *ack) |
+          for (_ <- ack) {
+            new result4a in {
+              robotAPI!("locate", "ball1", *result4a) |
+              for (@loc <- result4a) {
+                stdoutAck!("  ball1 is at: ", *ack) |
+                for (_ <- ack) {
+                  stdoutAck!(loc, *ack) |
+                  for (_ <- ack) {
+                    stdoutAck!("Step 2: Find path from room_c to room_a...", *ack) |
+                    for (_ <- ack) {
+                      new result4b in {
+                        robotAPI!("find_path", "room_c", "room_a", *result4b) |
+                        for (@path <- result4b) {
+                          stdoutAck!("  Path: ", *ack) |
                           for (_ <- ack) {
-                            new result4b in {
-                              robotAPI!("find_path", "room_c", "room_a", *result4b) |
-                              for (@path <- result4b) {
-                                stdoutAck!("  Path: ", *ack) |
-                                for (_ <- ack) {
-                                  stdoutAck!(path, *ack) |
-                                  for (_ <- ack) {
-                                    stdoutAck!("Step 3: Build complete transport plan...", *ack) |
+                            stdoutAck!(path, *ack) |
+                            for (_ <- ack) {
+                              stdoutAck!("Step 3: Build complete transport plan...", *ack) |
+                              for (_ <- ack) {
+                                new result4c in {
+                                  robotAPI!("transport_object", "ball1", "room_a", *result4c) |
+                                  for (@plan <- result4c) {
+                                    stdoutAck!("  Complete Plan: ", *ack) |
                                     for (_ <- ack) {
-                                      new result4c in {
-                                        robotAPI!("transport_object", "ball1", "room_a", *result4c) |
-                                        for (@plan <- result4c) {
-                                          stdoutAck!("  Complete Plan: ", *ack) |
-                                          for (_ <- ack) {
-                                            stdoutAck!(plan, *ack) |
-                                            for (_ <- ack) {
-                                              stdoutAck!("Step 4: Validate plan...", *ack) |
+                                      stdoutAck!(plan, *ack) |
+                                      for (_ <- ack) {
+                                        stdoutAck!("Step 4: Validate plan...", *ack) |
+                                        for (_ <- ack) {
+                                          new result4d in {
+                                            robotAPI!("validate_plan", "ball1", "room_a", *result4d) |
+                                            for (@validation <- result4d) {
+                                              stdoutAck!("  Validation: ", *ack) |
                                               for (_ <- ack) {
-                                                new result4d in {
-                                                  robotAPI!("validate_plan", "ball1", "room_a", *result4d) |
-                                                  for (@validation <- result4d) {
-                                                    stdoutAck!("  Validation: ", *ack) |
-                                                    for (_ <- ack) {
-                                                      stdoutAck!(validation, *ack) |
-                                                      for (_ <- ack) {
-                                                        stdoutAck!("\n✓ Demo 4 Complete: Full dynamic planning pipeline working!", *ack) |
-                                                        for (_ <- ack) {
-                                                          done4!()
-                                                        }
-                                                      }
-                                                    }
+                                                stdoutAck!(validation, *ack) |
+                                                for (_ <- ack) {
+                                                  stdoutAck!("\n✓ Demo 4 Complete: Full dynamic planning pipeline working!", *ack) |
+                                                  for (_ <- ack) {
+                                                    done4!()
                                                   }
                                                 }
                                               }
@@ -619,67 +610,55 @@ new stdoutAck(`rho:io:stdoutAck`),
                   }
                 }
               }
-            } |
+            }
+          }
+        }
+      } |
 
-            // Demo 5: Minimum distance calculation
-            for (<- done4) {
-              stdoutAck!("\nDemo 5: Calculate minimum distance from room_a to room_d", *ack) |
+      // Demo 5: Minimum distance calculation
+      for (<- done4) {
+        stdoutAck!("\nDemo 5: Calculate minimum distance from room_a to room_d", *ack) |
+        for (_ <- ack) {
+          new result5 in {
+            robotAPI!("distance", "room_a", "room_d", *result5) |
+            for (@res <- result5) {
+              stdoutAck!("  Minimum Distance: ", *ack) |
               for (_ <- ack) {
-                new result5 in {
-                  robotAPI!("distance", "room_a", "room_d", *result5) |
-                  for (@res <- result5) {
-                    stdoutAck!("  Minimum Distance: ", *ack) |
-                    for (_ <- ack) {
-                      stdoutAck!(res, *ack) |
-                      for (_ <- ack) {
-                        stdoutAck!("  (Direct minimum calculation, no path construction!)", *ack) |
-                        for (_ <- ack) {
-                          done5!()
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            } |
-
-            // Demo 6: Another transport example
-            for (<- done5) {
-              stdoutAck!("\nDemo 6: Transport box2 from room_b to room_d (full dynamic)", *ack) |
-              for (_ <- ack) {
-                new result6 in {
-                  robotAPI!("transport_object", "box2", "room_d", *result6) |
-                  for (@res <- result6) {
-                    stdoutAck!("  Plan: ", *ack) |
-                    for (_ <- ack) {
-                      stdoutAck!(res, *ack) |
-                      for (_ <- ack) {
-                        done6!()
-                      }
-                    }
-                  }
-                }
-              }
-            } |
-
-            // Final summary
-            for (<- done6) {
-              stdoutAck!("\n=== All Demos Complete ===", *ack) |
-              for (_ <- ack) {
-                stdoutAck!("✓ Performance: ~50-100x faster than original (state reuse)", *ack) |
+                stdoutAck!(res, *ack) |
                 for (_ <- ack) {
-                  stdoutAck!("✓ Dynamic counting with foldl-atom", *ack) |
+                  stdoutAck!("  (Direct minimum calculation, no path construction!)", *ack) |
                   for (_ <- ack) {
-                    stdoutAck!("✓ Dynamic step generation with map helpers", *ack) |
-                    for (_ <- ack) {
-                      stdoutAck!("✓ Error handling with catch (safe_locate, safe_find_path)", *ack)
-                    }
+                    done5!()
                   }
                 }
               }
             }
           }
         }
+      } |
+
+      // Demo 6: Another transport example
+      for (<- done5) {
+        stdoutAck!("\nDemo 6: Transport box2 from room_b to room_d (full dynamic)", *ack) |
+        for (_ <- ack) {
+          new result6 in {
+            robotAPI!("transport_object", "box2", "room_d", *result6) |
+            for (@res <- result6) {
+              stdoutAck!("  Plan: ", *ack) |
+              for (_ <- ack) {
+                stdoutAck!(res, *ack) |
+                for (_ <- ack) {
+                  done6!()
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      // Final summary
+      for (<- done6) {
+        stdoutAck!("\n=== All Demos Complete ===", *ack)
       }
     }
   }

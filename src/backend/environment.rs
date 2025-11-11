@@ -519,19 +519,20 @@ impl Environment {
     /// Checks directly in the Space using MORK binary format
     /// Uses structural equivalence to handle variable name changes from MORK's De Bruijn indices
     ///
-    /// OPTIMIZED: Uses query_multi() for O(k) prefix-based lookup instead of O(n) iteration
-    /// Falls back to linear search if query_multi optimization fails
+    /// NOTE: query_multi() cannot be used here because it treats variables in the search pattern
+    /// as pattern variables (to be bound), not as atoms to match. This causes false negatives.
+    /// For example, searching for `(= (test-rule $x) (processed $x))` with query_multi treats
+    /// $x as a pattern variable, which doesn't match the stored rule where $x was normalized to $a.
+    ///
+    /// Therefore, we always use linear search with structural equivalence checking.
     pub fn has_sexpr_fact(&self, sexpr: &MettaValue) -> bool {
-        // Try optimized query_multi approach first
-        if let Some(result) = self.has_sexpr_fact_optimized(sexpr) {
-            return result;
-        }
-
-        // Fall back to linear search if optimization fails
+        // Always use linear search - query_multi doesn't work for this use case
         self.has_sexpr_fact_linear(sexpr)
     }
 
-    /// Optimized version using query_multi for O(k) prefix-based lookup
+    /// UNUSED: This approach doesn't work because query_multi treats variables as pattern variables
+    /// Kept for historical reference - do not use
+    #[allow(dead_code)]
     fn has_sexpr_fact_optimized(&self, sexpr: &MettaValue) -> Option<bool> {
         use mork_expr::Expr;
         use mork_frontend::bytestring_parser::Parser;

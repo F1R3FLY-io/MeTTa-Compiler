@@ -366,11 +366,11 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         (MettaValue::Atom(p), v)
             if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\'')) && p != "&" =>
         {
-            // Check if variable is already bound
-            if let Some(existing) = bindings.get(p) {
+            // Check if variable is already bound (linear search for SmallVec)
+            if let Some((_, existing)) = bindings.iter().find(|(name, _)| name == p) {
                 existing == v
             } else {
-                bindings.insert(p.clone(), v.clone());
+                bindings.push((p.clone(), v.clone()));
                 true
             }
         }
@@ -459,7 +459,11 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
         MettaValue::Atom(s)
             if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" =>
         {
-            bindings.get(s).cloned().unwrap_or_else(|| value.clone())
+            bindings
+                .iter()
+                .find(|(name, _)| name == s)
+                .map(|(_, val)| val.clone())
+                .unwrap_or_else(|| value.clone())
         }
         MettaValue::SExpr(items) => {
             let new_items: Vec<_> = items
@@ -603,7 +607,7 @@ fn try_match_all_rules_query_multi(
             // Convert MORK bindings to our format
             if let Ok(our_bindings) = mork_bindings_to_metta(&bindings, &ctx, &space) {
                 // Extract the RHS from bindings
-                if let Some(rhs) = our_bindings.get("$rhs") {
+                if let Some((_, rhs)) = our_bindings.iter().find(|(name, _)| name == "$rhs") {
                     matches.push((rhs.clone(), our_bindings));
                 }
             }
@@ -715,7 +719,10 @@ mod tests {
         let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
         let bindings = bindings.unwrap();
-        assert_eq!(bindings.get("$x"), Some(&MettaValue::Long(42)));
+        assert_eq!(
+            bindings.iter().find(|(name, _)| name == "$x").map(|(_, val)| val),
+            Some(&MettaValue::Long(42))
+        );
     }
 
     #[test]
@@ -733,7 +740,10 @@ mod tests {
         let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
         let bindings = bindings.unwrap();
-        assert_eq!(bindings.get("$x"), Some(&MettaValue::Long(1)));
+        assert_eq!(
+            bindings.iter().find(|(name, _)| name == "$x").map(|(_, val)| val),
+            Some(&MettaValue::Long(1))
+        );
     }
 
     #[test]

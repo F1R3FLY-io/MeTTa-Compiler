@@ -55,6 +55,9 @@ regex = "1.11"
 # LRU cache for pattern caching optimization
 lru = "0.12"
 
+# SmallVec - Stack-allocated vector for optimizing pattern matching bindings
+smallvec = "1.11"
+
 # liblevenshtein - Fuzzy string matching for "Did you mean?" suggestions
 liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
 

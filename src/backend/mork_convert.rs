@@ -2,9 +2,9 @@
 //!
 //! This module handles the bidirectional conversion needed for query_multi integration:
 //! - MettaValue → MORK Expr (for pattern queries)
-//! - MORK bindings → HashMap<String, MettaValue> (for pattern match results)
+//! - MORK bindings → SmallVec<[(String, MettaValue); 8]> (for pattern match results)
 
-use super::models::MettaValue;
+use super::models::{Bindings, MettaValue};
 use mork::space::Space;
 use mork_expr::{Expr, ExprEnv, ExprZipper};
 use mork_frontend::bytestring_parser::Parser;
@@ -181,7 +181,7 @@ fn write_symbol(bytes: &[u8], space: &Space, ez: &mut ExprZipper) -> Result<(), 
 /// Convert MORK bindings to our Bindings format
 ///
 /// MORK uses BTreeMap<(u8, u8), ExprEnv> where the key is (old_var, new_var).
-/// We need to convert this to HashMap<String, MettaValue> using the original variable names.
+/// We need to convert this to SmallVec<[(String, MettaValue); 8]> using the original variable names.
 ///
 /// FIXED: Uses mork_expr_to_metta_value() instead of serialize2() to avoid reserved byte panic
 #[allow(unused_variables)]
@@ -189,10 +189,10 @@ pub fn mork_bindings_to_metta(
     mork_bindings: &std::collections::BTreeMap<(u8, u8), ExprEnv>,
     ctx: &ConversionContext,
     space: &Space,
-) -> Result<HashMap<String, MettaValue>, String> {
+) -> Result<Bindings, String> {
     use super::environment::Environment;
 
-    let mut bindings = HashMap::new();
+    let mut bindings = Bindings::new();
 
     for (&(old_var, _new_var), expr_env) in mork_bindings {
         // Get the variable name from context
@@ -206,7 +206,7 @@ pub fn mork_bindings_to_metta(
         // This avoids the "reserved byte" panic when bindings contain symbols with reserved bytes
         let expr: Expr = expr_env.subsexpr();
         if let Ok(value) = Environment::mork_expr_to_metta_value(&expr, space) {
-            bindings.insert(format!("${}", var_name), value);
+            bindings.push((format!("${}", var_name), value));
         }
     }
 

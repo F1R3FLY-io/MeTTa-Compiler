@@ -1865,6 +1865,7 @@ dependencies = [
  "regex",
  "rustyline",
  "serde",
+ "smallvec",
  "tokio",
  "toml",
  "tree-sitter",

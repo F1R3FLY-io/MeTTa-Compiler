@@ -16,6 +16,17 @@ pub struct Environment {
     /// Thread-safe via Arc<Mutex<>> for parallel evaluation
     pub space: Arc<Mutex<Space>>,
 
+    /// Rule index: Maps (head_symbol, arity) -> Vec<Rule> for O(1) rule lookup
+    /// This enables O(k) rule matching where k = rules with matching head symbol
+    /// Instead of O(n) iteration through all rules
+    /// Thread-safe via Arc<Mutex<>> for parallel evaluation
+    rule_index: Arc<Mutex<HashMap<(String, usize), Vec<Rule>>>>,
+
+    /// Wildcard rules: Rules without a clear head symbol (e.g., variable patterns, wildcards)
+    /// These rules must be checked against all queries
+    /// Thread-safe via Arc<Mutex<>> for parallel evaluation
+    wildcard_rules: Arc<Mutex<Vec<Rule>>>,
+
     /// Multiplicities: tracks how many times each rule is defined
     /// Maps a normalized rule key to its definition count
     /// This allows multiply-defined rules to produce multiple results
@@ -27,6 +38,8 @@ impl Environment {
     pub fn new() -> Self {
         Environment {
             space: Arc::new(Mutex::new(Space::new())),
+            rule_index: Arc::new(Mutex::new(HashMap::new())),
+            wildcard_rules: Arc::new(Mutex::new(Vec::new())),
             multiplicities: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -392,6 +405,7 @@ impl Environment {
     /// Add a rule to the environment
     /// Rules are stored in MORK Space as s-expressions: (= lhs rhs)
     /// Multiply-defined rules are tracked via multiplicities
+    /// Rules are also indexed by (head_symbol, arity) for fast lookup
     pub fn add_rule(&mut self, rule: Rule) {
         // Create a rule s-expression: (= lhs rhs)
         let rule_sexpr = MettaValue::SExpr(vec![
@@ -410,6 +424,22 @@ impl Environment {
             let new_count = *counts.entry(rule_key.clone()).or_insert(0) + 1;
             counts.insert(rule_key.clone(), new_count);
         } // Drop the RefMut borrow before add_to_space
+
+        // Add to rule index for O(k) lookup
+        // Note: We store the rule only ONCE (in either index or wildcard list)
+        // to avoid unnecessary clones. The rule is already in MORK Space.
+        if let Some(head) = rule.lhs.get_head_symbol() {
+            let arity = rule.lhs.get_arity();
+            let mut index = self.rule_index.lock().unwrap();
+            index
+                .entry((head, arity))
+                .or_insert_with(Vec::new)
+                .push(rule);  // Move instead of clone
+        } else {
+            // Rules without head symbol (wildcards, variables) go to wildcard list
+            let mut wildcards = self.wildcard_rules.lock().unwrap();
+            wildcards.push(rule);  // Move instead of clone
+        }
 
         // Add to MORK Space (only once - PathMap will deduplicate)
         self.add_to_space(&rule_sexpr);
@@ -507,13 +537,40 @@ impl Environment {
         }
     }
 
+    /// Get rules matching a specific head symbol and arity
+    /// Returns Vec<Rule> for O(1) lookup instead of O(n) iteration
+    /// Also includes wildcard rules that must be checked against all queries
+    pub fn get_matching_rules(&self, head: &str, arity: usize) -> Vec<Rule> {
+        let mut matching_rules = Vec::new();
+
+        // Get indexed rules with matching head symbol and arity
+        {
+            let index = self.rule_index.lock().unwrap();
+            if let Some(rules) = index.get(&(head.to_string(), arity)) {
+                matching_rules.extend(rules.clone());
+            }
+        }
+
+        // Also include wildcard rules (must always be checked)
+        {
+            let wildcards = self.wildcard_rules.lock().unwrap();
+            matching_rules.extend(wildcards.clone());
+        }
+
+        matching_rules
+    }
+
     /// Union two environments (monotonic merge)
     /// Since Space is shared via Arc<Mutex<>>, facts (including type assertions) are automatically merged
-    /// Multiplicities are also merged by taking the maximum count for each rule
+    /// Multiplicities and rule indices are also merged via shared Arc
     pub fn union(&self, _other: &Environment) -> Environment {
         // Space is shared via Arc, so both self and other point to the same Space
         // Facts (including type assertions) added to either are automatically visible in both
         let space = self.space.clone();
+
+        // Merge rule index and wildcard rules (both are Arc<Mutex>, so they're already shared)
+        let rule_index = self.rule_index.clone();
+        let wildcard_rules = self.wildcard_rules.clone();
 
         // Merge multiplicities (both are Arc<Mutex>, so they're already shared)
         // The counts are automatically shared via the Arc
@@ -521,6 +578,8 @@ impl Environment {
 
         Environment {
             space,
+            rule_index,
+            wildcard_rules,
             multiplicities,
         }
     }

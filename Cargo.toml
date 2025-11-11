@@ -18,6 +18,10 @@ crate-type = ["rlib", "cdylib"]
 name = "mettatron"
 path = "src/main.rs"
 
+[[bench]]
+name = "rule_matching"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }
@@ -56,6 +60,8 @@ nom = "7.1"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "process", "time", "sync", "macros"] }
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [profile.release]
 opt-level = 3

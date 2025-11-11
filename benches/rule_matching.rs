@@ -1,0 +1,254 @@
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use mettatron::backend::compile::compile;
+use mettatron::backend::environment::Environment;
+use mettatron::backend::eval::eval;
+
+/// Generate N fibonacci rules for benchmarking
+fn generate_fibonacci_rules(n: usize) -> String {
+    let mut rules = String::new();
+
+    // Base cases
+    rules.push_str("(= (fibonacci 0) 0)\n");
+    rules.push_str("(= (fibonacci 1) 1)\n");
+
+    // Generate N-2 additional dummy rules that won't match
+    for i in 2..n {
+        rules.push_str(&format!("(= (dummy-rule-{} $x) $x)\n", i));
+    }
+
+    // Real recursive rule at the end (worst case - must scan all rules)
+    rules.push_str("(= (fibonacci $n) (+ (fibonacci (- $n 1)) (fibonacci (- $n 2))))\n");
+
+    rules
+}
+
+/// Generate N simple pattern matching rules
+fn generate_pattern_rules(n: usize) -> String {
+    let mut rules = String::new();
+
+    for i in 0..n {
+        rules.push_str(&format!("(= (pattern-{} $x) (result-{} $x))\n", i, i));
+    }
+
+    rules
+}
+
+/// Benchmark rule matching with varying rule counts
+fn bench_rule_matching(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rule_matching");
+
+    for rule_count in [10, 50, 100, 500, 1000].iter() {
+        let rules_src = generate_fibonacci_rules(*rule_count);
+        let query_src = "(fibonacci 5)";
+
+        group.bench_with_input(
+            BenchmarkId::new("fibonacci_lookup", rule_count),
+            rule_count,
+            |b, _| {
+                b.iter(|| {
+                    let env = Environment::new();
+
+                    // Load rules
+                    for rule_str in rules_src.lines() {
+                        let rule_state = compile(rule_str).expect("Failed to compile rule");
+                        for rule_expr in rule_state.source {
+                            eval(black_box(rule_expr), env.clone());
+                        }
+                    }
+
+                    // Execute query
+                    let query_state = compile(query_src).expect("Failed to compile query");
+                    let query = query_state.source.into_iter().next().expect("No query");
+                    let result = eval(black_box(query), env);
+                    black_box(result)
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+/// Benchmark pattern matching with different pattern complexities
+fn bench_pattern_complexity(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pattern_matching");
+
+    let env = Environment::new();
+
+    // Simple pattern: (pattern $x)
+    let simple_rule = "(= (simple $x) $x)";
+    let simple_query = "(simple 42)";
+
+    group.bench_function("simple_variable", |b| {
+        b.iter(|| {
+            let env = env.clone();
+            let rule_state = compile(simple_rule).expect("Failed to compile");
+            let rule = rule_state.source.into_iter().next().expect("No rule");
+            eval(black_box(rule), env.clone());
+
+            let query_state = compile(simple_query).expect("Failed to compile");
+            let query = query_state.source.into_iter().next().expect("No query");
+            let result = eval(black_box(query), env);
+            black_box(result)
+        });
+    });
+
+    // Nested pattern: (pattern ($a ($b $c)))
+    let nested_rule = "(= (nested ($a ($b $c))) (result $a $b $c))";
+    let nested_query = "(nested (1 (2 3)))";
+
+    group.bench_function("nested_destructuring", |b| {
+        b.iter(|| {
+            let env = env.clone();
+            let rule_state = compile(nested_rule).expect("Failed to compile");
+            let rule = rule_state.source.into_iter().next().expect("No rule");
+            eval(black_box(rule), env.clone());
+
+            let query_state = compile(nested_query).expect("Failed to compile");
+            let query = query_state.source.into_iter().next().expect("No query");
+            let result = eval(black_box(query), env);
+            black_box(result)
+        });
+    });
+
+    // Multiple arguments: (pattern $a $b $c $d)
+    let multi_arg_rule = "(= (multi $a $b $c $d) (+ (+ $a $b) (+ $c $d)))";
+    let multi_arg_query = "(multi 1 2 3 4)";
+
+    group.bench_function("multi_argument", |b| {
+        b.iter(|| {
+            let env = env.clone();
+            let rule_state = compile(multi_arg_rule).expect("Failed to compile");
+            let rule = rule_state.source.into_iter().next().expect("No rule");
+            eval(black_box(rule), env.clone());
+
+            let query_state = compile(multi_arg_query).expect("Failed to compile");
+            let query = query_state.source.into_iter().next().expect("No query");
+            let result = eval(black_box(query), env);
+            black_box(result)
+        });
+    });
+
+    group.finish();
+}
+
+/// Benchmark full evaluation of representative programs
+fn bench_full_evaluation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("full_evaluation");
+
+    // Fibonacci with evaluation
+    let fib_program = r#"
+        (= (fibonacci 0) 0)
+        (= (fibonacci 1) 1)
+        (= (fibonacci $n) (+ (fibonacci (- $n 1)) (fibonacci (- $n 2))))
+        !(fibonacci 10)
+    "#;
+
+    group.bench_function("fibonacci_10", |b| {
+        b.iter(|| {
+            let env = Environment::new();
+            let lines: Vec<&str> = fib_program.lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect();
+
+            for line in lines {
+                let state = compile(line).expect("Failed to compile");
+                for expr in state.source {
+                    let _ = eval(black_box(expr), env.clone());
+                }
+            }
+        });
+    });
+
+    // Nested let bindings
+    let let_program = r#"
+        (let $x 10
+            (let $y 20
+                (let $z 30
+                    (+ (+ $x $y) $z))))
+    "#;
+
+    group.bench_function("nested_let", |b| {
+        b.iter(|| {
+            let env = Environment::new();
+            let state = compile(let_program).expect("Failed to compile");
+            let expr = state.source.into_iter().next().expect("No expr");
+            let result = eval(black_box(expr), env);
+            black_box(result)
+        });
+    });
+
+    // Type inference
+    let type_program = r#"
+        (: 42 Long)
+        (: "hello" String)
+        (: true Bool)
+        (get-type 42)
+    "#;
+
+    group.bench_function("type_inference", |b| {
+        b.iter(|| {
+            let env = Environment::new();
+            let lines: Vec<&str> = type_program.lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect();
+
+            for line in lines {
+                let state = compile(line).expect("Failed to compile");
+                for expr in state.source {
+                    let _ = eval(black_box(expr), env.clone());
+                }
+            }
+        });
+    });
+
+    group.finish();
+}
+
+/// Benchmark with many rules to stress-test rule iteration
+fn bench_large_rule_sets(c: &mut Criterion) {
+    let mut group = c.benchmark_group("large_rule_sets");
+    group.sample_size(10); // Reduce sample size for slow benchmarks
+
+    for rule_count in [100, 500, 1000].iter() {
+        let rules_src = generate_pattern_rules(*rule_count);
+        let query_src = format!("(pattern-{} 42)", rule_count - 1); // Query last rule (worst case)
+
+        group.bench_with_input(
+            BenchmarkId::new("worst_case_lookup", rule_count),
+            rule_count,
+            |b, _| {
+                b.iter(|| {
+                    let env = Environment::new();
+
+                    // Load all rules
+                    for rule_str in rules_src.lines() {
+                        let rule_state = compile(rule_str).expect("Failed to compile rule");
+                        for rule_expr in rule_state.source {
+                            eval(black_box(rule_expr), env.clone());
+                        }
+                    }
+
+                    // Query the last rule (must iterate through all)
+                    let query_state = compile(&query_src).expect("Failed to compile query");
+                    let query = query_state.source.into_iter().next().expect("No query");
+                    let result = eval(black_box(query), env);
+                    black_box(result)
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_rule_matching,
+    bench_pattern_complexity,
+    bench_full_evaluation,
+    bench_large_rule_sets
+);
+criterion_main!(benches);

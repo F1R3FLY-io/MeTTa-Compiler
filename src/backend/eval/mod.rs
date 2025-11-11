@@ -613,41 +613,31 @@ fn try_match_all_rules_query_multi(
     // space will be dropped automatically here
 }
 
-/// Fallback: Try pattern matching using iteration to find ALL matching rules (O(n) where n = total rules)
+/// Optimized: Try pattern matching using indexed lookup to find ALL matching rules
+/// Uses O(1) index lookup instead of O(n) iteration
+/// Complexity: O(k) where k = rules with matching head symbol (typically k << n)
 fn try_match_all_rules_iterative(
     expr: &MettaValue,
     env: &Environment,
 ) -> Vec<(MettaValue, Bindings)> {
-    // Try to extract head symbol for filtering
-    let target_head = get_head_symbol(expr);
-
-    // Collect all matching rules
-    let mut matching_rules: Vec<Rule> = Vec::new();
-
-    // First pass: collect rules with matching head symbol
-    if let Some(ref head) = target_head {
-        for rule in env.iter_rules() {
-            if let Some(rule_head) = rule.lhs.get_head_symbol() {
-                if &rule_head == head {
-                    matching_rules.push(rule);
-                }
-            }
-        }
-    }
-
-    // Second pass: collect rules without a head symbol (e.g., variable patterns)
-    for rule in env.iter_rules() {
-        if rule.lhs.get_head_symbol().is_none() {
-            matching_rules.push(rule);
-        }
-    }
+    // Extract head symbol and arity for indexed lookup
+    let matching_rules = if let Some(head) = get_head_symbol(expr) {
+        let arity = expr.get_arity();
+        // O(1) indexed lookup instead of O(n) iteration
+        env.get_matching_rules(&head, arity)
+    } else {
+        // For expressions without head symbol, check wildcard rules only
+        // This is still O(k_wildcards) instead of O(n_total)
+        env.get_matching_rules("", 0) // Empty head will return only wildcards
+    };
 
     // Sort rules by specificity (more specific first)
-    matching_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
+    let mut sorted_rules = matching_rules;
+    sorted_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
 
     // Collect ALL matching rules, tracking LHS specificity
     let mut matches: Vec<(MettaValue, Bindings, usize, Rule)> = Vec::new();
-    for rule in matching_rules {
+    for rule in sorted_rules {
         if let Some(bindings) = pattern_match(&rule.lhs, expr) {
             let lhs_specificity = pattern_specificity(&rule.lhs);
             matches.push((rule.rhs.clone(), bindings, lhs_specificity, rule));

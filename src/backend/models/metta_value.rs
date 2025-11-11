@@ -123,6 +123,16 @@ impl MettaValue {
         }
     }
 
+    /// Get the arity (number of arguments) for an s-expression
+    /// For (head arg1 arg2 arg3), arity is 3
+    /// For bare atoms, arity is 0
+    pub fn get_arity(&self) -> usize {
+        match self {
+            MettaValue::SExpr(items) if !items.is_empty() => items.len() - 1, // Exclude head
+            _ => 0,
+        }
+    }
+
     /// Convert MettaValue to MORK s-expression string format
     /// This format can be parsed by MORK's parser
     pub fn to_mork_string(&self) -> String {

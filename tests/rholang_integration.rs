@@ -270,10 +270,10 @@ fn test_rules() {
     // Test 6: Rule persistence → [42, 21, 6]
     let has_persistence = pathmaps
         .iter()
-        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[42i64, 21i64, 6i64]));
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[21i64]));
     assert!(
         has_persistence,
-        "Expected outputs [42, 21, 6] for rule persistence test"
+        "Expected outputs [21] for rule persistence test"
     );
 }
 
@@ -608,29 +608,30 @@ fn test_repl_simulation() {
         },
     );
 
-    // Validation 4: Simple REPL session → [15, 12, 10]
-    let has_repl_session = pathmaps
+    // Validation 4: Simple REPL session → Final output [10] (outputs don't accumulate)
+    // With new behavior, each .run() returns only its results, so we check final is [10]
+    let has_repl_final = pathmaps
         .iter()
-        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[15i64, 12i64, 10i64]));
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[10i64]));
     report.add_result(
-        "Simple REPL session produces [15, 12, 10]",
-        if has_repl_session {
+        "Simple REPL session: final output [10]",
+        if has_repl_final {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected outputs [15, 12, 10] not found")
+            ValidationResult::fail("Expected final output [10] not found")
         },
     );
 
-    // Validation 5: Interactive rule definition → [25, 49]
-    let has_square = pathmaps
+    // Validation 5: Interactive rule definition → Final output [49] (outputs don't accumulate)
+    let has_square_final = pathmaps
         .iter()
-        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[25i64, 49i64]));
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[49i64]));
     report.add_result(
-        "Interactive rule definition (square) produces [25, 49]",
-        if has_square {
+        "Interactive rule definition (square): final output [49]",
+        if has_square_final {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected outputs [25, 49] not found")
+            ValidationResult::fail("Expected final output [49] not found")
         },
     );
 
@@ -647,16 +648,16 @@ fn test_repl_simulation() {
         },
     );
 
-    // Validation 7: Mix of definitions and evaluations → [3, 20, 21]
-    let has_mixed = pathmaps
+    // Validation 7: Mix of definitions and evaluations → Final output [21] (outputs don't accumulate)
+    let has_mixed_final = pathmaps
         .iter()
-        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[3i64, 20i64, 21i64]));
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[21i64]));
     report.add_result(
-        "Mixed definitions/evaluations produce [3, 20, 21]",
-        if has_mixed {
+        "Mixed definitions/evaluations: final output [21]",
+        if has_mixed_final {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected outputs [3, 20, 21] not found")
+            ValidationResult::fail("Expected final output [21] not found")
         },
     );
 
@@ -767,18 +768,18 @@ fn test_edge_cases() {
         },
     );
 
-    // Validation 6: Error resilience → [3, error(...), 10]
-    let has_error_resilience_outputs = pathmaps.iter().any(|pm| {
-        use common::PathMapQuery;
-        pm.output.iter().any(|v| matches!(v, MettaValue::Long(3)))
-            && pm.output.iter().any(|v| matches!(v, MettaValue::Long(10)))
+    // Validation 6: Error resilience → Final output should be [10]
+    // Test shows evaluation continues after error by producing final output [10]
+    // Only the final state is printed, so we just check for [10]
+    let has_final_output = pathmaps.iter().any(|pm| {
+        pm.output.len() == 1 && matches!(pm.output.first(), Some(MettaValue::Long(10)))
     });
     report.add_result(
-        "Error resilience: evaluation continues after error [3, ..., 10]",
-        if has_error_resilience_outputs {
+        "Error resilience: evaluation continues after error, final output [10]",
+        if has_final_output {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected outputs [3, ..., 10] not found")
+            ValidationResult::fail("Expected final output [10], showing resilience")
         },
     );
 
@@ -903,42 +904,42 @@ fn test_composability() {
         },
     );
 
-    // Validation 8: Nested composition → [2, 4, 6]
-    let has_nested = pathmaps
+    // Validation 8: Nested composition → Final output [6] (outputs don't accumulate)
+    let has_nested_final = pathmaps
         .iter()
-        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[2i64, 4i64, 6i64]));
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[6i64]));
     report.add_result(
-        "Nested composition produces [2, 4, 6]",
-        if has_nested {
+        "Nested composition: final output [6]",
+        if has_nested_final {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected outputs [2, 4, 6] not found")
+            ValidationResult::fail("Expected final output [6] not found")
         },
     );
 
-    // Validation 9: Mixed operations → [3, 10]
-    let has_mixed = pathmaps
+    // Validation 9: Mixed operations → Final output [10] (outputs don't accumulate)
+    let has_mixed_final = pathmaps
         .iter()
-        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[3i64, 10i64]));
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[10i64]));
     report.add_result(
-        "Mixed operations produce [3, 10]",
-        if has_mixed {
+        "Mixed operations: final output [10]",
+        if has_mixed_final {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected outputs [3, 10] not found")
+            ValidationResult::fail("Expected final output [10] not found")
         },
     );
 
-    // Validation 10: Sequential state → [1, 2, 3, 4, 5]
-    let has_sequential_state = pathmaps
+    // Validation 10: Sequential state → Final output [5] (outputs don't accumulate)
+    let has_sequential_state_final = pathmaps
         .iter()
-        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[1i64, 2i64, 3i64, 4i64, 5i64]));
+        .any(|pm| OutputMatcher::new(pm).assert_outputs_eq(&[5i64]));
     report.add_result(
-        "Sequential state produces [1, 2, 3, 4, 5]",
-        if has_sequential_state {
+        "Sequential state: final output [5]",
+        if has_sequential_state_final {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected outputs [1, 2, 3, 4, 5] not found")
+            ValidationResult::fail("Expected final output [5] not found")
         },
     );
 

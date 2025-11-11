@@ -204,7 +204,7 @@ pub fn metta_state_to_json(state: &MettaState) -> String {
 /// Returns a new accumulated state with:
 /// - Empty source (all evaluated)
 /// - Updated environment (merged with new rules/facts)
-/// - Extended output (accumulated results)
+/// - Fresh output (only results from THIS invocation's `!` evaluations)
 ///
 /// **Threading**: Synchronous, single-threaded evaluation
 pub fn run_state(
@@ -215,7 +215,8 @@ pub fn run_state(
 
     // Start with accumulated environment
     let mut env = accumulated_state.environment;
-    let mut outputs = accumulated_state.output;
+    // Start with empty outputs - each .run() returns only its own results
+    let mut outputs = Vec::new();
 
     // Evaluate each pending expression from compiled state
     for expr in compiled_state.source {
@@ -287,7 +288,8 @@ pub async fn run_state_async(
     } else {
         compiled_state.environment.clone()
     };
-    let mut outputs = accumulated_state.output;
+    // Start with empty outputs - each .run() returns only its own results
+    let mut outputs = Vec::new();
 
     // Batch expressions into parallelizable groups
     let mut current_batch: Vec<(usize, MettaValue, bool)> = Vec::new();
@@ -320,10 +322,9 @@ pub async fn run_state_async(
         if is_rule_def || is_ground_fact {
             let (results, new_env) = eval(expr, env);
             env = new_env;
-            // Rule definitions don't produce output, but ground facts do
-            if is_ground_fact {
-                outputs.extend(results);
-            }
+            // Neither rule definitions nor ground facts produce output
+            // They only modify the environment by adding to MORK Space
+            // (Ground facts are not wrapped in !, so they shouldn't generate output)
         } else {
             // Only eval expressions go in parallel batch
             current_batch.push((idx, expr, is_eval_expr));
@@ -588,5 +589,42 @@ mod tests {
         assert_eq!(result.output.len(), 2);
         assert_eq!(result.output[0], MettaValue::Long(10));
         assert_eq!(result.output[1], MettaValue::Long(20));
+    }
+
+    #[test]
+    fn test_ground_facts_not_in_output() {
+        // Regression test: verify ground facts are NOT added to output
+        let mut accumulated = MettaState::new_empty();
+
+        // Add ground facts
+        let compiled1 = compile("(connected room_a room_b) (connected room_b room_c)").unwrap();
+        accumulated = run_state(accumulated, compiled1).unwrap();
+        // Ground facts should NOT produce output
+        assert_eq!(accumulated.output.len(), 0);
+
+        // Verify ground facts are in environment (can be queried)
+        let compiled2 = compile("!(match &self (connected $from $to) ($from $to))").unwrap();
+        accumulated = run_state(accumulated, compiled2).unwrap();
+        // Now output should contain query results (2 matches)
+        assert_eq!(accumulated.output.len(), 2);
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_ground_facts_not_in_output_async() {
+        // Regression test: verify ground facts are NOT added to output (async version)
+        let mut accumulated = MettaState::new_empty();
+
+        // Add ground facts
+        let compiled1 = compile("(connected room_a room_b) (connected room_b room_c)").unwrap();
+        accumulated = run_state_async(accumulated, compiled1).await.unwrap();
+        // Ground facts should NOT produce output
+        assert_eq!(accumulated.output.len(), 0);
+
+        // Verify ground facts are in environment (can be queried)
+        let compiled2 = compile("!(match &self (connected $from $to) ($from $to))").unwrap();
+        accumulated = run_state_async(accumulated, compiled2).await.unwrap();
+        // Now output should contain query results (2 matches)
+        assert_eq!(accumulated.output.len(), 2);
     }
 }

@@ -380,7 +380,7 @@ new stdoutAck(`rho:io:stdoutAck`),
         queryCode!("!(get_neighbors " ++ fromRoom ++ ")") |
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
-            queryResult!({||}.run(state).run(compiledQuery)) |
+            queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
               // Return updated state for next use
               persistentState!(newState) |
@@ -399,7 +399,7 @@ new stdoutAck(`rho:io:stdoutAck`),
         queryCode!("!(locate " ++ objectName ++ ")") |
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
-            queryResult!({||}.run(state).run(compiledQuery)) |
+            queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
               // Return updated state for next use
               persistentState!(newState) |
@@ -418,7 +418,7 @@ new stdoutAck(`rho:io:stdoutAck`),
         queryCode!("!(find_any_path " ++ fromRoom ++ " " ++ toRoom ++ ")") |
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
-            queryResult!({||}.run(state).run(compiledQuery)) |
+            queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
               // Return updated state for next use
               persistentState!(newState) |
@@ -437,7 +437,7 @@ new stdoutAck(`rho:io:stdoutAck`),
         queryCode!("!(distance_between " ++ fromRoom ++ " " ++ toRoom ++ ")") |
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
-            queryResult!({||}.run(state).run(compiledQuery)) |
+            queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
               // Return updated state for next use
               persistentState!(newState) |
@@ -456,7 +456,7 @@ new stdoutAck(`rho:io:stdoutAck`),
         queryCode!("!(transport_object " ++ objectName ++ " " ++ destRoom ++ ")") |
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
-            queryResult!({||}.run(state).run(compiledQuery)) |
+            queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
               // Return updated state for next use
               persistentState!(newState) |
@@ -475,7 +475,7 @@ new stdoutAck(`rho:io:stdoutAck`),
         queryCode!("!(validate_plan " ++ objectName ++ " " ++ destRoom ++ ")") |
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
-            queryResult!({||}.run(state).run(compiledQuery)) |
+            queryResult!(state.run(compiledQuery)) |
             for (@newState <- queryResult) {
               // Return updated state for next use
               persistentState!(newState) |

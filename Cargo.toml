@@ -48,6 +48,9 @@ rustyline = "14.0"
 dirs = "5.0"
 regex = "1.11"
 
+# LRU cache for pattern caching optimization
+lru = "0.12"
+
 [features]
 default = ["interning", "async"]
 async = ["tokio"]

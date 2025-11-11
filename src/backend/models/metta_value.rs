@@ -169,3 +169,57 @@ impl MettaValue {
         }
     }
 }
+
+// Implement Eq for MettaValue (required for HashMap keys)
+// Note: Float uses bit-level comparison for hashing purposes
+impl Eq for MettaValue {}
+
+// Implement Hash for MettaValue to enable use as HashMap key
+impl std::hash::Hash for MettaValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        use std::mem;
+        match self {
+            MettaValue::Atom(s) => {
+                0u8.hash(state);
+                s.hash(state);
+            }
+            MettaValue::Bool(b) => {
+                1u8.hash(state);
+                b.hash(state);
+            }
+            MettaValue::Long(n) => {
+                2u8.hash(state);
+                n.hash(state);
+            }
+            MettaValue::Float(f) => {
+                3u8.hash(state);
+                // Hash float as its bit representation for deterministic hashing
+                f.to_bits().hash(state);
+            }
+            MettaValue::String(s) => {
+                4u8.hash(state);
+                s.hash(state);
+            }
+            MettaValue::Uri(s) => {
+                5u8.hash(state);
+                s.hash(state);
+            }
+            MettaValue::SExpr(items) => {
+                6u8.hash(state);
+                items.hash(state);
+            }
+            MettaValue::Nil => {
+                7u8.hash(state);
+            }
+            MettaValue::Error(msg, details) => {
+                8u8.hash(state);
+                msg.hash(state);
+                details.hash(state);
+            }
+            MettaValue::Type(t) => {
+                9u8.hash(state);
+                t.hash(state);
+            }
+        }
+    }
+}

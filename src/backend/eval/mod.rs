@@ -561,14 +561,15 @@ fn try_match_all_rules_query_multi(
 ) -> Vec<(MettaValue, Bindings)> {
     // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
     // This will find all rules where the LHS matches our expression
-    let space = env.space.lock().unwrap();
 
-    // Convert expression to MORK format for querying
-    let mut ctx = ConversionContext::new();
-    let expr_bytes = match metta_to_mork_bytes(expr, &space, &mut ctx) {
+    // Convert expression to MORK format for querying (using cache)
+    let expr_bytes = match env.metta_to_mork_bytes_cached(expr) {
         Ok(bytes) => bytes,
         Err(_) => return Vec::new(), // Fallback to iterative if conversion fails
     };
+
+    let space = env.space.lock().unwrap();
+    let ctx = ConversionContext::new();
 
     // Create a query pattern: (= <expr> $rhs)
     let pattern_str = format!("(= {} $rhs)", String::from_utf8_lossy(&expr_bytes));

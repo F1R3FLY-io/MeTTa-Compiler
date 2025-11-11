@@ -238,8 +238,7 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalRes
             }
         } else {
             // No rule matched, add to MORK Space and return it
-            let mut final_env = unified_env.clone();
-            final_env.add_to_space(&sexpr);
+            unified_env.add_to_space(&sexpr);
             all_final_results.push(sexpr);
         }
     }

@@ -666,6 +666,10 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
                 }
             }
 
+            // Rebuild the rule index from the restored MORK Space
+            // This is critical for rule matching to work after deserialization
+            env.rebuild_rule_index();
+
             Ok(env)
         } else {
             Err("Expected ETuple for environment".to_string())

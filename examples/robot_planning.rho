@@ -113,7 +113,7 @@
 new stdoutAck(`rho:io:stdoutAck`),
     mettaCompile(`rho:metta:compile`),
     robotAPI,
-    persistentState,  // NEW: Single persistent state channel
+    persistentState,  // Single persistent state channel
     done1, done2, done3, done4, done5, done6,
     ack in {
 
@@ -355,10 +355,15 @@ new stdoutAck(`rho:io:stdoutAck`),
       ") |
 
       for (@code <- codeFile) {
-        for (@state <- mettaCompile!?(code)) {
-          // Store state in persistent channel
-          persistentState!(state) |
-          stdoutAck!("✓ MeTTa state initialized and stored in persistent channel", *ack)
+        for (@compiledState <- mettaCompile!?(code)) {
+          // Run compiled state to populate environment with facts and rules
+          new executedState in {
+            executedState!({||}.run(compiledState)) |
+            for (@state <- executedState) {
+              persistentState!(state) |
+              stdoutAck!("✓ MeTTa state initialized and stored in persistent channel", *ack)
+            }
+          }
         }
       }
     }
@@ -376,10 +381,10 @@ new stdoutAck(`rho:io:stdoutAck`),
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!({||}.run(state).run(compiledQuery)) |
-            for (@result <- queryResult) {
-              // Return state for next use
-              persistentState!(state) |
-              ret!(result)
+            for (@newState <- queryResult) {
+              // Return updated state for next use
+              persistentState!(newState) |
+              ret!(newState)
             }
           }
         }
@@ -395,10 +400,10 @@ new stdoutAck(`rho:io:stdoutAck`),
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!({||}.run(state).run(compiledQuery)) |
-            for (@result <- queryResult) {
-              // Return state for next use
-              persistentState!(state) |
-              ret!(result)
+            for (@newState <- queryResult) {
+              // Return updated state for next use
+              persistentState!(newState) |
+              ret!(newState)
             }
           }
         }
@@ -414,10 +419,10 @@ new stdoutAck(`rho:io:stdoutAck`),
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!({||}.run(state).run(compiledQuery)) |
-            for (@result <- queryResult) {
-              // Return state for next use
-              persistentState!(state) |
-              ret!(result)
+            for (@newState <- queryResult) {
+              // Return updated state for next use
+              persistentState!(newState) |
+              ret!(newState)
             }
           }
         }
@@ -433,10 +438,10 @@ new stdoutAck(`rho:io:stdoutAck`),
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!({||}.run(state).run(compiledQuery)) |
-            for (@result <- queryResult) {
-              // Return state for next use
-              persistentState!(state) |
-              ret!(result)
+            for (@newState <- queryResult) {
+              // Return updated state for next use
+              persistentState!(newState) |
+              ret!(newState)
             }
           }
         }
@@ -452,10 +457,10 @@ new stdoutAck(`rho:io:stdoutAck`),
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!({||}.run(state).run(compiledQuery)) |
-            for (@result <- queryResult) {
-              // Return state for next use
-              persistentState!(state) |
-              ret!(result)
+            for (@newState <- queryResult) {
+              // Return updated state for next use
+              persistentState!(newState) |
+              ret!(newState)
             }
           }
         }
@@ -471,10 +476,10 @@ new stdoutAck(`rho:io:stdoutAck`),
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!({||}.run(state).run(compiledQuery)) |
-            for (@result <- queryResult) {
-              // Return state for next use
-              persistentState!(state) |
-              ret!(result)
+            for (@newState <- queryResult) {
+              // Return updated state for next use
+              persistentState!(newState) |
+              ret!(newState)
             }
           }
         }

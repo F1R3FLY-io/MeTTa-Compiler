@@ -258,8 +258,35 @@ pub async fn run_state_async(
 ) -> Result<MettaState, String> {
     use crate::backend::eval::eval;
 
-    // Start with accumulated environment
-    let mut env = accumulated_state.environment;
+    // Start with accumulated environment, but if it's empty and compiled has data, use compiled's environment
+    use pathmap::zipper::ZipperIteration;
+
+    let acc_count = {
+        let space = accumulated_state.environment.space.lock().unwrap();
+        let mut rz = space.btm.read_zipper();
+        let mut count = 0;
+        while rz.to_next_val() {
+            count += 1;
+        }
+        count
+    };
+
+    let comp_count = {
+        let space = compiled_state.environment.space.lock().unwrap();
+        let mut rz = space.btm.read_zipper();
+        let mut count = 0;
+        while rz.to_next_val() {
+            count += 1;
+        }
+        count
+    };
+
+    // Use the environment that has data (prefer accumulated, fall back to compiled if accumulated is empty)
+    let mut env = if acc_count > 0 || comp_count == 0 {
+        accumulated_state.environment
+    } else {
+        compiled_state.environment.clone()
+    };
     let mut outputs = accumulated_state.output;
 
     // Batch expressions into parallelizable groups
@@ -273,8 +300,11 @@ pub async fn run_state_async(
         let is_rule_def = matches!(&expr, MettaValue::SExpr(items)
             if items.first().map(|v| matches!(v, MettaValue::Atom(s) if s == "=")).unwrap_or(false));
 
-        // If this is a rule definition and we have a batch, evaluate the batch first
-        if is_rule_def && !current_batch.is_empty() {
+        // Check if this is a ground fact (S-expression that's not a rule and not an eval)
+        let is_ground_fact = matches!(&expr, MettaValue::SExpr(_)) && !is_rule_def && !is_eval_expr;
+
+        // If this is a rule definition or ground fact and we have a batch, evaluate the batch first
+        if (is_rule_def || is_ground_fact) && !current_batch.is_empty() {
             // Evaluate parallel batch
             let batch_results = evaluate_batch_parallel(current_batch, env.clone()).await;
             for (_batch_idx, results, should_output) in batch_results {
@@ -285,13 +315,17 @@ pub async fn run_state_async(
             current_batch = Vec::new();
         }
 
-        // If this is a rule definition, execute it sequentially
-        if is_rule_def {
-            let (_results, new_env) = eval(expr, env);
+        // If this is a rule definition or ground fact, execute it sequentially
+        // (both modify the environment by adding to MORK Space)
+        if is_rule_def || is_ground_fact {
+            let (results, new_env) = eval(expr, env);
             env = new_env;
-            // Rule definitions don't produce output
+            // Rule definitions don't produce output, but ground facts do
+            if is_ground_fact {
+                outputs.extend(results);
+            }
         } else {
-            // Add to current batch for parallel execution
+            // Only eval expressions go in parallel batch
             current_batch.push((idx, expr, is_eval_expr));
         }
     }

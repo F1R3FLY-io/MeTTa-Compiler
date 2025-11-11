@@ -378,6 +378,40 @@ impl Environment {
         rules.into_iter()
     }
 
+    /// Rebuild the rule index from the MORK Space
+    /// This is needed after deserializing an Environment from PathMap Par,
+    /// since the serialization only preserves the MORK Space, not the index.
+    pub fn rebuild_rule_index(&mut self) {
+        // Clear existing indices
+        {
+            let mut index = self.rule_index.lock().unwrap();
+            index.clear();
+        }
+        {
+            let mut wildcards = self.wildcard_rules.lock().unwrap();
+            wildcards.clear();
+        }
+
+        // Rebuild from MORK Space
+        for rule in self.iter_rules() {
+            if let Some(head) = rule.lhs.get_head_symbol() {
+                let arity = rule.lhs.get_arity();
+                let mut index = self.rule_index.lock().unwrap();
+                index
+                    .entry((head.clone(), arity))
+                    .or_insert_with(Vec::new)
+                    .push(rule);
+
+                // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
+                self.fuzzy_matcher.insert(&head);
+            } else {
+                // Rules without head symbol (wildcards, variables) go to wildcard list
+                let mut wildcards = self.wildcard_rules.lock().unwrap();
+                wildcards.push(rule);
+            }
+        }
+    }
+
     /// Match pattern against all atoms in the Space (optimized for match operation)
     /// Returns all instantiated templates for atoms matching the pattern
     ///

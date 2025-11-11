@@ -32,9 +32,14 @@ new stdoutAck(`rho:io:stdoutAck`),
       ") |
 
       for (@code <- codeFile) {
-        for (@state <- mettaCompile!?(code)) {
-          persistentState!(state) |
-          stdoutAck!("✓ Test state initialized", *ack)
+        for (@compiledState <- mettaCompile!?(code)) {
+          new executedState in {
+            executedState!({||}.run(compiledState)) |
+            for (@state <- executedState) {
+              persistentState!(state) |
+              stdoutAck!("✓ Test state initialized", *ack)
+            }
+          }
         }
       }
     }
@@ -48,9 +53,9 @@ new stdoutAck(`rho:io:stdoutAck`),
         for (@code <- queryCode) {
           for (@compiledQuery <- mettaCompile!?(code)) {
             queryResult!({||}.run(state).run(compiledQuery)) |
-            for (@result <- queryResult) {
-              persistentState!(state) |
-              ret!(result)
+            for (@newState <- queryResult) {
+              persistentState!(newState) |
+              ret!(newState)
             }
           }
         }

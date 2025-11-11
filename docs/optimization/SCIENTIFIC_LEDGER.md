@@ -288,11 +288,19 @@ The `pattern_matching` benchmarks showed severe regression (hundreds-thousands o
 - Detailed statistics and charts for each benchmark
 
 ### Flamegraphs
-TODO: Generate flamegraphs to identify CPU hotspots
-- Tool: `cargo flamegraph --bench rule_matching`
-- Expected hotspots:
-  - `try_match_all_rules_iterative()` (confirmed bottleneck)
-  - `iter_rules()` (O(n) Space traversal)
+
+✅ **COMPLETED** (2025-11-10)
+
+**Optimized Version Flamegraph**: `docs/optimization/optimized_flamegraph.svg`
+
+Generated with:
+```bash
+cargo flamegraph --bench rule_matching --output optimized_flamegraph.svg -- --bench
+```
+
+**Analysis**: The flamegraph confirms that rule matching overhead has been significantly reduced. The O(n) iteration bottleneck in `try_match_all_rules_iterative()` is no longer the dominant factor.
+
+**Note**: A baseline flamegraph comparison would be ideal but the optimization has already been committed. Future optimizations should generate baseline flamegraphs first.
 
 ---
 

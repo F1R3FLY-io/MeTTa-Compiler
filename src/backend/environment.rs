@@ -1,6 +1,7 @@
 use lru::LruCache;
 use mork::space::Space;
-use pathmap::zipper::*;
+use mork_interning::SharedMappingHandle;
+use pathmap::{PathMap, zipper::*};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -9,15 +10,22 @@ use super::fuzzy_match::FuzzyMatcher;
 use super::{MettaValue, Rule};
 
 /// The environment contains the fact database and type assertions
-/// All facts (rules, atoms, s-expressions, type assertions) are stored in MORK Space
+/// All facts (rules, atoms, s-expressions, type assertions) are stored in MORK PathMap
 ///
-/// Thread-safe via Arc<Mutex<T>> to enable parallel evaluation
+/// Thread-safe following the Rholang LSP pattern:
+/// - SharedMappingHandle and PathMap are stored directly (cheap to clone)
+/// - Space is created thread-locally for each operation
+/// - This enables Send without requiring Sync (PathMap's Cell<u64> limitation)
 #[derive(Clone)]
 pub struct Environment {
-    /// MORK Space: primary fact database for all rules, expressions, and type assertions
-    /// PathMap's trie provides O(m) prefix queries and O(m) existence checks
-    /// Thread-safe via Arc<Mutex<>> for parallel evaluation
-    pub space: Arc<Mutex<Space>>,
+    /// THREAD-SAFE: SharedMappingHandle for symbol interning (string → u64)
+    /// Can be cloned and shared across threads (Send + Sync)
+    shared_mapping: SharedMappingHandle,
+
+    /// THREAD-SAFE: PathMap trie for fact storage
+    /// Cloning is O(1) via structural sharing (immutable after clone)
+    /// PathMap provides O(m) prefix queries and O(m) existence checks
+    btm: Arc<Mutex<PathMap<()>>>,
 
     /// Rule index: Maps (head_symbol, arity) -> Vec<Rule> for O(1) rule lookup
     /// This enables O(k) rule matching where k = rules with matching head symbol
@@ -51,8 +59,11 @@ pub struct Environment {
 
 impl Environment {
     pub fn new() -> Self {
+        use mork_interning::SharedMapping;
+
         Environment {
-            space: Arc::new(Mutex::new(Space::new())),
+            shared_mapping: SharedMapping::new(),
+            btm: Arc::new(Mutex::new(PathMap::new())),
             rule_index: Arc::new(Mutex::new(HashMap::new())),
             wildcard_rules: Arc::new(Mutex::new(Vec::new())),
             multiplicities: Arc::new(Mutex::new(HashMap::new())),
@@ -61,6 +72,22 @@ impl Environment {
             )),
             fuzzy_matcher: FuzzyMatcher::new(),
         }
+    }
+
+    /// Create a thread-local Space for operations
+    /// Following the Rholang LSP pattern: cheap clone via structural sharing
+    fn create_space(&self) -> Space {
+        let btm = self.btm.lock().unwrap().clone();
+        Space {
+            btm,
+            sm: self.shared_mapping.clone(),
+            mmaps: HashMap::new(),
+        }
+    }
+
+    /// Update PathMap after Space modifications (write operations)
+    fn update_pathmap(&mut self, space: Space) {
+        *self.btm.lock().unwrap() = space.btm;
     }
 
     /// Convert a MORK Expr directly to MettaValue without text serialization

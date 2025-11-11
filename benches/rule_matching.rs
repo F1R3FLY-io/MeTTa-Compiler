@@ -70,25 +70,31 @@ fn bench_rule_matching(c: &mut Criterion) {
 }
 
 /// Benchmark pattern matching with different pattern complexities
+/// FIXED: Share environment across iterations to measure query performance, not insertion overhead
 fn bench_pattern_complexity(c: &mut Criterion) {
     let mut group = c.benchmark_group("pattern_matching");
-
-    let env = Environment::new();
 
     // Simple pattern: (pattern $x)
     let simple_rule = "(= (simple $x) $x)";
     let simple_query = "(simple 42)";
 
+    // Pre-compile rule and query once, share environment
+    let simple_env = {
+        let env = Environment::new();
+        let rule_state = compile(simple_rule).expect("Failed to compile");
+        let rule = rule_state.source.into_iter().next().expect("No rule");
+        eval(rule, env.clone());
+        env
+    };
+    let simple_query_compiled = {
+        let query_state = compile(simple_query).expect("Failed to compile");
+        query_state.source.into_iter().next().expect("No query")
+    };
+
     group.bench_function("simple_variable", |b| {
         b.iter(|| {
-            let env = env.clone();
-            let rule_state = compile(simple_rule).expect("Failed to compile");
-            let rule = rule_state.source.into_iter().next().expect("No rule");
-            eval(black_box(rule), env.clone());
-
-            let query_state = compile(simple_query).expect("Failed to compile");
-            let query = query_state.source.into_iter().next().expect("No query");
-            let result = eval(black_box(query), env);
+            // Only measure query performance, not compilation or rule insertion
+            let result = eval(black_box(simple_query_compiled.clone()), simple_env.clone());
             black_box(result)
         });
     });
@@ -97,16 +103,21 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     let nested_rule = "(= (nested ($a ($b $c))) (result $a $b $c))";
     let nested_query = "(nested (1 (2 3)))";
 
+    let nested_env = {
+        let env = Environment::new();
+        let rule_state = compile(nested_rule).expect("Failed to compile");
+        let rule = rule_state.source.into_iter().next().expect("No rule");
+        eval(rule, env.clone());
+        env
+    };
+    let nested_query_compiled = {
+        let query_state = compile(nested_query).expect("Failed to compile");
+        query_state.source.into_iter().next().expect("No query")
+    };
+
     group.bench_function("nested_destructuring", |b| {
         b.iter(|| {
-            let env = env.clone();
-            let rule_state = compile(nested_rule).expect("Failed to compile");
-            let rule = rule_state.source.into_iter().next().expect("No rule");
-            eval(black_box(rule), env.clone());
-
-            let query_state = compile(nested_query).expect("Failed to compile");
-            let query = query_state.source.into_iter().next().expect("No query");
-            let result = eval(black_box(query), env);
+            let result = eval(black_box(nested_query_compiled.clone()), nested_env.clone());
             black_box(result)
         });
     });
@@ -115,16 +126,21 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     let multi_arg_rule = "(= (multi $a $b $c $d) (+ (+ $a $b) (+ $c $d)))";
     let multi_arg_query = "(multi 1 2 3 4)";
 
+    let multi_env = {
+        let env = Environment::new();
+        let rule_state = compile(multi_arg_rule).expect("Failed to compile");
+        let rule = rule_state.source.into_iter().next().expect("No rule");
+        eval(rule, env.clone());
+        env
+    };
+    let multi_query_compiled = {
+        let query_state = compile(multi_arg_query).expect("Failed to compile");
+        query_state.source.into_iter().next().expect("No query")
+    };
+
     group.bench_function("multi_argument", |b| {
         b.iter(|| {
-            let env = env.clone();
-            let rule_state = compile(multi_arg_rule).expect("Failed to compile");
-            let rule = rule_state.source.into_iter().next().expect("No rule");
-            eval(black_box(rule), env.clone());
-
-            let query_state = compile(multi_arg_query).expect("Failed to compile");
-            let query = query_state.source.into_iter().next().expect("No query");
-            let result = eval(black_box(query), env);
+            let result = eval(black_box(multi_query_compiled.clone()), multi_env.clone());
             black_box(result)
         });
     });

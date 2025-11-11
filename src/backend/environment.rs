@@ -497,8 +497,65 @@ impl Environment {
     /// Checks directly in the Space using MORK binary format
     /// Uses structural equivalence to handle variable name changes from MORK's De Bruijn indices
     ///
-    /// Uses direct zipper iteration to avoid dumping the entire Space.
+    /// OPTIMIZED: Uses query_multi() for O(k) prefix-based lookup instead of O(n) iteration
+    /// Falls back to linear search if query_multi optimization fails
     pub fn has_sexpr_fact(&self, sexpr: &MettaValue) -> bool {
+        // Try optimized query_multi approach first
+        if let Some(result) = self.has_sexpr_fact_optimized(sexpr) {
+            return result;
+        }
+
+        // Fall back to linear search if optimization fails
+        self.has_sexpr_fact_linear(sexpr)
+    }
+
+    /// Optimized version using query_multi for O(k) prefix-based lookup
+    fn has_sexpr_fact_optimized(&self, sexpr: &MettaValue) -> Option<bool> {
+        use mork_expr::Expr;
+        use mork_frontend::bytestring_parser::Parser;
+
+        // Convert MettaValue to MORK pattern for query
+        let mork_str = sexpr.to_mork_string();
+        let mork_bytes = mork_str.as_bytes();
+
+        let space = self.space.lock().unwrap();
+
+        // Parse to MORK Expr (following try_match_all_rules_query_multi pattern)
+        let mut parse_buffer = vec![0u8; 4096];
+        let mut pdp = mork::space::ParDataParser::new(&space.sm);
+        let mut ez = mork_expr::ExprZipper::new(Expr {
+            ptr: parse_buffer.as_mut_ptr(),
+        });
+        let mut context = mork_frontend::bytestring_parser::Context::new(mork_bytes);
+
+        // If parsing fails, return None to trigger fallback
+        if pdp.sexpr(&mut context, &mut ez).is_err() {
+            return None;
+        }
+
+        let pattern_expr = Expr {
+            ptr: parse_buffer.as_ptr().cast_mut(),
+        };
+
+        // Use query_multi for O(k) prefix-based search
+        let mut found = false;
+        mork::space::Space::query_multi(&space.btm, pattern_expr, |_bindings, matched_expr| {
+            // Convert matched expression back to MettaValue
+            if let Ok(stored_value) = Self::mork_expr_to_metta_value(&matched_expr, &space) {
+                // Check structural equivalence (handles De Bruijn variable renaming)
+                if sexpr.structurally_equivalent(&stored_value) {
+                    found = true;
+                    return false; // Stop searching, we found it
+                }
+            }
+            true // Continue searching
+        });
+
+        Some(found)
+    }
+
+    /// Fallback linear search for has_sexpr_fact (O(n) iteration)
+    fn has_sexpr_fact_linear(&self, sexpr: &MettaValue) -> bool {
         use mork_expr::Expr;
 
         let space = self.space.lock().unwrap();
@@ -511,8 +568,7 @@ impl Environment {
                 ptr: rz.path().as_ptr().cast_mut(),
             };
 
-            // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
-            // This avoids the "reserved byte" panic during evaluation
+            // Use mork_expr_to_metta_value() to avoid "reserved byte" panic
             if let Ok(stored_value) = Self::mork_expr_to_metta_value(&expr, &space) {
                 // Check structural equivalence (ignores variable names)
                 if sexpr.structurally_equivalent(&stored_value) {

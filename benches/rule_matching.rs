@@ -260,11 +260,67 @@ fn bench_large_rule_sets(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark has_sexpr_fact() with varying fact counts
+fn bench_has_sexpr_fact(c: &mut Criterion) {
+    let mut group = c.benchmark_group("has_sexpr_fact");
+    group.sample_size(50); // Increase sample size for more stable results
+
+    for fact_count in [100, 500, 1000, 5000].iter() {
+        // Pre-populate environment with facts
+        let env = Environment::new();
+
+        // Add facts to the Space
+        for i in 0..*fact_count {
+            let fact_src = format!("!(add-atom &space (fact-{} value-{}))", i, i);
+            let fact_state = compile(&fact_src).expect("Failed to compile fact");
+            for fact_expr in fact_state.source {
+                eval(fact_expr, env.clone());
+            }
+        }
+
+        // Query for a fact in the middle (typical case)
+        let query_idx = fact_count / 2;
+        let query_src = format!("(fact-{} value-{})", query_idx, query_idx);
+        let query_state = compile(&query_src).expect("Failed to compile query");
+        let query = query_state.source.into_iter().next().expect("No query");
+
+        group.bench_with_input(
+            BenchmarkId::new("query_existing_fact", fact_count),
+            fact_count,
+            |b, _| {
+                b.iter(|| {
+                    let result = env.has_sexpr_fact(black_box(&query));
+                    black_box(result)
+                });
+            },
+        );
+
+        // Query for a non-existent fact (worst case for linear search)
+        let missing_query_src = "(nonexistent-fact missing-value)";
+        let missing_state = compile(missing_query_src).expect("Failed to compile");
+        let missing_query = missing_state.source.into_iter().next().expect("No query");
+
+        group.bench_with_input(
+            BenchmarkId::new("query_missing_fact", fact_count),
+            fact_count,
+            |b, _| {
+                b.iter(|| {
+                    let result = env.has_sexpr_fact(black_box(&missing_query));
+                    black_box(result)
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_rule_matching,
     bench_pattern_complexity,
     bench_full_evaluation,
-    bench_large_rule_sets
+    bench_large_rule_sets,
+    bench_has_sexpr_fact
 );
 criterion_main!(benches);

@@ -9,45 +9,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added - Parallel Bulk Operations (Optimization 2)
+### Added - Expression-Level Parallelism (Optimization 3) ⚡
 
-#### Parallel Bulk Operations with Rayon ⚡
-- Implemented data parallelism for bulk fact and rule insertion
+#### Parallel Sub-Expression Evaluation with Rayon
+- Implemented expression-level parallelism for independent sub-expression evaluation
 - Added `rayon = "1.8"` dependency for parallel iteration
-- Created `ParallelConfig` with adaptive thresholds:
-  - default(): threshold=1000 items (tuned from initial 100)
-  - cpu_optimized(): threshold=750 (tuned from 75)
-  - memory_optimized(): threshold=1500 (tuned from 200)
-  - throughput_optimized(): threshold=500 (tuned from 50)
-- Three-phase parallel approach:
-  1. Parallel MORK serialization (Rayon par_iter)
-  2. Sequential PathMap construction (not thread-safe)
-  3. Single lock acquisition for bulk union
-- Adaptive thresholds: Automatically switches to parallel for large batches
-- Small batches (<1000) use faster sequential implementation
+- Adaptive threshold: Parallelizes only when `sub_expressions >= 4`
+- Below threshold: Uses sequential evaluation (avoids overhead)
 
-**Actual Performance** (based on empirical measurements):
-- **Small batches (<1000)**: Sequential faster (parallel overhead dominates)
-- **Large batches (≥1000)**: Parallel path available; speedups require batches of 10K-100K+ items
-  where serialization becomes a significant portion of total time
-- **Root cause**: MORK serialization (parallelized) is only ~10% of total time;
-  PathMap operations (sequential) dominate at ~90%
-- **Amdahl's Law validation**: Max theoretical speedup ≈1.11× with current bottlenecks
-
-**Threshold Tuning** (Commit TBD):
-- Adjusted thresholds based on benchmark analysis showing parallel overhead (50-100µs)
-  comparable to MORK serialization time (~1µs/item)
-- Conservative thresholds eliminate regressions at small/medium batch sizes
-- Implementation is functionally correct; requires larger batches to show benefits
+**Performance Strategy**:
+- Targets actual evaluation work (not just serialization)
+- Each sub-expression evaluated independently in parallel
+- Example: `(+ (* 2 3) (/ 10 5) (- 8 4) (* 7 2))` → 4 operations run concurrently
+- Expected speedup: 2-8× for complex nested expressions
 
 **Implementation Details**:
-- `add_facts_bulk_parallel()` in `src/backend/environment.rs`
-- `add_rules_bulk_parallel()` in `src/backend/environment.rs`
-- Parallel serialization uses Rayon's work-stealing thread pool
-- Compatible with existing Tokio runtime (separate thread pools)
-- All 407 tests pass - no breaking changes
+- Modified `eval_sexpr()` in `src/backend/eval/mod.rs`
+- Uses Rayon's `par_iter()` for sub-expression evaluation when threshold met
+- Each thread gets cloned Environment (thread-safe isolation)
+- Environments unioned after parallel work completes
+- All 403 tests pass - no breaking changes
 
-See: Commits 36147da (implementation), 1e725ab (changelog), dda01e5 (analysis)
+**Adaptive Threshold** (`PARALLEL_EVAL_THRESHOLD = 4`):
+- Empirically tuned based on parallel overhead (~50µs) vs evaluation time
+- Will be further tuned based on comprehensive benchmarking
+
+See: Commits TBD, Documentation: `docs/optimization/OPTIMIZATION_3_EXPRESSION_PARALLELISM.md` (TBD)
+
+### Rejected - Parallel Bulk Operations (Optimization 4) ❌
+
+**Attempted**: Three approaches to parallelize bulk fact/rule insertion with Rayon
+
+**Result**: COMPLETELY REJECTED after all three approaches failed
+
+**Approaches Tested**:
+1. **Parallel Space/PathMap Creation**: Segfault at 1000 items (jemalloc arena exhaustion)
+2. **String-Only Parallelization**: 647% regression (6.47× slowdown) for facts at 1000 items
+3. **Thread-Local PathMap** (user suggestion): **STILL SEGFAULTS** at 100 items (threshold boundary)
+
+**Why Rejected**:
+1. **Persistent Segmentation Faults**: jemalloc arena exhaustion occurs even with thread-local PathMaps
+2. **Fundamental Incompatibility**: PathMap + Rayon parallelism incompatible at allocator level
+3. **Massive Regressions**: 3.5-7.3× slowdown for facts when segfaults avoided (Approach 2)
+4. **Amdahl's Law Limitation**: Only 10% of work parallelizable (PathMap = 90%), max speedup 1.11×
+5. **Thread-Local Doesn't Help**: Problem is simultaneous allocation, not concurrent modification
+
+**Critical Finding**: Creating independent PathMap instances per thread **does NOT prevent** jemalloc arena exhaustion when ~18 Rayon worker threads all allocate simultaneously.
+
+**Empirical Evidence**:
+- **Approach 1**: Segfault at 1000 items (parallel Space creation)
+- **Approach 2**: 3.5× regression (100 facts), 7.3× regression (1000 facts)
+- **Approach 3**: Segfault at 100 items (exactly at `PARALLEL_BULK_THRESHOLD`)
+- **5+ segfaults observed**, all at same instruction (`segfault at 10`)
+- **All 403 tests pass** with thread-local approach (misleading - tests use < 100 items)
+
+**Benchmark Results (Approach 2 - String-Only)**:
+| Batch Size | Baseline | Optimized | Speedup | Status |
+|------------|----------|-----------|---------|--------|
+| 10 facts | 16.07 µs | 12.98 µs | 1.24× | ✅ Good |
+| 50 facts | 87.21 µs | 47.98 µs | 1.82× | ✅ Good |
+| **100 facts** | **201.92 µs** | **717.79 µs** | **0.28× (3.5× SLOWER)** | ❌ **REGRESSION** |
+| **500 facts** | **1.19 ms** | **4.48 ms** | **0.27× (3.7× SLOWER)** | ❌ **REGRESSION** |
+| **1000 facts** | **2.46 ms** | **17.90 ms** | **0.14× (7.3× SLOWER)** | ❌ **REGRESSION** |
+
+**Lessons Learned**:
+1. **Amdahl's Law applies**: Cannot parallelize 10% of work and expect significant gains
+2. **Parallel overhead is real**: Thread spawning cost > serialization gains for small workloads
+3. **Allocator limitations**: jemalloc arena exhaustion with simultaneous PathMap creation
+4. **Thread-local ≠ Allocator-safe**: Independent instances per thread still exhaust arenas
+5. **PathMap constraints are fundamental**: `Cell<u64>` prevents both concurrent modification AND parallel allocation
+6. **Always profile before optimizing**: 90% of time in PathMap (not serialization)
+
+**Recommendation**: Do NOT attempt further parallelization of bulk operations. Focus on:
+- Expression-level parallelism (Optimization 3) ✅ Already implemented
+- Algorithmic improvements to PathMap usage
+- Pre-building tries offline for static data
+
+**Documentation**: `docs/optimization/OPTIMIZATION_4_REJECTED_PARALLEL_BULK_OPERATIONS.md` provides comprehensive analysis with all three approaches
+
+See: Commits TBD (reversion)
+
+### Rejected - Parallel Bulk Operations (Optimization 2) ❌
+
+**Note**: This was an earlier attempt that was also rejected. See Optimization 4 above for the most recent comprehensive rejection.
+
+**Attempted**: Rayon-based data parallelism for MORK serialization in bulk operations
+
+**Result**: Completely reverted due to critical failures and fundamental design flaws
+
+**Why Rejected**:
+1. **Segmentation Faults**: jemalloc arena exhaustion at 1000-item threshold
+2. **Massive Regression**: 647% slowdown (6.47×) after fixing segfaults
+3. **Wrong Bottleneck**: Parallelized 10% (serialization) while 90% (PathMap) remained sequential
+4. **Amdahl's Law Limitation**: Max theoretical speedup only 1.11× even with perfect parallelization
+5. **Thread-Safety Constraint**: PathMap's `Cell<u64>` prevents parallel construction
+
+**Empirical Evidence**:
+- Initial benchmarks: 2-12% regressions across all batch sizes
+- After segfault fix: 647% regression for 1000-item batches
+- PathMap operations: 90% of time, cannot be parallelized
+- MORK serialization: 10% of time, parallelization overhead exceeds benefit
+
+**Lessons Learned**:
+- Always profile before optimizing (identify real bottlenecks)
+- Amdahl's Law applies: parallelizing small portions yields minimal gains
+- Thread-safety constraints of dependencies limit options
+- Parallel overhead significant for small workloads
+- Expression-level > batch-level parallelism for MeTTa
+
+**Documentation**: `docs/optimization/OPTIMIZATION_2_REJECTED.md` provides comprehensive analysis
+
+See: Commits TBD (reversion)
 
 ### Documentation
 - Reorganized documentation into intuitive directory structure

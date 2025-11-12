@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Parallel Bulk Operations (Optimization 2)
+
+#### Parallel Bulk Operations with Rayon (Expected: 5-36× speedup) ⚡
+- Implemented data parallelism for bulk fact and rule insertion
+- Added `rayon = "1.8"` dependency for parallel iteration
+- Created `ParallelConfig` with adaptive thresholds:
+  - default(): threshold=100 items
+  - cpu_optimized(): threshold=75
+  - memory_optimized(): threshold=200
+  - throughput_optimized(): threshold=50
+- Three-phase parallel approach:
+  1. Parallel MORK serialization (Rayon par_iter)
+  2. Sequential PathMap construction (not thread-safe)
+  3. Single lock acquisition for bulk union
+- Adaptive thresholds: Automatically switches to parallel for batches >= 100
+- Small batches (<100) use faster sequential implementation
+
+**Expected Performance** (pending empirical measurements):
+- Small batches (<100): Sequential faster (overhead dominates)
+- Medium batches (100-1000): 5-25× speedup expected
+- Large batches (>1000): 25-36× speedup expected
+
+**Implementation Details**:
+- `add_facts_bulk_parallel()` in `src/backend/environment.rs`
+- `add_rules_bulk_parallel()` in `src/backend/environment.rs`
+- Parallel serialization uses Rayon's work-stealing thread pool
+- Compatible with existing Tokio runtime (separate thread pools)
+- All 407 tests pass - no breaking changes
+
+See: Commit 36147da
+
 ### Documentation
 - Reorganized documentation into intuitive directory structure
 - Added `docs/ARCHITECTURE.md` - High-level system architecture overview

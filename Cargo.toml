@@ -75,6 +75,9 @@ smallvec = "1.11"
 # liblevenshtein - Fuzzy string matching for "Did you mean?" suggestions
 liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
 
+# Rayon - Data parallelism for parallel bulk operations
+rayon = "1.8"
+
 [features]
 default = ["interning", "async"]
 async = ["tokio"]

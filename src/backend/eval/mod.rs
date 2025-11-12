@@ -584,7 +584,7 @@ fn try_match_all_rules_query_multi(
         Err(_) => return Vec::new(), // Fallback to iterative if conversion fails
     };
 
-    let space = env.space.lock().unwrap();
+    let space = env.create_space();
     let ctx = ConversionContext::new();
 
     // Create a query pattern: (= <expr> $rhs)

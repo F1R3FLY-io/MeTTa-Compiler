@@ -263,7 +263,7 @@ pub async fn run_state_async(
     use pathmap::zipper::ZipperIteration;
 
     let acc_count = {
-        let space = accumulated_state.environment.space.lock().unwrap();
+        let space = accumulated_state.environment.create_space();
         let mut rz = space.btm.read_zipper();
         let mut count = 0;
         while rz.to_next_val() {
@@ -273,7 +273,7 @@ pub async fn run_state_async(
     };
 
     let comp_count = {
-        let space = compiled_state.environment.space.lock().unwrap();
+        let space = compiled_state.environment.create_space();
         let mut rz = space.btm.read_zipper();
         let mut count = 0;
         while rz.to_next_val() {

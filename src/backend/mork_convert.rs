@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn test_simple_atom_conversion() {
         let env = Environment::new();
-        let space = env.space.lock().unwrap();
+        let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
         let atom = MettaValue::Atom("foo".to_string());
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn test_variable_conversion() {
         let env = Environment::new();
-        let space = env.space.lock().unwrap();
+        let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
         // First occurrence should create NewVar
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn test_sexpr_conversion() {
         let env = Environment::new();
-        let space = env.space.lock().unwrap();
+        let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
         // (double $x)
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn test_repeated_variable() {
         let env = Environment::new();
-        let space = env.space.lock().unwrap();
+        let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
         // (* $x $x) - same variable twice

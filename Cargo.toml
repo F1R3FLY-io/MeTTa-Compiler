@@ -33,6 +33,8 @@ mork = { path = "../MORK/kernel", features = ["interning"] }
 mork-expr = { path = "../MORK/expr" }
 # MORK frontend - Parser for MORK s-expressions
 mork-frontend = { path = "../MORK/frontend" }
+# MORK interning - Symbol interning for MORK
+mork-interning = { path = "../MORK/interning" }
 # Models - Rholang protobuf models for PathMap Par integration
 models = { path = "../f1r3node/models" }
 # Tokio - Async runtime for parallel evaluation (optional)

@@ -76,7 +76,10 @@ impl Environment {
 
     /// Create a thread-local Space for operations
     /// Following the Rholang LSP pattern: cheap clone via structural sharing
-    fn create_space(&self) -> Space {
+    ///
+    /// This is useful for advanced operations that need direct access to the Space,
+    /// such as debugging or custom MORK queries.
+    pub fn create_space(&self) -> Space {
         let btm = self.btm.lock().unwrap().clone();
         Space {
             btm,
@@ -85,9 +88,11 @@ impl Environment {
         }
     }
 
-    /// Update PathMap after Space modifications (write operations)
-    fn update_pathmap(&mut self, space: Space) {
+    /// Update PathMap and shared mapping after Space modifications (write operations)
+    /// This updates both the PathMap (btm) and the SharedMappingHandle (sm)
+    pub(crate) fn update_pathmap(&mut self, space: Space) {
         *self.btm.lock().unwrap() = space.btm;
+        self.shared_mapping = space.sm;
     }
 
     /// Convert a MORK Expr directly to MettaValue without text serialization
@@ -326,7 +331,7 @@ impl Environment {
     pub fn get_type(&self, name: &str) -> Option<MettaValue> {
         use mork_expr::Expr;
 
-        let space = self.space.lock().unwrap();
+        let space = self.create_space();
         let mut rz = space.btm.read_zipper();
 
         // Iterate through all values in the trie
@@ -372,7 +377,7 @@ impl Environment {
     pub fn iter_rules(&self) -> impl Iterator<Item = Rule> {
         use mork_expr::Expr;
 
-        let space = self.space.lock().unwrap();
+        let space = self.create_space();
         let mut rz = space.btm.read_zipper();
         let mut rules = Vec::new();
 
@@ -455,7 +460,7 @@ impl Environment {
         use crate::backend::eval::{apply_bindings, pattern_match};
         use mork_expr::Expr;
 
-        let space = self.space.lock().unwrap();
+        let space = self.create_space();
         let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
 
@@ -559,7 +564,7 @@ impl Environment {
         let atom_value = MettaValue::Atom(atom.to_string());
         let _target_mork = atom_value.to_mork_string();
 
-        let space = self.space.lock().unwrap();
+        let space = self.create_space();
         let mut rz = space.btm.read_zipper();
 
         // Iterate through all values in the Space to find the atom
@@ -602,7 +607,7 @@ impl Environment {
         let mork_str = sexpr.to_mork_string();
         let mork_bytes = mork_str.as_bytes();
 
-        let space = self.space.lock().unwrap();
+        let space = self.create_space();
 
         // Parse to MORK Expr (following try_match_all_rules_query_multi pattern)
         let mut parse_buffer = vec![0u8; 4096];
@@ -642,7 +647,7 @@ impl Environment {
     fn has_sexpr_fact_linear(&self, sexpr: &MettaValue) -> bool {
         use mork_expr::Expr;
 
-        let space = self.space.lock().unwrap();
+        let space = self.create_space();
         let mut rz = space.btm.read_zipper();
 
         // Directly iterate through all values in the trie
@@ -690,7 +695,7 @@ impl Environment {
         }
 
         // Cache miss or variable pattern - perform conversion
-        let space = self.space.lock().unwrap();
+        let space = self.create_space();
         let mut ctx = ConversionContext::new();
         let bytes = metta_to_mork_bytes(value, &space, &mut ctx)?;
 
@@ -761,11 +766,16 @@ impl Environment {
         let mork_str = value.to_mork_string();
         let mork_bytes = mork_str.as_bytes();
 
+        // Create thread-local Space
+        let mut space = self.create_space();
+
         // Use MORK's parser to load the s-expression into PathMap trie
-        let mut space = self.space.lock().unwrap();
         if let Ok(_count) = space.load_all_sexpr_impl(mork_bytes, true) {
             // Successfully added to space
         }
+
+        // Update shared PathMap with modified Space
+        self.update_pathmap(space);
     }
 
     /// Get rules matching a specific head symbol and arity
@@ -828,12 +838,13 @@ impl Environment {
     }
 
     /// Union two environments (monotonic merge)
-    /// Since Space is shared via Arc<Mutex<>>, facts (including type assertions) are automatically merged
+    /// PathMap and shared_mapping are shared via Arc, so facts (including type assertions) are automatically merged
     /// Multiplicities and rule indices are also merged via shared Arc
     pub fn union(&self, _other: &Environment) -> Environment {
-        // Space is shared via Arc, so both self and other point to the same Space
+        // PathMap and SharedMappingHandle are shared via Arc/Clone
         // Facts (including type assertions) added to either are automatically visible in both
-        let space = self.space.clone();
+        let shared_mapping = self.shared_mapping.clone();
+        let btm = self.btm.clone();
 
         // Merge rule index and wildcard rules (both are Arc<Mutex>, so they're already shared)
         let rule_index = self.rule_index.clone();
@@ -846,7 +857,8 @@ impl Environment {
         let fuzzy_matcher = self.fuzzy_matcher.clone();
 
         Environment {
-            space,
+            shared_mapping,
+            btm,
             rule_index,
             wildcard_rules,
             multiplicities,

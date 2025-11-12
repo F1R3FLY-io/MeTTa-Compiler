@@ -31,7 +31,7 @@ fn main() {
     assert_eq!(result[0], MettaValue::Nil);
 
     // Dump the space to see what's actually stored
-    let space = new_env.space.lock().unwrap();
+    let space = new_env.create_space();
     let mut sexprs_bytes = Vec::new();
     space.dump_all_sexpr(&mut sexprs_bytes).unwrap();
     let sexprs_str = String::from_utf8_lossy(&sexprs_bytes);

@@ -128,7 +128,7 @@ pub fn environment_to_par(env: &Environment) -> Par {
     // Instead, we collect RAW path bytes directly from the trie using read_zipper.
     // This preserves bytes exactly without interpretation.
 
-    let space = env.space.lock().unwrap();
+    let space = env.create_space();
 
     // Collect all raw path bytes from the PathMap trie
     let mut all_paths_data = Vec::new();
@@ -566,7 +566,7 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
             // This avoids any interpretation of bytes as MORK tags.
             // We also restore the symbol table so symbol IDs match.
             {
-                let mut space = env.space.lock().unwrap();
+                let mut space = env.create_space();
                 if !space_dump_bytes.is_empty() {
                     // Read format: [magic: 4 bytes "MTTS"][sym_table_len: 8 bytes][sym_table_bytes][num_paths: 8 bytes][path1_len: 4 bytes][path1_bytes]...
                     if space_dump_bytes.len() >= 12 {
@@ -664,6 +664,8 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
                         }
                     }
                 }
+                // Update shared PathMap with modified Space
+                env.update_pathmap(space);
             }
 
             // Rebuild the rule index from the restored MORK Space

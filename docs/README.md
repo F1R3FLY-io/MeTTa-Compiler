@@ -6,15 +6,22 @@ This directory contains comprehensive documentation for the MeTTaTron project.
 
 ```
 docs/
-├── README.md               # This file
-├── ISSUE_3_SATISFACTION.md # MVP requirements satisfaction
-├── MVP_BACKEND_COMPLETE.md # MVP implementation status
-├── THREADING_MODEL.md      # Threading and parallelization documentation
-├── guides/                 # User guides and tutorials
-├── reference/              # API and language reference documentation
-├── design/                 # Design documents and implementation details
-├── testing/                # Testing documentation
-└── archive/                # Historical documents and status reports
+├── README.md                # This file
+├── ARCHITECTURE.md          # High-level system architecture overview
+├── CONTRIBUTING.md          # Contributor guidelines
+├── ISSUE_3_SATISFACTION.md  # MVP requirements satisfaction
+├── MVP_BACKEND_COMPLETE.md  # MVP implementation status
+├── THREADING_MODEL.md       # Threading and parallelization documentation
+├── guides/                  # User guides and tutorials
+├── reference/               # API and language reference documentation
+├── design/                  # Design documents and implementation details
+├── testing/                 # Testing documentation
+├── optimization/            # Performance optimization documentation
+│   ├── experiments/         # Optimization experiment results
+│   ├── sessions/            # Optimization session notes and planning
+│   └── benchmarks/          # Benchmark results and analysis
+├── examples/                # Example documentation
+└── archive/                 # Historical documents and archived proposals
 ```
 
 ## User Guides
@@ -43,6 +50,8 @@ Technical design and implementation details:
 - **[REPL Architecture](design/REPL_ARCHITECTURE.md)** - REPL design and implementation
 - **[Type System Implementation](design/TYPE_SYSTEM_IMPLEMENTATION.md)** - Type system architecture
 - **[Type System Rholang Integration](design/TYPE_SYSTEM_RHOLANG_INTEGRATION.md)** - Type integration patterns
+- **[Threading and PathMap Integration](design/THREADING_AND_PATHMAP_INTEGRATION.md)** - Threading model analysis
+- **[Threading Improvements](design/THREADING_IMPROVEMENTS.md)** - Implementation guide for threading optimizations
 - **[Collection-Aware Parser](design/COLLECTION_AWARE_PARSER.md)** - Collection-aware parsing strategies
 - **[Composability Tests](design/COMPOSABILITY_TESTS.md)** - Test composition strategies
 - **[MORK PathMap Query Design](design/MORK_PATHMAP_QUERY_DESIGN.md)** - PathMap query optimization
@@ -61,10 +70,22 @@ Documentation for testing strategies and frameworks:
 
 - **[Integration Testing Implementation](testing/INTEGRATION_TESTING_IMPLEMENTATION.md)** - Integration test framework and implementation
 
+## Optimization Documentation
+
+Performance optimization work with empirical results:
+
+- **[Performance Summary](optimization/PERFORMANCE_OPTIMIZATION_SUMMARY.md)** - Consolidated optimization results
+- **[Scientific Ledger](optimization/SCIENTIFIC_LEDGER.md)** - Scientific method tracking
+- **[Optimization README](optimization/README.md)** - Quick reference for all optimizations
+- **[Experiments](optimization/experiments/)** - Individual optimization experiment results
+- **[Sessions](optimization/sessions/)** - Optimization session notes and planning
+- **[Benchmarks](optimization/benchmarks/)** - Benchmark results and analysis
+
 ## Status Reports
 
 Project status and milestone documentation:
 
+- **[Architecture Overview](ARCHITECTURE.md)** - High-level system architecture
 - **[Issue #3 Satisfaction](ISSUE_3_SATISFACTION.md)** - GitHub Issue #3 MVP requirements analysis
 - **[MVP Backend Complete](MVP_BACKEND_COMPLETE.md)** - MVP implementation status and test results
 - **[Threading Model](THREADING_MODEL.md)** - Threading and parallelization documentation
@@ -75,6 +96,8 @@ For historical status reports and investigation documents, see:
 
 - **`archive/milestones/`** - Historical status reports and completion documents
 - **`archive/repl-investigation/`** - REPL implementation research and decisions
+- **`archive/proposals/`** - Archived proposals and design explorations
+- **`archive/`** - Older summary documents
 
 ## Related Documentation
 
@@ -106,15 +129,21 @@ For code examples, see:
 
 ## Contributing
 
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for full contributor guidelines.
+
 When adding new documentation:
 
 1. **User-facing guides** → `guides/`
 2. **API/language references** → `reference/`
 3. **Technical design docs** → `design/`
 4. **Testing documentation** → `testing/`
-5. **Status reports** → Root of `docs/`
-6. **Integration docs** → `../integration/`
-7. **Historical docs** → `archive/`
+5. **Optimization work** → `optimization/`
+   - Experiments → `optimization/experiments/`
+   - Session notes → `optimization/sessions/`
+   - Benchmarks → `optimization/benchmarks/`
+6. **Status reports** → Root of `docs/`
+7. **Integration docs** → `../integration/`
+8. **Historical docs** → `archive/`
 
 ---
 

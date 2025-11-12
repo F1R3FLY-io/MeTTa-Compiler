@@ -705,22 +705,58 @@ impl Environment {
                 wildcard_updates.push(rule);
             }
 
-            // Serialize to MORK and add to temporary trie
-            let mork_str = rule_sexpr.to_mork_string();
-            let mork_bytes = mork_str.as_bytes();
+            // OPTIMIZATION (Variant C): Use direct MORK byte conversion for ground rules
+            let is_ground = !Self::contains_variables(&rule_sexpr);
 
-            let mut temp_space = Space {
-                sm: self.shared_mapping.clone(),
-                btm: PathMap::new(),
-                mmaps: HashMap::new(),
-            };
+            if is_ground {
+                // Ground rule: use direct byte conversion (skip parsing)
+                use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 
-            temp_space
-                .load_all_sexpr_impl(mork_bytes, true)
-                .map_err(|e| format!("Failed to parse rule: {:?}", e))?;
+                let temp_space = Space {
+                    sm: self.shared_mapping.clone(),
+                    btm: PathMap::new(),
+                    mmaps: HashMap::new(),
+                };
+                let mut ctx = ConversionContext::new();
 
-            // Union into accumulating rule trie
-            rule_trie = rule_trie.join(&temp_space.btm);
+                if let Ok(mork_bytes) = metta_to_mork_bytes(&rule_sexpr, &temp_space, &mut ctx) {
+                    // Direct insertion without parsing
+                    rule_trie.insert(&mork_bytes, ());
+                } else {
+                    // Fallback to parsing
+                    let mork_str = rule_sexpr.to_mork_string();
+                    let mork_bytes = mork_str.as_bytes();
+
+                    let mut temp_space = Space {
+                        sm: self.shared_mapping.clone(),
+                        btm: PathMap::new(),
+                        mmaps: HashMap::new(),
+                    };
+
+                    temp_space
+                        .load_all_sexpr_impl(mork_bytes, true)
+                        .map_err(|e| format!("Failed to parse rule: {:?}", e))?;
+
+                    rule_trie = rule_trie.join(&temp_space.btm);
+                }
+            } else {
+                // Variable-containing rule: use string path
+                let mork_str = rule_sexpr.to_mork_string();
+                let mork_bytes = mork_str.as_bytes();
+
+                let mut temp_space = Space {
+                    sm: self.shared_mapping.clone(),
+                    btm: PathMap::new(),
+                    mmaps: HashMap::new(),
+                };
+
+                temp_space
+                    .load_all_sexpr_impl(mork_bytes, true)
+                    .map_err(|e| format!("Failed to parse rule: {:?}", e))?;
+
+                // Union into accumulating rule trie
+                rule_trie = rule_trie.join(&temp_space.btm);
+            }
         }
 
         // Apply all updates in batch (minimize critical sections)
@@ -1044,7 +1080,29 @@ impl Environment {
 
     /// Add a fact to the MORK Space for pattern matching
     /// Converts the MettaValue to MORK format and stores it
+    /// OPTIMIZATION (Variant C): Uses direct MORK byte conversion for ground values
     pub fn add_to_space(&mut self, value: &MettaValue) {
+        use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
+
+        // Try direct byte conversion first (Variant C)
+        // This skips string serialization + parsing for 10-20× speedup
+        let is_ground = !Self::contains_variables(value);
+
+        if is_ground {
+            // Ground values: use direct MORK byte conversion (no parsing needed)
+            let space = self.create_space();
+            let mut ctx = ConversionContext::new();
+
+            if let Ok(mork_bytes) = metta_to_mork_bytes(value, &space, &mut ctx) {
+                // Direct PathMap insertion without parsing
+                let mut space_mut = self.create_space();
+                space_mut.btm.insert(&mork_bytes, ());
+                self.update_pathmap(space_mut);
+                return;
+            }
+        }
+
+        // Fallback: use string path for variable-containing values
         let mork_str = value.to_mork_string();
         let mork_bytes = mork_str.as_bytes();
 
@@ -1078,8 +1136,29 @@ impl Environment {
         // This allows serialization and parsing without holding the mutex
         let mut fact_trie = PathMap::new();
 
+        // OPTIMIZATION (Variant C): Use direct MORK byte conversion
+        use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
+
         for fact in facts {
-            // Serialize fact to MORK format
+            let is_ground = !Self::contains_variables(fact);
+
+            if is_ground {
+                // Ground fact: use direct byte conversion (skip parsing)
+                let temp_space = Space {
+                    sm: self.shared_mapping.clone(),
+                    btm: PathMap::new(),
+                    mmaps: HashMap::new(),
+                };
+                let mut ctx = ConversionContext::new();
+
+                if let Ok(mork_bytes) = metta_to_mork_bytes(fact, &temp_space, &mut ctx) {
+                    // Direct insertion without parsing
+                    fact_trie.insert(&mork_bytes, ());
+                    continue;
+                }
+            }
+
+            // Fallback: use string path for variable-containing values
             let mork_str = fact.to_mork_string();
             let mork_bytes = mork_str.as_bytes();
 

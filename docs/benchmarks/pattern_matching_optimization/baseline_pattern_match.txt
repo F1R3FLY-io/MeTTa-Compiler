@@ -1,0 +1,1908 @@
+warning: unexpected `cfg` condition name: `gxhash`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:14:7
+   |
+14 | #[cfg(gxhash)]
+   |       ^^^^^^ help: found config with similar value: `feature = "gxhash"`
+   |
+   = help: expected names are: `docsrs`, `feature`, and `test` and 31 more
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gxhash)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(gxhash)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition name: `gxhash`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:17:11
+   |
+17 | #[cfg(not(gxhash))]
+   |           ^^^^^^ help: found config with similar value: `feature = "gxhash"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gxhash)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(gxhash)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unused import: `HashMap`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:57:32
+   |
+57 |     pub use std::collections::{HashMap, HashSet};
+   |                                ^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `e`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/macros.rs:167:17
+    |
+167 |     fn advanced(e: Expr) -> usize {
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_e`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `under`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:343:76
+    |
+343 |     pub fn difference_under<F : Fn(Expr, Expr) -> bool>(self, other: Expr, under: F) -> Option<usize> {
+    |                                                                            ^^^^^ help: if this is intentional, prefix it with an underscore: `_under`
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:623:13
+    |
+623 |         let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
+    |             ----^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:629:13
+    |
+629 |         let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
+    |             ----^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:675:13
+    |
+675 |         let mut s = vec![(ExprEnv::new(0, x), ExprEnv::new(1, y))];
+    |             ----^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:790:13
+    |
+790 |         let mut targets = [(target, "\x1B[43m", "\x1B[0m")].repeat(10); // FIXE
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `k`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:931:17
+    |
+931 |             for k in 0..a1 {
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `len`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1184:13
+     |
+1184 |         let len = self.trace.len();
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_len`
+
+warning: unused variable: `ss`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1192:25
+     |
+1192 |                     let ss = *s;
+     |                         ^^ help: if this is intentional, prefix it with an underscore: `_ss`
+
+warning: unused variable: `len`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1213:13
+     |
+1213 |         let len = self.trace.len();
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_len`
+
+warning: unused variable: `ss`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1233:25
+     |
+1233 |                     let ss = *s;
+     |                         ^^ help: if this is intentional, prefix it with an underscore: `_ss`
+
+warning: value assigned to `lc` is never read
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1308:13
+     |
+1308 |             lc += 1;
+     |             ^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `i` is never read
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1534:29
+     |
+1534 | ...                   i += s as usize;
+     |                       ^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+
+warning: unused variable: `offset`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1602:45
+     |
+1602 |     #[inline(always)] fn new_var(&mut self, offset: usize) -> () { self.ee.v += 1; }
+     |                                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_offset`
+
+warning: unused variable: `offset`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1603:45
+     |
+1603 |     #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () {}
+     |                                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_offset`
+
+warning: unused variable: `i`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1603:60
+     |
+1603 |     #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () {}
+     |                                                            ^ help: if this is intentional, prefix it with an underscore: `_i`
+
+warning: unused variable: `offset`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1604:44
+     |
+1604 |     #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {}
+     |                                            ^^^^^^ help: if this is intentional, prefix it with an underscore: `_offset`
+
+warning: unused variable: `s`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1604:59
+     |
+1604 |     #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {}
+     |                                                           ^ help: if this is intentional, prefix it with an underscore: `_s`
+
+warning: unused variable: `offset`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1605:42
+     |
+1605 |     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () {}
+     |                                          ^^^^^^ help: if this is intentional, prefix it with an underscore: `_offset`
+
+warning: unused variable: `a`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1605:57
+     |
+1605 |     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () {}
+     |                                                         ^ help: if this is intentional, prefix it with an underscore: `_a`
+
+warning: unused variable: `offset`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1606:41
+     |
+1606 |     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () {}
+     |                                         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_offset`
+
+warning: unused variable: `acc`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1606:56
+     |
+1606 |     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () {}
+     |                                                        ^^^ help: if this is intentional, prefix it with an underscore: `_acc`
+
+warning: unused variable: `sub`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1606:65
+     |
+1606 |     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () {}
+     |                                                                 ^^^ help: if this is intentional, prefix it with an underscore: `_sub`
+
+warning: unused variable: `offset`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1607:46
+     |
+1607 |     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () {}
+     |                                              ^^^^^^ help: if this is intentional, prefix it with an underscore: `_offset`
+
+warning: unused variable: `acc`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1607:61
+     |
+1607 |     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () {}
+     |                                                             ^^^ help: if this is intentional, prefix it with an underscore: `_acc`
+
+warning: unused variable: `i`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1635:43
+     |
+1635 | ...                   |v, i| format!("<{},{}>", self.n, v).leak(), self.offset as usize);
+     |                           ^ help: if this is intentional, prefix it with an underscore: `_i`
+
+warning: unnecessary `unsafe` block
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:221:31
+     |
+ 221 |           let mut value = match unsafe { byte_item(*$x.ptr.byte_add(j)) } {
+     |                                 ^^^^^^ unnecessary `unsafe` block
+...
+1673 |           unsafe {
+     |           ------ because it's nested under this `unsafe` block
+...
+1684 |                       let (se_c, _, se_offset) = traverseh!((), (), u8, env.subsexpr(), 0,
+     |  ________________________________________________-
+1685 | |                         |c: &mut u8, o| { *c += 1; },
+1686 | |                         |_, o, r| {},
+1687 | |                         |_, o, _| {},
+1688 | |                         |_, o, _| {},
+1689 | |                         |_, o, x, y| {},
+1690 | |                         |_, _, _| {});
+     | |_____________________________________- in this macro invocation
+     |
+     = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+     = note: this warning originates in the macro `traverseh` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unnecessary `unsafe` block
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:225:29
+     |
+ 225 |                   let slice = unsafe { &*slice_from_raw_parts($x.ptr.byte_add(j + 1), s as usize) };
+     |                               ^^^^^^ unnecessary `unsafe` block
+...
+1673 |           unsafe {
+     |           ------ because it's nested under this `unsafe` block
+...
+1684 |                       let (se_c, _, se_offset) = traverseh!((), (), u8, env.subsexpr(), 0,
+     |  ________________________________________________-
+1685 | |                         |c: &mut u8, o| { *c += 1; },
+1686 | |                         |_, o, r| {},
+1687 | |                         |_, o, _| {},
+1688 | |                         |_, o, _| {},
+1689 | |                         |_, o, x, y| {},
+1690 | |                         |_, _, _| {});
+     | |_____________________________________- in this macro invocation
+     |
+     = note: this warning originates in the macro `traverseh` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unnecessary `unsafe` block
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:242:21
+     |
+ 242 |                       unsafe {
+     |                       ^^^^^^ unnecessary `unsafe` block
+...
+1673 |           unsafe {
+     |           ------ because it's nested under this `unsafe` block
+...
+1684 |                       let (se_c, _, se_offset) = traverseh!((), (), u8, env.subsexpr(), 0,
+     |  ________________________________________________-
+1685 | |                         |c: &mut u8, o| { *c += 1; },
+1686 | |                         |_, o, r| {},
+1687 | |                         |_, o, _| {},
+1688 | |                         |_, o, _| {},
+1689 | |                         |_, o, x, y| {},
+1690 | |                         |_, _, _| {});
+     | |_____________________________________- in this macro invocation
+     |
+     = note: this warning originates in the macro `traverseh` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused variable: `sk`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1683:21
+     |
+1683 |                 for sk in 0..k {
+     |                     ^^ help: if this is intentional, prefix it with an underscore: `_sk`
+
+warning: unused variable: `o`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1685:38
+     |
+1685 |                         |c: &mut u8, o| { *c += 1; },
+     |                                      ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `o`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1686:29
+     |
+1686 |                         |_, o, r| {},
+     |                             ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `r`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1686:32
+     |
+1686 |                         |_, o, r| {},
+     |                                ^ help: if this is intentional, prefix it with an underscore: `_r`
+
+warning: unused variable: `o`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1687:29
+     |
+1687 |                         |_, o, _| {},
+     |                             ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `o`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1688:29
+     |
+1688 |                         |_, o, _| {},
+     |                             ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `o`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1689:29
+     |
+1689 |                         |_, o, x, y| {},
+     |                             ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `x`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1689:32
+     |
+1689 |                         |_, o, x, y| {},
+     |                                ^ help: if this is intentional, prefix it with an underscore: `_x`
+
+warning: unused variable: `y`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1689:35
+     |
+1689 |                         |_, o, x, y| {},
+     |                                   ^ help: if this is intentional, prefix it with an underscore: `_y`
+
+warning: unnecessary `unsafe` block
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1718:5
+     |
+1718 |     unsafe {
+     |     ^^^^^^ unnecessary `unsafe` block
+
+warning: unused variable: `evars_`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1754:38
+     |
+1754 | ...   let (evars_, nvars_) = apply(rhs.n, rhs.v, new_intros, &mut ExprZipper::new(rhs.subsexpr()), bindings, oz, cycled, stack, assignmen...
+     |            ^^^^^^ help: if this is intentional, prefix it with an underscore: `_evars_`
+
+warning: unused variable: `evars_`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1792:38
+     |
+1792 | ...   let (evars_, nvars_) = apply(rhs.n, rhs.v, new_intros, &mut ExprZipper::new(rhs.subsexpr()), bindings, oz, cycled, stack, assignmen...
+     |            ^^^^^^ help: if this is intentional, prefix it with an underscore: `_evars_`
+
+warning: unused variable: `s`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1801:36
+     |
+1801 |                 Ok(Tag::SymbolSize(s)) => {
+     |                                    ^ help: if this is intentional, prefix it with an underscore: `_s`
+
+warning: unused variable: `o`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1915:13
+     |
+1915 |         |_, o, a| { 
+     |             ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `o`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1910:13
+     |
+1910 |         |_, o, s| {
+     |             ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `o`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1871:13
+     |
+1871 |         |_, o, i| {
+     |             ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `evars_`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1901:26
+     |
+1901 |                     let (evars_, nvars_) = apply_e(rhs.n, rhs.v, new_intros, rhs.subsexpr(), bindings, oz, cycled, stack, assignments);
+     |                          ^^^^^^ help: if this is intentional, prefix it with an underscore: `_evars_`
+
+warning: unused variable: `o`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1830:13
+     |
+1830 |         |_, o| { 
+     |             ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `evars_`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1863:26
+     |
+1863 |                     let (evars_, nvars_) = apply_e(rhs.n, rhs.v, new_intros, rhs.subsexpr(), bindings, oz, cycled, stack, assignments);
+     |                          ^^^^^^ help: if this is intentional, prefix it with an underscore: `_evars_`
+
+warning: unused variable: `o`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1920:13
+     |
+1920 |         |_, o, _, _| {},
+     |             ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `c`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1941:22
+     |
+1941 |                     |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+     |                      ^
+...
+2041 |                 if step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
+     |                    --------------------- in this macro invocation
+     |
+help: `c` is captured in macro and introduced a unused variable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1941:22
+     |
+1941 |                     |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+     |                      ^
+...
+2041 |                 if step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
+     |                    --------------------- in this macro invocation
+     = note: this warning originates in the macro `step` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused variable: `c`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1941:22
+     |
+1941 |                     |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+     |                      ^
+...
+2036 |                 if step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
+     |                    --------------------- in this macro invocation
+     |
+help: `c` is captured in macro and introduced a unused variable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1941:22
+     |
+1941 |                     |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+     |                      ^
+...
+2036 |                 if step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
+     |                    --------------------- in this macro invocation
+     = note: this warning originates in the macro `step` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused variable: `e1`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:2027:59
+     |
+2027 | ...                   &mut |_ts1, e1, i1, _ts2, e2, i2| {
+     |                                   ^^ help: if this is intentional, prefix it with an underscore: `_e1`
+
+warning: unused variable: `e2`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:2027:73
+     |
+2027 | ...                   &mut |_ts1, e1, i1, _ts2, e2, i2| {
+     |                                                 ^^ help: if this is intentional, prefix it with an underscore: `_e2`
+
+warning: enum `Remaining` is never used
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:946:6
+    |
+946 | enum Remaining {
+    |      ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `same_functor` is never used
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:1652:8
+     |
+1610 | impl ExprEnv {
+     | ------------ method in this implementation
+...
+1652 |     fn same_functor(&self, other: &Self) -> bool {
+     |        ^^^^^^^^^^^^
+
+warning: struct `GxHasher` is never constructed
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:23:16
+   |
+23 |     pub struct GxHasher { state_lo: u64, state_hi: u64, }
+   |                ^^^^^^^^
+
+warning: associated items `with_seed` and `finish_u128` are never used
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:25:16
+   |
+24 |     impl GxHasher {
+   |     ------------- associated items in this implementation
+25 |         pub fn with_seed(seed: i64) -> Self {
+   |                ^^^^^^^^^
+...
+30 |         pub fn finish_u128(&self) -> u128 {
+   |                ^^^^^^^^^^^
+
+warning: function `gxhash128` is never used
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:58:12
+   |
+58 |     pub fn gxhash128(data: &[u8], _seed: i64) -> u128 { xxhash_rust::const_xxh3::xxh3_128(data) }
+   |            ^^^^^^^^^
+
+warning: trait `HashMapExt` is never used
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:59:15
+   |
+59 |     pub trait HashMapExt{}
+   |               ^^^^^^^^^^
+
+warning: trait `HashSetExt` is never used
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/expr/src/lib.rs:60:15
+   |
+60 |     pub trait HashSetExt{}
+   |               ^^^^^^^^^^
+
+warning: unused import: `GlobalAlloc`
+ --> /home/dylon/Workspace/f1r3fly.io/PathMap/src/dependent_zipper.rs:4:31
+  |
+4 | use crate::alloc::{Allocator, GlobalAlloc};
+  |                               ^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `zipper_priv`
+ --> /home/dylon/Workspace/f1r3fly.io/PathMap/src/dependent_zipper.rs:8:5
+  |
+8 | use zipper_priv::*;
+  |     ^^^^^^^^^^^
+
+warning: unused import: `crate::trie_node`
+ --> /home/dylon/Workspace/f1r3fly.io/PathMap/src/dependent_zipper.rs:6:5
+  |
+6 | use crate::trie_node::*;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: unused import: `Allocator`
+ --> /home/dylon/Workspace/f1r3fly.io/PathMap/src/dependent_zipper.rs:4:20
+  |
+4 | use crate::alloc::{Allocator, GlobalAlloc};
+  |                    ^^^^^^^^^
+
+warning: unused return value of `Option::<T>::insert` that must be used
+   --> /home/dylon/Workspace/f1r3fly.io/PathMap/src/dependent_zipper.rs:117:13
+    |
+117 |             self.enroll_payload.insert(payload);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if you intended to set a value, consider assignment instead
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+117 |             let _ = self.enroll_payload.insert(payload);
+    |             +++++++
+
+warning: `mork-expr` (lib) generated 63 warnings (run `cargo fix --lib -p mork-expr` to apply 46 suggestions)
+warning: `pathmap` (lib) generated 5 warnings (run `cargo fix --lib -p pathmap` to apply 1 suggestion)
+warning: unexpected `cfg` condition value: `nightly`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/frontend/src/json_parser.rs:874:11
+    |
+874 |     #[cfg(feature = "nightly")]
+    |           ^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `nightly` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: `mork-frontend` (lib) generated 1 warning
+warning: unused import: `handle::*`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/interning/src/lib.rs:26:5
+   |
+26 | use handle::*;
+   |     ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `get_soft_report` is never used
+   --> /home/dylon/Workspace/f1r3fly.io/f1r3node/rspace++/src/rspace/reporting_rspace.rs:194:8
+    |
+ 97 | / impl<C, P, A, K> ReportingRspace<C, P, A, K>
+ 98 | | where
+ 99 | |     C: Clone
+100 | |         + Debug
+...   |
+111 | |     A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+112 | |     K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    | |_____________________________________________________________________________________________- method in this implementation
+...
+194 |       fn get_soft_report(&self) -> Result<Vec<ReportingEvent<C, P, A, K>>, RSpaceError> {
+    |          ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling liblevenshtein v0.6.0 (/home/dylon/Workspace/f1r3fly.io/liblevenshtein-rust)
+warning: use of deprecated struct `blake2::digest::generic_array::GenericArray`: please upgrade to generic-array 1.x
+ --> /home/dylon/Workspace/f1r3fly.io/f1r3node/crypto/src/rust/signatures/secp256k1.rs:7:36
+  |
+7 |     elliptic_curve::generic_array::GenericArray,
+  |                                    ^^^^^^^^^^^^
+  |
+  = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated struct `blake2::digest::generic_array::GenericArray`: please upgrade to generic-array 1.x
+   --> /home/dylon/Workspace/f1r3fly.io/f1r3node/crypto/src/rust/signatures/secp256k1.rs:156:25
+    |
+156 |         let key_bytes = GenericArray::clone_from_slice(sec);
+    |                         ^^^^^^^^^^^^
+
+warning: use of deprecated struct `blake2::digest::generic_array::GenericArray`: please upgrade to generic-array 1.x
+   --> /home/dylon/Workspace/f1r3fly.io/f1r3node/crypto/src/rust/signatures/secp256k1.rs:168:48
+    |
+168 |         let key_bytes: GenericArray<u8, U32> = GenericArray::clone_from_slice(&sec.bytes);
+    |                                                ^^^^^^^^^^^^
+
+warning: use of deprecated struct `blake2::digest::generic_array::GenericArray`: please upgrade to generic-array 1.x
+   --> /home/dylon/Workspace/f1r3fly.io/f1r3node/crypto/src/rust/signatures/secp256k1.rs:168:24
+    |
+168 |         let key_bytes: GenericArray<u8, U32> = GenericArray::clone_from_slice(&sec.bytes);
+    |                        ^^^^^^^^^^^^
+
+warning: use of deprecated struct `blake2::digest::generic_array::GenericArray`: please upgrade to generic-array 1.x
+  --> /home/dylon/Workspace/f1r3fly.io/f1r3node/crypto/src/rust/util/key_util.rs:49:50
+   |
+49 |         use k256::elliptic_curve::generic_array::GenericArray;
+   |                                                  ^^^^^^^^^^^^
+
+warning: use of deprecated struct `blake2::digest::generic_array::GenericArray`: please upgrade to generic-array 1.x
+  --> /home/dylon/Workspace/f1r3fly.io/f1r3node/crypto/src/rust/util/key_util.rs:52:51
+   |
+52 |         let signing_key = SigningKey::from_bytes(&GenericArray::from_slice(&private_key.bytes))
+   |                                                   ^^^^^^^^^^^^
+
+warning: use of deprecated associated function `blake2::digest::generic_array::GenericArray::<T, N>::clone_from_slice`: please upgrade to generic-array 1.x
+   --> /home/dylon/Workspace/f1r3fly.io/f1r3node/crypto/src/rust/signatures/secp256k1.rs:156:39
+    |
+156 |         let key_bytes = GenericArray::clone_from_slice(sec);
+    |                                       ^^^^^^^^^^^^^^^^
+
+warning: use of deprecated associated function `blake2::digest::generic_array::GenericArray::<T, N>::clone_from_slice`: please upgrade to generic-array 1.x
+   --> /home/dylon/Workspace/f1r3fly.io/f1r3node/crypto/src/rust/signatures/secp256k1.rs:168:62
+    |
+168 |         let key_bytes: GenericArray<u8, U32> = GenericArray::clone_from_slice(&sec.bytes);
+    |                                                              ^^^^^^^^^^^^^^^^
+
+warning: use of deprecated associated function `blake2::digest::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
+  --> /home/dylon/Workspace/f1r3fly.io/f1r3node/crypto/src/rust/util/key_util.rs:52:65
+   |
+52 |         let signing_key = SigningKey::from_bytes(&GenericArray::from_slice(&private_key.bytes))
+   |                                                                 ^^^^^^^^^^
+
+warning: `mork-interning` (lib) generated 1 warning (run `cargo fix --lib -p mork-interning` to apply 1 suggestion)
+warning: `rspace_plus_plus` (lib) generated 1 warning
+warning: `crypto` (lib) generated 9 warnings
+warning: associated type `visualizeDagStream` should have an upper camel case name
+   --> /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/target/release/build/models-20fe094f418d5d0d/out/casper.v1.rs:860:14
+    |
+860 |         type visualizeDagStream: tonic::codegen::tokio_stream::Stream<
+    |              ^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case (notice the capitalization): `VisualizeDagStream`
+    |
+    = note: `#[warn(non_camel_case_types)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: associated type `showMainChainStream` should have an upper camel case name
+   --> /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/target/release/build/models-20fe094f418d5d0d/out/casper.v1.rs:881:14
+    |
+881 |         type showMainChainStream: tonic::codegen::tokio_stream::Stream<
+    |              ^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case (notice the capitalization): `ShowMainChainStream`
+
+warning: associated type `getBlocksStream` should have an upper camel case name
+   --> /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/target/release/build/models-20fe094f418d5d0d/out/casper.v1.rs:895:14
+    |
+895 |         type getBlocksStream: tonic::codegen::tokio_stream::Stream<
+    |              ^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `GetBlocksStream`
+
+warning: associated type `getBlocksByHeightsStream` should have an upper camel case name
+   --> /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/target/release/build/models-20fe094f418d5d0d/out/casper.v1.rs:977:14
+    |
+977 |         type getBlocksByHeightsStream: tonic::codegen::tokio_stream::Stream<
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `GetBlocksByHeightsStream`
+
+warning: comparison is useless due to type limits
+  --> /home/dylon/Workspace/f1r3fly.io/f1r3node/models/src/rust/path_map_encoder.rs:44:31
+   |
+44 |             b if b >= 0xC1 && b <= 0xFF => Ok(Tag::Symbol(b - 0xC0)),
+   |                               ^^^^^^^^^
+   |
+   = note: `#[warn(unused_comparisons)]` on by default
+
+warning: unused import: `Read`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1:24
+  |
+1 | use std::io::{BufRead, Read, Write};
+  |                        ^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `mem` and `ptr`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:2:11
+  |
+2 | use std::{mem, process, ptr};
+  |           ^^^           ^^^
+
+warning: unused import: `std::any::Any`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:3:5
+  |
+3 | use std::any::Any;
+  |     ^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::hash_map::Entry`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:5:5
+  |
+5 | use std::collections::hash_map::Entry;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::mem::MaybeUninit`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:8:5
+  |
+8 | use std::mem::MaybeUninit;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `CoroutineState` and `Coroutine`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:9:16
+  |
+9 | use std::ops::{Coroutine, CoroutineState};
+  |                ^^^^^^^^^  ^^^^^^^^^^^^^^
+
+warning: unused import: `std::pin::Pin`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:10:5
+   |
+10 | use std::pin::Pin;
+   |     ^^^^^^^^^^^^^
+
+warning: unused imports: `addr_of`, `null_mut`, `null`, and `slice_from_raw_parts_mut`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:11:16
+   |
+11 | use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut};
+   |                ^^^^^^^  ^^^^  ^^^^^^^^                        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::task::Poll`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:12:5
+   |
+12 | use std::task::Poll;
+   |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `std::time::Instant`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:13:5
+   |
+13 | use std::time::Instant;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AlgebraicStatus` and `Lattice`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:15:21
+   |
+15 | use pathmap::ring::{AlgebraicStatus, Lattice};
+   |                     ^^^^^^^^^^^^^^^  ^^^^^^^
+
+warning: unused imports: `ExtractFailure`, `UnificationFailure`, `parse`, and `traverseh`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:16:46
+   |
+16 | ... Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply, destruct};
+   |                       ^^^^^^^^^^^^^^             ^^^^^                  ^^^^^^^^^                  ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `mork_frontend::json_parser::Transcriber`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:23:5
+   |
+23 | use mork_frontend::json_parser::Transcriber;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unnecessary parentheses around assigned value
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:220:20
+    |
+220 |         self.buf = (self.write_permit.get_sym_or_insert(s) );
+    |                    ^                                      ^^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+220 -         self.buf = (self.write_permit.get_sym_or_insert(s) );
+220 +         self.buf = self.write_permit.get_sym_or_insert(s) ;
+    |
+
+warning: unexpected `cfg` condition value: `nightly`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:549:15
+    |
+549 |     #[cfg(all(feature = "nightly"))]
+    |               ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `default`, `grounding`, `interning`, `neo4j`, `no_search`, and `wasm`
+    = help: consider adding `nightly` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition value: `nightly`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:569:15
+    |
+569 |     #[cfg(all(feature = "nightly"))]
+    |               ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `default`, `grounding`, `interning`, `neo4j`, `no_search`, and `wasm`
+    = help: consider adding `nightly` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: type parameter `out_dir_path` should have an upper camel case name
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:950:27
+    |
+950 |     pub fn backup_symbols<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(), std::io::Error>  {
+    |                           ^^^^^^^^^^^^ help: convert the identifier to upper camel case: `OutDirPath`
+    |
+    = note: `#[warn(non_camel_case_types)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: unnecessary parentheses around pattern
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1262:21
+     |
+1262 |                 Err((ref bindings)) => {
+     |                     ^            ^
+     |
+help: remove these parentheses
+     |
+1262 -                 Err((ref bindings)) => {
+1262 +                 Err(ref bindings ) => {
+     |
+
+warning: unnecessary parentheses around pattern
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1367:21
+     |
+1367 |                 Err((ref bindings)) => {
+     |                     ^            ^
+     |
+help: remove these parentheses
+     |
+1367 -                 Err((ref bindings)) => {
+1367 +                 Err(ref bindings ) => {
+     |
+
+warning: unused import: `byte_item`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:5:17
+  |
+5 | use mork_expr::{byte_item, destruct, item_byte, serialize, Expr, Tag};
+  |                 ^^^^^^^^^
+
+warning: unused imports: `BufRead`, `Read`, and `Write`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:1:15
+  |
+1 | use std::io::{BufRead, Read, Write};
+  |               ^^^^^^^  ^^^^  ^^^^^
+
+warning: unused imports: `mem`, `process`, and `ptr`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:2:11
+  |
+2 | use std::{mem, process, ptr};
+  |           ^^^  ^^^^^^^  ^^^
+
+warning: unused import: `std::any::Any`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:3:5
+  |
+3 | use std::any::Any;
+  |     ^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::BTreeMap`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:4:5
+  |
+4 | use std::collections::BTreeMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::fs::File`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:5:5
+  |
+5 | use std::fs::File;
+  |     ^^^^^^^^^^^^^
+
+warning: unused import: `std::hint::unreachable_unchecked`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:6:5
+  |
+6 | use std::hint::unreachable_unchecked;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::mem::MaybeUninit`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:7:5
+  |
+7 | use std::mem::MaybeUninit;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `CoroutineState` and `Coroutine`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:8:16
+  |
+8 | use std::ops::{Coroutine, CoroutineState};
+  |                ^^^^^^^^^  ^^^^^^^^^^^^^^
+
+warning: unused import: `std::pin::Pin`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:9:5
+  |
+9 | use std::pin::Pin;
+  |     ^^^^^^^^^^^^^
+
+warning: unused imports: `addr_of`, `null_mut`, `null`, and `slice_from_raw_parts_mut`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:10:16
+   |
+10 | use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut};
+   |                ^^^^^^^  ^^^^  ^^^^^^^^                        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::sync::LazyLock`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:11:5
+   |
+11 | use std::sync::LazyLock;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::task::Poll`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:12:5
+   |
+12 | use std::task::Poll;
+   |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `std::time::Instant`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:13:5
+   |
+13 | use std::time::Instant;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `ExtractFailure`, `UnificationFailure`, `apply`, `parse`, `traverseh`, and `unify`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:16:46
+   |
+16 | ...pr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
+   |                    ^^^^^^^^^^^^^^             ^^^^^                  ^^^^^^^^^           ^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^
+
+warning: unused imports: `Context`, `ParserError`, and `Parser`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:17:40
+   |
+17 | use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
+   |                                        ^^^^^^  ^^^^^^^^^^^  ^^^^^^^
+
+warning: unused imports: `SharedMappingHandle`, `SharedMapping`, and `WritePermit`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:18:22
+   |
+18 | use mork_interning::{WritePermit, SharedMapping, SharedMappingHandle};
+   |                      ^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `BitMask` and `ByteMask`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:19:22
+   |
+19 | use pathmap::utils::{BitMask, ByteMask};
+   |                      ^^^^^^^  ^^^^^^^^
+
+warning: unused import: `mork_frontend::json_parser::Transcriber`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:21:5
+   |
+21 | use mork_frontend::json_parser::Transcriber;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused macro definition: `wasm_ctx`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:198:14
+    |
+198 | macro_rules! wasm_ctx { () => { r#"
+    |              ^^^^^^^^
+    |
+    = note: `#[warn(unused_macros)]` (part of `#[warn(unused)]`) on by default
+
+warning: use of deprecated method `pathmap::zipper::ZipperWriting::set_value`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:533:16
+    |
+533 |             wz.set_value(());
+    |                ^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: unused import: `futures::StreamExt`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:14:5
+   |
+14 | use futures::StreamExt;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `futures::StreamExt`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:14:5
+   |
+14 | use futures::StreamExt;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ZipperMoving`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:4:115
+  |
+4 | use pathmap::zipper::{PolyZipper, PrefixZipper, ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, Dependent...
+  |                                                                                                                   ^^^^^^^^^^^^
+
+warning: unused import: `Lattice`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:15:38
+   |
+15 | use pathmap::ring::{AlgebraicStatus, Lattice};
+   |                                      ^^^^^^^
+
+warning: unused import: `BufRead`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1:15
+  |
+1 | use std::io::{BufRead, Read, Write};
+  |               ^^^^^^^
+
+warning: unused import: `ZipperIteration`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:4:98
+  |
+4 | use pathmap::zipper::{PolyZipper, PrefixZipper, ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, Dependent...
+  |                                                                                                  ^^^^^^^^^^^^^^^
+
+warning: unused import: `ZipperAbsolutePath`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:4:78
+  |
+4 | use pathmap::zipper::{PolyZipper, PrefixZipper, ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, Dependent...
+  |                                                                              ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Zipper`
+ --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:4:70
+  |
+4 | use pathmap::zipper::{PolyZipper, PrefixZipper, ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, Dependent...
+  |                                                                      ^^^^^^
+
+warning: unnecessary `unsafe` block
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:108:5
+    |
+104 |     unsafe {
+    |     ------ because it's nested under this `unsafe` block
+...
+108 |     unsafe { transitions += 1 };
+    |     ^^^^^^ unnecessary `unsafe` block
+    |
+    = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:498:13
+    |
+498 |         let mut buf = [0u8; 2048];
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `e`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:529:21
+    |
+529 |                 Err(e) => { continue }
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_e`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `pattern`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:630:44
+    |
+630 |     pub fn load_json_(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
+    |                                            ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pattern`
+
+warning: unused variable: `e`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:868:29
+    |
+868 |                         Err(e) => { continue }
+    |                             ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `intro`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:900:20
+    |
+900 |             }, |i, intro| { Expr::VARNAMES[i as usize] });
+    |                    ^^^^^ help: if this is intentional, prefix it with an underscore: `_intro`
+
+warning: unused variable: `intro`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:943:20
+    |
+943 |             }, |i, intro| { Expr::VARNAMES[i as usize] });
+    |                    ^^^^^ help: if this is intentional, prefix it with an underscore: `_intro`
+
+warning: unused variable: `loc`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:915:92
+    |
+915 |         Self::query_multi(&self.btm, Expr{ ptr: pat.leak().as_mut_ptr() }, |refs_bindings, loc| {
+    |                                                                                            ^^^ help: if this is intentional, prefix it with an underscore: `_loc`
+
+warning: unused variable: `refs`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:919:20
+    |
+919 |                 Ok(refs) => {
+    |                    ^^^^ help: if this is intentional, prefix it with an underscore: `_refs`
+
+warning: unused variable: `constant_template_prefix`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:909:13
+    |
+909 |         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_constant_template_prefix`
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:993:129
+    |
+993 | ...>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    |                                                         ----^^^^^^
+    |                                                         |
+    |                                                         help: remove this `mut`
+
+warning: unused variable: `i`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1001:92
+     |
+1001 |         let mut prz = ProductZipper::new(btm.read_zipper(), (0..(pat_args.len() - 2)).map(|i| {
+     |                                                                                            ^ help: if this is intentional, prefix it with an underscore: `_i`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1009:96
+     |
+1009 |     pub fn query_multi_i<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut mmaps: &mut HashMap<&'static str, Aren...
+     |                                                                                                ----^^^^^
+     |                                                                                                |
+     |                                                                                                help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1009:203
+     |
+1009 | ...<memmap2::Mmap>>, btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+     |                                                         ----^^^^^^
+     |                                                         |
+     |                                                         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1023:17
+     |
+1023 |             let mut src = ASource::new(e.subsexpr());
+     |                 ----^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1113:13
+     |
+1113 |         let mut references: Vec<u32> = vec![];
+     |             ----^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1199:13
+     |
+1199 |         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
+     |             ----^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1200:13
+     |
+1200 | ...   let mut template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() })....
+     |           ----^^^^^^^^^^^^^^^^^
+     |           |
+     |           help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1204:13
+     |
+1204 |         let mut zh = self.btm.zipper_head();
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `refs`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1242:20
+     |
+1242 |                 Ok(refs) => {
+     |                    ^^^^ help: if this is intentional, prefix it with an underscore: `_refs`
+
+warning: unused variable: `res`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1281:29
+     |
+1281 |                         let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+     |                             ^^^ help: if this is intentional, prefix it with an underscore: `_res`
+
+warning: unused variable: `x`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1200:106
+     |
+1200 | ...safe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() }).collect();
+     |                                      ^ help: if this is intentional, prefix it with an underscore: `_x`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1304:13
+     |
+1304 |         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
+     |             ----^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1305:13
+     |
+1305 | ...   let mut template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() })....
+     |           ----^^^^^^^^^^^^^^^^^
+     |           |
+     |           help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1309:13
+     |
+1309 |         let mut zh = self.btm.zipper_head();
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `refs`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1347:20
+     |
+1347 |                 Ok(refs) => {
+     |                    ^^^^ help: if this is intentional, prefix it with an underscore: `_refs`
+
+warning: unused variable: `res`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1386:29
+     |
+1386 |                         let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+     |                             ^^^ help: if this is intentional, prefix it with an underscore: `_res`
+
+warning: unused variable: `x`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1305:106
+     |
+1305 | ...safe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() }).collect();
+     |                                      ^ help: if this is intentional, prefix it with an underscore: `_x`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1411:13
+     |
+1411 |         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
+     |             ----^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1413:13
+     |
+1413 |         let mut template_prefixes: Vec<_> = sinks.iter().map(|sink| sink.request().next().unwrap() ).collect();
+     |             ----^^^^^^^^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1417:13
+     |
+1417 |         let mut zh = self.btm.zipper_head();
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `refs`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1455:20
+     |
+1455 |                 Ok(refs) => {
+     |                    ^^^^ help: if this is intentional, prefix it with an underscore: `_refs`
+
+warning: unused variable: `res`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1493:29
+     |
+1493 |                         let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+     |                             ^^^ help: if this is intentional, prefix it with an underscore: `_res`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1522:13
+     |
+1522 |         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
+     |             ----^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1524:13
+     |
+1524 |         let mut template_prefixes: Vec<_> = sinks.iter().map(|sink| sink.request().next().unwrap() ).collect();
+     |             ----^^^^^^^^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1528:13
+     |
+1528 |         let mut zh = self.btm.zipper_head();
+     |             ----^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `refs`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1566:20
+     |
+1566 |                 Ok(refs) => {
+     |                    ^^^^ help: if this is intentional, prefix it with an underscore: `_refs`
+
+warning: unused variable: `res`
+    --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:1604:29
+     |
+1604 |                         let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+     |                             ^^^ help: if this is intentional, prefix it with an underscore: `_res`
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:179:79
+    |
+179 |     fn source<'trie, 'path, It: Iterator<Item=Resource<'trie, 'path>>>(&self, mut it: It) -> AFactor<'trie, ()> where 'path : 'trie {
+    |                                                                               ----^^
+    |                                                                               |
+    |                                                                               help: remove this `mut`
+
+warning: unused variable: `x`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:37:59
+   |
+37 |         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| self.e.span()).as_ref().unwrap() }[3..];
+   |                                                           ^ help: if this is intentional, prefix it with an underscore: `_x`
+
+warning: variable does not need to be mutable
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:42:13
+   |
+42 |         let mut wz = it.next().unwrap();
+   |             ----^^
+   |             |
+   |             help: remove this `mut`
+
+warning: unused variable: `it`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:49:99
+   |
+49 |     fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w  {
+   |                                                                                                   ^^ help: if this is intentional, prefix it with an underscore: `_it`
+
+warning: unused variable: `x`
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:61:59
+   |
+61 | ...   let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_r...
+   |                                                         ^ help: if this is intentional, prefix it with an underscore: `_x`
+
+warning: variable does not need to be mutable
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:66:13
+   |
+66 |         let mut wz = it.next().unwrap();
+   |             ----^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:73:13
+   |
+73 |         let mut wz = it.next().unwrap();
+   |             ----^^
+   |             |
+   |             help: remove this `mut`
+
+warning: unused variable: `x`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:102:59
+    |
+102 | ...   let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_r...
+    |                                                         ^ help: if this is intentional, prefix it with an underscore: `_x`
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:107:13
+    |
+107 |         let mut wz = it.next().unwrap();
+    |             ----^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:140:13
+    |
+140 |         let mut wz = it.next().unwrap();
+    |             ----^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `x`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:273:59
+    |
+273 | ...   let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_r...
+    |                                                         ^ help: if this is intentional, prefix it with an underscore: `_x`
+
+warning: unnecessary `unsafe` block
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:280:19
+    |
+280 |         let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
+    |                   ^^^^^^ unnecessary `unsafe` block
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:278:13
+    |
+278 |         let mut wz = it.next().unwrap();
+    |             ----^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `ctx`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:280:13
+    |
+280 |         let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
+    |             ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:286:13
+    |
+286 |         let mut wz = it.next().unwrap();
+    |             ----^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `refs_bindings`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:299:152
+    |
+299 | ...tr().cast_mut() })], |refs_bindings, loc| {
+    |                          ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_refs_bindings`
+
+warning: unused variable: `loc`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:299:167
+    |
+299 | ...cast_mut() })], |refs_bindings, loc| {
+    |                                    ^^^ help: if this is intentional, prefix it with an underscore: `_loc`
+
+warning: unused variable: `clen`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:302:17
+    |
+302 |             let clen = prz.path().len();
+    |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_clen`
+
+warning: unused variable: `os`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:328:25
+    |
+328 |                     let os = ie.substitute_one_de_bruijn(k, Expr{ ptr: cntv.as_mut_ptr() }, &mut oz);
+    |                         ^^ help: if this is intentional, prefix it with an underscore: `_os`
+
+warning: unused variable: `i`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:343:16
+    |
+343 |     fn add_i32(i: &[u8], o: &mut [u8]) -> bool {
+    |                ^ help: if this is intentional, prefix it with an underscore: `_i`
+
+warning: unused variable: `o`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:343:26
+    |
+343 |     fn add_i32(i: &[u8], o: &mut [u8]) -> bool {
+    |                          ^ help: if this is intentional, prefix it with an underscore: `_o`
+
+warning: unused variable: `x`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:355:59
+    |
+355 | ...   let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_r...
+    |                                                         ^ help: if this is intentional, prefix it with an underscore: `_x`
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:359:95
+    |
+359 |     fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k ...
+    |                                                                                               ----^^
+    |                                                                                               |
+    |                                                                                               help: remove this `mut`
+
+warning: unused variable: `it`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:359:95
+    |
+359 | ...acked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+    |                                   ^^^^^^ help: if this is intentional, prefix it with an underscore: `_it`
+
+warning: unused variable: `path`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:359:107
+    |
+359 | ..., ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+    |                                   ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: variable does not need to be mutable
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:368:99
+    |
+368 |     fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k :...
+    |                                                                                                   ----^^
+    |                                                                                                   |
+    |                                                                                                   help: remove this `mut`
+
+warning: unused variable: `it`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:368:99
+    |
+368 | ...acked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
+    |                                   ^^^^^^ help: if this is intentional, prefix it with an underscore: `_it`
+
+warning: type `BTMSource` is more private than the item `ASource::PosSource::0`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:146:30
+    |
+146 | pub enum ASource { PosSource(BTMSource), ACTSource(ACTSource), CmpSource(CmpSource) }
+    |                              ^^^^^^^^^ field `ASource::PosSource::0` is reachable at visibility `pub(crate)`
+    |
+note: but type `BTMSource` is only usable at visibility `pub(self)`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:27:1
+    |
+ 27 | struct BTMSource {
+    | ^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: type `ACTSource` is more private than the item `ASource::ACTSource::0`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:146:52
+    |
+146 | pub enum ASource { PosSource(BTMSource), ACTSource(ACTSource), CmpSource(CmpSource) }
+    |                                                    ^^^^^^^^^ field `ASource::ACTSource::0` is reachable at visibility `pub(crate)`
+    |
+note: but type `ACTSource` is only usable at visibility `pub(self)`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:50:1
+    |
+ 50 | struct ACTSource {
+    | ^^^^^^^^^^^^^^^^
+
+warning: type `CmpSource` is more private than the item `ASource::CmpSource::0`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:146:74
+    |
+146 | pub enum ASource { PosSource(BTMSource), ACTSource(ACTSource), CmpSource(CmpSource) }
+    |                                                                          ^^^^^^^^^ field `ASource::CmpSource::0` is reachable at visibility `pub(crate)`
+    |
+note: but type `CmpSource` is only usable at visibility `pub(self)`
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:80:1
+    |
+ 80 | struct CmpSource {
+    | ^^^^^^^^^^^^^^^^
+
+warning: method `destruct` is never used
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:314:8
+    |
+304 | impl <'a, 'c> ASpaceTranscriber<'a, 'c> {
+    | --------------------------------------- method in this implementation
+...
+314 |     fn destruct(self) -> (usize, &'c mut Vec<u8>, ParDataParser<'a>) {
+    |        ^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `e` is never read
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:28:5
+   |
+27 | struct BTMSource {
+   |        --------- field in this struct
+28 |     e: Expr
+   |     ^
+
+warning: field `e` is never read
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:51:5
+   |
+50 | struct ACTSource {
+   |        --------- field in this struct
+51 |     e: Expr,
+   |     ^
+
+warning: field `e` is never read
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sources.rs:81:5
+   |
+80 | struct CmpSource {
+   |        --------- field in this struct
+81 |     e: Expr,
+   |     ^
+
+warning: function `add_i32` is never used
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:343:8
+    |
+343 |     fn add_i32(i: &[u8], o: &mut [u8]) -> bool {
+    |        ^^^^^^^
+
+warning: static variable `transitions` should have an upper case name
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:26:16
+   |
+26 | pub static mut transitions: usize = 0;
+   |                ^^^^^^^^^^^ help: convert the identifier to upper case: `TRANSITIONS`
+   |
+   = note: `#[warn(non_upper_case_globals)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: static variable `unifications` should have an upper case name
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:27:16
+   |
+27 | pub static mut unifications: usize = 0;
+   |                ^^^^^^^^^^^^ help: convert the identifier to upper case: `UNIFICATIONS`
+
+warning: static variable `writes` should have an upper case name
+  --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:28:16
+   |
+28 | pub static mut writes: usize = 0;
+   |                ^^^^^^ help: convert the identifier to upper case: `WRITES`
+
+warning: static variable `nv` should have an upper case name
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:144:32
+    |
+144 |                         static nv: u8 = item_byte(Tag::NewVar);
+    |                                ^^
+    |
+help: convert the identifier to upper case
+    |
+144 -                         static nv: u8 = item_byte(Tag::NewVar);
+144 +                         static NV: u8 = item_byte(Tag::NewVar);
+    |
+
+warning: static variable `nv` should have an upper case name
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/space.rs:164:32
+    |
+164 |                         static nv: u8 = item_byte(Tag::NewVar);
+    |                                ^^
+    |
+help: convert the identifier to upper case
+    |
+164 -                         static nv: u8 = item_byte(Tag::NewVar);
+164 +                         static NV: u8 = item_byte(Tag::NewVar);
+    |
+
+warning: static variable `v` should have an upper case name
+   --> /home/dylon/Workspace/f1r3fly.io/MORK/kernel/src/sinks.rs:294:16
+    |
+294 |         static v: &'static [u8] = &[item_byte(Tag::NewVar)];
+    |                ^
+    |
+help: convert the identifier to upper case (notice the capitalization)
+    |
+294 -         static v: &'static [u8] = &[item_byte(Tag::NewVar)];
+294 +         static V: &'static [u8] = &[item_byte(Tag::NewVar)];
+    |
+
+warning: `models` (lib) generated 5 warnings
+warning: `mork` (lib) generated 127 warnings (run `cargo fix --lib -p mork` to apply 101 suggestions)
+warning: unused import: `Standard`
+  --> /home/dylon/Workspace/f1r3fly.io/liblevenshtein-rust/src/transducer/universal/subsumption.rs:62:37
+   |
+62 |     MergeAndSplit, PositionVariant, Standard, Transposition, UniversalPosition,
+   |                                     ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: use of deprecated struct `dictionary::dawg_optimized::OptimizedDawg`: Use DynamicDawg instead - 11× faster construction with full feature support
+  --> /home/dylon/Workspace/f1r3fly.io/liblevenshtein-rust/src/dictionary/factory.rs:25:28
+   |
+25 | use super::dawg_optimized::OptimizedDawg;
+   |                            ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated struct `dictionary::dawg_optimized::OptimizedDawg`: Use DynamicDawg instead - 11× faster construction with full feature support
+  --> /home/dylon/Workspace/f1r3fly.io/liblevenshtein-rust/src/dictionary/factory.rs:74:19
+   |
+74 |     OptimizedDawg(OptimizedDawg),
+   |                   ^^^^^^^^^^^^^
+
+warning: use of deprecated struct `dictionary::dawg_optimized::OptimizedDawg`: Use DynamicDawg instead - 11× faster construction with full feature support
+  --> /home/dylon/Workspace/f1r3fly.io/liblevenshtein-rust/src/lib.rs:73:48
+   |
+73 |     pub use crate::dictionary::dawg_optimized::OptimizedDawg;
+   |                                                ^^^^^^^^^^^^^
+
+warning: unused variable: `input_length`
+   --> /home/dylon/Workspace/f1r3fly.io/liblevenshtein-rust/src/transducer/universal/state.rs:289:9
+    |
+289 |         input_length: usize,
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_input_length`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `liblevenshtein` (lib) generated 5 warnings (run `cargo fix --lib -p liblevenshtein` to apply 2 suggestions)
+   Compiling mettatron v0.1.2 (/home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler)
+warning: unused import: `metta_to_mork_bytes`
+  --> src/backend/eval/mod.rs:24:5
+   |
+24 |     metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext,
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::mem`
+   --> src/backend/models/metta_value.rs:180:13
+    |
+180 |         use std::mem;
+    |             ^^^^^^^^
+
+warning: unused variable: `errors`
+  --> src/backend/eval/errors.rs:60:10
+   |
+60 |     let (errors, non_errors): (Vec<_>, Vec<_>) = results
+   |          ^^^^^^ help: if this is intentional, prefix it with an underscore: `_errors`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `results`
+   --> src/rholang_integration.rs:323:18
+    |
+323 |             let (results, new_env) = eval(expr, env);
+    |                  ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_results`
+
+warning: associated function `extract_pattern_prefix` is never used
+   --> src/backend/environment.rs:736:19
+    |
+ 60 | impl Environment {
+    | ---------------- associated function in this implementation
+...
+736 |     pub(crate) fn extract_pattern_prefix(pattern: &MettaValue) -> (Vec<MettaValue>, bool) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `mettatron` (lib) generated 5 warnings (run `cargo fix --lib -p mettatron` to apply 4 suggestions)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 1m 28s
+     Running benches/pattern_match.rs (target/release/deps/pattern_match-1eee4f1e12f48c30)
+Benchmarking simple_variable
+Benchmarking simple_variable: Warming up for 3.0000 s
+Benchmarking simple_variable: Collecting 100 samples in estimated 5.0002 s (47M iterations)
+Benchmarking simple_variable: Analyzing
+simple_variable         time:   [97.334 ns 98.196 ns 99.071 ns]
+                        change: [+3.3844% +4.4522% +5.6082%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking multiple_variables_3
+Benchmarking multiple_variables_3: Warming up for 3.0000 s
+Benchmarking multiple_variables_3: Collecting 100 samples in estimated 5.0004 s (23M iterations)
+Benchmarking multiple_variables_3: Analyzing
+multiple_variables_3    time:   [227.63 ns 231.26 ns 234.62 ns]
+                        change: [+6.7399% +8.3466% +10.059%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+
+Benchmarking variable_count_scaling/1
+Benchmarking variable_count_scaling/1: Warming up for 3.0000 s
+Benchmarking variable_count_scaling/1: Collecting 100 samples in estimated 10.000 s (103M iterations)
+Benchmarking variable_count_scaling/1: Analyzing
+variable_count_scaling/1
+                        time:   [102.96 ns 103.31 ns 103.68 ns]
+                        change: [+3.8081% +4.8470% +5.8473%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking variable_count_scaling/5
+Benchmarking variable_count_scaling/5: Warming up for 3.0000 s
+Benchmarking variable_count_scaling/5: Collecting 100 samples in estimated 10.001 s (35M iterations)
+Benchmarking variable_count_scaling/5: Analyzing
+variable_count_scaling/5
+                        time:   [285.22 ns 286.61 ns 288.18 ns]
+                        change: [-1.0472% -0.1075% +0.8148%] (p = 0.84 > 0.05)
+                        No change in performance detected.
+Found 10 outliers among 100 measurements (10.00%)
+  6 (6.00%) high mild
+  4 (4.00%) high severe
+Benchmarking variable_count_scaling/10
+Benchmarking variable_count_scaling/10: Warming up for 3.0000 s
+Benchmarking variable_count_scaling/10: Collecting 100 samples in estimated 10.003 s (17M iterations)
+Benchmarking variable_count_scaling/10: Analyzing
+variable_count_scaling/10
+                        time:   [585.36 ns 588.49 ns 591.95 ns]
+                        change: [-0.9137% -0.4092% +0.1153%] (p = 0.13 > 0.05)
+                        No change in performance detected.
+Found 7 outliers among 100 measurements (7.00%)
+  7 (7.00%) high mild
+Benchmarking variable_count_scaling/25
+Benchmarking variable_count_scaling/25: Warming up for 3.0000 s
+Benchmarking variable_count_scaling/25: Collecting 100 samples in estimated 10.006 s (6.5M iterations)
+Benchmarking variable_count_scaling/25: Analyzing
+variable_count_scaling/25
+                        time:   [1.6208 µs 1.6364 µs 1.6545 µs]
+                        change: [+0.7132% +1.7942% +2.8220%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 9 outliers among 100 measurements (9.00%)
+  7 (7.00%) high mild
+  2 (2.00%) high severe
+Benchmarking variable_count_scaling/50
+Benchmarking variable_count_scaling/50: Warming up for 3.0000 s
+Benchmarking variable_count_scaling/50: Collecting 100 samples in estimated 10.023 s (2.1M iterations)
+Benchmarking variable_count_scaling/50: Analyzing
+variable_count_scaling/50
+                        time:   [4.7651 µs 4.7882 µs 4.8137 µs]
+                        change: [-0.8043% -0.2733% +0.2069%] (p = 0.32 > 0.05)
+                        No change in performance detected.
+Found 8 outliers among 100 measurements (8.00%)
+  7 (7.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking nested_2_levels
+Benchmarking nested_2_levels: Warming up for 3.0000 s
+Benchmarking nested_2_levels: Collecting 100 samples in estimated 5.0004 s (25M iterations)
+Benchmarking nested_2_levels: Analyzing
+nested_2_levels         time:   [204.44 ns 206.24 ns 208.36 ns]
+                        change: [+3.5955% +4.6304% +5.7080%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 7 outliers among 100 measurements (7.00%)
+  7 (7.00%) high mild
+
+Benchmarking nesting_depth/1
+Benchmarking nesting_depth/1: Warming up for 3.0000 s
+Benchmarking nesting_depth/1: Collecting 100 samples in estimated 10.000 s (109M iterations)
+Benchmarking nesting_depth/1: Analyzing
+nesting_depth/1         time:   [91.183 ns 91.520 ns 91.940 ns]
+                        change: [-1.8571% -1.0731% -0.3465%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 7 outliers among 100 measurements (7.00%)
+  3 (3.00%) high mild
+  4 (4.00%) high severe
+Benchmarking nesting_depth/3
+Benchmarking nesting_depth/3: Warming up for 3.0000 s
+Benchmarking nesting_depth/3: Collecting 100 samples in estimated 10.000 s (51M iterations)
+Benchmarking nesting_depth/3: Analyzing
+nesting_depth/3         time:   [198.61 ns 201.25 ns 204.11 ns]
+                        change: [+1.8140% +2.6748% +3.5606%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 4 outliers among 100 measurements (4.00%)
+  4 (4.00%) high mild
+Benchmarking nesting_depth/5
+Benchmarking nesting_depth/5: Warming up for 3.0000 s
+Benchmarking nesting_depth/5: Collecting 100 samples in estimated 10.001 s (32M iterations)
+Benchmarking nesting_depth/5: Analyzing
+nesting_depth/5         time:   [308.92 ns 310.47 ns 312.18 ns]
+                        change: [+0.5394% +1.0769% +1.6277%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 11 outliers among 100 measurements (11.00%)
+  9 (9.00%) high mild
+  2 (2.00%) high severe
+Benchmarking nesting_depth/10
+Benchmarking nesting_depth/10: Warming up for 3.0000 s
+Benchmarking nesting_depth/10: Collecting 100 samples in estimated 10.003 s (16M iterations)
+Benchmarking nesting_depth/10: Analyzing
+nesting_depth/10        time:   [635.36 ns 639.02 ns 642.81 ns]
+                        change: [-2.2410% -1.6849% -1.1874%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 8 outliers among 100 measurements (8.00%)
+  1 (1.00%) low mild
+  7 (7.00%) high mild
+
+Benchmarking existing_binding_simple
+Benchmarking existing_binding_simple: Warming up for 3.0000 s
+Benchmarking existing_binding_simple: Collecting 100 samples in estimated 5.0000 s (45M iterations)
+Benchmarking existing_binding_simple: Analyzing
+existing_binding_simple time:   [108.40 ns 108.80 ns 109.27 ns]
+                        change: [-4.0932% -3.3669% -2.6760%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 9 outliers among 100 measurements (9.00%)
+  4 (4.00%) high mild
+  5 (5.00%) high severe
+
+Benchmarking existing_binding_complex
+Benchmarking existing_binding_complex: Warming up for 3.0000 s
+Benchmarking existing_binding_complex: Collecting 100 samples in estimated 5.0010 s (23M iterations)
+Benchmarking existing_binding_complex: Analyzing
+existing_binding_complex
+                        time:   [216.28 ns 218.12 ns 219.90 ns]
+                        change: [-1.3751% -0.4610% +0.3913%] (p = 0.32 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking ground_types/bool
+Benchmarking ground_types/bool: Warming up for 3.0000 s
+Benchmarking ground_types/bool: Collecting 100 samples in estimated 5.0000 s (65M iterations)
+Benchmarking ground_types/bool: Analyzing
+ground_types/bool       time:   [82.324 ns 83.579 ns 84.878 ns]
+                        change: [+12.491% +14.190% +15.856%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking ground_types/long
+Benchmarking ground_types/long: Warming up for 3.0000 s
+Benchmarking ground_types/long: Collecting 100 samples in estimated 5.0003 s (65M iterations)
+Benchmarking ground_types/long: Analyzing
+ground_types/long       time:   [79.792 ns 80.308 ns 80.901 ns]
+                        change: [+13.723% +14.484% +15.329%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 5 outliers among 100 measurements (5.00%)
+  4 (4.00%) high mild
+  1 (1.00%) high severe
+Benchmarking ground_types/float
+Benchmarking ground_types/float: Warming up for 3.0000 s
+Benchmarking ground_types/float: Collecting 100 samples in estimated 5.0002 s (64M iterations)
+Benchmarking ground_types/float: Analyzing
+ground_types/float      time:   [77.542 ns 77.754 ns 78.001 ns]
+                        change: [+12.135% +13.039% +13.950%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 10 outliers among 100 measurements (10.00%)
+  9 (9.00%) high mild
+  1 (1.00%) high severe
+Benchmarking ground_types/string
+Benchmarking ground_types/string: Warming up for 3.0000 s
+Benchmarking ground_types/string: Collecting 100 samples in estimated 5.0003 s (63M iterations)
+Benchmarking ground_types/string: Analyzing
+ground_types/string     time:   [82.538 ns 83.965 ns 85.579 ns]
+                        change: [+12.608% +13.726% +14.940%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 15 outliers among 100 measurements (15.00%)
+  1 (1.00%) low mild
+  8 (8.00%) high mild
+  6 (6.00%) high severe
+Benchmarking ground_types/atom
+Benchmarking ground_types/atom: Warming up for 3.0000 s
+Benchmarking ground_types/atom: Collecting 100 samples in estimated 5.0004 s (56M iterations)
+Benchmarking ground_types/atom: Analyzing
+ground_types/atom       time:   [82.799 ns 83.454 ns 84.184 ns]
+                        change: [+17.443% +18.526% +19.620%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+
+Benchmarking wildcards
+Benchmarking wildcards: Warming up for 3.0000 s
+Benchmarking wildcards: Collecting 100 samples in estimated 5.0002 s (45M iterations)
+Benchmarking wildcards: Analyzing
+wildcards               time:   [108.81 ns 109.59 ns 110.37 ns]
+                        change: [+1.8643% +2.5038% +3.2118%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
+
+Benchmarking mixed_complexity
+Benchmarking mixed_complexity: Warming up for 3.0000 s
+Benchmarking mixed_complexity: Collecting 100 samples in estimated 5.0017 s (14M iterations)
+Benchmarking mixed_complexity: Analyzing
+mixed_complexity        time:   [384.22 ns 387.78 ns 391.85 ns]
+                        change: [+8.0262% +9.5143% +10.832%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
+
+Benchmarking failures/type_mismatch
+Benchmarking failures/type_mismatch: Warming up for 3.0000 s
+Benchmarking failures/type_mismatch: Collecting 100 samples in estimated 5.0003 s (75M iterations)
+Benchmarking failures/type_mismatch: Analyzing
+failures/type_mismatch  time:   [67.637 ns 67.980 ns 68.337 ns]
+                        change: [+0.0476% +0.8715% +1.6655%] (p = 0.03 < 0.05)
+                        Change within noise threshold.
+Found 10 outliers among 100 measurements (10.00%)
+  3 (3.00%) low mild
+  5 (5.00%) high mild
+  2 (2.00%) high severe
+Benchmarking failures/length_mismatch
+Benchmarking failures/length_mismatch: Warming up for 3.0000 s
+Benchmarking failures/length_mismatch: Collecting 100 samples in estimated 5.0003 s (73M iterations)
+Benchmarking failures/length_mismatch: Analyzing
+failures/length_mismatch
+                        time:   [63.895 ns 64.472 ns 65.202 ns]
+                        change: [+5.0025% +6.8160% +9.0173%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 14 outliers among 100 measurements (14.00%)
+  5 (5.00%) high mild
+  9 (9.00%) high severe
+Benchmarking failures/binding_conflict
+Benchmarking failures/binding_conflict: Warming up for 3.0000 s
+Benchmarking failures/binding_conflict: Collecting 100 samples in estimated 5.0002 s (47M iterations)
+Benchmarking failures/binding_conflict: Analyzing
+failures/binding_conflict
+                        time:   [102.80 ns 103.42 ns 104.16 ns]
+                        change: [+0.4996% +1.5074% +2.4181%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
+

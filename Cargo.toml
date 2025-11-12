@@ -26,6 +26,18 @@ harness = false
 name = "pattern_match"
 harness = false
 
+[[bench]]
+name = "type_lookup"
+harness = false
+
+[[bench]]
+name = "prefix_navigation_benchmarks"
+harness = false
+
+[[bench]]
+name = "bulk_operations"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }

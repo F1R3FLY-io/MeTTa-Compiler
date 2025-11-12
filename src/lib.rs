@@ -87,7 +87,7 @@ pub use pathmap_par_integration::{
     pathmap_par_to_metta_state,
 };
 
-pub use config::{configure_eval, get_eval_config, EvalConfig, ParallelConfig};
+pub use config::{configure_eval, get_eval_config, EvalConfig};
 
 // Export commonly used REPL components
 pub use repl::{MettaHelper, PatternHistory, QueryHighlighter, ReplStateMachine, SmartIndenter};

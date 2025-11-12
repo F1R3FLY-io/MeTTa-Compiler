@@ -1,5 +1,4 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::compile::compile;
 use mettatron::backend::environment::Environment;
 use mettatron::backend::{MettaValue, Rule};
 
@@ -214,4 +213,5 @@ criterion_group!(
     bench_fact_speedup_comparison,
     bench_rule_speedup_comparison
 );
+
 criterion_main!(benches);

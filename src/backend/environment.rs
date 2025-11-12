@@ -2,7 +2,6 @@ use lru::LruCache;
 use mork::space::Space;
 use mork_interning::SharedMappingHandle;
 use pathmap::{PathMap, zipper::*};
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -667,25 +666,10 @@ impl Environment {
     ///
     /// Expected speedup: 20-100× for batches of 100+ rules
     /// Complexity: O(k) where k = batch size (vs O(n × lock) for individual adds)
-    ///
-    /// # Adaptive Parallelization
-    ///
-    /// Automatically uses parallel implementation for batches >= 100 rules.
-    /// For smaller batches, sequential implementation is faster due to lower overhead.
     pub fn add_rules_bulk(&mut self, rules: Vec<Rule>) -> Result<(), String> {
         if rules.is_empty() {
             return Ok(());
         }
-
-        // Adaptive threshold: Use parallel for large batches
-        use crate::config::ParallelConfig;
-        let config = ParallelConfig::default();
-
-        if rules.len() >= config.parallel_rules_threshold {
-            return self.add_rules_bulk_parallel(rules);
-        }
-
-        // Fall through to sequential implementation for small batches
 
         // Build temporary PathMap outside the lock
         let mut rule_trie = PathMap::new();
@@ -803,186 +787,6 @@ impl Environment {
         }
 
         // Single PathMap union (minimal critical section)
-        {
-            let mut btm = self.btm.lock().unwrap();
-            *btm = btm.join(&rule_trie);
-        }
-
-        Ok(())
-    }
-
-    /// Parallel bulk add rules using Rayon for MORK serialization
-    ///
-    /// This method uses data parallelism to serialize rules to MORK bytes in parallel,
-    /// then performs sequential PathMap construction and metadata updates.
-    ///
-    /// # Performance Characteristics
-    ///
-    /// - **Small batches (<100)**: Sequential is faster due to overhead
-    /// - **Medium batches (100-1000)**: 5-25× speedup over sequential
-    /// - **Large batches (>1000)**: 25-36× speedup over sequential
-    ///
-    /// # Threading Model
-    ///
-    /// Uses Rayon's global thread pool for parallel MORK serialization.
-    /// Rule index updates and PathMap operations remain sequential.
-    ///
-    /// # Arguments
-    ///
-    /// * `rules` - Vector of Rule objects to add
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` on success
-    /// * `Err(String)` if any rule fails to serialize
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use mettatron::{Environment, Rule, MettaValue};
-    ///
-    /// let mut env = Environment::new();
-    /// let rules: Vec<Rule> = vec![
-    ///     // ... rules ...
-    /// ];
-    /// env.add_rules_bulk_parallel(rules)?;
-    /// ```
-    pub fn add_rules_bulk_parallel(&mut self, rules: Vec<Rule>) -> Result<(), String> {
-        if rules.is_empty() {
-            return Ok(());
-        }
-
-        // PHASE 1: Parallel MORK serialization and metadata preparation
-        use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
-
-        type RuleData = (
-            Vec<u8>,                       // Serialized MORK bytes
-            Option<(String, usize)>,       // Rule index key (head, arity)
-            Rule,                          // The rule itself
-            String,                        // Rule key for multiplicity
-        );
-
-        let serialized_data: Result<Vec<RuleData>, String> = rules
-            .par_iter()
-            .map(|rule| {
-                // Create rule s-expression: (= lhs rhs)
-                let rule_sexpr = MettaValue::SExpr(vec![
-                    MettaValue::Atom("=".to_string()),
-                    rule.lhs.clone(),
-                    rule.rhs.clone(),
-                ]);
-
-                let rule_key = rule_sexpr.to_mork_string();
-
-                // Determine rule index key and wildcard status
-                let index_key = if let Some(head) = rule.lhs.get_head_symbol() {
-                    let arity = rule.lhs.get_arity();
-                    Some((head, arity))
-                } else {
-                    None
-                };
-
-                // Serialize to MORK bytes
-                let is_ground = !Self::contains_variables(&rule_sexpr);
-
-                let mork_bytes = if is_ground {
-                    // Ground rule: use direct byte conversion
-                    let temp_space = Space {
-                        sm: self.shared_mapping.clone(),
-                        btm: PathMap::new(),
-                        mmaps: HashMap::new(),
-                    };
-                    let mut ctx = ConversionContext::new();
-
-                    if let Ok(bytes) = metta_to_mork_bytes(&rule_sexpr, &temp_space, &mut ctx) {
-                        bytes
-                    } else {
-                        // Fallback to string serialization
-                        rule_sexpr.to_mork_string().into_bytes()
-                    }
-                } else {
-                    // Variable-containing rule: use string serialization
-                    rule_sexpr.to_mork_string().into_bytes()
-                };
-
-                Ok((mork_bytes, index_key, rule.clone(), rule_key))
-            })
-            .collect();
-
-        let serialized_data = serialized_data?;
-
-        // PHASE 2: Sequential PathMap construction and metadata updates
-        let mut rule_trie = PathMap::new();
-        let mut rule_index_updates: HashMap<(String, usize), Vec<Rule>> = HashMap::new();
-        let mut wildcard_updates: Vec<Rule> = Vec::new();
-        let mut multiplicity_updates: HashMap<String, usize> = HashMap::new();
-
-        for (mork_bytes, index_key, rule, rule_key) in serialized_data {
-            // Update multiplicity
-            *multiplicity_updates.entry(rule_key).or_insert(0) += 1;
-
-            // Update rule index
-            if let Some((head, arity)) = index_key {
-                // Track symbol for fuzzy matching
-                self.fuzzy_matcher.insert(&head);
-
-                // Add rule to index updates
-                rule_index_updates
-                    .entry((head, arity))
-                    .or_insert_with(Vec::new)
-                    .push(rule);
-            } else {
-                // Wildcard rule (no clear head symbol)
-                wildcard_updates.push(rule);
-            }
-
-            // Insert into PathMap
-            if mork_bytes.len() > 0 && mork_bytes[0] != b'(' {
-                // Direct MORK bytes
-                rule_trie.insert(&mork_bytes, ());
-            } else {
-                // String-based serialization - need to parse
-                let mut temp_space = Space {
-                    sm: self.shared_mapping.clone(),
-                    btm: PathMap::new(),
-                    mmaps: HashMap::new(),
-                };
-
-                if let Err(e) = temp_space.load_all_sexpr_impl(&mork_bytes, true) {
-                    return Err(format!("Failed to parse rule: {:?}", e));
-                }
-
-                rule_trie = rule_trie.join(&temp_space.btm);
-            }
-        }
-
-        // PHASE 3: Apply updates with locks
-        // Update rule indexes
-        {
-            let mut index = self.rule_index.lock().unwrap();
-            for ((head, arity), mut new_rules) in rule_index_updates {
-                index
-                    .entry((head, arity))
-                    .or_insert_with(Vec::new)
-                    .append(&mut new_rules);
-            }
-        }
-
-        // Update wildcard rules
-        {
-            let mut wildcards = self.wildcard_rules.lock().unwrap();
-            wildcards.extend(wildcard_updates);
-        }
-
-        // Update multiplicities
-        {
-            let mut counts = self.multiplicities.lock().unwrap();
-            for (key, count) in multiplicity_updates {
-                *counts.entry(key).or_insert(0) += count;
-            }
-        }
-
-        // Single PathMap union
         {
             let mut btm = self.btm.lock().unwrap();
             *btm = btm.join(&rule_trie);
@@ -1323,25 +1127,10 @@ impl Environment {
     ///
     /// Expected speedup: 10-50× for batches of 100+ facts
     /// Complexity: O(m) where m = size of fact batch (vs O(n × lock) for individual inserts)
-    ///
-    /// # Adaptive Parallelization
-    ///
-    /// Automatically uses parallel implementation for batches >= 100 facts.
-    /// For smaller batches, sequential implementation is faster due to lower overhead.
     pub fn add_facts_bulk(&mut self, facts: &[MettaValue]) -> Result<(), String> {
         if facts.is_empty() {
             return Ok(());
         }
-
-        // Adaptive threshold: Use parallel for large batches
-        use crate::config::ParallelConfig;
-        let config = ParallelConfig::default();
-
-        if facts.len() >= config.parallel_facts_threshold {
-            return self.add_facts_bulk_parallel(facts);
-        }
-
-        // Fall through to sequential implementation for small batches
 
         // Build temporary PathMap outside the lock
         // This allows serialization and parsing without holding the mutex
@@ -1398,131 +1187,6 @@ impl Environment {
 
         // Invalidate type index if any facts were type assertions
         // Conservative: Assume any bulk insert might contain types
-        *self.type_index_dirty.lock().unwrap() = true;
-
-        Ok(())
-    }
-
-    /// Parallel bulk add facts using Rayon for MORK serialization
-    ///
-    /// This method uses data parallelism to serialize facts to MORK bytes in parallel,
-    /// then performs sequential PathMap construction and a single lock acquisition.
-    ///
-    /// # Performance Characteristics
-    ///
-    /// - **Small batches (<100)**: Sequential is faster due to overhead
-    /// - **Medium batches (100-1000)**: 5-25× speedup over sequential
-    /// - **Large batches (>1000)**: 25-36× speedup over sequential
-    ///
-    /// # Threading Model
-    ///
-    /// Uses Rayon's global thread pool for parallel MORK serialization.
-    /// PathMap operations remain sequential (single-threaded).
-    ///
-    /// # Arguments
-    ///
-    /// * `facts` - Slice of MettaValue facts to insert
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` on success
-    /// * `Err(String)` if any fact fails to serialize
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use mettatron::{Environment, MettaValue};
-    ///
-    /// let mut env = Environment::new();
-    /// let facts: Vec<MettaValue> = vec![
-    ///     // ... facts ...
-    /// ];
-    /// env.add_facts_bulk_parallel(&facts)?;
-    /// ```
-    pub fn add_facts_bulk_parallel(&mut self, facts: &[MettaValue]) -> Result<(), String> {
-        if facts.is_empty() {
-            return Ok(());
-        }
-
-        // PHASE 1: Parallel MORK serialization using Rayon
-        // Each thread gets a chunk of facts and converts them to MORK bytes
-        use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
-
-        let serialized: Result<Vec<Vec<u8>>, String> = facts
-            .par_iter()
-            .map(|fact| {
-                let is_ground = !Self::contains_variables(fact);
-
-                if is_ground {
-                    // Ground fact: use direct byte conversion (skip parsing)
-                    let temp_space = Space {
-                        sm: self.shared_mapping.clone(),
-                        btm: PathMap::new(),
-                        mmaps: HashMap::new(),
-                    };
-                    let mut ctx = ConversionContext::new();
-
-                    if let Ok(mork_bytes) = metta_to_mork_bytes(fact, &temp_space, &mut ctx) {
-                        return Ok(mork_bytes);
-                    }
-                }
-
-                // Fallback: use string path for variable-containing values
-                let mork_str = fact.to_mork_string();
-                let mork_bytes = mork_str.as_bytes();
-
-                // Create temporary Space for this fact
-                let mut temp_space = Space {
-                    sm: self.shared_mapping.clone(),
-                    btm: PathMap::new(),
-                    mmaps: HashMap::new(),
-                };
-
-                // Parse fact into temporary space
-                temp_space
-                    .load_all_sexpr_impl(mork_bytes, true)
-                    .map_err(|e| format!("Failed to parse fact: {:?}", e))?;
-
-                // Extract bytes from PathMap (this is the serialized representation)
-                // Note: For now, we fall back to string serialization
-                Ok(mork_str.into_bytes())
-            })
-            .collect();
-
-        let serialized = serialized?;
-
-        // PHASE 2: Sequential PathMap construction
-        // PathMap is not thread-safe, so we build it sequentially
-        // This is still faster than parallel because serialization dominated
-        let mut fact_trie = PathMap::new();
-
-        for mork_bytes in serialized {
-            // Try direct insertion first (for ground facts)
-            if mork_bytes.len() > 0 && mork_bytes[0] != b'(' {
-                fact_trie.insert(&mork_bytes, ());
-            } else {
-                // Parse string-based representation
-                let mut temp_space = Space {
-                    sm: self.shared_mapping.clone(),
-                    btm: PathMap::new(),
-                    mmaps: HashMap::new(),
-                };
-
-                if let Err(e) = temp_space.load_all_sexpr_impl(&mork_bytes, true) {
-                    return Err(format!("Failed to parse fact: {:?}", e));
-                }
-
-                fact_trie = fact_trie.join(&temp_space.btm);
-            }
-        }
-
-        // PHASE 3: Single lock acquisition for bulk union
-        {
-            let mut btm = self.btm.lock().unwrap();
-            *btm = btm.join(&fact_trie);
-        }
-
-        // Invalidate type index
         *self.type_index_dirty.lock().unwrap() = true;
 
         Ok(())

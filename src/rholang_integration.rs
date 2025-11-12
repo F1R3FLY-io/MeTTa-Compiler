@@ -320,7 +320,7 @@ pub async fn run_state_async(
         // If this is a rule definition or ground fact, execute it sequentially
         // (both modify the environment by adding to MORK Space)
         if is_rule_def || is_ground_fact {
-            let (results, new_env) = eval(expr, env);
+            let (_results, new_env) = eval(expr, env);
             env = new_env;
             // Neither rule definitions nor ground facts produce output
             // They only modify the environment by adding to MORK Space

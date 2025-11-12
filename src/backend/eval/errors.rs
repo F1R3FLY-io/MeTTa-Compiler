@@ -57,7 +57,7 @@ pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalOutput
     let (results, env_after_eval) = eval(expr.clone(), env);
 
     // Handle nondeterministic evaluation: filter results into errors and non-errors
-    let (errors, non_errors): (Vec<_>, Vec<_>) = results
+    let (_errors, non_errors): (Vec<_>, Vec<_>) = results
         .into_iter()
         .partition(|r| matches!(r, MettaValue::Error(_, _)));
 

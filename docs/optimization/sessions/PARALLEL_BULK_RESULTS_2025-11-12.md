@@ -190,6 +190,54 @@ The parallel bulk operations implementation is **functionally correct** but **no
 
 ---
 
-**Status**: Implementation Complete - Awaiting Threshold Tuning
-**Performance**: Regression at current sizes (expected, per Amdahl's Law)
+## Threshold Adjustment (Post-Analysis)
+
+**Date**: 2025-11-12 (Same Session)
+**Action**: Adjusted adaptive thresholds based on empirical data analysis
+
+### Changes Made
+
+Updated `src/config.rs` ParallelConfig thresholds:
+
+| Configuration      | Old Threshold | New Threshold | Rationale                          |
+|-------------------|---------------|---------------|------------------------------------|
+| default()          | 100           | **1000**      | Eliminate regressions <1000 items  |
+| cpu_optimized()    | 75            | **750**       | Conservative, matches default -25% |
+| memory_optimized() | 200           | **1500**      | Higher to minimize overhead        |
+| throughput_optimized() | 50        | **500**       | Aggressive but still conservative  |
+
+### Rationale
+
+1. **Empirical Evidence**: Benchmarks showed 2-12% regressions at all tested sizes (10-1000)
+2. **Cost Analysis**:
+   - Parallel overhead: ~50-100µs (thread pool coordination)
+   - MORK serialization: ~1µs per item
+   - Break-even point: ~100-1000 items for overhead vs work
+3. **Amdahl's Law**: Serialization is only ~10% of total time; max speedup ≈1.11× regardless
+4. **Conservative Approach**: Set threshold at upper bound (1000) to eliminate all regressions
+
+### Expected Impact
+
+- ✅ **Eliminates all regressions** at batch sizes 10-1000
+- ✅ **Preserves parallel path** for truly large batches (≥1000)
+- ✅ **No API changes** - purely configuration tuning
+- ✅ **All tests continue to pass**
+
+### Documentation Updates
+
+- Updated `src/config.rs` struct documentation
+- Updated `CHANGELOG.md` with actual performance data
+- Updated all ParallelConfig tests
+- Added threshold tuning rationale to this analysis
+
+### Testing Status
+
+- Configuration changes: ✅ Complete
+- Unit tests: ✅ Pass (updated assertions)
+- Benchmark validation: 🔄 Pending (next step)
+
+---
+
+**Status**: Threshold Tuning Complete - Ready for Validation Benchmarks
+**Performance**: Expected to eliminate regressions at <1000 items
 **Correctness**: ✅ All tests pass, no breaking changes

@@ -11,25 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added - Parallel Bulk Operations (Optimization 2)
 
-#### Parallel Bulk Operations with Rayon (Expected: 5-36× speedup) ⚡
+#### Parallel Bulk Operations with Rayon ⚡
 - Implemented data parallelism for bulk fact and rule insertion
 - Added `rayon = "1.8"` dependency for parallel iteration
 - Created `ParallelConfig` with adaptive thresholds:
-  - default(): threshold=100 items
-  - cpu_optimized(): threshold=75
-  - memory_optimized(): threshold=200
-  - throughput_optimized(): threshold=50
+  - default(): threshold=1000 items (tuned from initial 100)
+  - cpu_optimized(): threshold=750 (tuned from 75)
+  - memory_optimized(): threshold=1500 (tuned from 200)
+  - throughput_optimized(): threshold=500 (tuned from 50)
 - Three-phase parallel approach:
   1. Parallel MORK serialization (Rayon par_iter)
   2. Sequential PathMap construction (not thread-safe)
   3. Single lock acquisition for bulk union
-- Adaptive thresholds: Automatically switches to parallel for batches >= 100
-- Small batches (<100) use faster sequential implementation
+- Adaptive thresholds: Automatically switches to parallel for large batches
+- Small batches (<1000) use faster sequential implementation
 
-**Expected Performance** (pending empirical measurements):
-- Small batches (<100): Sequential faster (overhead dominates)
-- Medium batches (100-1000): 5-25× speedup expected
-- Large batches (>1000): 25-36× speedup expected
+**Actual Performance** (based on empirical measurements):
+- **Small batches (<1000)**: Sequential faster (parallel overhead dominates)
+- **Large batches (≥1000)**: Parallel path available; speedups require batches of 10K-100K+ items
+  where serialization becomes a significant portion of total time
+- **Root cause**: MORK serialization (parallelized) is only ~10% of total time;
+  PathMap operations (sequential) dominate at ~90%
+- **Amdahl's Law validation**: Max theoretical speedup ≈1.11× with current bottlenecks
+
+**Threshold Tuning** (Commit TBD):
+- Adjusted thresholds based on benchmark analysis showing parallel overhead (50-100µs)
+  comparable to MORK serialization time (~1µs/item)
+- Conservative thresholds eliminate regressions at small/medium batch sizes
+- Implementation is functionally correct; requires larger batches to show benefits
 
 **Implementation Details**:
 - `add_facts_bulk_parallel()` in `src/backend/environment.rs`
@@ -38,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compatible with existing Tokio runtime (separate thread pools)
 - All 407 tests pass - no breaking changes
 
-See: Commit 36147da
+See: Commits 36147da (implementation), 1e725ab (changelog), dda01e5 (analysis)
 
 ### Documentation
 - Reorganized documentation into intuitive directory structure

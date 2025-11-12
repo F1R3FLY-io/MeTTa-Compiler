@@ -169,9 +169,9 @@ impl EvalConfig {
 ///
 /// # Performance Characteristics
 ///
-/// - **Small batches (<100)**: Sequential is faster (overhead dominates)
-/// - **Medium batches (100-1000)**: Parallel provides 5-25× speedup
-/// - **Large batches (>1000)**: Parallel provides 25-36× speedup
+/// - **Small batches (<1000)**: Sequential is faster (parallel overhead dominates)
+/// - **Large batches (≥1000)**: Parallel provides potential speedups when serialization becomes
+///   a significant portion of total time (requires batches of 10K-100K+ items)
 ///
 /// # Example
 ///
@@ -187,24 +187,26 @@ pub struct ParallelConfig {
     ///
     /// Batches smaller than this use sequential insertion.
     ///
-    /// **Default**: 100
+    /// **Default**: 1000
     ///
     /// **Tuning Guidelines**:
-    /// - Lower (50-75): Use parallel sooner, more overhead for small batches
-    /// - Higher (150-200): Less overhead, miss speedup opportunities
+    /// - Lower (500-750): Use parallel sooner, may incur overhead for medium batches
+    /// - Higher (1500-2000): Minimize overhead, only parallelize truly large batches
     ///
-    /// Based on empirical measurements showing sequential is faster below 100 items.
+    /// Based on empirical measurements showing parallel overhead dominates below 1000 items
+    /// due to Rayon thread pool coordination costs (~50-100µs) being comparable to
+    /// MORK serialization time (~1µs per item).
     pub parallel_facts_threshold: usize,
 
     /// Threshold for switching to parallel rule insertion
     ///
     /// Batches smaller than this use sequential insertion.
     ///
-    /// **Default**: 100
+    /// **Default**: 1000
     ///
     /// **Tuning Guidelines**:
     /// - Same as `parallel_facts_threshold`
-    /// - Rules are slightly more expensive than facts, so threshold could be lower
+    /// - Rules have additional metadata overhead, but parallel coordination cost still dominates
     pub parallel_rules_threshold: usize,
 
     /// Number of threads in Rayon's global thread pool
@@ -220,8 +222,8 @@ pub struct ParallelConfig {
 impl Default for ParallelConfig {
     fn default() -> Self {
         ParallelConfig {
-            parallel_facts_threshold: 100,
-            parallel_rules_threshold: 100,
+            parallel_facts_threshold: 1000,
+            parallel_rules_threshold: 1000,
             rayon_num_threads: None, // Use Rayon's default (num_cpus)
         }
     }
@@ -237,8 +239,8 @@ impl ParallelConfig {
             .unwrap_or(4);
 
         ParallelConfig {
-            parallel_facts_threshold: 75,
-            parallel_rules_threshold: 75,
+            parallel_facts_threshold: 750,
+            parallel_rules_threshold: 750,
             rayon_num_threads: Some(num_cpus),
         }
     }
@@ -252,8 +254,8 @@ impl ParallelConfig {
             .unwrap_or(4);
 
         ParallelConfig {
-            parallel_facts_threshold: 200,
-            parallel_rules_threshold: 200,
+            parallel_facts_threshold: 1500,
+            parallel_rules_threshold: 1500,
             rayon_num_threads: Some(num_cpus / 2),
         }
     }
@@ -263,8 +265,8 @@ impl ParallelConfig {
     /// Assumes large batches and aggressively uses parallelization.
     pub fn throughput_optimized() -> Self {
         ParallelConfig {
-            parallel_facts_threshold: 50,
-            parallel_rules_threshold: 50,
+            parallel_facts_threshold: 500,
+            parallel_rules_threshold: 500,
             rayon_num_threads: None, // Use all cores
         }
     }
@@ -389,8 +391,8 @@ mod tests {
     #[test]
     fn test_parallel_config_default() {
         let config = ParallelConfig::default();
-        assert_eq!(config.parallel_facts_threshold, 100);
-        assert_eq!(config.parallel_rules_threshold, 100);
+        assert_eq!(config.parallel_facts_threshold, 1000);
+        assert_eq!(config.parallel_rules_threshold, 1000);
         assert_eq!(config.rayon_num_threads, None);
     }
 
@@ -401,8 +403,8 @@ mod tests {
             .map(|n| n.get())
             .unwrap_or(4);
 
-        assert_eq!(config.parallel_facts_threshold, 75);
-        assert_eq!(config.parallel_rules_threshold, 75);
+        assert_eq!(config.parallel_facts_threshold, 750);
+        assert_eq!(config.parallel_rules_threshold, 750);
         assert_eq!(config.rayon_num_threads, Some(num_cpus));
     }
 
@@ -413,16 +415,16 @@ mod tests {
             .map(|n| n.get())
             .unwrap_or(4);
 
-        assert_eq!(config.parallel_facts_threshold, 200);
-        assert_eq!(config.parallel_rules_threshold, 200);
+        assert_eq!(config.parallel_facts_threshold, 1500);
+        assert_eq!(config.parallel_rules_threshold, 1500);
         assert_eq!(config.rayon_num_threads, Some(num_cpus / 2));
     }
 
     #[test]
     fn test_parallel_config_throughput_optimized() {
         let config = ParallelConfig::throughput_optimized();
-        assert_eq!(config.parallel_facts_threshold, 50);
-        assert_eq!(config.parallel_rules_threshold, 50);
+        assert_eq!(config.parallel_facts_threshold, 500);
+        assert_eq!(config.parallel_rules_threshold, 500);
         assert_eq!(config.rayon_num_threads, None);
     }
 }

@@ -4,7 +4,7 @@ use mork_interning::SharedMappingHandle;
 use pathmap::{PathMap, zipper::*};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::fuzzy_match::FuzzyMatcher;

@@ -817,7 +817,6 @@ impl Environment {
             let mut btm = self.btm.write().unwrap();
             *btm = btm.join(&rule_trie);
         }
-
         self.modified.store(true, Ordering::Release);  // CoW: mark as modified
         Ok(())
     }

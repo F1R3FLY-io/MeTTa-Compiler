@@ -54,9 +54,10 @@ tokio = { version = "1", features = [
     "macros",
 ] }
 divan = "0.1.21"
+paste = "1.0.15"
 
 [[bench]]
-name = "example"
+name = "metta"
 harness = false
 
 [profile.release]

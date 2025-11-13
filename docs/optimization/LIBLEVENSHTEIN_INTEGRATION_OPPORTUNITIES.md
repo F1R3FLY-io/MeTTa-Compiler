@@ -49,11 +49,12 @@ liblevenshtein provides **9 dictionary backends** with different performance/mem
 
 **Location**: `src/dictionary/double_array_trie.rs`
 
-**CRITICAL FEATURE**: ✅ **Serializable/Deserializable** for persistent storage and fast startup
+**CRITICAL FEATURE**: ✅ **Serializable/Deserializable** (ALL liblevenshtein dictionaries support this!)
 - DAT can be serialized to disk and deserialized for immediate use
 - Eliminates construction overhead on subsequent runs
 - Enables pre-built type index caching across sessions
 - Perfect for read-heavy workloads (type lookups, static rule sets)
+- **Note**: All 9 dictionary implementations support serialization/deserialization
 
 **Structure**:
 - **BASE array**: Offset for computing next state (4 bytes per state)

@@ -100,13 +100,46 @@ impl Environment {
         }
     }
 
+    /// CoW: Make this environment own its data (deep copy if sharing)
+    /// Called automatically on first mutation of a cloned environment
+    /// No-op if already owns data (owns_data == true)
+    fn make_owned(&mut self) {
+        // Fast path: already own data
+        if self.owns_data {
+            return;
+        }
+
+        // Deep copy all 7 RwLock-wrapped fields
+        // Clone the data first to avoid borrowing issues
+        let btm_data = self.btm.read().unwrap().clone();
+        let rule_index_data = self.rule_index.read().unwrap().clone();
+        let wildcard_rules_data = self.wildcard_rules.read().unwrap().clone();
+        let multiplicities_data = self.multiplicities.read().unwrap().clone();
+        let pattern_cache_data = self.pattern_cache.read().unwrap().clone();
+        let type_index_data = self.type_index.read().unwrap().clone();
+        let type_index_dirty_data = *self.type_index_dirty.read().unwrap();
+
+        // Now assign the new Arc<RwLock<T>> instances
+        self.btm = Arc::new(RwLock::new(btm_data));
+        self.rule_index = Arc::new(RwLock::new(rule_index_data));
+        self.wildcard_rules = Arc::new(RwLock::new(wildcard_rules_data));
+        self.multiplicities = Arc::new(RwLock::new(multiplicities_data));
+        self.pattern_cache = Arc::new(RwLock::new(pattern_cache_data));
+        self.type_index = Arc::new(RwLock::new(type_index_data));
+        self.type_index_dirty = Arc::new(RwLock::new(type_index_dirty_data));
+
+        // Mark as owning data and modified
+        self.owns_data = true;
+        self.modified.store(true, Ordering::Release);
+    }
+
     /// Create a thread-local Space for operations
     /// Following the Rholang LSP pattern: cheap clone via structural sharing
     ///
     /// This is useful for advanced operations that need direct access to the Space,
     /// such as debugging or custom MORK queries.
     pub fn create_space(&self) -> Space {
-        let btm = self.btm.lock().unwrap().clone();
+        let btm = self.btm.read().unwrap().clone();  // CoW: read lock for concurrent reads
         Space {
             btm,
             sm: self.shared_mapping.clone(),
@@ -117,8 +150,10 @@ impl Environment {
     /// Update PathMap and shared mapping after Space modifications (write operations)
     /// This updates both the PathMap (btm) and the SharedMappingHandle (sm)
     pub(crate) fn update_pathmap(&mut self, space: Space) {
-        *self.btm.lock().unwrap() = space.btm;
+        self.make_owned();  // CoW: ensure we own data before modifying
+        *self.btm.write().unwrap() = space.btm;  // CoW: write lock for exclusive access
         self.shared_mapping = space.sm;
+        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
     }
 
     /// Convert a MORK Expr directly to MettaValue without text serialization
@@ -342,6 +377,8 @@ impl Environment {
     /// Type assertions are stored as (: name type) in MORK Space
     /// Invalidates the type index cache
     pub fn add_type(&mut self, name: String, typ: MettaValue) {
+        self.make_owned();  // CoW: ensure we own data before modifying
+
         // Create type assertion: (: name typ)
         let type_assertion = MettaValue::SExpr(vec![
             MettaValue::Atom(":".to_string()),
@@ -351,7 +388,8 @@ impl Environment {
         self.add_to_space(&type_assertion);
 
         // Invalidate type index cache
-        *self.type_index_dirty.lock().unwrap() = true;
+        *self.type_index_dirty.write().unwrap() = true;
+        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
     }
 
     /// Ensure the type index is built and up-to-date
@@ -360,14 +398,14 @@ impl Environment {
     ///
     /// The type index is lazily initialized and cached until invalidated
     fn ensure_type_index(&self) {
-        let dirty = *self.type_index_dirty.lock().unwrap();
+        let dirty = *self.type_index_dirty.read().unwrap();
         if !dirty {
             return; // Index is up to date
         }
 
         // Build type index using PathMap::restrict()
         // This extracts a subtrie containing only paths that start with ":"
-        let btm = self.btm.lock().unwrap();
+        let btm = self.btm.read().unwrap();
 
         // Create a PathMap containing only the ":" prefix
         // restrict() will return all paths in btm that have matching prefixes in this map
@@ -387,8 +425,8 @@ impl Environment {
         let type_subtrie = btm.restrict(&type_prefix_map);
 
         // Cache the subtrie
-        *self.type_index.lock().unwrap() = Some(type_subtrie);
-        *self.type_index_dirty.lock().unwrap() = false;
+        *self.type_index.write().unwrap() = Some(type_subtrie);
+        *self.type_index_dirty.write().unwrap() = false;
     }
 
     /// Get type for an atom by querying MORK Space
@@ -406,7 +444,7 @@ impl Environment {
         self.ensure_type_index();
 
         // Get the type index subtrie
-        let type_index_opt = self.type_index.lock().unwrap();
+        let type_index_opt = self.type_index.read().unwrap();
         let type_index = match type_index_opt.as_ref() {
             Some(index) => index,
             None => {
@@ -552,13 +590,15 @@ impl Environment {
     /// This is needed after deserializing an Environment from PathMap Par,
     /// since the serialization only preserves the MORK Space, not the index.
     pub fn rebuild_rule_index(&mut self) {
+        self.make_owned();  // CoW: ensure we own data before modifying
+
         // Clear existing indices
         {
-            let mut index = self.rule_index.lock().unwrap();
+            let mut index = self.rule_index.write().unwrap();
             index.clear();
         }
         {
-            let mut wildcards = self.wildcard_rules.lock().unwrap();
+            let mut wildcards = self.wildcard_rules.write().unwrap();
             wildcards.clear();
         }
 
@@ -566,7 +606,7 @@ impl Environment {
         for rule in self.iter_rules() {
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
-                let mut index = self.rule_index.lock().unwrap();
+                let mut index = self.rule_index.write().unwrap();
                 index
                     .entry((head.clone(), arity))
                     .or_insert_with(Vec::new)
@@ -576,10 +616,12 @@ impl Environment {
                 self.fuzzy_matcher.insert(&head);
             } else {
                 // Rules without head symbol (wildcards, variables) go to wildcard list
-                let mut wildcards = self.wildcard_rules.lock().unwrap();
+                let mut wildcards = self.wildcard_rules.write().unwrap();
                 wildcards.push(rule);
             }
         }
+
+        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
     }
 
     /// Match pattern against all atoms in the Space (optimized for match operation)
@@ -630,6 +672,8 @@ impl Environment {
     /// Multiply-defined rules are tracked via multiplicities
     /// Rules are also indexed by (head_symbol, arity) for fast lookup
     pub fn add_rule(&mut self, rule: Rule) {
+        self.make_owned();  // CoW: ensure we own data before modifying
+
         // Create a rule s-expression: (= lhs rhs)
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
@@ -643,7 +687,7 @@ impl Environment {
 
         // Increment the count for this rule
         {
-            let mut counts = self.multiplicities.lock().unwrap();
+            let mut counts = self.multiplicities.write().unwrap();
             let new_count = *counts.entry(rule_key.clone()).or_insert(0) + 1;
             counts.insert(rule_key.clone(), new_count);
         } // Drop the RefMut borrow before add_to_space
@@ -653,7 +697,7 @@ impl Environment {
         // to avoid unnecessary clones. The rule is already in MORK Space.
         if let Some(head) = rule.lhs.get_head_symbol() {
             let arity = rule.lhs.get_arity();
-            let mut index = self.rule_index.lock().unwrap();
+            let mut index = self.rule_index.write().unwrap();
             index
                 .entry((head.clone(), arity))
                 .or_insert_with(Vec::new)
@@ -663,12 +707,13 @@ impl Environment {
             self.fuzzy_matcher.insert(&head);
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
-            let mut wildcards = self.wildcard_rules.lock().unwrap();
+            let mut wildcards = self.wildcard_rules.write().unwrap();
             wildcards.push(rule);  // Move instead of clone
         }
 
         // Add to MORK Space (only once - PathMap will deduplicate)
         self.add_to_space(&rule_sexpr);
+        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
     }
 
     /// Bulk add rules using PathMap::join() for batch efficiency
@@ -684,6 +729,8 @@ impl Environment {
         if rules.is_empty() {
             return Ok(());
         }
+
+        self.make_owned();  // CoW: ensure we own data before modifying
 
         // Build temporary PathMap outside the lock
         let mut rule_trie = PathMap::new();
@@ -742,7 +789,7 @@ impl Environment {
 
         // Update multiplicities
         {
-            let mut counts = self.multiplicities.lock().unwrap();
+            let mut counts = self.multiplicities.write().unwrap();
             for (key, delta) in multiplicity_updates {
                 *counts.entry(key).or_insert(0) += delta;
             }
@@ -750,7 +797,7 @@ impl Environment {
 
         // Update rule index
         {
-            let mut index = self.rule_index.lock().unwrap();
+            let mut index = self.rule_index.write().unwrap();
             for ((head, arity), mut rules) in rule_index_updates {
                 index
                     .entry((head, arity))
@@ -761,16 +808,17 @@ impl Environment {
 
         // Update wildcard rules
         {
-            let mut wildcards = self.wildcard_rules.lock().unwrap();
+            let mut wildcards = self.wildcard_rules.write().unwrap();
             wildcards.extend(wildcard_updates);
         }
 
         // Single PathMap union (minimal critical section)
         {
-            let mut btm = self.btm.lock().unwrap();
+            let mut btm = self.btm.write().unwrap();
             *btm = btm.join(&rule_trie);
         }
 
+        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
         Ok(())
     }
 
@@ -784,18 +832,20 @@ impl Environment {
         ]);
         let rule_key = rule_sexpr.to_mork_string();
 
-        let counts = self.multiplicities.lock().unwrap();
+        let counts = self.multiplicities.read().unwrap();
         *counts.get(&rule_key).unwrap_or(&1)
     }
 
     /// Get the multiplicities (for serialization)
     pub fn get_multiplicities(&self) -> HashMap<String, usize> {
-        self.multiplicities.lock().unwrap().clone()
+        self.multiplicities.read().unwrap().clone()
     }
 
     /// Set the multiplicities (used for deserialization)
     pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
-        *self.multiplicities.lock().unwrap() = counts;
+        self.make_owned();  // CoW: ensure we own data before modifying
+        *self.multiplicities.write().unwrap() = counts;
+        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
     }
 
     /// Check if an atom fact exists (queries MORK Space)
@@ -939,9 +989,9 @@ impl Environment {
         let is_ground = !Self::contains_variables(value);
 
         if is_ground {
-            // Check cache first for ground patterns
+            // Check cache first for ground patterns (read-only access)
             {
-                let mut cache = self.pattern_cache.lock().unwrap();
+                let mut cache = self.pattern_cache.write().unwrap();
                 if let Some(bytes) = cache.get(value) {
                     return Ok(bytes.clone());
                 }
@@ -954,8 +1004,8 @@ impl Environment {
         let bytes = metta_to_mork_bytes(value, &space, &mut ctx)?;
 
         if is_ground {
-            // Store ground patterns in cache for future use
-            let mut cache = self.pattern_cache.lock().unwrap();
+            // Store ground patterns in cache for future use (write access)
+            let mut cache = self.pattern_cache.write().unwrap();
             cache.put(value.clone(), bytes.clone());
         }
 
@@ -1109,6 +1159,8 @@ impl Environment {
             return Ok(());
         }
 
+        self.make_owned();  // CoW: ensure we own data before modifying
+
         // OPTIMIZATION: Use direct MORK byte conversion
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 
@@ -1143,14 +1195,15 @@ impl Environment {
         // Single lock acquisition → union → unlock
         // This is the only critical section, minimizing lock contention
         {
-            let mut btm = self.btm.lock().unwrap();
+            let mut btm = self.btm.write().unwrap();
             *btm = btm.join(&fact_trie);
         }
 
         // Invalidate type index if any facts were type assertions
         // Conservative: Assume any bulk insert might contain types
-        *self.type_index_dirty.lock().unwrap() = true;
+        *self.type_index_dirty.write().unwrap() = true;
 
+        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
         Ok(())
     }
 
@@ -1161,8 +1214,8 @@ impl Environment {
         // OPTIMIZATION: Preallocate capacity to avoid reallocation
         // Calculate exact size needed for both indexed rules and wildcards
         let (indexed_len, wildcard_len) = {
-            let index = self.rule_index.lock().unwrap();
-            let wildcards = self.wildcard_rules.lock().unwrap();
+            let index = self.rule_index.read().unwrap();
+            let wildcards = self.wildcard_rules.read().unwrap();
             let indexed = index.get(&(head.to_string(), arity)).map_or(0, |r| r.len());
             (indexed, wildcards.len())
         };
@@ -1171,7 +1224,7 @@ impl Environment {
 
         // Get indexed rules with matching head symbol and arity
         {
-            let index = self.rule_index.lock().unwrap();
+            let index = self.rule_index.read().unwrap();
             if let Some(rules) = index.get(&(head.to_string(), arity)) {
                 matching_rules.extend(rules.clone());
             }
@@ -1179,7 +1232,7 @@ impl Environment {
 
         // Also include wildcard rules (must always be checked)
         {
-            let wildcards = self.wildcard_rules.lock().unwrap();
+            let wildcards = self.wildcard_rules.read().unwrap();
             matching_rules.extend(wildcards.clone());
         }
 
@@ -1245,6 +1298,8 @@ impl Environment {
 
         Environment {
             shared_mapping,
+            owns_data: false,  // CoW: union creates a new shared environment
+            modified: Arc::new(AtomicBool::new(false)),  // CoW: fresh modification tracker
             btm,
             rule_index,
             wildcard_rules,
@@ -1253,6 +1308,26 @@ impl Environment {
             fuzzy_matcher,
             type_index,
             type_index_dirty,
+        }
+    }
+}
+
+/// CoW: Manual Clone implementation
+/// Clones share data (owns_data = false) until first modification triggers make_owned()
+impl Clone for Environment {
+    fn clone(&self) -> Self {
+        Environment {
+            shared_mapping: self.shared_mapping.clone(),
+            owns_data: false,  // CoW: clones do not own data initially
+            modified: Arc::new(AtomicBool::new(false)),  // CoW: fresh modification tracker
+            btm: Arc::clone(&self.btm),
+            rule_index: Arc::clone(&self.rule_index),
+            wildcard_rules: Arc::clone(&self.wildcard_rules),
+            multiplicities: Arc::clone(&self.multiplicities),
+            pattern_cache: Arc::clone(&self.pattern_cache),
+            fuzzy_matcher: self.fuzzy_matcher.clone(),
+            type_index: Arc::clone(&self.type_index),
+            type_index_dirty: Arc::clone(&self.type_index_dirty),
         }
     }
 }

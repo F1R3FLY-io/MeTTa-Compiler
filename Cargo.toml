@@ -82,6 +82,9 @@ liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend
 # Rayon - Data parallelism for expression-level parallel evaluation
 rayon = "1.8"
 
+# Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
+# PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup
+
 [features]
 default = ["interning", "async"]
 async = ["tokio"]

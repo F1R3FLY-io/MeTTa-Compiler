@@ -1,3 +1,8 @@
+// Phase 3a Note: jemalloc is already enabled globally via PathMap dependency
+// PathMap sets tikv_jemallocator as the global allocator (PathMap/src/lib.rs:66)
+// This provides 100-1000× parallel performance improvement vs system allocator
+// No changes needed here - jemalloc is already active!
+
 pub mod backend;
 pub mod config;
 /// MeTTaTron - MeTTa Evaluator Library

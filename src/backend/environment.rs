@@ -1847,30 +1847,63 @@ mod thread_safety_tests {
     use std::thread;
     use std::time::Duration;
 
-    // Helper: Create a test rule
+    // Helper: Create a test rule with proper SExpr structure
     fn make_test_rule(pattern: &str, body: &str) -> Rule {
-        Rule {
-            lhs: MettaValue::Atom(pattern.to_string()),
-            rhs: MettaValue::Atom(body.to_string()),
-        }
+        // Parse pattern string into proper MettaValue structure
+        // "(head $x)" → SExpr([Atom("head"), Atom("$x")])
+        let lhs = if pattern.starts_with('(') && pattern.ends_with(')') {
+            // Parse s-expression pattern
+            let inner = &pattern[1..pattern.len()-1];
+            let parts: Vec<&str> = inner.split_whitespace().collect();
+            if parts.is_empty() {
+                MettaValue::Atom(pattern.to_string())
+            } else {
+                MettaValue::SExpr(
+                    parts.into_iter()
+                        .map(|p| MettaValue::Atom(p.to_string()))
+                        .collect()
+                )
+            }
+        } else {
+            // Simple atom pattern
+            MettaValue::Atom(pattern.to_string())
+        };
+
+        // Parse body similarly
+        let rhs = if body.starts_with('(') && body.ends_with(')') {
+            let inner = &body[1..body.len()-1];
+            let parts: Vec<&str> = inner.split_whitespace().collect();
+            if parts.is_empty() {
+                MettaValue::Atom(body.to_string())
+            } else {
+                MettaValue::SExpr(
+                    parts.into_iter()
+                        .map(|p| MettaValue::Atom(p.to_string()))
+                        .collect()
+                )
+            }
+        } else {
+            MettaValue::Atom(body.to_string())
+        };
+
+        Rule { lhs, rhs }
     }
 
     // Helper: Extract head and arity from a pattern
     fn extract_head_arity(pattern: &MettaValue) -> (&str, usize) {
         match pattern {
-            MettaValue::Atom(s) => {
-                if let Some(stripped) = s.strip_prefix('(') {
-                    if let Some(end) = stripped.find(|c: char| c.is_whitespace() || c == ')') {
-                        let head = &stripped[..end];
-                        let arity = stripped.matches('$').count();
-                        (head, arity)
-                    } else {
-                        (stripped.trim_end_matches(')'), 0)
-                    }
+            MettaValue::SExpr(items) if !items.is_empty() => {
+                if let MettaValue::Atom(head) = &items[0] {
+                    // Count variables (starts with $, &, or ')
+                    let arity = items[1..].iter().filter(|item| {
+                        matches!(item, MettaValue::Atom(s) if s.starts_with('$') || s.starts_with('&') || s.starts_with('\''))
+                    }).count();
+                    (head.as_str(), arity)
                 } else {
-                    (s.as_str(), 0)
+                    ("_", 0)
                 }
             }
+            MettaValue::Atom(s) => (s.as_str(), 0),
             _ => ("_", 0),
         }
     }
@@ -1880,7 +1913,6 @@ mod thread_safety_tests {
     // ========================================================================
 
     #[test]
-    #[ignore]  // TODO: Fix detailed rule lookup in concurrent context
     fn test_concurrent_clone_and_mutate_2_threads() {
         let mut base = Environment::new();
 
@@ -1911,10 +1943,7 @@ mod thread_safety_tests {
                     // Verify thread-specific rules exist
                     for i in 0..5 {
                         let pattern = format!("(thread{}_rule{} $x)", thread_id, i);
-                        let rule = Rule {
-                            lhs: MettaValue::Atom(pattern.clone()),
-                            rhs: MettaValue::Atom(format!("(result{} $x)", i)),
-                        };
+                        let rule = make_test_rule(&pattern, &format!("(result{} $x)", i));
                         let (head, arity) = extract_head_arity(&rule.lhs);
                         let matches = clone.get_matching_rules(head, arity);
                         assert!(!matches.is_empty(), "Thread {} rule {} should exist", thread_id, i);
@@ -1940,10 +1969,7 @@ mod thread_safety_tests {
             let other_thread = 1 - thread_id;
             for i in 0..5 {
                 let pattern = format!("(thread{}_rule{} $x)", other_thread, i);
-                let rule = Rule {
-                    lhs: MettaValue::Atom(pattern),
-                    rhs: MettaValue::Atom(format!("(result{} $x)", i)),
-                };
+                let rule = make_test_rule(&pattern, &format!("(result{} $x)", i));
                 let (head, arity) = extract_head_arity(&rule.lhs);
                 let matches = clone.get_matching_rules(head, arity);
                 assert!(matches.is_empty(), "Clone {} should NOT have thread {} rules", thread_id, other_thread);

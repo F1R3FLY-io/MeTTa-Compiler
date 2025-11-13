@@ -10,6 +10,7 @@
 /// `pathmap_par_integration` module, not the JSON functions here.
 use crate::backend::models::{MettaState, MettaValue};
 
+// TODO -> should be a part of MettaValue impl
 /// Convert MettaValue to a JSON-like string representation
 /// Used for debugging and human-readable output
 fn metta_value_to_json_string(value: &MettaValue) -> String {
@@ -40,6 +41,7 @@ fn metta_value_to_json_string(value: &MettaValue) -> String {
     }
 }
 
+// TODO -> should be a part of MettaValue impl of metta_value_to_json_string
 /// Escape JSON special characters
 fn escape_json(s: &str) -> String {
     s.replace('\\', r"\\")
@@ -49,6 +51,7 @@ fn escape_json(s: &str) -> String {
         .replace('\t', r"\t")
 }
 
+// TODO -> should be a part of MettaState
 /// Convert MettaState to JSON representation for debugging
 ///
 /// Returns a JSON string with the format:
@@ -113,6 +116,7 @@ pub fn run_state(
 
     // Evaluate each pending expression from compiled state
     for expr in compiled_state.source {
+        // FIXME: provide cleaner impl of extracting is_eval_expr flag from the expr
         // Check if this is an evaluation expression (starts with !)
         let is_eval_expr = matches!(&expr, MettaValue::SExpr(items) if items.first().map(|v| matches!(v, MettaValue::Atom(s) if s == "!")).unwrap_or(false));
 
@@ -129,6 +133,19 @@ pub fn run_state(
     // Return new accumulated state
     Ok(MettaState::new_accumulated(env, outputs))
 }
+
+// TODO -> how to handle MeTTa's side effects?
+// -> for example when it will need to write
+
+/*
+    TODO -> Key Performance Bottlenecks to Investigate
+
+    1. Unbounded Parallelism Risk - No semaphores limiting concurrent evaluations
+    2. Memory Overhead - Max 2-4MB per thread stack, up to ~2GB with 512 threads
+    3. Context Switching - Frequent spawn_blocking calls for small expressions
+    4. Environment Cloning - Arc clone overhead in parallel evaluation
+
+*/
 
 /// Async version of run_state with parallel evaluation of independent expressions
 ///
@@ -156,11 +173,43 @@ pub async fn run_state_async(
     let mut env = accumulated_state.environment;
     let mut outputs = accumulated_state.output;
 
+    // TODO -> batch should be defined as struct.
     // Batch expressions into parallelizable groups
     let mut current_batch: Vec<(usize, MettaValue, bool)> = Vec::new();
     let exprs: Vec<_> = compiled_state.source.into_iter().enumerate().collect();
 
+    // dbg!(&exprs);
+
+    /*
+    !(+ 1 2)
+
+    exprs =
+
+        SExpr(
+            [
+                Atom(
+                    "!",
+                ),
+                SExpr(
+                    [
+                        Atom(
+                            "+",
+                        ),
+                        Long(
+                            1,
+                        ),
+                        Long(
+                            2,
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        ...
+    */
+
     for (idx, expr) in exprs {
+        // TODO -> can make is_eval_expr and is_rule_def part of MettaValue impls?
         let is_eval_expr = matches!(&expr, MettaValue::SExpr(items)
             if items.first().map(|v| matches!(v, MettaValue::Atom(s) if s == "!")).unwrap_or(false));
 
@@ -203,8 +252,49 @@ pub async fn run_state_async(
     Ok(MettaState::new_accumulated(env, outputs))
 }
 
+// TODO -> need to prevent risk resource exhaustion (unbounded parallelism) -> via semaphores?
 /// Helper function to evaluate a batch of expressions in parallel
 /// Returns results in original order with their indices
+// #[cfg(feature = "async")]
+// async fn evaluate_batch_parallel(
+//     batch: Vec<(usize, MettaValue, bool)>,
+//     env: crate::backend::environment::Environment,
+// ) -> Vec<(usize, Vec<MettaValue>, bool)> {
+//     use crate::backend::eval::eval;
+//     use tokio::task;
+
+//     // Spawn parallel evaluation tasks
+//     let tasks: Vec<_> = batch
+//         .into_iter()
+//         .map(|(idx, expr, should_output)| {
+//             let env = env.clone(); // Arc clone is cheap
+//             task::spawn_blocking(move || {
+//                 // println!("🟡 new thread spawned");
+
+//                 let (results, _new_env) = eval(expr, env);
+//                 (idx, results, should_output)
+//             })
+//         })
+//         .collect();
+
+//     // Collect results
+//     let mut results = Vec::new();
+//     for task_handle in tasks {
+//         match task_handle.await {
+//             Ok(result) => results.push(result),
+//             Err(e) => {
+//                 // Task panicked - this shouldn't happen with our eval
+//                 eprintln!("Parallel evaluation task panicked: {:?}", e);
+//             }
+//         }
+//     }
+
+//     // Sort results by original index to preserve order
+//     results.sort_by_key(|(idx, _, _)| *idx);
+
+//     results
+// }
+
 #[cfg(feature = "async")]
 async fn evaluate_batch_parallel(
     batch: Vec<(usize, MettaValue, bool)>,
@@ -217,7 +307,7 @@ async fn evaluate_batch_parallel(
     let tasks: Vec<_> = batch
         .into_iter()
         .map(|(idx, expr, should_output)| {
-            let env = env.clone(); // Arc clone is cheap
+            let env = env.clone();
             task::spawn_blocking(move || {
                 let (results, _new_env) = eval(expr, env);
                 (idx, results, should_output)
@@ -225,24 +315,16 @@ async fn evaluate_batch_parallel(
         })
         .collect();
 
-    // Collect results
     let mut results = Vec::new();
-    for task_handle in tasks {
-        match task_handle.await {
-            Ok(result) => results.push(result),
-            Err(e) => {
-                // Task panicked - this shouldn't happen with our eval
-                eprintln!("Parallel evaluation task panicked: {:?}", e);
-            }
-        }
+    for task in tasks {
+        results.push(task.await.unwrap());
     }
 
-    // Sort results by original index to preserve order
     results.sort_by_key(|(idx, _, _)| *idx);
-
     results
 }
 
+// TODO -> would be nice to have more tests
 #[cfg(test)]
 mod tests {
     use super::*;

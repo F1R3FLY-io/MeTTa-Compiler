@@ -11,6 +11,55 @@ In-depth technical design documentation for MeTTaTron's architecture and impleme
 - Lazy evaluation engine
 - Pattern matching implementation
 
+## Parallelism and Concurrency
+
+### Copy-on-Write Environment (2025-11-13)
+
+**Status**: Design Complete - Ready for Implementation
+
+**[COW_ENVIRONMENT_DESIGN.md](COW_ENVIRONMENT_DESIGN.md)** - Complete Technical Specification (~2500 lines)
+- Executive summary with success metrics
+- Detailed problem analysis (Arc-sharing race conditions)
+- Current architecture deep dive
+- Proposed CoW solution with full design
+- Performance analysis (< 1% overhead for read-only)
+- Implementation phases (24-32 hours estimated)
+- Comprehensive testing strategy
+- Risk analysis and mitigations
+- Alternatives considered with rationale
+
+**[COW_IMPLEMENTATION_GUIDE.md](COW_IMPLEMENTATION_GUIDE.md)** - Step-by-Step Implementation (~1500 lines)
+- Prerequisites and setup checklist
+- Detailed step-by-step implementation instructions
+- Code snippets for every change
+- Testing procedures (unit, integration, property, stress)
+- Benchmarking instructions with CPU affinity
+- Documentation update tasks
+
+**[COW_IMPLEMENTATION_SUMMARY.md](COW_IMPLEMENTATION_SUMMARY.md)** - Executive Overview (~500 lines)
+- Quick facts and key metrics
+- Document navigation guide
+- Key design decisions summary
+- Performance summary table
+- Success criteria checklist
+- Timeline and FAQ
+
+**Key Features**:
+- **Safety**: Eliminates race conditions via isolation (independent copy on write)
+- **Performance**: < 1% overhead for read-only, 4× concurrent read improvement
+- **Scope**: ~2000-2800 LOC total (including ~600 LOC tests)
+- **Compatibility**: 100% backward compatible (API unchanged)
+
+**[THREADING_IMPROVEMENTS.md](THREADING_IMPROVEMENTS.md)** - Threading Model Improvements
+- Thread pool configuration
+- Async/await integration patterns
+- Blocking operation handling
+
+**[THREADING_AND_PATHMAP_INTEGRATION.md](THREADING_AND_PATHMAP_INTEGRATION.md)** - Threading and PathMap
+- PathMap concurrency patterns
+- Thread-safe operations
+- Performance considerations
+
 ## Type System
 
 **[TYPE_SYSTEM_IMPLEMENTATION.md](TYPE_SYSTEM_IMPLEMENTATION.md)** - Type System Design

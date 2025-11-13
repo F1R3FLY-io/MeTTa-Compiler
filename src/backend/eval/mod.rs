@@ -1360,9 +1360,10 @@ mod tests {
         // S-expression should be added to fact database
         assert!(new_env.has_sexpr_fact(&expected_result));
 
-        // Individual atoms should also be in the fact database
-        assert!(new_env.has_fact("Hello"));
-        assert!(new_env.has_fact("World"));
+        // Individual atoms are NOT stored separately
+        // Only the full s-expression is stored in MORK format
+        assert!(!new_env.has_fact("Hello"));
+        assert!(!new_env.has_fact("World"));
     }
 
     #[test]
@@ -1397,10 +1398,11 @@ mod tests {
         ]);
         assert!(new_env.has_sexpr_fact(&expected_inner));
 
-        // All atoms should be in the atom fact database
-        assert!(new_env.has_fact("Outer"));
-        assert!(new_env.has_fact("Inner"));
-        assert!(new_env.has_fact("Nested"));
+        // Individual atoms are NOT stored separately
+        // Only the full s-expressions are stored in MORK format
+        assert!(!new_env.has_fact("Outer"));
+        assert!(!new_env.has_fact("Inner"));
+        assert!(!new_env.has_fact("Nested"));
     }
 
     #[test]

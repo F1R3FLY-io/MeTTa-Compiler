@@ -1345,3 +1345,494 @@ impl std::fmt::Debug for Environment {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod cow_tests {
+    use super::*;
+    use crate::backend::models::MettaValue;
+    use std::sync::atomic::Ordering;
+    use std::thread;
+    use std::sync::{Arc as StdArc, Barrier};
+
+    /// Helper: Create a simple rule for testing
+    fn make_test_rule(lhs: &str, rhs: &str) -> Rule {
+        Rule {
+            lhs: MettaValue::Atom(lhs.to_string()),
+            rhs: MettaValue::Atom(rhs.to_string()),
+        }
+    }
+
+    /// Helper: Extract head symbol and arity from a MettaValue (for get_matching_rules)
+    fn extract_head_arity(value: &MettaValue) -> (&str, usize) {
+        match value {
+            MettaValue::Atom(s) => (s.as_str(), 0),
+            MettaValue::SExpr(vec) if !vec.is_empty() => {
+                if let MettaValue::Atom(head) = &vec[0] {
+                    (head.as_str(), vec.len() - 1)
+                } else {
+                    ("", 0) // Fallback for non-atom head
+                }
+            }
+            _ => ("", 0), // Fallback for other cases
+        }
+    }
+
+    /// Helper: Create a simple MettaValue fact for testing
+    fn make_test_fact(value: &str) -> MettaValue {
+        MettaValue::Atom(value.to_string())
+    }
+
+    // ============================================================================
+    // UNIT TESTS (~300 LOC)
+    // ============================================================================
+
+    #[test]
+    fn test_new_environment_owns_data() {
+        // Test: New environment should own its data
+        let env = Environment::new();
+        assert!(env.owns_data, "New environment should own its data");
+        assert!(!env.modified.load(Ordering::Acquire), "New environment should not be modified");
+    }
+
+    #[test]
+    fn test_clone_does_not_own_data() {
+        // Test: Cloned environment should not own data initially
+        let env = Environment::new();
+        let clone = env.clone();
+
+        assert!(env.owns_data, "Original environment should still own data");
+        assert!(!clone.owns_data, "Cloned environment should NOT own data initially");
+        assert!(!clone.modified.load(Ordering::Acquire), "Cloned environment should not be modified");
+    }
+
+    #[test]
+    fn test_clone_shares_arc_pointers() {
+        // Test: Clone should share Arc pointers (cheap O(1) clone)
+        let env = Environment::new();
+
+        // Get Arc pointer addresses before clone
+        let btm_ptr_before = StdArc::as_ptr(&env.btm);
+        let rule_index_ptr_before = StdArc::as_ptr(&env.rule_index);
+
+        let clone = env.clone();
+
+        // Get Arc pointer addresses after clone
+        let btm_ptr_after = StdArc::as_ptr(&clone.btm);
+        let rule_index_ptr_after = StdArc::as_ptr(&clone.rule_index);
+
+        // Pointers should be identical (shared)
+        assert_eq!(btm_ptr_before, btm_ptr_after, "Clone should share btm Arc");
+        assert_eq!(rule_index_ptr_before, rule_index_ptr_after, "Clone should share rule_index Arc");
+    }
+
+    #[test]
+    fn test_make_owned_triggers_on_first_write() {
+        // Test: First mutation should trigger make_owned() and deep copy
+        let mut env = Environment::new();
+        let rule = make_test_rule("(test $x)", "(result $x)");
+
+        // Add rule to original (already owns data, no make_owned() needed)
+        env.add_rule(rule.clone());
+        assert!(env.owns_data, "Original should still own data");
+        assert!(env.modified.load(Ordering::Acquire), "Original should be marked modified");
+
+        // Clone and mutate
+        let mut clone = env.clone();
+        assert!(!clone.owns_data, "Clone should not own data initially");
+
+        // Get Arc pointers before mutation
+        let btm_ptr_before = StdArc::as_ptr(&clone.btm);
+
+        // First mutation triggers make_owned()
+        clone.add_rule(make_test_rule("(clone $y)", "(cloned $y)"));
+
+        // After mutation
+        assert!(clone.owns_data, "Clone should own data after mutation");
+        assert!(clone.modified.load(Ordering::Acquire), "Clone should be marked modified");
+
+        // Arc pointers should be different (deep copy occurred)
+        let btm_ptr_after = StdArc::as_ptr(&clone.btm);
+        assert_ne!(btm_ptr_before, btm_ptr_after, "make_owned() should create new Arc");
+    }
+
+    #[test]
+    fn test_isolation_after_clone_mutation() {
+        // Test: Mutations to clone should not affect original
+        let mut env = Environment::new();
+        let rule1 = make_test_rule("(original $x)", "(original-result $x)");
+        env.add_rule(rule1.clone());
+
+        // Clone and add different rule
+        let mut clone = env.clone();
+        let rule2 = make_test_rule("(cloned $y)", "(cloned-result $y)");
+        clone.add_rule(rule2.clone());
+
+        // Original should only have rule1
+        let (head1, arity1) = extract_head_arity(&rule1.lhs);
+        let original_rules = env.get_matching_rules(head1, arity1);
+        assert_eq!(original_rules.len(), 1, "Original should have 1 rule");
+
+        // Clone should have both rules (rule1 was shared, rule2 was added)
+        let clone_rules = clone.get_matching_rules(head1, arity1);
+        assert_eq!(clone_rules.len(), 1, "Clone should have original rule");
+
+        let (head2, arity2) = extract_head_arity(&rule2.lhs);
+        let clone_rules2 = clone.get_matching_rules(head2, arity2);
+        assert_eq!(clone_rules2.len(), 1, "Clone should have new rule");
+    }
+
+    #[test]
+    fn test_modification_tracking() {
+        // Test: Modification flag is correctly tracked
+        let mut env = Environment::new();
+        assert!(!env.modified.load(Ordering::Acquire), "New env should not be modified");
+
+        // Add rule → should set modified flag
+        env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+        assert!(env.modified.load(Ordering::Acquire), "Env should be modified after add_rule");
+
+        // Clone → clone should have fresh modified flag
+        let mut clone = env.clone();
+        assert!(!clone.modified.load(Ordering::Acquire), "Clone should have fresh modified flag");
+
+        // Mutate clone → should set clone's modified flag
+        clone.add_rule(make_test_rule("(test2 $y)", "(result2 $y)"));
+        assert!(clone.modified.load(Ordering::Acquire), "Clone should be modified after mutation");
+    }
+
+    #[test]
+    fn test_make_owned_idempotency() {
+        // Test: make_owned() should be idempotent (safe to call multiple times)
+        let mut env = Environment::new();
+        let mut clone = env.clone();
+
+        // First mutation triggers make_owned()
+        clone.add_rule(make_test_rule("(test1 $x)", "(result1 $x)"));
+        assert!(clone.owns_data, "Clone should own data after first mutation");
+
+        // Get Arc pointers after first make_owned()
+        let btm_ptr_first = StdArc::as_ptr(&clone.btm);
+
+        // Second mutation should NOT trigger another make_owned()
+        clone.add_rule(make_test_rule("(test2 $y)", "(result2 $y)"));
+
+        // Arc pointers should be same (no second deep copy)
+        let btm_ptr_second = StdArc::as_ptr(&clone.btm);
+        assert_eq!(btm_ptr_first, btm_ptr_second, "make_owned() should not run twice");
+    }
+
+    #[test]
+    fn test_deep_clone_copies_all_fields() {
+        // Test: make_owned() should deep copy all 7 RwLock fields
+        let mut env = Environment::new();
+        env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+
+        let mut clone = env.clone();
+
+        // Get Arc pointers before mutation
+        let btm_before = StdArc::as_ptr(&clone.btm);
+        let rule_index_before = StdArc::as_ptr(&clone.rule_index);
+        let wildcard_rules_before = StdArc::as_ptr(&clone.wildcard_rules);
+        let multiplicities_before = StdArc::as_ptr(&clone.multiplicities);
+        let pattern_cache_before = StdArc::as_ptr(&clone.pattern_cache);
+        let type_index_before = StdArc::as_ptr(&clone.type_index);
+        let type_index_dirty_before = StdArc::as_ptr(&clone.type_index_dirty);
+
+        // Trigger make_owned()
+        clone.add_rule(make_test_rule("(clone $y)", "(cloned $y)"));
+
+        // Get Arc pointers after mutation
+        let btm_after = StdArc::as_ptr(&clone.btm);
+        let rule_index_after = StdArc::as_ptr(&clone.rule_index);
+        let wildcard_rules_after = StdArc::as_ptr(&clone.wildcard_rules);
+        let multiplicities_after = StdArc::as_ptr(&clone.multiplicities);
+        let pattern_cache_after = StdArc::as_ptr(&clone.pattern_cache);
+        let type_index_after = StdArc::as_ptr(&clone.type_index);
+        let type_index_dirty_after = StdArc::as_ptr(&clone.type_index_dirty);
+
+        // All 7 Arc pointers should be different (deep copy occurred)
+        assert_ne!(btm_before, btm_after, "btm should be deep copied");
+        assert_ne!(rule_index_before, rule_index_after, "rule_index should be deep copied");
+        assert_ne!(wildcard_rules_before, wildcard_rules_after, "wildcard_rules should be deep copied");
+        assert_ne!(multiplicities_before, multiplicities_after, "multiplicities should be deep copied");
+        assert_ne!(pattern_cache_before, pattern_cache_after, "pattern_cache should be deep copied");
+        assert_ne!(type_index_before, type_index_after, "type_index should be deep copied");
+        assert_ne!(type_index_dirty_before, type_index_dirty_after, "type_index_dirty should be deep copied");
+    }
+
+    #[test]
+    fn test_multiple_clones_independent() {
+        // Test: Multiple clones should be independent after mutation
+        let mut env = Environment::new();
+        env.add_rule(make_test_rule("(original $x)", "(original-result $x)"));
+
+        let mut clone1 = env.clone();
+        let mut clone2 = env.clone();
+        let mut clone3 = env.clone();
+
+        // Mutate each clone differently
+        clone1.add_rule(make_test_rule("(clone1 $a)", "(result1 $a)"));
+        clone2.add_rule(make_test_rule("(clone2 $b)", "(result2 $b)"));
+        clone3.add_rule(make_test_rule("(clone3 $c)", "(result3 $c)"));
+
+        // Each clone should have only its own rule (plus original)
+        let original_count = env.rule_count();
+        let clone1_count = clone1.rule_count();
+        let clone2_count = clone2.rule_count();
+        let clone3_count = clone3.rule_count();
+
+        assert_eq!(original_count, 1, "Original should have 1 rule");
+        assert_eq!(clone1_count, 2, "Clone1 should have 2 rules");
+        assert_eq!(clone2_count, 2, "Clone2 should have 2 rules");
+        assert_eq!(clone3_count, 2, "Clone3 should have 2 rules");
+    }
+
+    // ============================================================================
+    // PROPERTY-BASED TESTS (~100 LOC)
+    // ============================================================================
+
+    #[test]
+    fn property_clone_never_shares_mutable_state_after_write() {
+        // Property: After mutation, clone and original should have independent state
+        for i in 0..10 {
+            let mut env = Environment::new();
+            env.add_rule(make_test_rule(&format!("(test{}  $x)", i), "(result $x)"));
+
+            let mut clone = env.clone();
+            clone.add_rule(make_test_rule(&format!("(clone{} $y)", i), "(cloned $y)"));
+
+            // Verify Arc pointers are different
+            let env_ptr = StdArc::as_ptr(&env.btm);
+            let clone_ptr = StdArc::as_ptr(&clone.btm);
+            assert_ne!(env_ptr, clone_ptr, "Property violated: clone shares mutable state after write (iteration {})", i);
+        }
+    }
+
+    #[test]
+    fn property_parallel_writes_are_isolated() {
+        // Property: Parallel mutations to different clones should be isolated
+        let env = Environment::new();
+        let num_threads = 4;
+        let barrier = StdArc::new(Barrier::new(num_threads));
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|i| {
+                let mut clone = env.clone();
+                let barrier = StdArc::clone(&barrier);
+
+                thread::spawn(move || {
+                    // Synchronize all threads to start mutations simultaneously
+                    barrier.wait();
+
+                    // Each thread adds a unique rule
+                    clone.add_rule(make_test_rule(&format!("(thread{} $x)", i), &format!("(result{} $x)", i)));
+
+                    // Verify this clone only has 1 rule
+                    let count = clone.rule_count();
+                    assert_eq!(count, 1, "Thread {} clone should have exactly 1 rule", i);
+
+                    clone
+                })
+            })
+            .collect();
+
+        // Join all threads and verify each clone is independent
+        let clones: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        for (i, clone) in clones.iter().enumerate() {
+            let count = clone.rule_count();
+            assert_eq!(count, 1, "Clone {} should have exactly 1 rule after parallel write", i);
+        }
+
+        // Original should be unchanged
+        assert_eq!(env.rule_count(), 0, "Original environment should be unchanged");
+    }
+
+    // ============================================================================
+    // STRESS TESTS (~100 LOC)
+    // ============================================================================
+
+    #[test]
+    fn stress_many_clones_with_mutations() {
+        // Stress: Create 1000 clones and mutate each one
+        let env = Environment::new();
+
+        for i in 0..1000 {
+            let mut clone = env.clone();
+            clone.add_rule(make_test_rule(&format!("(stress{} $x)", i), "(result $x)"));
+
+            assert!(clone.owns_data, "Clone {} should own data after mutation", i);
+            assert_eq!(clone.rule_count(), 1, "Clone {} should have 1 rule", i);
+        }
+
+        // Original should be unchanged
+        assert_eq!(env.rule_count(), 0, "Original should be unchanged after 1000 clone mutations");
+    }
+
+    #[test]
+    fn stress_deep_clone_chains() {
+        // Stress: Create clone chains (clone of clone of clone...)
+        let mut env = Environment::new();
+        env.add_rule(make_test_rule("(original $x)", "(result $x)"));
+
+        let mut current = env.clone();
+        for i in 0..10 {
+            current.add_rule(make_test_rule(&format!("(depth{} $x)", i), "(result $x)"));
+            let next = current.clone();
+            current = next;
+        }
+
+        // Final clone should have 1 (original) + 10 (depth) = 11 rules
+        assert_eq!(current.rule_count(), 11, "Final clone should have 11 rules");
+
+        // Original should be unchanged
+        assert_eq!(env.rule_count(), 1, "Original should still have 1 rule");
+    }
+
+    #[test]
+    fn stress_concurrent_clone_and_mutate() {
+        // Stress: Concurrent cloning and mutation across multiple threads
+        let env = StdArc::new(Environment::new());
+        let num_threads = 8;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|i| {
+                let env = StdArc::clone(&env);
+
+                thread::spawn(move || {
+                    for j in 0..100 {
+                        let mut clone = env.as_ref().clone();
+                        clone.add_rule(make_test_rule(&format!("(t{}_{} $x)", i, j), "(result $x)"));
+                        assert_eq!(clone.rule_count(), 1, "Clone should have 1 rule");
+                    }
+                })
+            })
+            .collect();
+
+        // Join all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Original should be unchanged
+        assert_eq!(env.rule_count(), 0, "Original should be unchanged after concurrent stress");
+    }
+
+    // ============================================================================
+    // INTEGRATION TESTS (~100 LOC)
+    // ============================================================================
+
+    #[test]
+    fn integration_parallel_eval_with_dynamic_rules() {
+        // Integration: Simulate parallel evaluation where each thread adds rules dynamically
+        use std::sync::Mutex as StdMutex;
+
+        let base_env = Environment::new();
+        let results = StdArc::new(StdMutex::new(Vec::new()));
+        let num_threads = 4;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|i| {
+                let mut env = base_env.clone();
+                let results = StdArc::clone(&results);
+
+                thread::spawn(move || {
+                    // Each thread adds rules dynamically during "evaluation"
+                    for j in 0..10 {
+                        let rule = make_test_rule(&format!("(eval{}_{}  $x)", i, j), "(result $x)");
+                        env.add_rule(rule);
+                    }
+
+                    let count = env.rule_count();
+                    results.lock().unwrap().push(count);
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Each thread should have 10 rules
+        let results = results.lock().unwrap();
+        assert_eq!(results.len(), num_threads, "Should have {} results", num_threads);
+        for (i, &count) in results.iter().enumerate() {
+            assert_eq!(count, 10, "Thread {} should have 10 rules", i);
+        }
+
+        // Base environment should be unchanged
+        assert_eq!(base_env.rule_count(), 0, "Base environment should be unchanged");
+    }
+
+    #[test]
+    fn integration_read_while_write() {
+        // Integration: Test concurrent reads and writes (RwLock benefit)
+        let mut env = Environment::new();
+        for i in 0..100 {
+            env.add_rule(make_test_rule(&format!("(rule{} $x)", i), "(result $x)"));
+        }
+
+        let env = StdArc::new(env);
+        let num_readers = 8;
+        let barrier = StdArc::new(Barrier::new(num_readers + 1));
+
+        // Spawn reader threads
+        let reader_handles: Vec<_> = (0..num_readers)
+            .map(|_| {
+                let env = StdArc::clone(&env);
+                let barrier = StdArc::clone(&barrier);
+
+                thread::spawn(move || {
+                    barrier.wait();
+
+                    // Multiple readers should be able to read concurrently (RwLock benefit)
+                    for _ in 0..100 {
+                        let count = env.rule_count();
+                        assert!(count >= 100, "Should see at least 100 rules");
+                    }
+                })
+            })
+            .collect();
+
+        // Start all readers simultaneously
+        barrier.wait();
+
+        // Join all readers
+        for handle in reader_handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn integration_clone_preserves_rule_data() {
+        // Integration: Verify clone preserves all rule data correctly
+        let mut env = Environment::new();
+
+        // Add various rules
+        let rules = vec![
+            make_test_rule("(color car red)", "(assert color car red)"),
+            make_test_rule("(color truck blue)", "(assert color truck blue)"),
+            make_test_rule("(size car small)", "(assert size car small)"),
+        ];
+
+        for rule in &rules {
+            env.add_rule(rule.clone());
+        }
+
+        // Clone environment
+        let clone = env.clone();
+
+        // Verify clone has same rules
+        assert_eq!(clone.rule_count(), env.rule_count(), "Clone should have same rule count");
+
+        // Verify each rule is accessible
+        for rule in &rules {
+            let (head, arity) = extract_head_arity(&rule.lhs);
+            let original_matches = env.get_matching_rules(head, arity);
+            let clone_matches = clone.get_matching_rules(head, arity);
+
+            assert!(!original_matches.is_empty(), "Original should have rule");
+            assert!(!clone_matches.is_empty(), "Clone should have rule");
+        }
+    }
+}

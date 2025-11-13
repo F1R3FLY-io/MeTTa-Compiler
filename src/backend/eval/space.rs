@@ -11,6 +11,7 @@ pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
     let rhs = items[2].clone();
     let mut new_env = env.clone();
 
+    // TODO -> are there rule_cache? or it's just stub for now?
     // Add rule using add_rule (stores in both rule_cache and MORK Space)
     new_env.add_rule(Rule { lhs, rhs });
 

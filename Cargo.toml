@@ -46,7 +46,13 @@ regex = "1.10"
 nom = "7.1"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "process", "time", "sync", "macros"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "process",
+    "time",
+    "sync",
+    "macros",
+] }
 
 [profile.release]
 opt-level = 3
@@ -67,13 +73,41 @@ depends = "$auto"
 section = "devel"
 priority = "optional"
 assets = [
-    ["target/release/mettatron", "usr/bin/", "755"],
-    ["target/release/rholang-cli", "usr/bin/", "755"],
-    ["target/release/libmettatron.so", "usr/lib/", "644"],
-    ["target/release/libmettatron.rlib", "usr/lib/", "644"],
-    ["README.md", "usr/share/doc/mettatron/", "644"],
-    ["LICENSE", "usr/share/doc/mettatron/", "644"],
-    ["examples/*", "usr/share/doc/mettatron/examples/", "644"],
+    [
+        "target/release/mettatron",
+        "usr/bin/",
+        "755",
+    ],
+    [
+        "target/release/rholang-cli",
+        "usr/bin/",
+        "755",
+    ],
+    [
+        "target/release/libmettatron.so",
+        "usr/lib/",
+        "644",
+    ],
+    [
+        "target/release/libmettatron.rlib",
+        "usr/lib/",
+        "644",
+    ],
+    [
+        "README.md",
+        "usr/share/doc/mettatron/",
+        "644",
+    ],
+    [
+        "LICENSE",
+        "usr/share/doc/mettatron/",
+        "644",
+    ],
+    [
+        "examples/*",
+        "usr/share/doc/mettatron/examples/",
+        "644",
+    ],
 ]
 
 # RPM package metadata
@@ -87,4 +121,3 @@ assets = [
     { source = "README.md", dest = "/usr/share/doc/mettatron/README.md", mode = "644", doc = true },
     { source = "LICENSE", dest = "/usr/share/doc/mettatron/LICENSE", mode = "644", doc = true },
 ]
-

@@ -22,7 +22,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use mettatron::backend::environment::Environment;
 use mettatron::backend::{MettaValue, Rule};
-use std::sync::Arc;
 
 // ================================================================================================
 // Helper Functions
@@ -86,7 +85,7 @@ fn create_mixed_fact_dataset(
     duplicate_ratio: f64,
 ) -> (Vec<MettaValue>, Vec<MettaValue>) {
     let num_duplicates = (total as f64 * duplicate_ratio) as usize;
-    let num_new = total - num_duplicates;
+    let _num_new = total - num_duplicates;
 
     let all_items = create_test_facts(total);
     let new_items = all_items[num_duplicates..].to_vec();
@@ -97,7 +96,7 @@ fn create_mixed_fact_dataset(
 /// Create mixed rule dataset with specified duplicate ratio
 fn create_mixed_rule_dataset(total: usize, duplicate_ratio: f64) -> (Vec<Rule>, Vec<Rule>) {
     let num_duplicates = (total as f64 * duplicate_ratio) as usize;
-    let num_new = total - num_duplicates;
+    let _num_new = total - num_duplicates;
 
     let all_items = create_test_rules(total);
     let new_items = all_items[num_duplicates..].to_vec();
@@ -207,7 +206,7 @@ fn bench_add_facts_mixed_ratios(c: &mut Criterion) {
 
     for ratio_percent in [0, 25, 50, 75, 100].iter() {
         let ratio = *ratio_percent as f64 / 100.0;
-        let (all_items, new_items) = create_mixed_fact_dataset(size, ratio);
+        let (all_items, _new_items) = create_mixed_fact_dataset(size, ratio);
 
         group.bench_with_input(
             BenchmarkId::new("ratio", ratio_percent),
@@ -237,7 +236,7 @@ fn bench_add_rules_mixed_ratios(c: &mut Criterion) {
 
     for ratio_percent in [0, 25, 50, 75, 100].iter() {
         let ratio = *ratio_percent as f64 / 100.0;
-        let (all_items, new_items) = create_mixed_rule_dataset(size, ratio);
+        let (all_items, _new_items) = create_mixed_rule_dataset(size, ratio);
 
         group.bench_with_input(
             BenchmarkId::new("ratio", ratio_percent),
@@ -331,7 +330,6 @@ fn bench_type_lookup_after_duplicate_facts(c: &mut Criterion) {
 
     for size in [100, 500, 1000].iter() {
         let type_facts = create_test_type_facts(*size);
-        let lookup_var = MettaValue::Atom("var0".to_string());
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
@@ -340,7 +338,7 @@ fn bench_type_lookup_after_duplicate_facts(c: &mut Criterion) {
                 // Add duplicates (Identity → type index NOT invalidated)
                 env.add_facts_bulk(&type_facts).unwrap();
                 // Lookup should use hot cache
-                let result = black_box(env.get_type(&lookup_var));
+                let result = black_box(env.get_type("var0"));
                 black_box(result);
             });
         });
@@ -365,7 +363,6 @@ fn bench_type_lookup_after_new_facts(c: &mut Criterion) {
                 }
             }
         }
-        let lookup_var = MettaValue::Atom("var0".to_string());
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
@@ -374,7 +371,7 @@ fn bench_type_lookup_after_new_facts(c: &mut Criterion) {
                 // Add new data (Element → type index invalidated)
                 env.add_facts_bulk(&type_facts2).unwrap();
                 // Lookup requires index rebuild
-                let result = black_box(env.get_type(&lookup_var));
+                let result = black_box(env.get_type("var0"));
                 black_box(result);
             });
         });

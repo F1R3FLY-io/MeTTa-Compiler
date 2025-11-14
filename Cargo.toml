@@ -42,6 +42,10 @@ harness = false
 name = "cow_environment"
 harness = false
 
+[[bench]]
+name = "algebraic_status_duplicate_detection"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }

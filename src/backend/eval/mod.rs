@@ -238,7 +238,9 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalRes
                 all_final_results.extend(results);
             }
         } else {
-            // No rule matched, add to MORK Space and return it
+            // No rule matched - add to space and return (official MeTTa ADD mode semantics)
+            // In official MeTTa's default ADD mode, bare expressions are automatically added to &self
+            // This matches the behavior: `(leaf1 leaf2)` -> auto-added, then `!(match &self ...)` can query it
             unified_env.add_to_space(&sexpr);
             all_final_results.push(sexpr);
         }
@@ -1322,7 +1324,9 @@ mod tests {
 
     #[test]
     fn test_sexpr_added_to_fact_database() {
-        // When an s-expression like (Hello World) is evaluated, it should be added to the fact database
+        // Verify official MeTTa ADD mode semantics:
+        // When an s-expression like (Hello World) is evaluated, it is automatically added to the space
+        // This matches: `(leaf1 leaf2)` in REPL -> auto-added, queryable via `!(match &self ...)`
         let env = Environment::new();
 
         // Evaluate the s-expression (Hello World)
@@ -1340,7 +1344,7 @@ mod tests {
         // S-expression should be returned (with evaluated elements)
         assert_eq!(results[0], expected_result);
 
-        // S-expression should be added to fact database
+        // S-expression should be added to fact database (ADD mode behavior)
         assert!(new_env.has_sexpr_fact(&expected_result));
 
         // Individual atoms are NOT stored separately
@@ -1351,6 +1355,8 @@ mod tests {
 
     #[test]
     fn test_nested_sexpr_in_fact_database() {
+        // Official MeTTa semantics: only the top-level expression is stored
+        // Nested sub-expressions are NOT extracted and stored separately
         let env = Environment::new();
 
         // Evaluate a nested s-expression
@@ -1364,7 +1370,7 @@ mod tests {
 
         let (_, new_env) = eval(sexpr, env);
 
-        // Outer s-expression should be in fact database
+        // CORRECT: Outer s-expression should be in fact database
         let expected_outer = MettaValue::SExpr(vec![
             MettaValue::Atom("Outer".to_string()),
             MettaValue::SExpr(vec![
@@ -1374,18 +1380,65 @@ mod tests {
         ]);
         assert!(new_env.has_sexpr_fact(&expected_outer));
 
-        // Inner s-expression should also be in fact database
+        // CORRECT: Inner s-expression should NOT be in fact database (not recursively stored)
+        // Official MeTTa only stores the top-level expression passed to add-atom
         let expected_inner = MettaValue::SExpr(vec![
             MettaValue::Atom("Inner".to_string()),
             MettaValue::Atom("Nested".to_string()),
         ]);
-        assert!(new_env.has_sexpr_fact(&expected_inner));
+        assert!(!new_env.has_sexpr_fact(&expected_inner));
 
         // Individual atoms are NOT stored separately
-        // Only the full s-expressions are stored in MORK format
         assert!(!new_env.has_fact("Outer"));
         assert!(!new_env.has_fact("Inner"));
         assert!(!new_env.has_fact("Nested"));
+    }
+
+    #[test]
+    fn test_pattern_matching_extracts_nested_sexpr() {
+        // Demonstrates that while nested s-expressions are NOT stored separately,
+        // they can still be accessed via pattern matching with variables.
+        // This is how official MeTTa handles nested data extraction.
+        let mut env = Environment::new();
+
+        // Store a nested s-expression: (Outer (Inner Nested))
+        let nested_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("Outer".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("Inner".to_string()),
+                MettaValue::Atom("Nested".to_string()),
+            ]),
+        ]);
+
+        // Evaluate to add to space (ADD mode behavior)
+        let (_, env1) = eval(nested_expr.clone(), env);
+        env = env1;
+
+        // Verify only the outer expression is stored
+        assert!(env.has_sexpr_fact(&nested_expr));
+        let inner_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("Inner".to_string()),
+            MettaValue::Atom("Nested".to_string()),
+        ]);
+        assert!(!env.has_sexpr_fact(&inner_expr)); // NOT stored separately
+
+        // Use pattern matching to extract the nested part: (match & self (Outer $x) $x)
+        let match_query = MettaValue::SExpr(vec![
+            MettaValue::Atom("match".to_string()),
+            MettaValue::Atom("&".to_string()),
+            MettaValue::Atom("self".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("Outer".to_string()),
+                MettaValue::Atom("$x".to_string()), // Variable to capture nested part
+            ]),
+            MettaValue::Atom("$x".to_string()), // Template: return the captured value
+        ]);
+
+        let (results, _) = eval(match_query, env);
+
+        // Should return the nested s-expression even though it wasn't stored separately
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], inner_expr); // Pattern matching extracts (Inner Nested)
     }
 
     #[test]

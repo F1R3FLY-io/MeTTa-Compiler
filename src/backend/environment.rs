@@ -1103,72 +1103,48 @@ impl Environment {
         None
     }
 
-    /// Extract all nested S-expressions from a value (recursively)
-    /// This ensures nested S-expressions are added to the fact database
-    fn extract_all_sexprs(value: &MettaValue, sexprs: &mut Vec<MettaValue>) {
-        if let MettaValue::SExpr(items) = value {
-            // First, recursively extract S-expressions from all nested items
-            for item in items {
-                Self::extract_all_sexprs(item, sexprs);
-            }
-            // Then add this S-expression itself
-            sexprs.push(value.clone());
-        }
-    }
-
     /// Add a fact to the MORK Space for pattern matching
     /// Converts the MettaValue to MORK format and stores it
     /// OPTIMIZATION (Variant C): Uses direct MORK byte conversion for ground values
-    /// NOTE: Also extracts and stores all nested S-expressions
+    ///
+    /// IMPORTANT: Official MeTTa semantics - only the top-level expression is stored.
+    /// Nested sub-expressions are NOT recursively extracted and stored separately.
+    /// To query nested parts, use pattern matching with variables, e.g., (Outer $x)
     pub fn add_to_space(&mut self, value: &MettaValue) {
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 
-        // Extract all nested S-expressions (including the value itself if it's an S-expr)
-        let mut all_sexprs = Vec::new();
-        Self::extract_all_sexprs(value, &mut all_sexprs);
+        // Try direct byte conversion first (Variant C)
+        // This skips string serialization + parsing for 10-20× speedup
+        let is_ground = !Self::contains_variables(value);
 
-        // If this value contains S-expressions, add them all
-        // Otherwise, just add the value itself
-        let values_to_add: Vec<&MettaValue> = if all_sexprs.is_empty() {
-            vec![value]
-        } else {
-            all_sexprs.iter().collect()
-        };
+        if is_ground {
+            // Ground values: use direct MORK byte conversion (no parsing needed)
+            let space = self.create_space();
+            let mut ctx = ConversionContext::new();
 
-        for val in values_to_add {
-            // Try direct byte conversion first (Variant C)
-            // This skips string serialization + parsing for 10-20× speedup
-            let is_ground = !Self::contains_variables(val);
-
-            if is_ground {
-                // Ground values: use direct MORK byte conversion (no parsing needed)
-                let space = self.create_space();
-                let mut ctx = ConversionContext::new();
-
-                if let Ok(mork_bytes) = metta_to_mork_bytes(val, &space, &mut ctx) {
-                    // Direct PathMap insertion without parsing
-                    let mut space_mut = self.create_space();
-                    space_mut.btm.insert(&mork_bytes, ());
-                    self.update_pathmap(space_mut);
-                    continue;
-                }
+            if let Ok(mork_bytes) = metta_to_mork_bytes(value, &space, &mut ctx) {
+                // Direct PathMap insertion without parsing
+                let mut space_mut = self.create_space();
+                space_mut.btm.insert(&mork_bytes, ());
+                self.update_pathmap(space_mut);
+                return;
             }
-
-            // Fallback: use string path for variable-containing values
-            let mork_str = val.to_mork_string();
-            let mork_bytes = mork_str.as_bytes();
-
-            // Create thread-local Space
-            let mut space = self.create_space();
-
-            // Use MORK's parser to load the s-expression into PathMap trie
-            if let Ok(_count) = space.load_all_sexpr_impl(mork_bytes, true) {
-                // Successfully added to space
-            }
-
-            // Update shared PathMap with modified Space
-            self.update_pathmap(space);
         }
+
+        // Fallback: use string path for variable-containing values
+        let mork_str = value.to_mork_string();
+        let mork_bytes = mork_str.as_bytes();
+
+        // Create thread-local Space
+        let mut space = self.create_space();
+
+        // Use MORK's parser to load the s-expression into PathMap trie
+        if let Ok(_count) = space.load_all_sexpr_impl(mork_bytes, true) {
+            // Successfully added to space
+        }
+
+        // Update shared PathMap with modified Space
+        self.update_pathmap(space);
     }
 
     /// Bulk insert facts into MORK Space using PathMap anamorphism (Strategy 2)

@@ -1863,7 +1863,6 @@ dependencies = [
  "mork-interning",
  "nom",
  "pathmap 0.2.0-alpha0",
- "rayon",
  "regex",
  "rustyline",
  "serde",

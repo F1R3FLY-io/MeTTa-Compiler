@@ -157,8 +157,9 @@ fn bench_mixed_complexity(c: &mut Criterion) {
 fn bench_threshold_tuning(c: &mut Criterion) {
     let mut group = c.benchmark_group("threshold_tuning");
 
-    // Test critical range around current threshold
-    for num_ops in [2, 3, 4, 5, 6, 7, 8, 10, 12, 16].iter() {
+    // Test critical range around current threshold (low counts)
+    // Extended to ultra-high operation counts to find crossover point
+    for num_ops in [2, 3, 4, 5, 6, 7, 8, 10, 12, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768].iter() {
         let expr = generate_arithmetic_expr(*num_ops);
         let env = Environment::new();
 

@@ -46,6 +46,10 @@ harness = false
 name = "algebraic_status_duplicate_detection"
 harness = false
 
+[[bench]]
+name = "expression_parallelism"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }
@@ -82,9 +86,6 @@ smallvec = "1.11"
 
 # liblevenshtein - Fuzzy string matching for "Did you mean?" suggestions
 liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
-
-# Rayon - Data parallelism for expression-level parallel evaluation
-rayon = "1.8"
 
 # Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
 # PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup

@@ -24,8 +24,6 @@ use crate::backend::mork_convert::{
     metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext,
 };
 use mork_expr::Expr;
-use rayon::prelude::*;
-use rayon::iter::IntoParallelRefIterator;
 
 pub(super) type EvalOutput = (Vec<MettaValue>, Environment);
 
@@ -37,12 +35,6 @@ const MAX_EVAL_DEPTH: usize = 1000;
 /// Maximum number of results in Cartesian product to prevent combinatorial explosion
 /// This limits the total number of combinations explored during nondeterministic evaluation
 const MAX_CARTESIAN_RESULTS: usize = 10000;
-
-/// Threshold for parallel sub-expression evaluation
-/// Only parallelize when number of sub-expressions >= this value
-/// Below this threshold, sequential evaluation is faster due to parallel overhead
-/// Empirically determined: parallel overhead (~50µs) vs evaluation time
-const PARALLEL_EVAL_THRESHOLD: usize = 4;
 
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)
@@ -187,22 +179,13 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalRes
         }
     }
 
-    // Adaptive parallelization: use parallel evaluation for expressions with many sub-expressions
-    // Sequential for small expressions to avoid parallel overhead
-    let eval_results_and_envs: Vec<(Vec<MettaValue>, Environment)> =
-        if items.len() >= PARALLEL_EVAL_THRESHOLD {
-            // Parallel evaluation for complex expressions
-            items
-                .par_iter()
-                .map(|item: &MettaValue| eval_with_depth(item.clone(), env.clone(), depth + 1))
-                .collect()
-        } else {
-            // Sequential evaluation for simple expressions
-            items
-                .iter()
-                .map(|item: &MettaValue| eval_with_depth(item.clone(), env.clone(), depth + 1))
-                .collect()
-        };
+    // Evaluate all sub-expressions sequentially
+    // Phase 3c benchmarking conclusively showed sequential is always faster
+    // (tested 2-32768 operations, flat + nested expressions)
+    let eval_results_and_envs: Vec<(Vec<MettaValue>, Environment)> = items
+        .iter()
+        .map(|item: &MettaValue| eval_with_depth(item.clone(), env.clone(), depth + 1))
+        .collect();
 
     // Check for errors in subexpressions and propagate immediately
     for (results, new_env) in &eval_results_and_envs {

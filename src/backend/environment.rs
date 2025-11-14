@@ -2,7 +2,6 @@ use lru::LruCache;
 use mork::space::Space;
 use mork_interning::SharedMappingHandle;
 use pathmap::{PathMap, zipper::*};
-use pathmap::ring::{AlgebraicStatus, Lattice};  // Phase 3b: AlgebraicStatus optimization
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, RwLock};
@@ -814,17 +813,11 @@ impl Environment {
         }
 
         // Single PathMap union (minimal critical section)
-        // Phase 3b: Use join_into() with AlgebraicStatus to skip modified flag when no changes
-        let status = {
+        {
             let mut btm = self.btm.write().unwrap();
-            (*btm).join_into(rule_trie)
-        };
-
-        // Only mark as modified if the join actually changed the PathMap
-        // AlgebraicStatus::Element = changed, AlgebraicStatus::Identity = unchanged
-        if status == AlgebraicStatus::Element {
-            self.modified.store(true, Ordering::Release);  // CoW: mark as modified
+            *btm = btm.join(&rule_trie);
         }
+        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
         Ok(())
     }
 
@@ -1228,21 +1221,16 @@ impl Environment {
 
         // Single lock acquisition → union → unlock
         // This is the only critical section, minimizing lock contention
-        // Phase 3b: Use join_into() with AlgebraicStatus to skip modified flag when no changes
-        let status = {
+        {
             let mut btm = self.btm.write().unwrap();
-            (*btm).join_into(fact_trie)
-        };
-
-        // Only mark as modified and invalidate type index if the join actually changed the PathMap
-        // AlgebraicStatus::Element = changed, AlgebraicStatus::Identity = unchanged
-        if status == AlgebraicStatus::Element {
-            // Invalidate type index if any facts were type assertions
-            // Conservative: Assume any bulk insert might contain types
-            *self.type_index_dirty.write().unwrap() = true;
-
-            self.modified.store(true, Ordering::Release);  // CoW: mark as modified
+            *btm = btm.join(&fact_trie);
         }
+
+        // Invalidate type index if any facts were type assertions
+        // Conservative: Assume any bulk insert might contain types
+        *self.type_index_dirty.write().unwrap() = true;
+
+        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
         Ok(())
     }
 

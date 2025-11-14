@@ -148,7 +148,6 @@ impl EvalConfig {
     }
 }
 
-// TODO -> global singletone config considered to be anti pattern. need to use explicit dependency.
 /// Configure the global evaluation settings
 ///
 /// This should be called **before** any async evaluation occurs, typically in your

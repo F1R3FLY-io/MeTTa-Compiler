@@ -393,7 +393,6 @@ impl Environment {
     /// Rules are stored in MORK Space as s-expressions: (= lhs rhs)
     /// Multiply-defined rules are tracked via multiplicities
     pub fn add_rule(&mut self, rule: Rule) {
-        // TODO -> define constructor for rule_sexpr
         // Create a rule s-expression: (= lhs rhs)
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
@@ -412,7 +411,6 @@ impl Environment {
             counts.insert(rule_key.clone(), new_count);
         } // Drop the RefMut borrow before add_to_space
 
-        // TODO -> pass rule_key to add_to_space to avoid converting duplication?
         // Add to MORK Space (only once - PathMap will deduplicate)
         self.add_to_space(&rule_sexpr);
     }

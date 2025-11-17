@@ -72,6 +72,8 @@ tokio = { version = "1", features = ["rt", "sync"], optional = true }
 # Note: Windows is not currently supported due to jemalloc incompatibility
 # MORK's workspace enables jemalloc which requires Unix build tools
 pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
+# pathmap = { git = "https://github.com/Adam-Vandervorst/PathMap.git", branch = "master", features = ["jemalloc", "arena_compact"] }
+# pathmap = { version = "0.2.0-alpha0", features = ["jemalloc", "arena_compact"] }
 
 # Tree-sitter - Parser for LSP support
 tree-sitter = "0.25"
@@ -89,7 +91,8 @@ lru = "0.12"
 smallvec = "1.11"
 
 # liblevenshtein - Fuzzy string matching for "Did you mean?" suggestions
-liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
+# liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
+liblevenshtein = { version = "^0.7", features = ["pathmap-backend"] }
 
 # Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
 # PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup

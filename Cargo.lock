@@ -1700,10 +1700,12 @@ checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
 
 [[package]]
 name = "liblevenshtein"
-version = "0.6.0"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e870924857dcca135e4fc7f24e16396051ef82b97007146a7aefb27cf604f7b6"
 dependencies = [
  "parking_lot",
- "pathmap 0.2.0-alpha0 (git+https://github.com/Adam-Vandervorst/PathMap.git?branch=master)",
+ "pathmap 0.2.0-alpha0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc-hash",
  "smallvec",
  "thiserror 2.0.17",
@@ -1903,7 +1905,7 @@ dependencies = [
  "crypto",
  "hex",
  "itertools 0.12.1",
- "pathmap 0.2.0-alpha0 (git+https://github.com/Adam-Vandervorst/PathMap.git?branch=master)",
+ "pathmap 0.2.0-alpha0 (git+https://github.com/Adam-Vandervorst/PathMap?branch=master)",
  "proptest",
  "proptest-derive",
  "prost 0.14.1",
@@ -2217,7 +2219,27 @@ dependencies = [
 [[package]]
 name = "pathmap"
 version = "0.2.0-alpha0"
-source = "git+https://github.com/Adam-Vandervorst/PathMap.git?branch=master#2030105926056b58c6bebded823b781413e916d0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8685798c049192c69c0bf739af32581a9dd21b852d46a084035b12ccf71fe3c7"
+dependencies = [
+ "arrayvec",
+ "dyn-clone",
+ "fast-slice-utils",
+ "gxhash 3.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libz-ng-sys",
+ "local-or-heap",
+ "maybe-dangling",
+ "num-traits",
+ "pathmap-derive",
+ "reusing-vec",
+ "smallvec",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "pathmap"
+version = "0.2.0-alpha0"
+source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#2030105926056b58c6bebded823b781413e916d0"
 dependencies = [
  "arrayvec",
  "dyn-clone",

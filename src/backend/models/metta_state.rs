@@ -61,6 +61,16 @@ impl MettaState {
         }
     }
 
+    /// Create a compiled state containing an error s-expression
+    /// Used when parsing fails to allow error handling at the evaluation level
+    pub fn new_with_error(error_sexpr: MettaValue) -> Self {
+        MettaState {
+            source: vec![error_sexpr],
+            environment: Environment::new(),
+            output: Vec::new(),
+        }
+    }
+
     /// Convert MettaState to JSON representation for debugging
     ///
     /// Returns a JSON string with the format:

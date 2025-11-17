@@ -1,11 +1,11 @@
 use lru::LruCache;
 use mork::space::Space;
 use mork_interning::SharedMappingHandle;
-use pathmap::{PathMap, zipper::*};
+use pathmap::{zipper::*, PathMap};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use super::fuzzy_match::FuzzyMatcher;
 use super::{MettaValue, Rule};
@@ -85,15 +85,13 @@ impl Environment {
 
         Environment {
             shared_mapping: SharedMapping::new(),
-            owns_data: true,  // CoW: new environments own their data
-            modified: Arc::new(AtomicBool::new(false)),  // CoW: track modifications
+            owns_data: true, // CoW: new environments own their data
+            modified: Arc::new(AtomicBool::new(false)), // CoW: track modifications
             btm: Arc::new(RwLock::new(PathMap::new())),
             rule_index: Arc::new(RwLock::new(HashMap::new())),
             wildcard_rules: Arc::new(RwLock::new(Vec::new())),
             multiplicities: Arc::new(RwLock::new(HashMap::new())),
-            pattern_cache: Arc::new(RwLock::new(
-                LruCache::new(NonZeroUsize::new(1000).unwrap())
-            )),
+            pattern_cache: Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap()))),
             fuzzy_matcher: FuzzyMatcher::new(),
             type_index: Arc::new(RwLock::new(None)),
             type_index_dirty: Arc::new(RwLock::new(true)),
@@ -139,7 +137,7 @@ impl Environment {
     /// This is useful for advanced operations that need direct access to the Space,
     /// such as debugging or custom MORK queries.
     pub fn create_space(&self) -> Space {
-        let btm = self.btm.read().unwrap().clone();  // CoW: read lock for concurrent reads
+        let btm = self.btm.read().unwrap().clone(); // CoW: read lock for concurrent reads
         Space {
             btm,
             sm: self.shared_mapping.clone(),
@@ -150,10 +148,10 @@ impl Environment {
     /// Update PathMap and shared mapping after Space modifications (write operations)
     /// This updates both the PathMap (btm) and the SharedMappingHandle (sm)
     pub(crate) fn update_pathmap(&mut self, space: Space) {
-        self.make_owned();  // CoW: ensure we own data before modifying
-        *self.btm.write().unwrap() = space.btm;  // CoW: write lock for exclusive access
+        self.make_owned(); // CoW: ensure we own data before modifying
+        *self.btm.write().unwrap() = space.btm; // CoW: write lock for exclusive access
         self.shared_mapping = space.sm;
-        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
+        self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
     /// Convert a MORK Expr directly to MettaValue without text serialization
@@ -377,7 +375,7 @@ impl Environment {
     /// Type assertions are stored as (: name type) in MORK Space
     /// Invalidates the type index cache
     pub fn add_type(&mut self, name: String, typ: MettaValue) {
-        self.make_owned();  // CoW: ensure we own data before modifying
+        self.make_owned(); // CoW: ensure we own data before modifying
 
         // Create type assertion: (: name typ)
         let type_assertion = MettaValue::SExpr(vec![
@@ -389,7 +387,7 @@ impl Environment {
 
         // Invalidate type index cache
         *self.type_index_dirty.write().unwrap() = true;
-        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
+        self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
     /// Ensure the type index is built and up-to-date
@@ -590,7 +588,7 @@ impl Environment {
     /// This is needed after deserializing an Environment from PathMap Par,
     /// since the serialization only preserves the MORK Space, not the index.
     pub fn rebuild_rule_index(&mut self) {
-        self.make_owned();  // CoW: ensure we own data before modifying
+        self.make_owned(); // CoW: ensure we own data before modifying
 
         // Clear existing indices
         {
@@ -621,7 +619,7 @@ impl Environment {
             }
         }
 
-        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
+        self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
     /// Match pattern against all atoms in the Space (optimized for match operation)
@@ -672,7 +670,7 @@ impl Environment {
     /// Multiply-defined rules are tracked via multiplicities
     /// Rules are also indexed by (head_symbol, arity) for fast lookup
     pub fn add_rule(&mut self, rule: Rule) {
-        self.make_owned();  // CoW: ensure we own data before modifying
+        self.make_owned(); // CoW: ensure we own data before modifying
 
         // Create a rule s-expression: (= lhs rhs)
         let rule_sexpr = MettaValue::SExpr(vec![
@@ -701,19 +699,19 @@ impl Environment {
             index
                 .entry((head.clone(), arity))
                 .or_insert_with(Vec::new)
-                .push(rule);  // Move instead of clone
+                .push(rule); // Move instead of clone
 
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
             self.fuzzy_matcher.insert(&head);
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
             let mut wildcards = self.wildcard_rules.write().unwrap();
-            wildcards.push(rule);  // Move instead of clone
+            wildcards.push(rule); // Move instead of clone
         }
 
         // Add to MORK Space (only once - PathMap will deduplicate)
         self.add_to_space(&rule_sexpr);
-        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
+        self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
     /// Bulk add rules using PathMap::join() for batch efficiency
@@ -730,7 +728,7 @@ impl Environment {
             return Ok(());
         }
 
-        self.make_owned();  // CoW: ensure we own data before modifying
+        self.make_owned(); // CoW: ensure we own data before modifying
 
         // Build temporary PathMap outside the lock
         let mut rule_trie = PathMap::new();
@@ -817,7 +815,7 @@ impl Environment {
             let mut btm = self.btm.write().unwrap();
             *btm = btm.join(&rule_trie);
         }
-        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
+        self.modified.store(true, Ordering::Release); // CoW: mark as modified
         Ok(())
     }
 
@@ -842,9 +840,9 @@ impl Environment {
 
     /// Set the multiplicities (used for deserialization)
     pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
-        self.make_owned();  // CoW: ensure we own data before modifying
+        self.make_owned(); // CoW: ensure we own data before modifying
         *self.multiplicities.write().unwrap() = counts;
-        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
+        self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
     /// Check if an atom fact exists (queries MORK Space)
@@ -977,10 +975,7 @@ impl Environment {
     /// NOTE: Only caches ground (variable-free) patterns for deterministic results
     /// Variable patterns require fresh ConversionContext for correct De Bruijn encoding
     /// Expected speedup: 3-10x for repeated ground patterns
-    pub(crate) fn metta_to_mork_bytes_cached(
-        &self,
-        value: &MettaValue,
-    ) -> Result<Vec<u8>, String> {
+    pub(crate) fn metta_to_mork_bytes_cached(&self, value: &MettaValue) -> Result<Vec<u8>, String> {
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 
         // Only cache ground (variable-free) patterns
@@ -1015,7 +1010,8 @@ impl Environment {
     fn contains_variables(value: &MettaValue) -> bool {
         match value {
             MettaValue::Atom(s) => {
-                s == "_" || (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&"
+                s == "_"
+                    || (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&"
             }
             MettaValue::SExpr(items) => items.iter().any(Self::contains_variables),
             MettaValue::Error(_, details) => Self::contains_variables(details),
@@ -1162,7 +1158,7 @@ impl Environment {
             return Ok(());
         }
 
-        self.make_owned();  // CoW: ensure we own data before modifying
+        self.make_owned(); // CoW: ensure we own data before modifying
 
         // OPTIMIZATION: Use direct MORK byte conversion
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
@@ -1206,7 +1202,7 @@ impl Environment {
         // Conservative: Assume any bulk insert might contain types
         *self.type_index_dirty.write().unwrap() = true;
 
-        self.modified.store(true, Ordering::Release);  // CoW: mark as modified
+        self.modified.store(true, Ordering::Release); // CoW: mark as modified
         Ok(())
     }
 
@@ -1255,7 +1251,11 @@ impl Environment {
     /// let suggestions = env.suggest_similar_symbols("fibonaci", 2);
     /// // Returns: [("fibonacci", 1)]
     /// ```
-    pub fn suggest_similar_symbols(&self, query: &str, max_distance: usize) -> Vec<(String, usize)> {
+    pub fn suggest_similar_symbols(
+        &self,
+        query: &str,
+        max_distance: usize,
+    ) -> Vec<(String, usize)> {
         self.fuzzy_matcher.suggest(query, max_distance)
     }
 
@@ -1301,8 +1301,8 @@ impl Environment {
 
         Environment {
             shared_mapping,
-            owns_data: false,  // CoW: union creates a new shared environment
-            modified: Arc::new(AtomicBool::new(false)),  // CoW: fresh modification tracker
+            owns_data: false, // CoW: union creates a new shared environment
+            modified: Arc::new(AtomicBool::new(false)), // CoW: fresh modification tracker
             btm,
             rule_index,
             wildcard_rules,
@@ -1321,8 +1321,8 @@ impl Clone for Environment {
     fn clone(&self) -> Self {
         Environment {
             shared_mapping: self.shared_mapping.clone(),
-            owns_data: false,  // CoW: clones do not own data initially
-            modified: Arc::new(AtomicBool::new(false)),  // CoW: fresh modification tracker
+            owns_data: false, // CoW: clones do not own data initially
+            modified: Arc::new(AtomicBool::new(false)), // CoW: fresh modification tracker
             btm: Arc::clone(&self.btm),
             rule_index: Arc::clone(&self.rule_index),
             wildcard_rules: Arc::clone(&self.wildcard_rules),
@@ -1354,8 +1354,8 @@ mod cow_tests {
     use super::*;
     use crate::backend::models::MettaValue;
     use std::sync::atomic::Ordering;
-    use std::thread;
     use std::sync::{Arc as StdArc, Barrier};
+    use std::thread;
 
     /// Helper: Create a simple rule for testing
     fn make_test_rule(lhs: &str, rhs: &str) -> Rule {
@@ -1394,7 +1394,10 @@ mod cow_tests {
         // Test: New environment should own its data
         let env = Environment::new();
         assert!(env.owns_data, "New environment should own its data");
-        assert!(!env.modified.load(Ordering::Acquire), "New environment should not be modified");
+        assert!(
+            !env.modified.load(Ordering::Acquire),
+            "New environment should not be modified"
+        );
     }
 
     #[test]
@@ -1404,8 +1407,14 @@ mod cow_tests {
         let clone = env.clone();
 
         assert!(env.owns_data, "Original environment should still own data");
-        assert!(!clone.owns_data, "Cloned environment should NOT own data initially");
-        assert!(!clone.modified.load(Ordering::Acquire), "Cloned environment should not be modified");
+        assert!(
+            !clone.owns_data,
+            "Cloned environment should NOT own data initially"
+        );
+        assert!(
+            !clone.modified.load(Ordering::Acquire),
+            "Cloned environment should not be modified"
+        );
     }
 
     #[test]
@@ -1425,7 +1434,10 @@ mod cow_tests {
 
         // Pointers should be identical (shared)
         assert_eq!(btm_ptr_before, btm_ptr_after, "Clone should share btm Arc");
-        assert_eq!(rule_index_ptr_before, rule_index_ptr_after, "Clone should share rule_index Arc");
+        assert_eq!(
+            rule_index_ptr_before, rule_index_ptr_after,
+            "Clone should share rule_index Arc"
+        );
     }
 
     #[test]
@@ -1437,7 +1449,10 @@ mod cow_tests {
         // Add rule to original (already owns data, no make_owned() needed)
         env.add_rule(rule.clone());
         assert!(env.owns_data, "Original should still own data");
-        assert!(env.modified.load(Ordering::Acquire), "Original should be marked modified");
+        assert!(
+            env.modified.load(Ordering::Acquire),
+            "Original should be marked modified"
+        );
 
         // Clone and mutate
         let mut clone = env.clone();
@@ -1451,11 +1466,17 @@ mod cow_tests {
 
         // After mutation
         assert!(clone.owns_data, "Clone should own data after mutation");
-        assert!(clone.modified.load(Ordering::Acquire), "Clone should be marked modified");
+        assert!(
+            clone.modified.load(Ordering::Acquire),
+            "Clone should be marked modified"
+        );
 
         // Arc pointers should be different (deep copy occurred)
         let btm_ptr_after = StdArc::as_ptr(&clone.btm);
-        assert_ne!(btm_ptr_before, btm_ptr_after, "make_owned() should create new Arc");
+        assert_ne!(
+            btm_ptr_before, btm_ptr_after,
+            "make_owned() should create new Arc"
+        );
     }
 
     #[test]
@@ -1488,19 +1509,31 @@ mod cow_tests {
     fn test_modification_tracking() {
         // Test: Modification flag is correctly tracked
         let mut env = Environment::new();
-        assert!(!env.modified.load(Ordering::Acquire), "New env should not be modified");
+        assert!(
+            !env.modified.load(Ordering::Acquire),
+            "New env should not be modified"
+        );
 
         // Add rule → should set modified flag
         env.add_rule(make_test_rule("(test $x)", "(result $x)"));
-        assert!(env.modified.load(Ordering::Acquire), "Env should be modified after add_rule");
+        assert!(
+            env.modified.load(Ordering::Acquire),
+            "Env should be modified after add_rule"
+        );
 
         // Clone → clone should have fresh modified flag
         let mut clone = env.clone();
-        assert!(!clone.modified.load(Ordering::Acquire), "Clone should have fresh modified flag");
+        assert!(
+            !clone.modified.load(Ordering::Acquire),
+            "Clone should have fresh modified flag"
+        );
 
         // Mutate clone → should set clone's modified flag
         clone.add_rule(make_test_rule("(test2 $y)", "(result2 $y)"));
-        assert!(clone.modified.load(Ordering::Acquire), "Clone should be modified after mutation");
+        assert!(
+            clone.modified.load(Ordering::Acquire),
+            "Clone should be modified after mutation"
+        );
     }
 
     #[test]
@@ -1511,7 +1544,10 @@ mod cow_tests {
 
         // First mutation triggers make_owned()
         clone.add_rule(make_test_rule("(test1 $x)", "(result1 $x)"));
-        assert!(clone.owns_data, "Clone should own data after first mutation");
+        assert!(
+            clone.owns_data,
+            "Clone should own data after first mutation"
+        );
 
         // Get Arc pointers after first make_owned()
         let btm_ptr_first = StdArc::as_ptr(&clone.btm);
@@ -1521,7 +1557,10 @@ mod cow_tests {
 
         // Arc pointers should be same (no second deep copy)
         let btm_ptr_second = StdArc::as_ptr(&clone.btm);
-        assert_eq!(btm_ptr_first, btm_ptr_second, "make_owned() should not run twice");
+        assert_eq!(
+            btm_ptr_first, btm_ptr_second,
+            "make_owned() should not run twice"
+        );
     }
 
     #[test]
@@ -1555,12 +1594,30 @@ mod cow_tests {
 
         // All 7 Arc pointers should be different (deep copy occurred)
         assert_ne!(btm_before, btm_after, "btm should be deep copied");
-        assert_ne!(rule_index_before, rule_index_after, "rule_index should be deep copied");
-        assert_ne!(wildcard_rules_before, wildcard_rules_after, "wildcard_rules should be deep copied");
-        assert_ne!(multiplicities_before, multiplicities_after, "multiplicities should be deep copied");
-        assert_ne!(pattern_cache_before, pattern_cache_after, "pattern_cache should be deep copied");
-        assert_ne!(type_index_before, type_index_after, "type_index should be deep copied");
-        assert_ne!(type_index_dirty_before, type_index_dirty_after, "type_index_dirty should be deep copied");
+        assert_ne!(
+            rule_index_before, rule_index_after,
+            "rule_index should be deep copied"
+        );
+        assert_ne!(
+            wildcard_rules_before, wildcard_rules_after,
+            "wildcard_rules should be deep copied"
+        );
+        assert_ne!(
+            multiplicities_before, multiplicities_after,
+            "multiplicities should be deep copied"
+        );
+        assert_ne!(
+            pattern_cache_before, pattern_cache_after,
+            "pattern_cache should be deep copied"
+        );
+        assert_ne!(
+            type_index_before, type_index_after,
+            "type_index should be deep copied"
+        );
+        assert_ne!(
+            type_index_dirty_before, type_index_dirty_after,
+            "type_index_dirty should be deep copied"
+        );
     }
 
     #[test]
@@ -1607,7 +1664,11 @@ mod cow_tests {
             // Verify Arc pointers are different
             let env_ptr = StdArc::as_ptr(&env.btm);
             let clone_ptr = StdArc::as_ptr(&clone.btm);
-            assert_ne!(env_ptr, clone_ptr, "Property violated: clone shares mutable state after write (iteration {})", i);
+            assert_ne!(
+                env_ptr, clone_ptr,
+                "Property violated: clone shares mutable state after write (iteration {})",
+                i
+            );
         }
     }
 
@@ -1628,7 +1689,10 @@ mod cow_tests {
                     barrier.wait();
 
                     // Each thread adds a unique rule
-                    clone.add_rule(make_test_rule(&format!("(thread{} $x)", i), &format!("(result{} $x)", i)));
+                    clone.add_rule(make_test_rule(
+                        &format!("(thread{} $x)", i),
+                        &format!("(result{} $x)", i),
+                    ));
 
                     // Verify this clone only has 1 rule
                     let count = clone.rule_count();
@@ -1644,11 +1708,19 @@ mod cow_tests {
 
         for (i, clone) in clones.iter().enumerate() {
             let count = clone.rule_count();
-            assert_eq!(count, 1, "Clone {} should have exactly 1 rule after parallel write", i);
+            assert_eq!(
+                count, 1,
+                "Clone {} should have exactly 1 rule after parallel write",
+                i
+            );
         }
 
         // Original should be unchanged
-        assert_eq!(env.rule_count(), 0, "Original environment should be unchanged");
+        assert_eq!(
+            env.rule_count(),
+            0,
+            "Original environment should be unchanged"
+        );
     }
 
     // ============================================================================
@@ -1664,12 +1736,20 @@ mod cow_tests {
             let mut clone = env.clone();
             clone.add_rule(make_test_rule(&format!("(stress{} $x)", i), "(result $x)"));
 
-            assert!(clone.owns_data, "Clone {} should own data after mutation", i);
+            assert!(
+                clone.owns_data,
+                "Clone {} should own data after mutation",
+                i
+            );
             assert_eq!(clone.rule_count(), 1, "Clone {} should have 1 rule", i);
         }
 
         // Original should be unchanged
-        assert_eq!(env.rule_count(), 0, "Original should be unchanged after 1000 clone mutations");
+        assert_eq!(
+            env.rule_count(),
+            0,
+            "Original should be unchanged after 1000 clone mutations"
+        );
     }
 
     #[test]
@@ -1705,7 +1785,8 @@ mod cow_tests {
                 thread::spawn(move || {
                     for j in 0..100 {
                         let mut clone = env.as_ref().clone();
-                        clone.add_rule(make_test_rule(&format!("(t{}_{} $x)", i, j), "(result $x)"));
+                        clone
+                            .add_rule(make_test_rule(&format!("(t{}_{} $x)", i, j), "(result $x)"));
                         assert_eq!(clone.rule_count(), 1, "Clone should have 1 rule");
                     }
                 })
@@ -1718,7 +1799,11 @@ mod cow_tests {
         }
 
         // Original should be unchanged
-        assert_eq!(env.rule_count(), 0, "Original should be unchanged after concurrent stress");
+        assert_eq!(
+            env.rule_count(),
+            0,
+            "Original should be unchanged after concurrent stress"
+        );
     }
 
     // ============================================================================
@@ -1758,13 +1843,22 @@ mod cow_tests {
 
         // Each thread should have 10 rules
         let results = results.lock().unwrap();
-        assert_eq!(results.len(), num_threads, "Should have {} results", num_threads);
+        assert_eq!(
+            results.len(),
+            num_threads,
+            "Should have {} results",
+            num_threads
+        );
         for (i, &count) in results.iter().enumerate() {
             assert_eq!(count, 10, "Thread {} should have 10 rules", i);
         }
 
         // Base environment should be unchanged
-        assert_eq!(base_env.rule_count(), 0, "Base environment should be unchanged");
+        assert_eq!(
+            base_env.rule_count(),
+            0,
+            "Base environment should be unchanged"
+        );
     }
 
     #[test]
@@ -1826,7 +1920,11 @@ mod cow_tests {
         let clone = env.clone();
 
         // Verify clone has same rules
-        assert_eq!(clone.rule_count(), env.rule_count(), "Clone should have same rule count");
+        assert_eq!(
+            clone.rule_count(),
+            env.rule_count(),
+            "Clone should have same rule count"
+        );
 
         // Verify each rule is accessible
         for rule in &rules {
@@ -1856,15 +1954,16 @@ mod thread_safety_tests {
         // "(head $x)" → SExpr([Atom("head"), Atom("$x")])
         let lhs = if pattern.starts_with('(') && pattern.ends_with(')') {
             // Parse s-expression pattern
-            let inner = &pattern[1..pattern.len()-1];
+            let inner = &pattern[1..pattern.len() - 1];
             let parts: Vec<&str> = inner.split_whitespace().collect();
             if parts.is_empty() {
                 MettaValue::Atom(pattern.to_string())
             } else {
                 MettaValue::SExpr(
-                    parts.into_iter()
+                    parts
+                        .into_iter()
                         .map(|p| MettaValue::Atom(p.to_string()))
-                        .collect()
+                        .collect(),
                 )
             }
         } else {
@@ -1874,15 +1973,16 @@ mod thread_safety_tests {
 
         // Parse body similarly
         let rhs = if body.starts_with('(') && body.ends_with(')') {
-            let inner = &body[1..body.len()-1];
+            let inner = &body[1..body.len() - 1];
             let parts: Vec<&str> = inner.split_whitespace().collect();
             if parts.is_empty() {
                 MettaValue::Atom(body.to_string())
             } else {
                 MettaValue::SExpr(
-                    parts.into_iter()
+                    parts
+                        .into_iter()
                         .map(|p| MettaValue::Atom(p.to_string()))
-                        .collect()
+                        .collect(),
                 )
             }
         } else {
@@ -1941,7 +2041,12 @@ mod thread_safety_tests {
                     }
 
                     // Verify this clone has base + thread-specific rules
-                    assert_eq!(clone.rule_count(), 15, "Thread {} should have 15 rules", thread_id);
+                    assert_eq!(
+                        clone.rule_count(),
+                        15,
+                        "Thread {} should have 15 rules",
+                        thread_id
+                    );
 
                     // Verify thread-specific rules exist
                     for i in 0..5 {
@@ -1949,7 +2054,12 @@ mod thread_safety_tests {
                         let rule = make_test_rule(&pattern, &format!("(result{} $x)", i));
                         let (head, arity) = extract_head_arity(&rule.lhs);
                         let matches = clone.get_matching_rules(head, arity);
-                        assert!(!matches.is_empty(), "Thread {} rule {} should exist", thread_id, i);
+                        assert!(
+                            !matches.is_empty(),
+                            "Thread {} rule {} should exist",
+                            thread_id,
+                            i
+                        );
                     }
 
                     clone
@@ -1966,7 +2076,12 @@ mod thread_safety_tests {
         // Verify each result has exactly its own mutations
         assert_eq!(results.len(), 2);
         for (thread_id, clone) in results.iter().enumerate() {
-            assert_eq!(clone.rule_count(), 15, "Clone {} should have 15 rules", thread_id);
+            assert_eq!(
+                clone.rule_count(),
+                15,
+                "Clone {} should have 15 rules",
+                thread_id
+            );
 
             // Verify other thread's rules DON'T exist (isolation)
             let other_thread = 1 - thread_id;
@@ -1975,7 +2090,12 @@ mod thread_safety_tests {
                 let rule = make_test_rule(&pattern, &format!("(result{} $x)", i));
                 let (head, arity) = extract_head_arity(&rule.lhs);
                 let matches = clone.get_matching_rules(head, arity);
-                assert!(matches.is_empty(), "Clone {} should NOT have thread {} rules", thread_id, other_thread);
+                assert!(
+                    matches.is_empty(),
+                    "Clone {} should NOT have thread {} rules",
+                    thread_id,
+                    other_thread
+                );
             }
         }
     }
@@ -2030,9 +2150,8 @@ mod thread_safety_tests {
             .collect();
 
         // Collect results
-        let results: Vec<(usize, Environment)> = handles.into_iter()
-            .map(|h| h.join().unwrap())
-            .collect();
+        let results: Vec<(usize, Environment)> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
 
         // Verify base unchanged
         assert_eq!(base.rule_count(), 20);
@@ -2098,9 +2217,7 @@ mod thread_safety_tests {
             .collect();
 
         // Collect all clones
-        let clones: Vec<Environment> = handles.into_iter()
-            .map(|h| h.join().unwrap())
-            .collect();
+        let clones: Vec<Environment> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
         // Verify each clone has exactly RULES_PER_THREAD
         for (i, clone) in clones.iter().enumerate() {
@@ -2260,7 +2377,12 @@ mod thread_safety_tests {
                     ));
 
                     // Verify we have base + 1 rule
-                    assert_eq!(my_clone.rule_count(), 11, "Thread {} should have 11 rules", thread_id);
+                    assert_eq!(
+                        my_clone.rule_count(),
+                        11,
+                        "Thread {} should have 11 rules",
+                        thread_id
+                    );
 
                     my_clone
                 })
@@ -2268,9 +2390,7 @@ mod thread_safety_tests {
             .collect();
 
         // Collect results
-        let results: Vec<Environment> = handles.into_iter()
-            .map(|h| h.join().unwrap())
-            .collect();
+        let results: Vec<Environment> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
         // Verify each got its own copy
         for (i, clone) in results.iter().enumerate() {
@@ -2330,7 +2450,13 @@ mod thread_safety_tests {
                             &format!("(writer{}_{} $x)", id, i),
                             "(result $x)",
                         ));
-                        assert_eq!(clone.rule_count(), 31, "Writer {} iteration {} wrong count", id, i);
+                        assert_eq!(
+                            clone.rule_count(),
+                            31,
+                            "Writer {} iteration {} wrong count",
+                            id,
+                            i
+                        );
                         thread::sleep(Duration::from_micros(5));
                     }
                 })

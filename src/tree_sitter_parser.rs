@@ -584,8 +584,8 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // Simple float
-        let result = strip_spans_vec(&parser.parse("3.14").unwrap());
-        assert_eq!(result, vec![SExpr::Float(3.14, None)]);
+        let result = strip_spans_vec(&parser.parse("3.15").unwrap());
+        assert_eq!(result, vec![SExpr::Float(3.15, None)]);
 
         // Negative float
         let result = strip_spans_vec(&parser.parse("-2.5").unwrap());
@@ -599,13 +599,13 @@ mod tests {
         assert_eq!(result, vec![SExpr::Float(-1.5e-3, None)]);
 
         // In expressions
-        let result = strip_spans_vec(&parser.parse("(+ 3.14 2.71)").unwrap());
+        let result = strip_spans_vec(&parser.parse("(+ 3.15 2.71)").unwrap());
         assert_eq!(
             result,
             vec![SExpr::List(
                 vec![
                     SExpr::Atom("+".to_string(), None),
-                    SExpr::Float(3.14, None),
+                    SExpr::Float(3.15, None),
                     SExpr::Float(2.71, None),
                 ],
                 None

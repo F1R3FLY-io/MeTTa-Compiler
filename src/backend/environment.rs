@@ -606,10 +606,7 @@ impl Environment {
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
                 let mut index = self.rule_index.write().unwrap();
-                index
-                    .entry((head.clone(), arity))
-                    .or_default()
-                    .push(rule);
+                index.entry((head.clone(), arity)).or_default().push(rule);
 
                 // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
                 self.fuzzy_matcher.insert(&head);
@@ -697,10 +694,7 @@ impl Environment {
         if let Some(head) = rule.lhs.get_head_symbol() {
             let arity = rule.lhs.get_arity();
             let mut index = self.rule_index.write().unwrap();
-            index
-                .entry((head.clone(), arity))
-                .or_default()
-                .push(rule); // Move instead of clone
+            index.entry((head.clone(), arity)).or_default().push(rule); // Move instead of clone
 
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
             self.fuzzy_matcher.insert(&head);
@@ -798,10 +792,7 @@ impl Environment {
         {
             let mut index = self.rule_index.write().unwrap();
             for ((head, arity), mut rules) in rule_index_updates {
-                index
-                    .entry((head, arity))
-                    .or_default()
-                    .append(&mut rules);
+                index.entry((head, arity)).or_default().append(&mut rules);
             }
         }
 

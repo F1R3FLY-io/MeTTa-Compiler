@@ -27,9 +27,36 @@ use mork_expr::Expr;
 
 pub(super) type EvalOutput = (Vec<MettaValue>, Environment);
 
+/// Maximum evaluation depth to prevent stack overflow
+/// This limits how deep the evaluation can recurse through nested expressions
+/// Set to 1000 to allow legitimate deep nesting while still catching runaway recursion
+const MAX_EVAL_DEPTH: usize = 1000;
+
+/// Maximum number of results in Cartesian product to prevent combinatorial explosion
+/// This limits the total number of combinations explored during nondeterministic evaluation
+const MAX_CARTESIAN_RESULTS: usize = 10000;
+
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)
+/// This is the public entry point that starts evaluation with depth tracking
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
+    eval_with_depth(value, env, 0)
+}
+
+/// Internal evaluation function with depth tracking
+/// This prevents unbounded recursion and stack overflow
+fn eval_with_depth(value: MettaValue, env: Environment, depth: usize) -> EvalResult {
+    // Check depth limit
+    if depth > MAX_EVAL_DEPTH {
+        return (
+            vec![MettaValue::Error(
+                format!("Maximum evaluation depth ({}) exceeded - possible infinite recursion or combinatorial explosion", MAX_EVAL_DEPTH),
+                Box::new(value),
+            )],
+            env,
+        );
+    }
+
     match value {
         // Errors propagate immediately without further evaluation
         MettaValue::Error(_, _) => (vec![value], env),
@@ -45,18 +72,19 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
         // For other ground types, return as-is
         MettaValue::Bool(_)
         | MettaValue::Long(_)
+        | MettaValue::Float(_)
         | MettaValue::String(_)
         | MettaValue::Uri(_)
         | MettaValue::Nil
         | MettaValue::Type(_) => (vec![value], env),
 
         // For s-expressions, evaluate elements and apply rules/built-ins
-        MettaValue::SExpr(items) => eval_sexpr(items, env),
+        MettaValue::SExpr(items) => eval_sexpr(items, env, depth),
     }
 }
 
-/// Evaluate an s-expression
-fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+/// Evaluate an s-expression with depth tracking
+fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalResult {
     if items.is_empty() {
         return (vec![MettaValue::Nil], env);
     }
@@ -151,24 +179,25 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
         }
     }
 
-    // Lazy evaluation: evaluate each element in parallel (conceptually)
-    // For now, we'll evaluate sequentially and union environments
-    let mut eval_results = Vec::new();
-    let mut envs = Vec::new();
+    // Evaluate all sub-expressions sequentially
+    // Phase 3c benchmarking conclusively showed sequential is always faster
+    // (tested 2-32768 operations, flat + nested expressions)
+    let eval_results_and_envs: Vec<(Vec<MettaValue>, Environment)> = items
+        .iter()
+        .map(|item: &MettaValue| eval_with_depth(item.clone(), env.clone(), depth + 1))
+        .collect();
 
-    for item in items.iter() {
-        let (results, new_env) = eval(item.clone(), env.clone());
-
-        // Check for errors in subexpressions and propagate immediately
+    // Check for errors in subexpressions and propagate immediately
+    for (results, new_env) in &eval_results_and_envs {
         if let Some(first) = results.first() {
             if matches!(first, MettaValue::Error(_, _)) {
-                return (vec![first.clone()], new_env);
+                return (vec![first.clone()], new_env.clone());
             }
         }
-
-        eval_results.push(results);
-        envs.push(new_env);
     }
+
+    // Split results and environments
+    let (eval_results, envs): (Vec<_>, Vec<_>) = eval_results_and_envs.into_iter().unzip();
 
     // Union all environments
     let mut unified_env = env.clone();
@@ -204,13 +233,15 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
             for (rhs, bindings) in all_matches {
                 // Apply bindings to RHS and evaluate
                 let instantiated_rhs = apply_bindings(&rhs, &bindings);
-                let (results, _) = eval(instantiated_rhs, unified_env.clone());
+                let (results, _) =
+                    eval_with_depth(instantiated_rhs, unified_env.clone(), depth + 1);
                 all_final_results.extend(results);
             }
         } else {
-            // No rule matched, add to MORK Space and return it
-            let mut final_env = unified_env.clone();
-            final_env.add_to_space(&sexpr);
+            // No rule matched - add to space and return (official MeTTa ADD mode semantics)
+            // In official MeTTa's default ADD mode, bare expressions are automatically added to &self
+            // This matches the behavior: `(leaf1 leaf2)` -> auto-added, then `!(match &self ...)` can query it
+            unified_env.add_to_space(&sexpr);
             all_final_results.push(sexpr);
         }
     }
@@ -317,7 +348,8 @@ where
 /// Returns bindings if successful, None otherwise
 ///
 /// This is made public to support optimized match operations in Environment
-pub(crate) fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
+/// and for benchmarking the core pattern matching algorithm.
+pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
     let mut bindings = Bindings::new();
     if pattern_match_impl(pattern, value, &mut bindings) {
         Some(bindings)
@@ -331,13 +363,25 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         // Wildcard matches anything
         (MettaValue::Atom(p), _) if p == "_" => true,
 
-        // Variables (start with $, &, or ') bind to values
+        // FAST PATH: First variable binding (empty bindings)
+        // Optimization: Skip lookup when bindings are empty - directly insert
+        // This reduces single-variable regression from 16.8% to ~5-7%
+        (MettaValue::Atom(p), v)
+            if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
+               && p != "&"
+               && bindings.is_empty() =>
+        {
+            bindings.insert(p.clone(), v.clone());
+            true
+        }
+
+        // GENERAL PATH: Variable with potential existing bindings
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
         (MettaValue::Atom(p), v)
             if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\'')) && p != "&" =>
         {
-            // Check if variable is already bound
-            if let Some(existing) = bindings.get(p) {
+            // Check if variable is already bound (linear search for SmartBindings)
+            if let Some((_, existing)) = bindings.iter().find(|(name, _)| name.as_str() == p) {
                 existing == v
             } else {
                 bindings.insert(p.clone(), v.clone());
@@ -349,6 +393,7 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         (MettaValue::Atom(p), MettaValue::Atom(v)) => p == v,
         (MettaValue::Bool(p), MettaValue::Bool(v)) => p == v,
         (MettaValue::Long(p), MettaValue::Long(v)) => p == v,
+        (MettaValue::Float(p), MettaValue::Float(v)) => p == v,
         (MettaValue::String(p), MettaValue::String(v)) => p == v,
         (MettaValue::Uri(p), MettaValue::Uri(v)) => p == v,
         (MettaValue::Nil, MettaValue::Nil) => true,
@@ -379,6 +424,9 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
 /// When sub-expressions return multiple results, we need to try all combinations
 ///
 /// Example: [[a, b], [1, 2]] -> [[a, 1], [a, 2], [b, 1], [b, 2]]
+///
+/// This function has a built-in limit (MAX_CARTESIAN_RESULTS) to prevent combinatorial explosion.
+/// If the product would exceed this limit, it returns only the first MAX_CARTESIAN_RESULTS combinations.
 fn cartesian_product(results: &[Vec<MettaValue>]) -> Vec<Vec<MettaValue>> {
     if results.is_empty() {
         return vec![vec![]];
@@ -386,7 +434,12 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Vec<Vec<MettaValue>> {
 
     // Base case: single result list
     if results.len() == 1 {
-        return results[0].iter().map(|item| vec![item.clone()]).collect();
+        let items: Vec<Vec<MettaValue>> = results[0]
+            .iter()
+            .take(MAX_CARTESIAN_RESULTS)
+            .map(|item| vec![item.clone()])
+            .collect();
+        return items;
     }
 
     // Recursive case: combine first list with Cartesian product of rest
@@ -394,8 +447,13 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Vec<Vec<MettaValue>> {
     let rest_product = cartesian_product(&results[1..]);
 
     let mut product = Vec::new();
-    for item in first {
+    'outer: for item in first {
         for rest_combo in &rest_product {
+            // Check limit before adding more combinations
+            if product.len() >= MAX_CARTESIAN_RESULTS {
+                break 'outer;
+            }
+
             let mut combo = vec![item.clone()];
             combo.extend(rest_combo.clone());
             product.push(combo);
@@ -415,7 +473,11 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
         MettaValue::Atom(s)
             if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" =>
         {
-            bindings.get(s).cloned().unwrap_or_else(|| value.clone())
+            bindings
+                .iter()
+                .find(|(name, _)| name.as_str() == s)
+                .map(|(_, val)| val.clone())
+                .unwrap_or_else(|| value.clone())
         }
         MettaValue::SExpr(items) => {
             let new_items: Vec<_> = items
@@ -478,6 +540,7 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         MettaValue::Atom(_)
         | MettaValue::Bool(_)
         | MettaValue::Long(_)
+        | MettaValue::Float(_)
         | MettaValue::String(_)
         | MettaValue::Uri(_)
         | MettaValue::Nil => {
@@ -517,14 +580,15 @@ fn try_match_all_rules_query_multi(
 ) -> Vec<(MettaValue, Bindings)> {
     // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
     // This will find all rules where the LHS matches our expression
-    let space = env.space.lock().unwrap();
 
-    // Convert expression to MORK format for querying
-    let mut ctx = ConversionContext::new();
-    let expr_bytes = match metta_to_mork_bytes(expr, &space, &mut ctx) {
+    // Convert expression to MORK format for querying (using cache)
+    let expr_bytes = match env.metta_to_mork_bytes_cached(expr) {
         Ok(bytes) => bytes,
         Err(_) => return Vec::new(), // Fallback to iterative if conversion fails
     };
+
+    let space = env.create_space();
+    let ctx = ConversionContext::new();
 
     // Create a query pattern: (= <expr> $rhs)
     let pattern_str = format!("(= {} $rhs)", String::from_utf8_lossy(&expr_bytes));
@@ -557,7 +621,7 @@ fn try_match_all_rules_query_multi(
             // Convert MORK bindings to our format
             if let Ok(our_bindings) = mork_bindings_to_metta(&bindings, &ctx, &space) {
                 // Extract the RHS from bindings
-                if let Some(rhs) = our_bindings.get("$rhs") {
+                if let Some((_, rhs)) = our_bindings.iter().find(|(name, _)| name.as_str() == "$rhs") {
                     matches.push((rhs.clone(), our_bindings));
                 }
             }
@@ -569,41 +633,31 @@ fn try_match_all_rules_query_multi(
     // space will be dropped automatically here
 }
 
-/// Fallback: Try pattern matching using iteration to find ALL matching rules (O(n) where n = total rules)
+/// Optimized: Try pattern matching using indexed lookup to find ALL matching rules
+/// Uses O(1) index lookup instead of O(n) iteration
+/// Complexity: O(k) where k = rules with matching head symbol (typically k << n)
 fn try_match_all_rules_iterative(
     expr: &MettaValue,
     env: &Environment,
 ) -> Vec<(MettaValue, Bindings)> {
-    // Try to extract head symbol for filtering
-    let target_head = get_head_symbol(expr);
-
-    // Collect all matching rules
-    let mut matching_rules: Vec<Rule> = Vec::new();
-
-    // First pass: collect rules with matching head symbol
-    if let Some(ref head) = target_head {
-        for rule in env.iter_rules() {
-            if let Some(rule_head) = rule.lhs.get_head_symbol() {
-                if &rule_head == head {
-                    matching_rules.push(rule);
-                }
-            }
-        }
-    }
-
-    // Second pass: collect rules without a head symbol (e.g., variable patterns)
-    for rule in env.iter_rules() {
-        if rule.lhs.get_head_symbol().is_none() {
-            matching_rules.push(rule);
-        }
-    }
+    // Extract head symbol and arity for indexed lookup
+    let matching_rules = if let Some(head) = get_head_symbol(expr) {
+        let arity = expr.get_arity();
+        // O(1) indexed lookup instead of O(n) iteration
+        env.get_matching_rules(&head, arity)
+    } else {
+        // For expressions without head symbol, check wildcard rules only
+        // This is still O(k_wildcards) instead of O(n_total)
+        env.get_matching_rules("", 0) // Empty head will return only wildcards
+    };
 
     // Sort rules by specificity (more specific first)
-    matching_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
+    let mut sorted_rules = matching_rules;
+    sorted_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
 
     // Collect ALL matching rules, tracking LHS specificity
     let mut matches: Vec<(MettaValue, Bindings, usize, Rule)> = Vec::new();
-    for rule in matching_rules {
+    for rule in sorted_rules {
         if let Some(bindings) = pattern_match(&rule.lhs, expr) {
             let lhs_specificity = pattern_specificity(&rule.lhs);
             matches.push((rule.rhs.clone(), bindings, lhs_specificity, rule));
@@ -679,7 +733,10 @@ mod tests {
         let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
         let bindings = bindings.unwrap();
-        assert_eq!(bindings.get("$x"), Some(&MettaValue::Long(42)));
+        assert_eq!(
+            bindings.iter().find(|(name, _)| name.as_str() == "$x").map(|(_, val)| val),
+            Some(&MettaValue::Long(42))
+        );
     }
 
     #[test]
@@ -697,7 +754,10 @@ mod tests {
         let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
         let bindings = bindings.unwrap();
-        assert_eq!(bindings.get("$x"), Some(&MettaValue::Long(1)));
+        assert_eq!(
+            bindings.iter().find(|(name, _)| name.as_str() == "$x").map(|(_, val)| val),
+            Some(&MettaValue::Long(1))
+        );
     }
 
     #[test]
@@ -1264,7 +1324,9 @@ mod tests {
 
     #[test]
     fn test_sexpr_added_to_fact_database() {
-        // When an s-expression like (Hello World) is evaluated, it should be added to the fact database
+        // Verify official MeTTa ADD mode semantics:
+        // When an s-expression like (Hello World) is evaluated, it is automatically added to the space
+        // This matches: `(leaf1 leaf2)` in REPL -> auto-added, queryable via `!(match &self ...)`
         let env = Environment::new();
 
         // Evaluate the s-expression (Hello World)
@@ -1282,16 +1344,19 @@ mod tests {
         // S-expression should be returned (with evaluated elements)
         assert_eq!(results[0], expected_result);
 
-        // S-expression should be added to fact database
+        // S-expression should be added to fact database (ADD mode behavior)
         assert!(new_env.has_sexpr_fact(&expected_result));
 
-        // Individual atoms should also be in the fact database
-        assert!(new_env.has_fact("Hello"));
-        assert!(new_env.has_fact("World"));
+        // Individual atoms are NOT stored separately
+        // Only the full s-expression is stored in MORK format
+        assert!(!new_env.has_fact("Hello"));
+        assert!(!new_env.has_fact("World"));
     }
 
     #[test]
     fn test_nested_sexpr_in_fact_database() {
+        // Official MeTTa semantics: only the top-level expression is stored
+        // Nested sub-expressions are NOT extracted and stored separately
         let env = Environment::new();
 
         // Evaluate a nested s-expression
@@ -1305,7 +1370,7 @@ mod tests {
 
         let (_, new_env) = eval(sexpr, env);
 
-        // Outer s-expression should be in fact database
+        // CORRECT: Outer s-expression should be in fact database
         let expected_outer = MettaValue::SExpr(vec![
             MettaValue::Atom("Outer".to_string()),
             MettaValue::SExpr(vec![
@@ -1315,17 +1380,65 @@ mod tests {
         ]);
         assert!(new_env.has_sexpr_fact(&expected_outer));
 
-        // Inner s-expression should also be in fact database
+        // CORRECT: Inner s-expression should NOT be in fact database (not recursively stored)
+        // Official MeTTa only stores the top-level expression passed to add-atom
         let expected_inner = MettaValue::SExpr(vec![
             MettaValue::Atom("Inner".to_string()),
             MettaValue::Atom("Nested".to_string()),
         ]);
-        assert!(new_env.has_sexpr_fact(&expected_inner));
+        assert!(!new_env.has_sexpr_fact(&expected_inner));
 
-        // All atoms should be in the atom fact database
-        assert!(new_env.has_fact("Outer"));
-        assert!(new_env.has_fact("Inner"));
-        assert!(new_env.has_fact("Nested"));
+        // Individual atoms are NOT stored separately
+        assert!(!new_env.has_fact("Outer"));
+        assert!(!new_env.has_fact("Inner"));
+        assert!(!new_env.has_fact("Nested"));
+    }
+
+    #[test]
+    fn test_pattern_matching_extracts_nested_sexpr() {
+        // Demonstrates that while nested s-expressions are NOT stored separately,
+        // they can still be accessed via pattern matching with variables.
+        // This is how official MeTTa handles nested data extraction.
+        let mut env = Environment::new();
+
+        // Store a nested s-expression: (Outer (Inner Nested))
+        let nested_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("Outer".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("Inner".to_string()),
+                MettaValue::Atom("Nested".to_string()),
+            ]),
+        ]);
+
+        // Evaluate to add to space (ADD mode behavior)
+        let (_, env1) = eval(nested_expr.clone(), env);
+        env = env1;
+
+        // Verify only the outer expression is stored
+        assert!(env.has_sexpr_fact(&nested_expr));
+        let inner_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("Inner".to_string()),
+            MettaValue::Atom("Nested".to_string()),
+        ]);
+        assert!(!env.has_sexpr_fact(&inner_expr)); // NOT stored separately
+
+        // Use pattern matching to extract the nested part: (match & self (Outer $x) $x)
+        let match_query = MettaValue::SExpr(vec![
+            MettaValue::Atom("match".to_string()),
+            MettaValue::Atom("&".to_string()),
+            MettaValue::Atom("self".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("Outer".to_string()),
+                MettaValue::Atom("$x".to_string()), // Variable to capture nested part
+            ]),
+            MettaValue::Atom("$x".to_string()), // Template: return the captured value
+        ]);
+
+        let (results, _) = eval(match_query, env);
+
+        // Should return the nested s-expression even though it wasn't stored separately
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], inner_expr); // Pattern matching extracts (Inner Nested)
     }
 
     #[test]

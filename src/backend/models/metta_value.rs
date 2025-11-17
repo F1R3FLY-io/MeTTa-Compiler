@@ -8,6 +8,8 @@ pub enum MettaValue {
     Bool(bool),
     /// An integer literal
     Long(i64),
+    /// A floating point literal
+    Float(f64),
     /// A string literal
     String(String),
     /// A URI literal
@@ -24,13 +26,14 @@ pub enum MettaValue {
 
 impl MettaValue {
     /// Check if this value is a ground type (non-reducible literal)
-    /// Ground types: Bool, Long, String, Uri, Nil
+    /// Ground types: Bool, Long, Float, String, Uri, Nil
     /// Returns true if the value doesn't require further evaluation
     pub fn is_ground_type(&self) -> bool {
         matches!(
             self,
             MettaValue::Bool(_)
                 | MettaValue::Long(_)
+                | MettaValue::Float(_)
                 | MettaValue::String(_)
                 | MettaValue::Uri(_)
                 | MettaValue::Nil
@@ -76,6 +79,7 @@ impl MettaValue {
             // Other ground types must match exactly
             (MettaValue::Bool(a), MettaValue::Bool(b)) => a == b,
             (MettaValue::Long(a), MettaValue::Long(b)) => a == b,
+            (MettaValue::Float(a), MettaValue::Float(b)) => a == b,
             (MettaValue::String(a), MettaValue::String(b)) => a == b,
             (MettaValue::Uri(a), MettaValue::Uri(b)) => a == b,
             (MettaValue::Nil, MettaValue::Nil) => true,
@@ -134,6 +138,16 @@ impl MettaValue {
         }
     }
 
+    /// Get the arity (number of arguments) for an s-expression
+    /// For (head arg1 arg2 arg3), arity is 3
+    /// For bare atoms, arity is 0
+    pub fn get_arity(&self) -> usize {
+        match self {
+            MettaValue::SExpr(items) if !items.is_empty() => items.len() - 1, // Exclude head
+            _ => 0,
+        }
+    }
+
     /// Convert MettaValue to MORK s-expression string format
     /// This format can be parsed by MORK's parser
     pub fn to_mork_string(&self) -> String {
@@ -151,6 +165,7 @@ impl MettaValue {
             }
             MettaValue::Bool(b) => b.to_string(),
             MettaValue::Long(n) => n.to_string(),
+            MettaValue::Float(f) => f.to_string(),
             MettaValue::String(s) => format!("\"{}\"", s),
             MettaValue::Uri(s) => format!("`{}`", s),
             MettaValue::SExpr(items) => {
@@ -176,6 +191,7 @@ impl MettaValue {
             MettaValue::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
             MettaValue::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
             MettaValue::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
+            MettaValue::Float(f) => format!(r#"{{"type":"float","value":{}}}"#, f),
             MettaValue::String(s) => format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s)),
             MettaValue::Uri(s) => format!(r#"{{"type":"uri","value":"{}"}}"#, escape_json(s)),
             MettaValue::Nil => r#"{"type":"nil"}"#.to_string(),
@@ -840,5 +856,59 @@ mod tests {
         assert!(json.contains(r#"\n"#));
         assert!(json.contains(r#"\""#));
         assert!(json.contains(r#"\\"#));
+    }
+}
+
+// Implement Eq for MettaValue (required for HashMap keys)
+// Note: Float uses bit-level comparison for hashing purposes
+impl Eq for MettaValue {}
+
+// Implement Hash for MettaValue to enable use as HashMap key
+impl std::hash::Hash for MettaValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        use std::mem;
+        match self {
+            MettaValue::Atom(s) => {
+                0u8.hash(state);
+                s.hash(state);
+            }
+            MettaValue::Bool(b) => {
+                1u8.hash(state);
+                b.hash(state);
+            }
+            MettaValue::Long(n) => {
+                2u8.hash(state);
+                n.hash(state);
+            }
+            MettaValue::Float(f) => {
+                3u8.hash(state);
+                // Hash float as its bit representation for deterministic hashing
+                f.to_bits().hash(state);
+            }
+            MettaValue::String(s) => {
+                4u8.hash(state);
+                s.hash(state);
+            }
+            MettaValue::Uri(s) => {
+                5u8.hash(state);
+                s.hash(state);
+            }
+            MettaValue::SExpr(items) => {
+                6u8.hash(state);
+                items.hash(state);
+            }
+            MettaValue::Nil => {
+                7u8.hash(state);
+            }
+            MettaValue::Error(msg, details) => {
+                8u8.hash(state);
+                msg.hash(state);
+                details.hash(state);
+            }
+            MettaValue::Type(t) => {
+                9u8.hash(state);
+                t.hash(state);
+            }
+        }
     }
 }

@@ -42,6 +42,7 @@ pub struct Environment {
     /// This enables O(k) rule matching where k = rules with matching head symbol
     /// Instead of O(n) iteration through all rules
     /// RwLock allows concurrent reads for parallel rule matching
+    #[allow(clippy::type_complexity)]
     rule_index: Arc<RwLock<HashMap<(String, usize), Vec<Rule>>>>,
 
     /// Wildcard rules: Rules without a clear head symbol (e.g., variable patterns, wildcards)
@@ -607,7 +608,7 @@ impl Environment {
                 let mut index = self.rule_index.write().unwrap();
                 index
                     .entry((head.clone(), arity))
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(rule);
 
                 // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
@@ -698,7 +699,7 @@ impl Environment {
             let mut index = self.rule_index.write().unwrap();
             index
                 .entry((head.clone(), arity))
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(rule); // Move instead of clone
 
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
@@ -755,7 +756,7 @@ impl Environment {
                 let arity = rule.lhs.get_arity();
                 rule_index_updates
                     .entry((head.clone(), arity))
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(rule);
 
                 // Track symbol for fuzzy matching
@@ -799,7 +800,7 @@ impl Environment {
             for ((head, arity), mut rules) in rule_index_updates {
                 index
                     .entry((head, arity))
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .append(&mut rules);
             }
         }
@@ -1032,6 +1033,7 @@ impl Environment {
     /// - p = prefix length (typically 1-3 items)
     /// - k = candidates matching prefix (typically << n)
     /// - n = total entries in space
+    #[allow(dead_code)]
     pub(crate) fn extract_pattern_prefix(pattern: &MettaValue) -> (Vec<MettaValue>, bool) {
         match pattern {
             MettaValue::SExpr(items) => {

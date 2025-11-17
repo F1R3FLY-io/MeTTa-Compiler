@@ -21,7 +21,7 @@ pub enum SmartBindings {
     Single((String, MettaValue)),
     /// 2-8 bindings (stack-allocated via SmallVec)
     /// >8 bindings (SmallVec spills to heap automatically)
-    Small(SmallVec<[(String, MettaValue); 8]>),
+    Small(Box<SmallVec<[(String, MettaValue); 8]>>),
 }
 
 impl SmartBindings {
@@ -64,7 +64,7 @@ impl SmartBindings {
                 let mut vec = SmallVec::new();
                 vec.push(existing.clone());
                 vec.push((name, value));
-                *self = SmartBindings::Small(vec);
+                *self = SmartBindings::Small(Box::new(vec));
             }
             SmartBindings::Small(vec) => {
                 vec.push((name, value));

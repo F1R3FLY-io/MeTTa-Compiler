@@ -1991,7 +1991,7 @@ dependencies = [
 [[package]]
 name = "pathmap"
 version = "0.2.0-alpha0"
-source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#d519b4d4e77a07a0d3af6594bc23b236af38c8e7"
+source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#29dfa5038887b7bdd3bc513a2d5122db164281fc"
 dependencies = [
  "arrayvec",
  "dyn-clone",

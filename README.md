@@ -656,6 +656,21 @@ See **`integration/RHOLANG_SYNC_GUIDE.md`** for complete usage patterns with the
 
 MeTTaTron supports **async parallel evaluation** for independent MeTTa expressions using Tokio's async runtime. This enables true parallelization and efficient resource utilization.
 
+### Performance Highlights
+
+Recent optimizations in the `dylon/rholang-language-server` branch deliver **significant performance improvements**:
+
+- **2.05× overall speedup** (51.2% faster on average)
+- **Async evaluation**: 2.94× faster (66.1% improvement)
+- **Sync evaluation**: 1.44× faster (28.4% improvement)
+
+**Key improvements:**
+- Async concurrent operations: **4.14× faster** (75.9% improvement)
+- Async reasoning tasks: **3.42× faster** (70.7% improvement)
+- Pattern matching: **1.60× faster** (37.5% improvement)
+
+These results come from comprehensive benchmarking using real-world MeTTa programs. See **`docs/benchmarks/METTA_BENCHMARK_SUITE.md`** for complete benchmark documentation.
+
 ### Configuration
 
 ```rust
@@ -681,7 +696,21 @@ configure_eval(EvalConfig {
 });
 ```
 
-See **`docs/THREADING_MODEL.md`** and **`docs/guides/CONFIGURATION.md`** for detailed information.
+### Benchmarking
+
+Run the comprehensive MeTTa benchmark suite:
+
+```bash
+# Run all benchmarks
+cargo bench --bench metta
+
+# Run specific benchmark categories
+cargo bench --bench metta async_    # Async benchmarks only
+cargo bench --bench rule_matching   # Rule matching performance
+cargo bench --bench pattern_match   # Pattern matching performance
+```
+
+See **`docs/THREADING_MODEL.md`**, **`docs/guides/CONFIGURATION.md`**, and **`docs/benchmarks/METTA_BENCHMARK_SUITE.md`** for detailed information.
 
 ## Documentation
 

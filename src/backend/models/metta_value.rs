@@ -866,7 +866,6 @@ impl Eq for MettaValue {}
 // Implement Hash for MettaValue to enable use as HashMap key
 impl std::hash::Hash for MettaValue {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        use std::mem;
         match self {
             MettaValue::Atom(s) => {
                 0u8.hash(state);

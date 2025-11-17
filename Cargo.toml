@@ -53,6 +53,12 @@ tokio = { version = "1", features = [
     "sync",
     "macros",
 ] }
+divan = "0.1.21"
+paste = "1.0.15"
+
+[[bench]]
+name = "metta"
+harness = false
 
 [profile.release]
 opt-level = 3

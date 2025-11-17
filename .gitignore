@@ -1,3 +1,6 @@
 parser/bnfc/rust/output
 target/
 perf.data
+perf.data.*
+*.perf.data
+flamegraph*.svg

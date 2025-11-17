@@ -67,7 +67,6 @@ pub mod tree_sitter_parser;
 /// - **Pattern Matching**: Automatic variable binding in rule application
 /// - **Error Propagation**: First error stops evaluation immediately
 /// - **Environment**: Monotonic rule storage with union operations
-
 pub use backend::{
     compile,
     environment::Environment,

@@ -518,6 +518,7 @@ impl Environment {
 
             // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
             // This avoids the "reserved byte" panic during evaluation
+            #[allow(clippy::collapsible_match)]
             if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
                 // Check if this is a type assertion: (: name type)
                 if let MettaValue::SExpr(items) = &value {
@@ -1374,6 +1375,7 @@ mod cow_tests {
     }
 
     /// Helper: Create a simple MettaValue fact for testing
+    #[allow(dead_code)]
     fn make_test_fact(value: &str) -> MettaValue {
         MettaValue::Atom(value.to_string())
     }
@@ -1532,7 +1534,7 @@ mod cow_tests {
     #[test]
     fn test_make_owned_idempotency() {
         // Test: make_owned() should be idempotent (safe to call multiple times)
-        let mut env = Environment::new();
+        let env = Environment::new();
         let mut clone = env.clone();
 
         // First mutation triggers make_owned()

@@ -20,9 +20,7 @@ mod types;
 
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
-use crate::backend::mork_convert::{
-    metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext,
-};
+use crate::backend::mork_convert::{mork_bindings_to_metta, ConversionContext};
 use mork_expr::Expr;
 
 pub(super) type EvalOutput = (Vec<MettaValue>, Environment);

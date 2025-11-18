@@ -605,10 +605,7 @@ impl Environment {
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
                 let mut index = self.rule_index.write().unwrap();
-                index
-                    .entry((head.clone(), arity))
-                    .or_insert_with(Vec::new)
-                    .push(rule);
+                index.entry((head.clone(), arity)).or_default().push(rule);
 
                 // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
                 self.fuzzy_matcher.insert(&head);
@@ -696,10 +693,7 @@ impl Environment {
         if let Some(head) = rule.lhs.get_head_symbol() {
             let arity = rule.lhs.get_arity();
             let mut index = self.rule_index.write().unwrap();
-            index
-                .entry((head.clone(), arity))
-                .or_insert_with(Vec::new)
-                .push(rule); // Move instead of clone
+            index.entry((head.clone(), arity)).or_default().push(rule); // Move instead of clone
 
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
             self.fuzzy_matcher.insert(&head);
@@ -755,7 +749,7 @@ impl Environment {
                 let arity = rule.lhs.get_arity();
                 rule_index_updates
                     .entry((head.clone(), arity))
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(rule);
 
                 // Track symbol for fuzzy matching
@@ -797,10 +791,7 @@ impl Environment {
         {
             let mut index = self.rule_index.write().unwrap();
             for ((head, arity), mut rules) in rule_index_updates {
-                index
-                    .entry((head, arity))
-                    .or_insert_with(Vec::new)
-                    .append(&mut rules);
+                index.entry((head, arity)).or_default().append(&mut rules);
             }
         }
 
@@ -1539,7 +1530,7 @@ mod cow_tests {
     #[test]
     fn test_make_owned_idempotency() {
         // Test: make_owned() should be idempotent (safe to call multiple times)
-        let mut env = Environment::new();
+        let env = Environment::new();
         let mut clone = env.clone();
 
         // First mutation triggers make_owned()

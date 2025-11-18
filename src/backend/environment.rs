@@ -42,6 +42,7 @@ pub struct Environment {
     /// This enables O(k) rule matching where k = rules with matching head symbol
     /// Instead of O(n) iteration through all rules
     /// RwLock allows concurrent reads for parallel rule matching
+    #[allow(clippy::type_complexity)]
     rule_index: Arc<RwLock<HashMap<(String, usize), Vec<Rule>>>>,
 
     /// Wildcard rules: Rules without a clear head symbol (e.g., variable patterns, wildcards)
@@ -517,6 +518,7 @@ impl Environment {
 
             // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
             // This avoids the "reserved byte" panic during evaluation
+            #[allow(clippy::collapsible_match)]
             if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
                 // Check if this is a type assertion: (: name type)
                 if let MettaValue::SExpr(items) = &value {
@@ -1023,6 +1025,7 @@ impl Environment {
     /// - p = prefix length (typically 1-3 items)
     /// - k = candidates matching prefix (typically << n)
     /// - n = total entries in space
+    #[allow(dead_code)]
     pub(crate) fn extract_pattern_prefix(pattern: &MettaValue) -> (Vec<MettaValue>, bool) {
         match pattern {
             MettaValue::SExpr(items) => {
@@ -1372,6 +1375,7 @@ mod cow_tests {
     }
 
     /// Helper: Create a simple MettaValue fact for testing
+    #[allow(dead_code)]
     fn make_test_fact(value: &str) -> MettaValue {
         MettaValue::Atom(value.to_string())
     }

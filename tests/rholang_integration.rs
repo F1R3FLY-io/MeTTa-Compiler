@@ -724,7 +724,7 @@ fn test_edge_cases() {
             match v {
                 MettaValue::Error(_, _) => true,
                 MettaValue::SExpr(items) => {
-                    items.first().map_or(false, |first| {
+                    items.first().is_some_and(|first| {
                         matches!(first, MettaValue::Atom(s) | MettaValue::String(s) if s == "error")
                     })
                 }
@@ -1159,7 +1159,7 @@ fn test_example_robot_planning() {
                         route_exprs.len() >= 2 &&
                         matches!(&route_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "route") &&
                         matches!(&route_exprs[1], MettaValue::SExpr(waypoint_exprs) if
-                            waypoint_exprs.len() >= 1 &&
+                            !waypoint_exprs.is_empty() &&
                             matches!(&waypoint_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "waypoints")
                         )
                     )

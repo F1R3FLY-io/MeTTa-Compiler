@@ -771,9 +771,9 @@ fn test_edge_cases() {
     // Validation 6: Error resilience → Final output should be [10]
     // Test shows evaluation continues after error by producing final output [10]
     // Only the final state is printed, so we just check for [10]
-    let has_final_output = pathmaps.iter().any(|pm| {
-        pm.output.len() == 1 && matches!(pm.output.first(), Some(MettaValue::Long(10)))
-    });
+    let has_final_output = pathmaps
+        .iter()
+        .any(|pm| pm.output.len() == 1 && matches!(pm.output.first(), Some(MettaValue::Long(10))));
     report.add_result(
         "Error resilience: evaluation continues after error, final output [10]",
         if has_final_output {

@@ -20,7 +20,9 @@ mod types;
 
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
-use crate::backend::mork_convert::{mork_bindings_to_metta, ConversionContext};
+use crate::backend::mork_convert::{
+    metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext,
+};
 use mork_expr::Expr;
 
 pub(super) type EvalOutput = (Vec<MettaValue>, Environment);
@@ -366,8 +368,8 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         // This reduces single-variable regression from 16.8% to ~5-7%
         (MettaValue::Atom(p), v)
             if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
-                && p != "&"
-                && bindings.is_empty() =>
+               && p != "&"
+               && bindings.is_empty() =>
         {
             bindings.insert(p.clone(), v.clone());
             true
@@ -619,10 +621,7 @@ fn try_match_all_rules_query_multi(
             // Convert MORK bindings to our format
             if let Ok(our_bindings) = mork_bindings_to_metta(&bindings, &ctx, &space) {
                 // Extract the RHS from bindings
-                if let Some((_, rhs)) = our_bindings
-                    .iter()
-                    .find(|(name, _)| name.as_str() == "$rhs")
-                {
+                if let Some((_, rhs)) = our_bindings.iter().find(|(name, _)| name.as_str() == "$rhs") {
                     matches.push((rhs.clone(), our_bindings));
                 }
             }
@@ -735,10 +734,7 @@ mod tests {
         assert!(bindings.is_some());
         let bindings = bindings.unwrap();
         assert_eq!(
-            bindings
-                .iter()
-                .find(|(name, _)| name.as_str() == "$x")
-                .map(|(_, val)| val),
+            bindings.iter().find(|(name, _)| name.as_str() == "$x").map(|(_, val)| val),
             Some(&MettaValue::Long(42))
         );
     }
@@ -759,10 +755,7 @@ mod tests {
         assert!(bindings.is_some());
         let bindings = bindings.unwrap();
         assert_eq!(
-            bindings
-                .iter()
-                .find(|(name, _)| name.as_str() == "$x")
-                .map(|(_, val)| val),
+            bindings.iter().find(|(name, _)| name.as_str() == "$x").map(|(_, val)| val),
             Some(&MettaValue::Long(1))
         );
     }

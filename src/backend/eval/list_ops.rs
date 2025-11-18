@@ -1280,7 +1280,7 @@ mod tests {
         let env = Environment::new();
 
         // Create a large list (100 elements)
-        let large_list: Vec<MettaValue> = (1..=100).map(MettaValue::Long).collect();
+        let large_list: Vec<MettaValue> = (1..=100).map(|i| MettaValue::Long(i)).collect();
 
         // Test map with large list
         let map_items = vec![

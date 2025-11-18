@@ -9,8 +9,8 @@
 //! This eliminates the single-variable regression observed with pure SmallVec while
 //! maintaining the 3.35x speedup for nested patterns.
 
-use super::MettaValue;
 use smallvec::SmallVec;
+use super::MettaValue;
 
 /// Hybrid bindings structure optimized for common cases
 #[derive(Debug, Clone, PartialEq)]
@@ -21,7 +21,7 @@ pub enum SmartBindings {
     Single((String, MettaValue)),
     /// 2-8 bindings (stack-allocated via SmallVec)
     /// >8 bindings (SmallVec spills to heap automatically)
-    Small(Box<SmallVec<[(String, MettaValue); 8]>>),
+    Small(SmallVec<[(String, MettaValue); 8]>),
 }
 
 impl SmartBindings {
@@ -43,7 +43,11 @@ impl SmartBindings {
                     None
                 }
             }
-            SmartBindings::Small(vec) => vec.iter().find(|(n, _)| n == name).map(|(_, v)| v),
+            SmartBindings::Small(vec) => {
+                vec.iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v)
+            }
         }
     }
 
@@ -64,7 +68,7 @@ impl SmartBindings {
                 let mut vec = SmallVec::new();
                 vec.push(existing.clone());
                 vec.push((name, value));
-                *self = SmartBindings::Small(Box::new(vec));
+                *self = SmartBindings::Small(vec);
             }
             SmartBindings::Small(vec) => {
                 vec.push((name, value));
@@ -185,10 +189,7 @@ mod tests {
 
         assert_eq!(bindings.len(), 5);
         for i in 0..5 {
-            assert_eq!(
-                bindings.get(&format!("$v{}", i)),
-                Some(&MettaValue::Long(i as i64))
-            );
+            assert_eq!(bindings.get(&format!("$v{}", i)), Some(&MettaValue::Long(i as i64)));
         }
     }
 
@@ -203,15 +204,9 @@ mod tests {
         assert_eq!(collected.len(), 3);
 
         // Check all bindings are present
-        let has_x = collected
-            .iter()
-            .any(|(n, v)| n == &"$x" && **v == MettaValue::Long(1));
-        let has_y = collected
-            .iter()
-            .any(|(n, v)| n == &"$y" && **v == MettaValue::Long(2));
-        let has_z = collected
-            .iter()
-            .any(|(n, v)| n == &"$z" && **v == MettaValue::Long(3));
+        let has_x = collected.iter().any(|(n, v)| n == &"$x" && **v == MettaValue::Long(1));
+        let has_y = collected.iter().any(|(n, v)| n == &"$y" && **v == MettaValue::Long(2));
+        let has_z = collected.iter().any(|(n, v)| n == &"$z" && **v == MettaValue::Long(3));
         assert!(has_x && has_y && has_z);
     }
 

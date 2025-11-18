@@ -200,7 +200,7 @@ mod tests {
 
         // Should find multiple similar matches
         let suggestions = matcher.suggest("fibonaci", 2);
-        assert!(!suggestions.is_empty());
+        assert!(suggestions.len() >= 1);
         assert_eq!(suggestions[0].0, "fibonacci"); // Closest match first
     }
 

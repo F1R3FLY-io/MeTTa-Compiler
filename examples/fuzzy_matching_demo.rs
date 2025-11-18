@@ -43,7 +43,7 @@ fn main() {
     println!("=== Fuzzy Matching Demonstrations ===\n");
 
     // Test 1: Single character substitution
-    let typo1 = "fibonaci";  // Missing 'c' in fibonacci
+    let typo1 = "fibonaci"; // Missing 'c' in fibonacci
     println!("Typo: '{}'", typo1);
     if let Some(suggestion) = env.did_you_mean(typo1, 2) {
         println!("  → {}\n", suggestion);
@@ -61,7 +61,7 @@ fn main() {
     }
 
     // Test 3: Different separator
-    let typo3 = "hello_world";  // Underscore instead of hyphen
+    let typo3 = "hello_world"; // Underscore instead of hyphen
     println!("Typo: '{}'", typo3);
     if let Some(suggestion) = env.did_you_mean(typo3, 2) {
         println!("  → {}\n", suggestion);
@@ -70,7 +70,7 @@ fn main() {
     }
 
     // Test 4: Abbreviation
-    let typo4 = "fib";  // Shortened form
+    let typo4 = "fib"; // Shortened form
     println!("Typo: '{}'", typo4);
     let suggestions = env.suggest_similar_symbols(typo4, 5);
     if !suggestions.is_empty() {
@@ -97,8 +97,10 @@ fn main() {
     let all_suggestions = env.suggest_similar_symbols("", 100);
     println!("Total tracked symbols: {}", all_suggestions.len());
     if !all_suggestions.is_empty() {
-        println!("Known symbols: {}",
-            all_suggestions.iter()
+        println!(
+            "Known symbols: {}",
+            all_suggestions
+                .iter()
                 .map(|(s, _)| s.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")

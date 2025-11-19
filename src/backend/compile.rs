@@ -11,9 +11,6 @@ use crate::backend::models::{MettaState, MettaValue};
 use crate::ir::MettaExpr;
 use crate::tree_sitter_parser::TreeSitterMettaParser;
 
-// String constants for common operators and special forms
-const QUOTE_ATOM: &str = "quote";
-
 /// Compile MeTTa source code into a MettaState ready for evaluation
 /// Returns a compiled state with pending expressions and empty environment
 pub fn compile(src: &str) -> Result<MettaState, String> {

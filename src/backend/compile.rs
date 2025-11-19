@@ -11,6 +11,9 @@ use crate::backend::models::{MettaState, MettaValue};
 use crate::ir::MettaExpr;
 use crate::tree_sitter_parser::TreeSitterMettaParser;
 
+// String constants for common operators and special forms
+const QUOTE_ATOM: &str = "quote";
+
 /// Compile MeTTa source code into a MettaState ready for evaluation
 /// Returns a compiled state with pending expressions and empty environment
 pub fn compile(src: &str) -> Result<MettaState, String> {
@@ -19,52 +22,48 @@ pub fn compile(src: &str) -> Result<MettaState, String> {
         TreeSitterMettaParser::new().map_err(|e| format!("Failed to initialize parser: {}", e))?;
     let sexprs = parser.parse(src)?;
 
-    // Convert s-expressions to MettaValue representation
-    let mut metta_values = Vec::new();
-    for sexpr in sexprs {
-        metta_values.push(sexpr_to_metta_value(&sexpr)?);
-    }
+    // Convert s-expressions to MettaValue representation using idiomatic TryFrom
+    let metta_values: Result<Vec<_>, _> = sexprs.iter().map(MettaValue::try_from).collect();
+    let metta_values = metta_values?;
 
     Ok(MettaState::new_compiled(metta_values))
 }
 
-/// Convert a MettaExpr (SExpr) to a MettaValue
-/// Operator symbols are preserved as-is (no normalization)
-/// Position information is discarded during conversion (used only for LSP/tooling)
-fn sexpr_to_metta_value(sexpr: &MettaExpr) -> Result<MettaValue, String> {
-    match sexpr {
-        MettaExpr::Atom(s, _span) => {
-            // Parse literals
-            if s == "true" {
-                Ok(MettaValue::Bool(true))
-            } else if s == "false" {
-                Ok(MettaValue::Bool(false))
-            } else {
-                // Keep the original symbol as-is (including operators like +, -, *, etc.)
-                Ok(MettaValue::Atom(s.clone()))
-            }
-        }
-        MettaExpr::String(s, _span) => Ok(MettaValue::String(s.clone())),
-        MettaExpr::Integer(n, _span) => Ok(MettaValue::Long(*n)),
-        MettaExpr::Float(f, _span) => Ok(MettaValue::Float(*f)),
-        MettaExpr::List(items, _span) => {
-            if items.is_empty() {
-                Ok(MettaValue::Nil)
-            } else {
-                let mut values = Vec::new();
-                for item in items {
-                    values.push(sexpr_to_metta_value(item)?);
+/// Implement idiomatic Rust conversion from MettaExpr to MettaValue
+impl TryFrom<&MettaExpr> for MettaValue {
+    type Error = String;
+
+    fn try_from(sexpr: &MettaExpr) -> Result<Self, String> {
+        match sexpr {
+            MettaExpr::Atom(s, _span) => {
+                // Parse literals (MeTTa uses capitalized True/False per hyperon-experimental)
+                match s.as_str() {
+                    "True" => Ok(MettaValue::Bool(true)),
+                    "False" => Ok(MettaValue::Bool(false)),
+                    _ => {
+                        // Keep the original symbol as-is (including operators like +, -, *, etc.)
+                        Ok(MettaValue::Atom(s.clone()))
+                    }
                 }
-                Ok(MettaValue::SExpr(values))
             }
-        }
-        MettaExpr::Quoted(expr, _span) => {
-            // For quoted expressions, wrap in a quote operator
-            let inner = sexpr_to_metta_value(expr)?;
-            Ok(MettaValue::SExpr(vec![
-                MettaValue::Atom("quote".to_string()),
-                inner,
-            ]))
+            MettaExpr::String(s, _span) => Ok(MettaValue::String(s.clone())),
+            MettaExpr::Integer(n, _span) => Ok(MettaValue::Long(*n)),
+            MettaExpr::Float(f, _span) => Ok(MettaValue::Float(*f)),
+            MettaExpr::List(items, _span) => {
+                if items.is_empty() {
+                    Ok(MettaValue::Nil)
+                } else {
+                    // Use iterator and collect for idiomatic Rust
+                    let values: Result<Vec<_>, _> =
+                        items.iter().map(MettaValue::try_from).collect();
+                    Ok(MettaValue::SExpr(values?))
+                }
+            }
+            MettaExpr::Quoted(expr, _span) => {
+                // For quoted expressions, wrap in a quote operator
+                let inner = MettaValue::try_from(expr.as_ref())?;
+                Ok(MettaValue::quote(inner))
+            }
         }
     }
 }
@@ -182,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_compile_literals() {
-        let src = "(true false 42 \"hello\")";
+        let src = "(True False 42 \"hello\")";
         let state = compile(src).unwrap();
 
         if let MettaValue::SExpr(items) = &state.source[0] {
@@ -195,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_compile_mixed_literals() {
-        let src = "(list 42 -7 0 true false \"text\" ())";
+        let src = "(list 42 -7 0 True False \"text\" ())";
         let state = compile(src).unwrap();
 
         if let MettaValue::SExpr(items) = &state.source[0] {
@@ -213,11 +212,39 @@ mod tests {
     }
 
     #[test]
+    fn test_boolean_case_sensitivity() {
+        // Lowercase should be treated as atoms, not booleans
+        // MeTTa uses capitalized True/False per hyperon-experimental
+        let src = "(true false)";
+        let state = compile(src).unwrap();
+
+        if let MettaValue::SExpr(items) = &state.source[0] {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], MettaValue::Atom("true".to_string()));
+            assert_eq!(items[1], MettaValue::Atom("false".to_string()));
+        } else {
+            panic!("Expected SExpr with lowercase boolean atoms");
+        }
+
+        // Verify capitalized versions ARE treated as booleans
+        let src = "(True False)";
+        let state = compile(src).unwrap();
+
+        if let MettaValue::SExpr(items) = &state.source[0] {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], MettaValue::Bool(true));
+            assert_eq!(items[1], MettaValue::Bool(false));
+        } else {
+            panic!("Expected SExpr with boolean values");
+        }
+    }
+
+    #[test]
     fn test_compile_with_comments() {
         let src = r#"
-            // Single line comment
+            ; Single line comment
             (+ 1 2)
-            /* Block comment */
+            ; Another comment
             (* 3 4)
         "#;
         let state = compile(src).unwrap();

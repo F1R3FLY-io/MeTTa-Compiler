@@ -52,27 +52,6 @@ Nested lists
           (integer_literal))))))
 
 ==================
-Brace list
-==================
-
-{a b c}
-
----
-
-(source_file
-  (expression
-    (brace_list
-      (expression
-        (atom_expression
-          (identifier)))
-      (expression
-        (atom_expression
-          (identifier)))
-      (expression
-        (atom_expression
-          (identifier))))))
-
-==================
 Empty list
 ==================
 
@@ -83,18 +62,6 @@ Empty list
 (source_file
   (expression
     (list)))
-
-==================
-Empty brace list
-==================
-
-{}
-
----
-
-(source_file
-  (expression
-    (brace_list)))
 
 ==================
 Prefixed expression with exclaim

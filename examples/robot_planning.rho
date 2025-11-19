@@ -124,14 +124,14 @@ new stdoutAck(`rho:io:stdoutAck`),
   new plannerState in {
     new codeFile in {
       codeFile!("
-        // ============================================================
-        // FACTS: Environment Knowledge Base
-        // ============================================================
+        ; ============================================================
+        ; FACTS: Environment Knowledge Base
+        ; ============================================================
 
-        // Room connections (bidirectional facts)
-        // IMPORTANT: Order matters for deterministic path selection!
-        // Listed alphabetically within each source room to ensure
-        // consistent shortest-path-first behavior
+        ; Room connections (bidirectional facts)
+        ; IMPORTANT: Order matters for deterministic path selection!
+        ; Listed alphabetically within each source room to ensure
+        ; consistent shortest-path-first behavior
         (connected room_a room_b)
         (connected room_a room_e)
 
@@ -147,74 +147,74 @@ new stdoutAck(`rho:io:stdoutAck`),
         (connected room_e room_a)
         (connected room_e room_d)
 
-        // Object locations
+        ; Object locations
         (object_at box1 room_a)
         (object_at box2 room_b)
         (object_at ball1 room_c)
         (object_at key1 room_d)
 
-        // Robot state
+        ; Robot state
         (robot_at room_a)
         (robot_carrying nothing)
 
-        // ============================================================
-        // QUERIES: Using match for dynamic fact retrieval
-        // ============================================================
+        ; ============================================================
+        ; QUERIES: Using match for dynamic fact retrieval
+        ; ============================================================
 
-        // Get all rooms connected to a given room
+        ; Get all rooms connected to a given room
         (= (get_neighbors $room)
            (match & self (connected $room $target) $target))
 
-        // Get all objects in the environment
+        ; Get all objects in the environment
         (= (get_all_objects)
            (match & self (object_at $obj $_) $obj))
 
-        // Find where an object is located
+        ; Find where an object is located
         (= (locate $obj)
            (match & self (object_at $obj $room) $room))
 
-        // Safe locate with error handling
+        ; Safe locate with error handling
         (= (safe_locate $obj)
            (catch (locate $obj)
                   (error object_not_found $obj)))
 
-        // Get robot's current location
+        ; Get robot's current location
         (= (get_robot_location)
            (match & self (robot_at $room) $room))
 
-        // Get what robot is carrying
+        ; Get what robot is carrying
         (= (get_robot_cargo)
            (match & self (robot_carrying $item) $item))
 
-        // Check if two rooms are directly connected (returns true/false)
+        ; Check if two rooms are directly connected (returns True/False)
         (= (is_connected $from $to)
-           (match & self (connected $from $to) true))
+           (match & self (connected $from $to) True))
 
-        // Get connection if exists (returns target or empty)
+        ; Get connection if exists (returns target or empty)
         (= (directly_connected $from $to)
            (match & self (connected $from $to) $to))
 
-        // ============================================================
-        // DYNAMIC PATH FINDING: Using if + match
-        // ============================================================
+        ; ============================================================
+        ; DYNAMIC PATH FINDING: Using if + match
+        ; ============================================================
 
-        // 1-hop: Direct connection with conditional check
-        // Returns error if no path exists (for catch to work properly)
+        ; 1-hop: Direct connection with conditional check
+        ; Returns error if no path exists (for catch to work properly)
         (= (find_path_1hop $from $to)
            (if (is_connected $from $to)
                (path $from $to)
                (error no_1hop_path ())))
 
-        // 2-hop: Through intermediate node (lexicographically first neighbor)
-        // Returns error if no path exists (for catch to work properly)
+        ; 2-hop: Through intermediate node (lexicographically first neighbor)
+        ; Returns error if no path exists (for catch to work properly)
         (= (find_path_2hop $from $to)
            (let $mid (get_first_neighbor $from)
                 (if (is_connected $mid $to)
                     (path $from $mid $to)
                     (error no_2hop_path ()))))
 
-        // 3-hop: Through two intermediate nodes (lexicographically first neighbors)
-        // Returns error if no path exists
+        ; 3-hop: Through two intermediate nodes (lexicographically first neighbors)
+        ; Returns error if no path exists
         (= (find_path_3hop $from $to)
            (let $mid1 (get_first_neighbor $from)
                 (let $mid2 (get_first_neighbor $mid1)
@@ -222,91 +222,91 @@ new stdoutAck(`rho:io:stdoutAck`),
                          (path $from $mid1 $mid2 $to)
                          (error no_3hop_path ())))))
 
-        // Deterministic path finding: try shortest paths first using catch
-        // Returns single shortest path with lexicographic tie-breaking
+        ; Deterministic path finding: try shortest paths first using catch
+        ; Returns single shortest path with lexicographic tie-breaking
         (= (find_any_path $from $to)
            (catch (find_path_1hop $from $to)
                   (catch (find_path_2hop $from $to)
                          (find_path_3hop $from $to))))
 
-        // Safe path finding with error handling
+        ; Safe path finding with error handling
         (= (safe_find_path $from $to)
            (catch (find_any_path $from $to)
                   (error no_path_exists (from $from to $to))))
 
 
-        // ============================================================
-        // HELPER FUNCTIONS: Extract elements from path structure
-        // ============================================================
+        ; ============================================================
+        ; HELPER FUNCTIONS: Extract elements from path structure
+        ; ============================================================
 
-        // Convert path to list of waypoints
+        ; Convert path to list of waypoints
         (= (path_to_list (path $a $b)) ($a $b))
         (= (path_to_list (path $a $b $c)) ($a $b $c))
         (= (path_to_list (path $a $b $c $d)) ($a $b $c $d))
 
-        // ============================================================
-        // HELPER FUNCTIONS: Minimum finding and deterministic selection
-        // ============================================================
+        ; ============================================================
+        ; HELPER FUNCTIONS: Minimum finding and deterministic selection
+        ; ============================================================
 
-        // Find minimum of three values
+        ; Find minimum of three values
         (= (min3 $a $b $c)
            (if (< $a $b)
                (if (< $a $c) $a $c)
                (if (< $b $c) $b $c)))
 
-        // Get first neighbor (deterministic - uses first match from knowledge base)
-        // Since connections are defined in order in the knowledge base,
-        // this gives us deterministic behavior
+        ; Get first neighbor (deterministic - uses first match from knowledge base)
+        ; Since connections are defined in order in the knowledge base,
+        ; this gives us deterministic behavior
         (= (get_first_neighbor $room)
            (get_neighbors $room))
 
-        // ============================================================
-        // DISTANCE CALCULATION: Using foldl-atom for dynamic counting
-        // ============================================================
+        ; ============================================================
+        ; DISTANCE CALCULATION: Using foldl-atom for dynamic counting
+        ; ============================================================
 
-        // Count elements in a list using foldl-atom
+        ; Count elements in a list using foldl-atom
         (= (count_list $list)
            (foldl-atom $list 0 $acc $_ (+ $acc 1)))
 
-        // Find minimum distance without building full paths
+        ; Find minimum distance without building full paths
         (= (find_shortest_distance $from $to)
            (let $dist_1hop (if (is_connected $from $to) 1 999)
                 (let $dist_2hop (check_2hop_distance $from $to)
                      (let $dist_3hop (check_3hop_distance $from $to)
                           (min3 $dist_1hop $dist_2hop $dist_3hop)))))
 
-        // Check if 2-hop path exists and return distance (deterministic - first neighbor)
+        ; Check if 2-hop path exists and return distance (deterministic - first neighbor)
         (= (check_2hop_distance $from $to)
            (let $mid (get_first_neighbor $from)
                 (if (is_connected $mid $to) 2 999)))
 
-        // Check if 3-hop path exists and return distance (deterministic - first neighbors)
+        ; Check if 3-hop path exists and return distance (deterministic - first neighbors)
         (= (check_3hop_distance $from $to)
            (let $mid1 (get_first_neighbor $from)
                 (let $mid2 (get_first_neighbor $mid1)
                      (if (is_connected $mid2 $to) 3 999))))
 
-        // Distance is the minimum hop count between two rooms
+        ; Distance is the minimum hop count between two rooms
         (= (distance_between $from $to)
            (find_shortest_distance $from $to))
 
-        // Count hops in a path using dynamic list counting (still used by validation)
+        ; Count hops in a path using dynamic list counting (still used by validation)
         (= (path_hop_count $path)
            (let $waypoints (path_to_list $path)
                 (let $count (count_list $waypoints)
                      (- $count 1))))
 
-        // ============================================================
-        // TRANSPORT PLANNING: Using map-atom for dynamic step generation
-        // ============================================================
+        ; ============================================================
+        ; TRANSPORT PLANNING: Using map-atom for dynamic step generation
+        ; ============================================================
 
-        // Top-level: Transport object to destination
+        ; Top-level: Transport object to destination
         (= (transport_object $obj $dest)
            (let $start (locate $obj)
                 (let $route (find_any_path $start $dest)
                      (build_plan $obj $route))))
 
-        // Build action plan from path - patterns with explicit step tuples
+        ; Build action plan from path - patterns with explicit step tuples
         (= (build_plan $obj (path $a $b))
            (plan
              (objective (transport $obj from $a to $b))
@@ -325,23 +325,23 @@ new stdoutAck(`rho:io:stdoutAck`),
              (route (waypoints $a $b $c $d))
              (steps ((navigate $a) (pickup $obj) (navigate $b) (navigate $c) (navigate $d) (putdown)))))
 
-        // ============================================================
-        // VALIDATION: Check path validity with CONDITIONAL LOGIC
-        // ============================================================
+        ; ============================================================
+        ; VALIDATION: Check path validity with CONDITIONAL LOGIC
+        ; ============================================================
 
-        // Check if path is multi-hop using dynamic counting
+        ; Check if path is multi-hop using dynamic counting
         (= (is_multihop $path)
            (let $waypoints (path_to_list $path)
                 (let $count (count_list $waypoints)
                      (> $count 2))))
 
-        // Check if object exists at location (using if + match!)
+        ; Check if object exists at location (using if + match!)
         (= (object_exists_at $obj $room)
-           (if (match & self (object_at $obj $room) true)
+           (if (match & self (object_at $obj $room) True)
                verified
                not_found))
 
-        // Validate plan with conditional checks
+        ; Validate plan with conditional checks
         (= (validate_plan $obj $dest)
            (let $obj_loc (locate $obj)
                 (let $path (find_any_path $obj_loc $dest)
@@ -350,7 +350,7 @@ new stdoutAck(`rho:io:stdoutAck`),
                               (validated $plan multihop_required)
                               (validated $plan direct_route))))))
 
-        // Extract route from plan (helper)
+        ; Extract route from plan (helper)
         (= (extract_route (plan $obj $route $steps)) $route)
       ") |
 

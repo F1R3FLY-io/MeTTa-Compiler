@@ -18,10 +18,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "brace_list"
-        },
-        {
-          "type": "SYMBOL",
           "name": "prefixed_expression"
         },
         {
@@ -47,26 +43,6 @@
         {
           "type": "STRING",
           "value": ")"
-        }
-      ]
-    },
-    "brace_list": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "STRING",
-          "value": "{"
-        },
-        {
-          "type": "REPEAT",
-          "content": {
-            "type": "SYMBOL",
-            "name": "expression"
-          }
-        },
-        {
-          "type": "STRING",
-          "value": "}"
         }
       ]
     },
@@ -133,6 +109,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "special_type_symbol"
+        },
+        {
+          "type": "SYMBOL",
           "name": "operator"
         },
         {
@@ -190,6 +170,17 @@
               "value": "False"
             }
           ]
+        }
+      }
+    },
+    "special_type_symbol": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 3,
+        "content": {
+          "type": "PATTERN",
+          "value": "%[A-Za-z][A-Za-z0-9_-]*%"
         }
       }
     },
@@ -426,6 +417,40 @@
                           "value": "\""
                         },
                         {
+                          "type": "SEQ",
+                          "members": [
+                            {
+                              "type": "STRING",
+                              "value": "x"
+                            },
+                            {
+                              "type": "PATTERN",
+                              "value": "[0-9a-fA-F]{2}"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "SEQ",
+                          "members": [
+                            {
+                              "type": "STRING",
+                              "value": "u"
+                            },
+                            {
+                              "type": "STRING",
+                              "value": "{"
+                            },
+                            {
+                              "type": "PATTERN",
+                              "value": "[0-9a-fA-F]{1,6}"
+                            },
+                            {
+                              "type": "STRING",
+                              "value": "}"
+                            }
+                          ]
+                        },
+                        {
                           "type": "PATTERN",
                           "value": "."
                         }
@@ -546,57 +571,15 @@
         "type": "PREC",
         "value": 10,
         "content": {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "SEQ",
-              "members": [
-                {
-                  "type": "STRING",
-                  "value": ";"
-                },
-                {
-                  "type": "PATTERN",
-                  "value": "[^\\n]*"
-                }
-              ]
-            },
-            {
-              "type": "SEQ",
-              "members": [
-                {
-                  "type": "STRING",
-                  "value": "//"
-                },
-                {
-                  "type": "PATTERN",
-                  "value": "[^\\n]*"
-                }
-              ]
-            }
-          ]
-        }
-      }
-    },
-    "block_comment": {
-      "type": "TOKEN",
-      "content": {
-        "type": "PREC",
-        "value": 10,
-        "content": {
           "type": "SEQ",
           "members": [
             {
               "type": "STRING",
-              "value": "/*"
+              "value": ";"
             },
             {
               "type": "PATTERN",
-              "value": "([^*]|\\*[^/])*"
-            },
-            {
-              "type": "STRING",
-              "value": "*/"
+              "value": "[^\\n]*"
             }
           ]
         }
@@ -611,10 +594,6 @@
     {
       "type": "SYMBOL",
       "name": "line_comment"
-    },
-    {
-      "type": "SYMBOL",
-      "name": "block_comment"
     }
   ],
   "conflicts": [],

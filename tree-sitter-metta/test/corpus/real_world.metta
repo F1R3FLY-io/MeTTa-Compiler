@@ -219,39 +219,6 @@ Type annotations and rules
           (boolean_literal))))))
 
 ==================
-Nondeterministic choice with brace list
-==================
-
-{1 2 3}
-{3.14 2.71 1.41}
-
----
-
-(source_file
-  (expression
-    (brace_list
-      (expression
-        (atom_expression
-          (integer_literal)))
-      (expression
-        (atom_expression
-          (integer_literal)))
-      (expression
-        (atom_expression
-          (integer_literal)))))
-  (expression
-    (brace_list
-      (expression
-        (atom_expression
-          (float_literal)))
-      (expression
-        (atom_expression
-          (float_literal)))
-      (expression
-        (atom_expression
-          (float_literal))))))
-
-==================
 Complex nested expression
 ==================
 

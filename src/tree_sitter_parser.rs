@@ -45,7 +45,7 @@ impl TreeSitterMettaParser {
 
         for child in node.children(&mut cursor) {
             // Skip comments
-            if matches!(child.kind(), "line_comment" | "block_comment") {
+            if child.kind() == "line_comment" {
                 continue;
             }
             if child.is_named() {
@@ -70,7 +70,6 @@ impl TreeSitterMettaParser {
                 Ok(vec![])
             }
             "list" => self.convert_list(node, source),
-            "brace_list" => self.convert_brace_list(node, source),
             "prefixed_expression" => self.convert_prefixed_expression(node, source),
             "atom_expression" => self.convert_atom_expression(node, source),
             _ => Err(format!("Unknown expression kind: {}", node.kind())),
@@ -89,22 +88,6 @@ impl TreeSitterMettaParser {
         }
 
         let span = self.node_span(node);
-        Ok(vec![SExpr::List(items, Some(span))])
-    }
-
-    /// Convert brace_list: {expr expr ...}
-    /// Matches sexpr.rs behavior: prepend "{}" atom
-    fn convert_brace_list(&self, node: Node, source: &str) -> Result<Vec<SExpr>, String> {
-        let span = self.node_span(node);
-        let mut items = vec![SExpr::Atom("{}".to_string(), Some(span))];
-        let mut cursor = node.walk();
-
-        for child in node.children(&mut cursor) {
-            if child.is_named() {
-                items.extend(self.convert_expression(child, source)?);
-            }
-        }
-
         Ok(vec![SExpr::List(items, Some(span))])
     }
 
@@ -178,6 +161,9 @@ impl TreeSitterMettaParser {
 
             // Boolean literals
             "boolean_literal" => Ok(vec![SExpr::Atom(text, Some(span))]),
+
+            // Special type symbols: %Undefined%, %Irreducible%, etc.
+            "special_type_symbol" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
             // All operator types (already decomposed by grammar)
             "operator"
@@ -268,6 +254,7 @@ impl TreeSitterMettaParser {
     }
 
     /// Unescape string literal (remove quotes and process escapes)
+    /// Supports: \n, \t, \r, \\, \", \x##, \u{...}
     fn unescape_string(&self, s: &str) -> Result<String, String> {
         if !s.starts_with('"') || !s.ends_with('"') {
             return Err(format!("Invalid string literal: {}", s));
@@ -275,7 +262,7 @@ impl TreeSitterMettaParser {
 
         let inner = &s[1..s.len() - 1];
         let mut result = String::new();
-        let mut chars = inner.chars();
+        let mut chars = inner.chars().peekable();
 
         while let Some(ch) = chars.next() {
             if ch == '\\' {
@@ -285,6 +272,53 @@ impl TreeSitterMettaParser {
                     Some('r') => result.push('\r'),
                     Some('\\') => result.push('\\'),
                     Some('"') => result.push('"'),
+                    // Hex escape: \x## (2 hex digits)
+                    Some('x') => {
+                        let hex1 = chars.next().ok_or("Incomplete hex escape sequence")?;
+                        let hex2 = chars.next().ok_or("Incomplete hex escape sequence")?;
+                        let hex_str = format!("{}{}", hex1, hex2);
+                        let byte = u8::from_str_radix(&hex_str, 16)
+                            .map_err(|_| format!("Invalid hex escape: \\x{}", hex_str))?;
+                        result.push(byte as char);
+                    }
+                    // Unicode escape: \u{...} (1-6 hex digits)
+                    Some('u') => {
+                        if chars.next() != Some('{') {
+                            return Err(
+                                "Invalid unicode escape: expected '{' after \\u".to_string()
+                            );
+                        }
+                        let mut hex_digits = String::new();
+                        loop {
+                            match chars.next() {
+                                Some('}') => break,
+                                Some(ch) if ch.is_ascii_hexdigit() => hex_digits.push(ch),
+                                Some(ch) => {
+                                    return Err(format!(
+                                        "Invalid character in unicode escape: '{}'",
+                                        ch
+                                    ))
+                                }
+                                None => {
+                                    return Err("Unterminated unicode escape sequence".to_string())
+                                }
+                            }
+                            if hex_digits.len() > 6 {
+                                return Err(
+                                    "Unicode escape too long (max 6 hex digits)".to_string()
+                                );
+                            }
+                        }
+                        if hex_digits.is_empty() {
+                            return Err("Empty unicode escape sequence".to_string());
+                        }
+                        let code_point = u32::from_str_radix(&hex_digits, 16).map_err(|_| {
+                            format!("Invalid unicode escape: \\u{{{}}}", hex_digits)
+                        })?;
+                        let unicode_char = char::from_u32(code_point)
+                            .ok_or(format!("Invalid unicode code point: U+{:X}", code_point))?;
+                        result.push(unicode_char);
+                    }
                     Some(other) => {
                         result.push('\\');
                         result.push(other);
@@ -476,26 +510,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_brace_list() {
-        let mut parser = TreeSitterMettaParser::new().unwrap();
-
-        // Brace list with {} atom prepended
-        let result = strip_spans_vec(&parser.parse("{a b c}").unwrap());
-        assert_eq!(
-            result,
-            vec![SExpr::List(
-                vec![
-                    SExpr::Atom("{}".to_string(), None),
-                    SExpr::Atom("a".to_string(), None),
-                    SExpr::Atom("b".to_string(), None),
-                    SExpr::Atom("c".to_string(), None),
-                ],
-                None
-            )]
-        );
-    }
-
-    #[test]
     fn test_parse_multiple_expressions() {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
@@ -529,38 +543,14 @@ mod tests {
     fn test_parse_with_comments() {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
-        // Line comments should be ignored
+        // Semicolon comments should be ignored
         let result = strip_spans_vec(
             &parser
                 .parse(
                     r#"
             ; This is a comment
-            // Another comment style
             (+ 1 2)
-            "#,
-                )
-                .unwrap(),
-        );
-
-        assert_eq!(
-            result,
-            vec![SExpr::List(
-                vec![
-                    SExpr::Atom("+".to_string(), None),
-                    SExpr::Integer(1, None),
-                    SExpr::Integer(2, None),
-                ],
-                None
-            )]
-        );
-
-        // Block comments
-        let result = strip_spans_vec(
-            &parser
-                .parse(
-                    r#"
-            /* Block comment */
-            (+ 1 2)
+            ; Another comment
             "#,
                 )
                 .unwrap(),
@@ -656,5 +646,77 @@ mod tests {
                 None
             )]
         );
+    }
+
+    #[test]
+    fn test_parse_special_type_symbols() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // %Undefined% special type
+        let result = strip_spans_vec(&parser.parse("%Undefined%").unwrap());
+        assert_eq!(result, vec![SExpr::Atom("%Undefined%".to_string(), None)]);
+
+        // %Irreducible% special type
+        let result = strip_spans_vec(&parser.parse("%Irreducible%").unwrap());
+        assert_eq!(result, vec![SExpr::Atom("%Irreducible%".to_string(), None)]);
+
+        // In type annotation: (: = (-> $t $t %Undefined%))
+        let result = strip_spans_vec(&parser.parse("(: = (-> $t $t %Undefined%))").unwrap());
+        match &result[0] {
+            SExpr::List(items, _) => {
+                assert_eq!(items[0], SExpr::Atom(":".to_string(), None));
+                assert_eq!(items[1], SExpr::Atom("=".to_string(), None));
+                // Third item should be (-> $t $t %Undefined%)
+                match &items[2] {
+                    SExpr::List(arrow_items, _) => {
+                        assert_eq!(arrow_items[0], SExpr::Atom("->".to_string(), None));
+                        assert_eq!(arrow_items[3], SExpr::Atom("%Undefined%".to_string(), None));
+                    }
+                    _ => panic!("Expected arrow type list"),
+                }
+            }
+            _ => panic!("Expected type annotation list"),
+        }
+    }
+
+    #[test]
+    fn test_parse_hex_escape_sequences() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Hex escape \x1b (ESC character)
+        let result = strip_spans_vec(&parser.parse(r#""\x1b[31mRed\x1b[0m""#).unwrap());
+        assert_eq!(
+            result,
+            vec![SExpr::String("\x1b[31mRed\x1b[0m".to_string(), None)]
+        );
+
+        // Hex escape \x41 (A)
+        let result = strip_spans_vec(&parser.parse(r#""\x41""#).unwrap());
+        assert_eq!(result, vec![SExpr::String("A".to_string(), None)]);
+
+        // Multiple hex escapes
+        let result = strip_spans_vec(&parser.parse(r#""\x48\x65\x6c\x6c\x6f""#).unwrap());
+        assert_eq!(result, vec![SExpr::String("Hello".to_string(), None)]);
+    }
+
+    #[test]
+    fn test_parse_unicode_escape_sequences() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Unicode escape \u{1F4A1} (💡 light bulb emoji)
+        let result = strip_spans_vec(&parser.parse(r#""\u{1F4A1}""#).unwrap());
+        assert_eq!(result, vec![SExpr::String("💡".to_string(), None)]);
+
+        // Unicode escape \u{0041} (A)
+        let result = strip_spans_vec(&parser.parse(r#""\u{0041}""#).unwrap());
+        assert_eq!(result, vec![SExpr::String("A".to_string(), None)]);
+
+        // Unicode escape \u{3B1} (α Greek alpha)
+        let result = strip_spans_vec(&parser.parse(r#""\u{3B1}""#).unwrap());
+        assert_eq!(result, vec![SExpr::String("α".to_string(), None)]);
+
+        // Mixed regular and unicode
+        let result = strip_spans_vec(&parser.parse(r#""Hello \u{1F30D}!""#).unwrap());
+        assert_eq!(result, vec![SExpr::String("Hello 🌍!".to_string(), None)]);
     }
 }

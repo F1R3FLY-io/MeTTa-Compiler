@@ -1,13 +1,11 @@
 ; Indentation queries for MeTTa
 ; Tree-Sitter uses these to compute automatic indentation in editors
 
-; Indent after opening parentheses and braces
+; Indent after opening parentheses
 (list "(" @indent)
-(brace_list "{" @indent)
 
-; Dedent before closing brackets
+; Dedent before closing bracket
 ")" @dedent
-"}" @dedent
 
 ; Prefixed expressions should indent their arguments
 (prefixed_expression
@@ -18,9 +16,5 @@
 (list
   (expression) @branch)
 
-(brace_list
-  (expression) @branch)
-
 ; Comments don't affect indentation
 (line_comment) @ignore
-(block_comment) @ignore

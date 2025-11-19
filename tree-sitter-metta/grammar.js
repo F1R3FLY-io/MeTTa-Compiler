@@ -6,7 +6,6 @@ module.exports = grammar({
   extras: $ => [
     /\s/,
     $.line_comment,
-    $.block_comment,
   ],
 
   rules: {
@@ -14,7 +13,6 @@ module.exports = grammar({
 
     expression: $ => choice(
       $.list,
-      $.brace_list,
       $.prefixed_expression,
       $.atom_expression,
     ),
@@ -24,13 +22,6 @@ module.exports = grammar({
       '(',
       repeat($.expression),
       ')'
-    ),
-
-    // Brace lists: {expr expr ...}
-    brace_list: $ => seq(
-      '{',
-      repeat($.expression),
-      '}'
     ),
 
     // Prefixed expressions: !expr, ?expr, 'expr
@@ -53,6 +44,7 @@ module.exports = grammar({
       $.variable,
       $.wildcard,
       $.boolean_literal,  // Must come before identifier
+      $.special_type_symbol,  // Must come before operator (contains %)
       $.operator,
       $.string_literal,
       $.float_literal,
@@ -72,6 +64,10 @@ module.exports = grammar({
 
     // Boolean literals (higher precedence than identifier)
     boolean_literal: $ => token(prec(3, choice('True', 'False'))),
+
+    // Special type symbols: %Undefined%, %Irreducible%, etc.
+    // Used in official MeTTa stdlib for special type markers
+    special_type_symbol: $ => token(prec(3, /%[A-Za-z][A-Za-z0-9_-]*%/)),
 
     // Regular identifiers (no special prefix)
     identifier: $ => token(prec(2, choice(
@@ -119,6 +115,7 @@ module.exports = grammar({
 
     // Punctuation operators: ;, |, ,, @, &, ., ...
     // Note: : is now separate as type_annotation_operator
+    // Note: % removed - now used only in special_type_symbol
     punctuation_operator: $ => token(choice(
       ';',
       '|',
@@ -139,17 +136,20 @@ module.exports = grammar({
     )),
 
     // String literals with escape sequences
+    // Supports: \n, \t, \r, \\, \", \x##, \u{...}
     string_literal: $ => token(seq(
       '"',
       repeat(choice(
         /[^"\\]/,
         seq('\\', choice(
-          'n',   // \n
-          't',   // \t
-          'r',   // \r
-          '\\',  // \\
-          '"',   // \"
-          /./,   // any other escaped char
+          'n',   // \n - newline
+          't',   // \t - tab
+          'r',   // \r - carriage return
+          '\\',  // \\ - backslash
+          '"',   // \" - quote
+          seq('x', /[0-9a-fA-F]{2}/),  // \x## - hex escape (e.g., \x1b)
+          seq('u', '{', /[0-9a-fA-F]{1,6}/, '}'),  // \u{...} - unicode escape (e.g., \u{1F4A1})
+          /./,   // any other escaped char (fallback)
         ))
       )),
       '"'
@@ -172,15 +172,7 @@ module.exports = grammar({
     ))),
 
     // Comments - high precedence to match before operators
-    line_comment: $ => token(prec(10, choice(
-      seq(';', /[^\n]*/),
-      seq('//', /[^\n]*/),
-    ))),
-
-    block_comment: $ => token(prec(10, seq(
-      '/*',
-      /([^*]|\*[^/])*/,
-      '*/'
-    ))),
+    // Official MeTTa uses only semicolon comments
+    line_comment: $ => token(prec(10, seq(';', /[^\n]*/))),
   }
 });

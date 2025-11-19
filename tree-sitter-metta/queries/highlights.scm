@@ -2,13 +2,15 @@
 
 ; Comments
 (line_comment) @comment
-(block_comment) @comment
 
 ; Literals
 (string_literal) @string
 (integer_literal) @number
 (float_literal) @number.float
 (boolean_literal) @boolean
+
+; Special type symbols (%Undefined%, %Irreducible%, etc.)
+(special_type_symbol) @type.builtin
 
 ; Variables (pattern variables)
 (variable) @variable
@@ -37,8 +39,6 @@
 ; Brackets
 "(" @punctuation.bracket
 ")" @punctuation.bracket
-"{" @punctuation.bracket
-"}" @punctuation.bracket
 
 ; Special keywords in identifier position
 ((identifier) @keyword

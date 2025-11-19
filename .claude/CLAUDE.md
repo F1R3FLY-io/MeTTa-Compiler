@@ -79,8 +79,12 @@ The evaluator consists of two main stages:
    - Uses Tree-Sitter grammar for robust parsing
    - Converts parse trees to S-expression IR (`SExpr`)
    - Tracks source positions for error reporting
-   - Handles comments: `//`, `/* */`, `;`
+   - Tokenizes input text into structured tokens using Tree-Sitter
+   - Parses tokens into S-expressions
+   - Handles comments: `;` (semicolon line comments only)
    - Supports special operators: `!`, `?`, `<-`, `<=`, etc.
+   - Prefix operator handling: `!(expr)` → `(! expr)`
+   - Special type symbols: `%Undefined%`, `%Irreducible%`
 
 2. **Backend Evaluation** (`src/backend/`)
    - **Compilation** (`compile.rs`) - Parses MeTTa source to `MettaValue` expressions
@@ -115,20 +119,25 @@ The evaluator consists of two main stages:
 ### Data Types
 
 - **Ground Types**: `Bool`, `String`, `Long`, `URI`, `Nil`
-- **Literals**: `true`, `false`, `42`, `"hello"`, `` `uri` ``
-- **Variables**: `$x`, `&y`, `'z` (start with `$`, `&`, or `'`)
+- **Literals**: `True`, `False`, `42`, `"hello"`, `` `uri` ``
+- **Variables**: `$x` (pattern variables start with `$`)
 - **Wildcards**: `_` (matches anything)
 - **S-expressions**: `(expr ...)` and quoted forms
 - **Errors**: `(error msg details)`
+- **Special Type Symbols**: `%Undefined%`, `%Irreducible%` (used in type system)
 
 ### Lexical Tokens
 
-- **Variables**: `$x`, `&y`, `'z`
-- **Strings**: `"hello"` (double-quoted with escapes)
+- **Variables**: `$x`, `$var` (start with `$`)
+- **Strings**: `"hello"` (double-quoted with escape sequences)
+  - Basic escapes: `\n`, `\t`, `\r`, `\\`, `\"`
+  - Hex escapes: `\x1b` (two hex digits)
+  - Unicode escapes: `\u{1F4A1}` (1-6 hex digits in braces)
 - **URIs**: `` `uri` `` (backtick-quoted)
 - **Integers**: `42`, `-10`
-- **Booleans**: `true`, `false`
-- **Comments**: `//` (line), `/* */` (block), `;` (line)
+- **Booleans**: `True`, `False` (capitalized per official MeTTa spec)
+- **Comments**: `;` (line comments only)
+- **Special Types**: `%Undefined%`, `%Irreducible%` (percent-delimited)
 
 ## Working with the Codebase
 

@@ -1,7 +1,11 @@
 pub mod backend;
 pub mod config;
+pub mod ir;
 pub mod pathmap_par_integration;
+pub mod repl;
 pub mod rholang_integration;
+pub mod tree_sitter_parser;
+
 /// MeTTaTron - MeTTa Evaluator Library
 ///
 /// This library provides a complete MeTTa language evaluator with lazy evaluation,
@@ -64,16 +68,15 @@ pub mod rholang_integration;
 /// - **Pattern Matching**: Automatic variable binding in rule application
 /// - **Error Propagation**: First error stops evaluation immediately
 /// - **Environment**: Monotonic rule storage with union operations
-pub mod sexpr;
-
 pub use backend::{
     compile,
     environment::Environment,
     eval,
     models::{MettaState, MettaValue, Rule},
 };
+pub use ir::{MettaExpr, Position, SExpr, Span};
 pub use rholang_integration::run_state;
-pub use sexpr::{Lexer, Parser, SExpr, Token};
+pub use tree_sitter_parser::TreeSitterMettaParser;
 
 // Export run_state_async when async feature is enabled (which is by default)
 #[cfg(feature = "async")]
@@ -85,6 +88,9 @@ pub use pathmap_par_integration::{
 };
 
 pub use config::{configure_eval, get_eval_config, EvalConfig};
+
+// Export commonly used REPL components
+pub use repl::{MettaHelper, PatternHistory, QueryHighlighter, ReplStateMachine, SmartIndenter};
 
 #[cfg(test)]
 mod tests {

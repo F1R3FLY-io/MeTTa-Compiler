@@ -120,9 +120,9 @@ new stdoutAck(`rho:io:stdoutAck`),
     stdoutAck!("Test 3: get-type for boolean\n", *ack) |
     for (_ <- ack) {
       new result in {
-        runMeTTa!(*result, "!(get-type true)") |
+        runMeTTa!(*result, "!(get-type True)") |
         for (@state <- result) {
-          stdoutAck!("  Input: !(get-type true)\n", *ack) |
+          stdoutAck!("  Input: !(get-type True)\n", *ack) |
           for (_ <- ack) {
             stdoutAck!("  Result: ", *ack) |
             for (_ <- ack) {

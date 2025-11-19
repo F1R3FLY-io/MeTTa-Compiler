@@ -8,10 +8,12 @@
 pub mod compile;
 pub mod environment;
 pub mod eval;
+pub mod fuzzy_match;
 pub mod models;
 pub mod mork_convert;
 
 pub use compile::compile;
 pub use environment::Environment;
-pub use eval::eval;
+pub use eval::{eval, pattern_match};
+pub use fuzzy_match::FuzzyMatcher;
 pub use models::*;

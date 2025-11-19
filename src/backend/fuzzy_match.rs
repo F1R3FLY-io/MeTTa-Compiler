@@ -6,22 +6,25 @@
 use liblevenshtein::dictionary::pathmap::PathMapDictionary;
 use liblevenshtein::dictionary::Dictionary; // Trait for contains()
 use liblevenshtein::transducer::{Candidate, Transducer};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Fuzzy matcher for symbol suggestions using Levenshtein distance.
 ///
 /// Uses PathMapDictionary as the backend, which is compatible with
 /// MeTTaTron's existing PathMap usage for MORK.
+///
+/// PathMapDictionary is already thread-safe (uses Arc<RwLock> internally),
+/// so we only need Arc for sharing across clones.
 #[derive(Clone)]
 pub struct FuzzyMatcher {
-    dictionary: Arc<Mutex<PathMapDictionary<()>>>,
+    dictionary: Arc<PathMapDictionary<()>>,
 }
 
 impl FuzzyMatcher {
     /// Create a new empty fuzzy matcher
     pub fn new() -> Self {
         Self {
-            dictionary: Arc::new(Mutex::new(PathMapDictionary::new())),
+            dictionary: Arc::new(PathMapDictionary::new()),
         }
     }
 
@@ -32,26 +35,23 @@ impl FuzzyMatcher {
         S: AsRef<str>,
     {
         Self {
-            dictionary: Arc::new(Mutex::new(PathMapDictionary::from_terms(terms))),
+            dictionary: Arc::new(PathMapDictionary::from_terms(terms)),
         }
     }
 
     /// Add a term to the dictionary
     pub fn insert(&self, term: &str) {
-        let dict = self.dictionary.lock().unwrap();
-        dict.insert(term);
+        self.dictionary.insert(term);
     }
 
     /// Remove a term from the dictionary
     pub fn remove(&self, term: &str) -> bool {
-        let dict = self.dictionary.lock().unwrap();
-        dict.remove(term)
+        self.dictionary.remove(term)
     }
 
     /// Check if a term exists in the dictionary
     pub fn contains(&self, term: &str) -> bool {
-        let dict = self.dictionary.lock().unwrap();
-        dict.contains(term)
+        self.dictionary.contains(term)
     }
 
     /// Find similar terms within the given edit distance.
@@ -69,12 +69,9 @@ impl FuzzyMatcher {
     /// // Returns: [("fibonacci", 1)]
     /// ```
     pub fn suggest(&self, query: &str, max_distance: usize) -> Vec<(String, usize)> {
-        let dict = self.dictionary.lock().unwrap();
-        let dict_clone = dict.clone(); // Clone to release lock before query
-        drop(dict); // Explicitly drop to release lock
-
+        // PathMapDictionary is already thread-safe, no need to clone
         // Use Transposition algorithm to catch common typos (e.g., "teh" -> "the")
-        let transducer = Transducer::with_transposition(dict_clone);
+        let transducer = Transducer::with_transposition(self.dictionary.as_ref().clone());
 
         let mut results: Vec<(String, usize)> = transducer
             .query_with_distance(query, max_distance)
@@ -149,8 +146,7 @@ impl FuzzyMatcher {
 
     /// Get the number of terms in the dictionary
     pub fn len(&self) -> usize {
-        let dict = self.dictionary.lock().unwrap();
-        dict.term_count()
+        self.dictionary.term_count()
     }
 
     /// Check if the dictionary is empty

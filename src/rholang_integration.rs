@@ -55,7 +55,7 @@ pub fn compile_safe(src: &str) -> MettaState {
             ]);
 
             // Return a state containing the error
-            MettaState::new_with_error(error_sexpr)
+            MettaState::from(error_sexpr)
         }
     }
 }

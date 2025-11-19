@@ -56,17 +56,20 @@ pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalOutput
     // Evaluate the expression
     let (results, env_after_eval) = eval(expr.clone(), env);
 
-    // Check if result is an error
-    if let Some(first) = results.first() {
-        if matches!(first, MettaValue::Error(_, _)) {
-            // Error occurred - evaluate and return default instead
-            // This PREVENTS the error from propagating further
-            return eval(default.clone(), env_after_eval);
-        }
-    }
+    // Handle nondeterministic evaluation: filter results into errors and non-errors
+    let (_errors, non_errors): (Vec<_>, Vec<_>) = results
+        .into_iter()
+        .partition(|r| matches!(r, MettaValue::Error(_, _)));
 
-    // No error - return the result
-    (results, env_after_eval)
+    if non_errors.is_empty() {
+        // All results were errors - evaluate and return default instead
+        // This PREVENTS the errors from propagating further
+        eval(default.clone(), env_after_eval)
+    } else {
+        // Some non-error results exist - return only those, filtering out errors
+        // This handles nondeterministic evaluation where some branches fail
+        (non_errors, env_after_eval)
+    }
 }
 
 #[cfg(test)]

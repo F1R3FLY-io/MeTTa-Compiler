@@ -1,22 +1,22 @@
-// Simple MeTTa examples
+; Simple MeTTa examples
 
-// Type assertion
+; Type assertion
 (: $x Bool)
 
-// Rule definition
+; Rule definition
 (= (add $a $b) (+ $a $b))
 
-// Concurrent execution
-{ (+ 1 2) (- 5 3) (* 4 2) }
+; Note: Nondeterministic evaluation uses superpose, not braces
+; See official MeTTa documentation for nondeterministic patterns
 
-// Sequential execution
+; Sequential execution
 ((+ 1 2) (- 5 3) (* 4 2))
 
-// Pattern matching
+; Pattern matching
 (match $space $x $x)
 
-// Knowledge base entry
+; Knowledge base entry
 (! (= $fact 42) .)
 
-// Query
+; Query
 (? $fact .)

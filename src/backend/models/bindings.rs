@@ -13,6 +13,30 @@ use super::MettaValue;
 use smallvec::SmallVec;
 
 /// Hybrid bindings structure optimized for common cases
+//
+// Clippy warns about the large size difference between variants (Empty: 0 bytes,
+// Single: 56 bytes, Small: 456 bytes), recommending we Box the SmallVec to reduce
+// the enum size from 464 bytes to ~64 bytes.
+//
+// However, benchmarking shows that the unboxed version provides significant performance
+// improvements in the pattern matching hot path:
+// - pattern_matching_stress: 5.9% faster (2.007ms → 1.889ms median)
+// - knowledge_graph: 3.5% faster (910.8µs → 879µs median)
+// - fib: 1.9% faster (5.74ms → 5.629ms median)
+//
+// The unboxed version eliminates:
+// 1. Heap allocation when transitioning Single → Small
+// 2. Pointer indirection on every Small variant access
+// 3. Cache misses from heap-scattered data
+//
+// Since SmartBindings are:
+// - Passed by reference (no copy overhead from large size)
+// - Short-lived (created during pattern matching, quickly dropped)
+// - Used in performance-critical code paths
+//
+// The measured performance gains outweigh the stack space cost.
+// See benchmark_comparison.md for detailed analysis.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum SmartBindings {
     /// No bindings (zero-cost)
@@ -21,7 +45,7 @@ pub enum SmartBindings {
     Single((String, MettaValue)),
     /// 2-8 bindings (stack-allocated via SmallVec)
     /// >8 bindings (SmallVec spills to heap automatically)
-    Small(Box<SmallVec<[(String, MettaValue); 8]>>),
+    Small(SmallVec<[(String, MettaValue); 8]>),
 }
 
 impl SmartBindings {
@@ -64,7 +88,7 @@ impl SmartBindings {
                 let mut vec = SmallVec::new();
                 vec.push(existing.clone());
                 vec.push((name, value));
-                *self = SmartBindings::Small(Box::new(vec));
+                *self = SmartBindings::Small(vec);
             }
             SmartBindings::Small(vec) => {
                 vec.push((name, value));

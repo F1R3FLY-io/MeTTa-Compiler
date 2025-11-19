@@ -1939,7 +1939,7 @@ dependencies = [
  "crypto",
  "hex",
  "itertools 0.12.1",
- "pathmap 0.2.0-alpha0 (git+https://github.com/Adam-Vandervorst/PathMap?branch=master)",
+ "pathmap 0.2.0-alpha0",
  "proptest",
  "proptest-derive",
  "prost 0.14.1",
@@ -2261,25 +2261,6 @@ name = "pathmap"
 version = "0.2.0-alpha0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8685798c049192c69c0bf739af32581a9dd21b852d46a084035b12ccf71fe3c7"
-dependencies = [
- "arrayvec",
- "dyn-clone",
- "fast-slice-utils",
- "gxhash 3.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "libz-ng-sys",
- "local-or-heap",
- "maybe-dangling",
- "num-traits",
- "pathmap-derive",
- "reusing-vec",
- "smallvec",
- "xxhash-rust",
-]
-
-[[package]]
-name = "pathmap"
-version = "0.2.0-alpha0"
-source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#29dfa5038887b7bdd3bc513a2d5122db164281fc"
 dependencies = [
  "arrayvec",
  "dyn-clone",

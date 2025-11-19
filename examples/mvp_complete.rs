@@ -166,14 +166,11 @@ fn test_evaluation_order() {
     let env = Environment::new();
 
     // Quote prevents evaluation
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("quote".to_string()),
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]),
-    ]);
+    let expr = MettaValue::quote(MettaValue::SExpr(vec![
+        MettaValue::Atom("add".to_string()),
+        MettaValue::Long(1),
+        MettaValue::Long(2),
+    ]));
 
     let (result, _) = eval(expr, env);
     println!("(quote (+ 1 2)) = {:?}", result[0]);

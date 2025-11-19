@@ -65,6 +65,7 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
         // Ground types have built-in types
         MettaValue::Bool(_) => MettaValue::Atom("Bool".to_string()),
         MettaValue::Long(_) => MettaValue::Atom("Number".to_string()),
+        MettaValue::Float(_) => MettaValue::Atom("Number".to_string()),
         MettaValue::String(_) => MettaValue::Atom("String".to_string()),
         MettaValue::Uri(_) => MettaValue::Atom("URI".to_string()),
         MettaValue::Nil => MettaValue::Atom("Nil".to_string()),

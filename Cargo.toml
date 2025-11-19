@@ -25,6 +25,8 @@ mork = { path = "../MORK/kernel", features = ["interning"] }
 mork-expr = { path = "../MORK/expr" }
 # MORK frontend - Parser for MORK s-expressions
 mork-frontend = { path = "../MORK/frontend" }
+# MORK interning - Symbol interning for MORK
+mork-interning = { path = "../MORK/interning" }
 # Models - Rholang protobuf models for PathMap Par integration
 models = { path = "../f1r3node/models" }
 # Tokio - Async runtime for parallel evaluation (optional)
@@ -34,6 +36,30 @@ tokio = { version = "1", features = ["rt", "sync"], optional = true }
 # Note: Windows is not currently supported due to jemalloc incompatibility
 # MORK's workspace enables jemalloc which requires Unix build tools
 pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
+# pathmap = { git = "https://github.com/Adam-Vandervorst/PathMap.git", branch = "master", features = ["jemalloc", "arena_compact"] }
+# pathmap = { version = "0.2.0-alpha0", features = ["jemalloc", "arena_compact"] }
+
+# Tree-sitter - Parser for LSP support
+tree-sitter = "0.25"
+tree-sitter-metta = { path = "tree-sitter-metta" }
+
+# REPL dependencies
+rustyline = "14.0"
+dirs = "5.0"
+regex = "1.11"
+
+# LRU cache for pattern caching optimization
+lru = "0.12"
+
+# SmallVec - Stack-allocated vector for optimizing pattern matching bindings
+smallvec = "1.11"
+
+# liblevenshtein - Fuzzy string matching for "Did you mean?" suggestions
+# liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
+liblevenshtein = { version = "^0.7", features = ["pathmap-backend"] }
+
+# Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
+# PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup
 
 [features]
 default = ["interning", "async"]
@@ -53,6 +79,8 @@ tokio = { version = "1", features = [
     "sync",
     "macros",
 ] }
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
 divan = "0.1.21"
 paste = "1.0.15"
 
@@ -65,6 +93,16 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+[profile.bench]
+inherits = "release"
+strip = false  # Keep debug symbols for profiling
+debug = true   # Enable line-level profiling
+
+[profile.profiling]
+inherits = "release"
+strip = false  # Keep debug symbols for flamegraphs
+debug = 1      # Line tables only (smaller than debug = true)
 
 # Debian package metadata
 [package.metadata.deb]

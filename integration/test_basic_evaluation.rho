@@ -264,7 +264,7 @@ new stdoutAck(`rho:io:stdoutAck`),
             for (_ <- ack) {
               stdoutAck!(state, *ack) |
               for (_ <- ack) {
-                stdoutAck!("\n  Expected: outputs [true, true, true]\n\n", *ack) |
+                stdoutAck!("\n  Expected: outputs [True, True, True]\n\n", *ack) |
                 for (_ <- ack) {
                   ret!() | testComplete!("8")
                 }

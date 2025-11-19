@@ -6,33 +6,41 @@ This directory contains documentation specifically for Claude Code (claude.ai/co
 
 These files provide context, planning examples, and implementation guides for AI assistants working on this project. They are not intended for end users.
 
+## Directory Structure
+
+```
+.claude/
+├── README.md            # This file
+├── CLAUDE.md            # Main project instructions for Claude Code
+├── docs/                # Claude-specific guides and examples
+│   ├── DYNAMIC_PLANNING.md
+│   ├── MULTISTEP_PLANNING.md
+│   ├── EXTRACT_OUTPUTS_GUIDE.md
+│   ├── QUICK_REFERENCE_EXTRACTION.md
+│   └── PRETTY_PRINTER_METTA_DISPLAY.md
+└── archive/             # Historical Claude-specific documents
+    └── (18 archived completion summaries and guides)
+```
+
 ## Files
 
 ### Project Instructions
 - **CLAUDE.md** - Main instructions for Claude Code about the project architecture, build system, and development workflow
 
-### Implementation Summaries
-- **DESIGN_COMPLIANCE_FIX.md** - Design compliance and architectural decisions
-- **INTEGRATION_SUCCESS.md** - Integration milestone achievements
-- **PARALLEL_EVALUATION_COMPLETE.md** - Parallel evaluation implementation details
-- **PATHMAP_INTEGRATION_SUMMARY.md** - PathMap integration overview
-- **PATHMAP_PAR_INTEGRATION_COMPLETE.md** - PathMap/Par integration completion status
-- **THREADING_CONFIG_SUMMARY.md** - Threading configuration implementation
-
-### Planning Examples
+### Claude-Specific Guides (`docs/`)
 - **DYNAMIC_PLANNING.md** - Dynamic planning pattern examples
-- **DYNAMIC_PLANNING_COMPLETE.md** - Dynamic planning completion status
-- **EXTRACT_OUTPUTS_GUIDE.md** - Guide for extracting outputs from MeTTa evaluation
-- **EXTRACT_OUTPUTS_SOLUTION.md** - Output extraction implementation
 - **MULTISTEP_PLANNING.md** - Multi-step planning examples
-- **MULTISTEP_PLANNING_UPDATE.md** - Multi-step planning updates
+- **EXTRACT_OUTPUTS_GUIDE.md** - Guide for extracting outputs from MeTTa evaluation
 - **QUICK_REFERENCE_EXTRACTION.md** - Quick reference for common patterns
-- **QUICK_START.md** - Quick start guide for AI assistants
+- **PRETTY_PRINTER_METTA_DISPLAY.md** - Pretty printer implementation
 
-### Robot Planning Examples
-- **ROBOT_PLANNING.md** - Robot planning domain examples
-- **ROBOT_PLANNING_SUMMARY.md** - Robot planning implementation summary
-- **README_ROBOT_PLANNING.md** - Robot planning README
+### Historical Documentation (`archive/`)
+Contains 18 archived Claude-specific documents including:
+- Implementation completion summaries
+- Integration milestone achievements
+- Threading configuration implementation
+- PathMap integration details
+- Robot planning summaries
 
 ## For Users
 

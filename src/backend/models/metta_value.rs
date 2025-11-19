@@ -25,6 +25,21 @@ pub enum MettaValue {
 }
 
 impl MettaValue {
+    /// Create a quoted expression: (quote inner)
+    ///
+    /// Returns a quote special form that prevents evaluation of the inner expression.
+    /// Equivalent to the MeTTa syntax: 'inner
+    ///
+    /// # Example
+    /// ```ignore
+    /// let expr = MettaValue::Atom("x".to_string());
+    /// let quoted = MettaValue::quote(expr);
+    /// // Produces: (quote x)
+    /// ```
+    pub fn quote(inner: Self) -> Self {
+        MettaValue::SExpr(vec![MettaValue::Atom("quote".to_string()), inner])
+    }
+
     /// Check if this value is a ground type (non-reducible literal)
     /// Ground types: Bool, Long, Float, String, Uri, Nil
     /// Returns true if the value doesn't require further evaluation
@@ -271,6 +286,47 @@ impl std::hash::Hash for MettaValue {
                 9u8.hash(state);
                 t.hash(state);
             }
+        }
+    }
+}
+
+// Idiomatic From trait implementations for convenient MettaValue construction
+impl From<bool> for MettaValue {
+    fn from(b: bool) -> Self {
+        MettaValue::Bool(b)
+    }
+}
+
+impl From<i64> for MettaValue {
+    fn from(n: i64) -> Self {
+        MettaValue::Long(n)
+    }
+}
+
+impl From<f64> for MettaValue {
+    fn from(f: f64) -> Self {
+        MettaValue::Float(f)
+    }
+}
+
+impl From<String> for MettaValue {
+    fn from(s: String) -> Self {
+        MettaValue::String(s)
+    }
+}
+
+impl From<&str> for MettaValue {
+    fn from(s: &str) -> Self {
+        MettaValue::Atom(s.to_string())
+    }
+}
+
+impl From<Vec<MettaValue>> for MettaValue {
+    fn from(items: Vec<MettaValue>) -> Self {
+        if items.is_empty() {
+            MettaValue::Nil
+        } else {
+            MettaValue::SExpr(items)
         }
     }
 }

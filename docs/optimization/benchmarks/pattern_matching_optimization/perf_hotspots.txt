@@ -1,0 +1,123 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 74K of event 'cycles:Pu'
+# Event count (approx.): 2176134734589
+#
+# Overhead  Command          Shared Object                        Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ...............  ...................................  ......................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    18.61%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] criterion::bencher::Bencher<M>::iter
+            |          
+             --17.43%--core::ptr::read_volatile (inlined)
+                       criterion::black_box (inlined)
+                       |          
+                       |--9.28%--criterion::bencher::Bencher<M>::iter
+                       |          |          
+                       |           --1.01%--0x2
+                       |          
+                        --8.15%--pattern_match::bench_mixed_complexity::{{closure}}::{{closure}} (inlined)
+                                  criterion::bencher::Bencher<M>::iter
+
+     7.88%  pattern_match-1  libm.so.6                            [.] exp
+            |
+            ---exp
+               |          
+               |--6.10%--std::f64::<impl f64>::exp (inlined)
+               |          <f64 as num_traits::float::Float>::exp (inlined)
+               |          <criterion::stats::univariate::kde::kernel::Gaussian as criterion::stats::univariate::kde::kernel::Kernel<A>>::evaluate (inlined)
+               |          criterion::stats::univariate::kde::Kde<A,K>::estimate::{{closure}} (inlined)
+               |          <core::slice::iter::Iter<T> as core::iter::traits::iterator::Iterator>::fold (inlined)
+               |          criterion::stats::univariate::kde::Kde<A,K>::estimate (inlined)
+               |          |          
+               |           --6.08%--criterion::stats::univariate::kde::Kde<A,K>::map::{{closure}} (inlined)
+               |                     core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut (inlined)
+               |                     core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &mut F>::call_once (inlined)
+               |                     core::option::Option<T>::map (inlined)
+               |                     <core::iter::adapters::map::Map<I,F> as core::iter::traits::iterator::Iterator>::next (inlined)
+               |                     rayon::iter::plumbing::Folder::consume_iter (inlined)
+               |                     <rayon::iter::map::MapFolder<C,F> as rayon::iter::plumbing::Folder<T>>::consume_iter (inlined)
+               |                     rayon::iter::plumbing::Producer::fold_with (inlined)
+               |                     rayon::iter::plumbing::bridge_producer_consumer::helper
+               |          
+                --1.35%--0x8348c37e0f486652
+
+     6.25%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] mettatron::backend::eval::pattern_match_impl
+            |          
+             --5.09%--mettatron::backend::eval::pattern_match_impl
+                       |          
+                        --1.29%--0x7fffffffffffffff
+
+     6.14%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] rayon::iter::plumbing::bridge_producer_consumer::helper
+            |          
+            |--1.53%--core::f64::<impl f64>::recip (inlined)
+            |          <f64 as num_traits::float::Float>::recip (inlined)
+            |          <criterion::stats::univariate::kde::kernel::Gaussian as criterion::stats::univariate::kde::kernel::Kernel<A>>::evaluate (inlined)
+            |          criterion::stats::univariate::kde::Kde<A,K>::estimate::{{closure}} (inlined)
+            |          <core::slice::iter::Iter<T> as core::iter::traits::iterator::Iterator>::fold (inlined)
+            |          criterion::stats::univariate::kde::Kde<A,K>::estimate (inlined)
+            |          criterion::stats::univariate::kde::Kde<A,K>::map::{{closure}} (inlined)
+            |          core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut (inlined)
+            |          core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &mut F>::call_once (inlined)
+            |          core::option::Option<T>::map (inlined)
+            |          <core::iter::adapters::map::Map<I,F> as core::iter::traits::iterator::Iterator>::next (inlined)
+            |          rayon::iter::plumbing::Folder::consume_iter (inlined)
+            |          <rayon::iter::map::MapFolder<C,F> as rayon::iter::plumbing::Folder<T>>::consume_iter (inlined)
+            |          rayon::iter::plumbing::Producer::fold_with (inlined)
+            |          rayon::iter::plumbing::bridge_producer_consumer::helper
+            |          
+            |--1.06%--std::f64::<impl f64>::exp (inlined)
+            |          <f64 as num_traits::float::Float>::exp (inlined)
+            |          <criterion::stats::univariate::kde::kernel::Gaussian as criterion::stats::univariate::kde::kernel::Kernel<A>>::evaluate (inlined)
+            |          criterion::stats::univariate::kde::Kde<A,K>::estimate::{{closure}} (inlined)
+            |          <core::slice::iter::Iter<T> as core::iter::traits::iterator::Iterator>::fold (inlined)
+            |          criterion::stats::univariate::kde::Kde<A,K>::estimate (inlined)
+            |          criterion::stats::univariate::kde::Kde<A,K>::map::{{closure}} (inlined)
+            |          core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut (inlined)
+            |          core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &mut F>::call_once (inlined)
+            |          core::option::Option<T>::map (inlined)
+            |          <core::iter::adapters::map::Map<I,F> as core::iter::traits::iterator::Iterator>::next (inlined)
+            |          rayon::iter::plumbing::Folder::consume_iter (inlined)
+            |          <rayon::iter::map::MapFolder<C,F> as rayon::iter::plumbing::Folder<T>>::consume_iter (inlined)
+            |          rayon::iter::plumbing::Producer::fold_with (inlined)
+            |          rayon::iter::plumbing::bridge_producer_consumer::helper
+            |          
+             --1.05%--<f64 as core::ops::arith::Add>::add (inlined)
+                       criterion::stats::univariate::kde::Kde<A,K>::estimate::{{closure}} (inlined)
+                       <core::slice::iter::Iter<T> as core::iter::traits::iterator::Iterator>::fold (inlined)
+                       criterion::stats::univariate::kde::Kde<A,K>::estimate (inlined)
+                       criterion::stats::univariate::kde::Kde<A,K>::map::{{closure}} (inlined)
+                       core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut (inlined)
+                       core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &mut F>::call_once (inlined)
+                       core::option::Option<T>::map (inlined)
+                       <core::iter::adapters::map::Map<I,F> as core::iter::traits::iterator::Iterator>::next (inlined)
+                       rayon::iter::plumbing::Folder::consume_iter (inlined)
+                       <rayon::iter::map::MapFolder<C,F> as rayon::iter::plumbing::Folder<T>>::consume_iter (inlined)
+                       rayon::iter::plumbing::Producer::fold_with (inlined)
+                       rayon::iter::plumbing::bridge_producer_consumer::helper
+
+     2.57%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] core::iter::traits::iterator::Iterator::try_fold
+     2.25%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] mettatron::backend::models::bindings::SmartBindings::insert
+            |          
+             --1.44%--mettatron::backend::models::bindings::SmartBindings::insert
+
+     1.66%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] _rjem_sdallocx
+     1.59%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] rayon::slice::sort::recurse
+     1.48%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] <mettatron::backend::models::metta_value::MettaValue as core::clone::Clone>::clone.1941
+            |          
+             --1.37%--<mettatron::backend::models::metta_value::MettaValue as core::clone::Clone>::clone (inlined)
+
+     1.36%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] core::ptr::drop_in_place<mettatron::backend::models::metta_value::MettaValue>
+            |          
+             --1.33%--core::ptr::drop_in_place<mettatron::backend::models::metta_value::MettaValue>
+
+     1.09%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] rayon::slice::sort::insertion_sort_shift_left
+     1.08%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] <alloc::string::String as core::clone::Clone>::clone
+     1.03%  pattern_match-1  pattern_match-1eee4f1e12f48c30       [.] _rjem_malloc
+
+
+#
+# (Tip: To not accumulate CPU time of children symbols add --no-children)
+#

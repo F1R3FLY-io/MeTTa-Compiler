@@ -18,6 +18,42 @@ crate-type = ["rlib", "cdylib"]
 name = "mettatron"
 path = "src/main.rs"
 
+[[bench]]
+name = "rule_matching"
+harness = false
+
+[[bench]]
+name = "pattern_match"
+harness = false
+
+[[bench]]
+name = "type_lookup"
+harness = false
+
+[[bench]]
+name = "prefix_navigation_benchmarks"
+harness = false
+
+[[bench]]
+name = "bulk_operations"
+harness = false
+
+[[bench]]
+name = "cow_environment"
+harness = false
+
+[[bench]]
+name = "algebraic_status_duplicate_detection"
+harness = false
+
+[[bench]]
+name = "expression_parallelism"
+harness = false
+
+[[bench]]
+name = "branch_comparison"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }

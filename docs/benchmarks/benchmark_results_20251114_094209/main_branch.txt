@@ -1,0 +1,17 @@
+    Updating crates.io index
+    Updating git repository `https://github.com/Adam-Vandervorst/PathMap`
+     Locking 3 packages to latest compatible versions
+    Updating pathmap v0.1.0 (/home/dylon/Workspace/f1r3fly.io/PathMap) -> v0.2.0-alpha0
+      Adding pathmap v0.2.0-alpha0 (https://github.com/Adam-Vandervorst/PathMap?branch=master#d519b4d4)
+      Adding pathmap-derive v0.2.0-alpha0
+error: no bench target named `branch_comparison` in default-run packages
+
+
+=== BUILD INFORMATION ===
+Git Branch: main
+Git Commit: c0d252156082d432f4a0ffdfeb6040cf65f46ace
+Git Commit Message: Merge pull request #34 from F1R3FLY-io/implement-list-operations-built-in-functions
+
+Implement list operations builtin functions
+cargo 1.93.0-nightly (636800288 2025-10-31)
+rustc 1.93.0-nightly (f15a7f385 2025-11-04)

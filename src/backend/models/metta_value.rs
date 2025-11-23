@@ -1,6 +1,8 @@
+use serde::{Serialize, Deserialize};
+
 /// Represents a MeTTa value as an s-expression
 /// S-expressions are nested lists with textual operator names
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MettaValue {
     /// An atom (symbol, variable, or literal)
     Atom(String),

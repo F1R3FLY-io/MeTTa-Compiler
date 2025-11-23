@@ -1886,11 +1886,13 @@ dependencies = [
 name = "mettatron"
 version = "0.1.2"
 dependencies = [
+ "bincode",
  "criterion",
  "dirs",
  "divan",
  "liblevenshtein",
  "lru",
+ "memmap2",
  "models",
  "mork",
  "mork-expr",

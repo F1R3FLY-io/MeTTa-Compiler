@@ -21,10 +21,13 @@ fn print_usage() {
     eprintln!("OPTIONS:");
     eprintln!("    -h, --help           Print this help message");
     eprintln!("    -v, --version        Print version information");
-    eprintln!("    -o, --output <FILE>  Write output to FILE (default: stdout)");
-    eprintln!("    --sexpr              Print S-expressions instead of evaluating");
-    eprintln!("    --repl               Start interactive REPL");
-    eprintln!("    --eval               Evaluate and print results (default)");
+    eprintln!("    -o, --output <FILE>     Write output to FILE (default: stdout)");
+    eprintln!("    --sexpr                 Print S-expressions instead of evaluating");
+    eprintln!("    --repl                  Start interactive REPL");
+    eprintln!("    --eval                  Evaluate and print results (default)");
+    eprintln!("    --load-snapshot <FILE>  Load knowledge base from snapshot (O(1) instant)");
+    eprintln!("    --save-snapshot <FILE>  Save compiled KB to snapshot after evaluation");
+    eprintln!("    --no-merkleize          Disable merkleization when saving snapshot");
     eprintln!();
     eprintln!("ARGUMENTS:");
     eprintln!("    <INPUT>              Input MeTTa file (use '-' for stdin)");
@@ -45,6 +48,9 @@ struct Options {
     output: Option<String>,
     show_sexpr: bool,
     repl_mode: bool,
+    load_snapshot: Option<String>,
+    save_snapshot: Option<String>,
+    merkleize: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -54,6 +60,9 @@ fn parse_args() -> Result<Options, String> {
     let mut output = None;
     let mut show_sexpr = false;
     let mut repl_mode = false;
+    let mut load_snapshot = None;
+    let mut save_snapshot = None;
+    let mut merkleize = true; // Enabled by default
     let mut i = 1;
 
     while i < args.len() {
@@ -82,6 +91,23 @@ fn parse_args() -> Result<Options, String> {
             "--eval" => {
                 // Default mode, no-op
             }
+            "--load-snapshot" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("Missing snapshot file after --load-snapshot".to_string());
+                }
+                load_snapshot = Some(args[i].clone());
+            }
+            "--save-snapshot" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("Missing snapshot file after --save-snapshot".to_string());
+                }
+                save_snapshot = Some(args[i].clone());
+            }
+            "--no-merkleize" => {
+                merkleize = false;
+            }
             arg if arg.starts_with('-') && arg != "-" => {
                 return Err(format!("Unknown option: {}", arg));
             }
@@ -98,6 +124,9 @@ fn parse_args() -> Result<Options, String> {
     Ok(Options {
         input,
         output,
+        load_snapshot,
+        save_snapshot,
+        merkleize,
         show_sexpr,
         repl_mode,
     })

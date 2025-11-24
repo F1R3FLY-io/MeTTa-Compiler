@@ -38,17 +38,22 @@ impl TreeSitterMettaParser {
         self.convert_source_file(root, source)
     }
 
+    /// Check if a node should be processed (named and not extra)
+    ///
+    /// This filters out extras like comments and whitespace while preserving
+    /// them in the Tree-Sitter CST for future LSP server access.
+    #[inline]
+    fn should_process_node(&self, node: Node) -> bool {
+        node.is_named() && !node.is_extra()
+    }
+
     /// Convert source_file node (contains multiple expressions)
     fn convert_source_file(&self, node: Node, source: &str) -> Result<Vec<SExpr>, String> {
         let mut expressions = Vec::new();
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
-            // Skip comments
-            if child.kind() == "line_comment" {
-                continue;
-            }
-            if child.is_named() {
+            if self.should_process_node(child) {
                 expressions.extend(self.convert_expression(child, source)?);
             }
         }
@@ -63,7 +68,7 @@ impl TreeSitterMettaParser {
                 // Unwrap the expression wrapper
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
-                    if child.is_named() {
+                    if self.should_process_node(child) {
                         return self.convert_expression(child, source);
                     }
                 }
@@ -82,7 +87,7 @@ impl TreeSitterMettaParser {
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
-            if child.is_named() {
+            if self.should_process_node(child) {
                 items.extend(self.convert_expression(child, source)?);
             }
         }
@@ -114,7 +119,7 @@ impl TreeSitterMettaParser {
                     prefix = Some("'");
                     prefix_span = Some(self.node_span(child));
                 }
-                _ if child.is_named() => {
+                _ if self.should_process_node(child) => {
                     argument = Some(self.convert_expression(child, source)?);
                 }
                 _ => {}
@@ -136,7 +141,7 @@ impl TreeSitterMettaParser {
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
-            if child.is_named() {
+            if self.should_process_node(child) {
                 return self.convert_atom(child, source);
             }
         }
@@ -718,5 +723,160 @@ mod tests {
         // Mixed regular and unicode
         let result = strip_spans_vec(&parser.parse(r#""Hello \u{1F30D}!""#).unwrap());
         assert_eq!(result, vec![SExpr::String("Hello 🌍!".to_string(), None)]);
+    }
+
+    #[test]
+    fn test_parse_inline_comments() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Comment within list
+        let result = strip_spans_vec(&parser.parse("(+ 1 ; comment here\n 2)").unwrap());
+
+        assert_eq!(
+            result,
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_inline_comments() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Multiple comments in one list
+        let result = strip_spans_vec(
+            &parser
+                .parse("(+ ; first comment\n 1 ; second comment\n 2)")
+                .unwrap(),
+        );
+
+        assert_eq!(
+            result,
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn test_parse_comment_in_nested_list() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Comment in nested structure
+        let result = strip_spans_vec(&parser.parse("(+ (* 2 ; inner comment\n 3) 4)").unwrap());
+
+        assert_eq!(
+            result,
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::List(
+                        vec![
+                            SExpr::Atom("*".to_string(), None),
+                            SExpr::Integer(2, None),
+                            SExpr::Integer(3, None),
+                        ],
+                        None
+                    ),
+                    SExpr::Integer(4, None),
+                ],
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn test_parse_comment_between_list_items() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Comments between major list items (rule definition)
+        let result = strip_spans_vec(
+            &parser
+                .parse(
+                    r#"
+            (=
+                ; Pattern
+                (double $x)
+                ; Body
+                (* $x 2))
+            "#,
+                )
+                .unwrap(),
+        );
+
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            SExpr::List(items, _) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], SExpr::Atom("=".to_string(), None));
+                // Pattern: (double $x)
+                match &items[1] {
+                    SExpr::List(pattern_items, _) => {
+                        assert_eq!(pattern_items.len(), 2);
+                        assert_eq!(pattern_items[0], SExpr::Atom("double".to_string(), None));
+                        assert_eq!(pattern_items[1], SExpr::Atom("$x".to_string(), None));
+                    }
+                    _ => panic!("Expected pattern list"),
+                }
+                // Body: (* $x 2)
+                match &items[2] {
+                    SExpr::List(body_items, _) => {
+                        assert_eq!(body_items.len(), 3);
+                        assert_eq!(body_items[0], SExpr::Atom("*".to_string(), None));
+                        assert_eq!(body_items[1], SExpr::Atom("$x".to_string(), None));
+                        assert_eq!(body_items[2], SExpr::Integer(2, None));
+                    }
+                    _ => panic!("Expected body list"),
+                }
+            }
+            _ => panic!("Expected rule definition list"),
+        }
+    }
+
+    #[test]
+    fn test_parse_comment_after_top_level_expression() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Comment after a complete expression
+        let result = strip_spans_vec(
+            &parser
+                .parse("(+ 1 2) ; result is 3\n(* 3 4)")
+                .unwrap(),
+        );
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            result[0],
+            SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )
+        );
+        assert_eq!(
+            result[1],
+            SExpr::List(
+                vec![
+                    SExpr::Atom("*".to_string(), None),
+                    SExpr::Integer(3, None),
+                    SExpr::Integer(4, None),
+                ],
+                None
+            )
+        );
     }
 }

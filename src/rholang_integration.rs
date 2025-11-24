@@ -143,6 +143,10 @@ fn metta_value_to_json_string(value: &MettaValue) -> String {
                 metta_value_to_json_string(t)
             )
         }
+        MettaValue::Conjunction(goals) => {
+            let goals_json: Vec<String> = goals.iter().map(metta_value_to_json_string).collect();
+            format!(r#"{{"type":"conjunction","goals":[{}]}}"#, goals_json.join(","))
+        }
     }
 }
 

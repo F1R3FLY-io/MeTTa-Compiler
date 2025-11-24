@@ -22,6 +22,10 @@ pub enum MettaValue {
     Error(String, Box<MettaValue>),
     /// A type (first-class types as atoms)
     Type(Box<MettaValue>),
+    /// A conjunction of goals (MORK-style logical AND)
+    /// Represents (,), (, expr), or (, expr1 expr2 ...)
+    /// Goals are evaluated left-to-right with variable binding threading
+    Conjunction(Vec<MettaValue>),
 }
 
 impl MettaValue {
@@ -118,6 +122,17 @@ impl MettaValue {
             // Types must be structurally equivalent
             (MettaValue::Type(a), MettaValue::Type(b)) => a.structurally_equivalent(b),
 
+            // Conjunctions must have same structure
+            (MettaValue::Conjunction(a_goals), MettaValue::Conjunction(b_goals)) => {
+                if a_goals.len() != b_goals.len() {
+                    return false;
+                }
+                a_goals
+                    .iter()
+                    .zip(b_goals.iter())
+                    .all(|(a, b)| a.structurally_equivalent(b))
+            }
+
             _ => false,
         }
     }
@@ -196,6 +211,14 @@ impl MettaValue {
                 format!("(error \"{}\" {})", msg, details.to_mork_string())
             }
             MettaValue::Type(t) => t.to_mork_string(),
+            MettaValue::Conjunction(goals) => {
+                let inner = goals
+                    .iter()
+                    .map(|v| v.to_mork_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("(, {})", inner)
+            }
         }
     }
 
@@ -224,6 +247,11 @@ impl MettaValue {
             }
             MettaValue::Type(t) => {
                 format!(r#"{{"type":"metatype","value":{}}}"#, t.to_json_string())
+            }
+            MettaValue::Conjunction(goals) => {
+                let goals_json: Vec<String> =
+                    goals.iter().map(|value| value.to_json_string()).collect();
+                format!(r#"{{"type":"conjunction","goals":[{}]}}"#, goals_json.join(","))
             }
         }
     }
@@ -285,6 +313,10 @@ impl std::hash::Hash for MettaValue {
             MettaValue::Type(t) => {
                 9u8.hash(state);
                 t.hash(state);
+            }
+            MettaValue::Conjunction(goals) => {
+                10u8.hash(state);
+                goals.hash(state);
             }
         }
     }

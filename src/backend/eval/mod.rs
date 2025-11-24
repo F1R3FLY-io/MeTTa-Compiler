@@ -14,6 +14,7 @@ mod control_flow;
 mod errors;
 mod evaluation;
 mod list_ops;
+mod mork_forms;
 mod quoting;
 mod space;
 mod types;
@@ -78,6 +79,9 @@ fn eval_with_depth(value: MettaValue, env: Environment, depth: usize) -> EvalRes
 
         // For s-expressions, evaluate elements and apply rules/built-ins
         MettaValue::SExpr(items) => eval_sexpr(items, env, depth),
+
+        // For conjunctions, evaluate goals left-to-right with binding threading
+        MettaValue::Conjunction(goals) => eval_conjunction(goals, env, depth),
     }
 }
 
@@ -172,6 +176,30 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalRes
             // foldl-atom: folds (reduces) a list from left to right using an operation and initial value
             "foldl-atom" => return list_ops::eval_foldl_atom(items, env),
 
+            // ====================================================================
+            // MORK Special Forms
+            // ====================================================================
+
+            // exec: Rule execution with conjunction antecedents/consequents
+            // (exec <priority> <antecedent> <consequent>)
+            // Executes rules when all antecedent conditions match
+            "exec" => return mork_forms::eval_exec(items, env),
+
+            // coalg: Coalgebra patterns for tree transformations
+            // (coalg <pattern> <templates>)
+            // Unfolds structures with explicit result cardinality
+            "coalg" => return mork_forms::eval_coalg(items, env),
+
+            // lookup: Conditional fact lookup with success/failure branches
+            // (lookup <pattern> <success-goals> <failure-goals>)
+            // Executes different branches based on pattern presence in space
+            "lookup" => return mork_forms::eval_lookup(items, env),
+
+            // rulify: Meta-programming for runtime rule generation
+            // (rulify $name (, $p0) (, $t0 ...) <antecedent> <consequent>)
+            // Generates exec rules from coalgebra definitions
+            "rulify" => return mork_forms::eval_rulify(items, env),
+
             // Fall through to normal evaluation
             _ => {}
         }
@@ -245,6 +273,56 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalRes
     }
 
     (all_final_results, unified_env)
+}
+
+/// Evaluate a conjunction: (,), (, expr), or (, expr1 expr2 ...)
+/// Implements MORK-style goal evaluation with left-to-right binding threading
+///
+/// Semantics:
+/// - (,)          → succeed with empty result (always true)
+/// - (, expr)     → evaluate expr directly (unary passthrough)
+/// - (, e1 e2 ... en) → evaluate goals left-to-right, threading bindings through
+fn eval_conjunction(goals: Vec<MettaValue>, env: Environment, depth: usize) -> EvalResult {
+    // Empty conjunction: (,) succeeds with empty result
+    if goals.is_empty() {
+        return (vec![MettaValue::Nil], env);
+    }
+
+    // Unary conjunction: (, expr) evaluates expr directly
+    if goals.len() == 1 {
+        return eval_with_depth(goals[0].clone(), env, depth + 1);
+    }
+
+    // N-ary conjunction: evaluate left-to-right with binding threading
+    // Start with the first goal
+    let (mut results, mut current_env) = eval_with_depth(goals[0].clone(), env, depth + 1);
+
+    // For each subsequent goal, evaluate it in the context of previous results
+    for goal in &goals[1..] {
+        let mut next_results = Vec::new();
+
+        // For each result from previous goals, evaluate the current goal
+        for result in results {
+            // If previous result is an error, propagate it
+            if matches!(result, MettaValue::Error(_, _)) {
+                next_results.push(result);
+                continue;
+            }
+
+            // Evaluate the current goal
+            let (goal_results, goal_env) = eval_with_depth(goal.clone(), current_env.clone(), depth + 1);
+
+            // Union the environment
+            current_env = current_env.union(&goal_env);
+
+            // Collect all results from this goal
+            next_results.extend(goal_results);
+        }
+
+        results = next_results;
+    }
+
+    (results, current_env)
 }
 
 /// Try to evaluate a built-in operation
@@ -409,6 +487,19 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
             true
         }
 
+        // Conjunctions must have same length and all goals must match
+        (MettaValue::Conjunction(p_goals), MettaValue::Conjunction(v_goals)) => {
+            if p_goals.len() != v_goals.len() {
+                return false;
+            }
+            for (p, v) in p_goals.iter().zip(v_goals.iter()) {
+                if !pattern_match_impl(p, v, bindings) {
+                    return false;
+                }
+            }
+            true
+        }
+
         // Errors match if message and details match
         (MettaValue::Error(p_msg, p_details), MettaValue::Error(v_msg, v_details)) => {
             p_msg == v_msg && pattern_match_impl(p_details, v_details, bindings)
@@ -484,6 +575,13 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
                 .collect();
             MettaValue::SExpr(new_items)
         }
+        MettaValue::Conjunction(goals) => {
+            let new_goals: Vec<_> = goals
+                .iter()
+                .map(|goal| apply_bindings(goal, bindings))
+                .collect();
+            MettaValue::Conjunction(new_goals)
+        }
         MettaValue::Error(msg, details) => {
             let new_details = apply_bindings(details, bindings);
             MettaValue::Error(msg.clone(), Box::new(new_details))
@@ -547,6 +645,10 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         MettaValue::SExpr(items) => {
             // Sum specificity of all items
             items.iter().map(pattern_specificity).sum()
+        }
+        // Conjunctions: sum specificity of all goals
+        MettaValue::Conjunction(goals) => {
+            goals.iter().map(pattern_specificity).sum()
         }
         // Errors: use specificity of details
         MettaValue::Error(_, details) => pattern_specificity(details),
@@ -1608,5 +1710,170 @@ mod tests {
             }
             other => panic!("Expected Error, got {:?}", other),
         }
+    }
+
+    // ========================================================================
+    // Conjunction Pattern Tests
+    // ========================================================================
+
+    #[test]
+    fn test_empty_conjunction() {
+        let env = Environment::new();
+
+        // Empty conjunction: (,) → Nil
+        let value = MettaValue::Conjunction(vec![]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Nil);
+    }
+
+    #[test]
+    fn test_unary_conjunction() {
+        let env = Environment::new();
+
+        // Unary conjunction: (, expr) → evaluates expr directly
+        let value = MettaValue::Conjunction(vec![MettaValue::Long(42)]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_unary_conjunction_with_expression() {
+        let env = Environment::new();
+
+        // Unary conjunction with expression: (, (+ 2 3)) → 5
+        let value = MettaValue::Conjunction(vec![MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(3),
+        ])]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(5));
+    }
+
+    #[test]
+    fn test_binary_conjunction() {
+        let env = Environment::new();
+
+        // Binary conjunction: (, (+ 1 1) (+ 2 2)) → 2, 4
+        let value = MettaValue::Conjunction(vec![
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(1),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        // Binary conjunction returns results from the last goal
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(4));
+    }
+
+    #[test]
+    fn test_nary_conjunction() {
+        let env = Environment::new();
+
+        // N-ary conjunction: (, (+ 1 1) (+ 2 2) (+ 3 3)) → 2, 4, 6 (returns last)
+        let value = MettaValue::Conjunction(vec![
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(1),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(3),
+                MettaValue::Long(3),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        // N-ary conjunction returns results from the last goal
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(6));
+    }
+
+    #[test]
+    fn test_conjunction_pattern_match() {
+        // Test that conjunctions can be pattern matched
+        let pattern = MettaValue::Conjunction(vec![
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Atom("$y".to_string()),
+        ]);
+
+        let value = MettaValue::Conjunction(vec![MettaValue::Long(1), MettaValue::Long(2)]);
+
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_some());
+
+        let bindings = bindings.unwrap();
+        assert_eq!(
+            bindings
+                .iter()
+                .find(|(name, _)| name.as_str() == "$x")
+                .map(|(_, val)| val),
+            Some(&MettaValue::Long(1))
+        );
+        assert_eq!(
+            bindings
+                .iter()
+                .find(|(name, _)| name.as_str() == "$y")
+                .map(|(_, val)| val),
+            Some(&MettaValue::Long(2))
+        );
+    }
+
+    #[test]
+    fn test_conjunction_with_error_propagation() {
+        let env = Environment::new();
+
+        // Conjunction with error should propagate the error
+        let value = MettaValue::Conjunction(vec![
+            MettaValue::Long(42),
+            MettaValue::Error("test error".to_string(), Box::new(MettaValue::Nil)),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], MettaValue::Error(_, _)));
+    }
+
+    #[test]
+    fn test_nested_conjunction() {
+        let env = Environment::new();
+
+        // Nested conjunction: (, (+ 1 2) (, (+ 3 4)))
+        let value = MettaValue::Conjunction(vec![
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::Conjunction(vec![MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(3),
+                MettaValue::Long(4),
+            ])]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(7));
     }
 }

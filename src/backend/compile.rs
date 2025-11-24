@@ -50,10 +50,24 @@ impl TryFrom<&MettaExpr> for MettaValue {
                 if items.is_empty() {
                     Ok(MettaValue::Nil)
                 } else {
-                    // Use iterator and collect for idiomatic Rust
-                    let values: Result<Vec<_>, _> =
-                        items.iter().map(MettaValue::try_from).collect();
-                    Ok(MettaValue::SExpr(values?))
+                    // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
+                    let is_conjunction = items.first().map_or(false, |first| {
+                        matches!(first, MettaExpr::Atom(s, _) if s == ",")
+                    });
+
+                    if is_conjunction {
+                        // Convert to Conjunction variant (skip the comma operator)
+                        let goals: Result<Vec<_>, _> = items[1..]
+                            .iter()
+                            .map(MettaValue::try_from)
+                            .collect();
+                        Ok(MettaValue::Conjunction(goals?))
+                    } else {
+                        // Regular S-expression
+                        let values: Result<Vec<_>, _> =
+                            items.iter().map(MettaValue::try_from).collect();
+                        Ok(MettaValue::SExpr(values?))
+                    }
                 }
             }
             MettaExpr::Quoted(expr, _span) => {

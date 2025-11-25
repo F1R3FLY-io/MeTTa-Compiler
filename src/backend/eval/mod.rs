@@ -13,6 +13,7 @@ mod bindings;
 mod control_flow;
 mod errors;
 mod evaluation;
+pub mod fixed_point;
 mod list_ops;
 mod mork_forms;
 pub mod priority;

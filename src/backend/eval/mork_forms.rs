@@ -128,9 +128,8 @@ fn eval_operation(items: &[MettaValue], mut env: Environment) -> EvalResult {
                         env.add_to_space(fact);
                     }
                     (MettaValue::Atom(op_type), fact) if op_type == "-" => {
-                        // Remove fact from space (to be implemented)
-                        // For now, just add a placeholder
-                        let _remove = fact; // TODO: implement remove_from_space
+                        // Remove fact from space
+                        env.remove_from_space(fact);
                     }
                     _ => {}
                 }

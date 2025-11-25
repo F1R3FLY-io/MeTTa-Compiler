@@ -27,7 +27,7 @@ use super::{apply_bindings, eval_with_depth, pattern_match, EvalResult};
 /// - (exec P0 (,) (, (always-true)))  ; Empty antecedent, always fires
 /// - (exec P1 (, (parent $x Alice)) (, (result $x)))  ; Simple pattern match
 /// - (exec P2 (, (a $x) (b $x)) (, (c $x)))  ; Binary conjunction with shared variable
-pub(super) fn eval_exec(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalResult {
     let args = &items[1..]; // Skip "exec" operator
 
     if args.len() < 3 {
@@ -41,6 +41,11 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     let _priority = &args[0]; // Priority for future use (rule ordering)
     let antecedent = &args[1];
     let consequent = &args[2];
+
+    // PHASE 3: Store exec as a fact for dynamic exec generation
+    // This allows exec rules to be matched in antecedents: (exec (1 $l) $ps $ts)
+    let exec_fact = MettaValue::SExpr(items.clone());
+    env.add_to_space(&exec_fact);
 
     // Antecedent must be a conjunction
     let antecedent_goals = match antecedent {
@@ -71,9 +76,9 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, env: Environment) -> EvalResult 
         // Consequent can be either a conjunction or an operation
         match consequent {
             MettaValue::Conjunction(goals) => {
-                // Evaluate consequent conjunction
+                // PHASE 3: Check for exec in consequent goals
                 let (conseq_results, conseq_env) =
-                    eval_conjunction_for_exec(goals.clone(), antecedent_env.clone());
+                    eval_consequent_conjunction(goals.clone(), antecedent_env.clone());
                 all_results.extend(conseq_results);
                 final_env = final_env.union(&conseq_env);
             }
@@ -107,6 +112,45 @@ fn eval_conjunction_for_exec(goals: Vec<MettaValue>, env: Environment) -> EvalRe
     // Evaluate the conjunction directly
     let conjunction = MettaValue::Conjunction(goals);
     eval_with_depth(conjunction, env, 0)
+}
+
+/// Evaluate a consequent conjunction with special handling for exec goals
+///
+/// PHASE 3: Dynamic exec generation
+/// When a consequent contains (exec ...), don't execute it immediately.
+/// Instead, add it as a fact so it can be executed in the next fixed-point iteration.
+fn eval_consequent_conjunction(goals: Vec<MettaValue>, mut env: Environment) -> EvalResult {
+    if goals.is_empty() {
+        return (vec![MettaValue::Nil], env);
+    }
+
+    let mut all_results = Vec::new();
+
+    for goal in goals {
+        if is_exec_form(&goal) {
+            // Special case: exec in consequent
+            // Don't execute it, just add as fact for next iteration
+            env.add_to_space(&goal);
+            all_results.push(MettaValue::Atom("ok".to_string()));
+        } else {
+            // Normal evaluation
+            let (results, new_env) = eval_with_depth(goal, env, 0);
+            all_results.extend(results);
+            env = new_env;
+        }
+    }
+
+    (all_results, env)
+}
+
+/// Check if a MettaValue is an exec form: (exec ...)
+fn is_exec_form(value: &MettaValue) -> bool {
+    match value {
+        MettaValue::SExpr(items) if !items.is_empty() => {
+            matches!(&items[0], MettaValue::Atom(op) if op == "exec")
+        }
+        _ => false,
+    }
 }
 
 /// Check if an S-expression is an operation (starts with "O")

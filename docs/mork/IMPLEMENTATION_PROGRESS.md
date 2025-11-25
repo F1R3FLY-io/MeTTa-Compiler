@@ -226,13 +226,24 @@ These features from ancestor.mm2 are already supported by the current implementa
 ## Branch Structure
 
 ```
+dylon/conjunction-pattern (conjunction operator, exec, coalg, lookup, rulify)
+  └─ feature/mork-fact-removal (PR #1) ✅
+      └─ feature/mork-peano-numbers (PR #2) ✅
+          └─ feature/mork-wildcard-patterns (PR #3) ✅
+              └─ (future: dynamic exec + fixed-point)
+
 main
-  ├─ feature/mork-fact-removal (PR #1) ✅
-  │   └─ feature/mork-peano-numbers (PR #2) ✅
-  │       └─ feature/mork-wildcard-patterns (PR #3) ✅
-  │           └─ (future: dynamic exec + fixed-point)
   └─ feature/act (separate: PathMap ACT persistence)
 ```
+
+**Base Branch**: All MORK feature PRs are built on `dylon/conjunction-pattern`, which provides:
+- ✅ Conjunction operator `(,)` for logical AND
+- ✅ `exec` special form with priority-based rule execution
+- ✅ `coalg` for coalgebra patterns
+- ✅ `lookup` for conditional fact lookup
+- ✅ `rulify` for meta-programming patterns
+- ✅ Comprehensive MORK documentation (5,000+ lines)
+- ✅ Example files demonstrating all MORK special forms
 
 ---
 

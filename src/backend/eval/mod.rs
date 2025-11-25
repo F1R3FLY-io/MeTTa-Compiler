@@ -15,6 +15,7 @@ mod errors;
 mod evaluation;
 mod list_ops;
 mod mork_forms;
+pub mod priority;
 mod quoting;
 mod space;
 mod types;

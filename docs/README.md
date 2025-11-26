@@ -68,11 +68,30 @@ Technical design and implementation details:
 
 Comprehensive documentation for MORK (the hypergraph processing kernel):
 
+### Core MORK Features ✅
+- **[MORK Features Support](mork/MORK_FEATURES_SUPPORT.md)** - Complete feature reference and test results
+  - All 9 implemented features (fixed-point, binding threading, priorities, etc.)
+  - 17/17 tests passing (ancestor.mm2 verified)
+  - Performance characteristics and usage examples
+- **[Benchmark Results](mork/BENCHMARK_RESULTS.md)** - Comprehensive performance benchmarks
+  - Sub-millisecond performance for typical workloads
+  - Scaling analysis and bottleneck identification
+  - Hardware utilization and optimization recommendations
+- **[Future Enhancements](mork/FUTURE_ENHANCEMENTS.md)** - Planned optimizations and features
+  - Performance optimizations (fact indexing, incremental evaluation)
+  - Language features (negation, constraints, aggregation)
+  - Developer tools (trace/debug mode, visualization)
+
+### Conjunction Pattern
 - **[Conjunction Pattern](mork/conjunction-pattern/)** - Deep dive on MORK's comma/conjunction pattern
   - Why uniform conjunctions for unary expressions
   - Parser and evaluator implementation
   - Coalgebra and meta-programming patterns
   - Benefits analysis and comparison with alternatives
+  - **[Implementation Details](mork/conjunction-pattern/IMPLEMENTATION.md)** - Technical deep dive
+  - **[Completion Summary](mork/conjunction-pattern/COMPLETION_SUMMARY.md)** - Implementation status
+
+### Additional MORK Documentation
 - **[Pattern Matching](mork/pattern-matching.md)** - Pattern matching implementation guide
 - **[Encoding Strategy](mork/encoding-strategy.md)** - Byte-level encoding specification
 - **[Evaluation Engine](mork/evaluation-engine.md)** - Evaluation semantics

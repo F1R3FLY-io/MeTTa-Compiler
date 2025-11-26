@@ -97,6 +97,11 @@ fn test_simple_meta_programming() {
     let (before_execs, _) = eval(before_query.source[0].clone(), env.clone());
     println!("Exec rules before fixed-point: {}", before_execs.len());
 
+    // Debug: Check if (level Z) is in space
+    let level_query = compile("(match &self (level Z) (level Z))").unwrap();
+    let (level_matches, _) = eval(level_query.source[0].clone(), env.clone());
+    println!("(level Z) facts before fixed-point: {}", level_matches.len());
+
     // Run to fixed point
     let (final_env, result) = eval_env_to_fixed_point(env, 10);
     println!("Fixed-point result: iterations={}, converged={}, facts_added={}",

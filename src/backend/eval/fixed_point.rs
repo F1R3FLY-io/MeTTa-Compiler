@@ -9,8 +9,6 @@
 use crate::backend::environment::Environment;
 use crate::backend::eval::priority::compare_priorities;
 use crate::backend::models::MettaValue;
-use std::cmp::Ordering;
-use std::collections::HashSet;
 
 /// Maximum number of fixed-point iterations to prevent infinite loops
 const DEFAULT_MAX_ITERATIONS: usize = 1000;
@@ -193,9 +191,16 @@ fn count_facts(env: &Environment) -> usize {
 fn try_fire_rule(rule: &ExecRule, env: Environment) -> Environment {
     use super::eval_with_depth;
 
+    // DEBUG: Check what facts are in environment before firing
+    let wildcard = MettaValue::Atom("$_".to_string());
+    let _all_facts = env.match_space(&wildcard, &wildcard);
+
     // Evaluate the full exec expression
     // This will handle antecedent matching and consequent execution
     let (_results, new_env) = eval_with_depth(rule.full_expr.clone(), env, 0);
+
+    // DEBUG: Check facts after firing
+    let _after_facts = new_env.match_space(&wildcard, &wildcard);
 
     new_env
 }

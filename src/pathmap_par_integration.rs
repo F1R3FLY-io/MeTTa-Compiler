@@ -6,6 +6,7 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{MettaState, MettaValue};
 use models::rhoapi::{expr::ExprInstance, EList, EPathMap, ETuple, Expr, Par};
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
+use std::sync::Arc;
 
 /// Helper function to create a Par with a string value
 fn create_string_par(s: String) -> Par {
@@ -18,13 +19,6 @@ fn create_string_par(s: String) -> Par {
 fn create_int_par(n: i64) -> Par {
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GInt(n)),
-    }])
-}
-
-/// Helper function to create a Par with a URI value
-fn create_uri_par(uri: String) -> Par {
-    Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::GUri(uri)),
     }])
 }
 
@@ -52,7 +46,6 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 s.replace("\\", "\\\\").replace("\"", "\\\"")
             ))
         }
-        MettaValue::Uri(s) => create_uri_par(s.clone()),
         MettaValue::Nil => {
             // Represent Nil as empty Par
             Par::default()
@@ -343,7 +336,7 @@ pub fn metta_state_to_pathmap_par(state: &MettaState) -> Par {
 /// Returns a PathMap containing the error (to maintain consistent type)
 pub fn metta_error_to_par(error_msg: &str) -> Par {
     // Create an error MettaValue
-    let error_value = MettaValue::Error(error_msg.to_string(), Box::new(MettaValue::Nil));
+    let error_value = MettaValue::Error(error_msg.to_string(), Arc::new(MettaValue::Nil));
 
     // Create a MettaState with the error in output
     let error_state = MettaState {
@@ -381,7 +374,6 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
             }
             Some(ExprInstance::GInt(n)) => Ok(MettaValue::Long(*n)),
             Some(ExprInstance::GBool(b)) => Ok(MettaValue::Bool(*b)),
-            Some(ExprInstance::GUri(u)) => Ok(MettaValue::Uri(u.clone())),
             Some(ExprInstance::EListBody(list)) => {
                 // Lists are also converted to S-expressions for compatibility
                 let items: Result<Vec<MettaValue>, String> =
@@ -407,7 +399,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
                                         let msg = par_to_metta_value(&tuple.ps[1])?;
                                         let details = par_to_metta_value(&tuple.ps[2])?;
                                         if let MettaValue::String(msg_str) = msg {
-                                            Ok(MettaValue::Error(msg_str, Box::new(details)))
+                                            Ok(MettaValue::Error(msg_str, Arc::new(details)))
                                         } else {
                                             Err("Error message must be a string".to_string())
                                         }
@@ -418,7 +410,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
                                 "type" => {
                                     // Type tuple: (tag, inner_value)
                                     let inner = par_to_metta_value(&tuple.ps[1])?;
-                                    Ok(MettaValue::Type(Box::new(inner)))
+                                    Ok(MettaValue::Type(Arc::new(inner)))
                                 }
                                 _ => {
                                     // Unknown tag, treat as regular S-expr

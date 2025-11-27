@@ -1,12 +1,13 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{EvalResult, MettaValue};
+use std::sync::Arc;
 
-use super::{apply_bindings, eval, pattern_match, EvalOutput};
+use super::{apply_bindings, eval, pattern_match};
 
 /// Eval: force evaluation of quoted expressions
 /// (eval expr) - complementary to quote
-pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_one_arg!("eval", items, env);
+pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("eval", items, 1, env, "(eval expr)");
 
     // First evaluate the argument to get the expression
     let (arg_results, arg_env) = eval(items[1].clone(), env);
@@ -19,16 +20,16 @@ pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalOutput 
 }
 
 /// Evaluation: ! expr - force evaluation
-pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_one_arg!("!", items, env);
+pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("!", items, 1, env, "(! expr)");
     // Evaluate the expression after !
     eval(items[1].clone(), env)
 }
 
 /// Function: creates an evaluation loop that continues
 /// until it encounters a return value
-pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_one_arg!("function", items, env);
+pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("function", items, 1, env, "(function expr)");
 
     let mut current_expr = items[1].clone();
     let mut current_env = env;
@@ -76,7 +77,7 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalOut
             return (
                 vec![MettaValue::Error(
                     format!("function exceeded maximum iterations ({})", MAX_ITERATIONS),
-                    Box::new(current_expr),
+                    Arc::new(current_expr),
                 )],
                 current_env,
             );
@@ -87,8 +88,8 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalOut
 }
 
 /// Return: signals termination from a function evaluation loop
-pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_one_arg!("return", items, env);
+pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("return", items, 1, env, "(return value)");
 
     let (arg_results, arg_env) = eval(items[1].clone(), env);
     for result in &arg_results {
@@ -107,8 +108,8 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalOutpu
 
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
-pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_three_args!("chain", items, env);
+pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("chain", items, 3, env, "(chain expr $var body)");
 
     let expr = &items[1];
     let var = &items[2];

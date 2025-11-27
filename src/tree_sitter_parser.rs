@@ -38,7 +38,11 @@ pub enum SyntaxErrorKind {
 
 impl std::fmt::Display for SyntaxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Syntax error at line {}, column {}: ", self.line, self.column)?;
+        write!(
+            f,
+            "Syntax error at line {}, column {}: ",
+            self.line, self.column
+        )?;
         match &self.kind {
             SyntaxErrorKind::UnexpectedToken => write!(f, "unexpected '{}'", self.text),
             SyntaxErrorKind::UnclosedDelimiter(c) => write!(f, "unclosed '{}'", c),
@@ -126,12 +130,13 @@ impl TreeSitterMettaParser {
             return Err(self.create_syntax_error(&root, source));
         }
 
-        self.convert_source_file(root, source).map_err(|e| SyntaxError {
-            kind: SyntaxErrorKind::Generic,
-            line: 1,
-            column: 1,
-            text: e,
-        })
+        self.convert_source_file(root, source)
+            .map_err(|e| SyntaxError {
+                kind: SyntaxErrorKind::Generic,
+                line: 1,
+                column: 1,
+                text: e,
+            })
     }
 
     /// Convert source_file node (contains multiple expressions)

@@ -41,7 +41,11 @@ fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaValue) -> Stri
         for (i, (p, v)) in p_items.iter().zip(v_items.iter()).enumerate() {
             // Skip if pattern is a variable (starts with $, &, or ')
             if let MettaValue::Atom(name) = p {
-                if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') || name == "_" {
+                if name.starts_with('$')
+                    || name.starts_with('&')
+                    || name.starts_with('\'')
+                    || name == "_"
+                {
                     continue;
                 }
             }
@@ -578,11 +582,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(
-                    msg.contains("Hint"),
-                    "Expected 'Hint' in: {}",
-                    msg
-                );
+                assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
                 assert!(
                     msg.contains("2 element"),
                     "Expected arity mismatch hint in: {}",
@@ -615,11 +615,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(
-                    msg.contains("Hint"),
-                    "Expected 'Hint' in: {}",
-                    msg
-                );
+                assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
                 assert!(
                     msg.contains("foo") && msg.contains("bar"),
                     "Expected head mismatch hint in: {}",
@@ -654,11 +650,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(
-                    msg.contains("Hint"),
-                    "Expected 'Hint' in: {}",
-                    msg
-                );
+                assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
                 // Should mention the position and values that don't match
                 assert!(
                     msg.contains("position") || msg.contains("doesn't match"),

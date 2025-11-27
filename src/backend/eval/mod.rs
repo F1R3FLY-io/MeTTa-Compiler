@@ -36,9 +36,27 @@ const MAX_CARTESIAN_RESULTS: usize = 10000;
 
 /// MeTTa special forms for "did you mean" suggestions during evaluation
 const SPECIAL_FORMS: &[&str] = &[
-    "=", "!", "quote", "if", "error", "is-error", "catch", "eval",
-    "function", "return", "chain", "match", "case", "switch", "let",
-    ":", "get-type", "check-type", "map-atom", "filter-atom", "foldl-atom",
+    "=",
+    "!",
+    "quote",
+    "if",
+    "error",
+    "is-error",
+    "catch",
+    "eval",
+    "function",
+    "return",
+    "chain",
+    "match",
+    "case",
+    "switch",
+    "let",
+    ":",
+    "get-type",
+    "check-type",
+    "map-atom",
+    "filter-atom",
+    "foldl-atom",
 ];
 
 /// Convert MettaValue to a friendly type name for error messages
@@ -1602,11 +1620,7 @@ mod tests {
         match &results[0] {
             MettaValue::Error(msg, details) => {
                 // Error message should contain the friendly type name
-                assert!(
-                    msg.contains("String"),
-                    "Expected 'String' in: {}",
-                    msg
-                );
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
                 assert!(
                     msg.contains("expected Number (integer)"),
                     "Expected 'expected Number (integer)' in: {}",

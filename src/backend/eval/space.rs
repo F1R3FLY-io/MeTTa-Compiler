@@ -499,11 +499,7 @@ mod tests {
                     msg
                 );
                 assert!(msg.contains("got 2"), "Expected 'got 2' in: {}", msg);
-                assert!(
-                    msg.contains("Usage:"),
-                    "Expected 'Usage:' in: {}",
-                    msg
-                );
+                assert!(msg.contains("Usage:"), "Expected 'Usage:' in: {}", msg);
             }
             _ => panic!("Expected error for insufficient arguments"),
         }

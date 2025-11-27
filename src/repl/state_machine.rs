@@ -2,13 +2,15 @@
 //!
 //! Manages REPL state transitions and multi-line input detection
 
+use ropey::Rope;
+
 /// REPL states
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ReplState {
     /// Ready to accept new input
     Ready,
-    /// Waiting for more input to complete expression
-    Continuation { buffer: String },
+    /// Waiting for more input to complete expression (uses Rope for O(1) clone)
+    Continuation { buffer: Rope },
     /// Evaluating a complete expression
     Evaluating { input: String },
     /// Displaying evaluation results
@@ -16,6 +18,25 @@ pub enum ReplState {
     /// Error state (parse error, evaluation error, etc.)
     Error { message: String },
 }
+
+// Manual PartialEq implementation since Rope doesn't derive it
+impl PartialEq for ReplState {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ReplState::Ready, ReplState::Ready) => true,
+            (ReplState::Continuation { buffer: a }, ReplState::Continuation { buffer: b }) => {
+                // Compare Rope contents as strings
+                *a == *b
+            }
+            (ReplState::Evaluating { input: a }, ReplState::Evaluating { input: b }) => a == b,
+            (ReplState::DisplayingResults, ReplState::DisplayingResults) => true,
+            (ReplState::Error { message: a }, ReplState::Error { message: b }) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ReplState {}
 
 /// REPL events
 #[derive(Debug, Clone)]
@@ -99,12 +120,11 @@ impl ReplStateMachine {
             // Ready state: accept new input
             (ReplState::Ready, ReplEvent::LineSubmitted(line)) => self.handle_new_input(line),
 
-            // Continuation state: accumulate input
+            // Continuation state: accumulate input (O(1) clone with Rope)
             (ReplState::Continuation { buffer }, ReplEvent::LineSubmitted(line)) => {
-                let mut combined = buffer.clone();
-                combined.push('\n');
-                combined.push_str(&line);
-                self.handle_continuation(combined)
+                let mut rope = buffer.clone();
+                rope.append(Rope::from(format!("\n{}", line)));
+                self.handle_continuation(rope)
             }
 
             // Interrupted: reset to ready
@@ -163,11 +183,12 @@ impl ReplStateMachine {
                 StateTransition::Transition(ReplState::Evaluating { input: line })
             }
             CompletenessStatus::Incomplete { .. } => {
+                let rope = Rope::from(line.as_str());
                 self.state = ReplState::Continuation {
-                    buffer: line.clone(),
+                    buffer: rope.clone(),
                 };
                 StateTransition::TransitionWithPrompt {
-                    new_state: ReplState::Continuation { buffer: line },
+                    new_state: ReplState::Continuation { buffer: rope },
                     prompt: self.continuation_prompt.clone(),
                 }
             }
@@ -180,8 +201,9 @@ impl ReplStateMachine {
         }
     }
 
-    /// Handle continuation input
-    fn handle_continuation(&mut self, combined: String) -> StateTransition {
+    /// Handle continuation input (using Rope for efficient buffer management)
+    fn handle_continuation(&mut self, buffer: Rope) -> StateTransition {
+        let combined = buffer.to_string();
         match Self::check_completeness(&combined) {
             CompletenessStatus::Complete => {
                 self.state = ReplState::Evaluating {
@@ -191,10 +213,10 @@ impl ReplStateMachine {
             }
             CompletenessStatus::Incomplete { .. } => {
                 self.state = ReplState::Continuation {
-                    buffer: combined.clone(),
+                    buffer: buffer.clone(),
                 };
                 StateTransition::TransitionWithPrompt {
-                    new_state: ReplState::Continuation { buffer: combined },
+                    new_state: ReplState::Continuation { buffer },
                     prompt: self.continuation_prompt.clone(),
                 }
             }
@@ -213,30 +235,20 @@ impl ReplStateMachine {
         let mut brace_depth = 0;
         let mut in_string = false;
         let mut in_line_comment = false;
-        let mut in_block_comment = false;
         let mut escape_next = false;
-        let mut chars = input.chars().peekable();
+        let chars = input.chars().peekable();
 
-        while let Some(ch) = chars.next() {
+        for ch in chars {
             // Handle escape sequences in strings
             if escape_next {
                 escape_next = false;
                 continue;
             }
 
-            // Line comments end at newline
+            // Line comments (;) end at newline
             if in_line_comment {
                 if ch == '\n' {
                     in_line_comment = false;
-                }
-                continue;
-            }
-
-            // Block comments
-            if in_block_comment {
-                if ch == '*' && chars.peek() == Some(&'/') {
-                    chars.next(); // consume '/'
-                    in_block_comment = false;
                 }
                 continue;
             }
@@ -251,22 +263,10 @@ impl ReplStateMachine {
                 continue;
             }
 
-            // Start of comments
+            // Start of line comment (MeTTa uses ; for comments)
             if ch == ';' {
                 in_line_comment = true;
                 continue;
-            }
-
-            if ch == '/' {
-                if chars.peek() == Some(&'/') {
-                    chars.next();
-                    in_line_comment = true;
-                    continue;
-                } else if chars.peek() == Some(&'*') {
-                    chars.next();
-                    in_block_comment = true;
-                    continue;
-                }
             }
 
             // Start of string
@@ -379,14 +379,6 @@ mod tests {
     fn test_completeness_with_line_comment() {
         assert_eq!(
             ReplStateMachine::check_completeness("; comment\n(+ 1 2)"),
-            CompletenessStatus::Complete
-        );
-    }
-
-    #[test]
-    fn test_completeness_with_block_comment() {
-        assert_eq!(
-            ReplStateMachine::check_completeness("/* comment */ (+ 1 2)"),
             CompletenessStatus::Complete
         );
     }

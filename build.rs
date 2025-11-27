@@ -21,8 +21,8 @@ fn regenerate_tree_sitter_parser() {
     println!("cargo:rerun-if-changed={}", grammar_path);
 
     // Check if parser needs regeneration (grammar is newer than parser)
-    let needs_regeneration = !Path::new(parser_path).exists()
-        || is_grammar_newer_than_parser(grammar_path, parser_path);
+    let needs_regeneration =
+        !Path::new(parser_path).exists() || is_grammar_newer_than_parser(grammar_path, parser_path);
 
     if !needs_regeneration {
         eprintln!("Tree-Sitter parser is up-to-date");

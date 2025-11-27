@@ -100,7 +100,10 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
         }
         _ => {
             let err = MettaValue::Error(
-                format!("match requires & as first argument, got: {:?}", space_ref),
+                format!(
+                    "match requires & as first argument, got: {}",
+                    super::friendly_value_repr(space_ref)
+                ),
                 Box::new(MettaValue::SExpr(args.to_vec())),
             );
             (vec![err], env)

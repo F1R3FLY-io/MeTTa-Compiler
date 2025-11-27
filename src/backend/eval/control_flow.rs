@@ -133,7 +133,10 @@ fn eval_switch_minimal(atom: MettaValue, cases: MettaValue, env: Environment) ->
     }
 
     let err = MettaValue::Error(
-        "switch-minimal expects expression as second argument".to_string(),
+        format!(
+            "switch-minimal expects expression as second argument, got: {}",
+            super::friendly_value_repr(&cases)
+        ),
         Box::new(cases),
     );
     (vec![err], env)
@@ -145,7 +148,11 @@ fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environme
     if let MettaValue::SExpr(cases_items) = cases_data {
         if cases_items.len() != 2 {
             let err = MettaValue::Error(
-                "switch-internal expects exactly 2 arguments".to_string(),
+                format!(
+                    "switch-internal expects exactly 2 arguments, got {}. \
+                     Usage: (switch-internal expr (first-case remaining-cases))",
+                    cases_items.len()
+                ),
                 Box::new(MettaValue::SExpr(cases_items)),
             );
             return (vec![err], env);
@@ -178,7 +185,10 @@ Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
             }
         } else {
             let err = MettaValue::Error(
-                "switch case should be an expression".to_string(),
+                format!(
+                    "switch case should be an expression (pattern-template pair), got: {}",
+                    super::friendly_value_repr(&first_case)
+                ),
                 Box::new(first_case),
             );
             return (vec![err], env);
@@ -186,7 +196,10 @@ Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
     }
 
     let err = MettaValue::Error(
-        "switch-internal expects expression argument".to_string(),
+        format!(
+            "switch-internal expects expression argument, got: {}",
+            super::friendly_value_repr(&cases_data)
+        ),
         Box::new(cases_data),
     );
     (vec![err], env)

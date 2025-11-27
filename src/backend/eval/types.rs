@@ -21,8 +21,6 @@ const TYPE_NAME_MAPPINGS: &[(&str, &str)] = &[
     ("symbol", "Atom"),
     ("type", "Type"),
     ("error", "Error"),
-    ("uri", "URI"),
-    ("url", "URI"),
 ];
 
 /// Suggest correct type name capitalization if the given name is a common variant
@@ -105,7 +103,6 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
         MettaValue::Long(_) => MettaValue::Atom("Number".to_string()),
         MettaValue::Float(_) => MettaValue::Atom("Number".to_string()),
         MettaValue::String(_) => MettaValue::Atom("String".to_string()),
-        MettaValue::Uri(_) => MettaValue::Atom("URI".to_string()),
         MettaValue::Nil => MettaValue::Atom("Nil".to_string()),
 
         // Type values have type Type

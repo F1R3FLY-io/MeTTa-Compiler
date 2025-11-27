@@ -105,8 +105,10 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
             let suggestion = pattern_mismatch_suggestion(pattern, &value);
             let err = MettaValue::Error(
                 format!(
-                    "let pattern {:?} does not match value {:?}. {}",
-                    pattern, value, suggestion
+                    "let pattern {} does not match value {}. {}",
+                    super::friendly_value_repr(pattern),
+                    super::friendly_value_repr(&value),
+                    suggestion
                 ),
                 Box::new(MettaValue::SExpr(args.to_vec())),
             );

@@ -968,7 +968,16 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>
             continue;
         }
 
-        let mut new_product = Vec::with_capacity(product.len() * result_list.len());
+        let new_capacity = product
+            .len()
+            .checked_mul(result_list.len())
+            .ok_or_else(|| {
+                MettaValue::Error(
+                    "Combinatorial explosion: integer overflow in cartesian product".to_string(),
+                    Arc::new(MettaValue::Atom("Overflow".to_string())),
+                )
+            })?;
+        let mut new_product = Vec::with_capacity(new_capacity);
 
         for combo in &product {
             for item in result_list {

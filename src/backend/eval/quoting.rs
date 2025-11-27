@@ -1,11 +1,9 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
-
-use super::EvalOutput;
+use crate::backend::models::{EvalResult, MettaValue};
 
 /// Quote: return argument unevaluated
-pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_one_arg!("quote", items, env);
+pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("quote", items, 1, env, "(quote expr)");
     (vec![items[1].clone()], env)
 }
 
@@ -13,6 +11,7 @@ pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalOutput
 mod tests {
     use super::*;
     use crate::eval;
+    use std::sync::Arc;
 
     #[test]
     fn test_quote_missing_argument() {
@@ -272,7 +271,7 @@ mod tests {
         }
 
         // Test quoting an actual error value
-        let actual_error = MettaValue::Error("real-error".to_string(), Box::new(MettaValue::Nil));
+        let actual_error = MettaValue::Error("real-error".to_string(), Arc::new(MettaValue::Nil));
         let quote_actual_error = MettaValue::SExpr(vec![
             MettaValue::Atom("quote".to_string()),
             actual_error.clone(),
@@ -478,33 +477,20 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_preserves_uri_and_special_types() {
+    fn test_quote_preserves_special_types() {
         let env = Environment::new();
 
-        // Test quoting URI values
-        let quote_uri = MettaValue::SExpr(vec![
-            MettaValue::Atom("quote".to_string()),
-            MettaValue::Uri("http://example.com".to_string()),
-        ]);
-
-        let (results, _) = eval(quote_uri, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0],
-            MettaValue::Uri("http://example.com".to_string())
-        );
-
-        // Test quoting Type values (if available)
+        // Test quoting Type values
         let quote_type = MettaValue::SExpr(vec![
             MettaValue::Atom("quote".to_string()),
-            MettaValue::Type(Box::new(MettaValue::Atom("Number".to_string()))),
+            MettaValue::Type(Arc::new(MettaValue::Atom("Number".to_string()))),
         ]);
 
         let (results, _) = eval(quote_type, env);
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0],
-            MettaValue::Type(Box::new(MettaValue::Atom("Number".to_string())))
+            MettaValue::Type(Arc::new(MettaValue::Atom("Number".to_string())))
         );
     }
 

@@ -1,6 +1,5 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
-use std::sync::Arc;
 
 /// Quote: return argument unevaluated
 pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
@@ -12,6 +11,7 @@ pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult
 mod tests {
     use super::*;
     use crate::eval;
+    use std::sync::Arc;
 
     #[test]
     fn test_quote_missing_argument() {

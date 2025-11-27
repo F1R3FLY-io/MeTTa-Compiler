@@ -18,6 +18,9 @@ mod quoting;
 mod space;
 mod types;
 
+use std::collections::VecDeque;
+use std::sync::Arc;
+
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
 use crate::backend::mork_convert::{mork_bindings_to_metta, ConversionContext};
@@ -53,8 +56,8 @@ enum Continuation {
     Done,
     /// Collecting S-expression sub-results before processing
     CollectSExpr {
-        /// Items still to evaluate
-        remaining: Vec<MettaValue>,
+        /// Items still to evaluate (VecDeque for O(1) pop_front)
+        remaining: VecDeque<MettaValue>,
         /// Results collected so far: (results_vec, env)
         collected: Vec<EvalResult>,
         /// Original environment for the S-expression
@@ -81,8 +84,8 @@ enum Continuation {
     },
     /// Processing rule match results
     ProcessRuleMatches {
-        /// Remaining (rhs, bindings) pairs to evaluate
-        remaining_matches: Vec<(MettaValue, Bindings)>,
+        /// Remaining (rhs, bindings) pairs to evaluate (VecDeque for O(1) pop_front)
+        remaining_matches: VecDeque<(MettaValue, Bindings)>,
         /// Results accumulated so far
         results: Vec<MettaValue>,
         /// Environment
@@ -237,19 +240,24 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 result: (vec![MettaValue::Nil], env),
                             });
                         } else {
+                            // Convert to VecDeque ONCE (O(n)) and pop front (O(1))
+                            // This avoids O(n) slice copy + O(n) remove(0) = O(n²) total
+                            let mut items_deque: VecDeque<MettaValue> = items.into_iter().collect();
+                            let first = items_deque.pop_front().unwrap();
+
                             // Create continuation to collect results
                             let collect_cont_id = continuations.len();
                             continuations.push(Continuation::CollectSExpr {
-                                remaining: items[1..].to_vec(),
+                                remaining: items_deque, // Already a VecDeque, no copy needed
                                 collected: Vec::new(),
                                 original_env: env.clone(),
                                 depth,
                                 parent_cont: cont_id,
                             });
 
-                            // Evaluate first item
+                            // Evaluate first item (moved, not cloned)
                             work_stack.push(WorkItem::Eval {
-                                value: items[0].clone(),
+                                value: first,
                                 env,
                                 depth: depth + 1,
                                 cont_id: collect_cont_id,
@@ -307,19 +315,22 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                             result: (base_results, env),
                                         });
                                     } else {
-                                        // Create continuation to process rule matches
+                                        // Convert to VecDeque ONCE and pop front (O(n) + O(1) vs O(n²))
+                                        let mut matches_deque: VecDeque<_> = matches.into_iter().collect();
+                                        let (rhs, bindings) = matches_deque.pop_front().unwrap();
+
+                                        // Create continuation to process remaining rule matches
                                         let match_cont_id = continuations.len();
                                         continuations.push(Continuation::ProcessRuleMatches {
-                                            remaining_matches: matches[1..].to_vec(),
+                                            remaining_matches: matches_deque,
                                             results: base_results,
                                             env: env.clone(),
                                             depth,
                                             parent_cont,
                                         });
 
-                                        // Evaluate first rule RHS
-                                        let (rhs, bindings) = &matches[0];
-                                        let instantiated_rhs = apply_bindings(rhs, bindings);
+                                        // Evaluate first rule RHS (values moved, not cloned)
+                                        let instantiated_rhs = apply_bindings(&rhs, &bindings);
                                         work_stack.push(WorkItem::Eval {
                                             value: instantiated_rhs,
                                             env,
@@ -330,8 +341,8 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 }
                             }
                         } else {
-                            // More items to evaluate
-                            let next = remaining.remove(0);
+                            // More items to evaluate - O(1) pop from VecDeque front
+                            let next = remaining.pop_front().unwrap();
 
                             // Put continuation back (modified)
                             continuations[cont_id] = Continuation::CollectSExpr {
@@ -369,8 +380,8 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 result: (results, env),
                             });
                         } else {
-                            // More rules to evaluate
-                            let (rhs, bindings) = remaining_matches.remove(0);
+                            // More rules to evaluate - O(1) pop from VecDeque front
+                            let (rhs, bindings) = remaining_matches.pop_front().unwrap();
 
                             // Put continuation back (modified)
                             continuations[cont_id] = Continuation::ProcessRuleMatches {
@@ -444,7 +455,7 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
                      Hint: Use (function ...) and (return ...) for tail-recursive evaluation",
                     MAX_EVAL_DEPTH
                 ),
-                Box::new(value),
+                Arc::new(value),
             )],
             env,
         ));
@@ -597,14 +608,14 @@ fn handle_no_rule_match(
             if let Some(suggestion) = suggest_special_form(head) {
                 return MettaValue::Error(
                     format!("Unknown special form '{}'. {}", head, suggestion),
-                    Box::new(sexpr.clone()),
+                    Arc::new(sexpr.clone()),
                 );
             }
             // Check for misspelled rule head
             if let Some(suggestion) = unified_env.did_you_mean(head, 1) {
                 return MettaValue::Error(
                     format!("No rule matches '{}'. {}", head, suggestion),
-                    Box::new(sexpr.clone()),
+                    Arc::new(sexpr.clone()),
                 );
             }
         }
@@ -651,7 +662,7 @@ where
                 op_name,
                 args.len()
             ),
-            Box::new(MettaValue::Nil),
+            Arc::new(MettaValue::Nil),
         ));
     }
 
@@ -664,7 +675,7 @@ where
                     op_name,
                     friendly_type_name(other)
                 ),
-                Box::new(MettaValue::Atom("TypeError".to_string())),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -678,7 +689,7 @@ where
                     op_name,
                     friendly_type_name(other)
                 ),
-                Box::new(MettaValue::Atom("TypeError".to_string())),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -690,7 +701,7 @@ where
                 "Arithmetic overflow: {} {} {} exceeds integer bounds",
                 a, op_name, b
             ),
-            Box::new(MettaValue::Atom("ArithmeticError".to_string())),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
         )),
     }
 }
@@ -700,7 +711,7 @@ fn eval_division(args: &[MettaValue]) -> Option<MettaValue> {
     if args.len() != 2 {
         return Some(MettaValue::Error(
             format!("Division requires exactly 2 arguments, got {}", args.len()),
-            Box::new(MettaValue::Nil),
+            Arc::new(MettaValue::Nil),
         ));
     }
 
@@ -712,7 +723,7 @@ fn eval_division(args: &[MettaValue]) -> Option<MettaValue> {
                     "Cannot divide: expected Number (integer), got {}",
                     friendly_type_name(other)
                 ),
-                Box::new(MettaValue::Atom("TypeError".to_string())),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -725,7 +736,7 @@ fn eval_division(args: &[MettaValue]) -> Option<MettaValue> {
                     "Cannot divide: expected Number (integer), got {}",
                     friendly_type_name(other)
                 ),
-                Box::new(MettaValue::Atom("TypeError".to_string())),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -733,7 +744,7 @@ fn eval_division(args: &[MettaValue]) -> Option<MettaValue> {
     if b == 0 {
         return Some(MettaValue::Error(
             "Division by zero".to_string(),
-            Box::new(MettaValue::Atom("ArithmeticError".to_string())),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
         ));
     }
 
@@ -742,7 +753,7 @@ fn eval_division(args: &[MettaValue]) -> Option<MettaValue> {
         Some(result) => Some(MettaValue::Long(result)),
         None => Some(MettaValue::Error(
             format!("Arithmetic overflow: {} / {} exceeds integer bounds", a, b),
-            Box::new(MettaValue::Atom("ArithmeticError".to_string())),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
         )),
     }
 }
@@ -758,7 +769,7 @@ where
                 "Comparison operation requires exactly 2 arguments, got {}",
                 args.len()
             ),
-            Box::new(MettaValue::Nil),
+            Arc::new(MettaValue::Nil),
         ));
     }
 
@@ -770,7 +781,7 @@ where
                     "Cannot compare: expected Number (integer), got {}",
                     friendly_type_name(other)
                 ),
-                Box::new(MettaValue::Atom("TypeError".to_string())),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -783,7 +794,7 @@ where
                     "Cannot compare: expected Number (integer), got {}",
                     friendly_type_name(other)
                 ),
-                Box::new(MettaValue::Atom("TypeError".to_string())),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -804,7 +815,7 @@ where
                 args.len(),
                 op_name
             ),
-            Box::new(MettaValue::Atom("ArityError".to_string())),
+            Arc::new(MettaValue::Atom("ArityError".to_string())),
         ));
     }
 
@@ -817,7 +828,7 @@ where
                     op_name,
                     friendly_type_name(other)
                 ),
-                Box::new(MettaValue::Atom("TypeError".to_string())),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -831,7 +842,7 @@ where
                     op_name,
                     friendly_type_name(other)
                 ),
-                Box::new(MettaValue::Atom("TypeError".to_string())),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -847,7 +858,7 @@ fn eval_logical_not(args: &[MettaValue]) -> Option<MettaValue> {
                 "'not' requires exactly 1 argument, got {}. Usage: (not bool)",
                 args.len()
             ),
-            Box::new(MettaValue::Atom("ArityError".to_string())),
+            Arc::new(MettaValue::Atom("ArityError".to_string())),
         ));
     }
 
@@ -855,7 +866,7 @@ fn eval_logical_not(args: &[MettaValue]) -> Option<MettaValue> {
         MettaValue::Bool(b) => Some(MettaValue::Bool(!b)),
         other => Some(MettaValue::Error(
             format!("'not': expected Bool, got {}", friendly_type_name(other)),
-            Box::new(MettaValue::Atom("TypeError".to_string())),
+            Arc::new(MettaValue::Atom("TypeError".to_string())),
         )),
     }
 }
@@ -947,6 +958,17 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>
         return Ok(vec![vec![]]);
     }
 
+    // FAST PATH: If all result lists have exactly 1 item (deterministic evaluation),
+    // we can just concatenate them directly in O(n) instead of O(n²)
+    // This is the common case for arithmetic and most builtin operations
+    if results.iter().all(|r| r.len() == 1) {
+        let single_combo: Vec<MettaValue> = results
+            .iter()
+            .map(|r| r[0].clone())
+            .collect();
+        return Ok(vec![single_combo]);
+    }
+
     // Calculate the total product size first to check if it would exceed the limit
     let total_size: usize = results
         .iter()
@@ -960,11 +982,11 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>
                  Consider simplifying the expression or adding constraints.",
                 total_size, MAX_CARTESIAN_RESULTS
             ),
-            Box::new(MettaValue::Atom("LimitExceeded".to_string())),
+            Arc::new(MettaValue::Atom("LimitExceeded".to_string())),
         ));
     }
 
-    // Iterative Cartesian product to avoid stack overflow with large inputs
+    // Iterative Cartesian product for non-deterministic cases
     // Start with a single empty combination
     let mut product = vec![Vec::with_capacity(results.len())];
 
@@ -1016,7 +1038,7 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
         }
         MettaValue::Error(msg, details) => {
             let new_details = apply_bindings(details, bindings);
-            MettaValue::Error(msg.clone(), Box::new(new_details))
+            MettaValue::Error(msg.clone(), Arc::new(new_details))
         }
         _ => value.clone(),
     }
@@ -1024,7 +1046,7 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
 
 /// Extract the head symbol from a pattern for indexing
 /// Returns None if the pattern doesn't have a clear head symbol
-fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
+fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
     match pattern {
         // For s-expressions like (double $x), extract "double"
         // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
@@ -1035,7 +1057,7 @@ fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
                     && !head.starts_with('\'')
                     && head != "_" =>
             {
-                Some(head.clone())
+                Some(head.as_str())
             }
             _ => None,
         },
@@ -1047,7 +1069,7 @@ fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
                 && !head.starts_with('\'')
                 && head != "_" =>
         {
-            Some(head.clone())
+            Some(head.as_str())
         }
         _ => None,
     }

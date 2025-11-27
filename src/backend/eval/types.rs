@@ -1,5 +1,6 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
+use std::sync::Arc;
 
 /// Built-in type names with correct capitalization for "Did you mean?" suggestions
 const TYPE_NAME_MAPPINGS: &[(&str, &str)] = &[
@@ -116,7 +117,7 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
             // Check if it's a variable (starts with $, &, or ')
             if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
                 // Type variable - return as-is wrapped in Type
-                return MettaValue::Type(Box::new(MettaValue::Atom(name.clone())));
+                return MettaValue::Type(Arc::new(MettaValue::Atom(name.clone())));
             }
 
             // Look up type in environment

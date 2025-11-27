@@ -57,7 +57,13 @@ pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
 pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_two_args!("case", items, env);
+    require_args_with_usage!(
+        "case",
+        items,
+        2,
+        env,
+        "(case expr ((pattern1 result1) ...))"
+    );
 
     let atom = items[1].clone();
     let cases = items[2].clone();
@@ -91,14 +97,26 @@ pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 /// Difference between `switch` and `case` is a way how they interpret `Empty` result.
 /// case interprets first argument inside itself and then manually checks whether result is empty.
 pub(super) fn eval_switch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_two_args!("switch", items, env);
+    require_args_with_usage!(
+        "switch",
+        items,
+        2,
+        env,
+        "(switch expr ((pattern1 result1) ...))"
+    );
     let atom = items[1].clone();
     let cases = items[2].clone();
     eval_switch_minimal(atom, cases, env)
 }
 
 pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_two_args!("switch-minimal", items, env);
+    require_args_with_usage!(
+        "switch-minimal",
+        items,
+        2,
+        env,
+        "(switch-minimal expr cases)"
+    );
     let atom = items[1].clone();
     let cases = items[2].clone();
     eval_switch_minimal(atom, cases, env)
@@ -107,7 +125,13 @@ pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environme
 /// This function is being called inside switch function to test one of the cases and it
 /// calls switch once again if current condition is not met
 pub(super) fn eval_switch_internal_handler(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_two_args!("switch-internal", items, env);
+    require_args_with_usage!(
+        "switch-internal",
+        items,
+        2,
+        env,
+        "(switch-internal expr cases-data)"
+    );
     let atom = items[1].clone();
     let cases = items[2].clone();
     eval_switch_internal(atom, cases, env)

@@ -42,7 +42,7 @@ pub(crate) fn suggest_type_name(name: &str) -> Option<String> {
 /// Type assertion: (: expr type)
 /// Adds a type assertion to the environment
 pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_two_args!(":", items, env);
+    require_args_with_usage!(":", items, 2, env, "(: expr type)");
 
     let expr = &items[1];
     let typ = items[2].clone();
@@ -73,7 +73,7 @@ pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> E
 /// get-type: return the type of an expression
 /// (get-type expr) -> Type
 pub(super) fn eval_get_type(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_one_arg!("get-type", items, env);
+    require_args_with_usage!("get-type", items, 1, env, "(get-type expr)");
 
     let expr = &items[1];
     let typ = infer_type(expr, &env);
@@ -83,7 +83,7 @@ pub(super) fn eval_get_type(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// check-type: check if expression has expected type
 /// (check-type expr expected-type) -> Bool
 pub(super) fn eval_check_type(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_two_args!("check-type", items, env);
+    require_args_with_usage!("check-type", items, 2, env, "(check-type expr type)");
 
     let expr = &items[1];
     let expected = &items[2];

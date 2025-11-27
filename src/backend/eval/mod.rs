@@ -23,8 +23,6 @@ use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
 use crate::backend::mork_convert::{mork_bindings_to_metta, ConversionContext};
 use mork_expr::Expr;
 
-pub(super) type EvalOutput = (Vec<MettaValue>, Environment);
-
 /// Maximum evaluation depth to prevent stack overflow
 /// This limits how deep the evaluation can recurse through nested expressions
 /// Set to 1000 to allow legitimate deep nesting while still catching runaway recursion

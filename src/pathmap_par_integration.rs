@@ -21,13 +21,6 @@ fn create_int_par(n: i64) -> Par {
     }])
 }
 
-/// Helper function to create a Par with a URI value
-fn create_uri_par(uri: String) -> Par {
-    Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::GUri(uri)),
-    }])
-}
-
 // Magic numbers for MeTTa Environment byte arrays
 // These identify byte arrays as MeTTa-specific data for the pretty-printer
 const METTA_MULTIPLICITIES_MAGIC: &[u8] = b"MTTM"; // MeTTa Multiplicities
@@ -52,7 +45,6 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 s.replace("\\", "\\\\").replace("\"", "\\\"")
             ))
         }
-        MettaValue::Uri(s) => create_uri_par(s.clone()),
         MettaValue::Nil => {
             // Represent Nil as empty Par
             Par::default()
@@ -368,7 +360,6 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
             }
             Some(ExprInstance::GInt(n)) => Ok(MettaValue::Long(*n)),
             Some(ExprInstance::GBool(b)) => Ok(MettaValue::Bool(*b)),
-            Some(ExprInstance::GUri(u)) => Ok(MettaValue::Uri(u.clone())),
             Some(ExprInstance::EListBody(list)) => {
                 // Lists are also converted to S-expressions for compatibility
                 let items: Result<Vec<MettaValue>, String> =

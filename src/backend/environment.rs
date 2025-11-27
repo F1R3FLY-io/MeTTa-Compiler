@@ -289,12 +289,6 @@ impl Environment {
                     {
                         // String literal - strip quotes
                         MettaValue::String(symbol_str[1..symbol_str.len() - 1].to_string())
-                    } else if symbol_str.starts_with('`')
-                        && symbol_str.ends_with('`')
-                        && symbol_str.len() >= 2
-                    {
-                        // URI literal - strip backticks
-                        MettaValue::Uri(symbol_str[1..symbol_str.len() - 1].to_string())
                     } else {
                         MettaValue::Atom(symbol_str)
                     }
@@ -1009,7 +1003,7 @@ impl Environment {
             MettaValue::SExpr(items) => items.iter().any(Self::contains_variables),
             MettaValue::Error(_, details) => Self::contains_variables(details),
             MettaValue::Type(t) => Self::contains_variables(t),
-            _ => false, // Ground types: Bool, Long, Float, String, Uri, Nil
+            _ => false, // Ground types: Bool, Long, Float, String, Nil
         }
     }
 

@@ -144,7 +144,6 @@ fn format_result(value: &MettaValue) -> String {
         MettaValue::Long(n) => n.to_string(),
         MettaValue::Float(f) => f.to_string(),
         MettaValue::String(s) => format!("\"{}\"", s),
-        MettaValue::Uri(s) => format!("`{}`", s),
         MettaValue::Nil => "Nil".to_string(),
         MettaValue::Error(msg, details) => {
             // Format as (Error "msg" details) to match MeTTa spec
@@ -175,7 +174,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         // Parse with Tree-Sitter and show S-expressions
         let mut parser = mettatron::TreeSitterMettaParser::new()
             .map_err(|e| format!("Failed to initialize parser: {}", e))?;
-        let sexprs = parser.parse(input)?;
+        let sexprs = parser.parse(input).map_err(|e| e.to_string())?;
         let mut output = String::new();
         for sexpr in sexprs {
             output.push_str(&format!("{}\n", sexpr));
@@ -184,7 +183,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     }
 
     // Compile to MettaValue
-    let state = compile(input)?;
+    let state = compile(input).map_err(|e| e.to_string())?;
     let mut env = state.environment;
 
     // Evaluate each expression

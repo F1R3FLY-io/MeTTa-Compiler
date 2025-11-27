@@ -83,6 +83,7 @@ tree-sitter-metta = { path = "tree-sitter-metta" }
 rustyline = "14.0"
 dirs = "5.0"
 regex = "1.11"
+ropey = "1.6"
 
 # LRU cache for pattern caching optimization
 lru = "0.12"

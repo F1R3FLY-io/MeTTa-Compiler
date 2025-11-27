@@ -43,10 +43,7 @@ enum WorkItem {
         cont_id: usize,
     },
     /// Resume a continuation with a result
-    Resume {
-        cont_id: usize,
-        result: EvalResult,
-    },
+    Resume { cont_id: usize, result: EvalResult },
 }
 
 /// Continuation representing what to do with an evaluation result
@@ -65,21 +62,6 @@ enum Continuation {
         /// Evaluation depth
         depth: usize,
         /// Parent continuation to resume after processing
-        parent_cont: usize,
-    },
-    /// Processing Cartesian product combinations for rule matching
-    ProcessCombinations {
-        /// All combinations to try
-        combinations: Vec<Vec<MettaValue>>,
-        /// Current combination index
-        current_idx: usize,
-        /// Results accumulated so far
-        results: Vec<MettaValue>,
-        /// Unified environment
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-        /// Parent continuation
         parent_cont: usize,
     },
     /// Processing rule match results
@@ -225,10 +207,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                 match step_result {
                     // Direct result - resume continuation
                     EvalStep::Done(result) => {
-                        work_stack.push(WorkItem::Resume {
-                            cont_id,
-                            result,
-                        });
+                        work_stack.push(WorkItem::Resume { cont_id, result });
                     }
 
                     // Need to evaluate S-expression sub-items
@@ -289,11 +268,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                         if remaining.is_empty() {
                             // All items evaluated, process collected results
-                            let processed = process_collected_sexpr(
-                                collected,
-                                original_env,
-                                depth,
-                            );
+                            let processed = process_collected_sexpr(collected, original_env, depth);
 
                             match processed {
                                 ProcessedSExpr::Done(result) => {
@@ -316,7 +291,8 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         });
                                     } else {
                                         // Convert to VecDeque ONCE and pop front (O(n) + O(1) vs O(n²))
-                                        let mut matches_deque: VecDeque<_> = matches.into_iter().collect();
+                                        let mut matches_deque: VecDeque<_> =
+                                            matches.into_iter().collect();
                                         let (rhs, bindings) = matches_deque.pop_front().unwrap();
 
                                         // Create continuation to process remaining rule matches
@@ -401,12 +377,6 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 cont_id,
                             });
                         }
-                    }
-
-                    Continuation::ProcessCombinations { .. } => {
-                        // This continuation type is reserved for future use
-                        // Currently combinations are processed synchronously
-                        unreachable!("ProcessCombinations not yet implemented");
                     }
                 }
             }
@@ -504,8 +474,12 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "match" => return EvalStep::Done(space::eval_match(items, env)),
             "case" => return EvalStep::Done(control_flow::eval_case(items, env)),
             "switch" => return EvalStep::Done(control_flow::eval_switch(items, env)),
-            "switch-minimal" => return EvalStep::Done(control_flow::eval_switch_minimal_handler(items, env)),
-            "switch-internal" => return EvalStep::Done(control_flow::eval_switch_internal_handler(items, env)),
+            "switch-minimal" => {
+                return EvalStep::Done(control_flow::eval_switch_minimal_handler(items, env))
+            }
+            "switch-internal" => {
+                return EvalStep::Done(control_flow::eval_switch_internal_handler(items, env))
+            }
             "let" => return EvalStep::Done(bindings::eval_let(items, env)),
             ":" => return EvalStep::Done(types::eval_type_assertion(items, env)),
             "get-type" => return EvalStep::Done(types::eval_get_type(items, env)),
@@ -962,10 +936,7 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>
     // we can just concatenate them directly in O(n) instead of O(n²)
     // This is the common case for arithmetic and most builtin operations
     if results.iter().all(|r| r.len() == 1) {
-        let single_combo: Vec<MettaValue> = results
-            .iter()
-            .map(|r| r[0].clone())
-            .collect();
+        let single_combo: Vec<MettaValue> = results.iter().map(|r| r[0].clone()).collect();
         return Ok(vec![single_combo]);
     }
 
@@ -1196,7 +1167,7 @@ fn try_match_all_rules_iterative(
     let matching_rules = if let Some(head) = get_head_symbol(expr) {
         let arity = expr.get_arity();
         // O(1) indexed lookup instead of O(n) iteration
-        env.get_matching_rules(&head, arity)
+        env.get_matching_rules(head, arity)
     } else {
         // For expressions without head symbol, check wildcard rules only
         // This is still O(k_wildcards) instead of O(n_total)

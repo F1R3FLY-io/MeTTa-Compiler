@@ -75,6 +75,13 @@ jobs:
           toolchain: nightly
           target: ${{ matrix.platform.target }}
 
+      - name: Install Tree-Sitter CLI
+        run: |
+          echo "::group::Installing Tree-Sitter CLI"
+          npm install -g tree-sitter-cli
+          tree-sitter --version
+          echo "::endgroup::"
+
       - name: Build MeTTaTron
         env:
           RUSTFLAGS: ${{ matrix.platform.rustflags }}
@@ -101,6 +108,14 @@ jobs:
         run: |
           echo "::group::Unit tests"
           cargo test --lib --target ${{ matrix.platform.target }} --verbose -- --nocapture
+          echo "::endgroup::"
+
+      - name: Run Tree-Sitter corpus integration test
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
+        run: |
+          echo "::group::Running Tree-Sitter corpus tests via cargo test"
+          cargo test --test tree_sitter_corpus --target ${{ matrix.platform.target }} --verbose -- --nocapture
           echo "::endgroup::"
 
       - name: Run integration tests

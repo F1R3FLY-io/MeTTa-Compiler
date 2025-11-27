@@ -1,7 +1,7 @@
 use crate::backend::environment::Environment;
 use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::models::{EvalResult, MettaValue, Rule};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 /// Valid space names for "Did you mean?" suggestions
 const VALID_SPACE_NAMES: &[&str] = &["self"];
@@ -54,7 +54,7 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
                 "match requires exactly 4 arguments, got {}. Usage: (match & space pattern template)",
                 got
             ),
-            Box::new(MettaValue::SExpr(args.to_vec())),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
     }
@@ -93,7 +93,7 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
                         ),
                     };
 
-                    let err = MettaValue::Error(msg, Box::new(MettaValue::SExpr(args.to_vec())));
+                    let err = MettaValue::Error(msg, Arc::new(MettaValue::SExpr(args.to_vec())));
                     (vec![err], env)
                 }
             }
@@ -104,7 +104,7 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
                     "match requires & as first argument, got: {}",
                     super::friendly_value_repr(space_ref)
                 ),
-                Box::new(MettaValue::SExpr(args.to_vec())),
+                Arc::new(MettaValue::SExpr(args.to_vec())),
             );
             (vec![err], env)
         }

@@ -10,6 +10,7 @@
 use crate::backend::models::{MettaState, MettaValue};
 use crate::ir::MettaExpr;
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind, TreeSitterMettaParser};
+use std::sync::Arc;
 
 /// Compile MeTTa source code into a MettaState ready for evaluation
 /// Returns a compiled state with pending expressions and empty environment
@@ -76,7 +77,7 @@ impl TryFrom<&MettaExpr> for MettaValue {
 
 /// Helper function to create an error value
 pub fn make_error(msg: &str, details: MettaValue) -> MettaValue {
-    MettaValue::Error(msg.to_string(), Box::new(details))
+    MettaValue::Error(msg.to_string(), Arc::new(details))
 }
 
 #[cfg(test)]

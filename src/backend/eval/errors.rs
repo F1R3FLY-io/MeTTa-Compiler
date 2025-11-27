@@ -1,5 +1,6 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
+use std::sync::Arc;
 
 use super::eval;
 
@@ -20,7 +21,7 @@ pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult
         MettaValue::Nil
     };
 
-    (vec![MettaValue::Error(msg, Box::new(details))], env)
+    (vec![MettaValue::Error(msg, Arc::new(details))], env)
 }
 
 /// Is-error: check if value is an error (for error recovery)
@@ -45,7 +46,7 @@ pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalResult
     if args.len() < 2 {
         let err = MettaValue::Error(
             "catch requires 2 arguments: expr and default".to_string(),
-            Box::new(MettaValue::SExpr(args.to_vec())),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
     }
@@ -99,7 +100,7 @@ mod tests {
         let env = Environment::new();
 
         // Create an error
-        let error = MettaValue::Error("test error".to_string(), Box::new(MettaValue::Long(42)));
+        let error = MettaValue::Error("test error".to_string(), Arc::new(MettaValue::Long(42)));
 
         // Errors should propagate unchanged
         let (results, _) = eval(error.clone(), env);
@@ -537,7 +538,7 @@ mod tests {
                 false,
             ),
             (
-                MettaValue::Error("test".to_string(), Box::new(MettaValue::Nil)),
+                MettaValue::Error("test".to_string(), Arc::new(MettaValue::Nil)),
                 true,
             ),
         ];

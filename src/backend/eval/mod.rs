@@ -18,12 +18,66 @@ mod quoting;
 mod space;
 mod types;
 
+use std::collections::VecDeque;
+use std::sync::Arc;
+
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
 use crate::backend::mork_convert::{mork_bindings_to_metta, ConversionContext};
 use mork_expr::Expr;
 
-pub(super) type EvalOutput = (Vec<MettaValue>, Environment);
+// =============================================================================
+// Iterative Trampoline Types
+// =============================================================================
+// These types enable iterative evaluation using an explicit work stack instead
+// of recursive function calls. This prevents stack overflow for large expressions.
+
+/// Work item representing pending evaluation work
+#[derive(Debug)]
+enum WorkItem {
+    /// Evaluate a value and send result to continuation
+    Eval {
+        value: MettaValue,
+        env: Environment,
+        depth: usize,
+        cont_id: usize,
+    },
+    /// Resume a continuation with a result
+    Resume { cont_id: usize, result: EvalResult },
+}
+
+/// Continuation representing what to do with an evaluation result
+#[derive(Debug)]
+enum Continuation {
+    /// Final result - return from eval()
+    Done,
+    /// Collecting S-expression sub-results before processing
+    CollectSExpr {
+        /// Items still to evaluate (VecDeque for O(1) pop_front)
+        remaining: VecDeque<MettaValue>,
+        /// Results collected so far: (results_vec, env)
+        collected: Vec<EvalResult>,
+        /// Original environment for the S-expression
+        original_env: Environment,
+        /// Evaluation depth
+        depth: usize,
+        /// Parent continuation to resume after processing
+        parent_cont: usize,
+    },
+    /// Processing rule match results
+    ProcessRuleMatches {
+        /// Remaining (rhs, bindings) pairs to evaluate (VecDeque for O(1) pop_front)
+        remaining_matches: VecDeque<(MettaValue, Bindings)>,
+        /// Results accumulated so far
+        results: Vec<MettaValue>,
+        /// Environment
+        env: Environment,
+        /// Evaluation depth
+        depth: usize,
+        /// Parent continuation
+        parent_cont: usize,
+    },
+}
 
 /// Maximum evaluation depth to prevent stack overflow
 /// This limits how deep the evaluation can recurse through nested expressions
@@ -34,217 +88,517 @@ const MAX_EVAL_DEPTH: usize = 1000;
 /// This limits the total number of combinations explored during nondeterministic evaluation
 const MAX_CARTESIAN_RESULTS: usize = 10000;
 
-/// Evaluate a MettaValue in the given environment
-/// Returns (results, new_environment)
-/// This is the public entry point that starts evaluation with depth tracking
-pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
-    eval_with_depth(value, env, 0)
+/// MeTTa special forms for "did you mean" suggestions during evaluation
+const SPECIAL_FORMS: &[&str] = &[
+    "=",
+    "!",
+    "quote",
+    "if",
+    "error",
+    "is-error",
+    "catch",
+    "eval",
+    "function",
+    "return",
+    "chain",
+    "match",
+    "case",
+    "switch",
+    "let",
+    ":",
+    "get-type",
+    "check-type",
+    "map-atom",
+    "filter-atom",
+    "foldl-atom",
+];
+
+/// Convert MettaValue to a friendly type name for error messages
+/// This provides user-friendly type names instead of debug format like "Long(5)"
+fn friendly_type_name(value: &MettaValue) -> &'static str {
+    match value {
+        MettaValue::Long(_) => "Number (integer)",
+        MettaValue::Float(_) => "Number (float)",
+        MettaValue::Bool(_) => "Bool",
+        MettaValue::String(_) => "String",
+        MettaValue::Atom(_) => "Atom",
+        MettaValue::Nil => "Nil",
+        MettaValue::SExpr(_) => "S-expression",
+        MettaValue::Error(_, _) => "Error",
+        MettaValue::Type(_) => "Type",
+    }
 }
 
-/// Internal evaluation function with depth tracking
-/// This prevents unbounded recursion and stack overflow
-fn eval_with_depth(value: MettaValue, env: Environment, depth: usize) -> EvalResult {
+/// Convert MettaValue to a user-friendly representation for error messages
+/// Unlike debug format, this shows values in MeTTa syntax
+pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
+    match value {
+        MettaValue::Long(n) => n.to_string(),
+        MettaValue::Float(f) => f.to_string(),
+        MettaValue::Bool(b) => {
+            if *b {
+                "True".to_string()
+            } else {
+                "False".to_string()
+            }
+        }
+        MettaValue::String(s) => format!("\"{}\"", s),
+        MettaValue::Atom(a) => a.clone(),
+        MettaValue::Nil => "Nil".to_string(),
+        MettaValue::SExpr(items) => {
+            let inner: Vec<String> = items.iter().map(friendly_value_repr).collect();
+            format!("({})", inner.join(" "))
+        }
+        MettaValue::Error(msg, _) => format!("(error \"{}\")", msg),
+        MettaValue::Type(t) => format!("(: {})", friendly_value_repr(t)),
+    }
+}
+
+/// Check if an operator is close to a known special form
+/// Uses max edit distance of 1 to avoid false positives on short words
+fn suggest_special_form(op: &str) -> Option<String> {
+    use crate::backend::fuzzy_match::FuzzyMatcher;
+    use std::sync::OnceLock;
+
+    static MATCHER: OnceLock<FuzzyMatcher> = OnceLock::new();
+    let matcher = MATCHER.get_or_init(|| FuzzyMatcher::from_terms(SPECIAL_FORMS.iter().copied()));
+
+    matcher.did_you_mean(op, 1, 3)
+}
+
+/// Evaluate a MettaValue in the given environment
+/// Returns (results, new_environment)
+/// This is the public entry point that uses iterative evaluation with an explicit work stack
+/// to prevent stack overflow for large expressions.
+pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
+    eval_trampoline(value, env)
+}
+
+/// Iterative evaluation using a trampoline pattern with explicit work stack.
+/// This prevents stack overflow by using heap-allocated work items instead of
+/// recursive function calls.
+fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
+    // Initialize work stack with the initial evaluation
+    let mut work_stack: Vec<WorkItem> = vec![WorkItem::Eval {
+        value,
+        env: env.clone(),
+        depth: 0,
+        cont_id: 0, // Done continuation
+    }];
+
+    // Continuation storage - index 0 is always Done
+    let mut continuations: Vec<Continuation> = vec![Continuation::Done];
+
+    // Final result storage
+    let mut final_result: Option<EvalResult> = None;
+
+    // Main trampoline loop
+    while let Some(work) = work_stack.pop() {
+        match work {
+            WorkItem::Eval {
+                value,
+                env,
+                depth,
+                cont_id,
+            } => {
+                // Perform one step of evaluation
+                let step_result = eval_step(value, env.clone(), depth);
+
+                match step_result {
+                    // Direct result - resume continuation
+                    EvalStep::Done(result) => {
+                        work_stack.push(WorkItem::Resume { cont_id, result });
+                    }
+
+                    // Need to evaluate S-expression sub-items
+                    EvalStep::EvalSExpr { items, env, depth } => {
+                        if items.is_empty() {
+                            // Empty s-expression evaluates to Nil
+                            work_stack.push(WorkItem::Resume {
+                                cont_id,
+                                result: (vec![MettaValue::Nil], env),
+                            });
+                        } else {
+                            // Convert to VecDeque ONCE (O(n)) and pop front (O(1))
+                            // This avoids O(n) slice copy + O(n) remove(0) = O(n²) total
+                            let mut items_deque: VecDeque<MettaValue> = items.into_iter().collect();
+                            let first = items_deque.pop_front().unwrap();
+
+                            // Create continuation to collect results
+                            let collect_cont_id = continuations.len();
+                            continuations.push(Continuation::CollectSExpr {
+                                remaining: items_deque, // Already a VecDeque, no copy needed
+                                collected: Vec::new(),
+                                original_env: env.clone(),
+                                depth,
+                                parent_cont: cont_id,
+                            });
+
+                            // Evaluate first item (moved, not cloned)
+                            work_stack.push(WorkItem::Eval {
+                                value: first,
+                                env,
+                                depth: depth + 1,
+                                cont_id: collect_cont_id,
+                            });
+                        }
+                    }
+                }
+            }
+
+            WorkItem::Resume { cont_id, result } => {
+                // Take ownership of continuation for processing
+                let cont = std::mem::replace(&mut continuations[cont_id], Continuation::Done);
+
+                match cont {
+                    Continuation::Done => {
+                        // Final result
+                        final_result = Some(result);
+                    }
+
+                    Continuation::CollectSExpr {
+                        mut remaining,
+                        mut collected,
+                        original_env,
+                        depth,
+                        parent_cont,
+                    } => {
+                        // Add result to collected
+                        collected.push(result);
+
+                        if remaining.is_empty() {
+                            // All items evaluated, process collected results
+                            let processed = process_collected_sexpr(collected, original_env, depth);
+
+                            match processed {
+                                ProcessedSExpr::Done(result) => {
+                                    work_stack.push(WorkItem::Resume {
+                                        cont_id: parent_cont,
+                                        result,
+                                    });
+                                }
+                                ProcessedSExpr::EvalRuleMatches {
+                                    matches,
+                                    env,
+                                    depth,
+                                    base_results,
+                                } => {
+                                    if matches.is_empty() {
+                                        // No rule matches, return base results
+                                        work_stack.push(WorkItem::Resume {
+                                            cont_id: parent_cont,
+                                            result: (base_results, env),
+                                        });
+                                    } else {
+                                        // Convert to VecDeque ONCE and pop front (O(n) + O(1) vs O(n²))
+                                        let mut matches_deque: VecDeque<_> =
+                                            matches.into_iter().collect();
+                                        let (rhs, bindings) = matches_deque.pop_front().unwrap();
+
+                                        // Create continuation to process remaining rule matches
+                                        let match_cont_id = continuations.len();
+                                        continuations.push(Continuation::ProcessRuleMatches {
+                                            remaining_matches: matches_deque,
+                                            results: base_results,
+                                            env: env.clone(),
+                                            depth,
+                                            parent_cont,
+                                        });
+
+                                        // Evaluate first rule RHS (values moved, not cloned)
+                                        let instantiated_rhs = apply_bindings(&rhs, &bindings);
+                                        work_stack.push(WorkItem::Eval {
+                                            value: instantiated_rhs,
+                                            env,
+                                            depth: depth + 1,
+                                            cont_id: match_cont_id,
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            // More items to evaluate - O(1) pop from VecDeque front
+                            let next = remaining.pop_front().unwrap();
+
+                            // Put continuation back (modified)
+                            continuations[cont_id] = Continuation::CollectSExpr {
+                                remaining,
+                                collected,
+                                original_env: original_env.clone(),
+                                depth,
+                                parent_cont,
+                            };
+
+                            // Evaluate next item
+                            work_stack.push(WorkItem::Eval {
+                                value: next,
+                                env: original_env,
+                                depth: depth + 1,
+                                cont_id,
+                            });
+                        }
+                    }
+
+                    Continuation::ProcessRuleMatches {
+                        mut remaining_matches,
+                        mut results,
+                        env,
+                        depth,
+                        parent_cont,
+                    } => {
+                        // Add results from this rule evaluation
+                        results.extend(result.0);
+
+                        if remaining_matches.is_empty() {
+                            // All rules evaluated
+                            work_stack.push(WorkItem::Resume {
+                                cont_id: parent_cont,
+                                result: (results, env),
+                            });
+                        } else {
+                            // More rules to evaluate - O(1) pop from VecDeque front
+                            let (rhs, bindings) = remaining_matches.pop_front().unwrap();
+
+                            // Put continuation back (modified)
+                            continuations[cont_id] = Continuation::ProcessRuleMatches {
+                                remaining_matches,
+                                results,
+                                env: env.clone(),
+                                depth,
+                                parent_cont,
+                            };
+
+                            // Evaluate next rule RHS
+                            let instantiated_rhs = apply_bindings(&rhs, &bindings);
+                            work_stack.push(WorkItem::Eval {
+                                value: instantiated_rhs,
+                                env,
+                                depth: depth + 1,
+                                cont_id,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    final_result.unwrap_or_else(|| (vec![], env))
+}
+
+/// Result of a single evaluation step
+enum EvalStep {
+    /// Evaluation complete, return this result
+    Done(EvalResult),
+    /// Need to evaluate S-expression items (iteratively)
+    EvalSExpr {
+        items: Vec<MettaValue>,
+        env: Environment,
+        depth: usize,
+    },
+}
+
+/// Result of processing collected S-expression results
+enum ProcessedSExpr {
+    /// Processing complete, return this result
+    Done(EvalResult),
+    /// Need to evaluate rule matches
+    EvalRuleMatches {
+        matches: Vec<(MettaValue, Bindings)>,
+        env: Environment,
+        depth: usize,
+        base_results: Vec<MettaValue>,
+    },
+}
+
+/// Perform a single step of evaluation.
+/// Returns either a final result or indicates more work is needed.
+fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
     // Check depth limit
     if depth > MAX_EVAL_DEPTH {
-        return (
+        return EvalStep::Done((
             vec![MettaValue::Error(
-                format!("Maximum evaluation depth ({}) exceeded - possible infinite recursion or combinatorial explosion", MAX_EVAL_DEPTH),
-                Box::new(value),
+                format!(
+                    "Maximum evaluation depth ({}) exceeded. Possible causes:\n\
+                     - Infinite recursion: check for missing base case in recursive rules\n\
+                     - Combinatorial explosion: rule produces too many branches\n\
+                     Hint: Use (function ...) and (return ...) for tail-recursive evaluation",
+                    MAX_EVAL_DEPTH
+                ),
+                Arc::new(value),
             )],
             env,
-        );
+        ));
     }
 
     match value {
-        // Errors propagate immediately without further evaluation
-        MettaValue::Error(_, _) => (vec![value], env),
+        // Errors propagate immediately
+        MettaValue::Error(_, _) => EvalStep::Done((vec![value], env)),
 
-        // For atoms: add bare symbols to MORK Space, then return as-is
-        MettaValue::Atom(_) => {
-            // Atoms evaluate to themselves without being stored in the space
-            // Only rules (via =), type assertions (via :), and unmatched s-expressions
-            // are stored in the MORK space
-            (vec![value], env)
-        }
+        // Atoms evaluate to themselves
+        MettaValue::Atom(_) => EvalStep::Done((vec![value], env)),
 
-        // For other ground types, return as-is
+        // Ground types evaluate to themselves
         MettaValue::Bool(_)
         | MettaValue::Long(_)
         | MettaValue::Float(_)
         | MettaValue::String(_)
-        | MettaValue::Uri(_)
         | MettaValue::Nil
-        | MettaValue::Type(_) => (vec![value], env),
+        | MettaValue::Type(_) => EvalStep::Done((vec![value], env)),
 
-        // For s-expressions, evaluate elements and apply rules/built-ins
-        MettaValue::SExpr(items) => eval_sexpr(items, env, depth),
+        // S-expressions need special handling
+        MettaValue::SExpr(items) => eval_sexpr_step(items, env, depth),
     }
 }
 
-/// Evaluate an s-expression with depth tracking
-fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalResult {
+/// Evaluate an S-expression step - handles special forms and delegates to iterative collection
+fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     if items.is_empty() {
-        return (vec![MettaValue::Nil], env);
+        return EvalStep::Done((vec![MettaValue::Nil], env));
     }
 
-    // Check for special forms before evaluation
+    // Check for special forms - these are handled directly (they manage their own recursion)
     if let Some(MettaValue::Atom(op)) = items.first() {
         match op.as_str() {
-            // Rule definition: (= lhs rhs) - add to MORK Space and rule cache
-            "=" => return space::eval_add(items, env),
-
-            // Evaluation: ! expr - force evaluation
-            "!" => return evaluation::force_eval(items, env),
-
-            // Quote: return argument unevaluated
-            "quote" => return quoting::eval_quote(items, env),
-
-            // If: conditional evaluation - only evaluate chosen branch
-            "if" => return control_flow::eval_if(items, env),
-
-            // Error construction
-            "error" => return errors::eval_error(items, env),
-
-            // Is-error: check if value is an error (for error recovery)
-            "is-error" => return errors::eval_if_error(items, env),
-
-            // Catch: error recovery - (catch expr default)
-            // If expr evaluates to error, return default instead
-            "catch" => return errors::eval_catch(items, env),
-
-            // Eval: force evaluation of quoted expressions
-            // (eval expr) - complementary to quote
-            "eval" => return evaluation::eval_eval(items, env),
-
-            // Function: creates an evaluation loop that continues
-            // until it encounters a return value
-            "function" => return evaluation::eval_function(items, env),
-
-            // Return: signals termination from a function evaluation loop
-            "return" => return evaluation::eval_return(items, env),
-
-            // Evaluates first argument, binds it to the variable (second argument) and
-            // then evaluates third argument which contains (or not) mentioned variable
-            "chain" => return evaluation::eval_chain(items, env),
-
-            // Match: pattern matching against atom space
-            // (match <space> <pattern> <template>)
-            // Searches space for all atoms matching pattern and returns instantiated templates
-            "match" => return space::eval_match(items, env),
-
-            // Subsequently tests multiple pattern-matching conditions (second argument) for the
-            // given value (first argument)
-            "case" => return control_flow::eval_case(items, env),
-
-            // Difference between `switch` and `case` is a way how they interpret `Empty` result.
-            // case interprets first argument inside itself and then manually checks whether result is empty.
-            "switch" => return control_flow::eval_switch(items, env),
-
-            "switch-minimal" => return control_flow::eval_switch_minimal_handler(items, env),
-
-            // This function is being called inside switch function to test one of the cases and it
-            // calls switch once again if current condition is not met
-            "switch-internal" => return control_flow::eval_switch_internal_handler(items, env),
-
-            // Let: local variable binding
-            // (let $var value body) - Bind variable to value and evaluate body with that binding
-            // Supports pattern matching: (let ($x $y) (tuple 1 2) body)
-            "let" => return bindings::eval_let(items, env),
-
-            // Type assertion: (: expr type)
-            // Adds a type assertion to the environment
-            ":" => return types::eval_type_assertion(items, env),
-
-            // get-type: return the type of an expression
-            // (get-type expr) -> Type
-            "get-type" => return types::eval_get_type(items, env),
-
-            // check-type: check if expression has expected type
-            // (check-type expr expected-type) -> Bool
-            "check-type" => return types::eval_check_type(items, env),
-
-            // map-atom: maps a function over a list of atoms
-            "map-atom" => return list_ops::eval_map_atom(items, env),
-
-            // filter-atom: filters a list keeping only elements that satisfy the predicate
-            "filter-atom" => return list_ops::eval_filter_atom(items, env),
-
-            // foldl-atom: folds (reduces) a list from left to right using an operation and initial value
-            "foldl-atom" => return list_ops::eval_foldl_atom(items, env),
-
-            // Fall through to normal evaluation
+            "=" => return EvalStep::Done(space::eval_add(items, env)),
+            "!" => return EvalStep::Done(evaluation::force_eval(items, env)),
+            "quote" => return EvalStep::Done(quoting::eval_quote(items, env)),
+            "if" => return EvalStep::Done(control_flow::eval_if(items, env)),
+            "error" => return EvalStep::Done(errors::eval_error(items, env)),
+            "is-error" => return EvalStep::Done(errors::eval_if_error(items, env)),
+            "catch" => return EvalStep::Done(errors::eval_catch(items, env)),
+            "eval" => return EvalStep::Done(evaluation::eval_eval(items, env)),
+            "function" => return EvalStep::Done(evaluation::eval_function(items, env)),
+            "return" => return EvalStep::Done(evaluation::eval_return(items, env)),
+            "chain" => return EvalStep::Done(evaluation::eval_chain(items, env)),
+            "match" => return EvalStep::Done(space::eval_match(items, env)),
+            "case" => return EvalStep::Done(control_flow::eval_case(items, env)),
+            "switch" => return EvalStep::Done(control_flow::eval_switch(items, env)),
+            "switch-minimal" => {
+                return EvalStep::Done(control_flow::eval_switch_minimal_handler(items, env))
+            }
+            "switch-internal" => {
+                return EvalStep::Done(control_flow::eval_switch_internal_handler(items, env))
+            }
+            "let" => return EvalStep::Done(bindings::eval_let(items, env)),
+            ":" => return EvalStep::Done(types::eval_type_assertion(items, env)),
+            "get-type" => return EvalStep::Done(types::eval_get_type(items, env)),
+            "check-type" => return EvalStep::Done(types::eval_check_type(items, env)),
+            "map-atom" => return EvalStep::Done(list_ops::eval_map_atom(items, env)),
+            "filter-atom" => return EvalStep::Done(list_ops::eval_filter_atom(items, env)),
+            "foldl-atom" => return EvalStep::Done(list_ops::eval_foldl_atom(items, env)),
             _ => {}
         }
     }
 
-    // Evaluate all sub-expressions sequentially
-    // Phase 3c benchmarking conclusively showed sequential is always faster
-    // (tested 2-32768 operations, flat + nested expressions)
-    let eval_results_and_envs: Vec<(Vec<MettaValue>, Environment)> = items
-        .iter()
-        .map(|item: &MettaValue| eval_with_depth(item.clone(), env.clone(), depth + 1))
-        .collect();
+    // Not a special form - need to evaluate all sub-expressions iteratively
+    EvalStep::EvalSExpr { items, env, depth }
+}
 
-    // Check for errors in subexpressions and propagate immediately
-    for (results, new_env) in &eval_results_and_envs {
+/// Process collected S-expression evaluation results.
+/// This handles Cartesian products, builtins, and rule matching.
+fn process_collected_sexpr(
+    collected: Vec<EvalResult>,
+    original_env: Environment,
+    depth: usize,
+) -> ProcessedSExpr {
+    // Check for errors in sub-expression results
+    for (results, new_env) in &collected {
         if let Some(first) = results.first() {
             if matches!(first, MettaValue::Error(_, _)) {
-                return (vec![first.clone()], new_env.clone());
+                return ProcessedSExpr::Done((vec![first.clone()], new_env.clone()));
             }
         }
     }
 
     // Split results and environments
-    let (eval_results, envs): (Vec<_>, Vec<_>) = eval_results_and_envs.into_iter().unzip();
+    let (eval_results, envs): (Vec<_>, Vec<_>) = collected.into_iter().unzip();
 
     // Union all environments
-    let mut unified_env = env.clone();
+    let mut unified_env = original_env;
     for e in envs {
         unified_env = unified_env.union(&e);
     }
 
-    // Handle nondeterministic evaluation: generate Cartesian product of all sub-expression results
-    // When any sub-expression returns multiple results, we need to try all combinations
-    let combinations = cartesian_product(&eval_results);
+    // Generate Cartesian product of all sub-expression results
+    let combinations = match cartesian_product(&eval_results) {
+        Ok(c) => c,
+        Err(err) => {
+            return ProcessedSExpr::Done((vec![err], unified_env));
+        }
+    };
 
-    // Collect all final results from all combinations
+    // Collect results and rule matches that need evaluation
     let mut all_final_results = Vec::new();
+    let mut rule_matches_to_eval: Vec<(MettaValue, Bindings)> = Vec::new();
 
     for evaled_items in combinations {
         // Check if this is a grounded operation
         if let Some(MettaValue::Atom(op)) = evaled_items.first() {
             if let Some(result) = try_eval_builtin(op, &evaled_items[1..]) {
                 all_final_results.push(result);
-                continue; // Move to next combination
+                continue;
             }
         }
 
-        // Try to match against rules in MORK Space
+        // Try to match against rules
         let sexpr = MettaValue::SExpr(evaled_items.clone());
-
-        // Collect ALL matching rules with the BEST specificity (MeTTa returns multiple results)
-        // The helper function already filters to return only rules with the best specificity
         let all_matches = try_match_all_rules(&sexpr, &unified_env);
 
         if !all_matches.is_empty() {
-            // Evaluate all matching rule bodies (all have the same specificity)
-            for (rhs, bindings) in all_matches {
-                // Apply bindings to RHS and evaluate
-                let instantiated_rhs = apply_bindings(&rhs, &bindings);
-                let (results, _) =
-                    eval_with_depth(instantiated_rhs, unified_env.clone(), depth + 1);
-                all_final_results.extend(results);
-            }
+            // Collect rule matches for later evaluation
+            rule_matches_to_eval.extend(all_matches);
         } else {
-            // No rule matched - add to space and return (official MeTTa ADD mode semantics)
-            // In official MeTTa's default ADD mode, bare expressions are automatically added to &self
-            // This matches the behavior: `(leaf1 leaf2)` -> auto-added, then `!(match &self ...)` can query it
-            unified_env.add_to_space(&sexpr);
-            all_final_results.push(sexpr);
+            // No rule matched - check for typos and handle ADD mode
+            let result = handle_no_rule_match(evaled_items, &sexpr, &mut unified_env);
+            all_final_results.push(result);
         }
     }
 
-    (all_final_results, unified_env)
+    if rule_matches_to_eval.is_empty() {
+        // No rules to evaluate, we're done
+        ProcessedSExpr::Done((all_final_results, unified_env))
+    } else {
+        // Need to evaluate rule matches iteratively
+        ProcessedSExpr::EvalRuleMatches {
+            matches: rule_matches_to_eval,
+            env: unified_env,
+            depth,
+            base_results: all_final_results,
+        }
+    }
+}
+
+/// Handle the case where no rule matches an s-expression
+fn handle_no_rule_match(
+    evaled_items: Vec<MettaValue>,
+    sexpr: &MettaValue,
+    unified_env: &mut Environment,
+) -> MettaValue {
+    // Check for likely typos before falling back to ADD mode
+    if let Some(MettaValue::Atom(head)) = evaled_items.first() {
+        if head.len() >= 3 {
+            // Check for misspelled special form
+            if let Some(suggestion) = suggest_special_form(head) {
+                return MettaValue::Error(
+                    format!("Unknown special form '{}'. {}", head, suggestion),
+                    Arc::new(sexpr.clone()),
+                );
+            }
+            // Check for misspelled rule head
+            if let Some(suggestion) = unified_env.did_you_mean(head, 1) {
+                return MettaValue::Error(
+                    format!("No rule matches '{}'. {}", head, suggestion),
+                    Arc::new(sexpr.clone()),
+                );
+            }
+        }
+    }
+
+    // ADD mode: add to space and return unreduced s-expression
+    // In official MeTTa's default ADD mode, bare expressions are automatically added to &self
+    unified_env.add_to_space(sexpr);
+    sexpr.clone()
 }
 
 /// Try to evaluate a built-in operation
@@ -252,32 +606,37 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalRes
 /// Uses operator symbols (+, -, *, etc.) instead of normalized names
 fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaValue> {
     match op {
-        "+" => eval_binary_arithmetic(args, |a, b| a + b),
-        "-" => eval_binary_arithmetic(args, |a, b| a - b),
-        "*" => eval_binary_arithmetic(args, |a, b| a * b),
-        "/" => eval_binary_arithmetic(args, |a, b| a / b),
+        "+" => eval_checked_arithmetic(args, |a, b| a.checked_add(b), "+"),
+        "-" => eval_checked_arithmetic(args, |a, b| a.checked_sub(b), "-"),
+        "*" => eval_checked_arithmetic(args, |a, b| a.checked_mul(b), "*"),
+        "/" => eval_division(args),
         "<" => eval_comparison(args, |a, b| a < b),
         "<=" => eval_comparison(args, |a, b| a <= b),
         ">" => eval_comparison(args, |a, b| a > b),
         ">=" => eval_comparison(args, |a, b| a >= b),
         "==" => eval_comparison(args, |a, b| a == b),
         "!=" => eval_comparison(args, |a, b| a != b),
+        // Logical operators
+        "and" => eval_logical_binary(args, |a, b| a && b, "and"),
+        "or" => eval_logical_binary(args, |a, b| a || b, "or"),
+        "not" => eval_logical_not(args),
         _ => None,
     }
 }
 
-/// Evaluate a binary arithmetic operation with strict type checking
-fn eval_binary_arithmetic<F>(args: &[MettaValue], op: F) -> Option<MettaValue>
+/// Evaluate a binary arithmetic operation with overflow checking
+fn eval_checked_arithmetic<F>(args: &[MettaValue], op: F, op_name: &str) -> Option<MettaValue>
 where
-    F: Fn(i64, i64) -> i64,
+    F: Fn(i64, i64) -> Option<i64>,
 {
     if args.len() != 2 {
         return Some(MettaValue::Error(
             format!(
-                "Arithmetic operation requires exactly 2 arguments, got {}",
+                "Arithmetic operation '{}' requires exactly 2 arguments, got {}",
+                op_name,
                 args.len()
             ),
-            Box::new(MettaValue::Nil),
+            Arc::new(MettaValue::Nil),
         ));
     }
 
@@ -285,8 +644,12 @@ where
         MettaValue::Long(n) => *n,
         other => {
             return Some(MettaValue::Error(
-                format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string())),
+                format!(
+                    "Cannot perform '{}': expected Number (integer), got {}",
+                    op_name,
+                    friendly_type_name(other)
+                ),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -295,13 +658,78 @@ where
         MettaValue::Long(n) => *n,
         other => {
             return Some(MettaValue::Error(
-                format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string())),
+                format!(
+                    "Cannot perform '{}': expected Number (integer), got {}",
+                    op_name,
+                    friendly_type_name(other)
+                ),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
 
-    Some(MettaValue::Long(op(a, b)))
+    match op(a, b) {
+        Some(result) => Some(MettaValue::Long(result)),
+        None => Some(MettaValue::Error(
+            format!(
+                "Arithmetic overflow: {} {} {} exceeds integer bounds",
+                a, op_name, b
+            ),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        )),
+    }
+}
+
+/// Evaluate division with division-by-zero and overflow checking
+fn eval_division(args: &[MettaValue]) -> Option<MettaValue> {
+    if args.len() != 2 {
+        return Some(MettaValue::Error(
+            format!("Division requires exactly 2 arguments, got {}", args.len()),
+            Arc::new(MettaValue::Nil),
+        ));
+    }
+
+    let a = match &args[0] {
+        MettaValue::Long(n) => *n,
+        other => {
+            return Some(MettaValue::Error(
+                format!(
+                    "Cannot divide: expected Number (integer), got {}",
+                    friendly_type_name(other)
+                ),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
+            ));
+        }
+    };
+
+    let b = match &args[1] {
+        MettaValue::Long(n) => *n,
+        other => {
+            return Some(MettaValue::Error(
+                format!(
+                    "Cannot divide: expected Number (integer), got {}",
+                    friendly_type_name(other)
+                ),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
+            ));
+        }
+    };
+
+    if b == 0 {
+        return Some(MettaValue::Error(
+            "Division by zero".to_string(),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        ));
+    }
+
+    // Use checked_div for overflow protection (e.g., i64::MIN / -1)
+    match a.checked_div(b) {
+        Some(result) => Some(MettaValue::Long(result)),
+        None => Some(MettaValue::Error(
+            format!("Arithmetic overflow: {} / {} exceeds integer bounds", a, b),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        )),
+    }
 }
 
 /// Evaluate a comparison operation with strict type checking
@@ -315,7 +743,7 @@ where
                 "Comparison operation requires exactly 2 arguments, got {}",
                 args.len()
             ),
-            Box::new(MettaValue::Nil),
+            Arc::new(MettaValue::Nil),
         ));
     }
 
@@ -323,8 +751,11 @@ where
         MettaValue::Long(n) => *n,
         other => {
             return Some(MettaValue::Error(
-                format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string())),
+                format!(
+                    "Cannot compare: expected Number (integer), got {}",
+                    friendly_type_name(other)
+                ),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -333,13 +764,85 @@ where
         MettaValue::Long(n) => *n,
         other => {
             return Some(MettaValue::Error(
-                format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string())),
+                format!(
+                    "Cannot compare: expected Number (integer), got {}",
+                    friendly_type_name(other)
+                ),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
 
     Some(MettaValue::Bool(op(a, b)))
+}
+
+/// Evaluate a binary logical operation (and, or)
+fn eval_logical_binary<F>(args: &[MettaValue], op: F, op_name: &str) -> Option<MettaValue>
+where
+    F: Fn(bool, bool) -> bool,
+{
+    if args.len() != 2 {
+        return Some(MettaValue::Error(
+            format!(
+                "'{}' requires exactly 2 arguments, got {}. Usage: ({} bool1 bool2)",
+                op_name,
+                args.len(),
+                op_name
+            ),
+            Arc::new(MettaValue::Atom("ArityError".to_string())),
+        ));
+    }
+
+    let a = match &args[0] {
+        MettaValue::Bool(b) => *b,
+        other => {
+            return Some(MettaValue::Error(
+                format!(
+                    "'{}': expected Bool, got {}",
+                    op_name,
+                    friendly_type_name(other)
+                ),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
+            ));
+        }
+    };
+
+    let b = match &args[1] {
+        MettaValue::Bool(b) => *b,
+        other => {
+            return Some(MettaValue::Error(
+                format!(
+                    "'{}': expected Bool, got {}",
+                    op_name,
+                    friendly_type_name(other)
+                ),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
+            ));
+        }
+    };
+
+    Some(MettaValue::Bool(op(a, b)))
+}
+
+/// Evaluate logical not (unary)
+fn eval_logical_not(args: &[MettaValue]) -> Option<MettaValue> {
+    if args.len() != 1 {
+        return Some(MettaValue::Error(
+            format!(
+                "'not' requires exactly 1 argument, got {}. Usage: (not bool)",
+                args.len()
+            ),
+            Arc::new(MettaValue::Atom("ArityError".to_string())),
+        ));
+    }
+
+    match &args[0] {
+        MettaValue::Bool(b) => Some(MettaValue::Bool(!b)),
+        other => Some(MettaValue::Error(
+            format!("'not': expected Bool, got {}", friendly_type_name(other)),
+            Arc::new(MettaValue::Atom("TypeError".to_string())),
+        )),
+    }
 }
 
 /// Pattern match a pattern against a value
@@ -393,7 +896,6 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         (MettaValue::Long(p), MettaValue::Long(v)) => p == v,
         (MettaValue::Float(p), MettaValue::Float(v)) => p == v,
         (MettaValue::String(p), MettaValue::String(v)) => p == v,
-        (MettaValue::Uri(p), MettaValue::Uri(v)) => p == v,
         (MettaValue::Nil, MettaValue::Nil) => true,
 
         // S-expressions must have same length and all elements must match
@@ -424,41 +926,71 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
 /// Example: [[a, b], [1, 2]] -> [[a, 1], [a, 2], [b, 1], [b, 2]]
 ///
 /// This function has a built-in limit (MAX_CARTESIAN_RESULTS) to prevent combinatorial explosion.
-/// If the product would exceed this limit, it returns only the first MAX_CARTESIAN_RESULTS combinations.
-fn cartesian_product(results: &[Vec<MettaValue>]) -> Vec<Vec<MettaValue>> {
+/// Returns Err with an error message if the limit is exceeded.
+fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>, MettaValue> {
     if results.is_empty() {
-        return vec![vec![]];
+        return Ok(vec![vec![]]);
     }
 
-    // Base case: single result list
-    if results.len() == 1 {
-        let items: Vec<Vec<MettaValue>> = results[0]
-            .iter()
-            .take(MAX_CARTESIAN_RESULTS)
-            .map(|item| vec![item.clone()])
-            .collect();
-        return items;
+    // FAST PATH: If all result lists have exactly 1 item (deterministic evaluation),
+    // we can just concatenate them directly in O(n) instead of O(n²)
+    // This is the common case for arithmetic and most builtin operations
+    if results.iter().all(|r| r.len() == 1) {
+        let single_combo: Vec<MettaValue> = results.iter().map(|r| r[0].clone()).collect();
+        return Ok(vec![single_combo]);
     }
 
-    // Recursive case: combine first list with Cartesian product of rest
-    let first = &results[0];
-    let rest_product = cartesian_product(&results[1..]);
+    // Calculate the total product size first to check if it would exceed the limit
+    let total_size: usize = results
+        .iter()
+        .map(|r| r.len().max(1))
+        .fold(1usize, |acc, len| acc.saturating_mul(len));
 
-    let mut product = Vec::new();
-    'outer: for item in first {
-        for rest_combo in &rest_product {
-            // Check limit before adding more combinations
-            if product.len() >= MAX_CARTESIAN_RESULTS {
-                break 'outer;
-            }
+    if total_size > MAX_CARTESIAN_RESULTS {
+        return Err(MettaValue::Error(
+            format!(
+                "Combinatorial explosion: evaluation would produce {} results, exceeding limit of {}. \
+                 Consider simplifying the expression or adding constraints.",
+                total_size, MAX_CARTESIAN_RESULTS
+            ),
+            Arc::new(MettaValue::Atom("LimitExceeded".to_string())),
+        ));
+    }
 
-            let mut combo = vec![item.clone()];
-            combo.extend(rest_combo.clone());
-            product.push(combo);
+    // Iterative Cartesian product for non-deterministic cases
+    // Start with a single empty combination
+    let mut product = vec![Vec::with_capacity(results.len())];
+
+    // Process each result list and extend all existing combinations
+    for result_list in results {
+        if result_list.is_empty() {
+            // Empty list contributes nothing to combinations
+            continue;
         }
+
+        let new_capacity = product
+            .len()
+            .checked_mul(result_list.len())
+            .ok_or_else(|| {
+                MettaValue::Error(
+                    "Combinatorial explosion: integer overflow in cartesian product".to_string(),
+                    Arc::new(MettaValue::Atom("Overflow".to_string())),
+                )
+            })?;
+        let mut new_product = Vec::with_capacity(new_capacity);
+
+        for combo in &product {
+            for item in result_list {
+                let mut new_combo = combo.clone();
+                new_combo.push(item.clone());
+                new_product.push(new_combo);
+            }
+        }
+
+        product = new_product;
     }
 
-    product
+    Ok(product)
 }
 
 /// Apply variable bindings to a value
@@ -486,7 +1018,7 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
         }
         MettaValue::Error(msg, details) => {
             let new_details = apply_bindings(details, bindings);
-            MettaValue::Error(msg.clone(), Box::new(new_details))
+            MettaValue::Error(msg.clone(), Arc::new(new_details))
         }
         _ => value.clone(),
     }
@@ -494,7 +1026,7 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
 
 /// Extract the head symbol from a pattern for indexing
 /// Returns None if the pattern doesn't have a clear head symbol
-fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
+fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
     match pattern {
         // For s-expressions like (double $x), extract "double"
         // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
@@ -505,7 +1037,7 @@ fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
                     && !head.starts_with('\'')
                     && head != "_" =>
             {
-                Some(head.clone())
+                Some(head.as_str())
             }
             _ => None,
         },
@@ -517,7 +1049,7 @@ fn get_head_symbol(pattern: &MettaValue) -> Option<String> {
                 && !head.starts_with('\'')
                 && head != "_" =>
         {
-            Some(head.clone())
+            Some(head.as_str())
         }
         _ => None,
     }
@@ -540,7 +1072,6 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         | MettaValue::Long(_)
         | MettaValue::Float(_)
         | MettaValue::String(_)
-        | MettaValue::Uri(_)
         | MettaValue::Nil => {
             0 // Literals are most specific (including standalone "&")
         }
@@ -645,7 +1176,7 @@ fn try_match_all_rules_iterative(
     let matching_rules = if let Some(head) = get_head_symbol(expr) {
         let arity = expr.get_arity();
         // O(1) indexed lookup instead of O(n) iteration
-        env.get_matching_rules(&head, arity)
+        env.get_matching_rules(head, arity)
     } else {
         // For expressions without head symbol, check wildcard rules only
         // This is still O(k_wildcards) instead of O(n_total)
@@ -725,6 +1256,177 @@ mod tests {
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Bool(true));
+    }
+
+    #[test]
+    fn test_eval_logical_and() {
+        let env = Environment::new();
+
+        // True and True = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("and".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // True and False = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("and".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Bool(false),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // False and True = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("and".to_string()),
+            MettaValue::Bool(false),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // False and False = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("and".to_string()),
+            MettaValue::Bool(false),
+            MettaValue::Bool(false),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+    }
+
+    #[test]
+    fn test_eval_logical_or() {
+        let env = Environment::new();
+
+        // True or True = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("or".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // True or False = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("or".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Bool(false),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // False or True = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("or".to_string()),
+            MettaValue::Bool(false),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // False or False = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("or".to_string()),
+            MettaValue::Bool(false),
+            MettaValue::Bool(false),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+    }
+
+    #[test]
+    fn test_eval_logical_not() {
+        let env = Environment::new();
+
+        // not True = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("not".to_string()),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // not False = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("not".to_string()),
+            MettaValue::Bool(false),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+    }
+
+    #[test]
+    fn test_eval_logical_type_error() {
+        let env = Environment::new();
+
+        // and with non-boolean should error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("and".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], MettaValue::Error(_, _)));
+
+        // or with non-boolean should error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("or".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::String("hello".to_string()),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], MettaValue::Error(_, _)));
+
+        // not with non-boolean should error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("not".to_string()),
+            MettaValue::Long(42),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], MettaValue::Error(_, _)));
+    }
+
+    #[test]
+    fn test_eval_logical_arity_error() {
+        let env = Environment::new();
+
+        // and with wrong arity
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("and".to_string()),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], MettaValue::Error(_, _)));
+
+        // not with wrong arity
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("not".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Bool(false),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], MettaValue::Error(_, _)));
     }
 
     #[test]
@@ -1502,7 +2204,7 @@ mod tests {
     fn test_arithmetic_type_error_string() {
         let env = Environment::new();
 
-        // Test: !(+ 1 "a") should produce BadType error
+        // Test: !(+ 1 "a") should produce TypeError with friendly message
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
@@ -1514,10 +2216,15 @@ mod tests {
 
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                // Error message should contain the invalid value
-                assert!(msg.contains("String"));
-                // Error details should be BadType
-                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+                // Error message should contain the friendly type name
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected 'expected Number (integer)' in: {}",
+                    msg
+                );
+                // Error details should be TypeError
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }
@@ -1539,8 +2246,13 @@ mod tests {
 
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"));
-                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected type info in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }
@@ -1562,8 +2274,13 @@ mod tests {
 
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                assert!(msg.contains("Bool"));
-                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected type info in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }
@@ -1585,8 +2302,13 @@ mod tests {
 
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"));
-                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert!(
+                    msg.contains("Cannot compare"),
+                    "Expected 'Cannot compare' in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }
@@ -1608,5 +2330,116 @@ mod tests {
             }
             other => panic!("Expected Error, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_misspelled_special_form() {
+        let env = Environment::new();
+
+        // Try to use "mach" instead of "match"
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("mach".to_string()),
+            MettaValue::Atom("&self".to_string()),
+            MettaValue::Atom("pattern".to_string()),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Did you mean"),
+                    "Expected suggestion in: {}",
+                    msg
+                );
+                assert!(msg.contains("match"), "Expected 'match' in: {}", msg);
+            }
+            other => panic!("Expected Error with suggestion, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_undefined_symbol_with_rule_suggestion() {
+        let mut env = Environment::new();
+
+        // Add a rule for "fibonacci"
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("fibonacci".to_string()),
+                MettaValue::Atom("$n".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Atom("$n".to_string()),
+                MettaValue::Atom("$n".to_string()),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // Try to call "fibonaci" (misspelled - missing 'n')
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("fibonaci".to_string()),
+            MettaValue::Long(5),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Did you mean"),
+                    "Expected suggestion in: {}",
+                    msg
+                );
+                assert!(
+                    msg.contains("fibonacci"),
+                    "Expected 'fibonacci' in: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected Error with suggestion, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unknown_symbol_returns_as_is() {
+        let env = Environment::new();
+
+        // Completely unknown symbols (not similar to any known term)
+        // should be returned as-is per ADD mode semantics
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("xyzzy".to_string()),
+            MettaValue::Long(1),
+        ]);
+
+        let (results, _) = eval(expr.clone(), env);
+        assert_eq!(results.len(), 1);
+
+        // Should return the expression as-is (ADD mode), not an error
+        assert_eq!(results[0], expr, "Expected expression to be returned as-is");
+    }
+
+    #[test]
+    fn test_short_symbol_not_flagged_as_typo() {
+        let env = Environment::new();
+
+        // Short symbols like "a" should NOT be flagged as typos even if
+        // they're close to special forms like "=" (edit distance 1)
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("a".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+
+        let (results, _) = eval(expr.clone(), env);
+        assert_eq!(results.len(), 1);
+
+        // Should return the expression as-is (ADD mode), not an error
+        assert_eq!(
+            results[0], expr,
+            "Short symbols should not be flagged as typos"
+        );
     }
 }

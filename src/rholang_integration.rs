@@ -10,7 +10,54 @@ use crate::backend::compile::compile;
 ///
 /// **Note**: For Rholang integration, use the PathMap Par functions in
 /// `pathmap_par_integration` module, not the JSON functions here.
+use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::models::{MettaState, MettaValue};
+use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+use std::sync::OnceLock;
+
+/// MeTTa built-in keywords for syntax-level "did you mean" suggestions
+const METTA_KEYWORDS: &[&str] = &[
+    // Special forms
+    "=",
+    "!",
+    "quote",
+    "if",
+    "error",
+    "is-error",
+    "catch",
+    "eval",
+    "function",
+    "return",
+    "chain",
+    "match",
+    "case",
+    "switch",
+    "let",
+    ":",
+    "get-type",
+    "check-type",
+    "map-atom",
+    "filter-atom",
+    "foldl-atom",
+    // Arithmetic operators
+    "+",
+    "-",
+    "*",
+    "/",
+    // Comparison operators
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "==",
+    "!=",
+];
+
+/// Get fuzzy matcher for MeTTa keywords (lazily initialized)
+fn keyword_matcher() -> &'static FuzzyMatcher {
+    static MATCHER: OnceLock<FuzzyMatcher> = OnceLock::new();
+    MATCHER.get_or_init(|| FuzzyMatcher::from_terms(METTA_KEYWORDS.iter().copied()))
+}
 
 /// Safe compilation wrapper that never fails
 ///
@@ -44,9 +91,9 @@ use crate::backend::models::{MettaState, MettaValue};
 pub fn compile_safe(src: &str) -> MettaState {
     match compile(src) {
         Ok(state) => state,
-        Err(error_msg) => {
+        Err(error) => {
             // Improve error message with additional context
-            let improved_msg = improve_error_message(&error_msg, src);
+            let improved_msg = improve_error_message(&error);
 
             // Create error s-expression: (error "message")
             let error_sexpr = MettaValue::SExpr(vec![
@@ -60,59 +107,86 @@ pub fn compile_safe(src: &str) -> MettaState {
     }
 }
 
-/// Improve error messages with additional context and suggestions
-fn improve_error_message(raw_error: &str, source: &str) -> String {
-    // Extract line/column info if present
-    let error_lower = raw_error.to_lowercase();
+/// Improve error messages with additional context and suggestions using pattern matching
+fn improve_error_message(error: &SyntaxError) -> String {
+    let base_msg = error.to_string();
 
-    // Provide contextual suggestions based on error patterns
-    if error_lower.contains("unexpected") && error_lower.contains("'") {
-        // Likely unclosed parenthesis or unexpected EOF
-        let unclosed_parens = count_unclosed_parens(source);
-        if unclosed_parens > 0 {
-            return format!(
-                "{} (Hint: {} unclosed parenthesis{} detected)",
-                raw_error,
-                unclosed_parens,
-                if unclosed_parens == 1 { "" } else { "es" }
-            );
-        } else if unclosed_parens < 0 {
-            return format!(
-                "{} (Hint: {} extra closing parenthesis{} detected)",
-                raw_error,
-                -unclosed_parens,
-                if unclosed_parens == -1 { "" } else { "es" }
-            );
+    let hint = match &error.kind {
+        SyntaxErrorKind::UnclosedDelimiter(c) => {
+            Some(format!("check for missing closing '{}'", matching_close(*c)))
         }
-    }
+        SyntaxErrorKind::ExtraClosingDelimiter(c) => {
+            Some(format!("remove extra '{}' or add matching '{}'", c, matching_open(*c)))
+        }
+        SyntaxErrorKind::UnclosedString => Some("close the string with '\"'".into()),
+        SyntaxErrorKind::InvalidEscape(seq) => {
+            // Provide specific suggestions based on the invalid escape character
+            let suggestion = match seq.chars().next() {
+                Some('n') | Some('N') => "use \\n for newline",
+                Some('t') | Some('T') => "use \\t for tab",
+                Some('r') | Some('R') => "use \\r for carriage return",
+                Some('0') => "use \\x00 for null byte (hex escape)",
+                Some(c) if c.is_ascii_hexdigit() => "use \\x## format (two hex digits)",
+                Some('u') | Some('U') => "use \\u{####} for Unicode codepoint",
+                Some('b') | Some('B') => "use \\x08 for backspace (hex escape)",
+                Some('f') | Some('F') => "use \\x0C for form feed (hex escape)",
+                Some('e') | Some('E') => "use \\x1B for escape (hex escape)",
+                _ => "valid escapes: \\n, \\t, \\r, \\\\, \\\", \\x## (hex), \\u{...} (unicode)",
+            };
+            Some(format!(
+                "invalid escape \\{}. Hint: {}",
+                seq, suggestion
+            ))
+        }
+        SyntaxErrorKind::UnexpectedToken => {
+            // Try to suggest similar keywords
+            if !error.text.is_empty() {
+                keyword_matcher().did_you_mean(&error.text, 1, 3)
+            } else {
+                None
+            }
+        }
+        SyntaxErrorKind::UnknownNodeKind(kind) => {
+            Some(format!(
+                "Parser encountered unknown syntax '{}'. Check for typos or unsupported syntax.",
+                kind
+            ))
+        }
+        SyntaxErrorKind::ParserInit(msg) => {
+            Some(format!(
+                "Parser initialization failed: {}. This may indicate a corrupt grammar file or installation issue.",
+                msg
+            ))
+        }
+        SyntaxErrorKind::Generic => {
+            Some("Check syntax near the indicated position. Common issues: unclosed parentheses, missing quotes, invalid escape sequences.".into())
+        }
+    };
 
-    // Return improved message or original if no improvements found
-    raw_error.to_string()
+    match hint {
+        Some(h) => format!("{} (Hint: {})", base_msg, h),
+        None => base_msg,
+    }
 }
 
-/// Count unclosed parentheses in source
-/// Returns: positive = unclosed open parens, negative = extra close parens
-fn count_unclosed_parens(source: &str) -> i32 {
-    let mut depth = 0;
-    let mut in_string = false;
-    let mut escape_next = false;
-
-    for ch in source.chars() {
-        if escape_next {
-            escape_next = false;
-            continue;
-        }
-
-        match ch {
-            '\\' if in_string => escape_next = true,
-            '"' => in_string = !in_string,
-            '(' if !in_string => depth += 1,
-            ')' if !in_string => depth -= 1,
-            _ => {}
-        }
+/// Get the matching closing delimiter
+fn matching_close(open: char) -> char {
+    match open {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        c => c,
     }
+}
 
-    depth
+/// Get the matching opening delimiter
+fn matching_open(close: char) -> char {
+    match close {
+        ')' => '(',
+        ']' => '[',
+        '}' => '{',
+        c => c,
+    }
 }
 
 /// Convert MettaValue to a JSON-like string representation
@@ -124,7 +198,6 @@ fn metta_value_to_json_string(value: &MettaValue) -> String {
         MettaValue::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
         MettaValue::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
         MettaValue::String(s) => format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s)),
-        MettaValue::Uri(s) => format!(r#"{{"type":"uri","value":"{}"}}"#, escape_json(s)),
         MettaValue::Nil => r#"{"type":"nil"}"#.to_string(),
         MettaValue::SExpr(items) => {
             let items_json: Vec<String> = items.iter().map(metta_value_to_json_string).collect();
@@ -1145,5 +1218,244 @@ mod tests {
         let result = run_state(accumulated, compiled).unwrap();
 
         assert!(!result.output.is_empty());
+    }
+
+    // Tests for improve_error_message with different SyntaxErrorKind variants
+
+    #[test]
+    fn test_improve_error_message_unclosed_paren() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnclosedDelimiter('('),
+            line: 1,
+            column: 7,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("missing closing ')'"));
+    }
+
+    #[test]
+    fn test_improve_error_message_extra_close_paren() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::ExtraClosingDelimiter(')'),
+            line: 1,
+            column: 8,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("remove extra ')'") || msg.contains("add matching '('"));
+    }
+
+    #[test]
+    fn test_improve_error_message_unclosed_string() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnclosedString,
+            line: 1,
+            column: 10,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("close the string"));
+    }
+
+    #[test]
+    fn test_improve_error_message_invalid_escape() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::InvalidEscape("z".to_string()),
+            line: 1,
+            column: 5,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("valid escapes"));
+    }
+
+    #[test]
+    fn test_improve_error_message_generic_has_hint() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::Generic,
+            line: 1,
+            column: 1,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        // Generic errors now have a helpful hint
+        assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
+        assert!(
+            msg.contains("Common issues"),
+            "Expected 'Common issues' in: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_improve_error_message_unclosed_bracket() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnclosedDelimiter('['),
+            line: 1,
+            column: 5,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("missing closing ']'"));
+    }
+
+    #[test]
+    fn test_improve_error_message_unclosed_brace() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnclosedDelimiter('{'),
+            line: 1,
+            column: 5,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("missing closing '}'"));
+    }
+
+    #[test]
+    fn test_keyword_suggestion_quota_to_quote() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        // "quota" is close to "quote"
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnexpectedToken,
+            line: 1,
+            column: 1,
+            text: "quota".to_string(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(
+            msg.contains("Did you mean"),
+            "Expected suggestion in: {}",
+            msg
+        );
+        assert!(msg.contains("quote"), "Expected 'quote' in: {}", msg);
+    }
+
+    #[test]
+    fn test_keyword_suggestion_iff_to_if() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        // "iff" is close to "if"
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnexpectedToken,
+            line: 1,
+            column: 1,
+            text: "iff".to_string(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(
+            msg.contains("Did you mean"),
+            "Expected suggestion in: {}",
+            msg
+        );
+        assert!(msg.contains("if"), "Expected 'if' in: {}", msg);
+    }
+
+    #[test]
+    fn test_keyword_suggestion_no_match() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        // "xyzzy" is not close to any keyword
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnexpectedToken,
+            line: 1,
+            column: 1,
+            text: "xyzzy".to_string(),
+        };
+        let msg = improve_error_message(&error);
+        // Should not contain "Did you mean" when no similar keyword
+        assert!(
+            !msg.contains("Did you mean"),
+            "Unexpected suggestion in: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_keyword_suggestion_empty_text() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        // Empty text should not produce a suggestion
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnexpectedToken,
+            line: 1,
+            column: 1,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(
+            !msg.contains("Did you mean"),
+            "Unexpected suggestion for empty text: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_improve_error_message_unknown_node_kind() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnknownNodeKind("weird_node".to_string()),
+            line: 1,
+            column: 5,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
+        assert!(
+            msg.contains("weird_node"),
+            "Expected node kind name in: {}",
+            msg
+        );
+        assert!(
+            msg.contains("unknown syntax") || msg.contains("unsupported"),
+            "Expected helpful message in: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_improve_error_message_parser_init() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::ParserInit("failed to load grammar".to_string()),
+            line: 0,
+            column: 0,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
+        assert!(
+            msg.contains("failed to load grammar"),
+            "Expected original message in: {}",
+            msg
+        );
+        assert!(
+            msg.contains("initialization") || msg.contains("grammar file"),
+            "Expected helpful context in: {}",
+            msg
+        );
     }
 }

@@ -1,13 +1,39 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{EvalResult, MettaValue};
+use std::sync::Arc;
 
-use super::{eval, EvalOutput};
+use super::eval;
+
+/// Suggest variable format when user provides a plain atom instead of `$var`
+/// Returns a suggestion string if the atom looks like it should be a variable
+fn suggest_variable_format(atom: &str) -> Option<String> {
+    // If it's already a variable, no suggestion needed
+    if atom.starts_with('$') || atom.starts_with('&') || atom.starts_with('\'') {
+        return None;
+    }
+
+    // Don't suggest for obvious non-variables (operators, keywords, etc.)
+    if atom.contains('(') || atom.contains(')') || atom.is_empty() {
+        return None;
+    }
+
+    // Short, lowercase identifiers are likely intended as variables
+    let first_char = atom.chars().next()?;
+    if first_char.is_lowercase() && atom.len() <= 10 {
+        Some(format!(
+            "Did you mean: ${}? (variables must start with $)",
+            atom
+        ))
+    } else {
+        None
+    }
+}
 
 /// Map atom: (map-atom $list $var $template)
 /// Maps a function over a list of atoms
 /// Example: (map-atom (1 2 3 4) $v (+ $v 1)) -> (2 3 4 5)
-pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_three_args!("map-atom", items, env);
+pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("map-atom", items, 3, env, "(map-atom list $var expr)");
 
     let list = &items[1];
     let var = &items[2];
@@ -15,10 +41,25 @@ pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalOut
 
     let var_name = match var {
         MettaValue::Atom(name) if name.starts_with('$') => name.clone(),
+        MettaValue::Atom(name) => {
+            // Try to suggest variable format
+            let suggestion = suggest_variable_format(name);
+            let msg = match suggestion {
+                Some(s) => format!(
+                    "map-atom: second argument must be a variable (starting with $). {}",
+                    s
+                ),
+                None => {
+                    "map-atom: second argument must be a variable (starting with $)".to_string()
+                }
+            };
+            let err = MettaValue::Error(msg, Arc::new(var.clone()));
+            return (vec![err], env);
+        }
         _ => {
             let err = MettaValue::Error(
                 "map-atom: second argument must be a variable (starting with $)".to_string(),
-                Box::new(var.clone()),
+                Arc::new(var.clone()),
             );
             return (vec![err], env);
         }
@@ -29,8 +70,11 @@ pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalOut
         MettaValue::Nil => vec![],
         _ => {
             let err = MettaValue::Error(
-                "map-atom: first argument must be a list (S-expression)".to_string(),
-                Box::new(list.clone()),
+                format!(
+                    "map-atom: first argument must be a list, got {}. Usage: (map-atom list $var expr)",
+                    super::friendly_value_repr(list)
+                ),
+                Arc::new(list.clone()),
             );
             return (vec![err], env);
         }
@@ -66,8 +110,14 @@ pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalOut
 /// Filter atom: (filter-atom $list $var $predicate)
 /// Filters a list keeping only elements that satisfy the predicate
 /// Example: (filter-atom (1 2 3 4) $v (> $v 2)) -> (3 4)
-pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_three_args!("filter-atom", items, env);
+pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!(
+        "filter-atom",
+        items,
+        3,
+        env,
+        "(filter-atom list $var predicate)"
+    );
 
     let list = &items[1];
     let var = &items[2];
@@ -75,10 +125,25 @@ pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 
     let var_name = match var {
         MettaValue::Atom(name) if name.starts_with('$') => name.clone(),
+        MettaValue::Atom(name) => {
+            // Try to suggest variable format
+            let suggestion = suggest_variable_format(name);
+            let msg = match suggestion {
+                Some(s) => format!(
+                    "filter-atom: second argument must be a variable (starting with $). {}",
+                    s
+                ),
+                None => {
+                    "filter-atom: second argument must be a variable (starting with $)".to_string()
+                }
+            };
+            let err = MettaValue::Error(msg, Arc::new(var.clone()));
+            return (vec![err], env);
+        }
         _ => {
             let err = MettaValue::Error(
                 "filter-atom: second argument must be a variable (starting with $)".to_string(),
-                Box::new(var.clone()),
+                Arc::new(var.clone()),
             );
             return (vec![err], env);
         }
@@ -89,8 +154,11 @@ pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> Eval
         MettaValue::Nil => vec![],
         _ => {
             let err = MettaValue::Error(
-                "filter-atom: first argument must be a list (S-expression)".to_string(),
-                Box::new(list.clone()),
+                format!(
+                    "filter-atom: first argument must be a list, got {}. Usage: (filter-atom list $var predicate)",
+                    super::friendly_value_repr(list)
+                ),
+                Arc::new(list.clone()),
             );
             return (vec![err], env);
         }
@@ -134,12 +202,12 @@ pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 /// Fold left atom: (foldl-atom $list $init $acc $item $op)
 /// Folds (reduces) a list from left to right using an operation and initial value
 /// Example: (foldl-atom (1 2 3) 0 $acc $x (+ $acc $x)) -> 6
-pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     if items.len() != 6 {
         let err = MettaValue::Error(
             "foldl-atom requires exactly 5 arguments: list, init, acc-var, item-var, operation"
                 .to_string(),
-            Box::new(MettaValue::SExpr(items.to_vec())),
+            Arc::new(MettaValue::SExpr(items.to_vec())),
         );
         return (vec![err], env);
     }
@@ -152,10 +220,25 @@ pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalO
 
     let acc_var_name = match acc_var {
         MettaValue::Atom(name) if name.starts_with('$') => name.clone(),
+        MettaValue::Atom(name) => {
+            // Try to suggest variable format
+            let suggestion = suggest_variable_format(name);
+            let msg = match suggestion {
+                Some(s) => format!(
+                    "foldl-atom: third argument must be a variable (starting with $). {}",
+                    s
+                ),
+                None => {
+                    "foldl-atom: third argument must be a variable (starting with $)".to_string()
+                }
+            };
+            let err = MettaValue::Error(msg, Arc::new(acc_var.clone()));
+            return (vec![err], env);
+        }
         _ => {
             let err = MettaValue::Error(
                 "foldl-atom: third argument must be a variable (starting with $)".to_string(),
-                Box::new(acc_var.clone()),
+                Arc::new(acc_var.clone()),
             );
             return (vec![err], env);
         }
@@ -163,10 +246,25 @@ pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalO
 
     let item_var_name = match item_var {
         MettaValue::Atom(name) if name.starts_with('$') => name.clone(),
+        MettaValue::Atom(name) => {
+            // Try to suggest variable format
+            let suggestion = suggest_variable_format(name);
+            let msg = match suggestion {
+                Some(s) => format!(
+                    "foldl-atom: fourth argument must be a variable (starting with $). {}",
+                    s
+                ),
+                None => {
+                    "foldl-atom: fourth argument must be a variable (starting with $)".to_string()
+                }
+            };
+            let err = MettaValue::Error(msg, Arc::new(item_var.clone()));
+            return (vec![err], env);
+        }
         _ => {
             let err = MettaValue::Error(
                 "foldl-atom: fourth argument must be a variable (starting with $)".to_string(),
-                Box::new(item_var.clone()),
+                Arc::new(item_var.clone()),
             );
             return (vec![err], env);
         }
@@ -177,8 +275,11 @@ pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalO
         MettaValue::Nil => vec![],
         _ => {
             let err = MettaValue::Error(
-                "foldl-atom: first argument must be a list (S-expression)".to_string(),
-                Box::new(list.clone()),
+                format!(
+                    "foldl-atom: first argument must be a list, got {}. Usage: (foldl-atom list init $acc $elem expr)",
+                    super::friendly_value_repr(list)
+                ),
+                Arc::new(list.clone()),
             );
             return (vec![err], env);
         }
@@ -219,7 +320,7 @@ fn substitute_variable(expr: &MettaValue, var_name: &str, value: &MettaValue) ->
         }
         MettaValue::Error(msg, details) => {
             let substituted_details = substitute_variable(details, var_name, value);
-            MettaValue::Error(msg.clone(), Box::new(substituted_details))
+            MettaValue::Error(msg.clone(), Arc::new(substituted_details))
         }
         _ => expr.clone(),
     }
@@ -1408,6 +1509,188 @@ mod tests {
                 assert_eq!(mapped[2], MettaValue::Long(4));
             }
             _ => panic!("Expected S-expression result"),
+        }
+    }
+
+    // === Tests for "Did You Mean" variable format suggestions ===
+
+    #[test]
+    fn test_map_atom_variable_format_suggestion() {
+        let env = Environment::new();
+
+        // (map-atom (1 2 3) x (+ x 1)) - missing $ prefix on variable
+        let items = vec![
+            MettaValue::Atom("map-atom".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::Atom("x".to_string()), // Missing $ prefix
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Atom("x".to_string()),
+                MettaValue::Long(1),
+            ]),
+        ];
+
+        let (results, _) = eval_map_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Did you mean: $x"),
+                    "Expected suggestion '$x' in: {}",
+                    msg
+                );
+                assert!(
+                    msg.contains("variables must start with $"),
+                    "Expected explanation in: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error with variable suggestion"),
+        }
+    }
+
+    #[test]
+    fn test_filter_atom_variable_format_suggestion() {
+        let env = Environment::new();
+
+        // (filter-atom (1 2 3) v (> v 1)) - missing $ prefix
+        let items = vec![
+            MettaValue::Atom("filter-atom".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::Atom("v".to_string()), // Missing $ prefix
+            MettaValue::SExpr(vec![
+                MettaValue::Atom(">".to_string()),
+                MettaValue::Atom("v".to_string()),
+                MettaValue::Long(1),
+            ]),
+        ];
+
+        let (results, _) = eval_filter_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Did you mean: $v"),
+                    "Expected suggestion '$v' in: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error with variable suggestion"),
+        }
+    }
+
+    #[test]
+    fn test_foldl_atom_variable_format_suggestion_acc() {
+        let env = Environment::new();
+
+        // (foldl-atom (1 2 3) 0 acc $x (+ acc $x)) - missing $ prefix on acc
+        let items = vec![
+            MettaValue::Atom("foldl-atom".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::Long(0),
+            MettaValue::Atom("acc".to_string()), // Missing $ prefix
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Atom("acc".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+        ];
+
+        let (results, _) = eval_foldl_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Did you mean: $acc"),
+                    "Expected suggestion '$acc' in: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error with variable suggestion"),
+        }
+    }
+
+    #[test]
+    fn test_foldl_atom_variable_format_suggestion_item() {
+        let env = Environment::new();
+
+        // (foldl-atom (1 2 3) 0 $acc item (+ $acc item)) - missing $ prefix on item
+        let items = vec![
+            MettaValue::Atom("foldl-atom".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::Long(0),
+            MettaValue::Atom("$acc".to_string()),
+            MettaValue::Atom("item".to_string()), // Missing $ prefix
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Atom("$acc".to_string()),
+                MettaValue::Atom("item".to_string()),
+            ]),
+        ];
+
+        let (results, _) = eval_foldl_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Did you mean: $item"),
+                    "Expected suggestion '$item' in: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error with variable suggestion"),
+        }
+    }
+
+    #[test]
+    fn test_map_atom_no_suggestion_for_uppercase() {
+        let env = Environment::new();
+
+        // (map-atom (1 2 3) X (+ X 1)) - uppercase X shouldn't get suggestion
+        let items = vec![
+            MettaValue::Atom("map-atom".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::Atom("X".to_string()), // Uppercase - not variable-like
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Atom("X".to_string()),
+                MettaValue::Long(1),
+            ]),
+        ];
+
+        let (results, _) = eval_map_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                // Should NOT have "Did you mean" for uppercase identifiers
+                assert!(
+                    !msg.contains("Did you mean"),
+                    "Should not suggest for uppercase identifier: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error without suggestion"),
         }
     }
 }

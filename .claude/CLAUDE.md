@@ -75,7 +75,10 @@ MeTTa Source → Tokens → S-expressions → MettaValue → Evaluation Results
 
 The evaluator consists of two main stages:
 
-1. **Lexical Analysis & S-expression Parsing** (`src/tree_sitter_parser.rs`)
+1. **Tree-Sitter Parsing** (`src/tree_sitter_parser.rs` + `src/ir.rs`)
+   - Uses Tree-Sitter grammar for robust parsing
+   - Converts parse trees to S-expression IR (`SExpr`)
+   - Tracks source positions for error reporting
    - Tokenizes input text into structured tokens using Tree-Sitter
    - Parses tokens into S-expressions
    - Handles comments: `;` (semicolon line comments only)
@@ -92,10 +95,10 @@ The evaluator consists of two main stages:
 
 - **Library exports**: `src/lib.rs`
 - **CLI and REPL**: `src/main.rs`
-- **Lexer/S-expr parser**: `src/sexpr.rs`
-- **Backend evaluator**: `src/backend/` (compile.rs, eval.rs, types.rs, mod.rs)
+- **Parser and IR**: `src/tree_sitter_parser.rs`, `src/ir.rs`
+- **Backend evaluator**: `src/backend/` (compile.rs, eval/, models/, mod.rs)
 - **Rholang integration**: `src/rholang_integration.rs`
-- **FFI layer**: `src/ffi.rs`
+- **Environment**: `src/environment.rs`
 - **Project config**: `Cargo.toml`
 - **Examples**: `examples/` (*.metta files and Rust examples)
 
@@ -140,10 +143,10 @@ The evaluator consists of two main stages:
 
 ### Adding New Features
 
-1. **New MeTTa syntax**: Update `src/sexpr.rs` (tokens) and `src/backend/compile.rs` (parsing)
-2. **New evaluation semantics**: Update `src/backend/eval.rs` (evaluation logic)
-3. **New special forms**: Update `src/backend/eval.rs` (add to eval_special_form)
-4. **New grounded functions**: Update `src/backend/eval.rs` (add to eval_grounded)
+1. **New MeTTa syntax**: Update Tree-Sitter grammar in `rholang-rs/metta-tree-sitter` and `src/backend/compile.rs` (parsing)
+2. **New evaluation semantics**: Update `src/backend/eval/` (evaluation logic modules)
+3. **New special forms**: Update `src/backend/eval/control_flow.rs` (add to control flow evaluation)
+4. **New grounded functions**: Update `src/backend/eval/mod.rs` (add to eval_grounded)
 5. **New CLI options**: Update `src/main.rs`
 
 ### Testing
@@ -179,26 +182,26 @@ RUST_LOG=debug ./target/release/mettatron input.metta
 ### Common Tasks
 
 **Add a new grounded function:**
-1. Update `eval_grounded()` in `src/backend/eval.rs`
+1. Update `eval_grounded()` in `src/backend/eval/mod.rs`
 2. Add pattern match for the function name
 3. Implement the operation logic
-4. Add tests in `src/backend/eval.rs`
+4. Add tests in `src/backend/eval/mod.rs`
 
 **Add a new special form:**
-1. Update `eval_special_form()` in `src/backend/eval.rs`
+1. Update appropriate module in `src/backend/eval/` (control_flow.rs, quoting.rs, etc.)
 2. Add pattern match for the form name
 3. Implement the evaluation semantics
 4. Add tests
 
 **Add a new operator token:**
-1. Update `Lexer` in `src/sexpr.rs` to recognize the token
-2. Update `Parser` to handle prefix/infix positioning
+1. Update Tree-Sitter grammar in `rholang-rs/metta-tree-sitter`
+2. Update parser queries if needed
 3. Map to appropriate function name in `compile()` if needed
 
 **Modify type system:**
-- Type assertions: `src/backend/types.rs` (`Environment` struct)
-- Type inference: `src/backend/eval.rs` (`infer_type()` function)
-- Type checking: `src/backend/eval.rs` (`check_type_match()` function)
+- Type assertions: `src/backend/models/metta_value.rs` (`MettaValue` type)
+- Type inference: `src/backend/eval/types.rs` (`infer_type()` function)
+- Type checking: `src/backend/eval/types.rs` (`check_type_match()` function)
 
 ## Examples
 
@@ -283,15 +286,29 @@ src/
 ├── main.rs                  # CLI and REPL implementation
 ├── lib.rs                   # Public API exports
 ├── config.rs                # Threading configuration
-├── sexpr.rs                 # Lexer and S-expression parser
+├── ir.rs                    # Intermediate representation (SExpr, Position, Span)
+├── tree_sitter_parser.rs    # Tree-Sitter based parser
 ├── backend/                 # Evaluation engine
 │   ├── mod.rs              # Module exports
-│   ├── types.rs            # MettaValue, Environment, Rule
 │   ├── compile.rs          # MeTTa source → MettaValue
-│   └── eval.rs             # Lazy evaluation engine
+│   ├── environment.rs      # Environment and rule management
+│   ├── models/             # Type definitions
+│   │   ├── mod.rs
+│   │   └── metta_value.rs  # MettaValue enum and methods
+│   ├── eval/               # Modular evaluation engine
+│   │   ├── mod.rs          # Core evaluation and pattern matching
+│   │   ├── evaluation.rs   # Main eval loop and rule application
+│   │   ├── bindings.rs     # Variable binding and unification
+│   │   ├── control_flow.rs # if, switch, case special forms
+│   │   ├── errors.rs       # Error handling and propagation
+│   │   ├── list_ops.rs     # List operations (cons, car, cdr, etc.)
+│   │   ├── quoting.rs      # Quote and eval special forms
+│   │   ├── space.rs        # Space operations and match
+│   │   ├── types.rs        # Type inference and checking
+│   │   └── macros.rs       # Helper macros for evaluation
+│   └── mork_convert.rs     # MORK/PathMap conversion
 ├── rholang_integration.rs   # Rholang integration API (sync & async)
-├── pathmap_par_integration.rs  # PathMap Par conversion
-└── ffi.rs                   # C FFI layer
+└── pathmap_par_integration.rs  # PathMap Par conversion
 ```
 
 ## Style Guidelines

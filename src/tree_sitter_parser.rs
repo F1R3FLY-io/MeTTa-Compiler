@@ -6,6 +6,99 @@
 use crate::ir::{Position, SExpr, Span};
 use tree_sitter::{Node, Parser};
 
+/// Structured syntax error with location and type information
+#[derive(Debug, Clone)]
+pub struct SyntaxError {
+    pub kind: SyntaxErrorKind,
+    pub line: usize,
+    pub column: usize,
+    pub text: String,
+}
+
+/// Categorized syntax error kinds for pattern matching
+#[derive(Debug, Clone, PartialEq)]
+pub enum SyntaxErrorKind {
+    /// Unexpected token in input
+    UnexpectedToken,
+    /// Unclosed opening delimiter (e.g., '(', '[', '{')
+    UnclosedDelimiter(char),
+    /// Extra closing delimiter without matching open
+    ExtraClosingDelimiter(char),
+    /// String literal not properly closed
+    UnclosedString,
+    /// Invalid escape sequence in string
+    InvalidEscape(String),
+    /// Unknown node kind from parser
+    UnknownNodeKind(String),
+    /// Parser initialization failed
+    ParserInit(String),
+    /// Generic/fallback error
+    Generic,
+}
+
+impl std::fmt::Display for SyntaxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Syntax error at line {}, column {}: ",
+            self.line, self.column
+        )?;
+        match &self.kind {
+            SyntaxErrorKind::UnexpectedToken => write!(f, "unexpected '{}'", self.text),
+            SyntaxErrorKind::UnclosedDelimiter(c) => write!(f, "unclosed '{}'", c),
+            SyntaxErrorKind::ExtraClosingDelimiter(c) => write!(f, "unexpected closing '{}'", c),
+            SyntaxErrorKind::UnclosedString => write!(f, "unclosed string literal"),
+            SyntaxErrorKind::InvalidEscape(s) => write!(f, "invalid escape sequence '{}'", s),
+            SyntaxErrorKind::UnknownNodeKind(k) => write!(f, "unknown syntax '{}'", k),
+            SyntaxErrorKind::ParserInit(msg) => write!(f, "parser initialization failed: {}", msg),
+            SyntaxErrorKind::Generic => write!(f, "invalid syntax"),
+        }
+    }
+}
+
+impl std::error::Error for SyntaxError {}
+
+/// Count delimiter balance in source (positive = unclosed, negative = extra close)
+fn count_delimiter_balance(source: &str, open: char, close: char) -> i32 {
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for ch in source.chars() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escape_next = true,
+            '"' => in_string = !in_string,
+            c if c == open && !in_string => depth += 1,
+            c if c == close && !in_string => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
+}
+
+/// Check if source has an unclosed string literal
+fn has_unclosed_string(source: &str) -> bool {
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for ch in source.chars() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escape_next = true,
+            '"' => in_string = !in_string,
+            _ => {}
+        }
+    }
+    in_string
+}
+
 /// Parser that uses Tree-Sitter with semantic node type decomposition
 pub struct TreeSitterMettaParser {
     parser: Parser,
@@ -22,20 +115,28 @@ impl TreeSitterMettaParser {
     }
 
     /// Parse MeTTa source code into SExpr AST
-    pub fn parse(&mut self, source: &str) -> Result<Vec<SExpr>, String> {
-        let tree = self
-            .parser
-            .parse(source, None)
-            .ok_or_else(|| "Failed to parse source".to_string())?;
+    pub fn parse(&mut self, source: &str) -> Result<Vec<SExpr>, SyntaxError> {
+        let tree = self.parser.parse(source, None).ok_or_else(|| SyntaxError {
+            kind: SyntaxErrorKind::Generic,
+            line: 1,
+            column: 1,
+            text: "Failed to parse source".into(),
+        })?;
 
         let root = tree.root_node();
 
         // Check for syntax errors in the parse tree
         if root.has_error() {
-            return Err(self.format_syntax_error(&root, source));
+            return Err(self.create_syntax_error(&root, source));
         }
 
         self.convert_source_file(root, source)
+            .map_err(|e| SyntaxError {
+                kind: SyntaxErrorKind::Generic,
+                line: 1,
+                column: 1,
+                text: e,
+            })
     }
 
     /// Convert source_file node (contains multiple expressions)
@@ -209,27 +310,63 @@ impl TreeSitterMettaParser {
         Ok(source[start..end].to_string())
     }
 
-    /// Format a syntax error message from the parse tree
-    fn format_syntax_error(&self, node: &Node, source: &str) -> String {
-        // Find the first ERROR node
+    /// Create a structured syntax error from the parse tree
+    fn create_syntax_error(&self, node: &Node, source: &str) -> SyntaxError {
         let mut cursor = node.walk();
         if self.find_error_node(&mut cursor) {
             let error_node = cursor.node();
             let start = error_node.start_position();
-            let _end = error_node.end_position();
+            let error_text = source[error_node.start_byte()..error_node.end_byte()].to_string();
+            let kind = self.analyze_error_kind(source);
 
-            // Extract the problematic text
-            let error_text = &source[error_node.start_byte()..error_node.end_byte()];
+            SyntaxError {
+                kind,
+                line: start.row + 1,
+                column: start.column + 1,
+                text: error_text,
+            }
+        } else {
+            SyntaxError {
+                kind: SyntaxErrorKind::Generic,
+                line: 1,
+                column: 1,
+                text: String::new(),
+            }
+        }
+    }
 
-            return format!(
-                "Syntax error at line {}, column {}: unexpected '{}'",
-                start.row + 1,
-                start.column + 1,
-                error_text
-            );
+    /// Analyze source to determine the specific error kind
+    fn analyze_error_kind(&self, source: &str) -> SyntaxErrorKind {
+        // Check for unclosed string FIRST - unclosed strings affect delimiter counting
+        if has_unclosed_string(source) {
+            return SyntaxErrorKind::UnclosedString;
         }
 
-        "Syntax error in source code".to_string()
+        // Check parenthesis balance
+        let paren_balance = count_delimiter_balance(source, '(', ')');
+        if paren_balance > 0 {
+            return SyntaxErrorKind::UnclosedDelimiter('(');
+        } else if paren_balance < 0 {
+            return SyntaxErrorKind::ExtraClosingDelimiter(')');
+        }
+
+        // Check bracket balance
+        let bracket_balance = count_delimiter_balance(source, '[', ']');
+        if bracket_balance > 0 {
+            return SyntaxErrorKind::UnclosedDelimiter('[');
+        } else if bracket_balance < 0 {
+            return SyntaxErrorKind::ExtraClosingDelimiter(']');
+        }
+
+        // Check brace balance
+        let brace_balance = count_delimiter_balance(source, '{', '}');
+        if brace_balance > 0 {
+            return SyntaxErrorKind::UnclosedDelimiter('{');
+        } else if brace_balance < 0 {
+            return SyntaxErrorKind::ExtraClosingDelimiter('}');
+        }
+
+        SyntaxErrorKind::UnexpectedToken
     }
 
     /// Find the first ERROR node in the tree
@@ -718,5 +855,228 @@ mod tests {
         // Mixed regular and unicode
         let result = strip_spans_vec(&parser.parse(r#""Hello \u{1F30D}!""#).unwrap());
         assert_eq!(result, vec![SExpr::String("Hello 🌍!".to_string(), None)]);
+    }
+
+    // Tests for structured SyntaxError types
+
+    #[test]
+    fn test_syntax_error_unclosed_paren() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+        let result = parser.parse("(+ 1 2");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error.kind, SyntaxErrorKind::UnclosedDelimiter('(')),
+            "Expected UnclosedDelimiter('('), got {:?}",
+            error.kind
+        );
+    }
+
+    #[test]
+    fn test_syntax_error_extra_close_paren() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+        let result = parser.parse("(+ 1 2))");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error.kind, SyntaxErrorKind::ExtraClosingDelimiter(')')),
+            "Expected ExtraClosingDelimiter(')'), got {:?}",
+            error.kind
+        );
+    }
+
+    #[test]
+    fn test_syntax_error_unclosed_string() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+        let result = parser.parse(r#"(print "hello)"#);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error.kind, SyntaxErrorKind::UnclosedString),
+            "Expected UnclosedString, got {:?}",
+            error.kind
+        );
+    }
+
+    #[test]
+    fn test_syntax_error_unclosed_bracket() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+        let result = parser.parse("[1 2 3");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error.kind, SyntaxErrorKind::UnclosedDelimiter('[')),
+            "Expected UnclosedDelimiter('['), got {:?}",
+            error.kind
+        );
+    }
+
+    #[test]
+    fn test_syntax_error_extra_close_bracket() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+        let result = parser.parse("[1 2 3]]");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error.kind, SyntaxErrorKind::ExtraClosingDelimiter(']')),
+            "Expected ExtraClosingDelimiter(']'), got {:?}",
+            error.kind
+        );
+    }
+
+    #[test]
+    fn test_syntax_error_unclosed_brace() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+        let result = parser.parse("{a b c");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error.kind, SyntaxErrorKind::UnclosedDelimiter('{')),
+            "Expected UnclosedDelimiter('{{'), got {:?}",
+            error.kind
+        );
+    }
+
+    #[test]
+    fn test_syntax_error_extra_close_brace() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+        let result = parser.parse("{a b c}}");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error.kind, SyntaxErrorKind::ExtraClosingDelimiter('}')),
+            "Expected ExtraClosingDelimiter('}}'), got {:?}",
+            error.kind
+        );
+    }
+
+    #[test]
+    fn test_syntax_error_display() {
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnclosedDelimiter('('),
+            line: 1,
+            column: 7,
+            text: String::new(),
+        };
+        let msg = error.to_string();
+        assert!(msg.contains("line 1"));
+        assert!(msg.contains("column 7"));
+        assert!(msg.contains("unclosed '('"));
+    }
+
+    #[test]
+    fn test_syntax_error_kind_variants() {
+        // Test Display impl for all variants
+        let variants = vec![
+            (
+                SyntaxError {
+                    kind: SyntaxErrorKind::UnexpectedToken,
+                    line: 1,
+                    column: 1,
+                    text: "foo".to_string(),
+                },
+                "unexpected 'foo'",
+            ),
+            (
+                SyntaxError {
+                    kind: SyntaxErrorKind::UnclosedDelimiter('('),
+                    line: 1,
+                    column: 1,
+                    text: String::new(),
+                },
+                "unclosed '('",
+            ),
+            (
+                SyntaxError {
+                    kind: SyntaxErrorKind::ExtraClosingDelimiter(')'),
+                    line: 1,
+                    column: 1,
+                    text: String::new(),
+                },
+                "unexpected closing ')'",
+            ),
+            (
+                SyntaxError {
+                    kind: SyntaxErrorKind::UnclosedString,
+                    line: 1,
+                    column: 1,
+                    text: String::new(),
+                },
+                "unclosed string",
+            ),
+            (
+                SyntaxError {
+                    kind: SyntaxErrorKind::InvalidEscape("z".to_string()),
+                    line: 1,
+                    column: 1,
+                    text: String::new(),
+                },
+                "invalid escape sequence 'z'",
+            ),
+            (
+                SyntaxError {
+                    kind: SyntaxErrorKind::ParserInit("failed".to_string()),
+                    line: 0,
+                    column: 0,
+                    text: String::new(),
+                },
+                "parser initialization failed",
+            ),
+            (
+                SyntaxError {
+                    kind: SyntaxErrorKind::Generic,
+                    line: 1,
+                    column: 1,
+                    text: String::new(),
+                },
+                "invalid syntax",
+            ),
+        ];
+
+        for (error, expected_substring) in variants {
+            let msg = error.to_string();
+            assert!(
+                msg.contains(expected_substring),
+                "Error message '{}' should contain '{}'",
+                msg,
+                expected_substring
+            );
+        }
+    }
+
+    #[test]
+    fn test_helper_count_delimiter_balance() {
+        // Balanced
+        assert_eq!(count_delimiter_balance("(+ 1 2)", '(', ')'), 0);
+        assert_eq!(count_delimiter_balance("((a) (b))", '(', ')'), 0);
+
+        // Unclosed
+        assert_eq!(count_delimiter_balance("(+ 1 2", '(', ')'), 1);
+        assert_eq!(count_delimiter_balance("((a)", '(', ')'), 1);
+        assert_eq!(count_delimiter_balance("(((", '(', ')'), 3);
+
+        // Extra closing
+        assert_eq!(count_delimiter_balance("(+ 1 2))", '(', ')'), -1);
+        assert_eq!(count_delimiter_balance(")))", '(', ')'), -3);
+
+        // Inside strings should be ignored
+        assert_eq!(count_delimiter_balance(r#"("(" ")")"#, '(', ')'), 0);
+        assert_eq!(count_delimiter_balance(r#"(print "(((")"#, '(', ')'), 0);
+    }
+
+    #[test]
+    fn test_helper_has_unclosed_string() {
+        // Closed strings
+        assert!(!has_unclosed_string(r#""hello""#));
+        assert!(!has_unclosed_string(r#""hello" "world""#));
+        assert!(!has_unclosed_string(r#"(print "test")"#));
+
+        // Unclosed strings
+        assert!(has_unclosed_string(r#""hello"#));
+        assert!(has_unclosed_string(r#"(print "test)"#));
+
+        // Escaped quotes should be handled
+        assert!(!has_unclosed_string(r#""hello \"world\"""#));
+        assert!(has_unclosed_string(r#""hello \""#));
     }
 }

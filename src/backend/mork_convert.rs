@@ -124,12 +124,6 @@ fn write_metta_value(
             write_symbol(quoted.as_bytes(), space, ez)?;
         }
 
-        MettaValue::Uri(u) => {
-            // MORK uses backticks for URIs
-            let quoted = format!("`{}`", u);
-            write_symbol(quoted.as_bytes(), space, ez)?;
-        }
-
         MettaValue::Nil => {
             // Empty list
             ez.write_arity(0);
@@ -184,6 +178,7 @@ fn write_symbol(bytes: &[u8], space: &Space, ez: &mut ExprZipper) -> Result<(), 
 /// We need to convert this to SmallVec<[(String, MettaValue); 8]> using the original variable names.
 ///
 /// FIXED: Uses mork_expr_to_metta_value() instead of serialize2() to avoid reserved byte panic
+/// Now properly reports conversion errors instead of silently skipping bindings.
 #[allow(unused_variables)]
 pub fn mork_bindings_to_metta(
     mork_bindings: &std::collections::BTreeMap<(u8, u8), ExprEnv>,
@@ -193,11 +188,18 @@ pub fn mork_bindings_to_metta(
     use super::environment::Environment;
 
     let mut bindings = Bindings::new();
+    let mut conversion_errors: Vec<String> = Vec::new();
 
     for (&(old_var, _new_var), expr_env) in mork_bindings {
         // Get the variable name from context
         if (old_var as usize) >= ctx.var_names.len() {
-            continue; // Skip if variable not in our context
+            // Variable index out of bounds - this indicates an internal inconsistency
+            conversion_errors.push(format!(
+                "Variable index {} exceeds known variables (max: {})",
+                old_var,
+                ctx.var_names.len().saturating_sub(1)
+            ));
+            continue;
         }
         let var_name = &ctx.var_names[old_var as usize];
 
@@ -205,9 +207,25 @@ pub fn mork_bindings_to_metta(
         // FIXED: Use mork_expr_to_metta_value() instead of serialize2()
         // This avoids the "reserved byte" panic when bindings contain symbols with reserved bytes
         let expr: Expr = expr_env.subsexpr();
-        if let Ok(value) = Environment::mork_expr_to_metta_value(&expr, space) {
-            bindings.insert(format!("${}", var_name), value);
+        match Environment::mork_expr_to_metta_value(&expr, space) {
+            Ok(value) => {
+                bindings.insert(format!("${}", var_name), value);
+            }
+            Err(e) => {
+                conversion_errors.push(format!(
+                    "Failed to convert binding for ${}: {}",
+                    var_name, e
+                ));
+            }
         }
+    }
+
+    // If there were any conversion errors, return an error with all failures listed
+    if !conversion_errors.is_empty() {
+        return Err(format!(
+            "MORK binding conversion failed:\n  - {}",
+            conversion_errors.join("\n  - ")
+        ));
     }
 
     Ok(bindings)

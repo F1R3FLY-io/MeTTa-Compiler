@@ -9,19 +9,28 @@
 
 use crate::backend::models::{MettaState, MettaValue};
 use crate::ir::MettaExpr;
-use crate::tree_sitter_parser::TreeSitterMettaParser;
+use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind, TreeSitterMettaParser};
 
 /// Compile MeTTa source code into a MettaState ready for evaluation
 /// Returns a compiled state with pending expressions and empty environment
-pub fn compile(src: &str) -> Result<MettaState, String> {
+pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
     // Parse the source into s-expressions using Tree-Sitter
-    let mut parser =
-        TreeSitterMettaParser::new().map_err(|e| format!("Failed to initialize parser: {}", e))?;
+    let mut parser = TreeSitterMettaParser::new().map_err(|e| SyntaxError {
+        kind: SyntaxErrorKind::ParserInit(e),
+        line: 0,
+        column: 0,
+        text: String::new(),
+    })?;
     let sexprs = parser.parse(src)?;
 
     // Convert s-expressions to MettaValue representation using idiomatic TryFrom
     let metta_values: Result<Vec<_>, _> = sexprs.iter().map(MettaValue::try_from).collect();
-    let metta_values = metta_values?;
+    let metta_values = metta_values.map_err(|e| SyntaxError {
+        kind: SyntaxErrorKind::Generic,
+        line: 1,
+        column: 1,
+        text: e,
+    })?;
 
     Ok(MettaState::new_compiled(metta_values))
 }
@@ -390,7 +399,4 @@ mod tests {
             panic!("Expected error");
         }
     }
-
-    // Note: URI literals with backticks are not yet supported by the lexer
-    // They would need to be added to sexpr.rs
 }

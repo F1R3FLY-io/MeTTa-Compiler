@@ -2,6 +2,7 @@ pub mod backend;
 pub mod config;
 pub mod ir;
 pub mod pathmap_par_integration;
+pub mod repl;
 pub mod rholang_integration;
 pub mod tree_sitter_parser;
 
@@ -18,7 +19,7 @@ pub mod tree_sitter_parser;
 /// 1. **Lexical Analysis & S-expression Parsing** (`sexpr` module)
 ///    - Tokenizes input text into structured tokens
 ///    - Parses tokens into S-expressions
-///    - Handles comments: `//`, `/* */`, `;`
+///    - Handles comments: `;` (semicolon line comments)
 ///    - Supports special operators: `!`, `?`, `<-`, etc.
 ///
 /// 2. **Backend Evaluation** (`backend` module)
@@ -87,6 +88,9 @@ pub use pathmap_par_integration::{
 };
 
 pub use config::{configure_eval, get_eval_config, EvalConfig};
+
+// Export commonly used REPL components
+pub use repl::{MettaHelper, PatternHistory, QueryHighlighter, ReplStateMachine, SmartIndenter};
 
 #[cfg(test)]
 mod tests {

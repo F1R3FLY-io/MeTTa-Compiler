@@ -1,19 +1,79 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{EvalResult, MettaValue};
 
-use super::{apply_bindings, eval, pattern_match, EvalOutput};
+use super::{apply_bindings, eval, pattern_match};
+
+/// Generate helpful message for pattern mismatch in let bindings
+fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaValue) -> String {
+    let pattern_arity = match pattern {
+        MettaValue::SExpr(items) => items.len(),
+        _ => 1,
+    };
+    let value_arity = match value {
+        MettaValue::SExpr(items) => items.len(),
+        _ => 1,
+    };
+
+    // Check for arity mismatch
+    if pattern_arity != value_arity {
+        return format!(
+            "Hint: pattern has {} element(s) but value has {}. Adjust pattern to match value structure.",
+            pattern_arity, value_arity
+        );
+    }
+
+    // Check for structure mismatch (different head atoms)
+    if let (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items)) = (pattern, value) {
+        if let (Some(MettaValue::Atom(p_head)), Some(MettaValue::Atom(v_head))) =
+            (p_items.first(), v_items.first())
+        {
+            if p_head != v_head {
+                return format!(
+                    "Hint: pattern head '{}' doesn't match value head '{}'.",
+                    p_head, v_head
+                );
+            }
+        }
+    }
+
+    // Check for literal mismatch inside structures
+    if let (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items)) = (pattern, value) {
+        for (i, (p, v)) in p_items.iter().zip(v_items.iter()).enumerate() {
+            // Skip if pattern is a variable (starts with $, &, or ')
+            if let MettaValue::Atom(name) = p {
+                if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') || name == "_" {
+                    continue;
+                }
+            }
+            // Check for literal mismatch
+            if p != v && !matches!(p, MettaValue::SExpr(_)) {
+                return format!(
+                    "Hint: element at position {} doesn't match - pattern has {:?} but value has {:?}.",
+                    i, p, v
+                );
+            }
+        }
+    }
+
+    // Default hint
+    "Hint: pattern structure doesn't match value. Check that variable names align with value positions.".to_string()
+}
 
 /// Evaluate let binding: (let pattern value body)
 /// Evaluates value, binds it to pattern, and evaluates body with those bindings
 /// Supports both simple variable binding and pattern matching:
 ///   - (let $x 42 body) - simple binding
 ///   - (let ($a $b) (tuple 1 2) body) - destructuring pattern
-pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
     if args.len() < 3 {
+        let got = args.len();
         let err = MettaValue::Error(
-            "let requires 3 arguments: pattern, value, and body".to_string(),
+            format!(
+                "let requires exactly 3 arguments, got {}. Usage: (let pattern value body)",
+                got
+            ),
             Box::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
@@ -37,9 +97,13 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
             let (body_results, _) = eval(instantiated_body, value_env.clone());
             all_results.extend(body_results);
         } else {
-            // Pattern match failed
+            // Pattern match failed - provide helpful suggestion
+            let suggestion = pattern_mismatch_suggestion(pattern, &value);
             let err = MettaValue::Error(
-                format!("let pattern {:?} does not match value {:?}", pattern, value),
+                format!(
+                    "let pattern {:?} does not match value {:?}. {}",
+                    pattern, value, suggestion
+                ),
                 Box::new(MettaValue::SExpr(args.to_vec())),
             );
             all_results.push(err);
@@ -376,8 +440,14 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(msg.contains("let"));
-                assert!(msg.contains("3 arguments"));
+                assert!(msg.contains("let"), "Expected 'let' in: {}", msg);
+                assert!(
+                    msg.contains("3 arguments"),
+                    "Expected '3 arguments' in: {}",
+                    msg
+                );
+                assert!(msg.contains("got 2"), "Expected 'got 2' in: {}", msg);
+                assert!(msg.contains("Usage:"), "Expected 'Usage:' in: {}", msg);
             }
             _ => panic!("Expected error for missing arguments"),
         }
@@ -391,8 +461,13 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(msg.contains("let"));
-                assert!(msg.contains("3 arguments"));
+                assert!(msg.contains("let"), "Expected 'let' in: {}", msg);
+                assert!(
+                    msg.contains("3 arguments"),
+                    "Expected '3 arguments' in: {}",
+                    msg
+                );
+                assert!(msg.contains("got 1"), "Expected 'got 1' in: {}", msg);
             }
             _ => panic!("Expected error for missing arguments"),
         }
@@ -403,8 +478,13 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(msg.contains("let"));
-                assert!(msg.contains("3 arguments"));
+                assert!(msg.contains("let"), "Expected 'let' in: {}", msg);
+                assert!(
+                    msg.contains("3 arguments"),
+                    "Expected '3 arguments' in: {}",
+                    msg
+                );
+                assert!(msg.contains("got 0"), "Expected 'got 0' in: {}", msg);
             }
             _ => panic!("Expected error for missing arguments"),
         }
@@ -469,6 +549,124 @@ mod tests {
                 assert_eq!(msg, "value-error");
             }
             _ => panic!("Expected error to be bound and returned"),
+        }
+    }
+
+    // === Tests for "Did You Mean" pattern mismatch suggestions ===
+
+    #[test]
+    fn test_pattern_mismatch_arity_hint() {
+        let env = Environment::new();
+
+        // (let ($a $b) (tuple 1 2 3) ...) - pattern has 2 elements, value has 3
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("$a".to_string()),
+                MettaValue::Atom("$b".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("tuple".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::Atom("$a".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Hint"),
+                    "Expected 'Hint' in: {}",
+                    msg
+                );
+                assert!(
+                    msg.contains("2 element"),
+                    "Expected arity mismatch hint in: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error with pattern mismatch hint"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_mismatch_head_hint() {
+        let env = Environment::new();
+
+        // (let (foo $x) (bar 42) $x) - head atoms don't match
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("foo".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("bar".to_string()),
+                MettaValue::Long(42),
+            ]),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Hint"),
+                    "Expected 'Hint' in: {}",
+                    msg
+                );
+                assert!(
+                    msg.contains("foo") && msg.contains("bar"),
+                    "Expected head mismatch hint in: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error with pattern mismatch hint"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_mismatch_literal_hint() {
+        let env = Environment::new();
+
+        // (let (pair 42 $x) (pair 99 hello) $x) - literal 42 doesn't match 99
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("pair".to_string()),
+                MettaValue::Long(42),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("pair".to_string()),
+                MettaValue::Long(99),
+                MettaValue::Atom("hello".to_string()),
+            ]),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Hint"),
+                    "Expected 'Hint' in: {}",
+                    msg
+                );
+                // Should mention the position and values that don't match
+                assert!(
+                    msg.contains("position") || msg.contains("doesn't match"),
+                    "Expected position mismatch hint in: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error with pattern mismatch hint"),
         }
     }
 

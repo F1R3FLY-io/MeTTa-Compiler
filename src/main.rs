@@ -179,7 +179,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     }
 
     // Compile to MettaValue
-    let state = compile(input)?;
+    let state = compile(input).map_err(|e| e.to_string())?;
     let mut env = state.environment;
 
     // Evaluate each expression

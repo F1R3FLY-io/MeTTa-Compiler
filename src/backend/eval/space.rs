@@ -1,10 +1,31 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::{MettaValue, Rule};
+use crate::backend::fuzzy_match::FuzzyMatcher;
+use crate::backend::models::{EvalResult, MettaValue, Rule};
+use std::sync::OnceLock;
 
-use super::EvalOutput;
+/// Valid space names for "Did you mean?" suggestions
+const VALID_SPACE_NAMES: &[&str] = &["self"];
+
+/// Get fuzzy matcher for space names (lazily initialized)
+fn space_name_matcher() -> &'static FuzzyMatcher {
+    static MATCHER: OnceLock<FuzzyMatcher> = OnceLock::new();
+    MATCHER.get_or_init(|| FuzzyMatcher::from_terms(VALID_SPACE_NAMES.iter().copied()))
+}
+
+/// Suggest a valid space name if the given name is close to one
+fn suggest_space_name(name: &str) -> Option<String> {
+    // First check for common case errors
+    let lower = name.to_lowercase();
+    if lower == "self" && name != "self" {
+        return Some("Did you mean: self? (space names are case-sensitive)".to_string());
+    }
+
+    // Use fuzzy matcher for other typos (e.g., "slef" -> "self")
+    space_name_matcher().did_you_mean(name, 2, 1)
+}
 
 /// Rule definition: (= lhs rhs) - add to MORK Space and rule cache
-pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_two_args!("=", items, env);
 
     let lhs = items[1].clone();
@@ -23,12 +44,16 @@ pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
 ///
 /// Optimized to use Environment::match_space which performs pattern matching
 /// directly on MORK expressions without unnecessary intermediate allocations
-pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
     if args.len() < 4 {
+        let got = args.len();
         let err = MettaValue::Error(
-            "match requires 4 arguments: &, space-name, pattern, and template".to_string(),
+            format!(
+                "match requires exactly 4 arguments, got {}. Usage: (match & space pattern template)",
+                got
+            ),
             Box::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
@@ -50,13 +75,25 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalOutput
                     (results, env)
                 }
                 _ => {
-                    let err = MettaValue::Error(
-                        format!(
+                    // Try to suggest a valid space name
+                    let name_str = match space_name {
+                        MettaValue::Atom(s) => s.as_str(),
+                        _ => "",
+                    };
+
+                    let suggestion = suggest_space_name(name_str);
+                    let msg = match suggestion {
+                        Some(s) => format!(
+                            "match only supports 'self' as space name, got: {:?}. {}",
+                            space_name, s
+                        ),
+                        None => format!(
                             "match only supports 'self' as space name, got: {:?}",
                             space_name
                         ),
-                        Box::new(MettaValue::SExpr(args.to_vec())),
-                    );
+                    };
+
+                    let err = MettaValue::Error(msg, Box::new(MettaValue::SExpr(args.to_vec())));
                     (vec![err], env)
                 }
             }
@@ -455,8 +492,18 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(msg.contains("match"));
-                assert!(msg.contains("4 arguments"));
+                assert!(msg.contains("match"), "Expected 'match' in: {}", msg);
+                assert!(
+                    msg.contains("4 arguments"),
+                    "Expected '4 arguments' in: {}",
+                    msg
+                );
+                assert!(msg.contains("got 2"), "Expected 'got 2' in: {}", msg);
+                assert!(
+                    msg.contains("Usage:"),
+                    "Expected 'Usage:' in: {}",
+                    msg
+                );
             }
             _ => panic!("Expected error for insufficient arguments"),
         }
@@ -727,5 +774,94 @@ mod tests {
 
         // Verify the rule definition is in the fact database
         assert!(new_env.has_sexpr_fact(&rule_def));
+    }
+
+    // Tests for "Did You Mean" space name suggestions
+
+    #[test]
+    fn test_space_name_case_sensitivity_suggestion() {
+        let env = Environment::new();
+
+        // Test "Self" (capital S) -> should suggest "self"
+        let match_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("match".to_string()),
+            MettaValue::Atom("&".to_string()),
+            MettaValue::Atom("Self".to_string()), // Wrong case
+            MettaValue::Atom("pattern".to_string()),
+            MettaValue::Atom("template".to_string()),
+        ]);
+
+        let (results, _) = eval(match_expr, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Did you mean: self"),
+                    "Expected 'Did you mean: self' in: {}",
+                    msg
+                );
+                assert!(
+                    msg.contains("case-sensitive"),
+                    "Expected 'case-sensitive' in: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error with suggestion"),
+        }
+    }
+
+    #[test]
+    fn test_space_name_typo_suggestion() {
+        let env = Environment::new();
+
+        // Test "slef" (typo) -> should suggest "self"
+        let match_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("match".to_string()),
+            MettaValue::Atom("&".to_string()),
+            MettaValue::Atom("slef".to_string()), // Typo
+            MettaValue::Atom("pattern".to_string()),
+            MettaValue::Atom("template".to_string()),
+        ]);
+
+        let (results, _) = eval(match_expr, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Did you mean: self"),
+                    "Expected 'Did you mean: self' in: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error with suggestion"),
+        }
+    }
+
+    #[test]
+    fn test_space_name_no_suggestion_for_unrelated() {
+        let env = Environment::new();
+
+        // Test "foobar" -> no suggestion (too different from "self")
+        let match_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("match".to_string()),
+            MettaValue::Atom("&".to_string()),
+            MettaValue::Atom("foobar".to_string()), // Completely different
+            MettaValue::Atom("pattern".to_string()),
+            MettaValue::Atom("template".to_string()),
+        ]);
+
+        let (results, _) = eval(match_expr, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                // Should NOT contain "Did you mean" for completely unrelated names
+                assert!(
+                    !msg.contains("Did you mean"),
+                    "Should not have suggestion for unrelated name: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected error without suggestion"),
+        }
     }
 }

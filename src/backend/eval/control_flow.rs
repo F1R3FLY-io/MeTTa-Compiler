@@ -1,16 +1,20 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{EvalResult, MettaValue};
 
-use super::{apply_bindings, eval, pattern_match, EvalOutput, EvalResult};
+use super::{apply_bindings, eval, pattern_match};
 
 /// Evaluate if control flow: (if condition then-branch else-branch)
 /// Only evaluates the chosen branch (lazy evaluation)
-pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
     if args.len() < 3 {
+        let got = args.len();
         let err = MettaValue::Error(
-            "if requires 3 arguments: condition, then-branch, else-branch".to_string(),
+            format!(
+                "if requires exactly 3 arguments, got {}. Usage: (if condition then-branch else-branch)",
+                got
+            ),
             Box::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
@@ -52,7 +56,7 @@ pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
 
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
-pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_two_args!("case", items, env);
 
     let atom = items[1].clone();
@@ -86,14 +90,14 @@ pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalOutput 
 
 /// Difference between `switch` and `case` is a way how they interpret `Empty` result.
 /// case interprets first argument inside itself and then manually checks whether result is empty.
-pub(super) fn eval_switch(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_switch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_two_args!("switch", items, env);
     let atom = items[1].clone();
     let cases = items[2].clone();
     eval_switch_minimal(atom, cases, env)
 }
 
-pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_two_args!("switch-minimal", items, env);
     let atom = items[1].clone();
     let cases = items[2].clone();
@@ -102,7 +106,7 @@ pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environme
 
 /// This function is being called inside switch function to test one of the cases and it
 /// calls switch once again if current condition is not met
-pub(super) fn eval_switch_internal_handler(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_switch_internal_handler(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_two_args!("switch-internal", items, env);
     let atom = items[1].clone();
     let cases = items[2].clone();
@@ -153,7 +157,11 @@ fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environme
         if let MettaValue::SExpr(case_items) = first_case {
             if case_items.len() != 2 {
                 let err = MettaValue::Error(
-                    "switch case should be a pattern-template pair".to_string(),
+                    format!(
+                        "switch case should be a pattern-template pair with exactly 2 elements, got {}. \
+Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
+                        case_items.len()
+                    ),
                     Box::new(MettaValue::SExpr(case_items)),
                 );
                 return (vec![err], env);

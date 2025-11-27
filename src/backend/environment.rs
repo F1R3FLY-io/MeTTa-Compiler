@@ -289,12 +289,6 @@ impl Environment {
                     {
                         // String literal - strip quotes
                         MettaValue::String(symbol_str[1..symbol_str.len() - 1].to_string())
-                    } else if symbol_str.starts_with('`')
-                        && symbol_str.ends_with('`')
-                        && symbol_str.len() >= 2
-                    {
-                        // URI literal - strip backticks
-                        MettaValue::Uri(symbol_str[1..symbol_str.len() - 1].to_string())
                     } else {
                         MettaValue::Atom(symbol_str)
                     }
@@ -606,11 +600,11 @@ impl Environment {
         for rule in self.iter_rules() {
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
-                let mut index = self.rule_index.write().unwrap();
-                index.entry((head.clone(), arity)).or_default().push(rule);
-
+                let head_owned = head.to_owned();
                 // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-                self.fuzzy_matcher.insert(&head);
+                self.fuzzy_matcher.insert(&head_owned);
+                let mut index = self.rule_index.write().unwrap();
+                index.entry((head_owned, arity)).or_default().push(rule);
             } else {
                 // Rules without head symbol (wildcards, variables) go to wildcard list
                 let mut wildcards = self.wildcard_rules.write().unwrap();
@@ -694,11 +688,11 @@ impl Environment {
         // to avoid unnecessary clones. The rule is already in MORK Space.
         if let Some(head) = rule.lhs.get_head_symbol() {
             let arity = rule.lhs.get_arity();
-            let mut index = self.rule_index.write().unwrap();
-            index.entry((head.clone(), arity)).or_default().push(rule); // Move instead of clone
-
+            let head_owned = head.to_owned();
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-            self.fuzzy_matcher.insert(&head);
+            self.fuzzy_matcher.insert(&head_owned);
+            let mut index = self.rule_index.write().unwrap();
+            index.entry((head_owned, arity)).or_default().push(rule); // Move instead of clone
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
             let mut wildcards = self.wildcard_rules.write().unwrap();
@@ -749,13 +743,13 @@ impl Environment {
             // Prepare rule index updates
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
+                let head_owned = head.to_owned();
+                // Track symbol for fuzzy matching
+                self.fuzzy_matcher.insert(&head_owned);
                 rule_index_updates
-                    .entry((head.clone(), arity))
+                    .entry((head_owned, arity))
                     .or_default()
                     .push(rule);
-
-                // Track symbol for fuzzy matching
-                self.fuzzy_matcher.insert(&head);
             } else {
                 wildcard_updates.push(rule);
             }
@@ -1009,7 +1003,7 @@ impl Environment {
             MettaValue::SExpr(items) => items.iter().any(Self::contains_variables),
             MettaValue::Error(_, details) => Self::contains_variables(details),
             MettaValue::Type(t) => Self::contains_variables(t),
-            _ => false, // Ground types: Bool, Long, Float, String, Uri, Nil
+            _ => false, // Ground types: Bool, Long, Float, String, Nil
         }
     }
 
@@ -1185,7 +1179,7 @@ impl Environment {
 
         // Parse to get MORK bytes, then remove
         // We need to parse it to get the actual bytes used by PathMap
-        if let Ok(_) = space.load_all_sexpr_impl(mork_bytes, false) {
+        if space.load_all_sexpr_impl(mork_bytes, false).is_ok() {
             // The parsed bytes are now in the temporary space
             // We need to extract them and remove from our space
             // For now, use the simpler approach: rebuild space without this fact
@@ -1299,30 +1293,27 @@ impl Environment {
     /// Returns Vec<Rule> for O(1) lookup instead of O(n) iteration
     /// Also includes wildcard rules that must be checked against all queries
     pub fn get_matching_rules(&self, head: &str, arity: usize) -> Vec<Rule> {
-        // OPTIMIZATION: Preallocate capacity to avoid reallocation
-        // Calculate exact size needed for both indexed rules and wildcards
-        let (indexed_len, wildcard_len) = {
-            let index = self.rule_index.read().unwrap();
-            let wildcards = self.wildcard_rules.read().unwrap();
-            let indexed = index.get(&(head.to_string(), arity)).map_or(0, |r| r.len());
-            (indexed, wildcards.len())
-        };
+        // OPTIMIZATION: Single allocation for key to avoid double allocation
+        let key = (head.to_owned(), arity);
 
+        // Get indexed rules and wildcards in single lock scope where possible
+        let index = self.rule_index.read().unwrap();
+        let wildcards = self.wildcard_rules.read().unwrap();
+
+        let indexed_rules = index.get(&key);
+        let indexed_len = indexed_rules.map_or(0, |r| r.len());
+        let wildcard_len = wildcards.len();
+
+        // OPTIMIZATION: Preallocate capacity to avoid reallocation
         let mut matching_rules = Vec::with_capacity(indexed_len + wildcard_len);
 
         // Get indexed rules with matching head symbol and arity
-        {
-            let index = self.rule_index.read().unwrap();
-            if let Some(rules) = index.get(&(head.to_string(), arity)) {
-                matching_rules.extend(rules.clone());
-            }
+        if let Some(rules) = indexed_rules {
+            matching_rules.extend(rules.iter().cloned());
         }
 
         // Also include wildcard rules (must always be checked)
-        {
-            let wildcards = self.wildcard_rules.read().unwrap();
-            matching_rules.extend(wildcards.clone());
-        }
+        matching_rules.extend(wildcards.iter().cloned());
 
         matching_rules
     }

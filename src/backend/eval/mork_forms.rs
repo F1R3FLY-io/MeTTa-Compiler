@@ -6,10 +6,12 @@
 //! - lookup: Conditional fact lookup with success/failure branches
 //! - rulify: Meta-programming for runtime rule generation
 
+use std::sync::Arc;
+
 use crate::backend::environment::Environment;
 use crate::backend::models::MettaValue;
 
-use super::{apply_bindings, eval_with_depth, pattern_match, EvalResult};
+use super::{eval, EvalResult};
 
 /// Evaluate exec special form: (exec <priority> <antecedent> <consequent>)
 ///
@@ -33,7 +35,7 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     if args.len() < 3 {
         let err = MettaValue::Error(
             "exec requires 3 arguments: priority, antecedent, and consequent".to_string(),
-            Box::new(MettaValue::SExpr(args.to_vec())),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
     }
@@ -48,7 +50,7 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, env: Environment) -> EvalResult 
         _ => {
             let err = MettaValue::Error(
                 "exec antecedent must be a conjunction (,)".to_string(),
-                Box::new(antecedent.clone()),
+                Arc::new(antecedent.clone()),
             );
             return (vec![err], env);
         }
@@ -86,7 +88,7 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, env: Environment) -> EvalResult 
             _ => {
                 let err = MettaValue::Error(
                     "exec consequent must be a conjunction or operation (O ...)".to_string(),
-                    Box::new(consequent.clone()),
+                    Arc::new(consequent.clone()),
                 );
                 all_results.push(err);
             }
@@ -106,7 +108,7 @@ fn eval_conjunction_for_exec(goals: Vec<MettaValue>, env: Environment) -> EvalRe
 
     // Evaluate the conjunction directly
     let conjunction = MettaValue::Conjunction(goals);
-    eval_with_depth(conjunction, env, 0)
+    eval(conjunction, env)
 }
 
 /// Check if an S-expression is an operation (starts with "O")
@@ -163,7 +165,7 @@ pub(super) fn eval_coalg(items: Vec<MettaValue>, env: Environment) -> EvalResult
     if args.len() < 2 {
         let err = MettaValue::Error(
             "coalg requires 2 arguments: pattern and templates".to_string(),
-            Box::new(MettaValue::SExpr(args.to_vec())),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
     }
@@ -177,7 +179,7 @@ pub(super) fn eval_coalg(items: Vec<MettaValue>, env: Environment) -> EvalResult
         _ => {
             let err = MettaValue::Error(
                 "coalg templates must be a conjunction (,)".to_string(),
-                Box::new(templates.clone()),
+                Arc::new(templates.clone()),
             );
             return (vec![err], env);
         }
@@ -219,7 +221,7 @@ pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResul
     if args.len() < 3 {
         let err = MettaValue::Error(
             "lookup requires 3 arguments: pattern, success-goals, and failure-goals".to_string(),
-            Box::new(MettaValue::SExpr(args.to_vec())),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
     }
@@ -234,7 +236,7 @@ pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResul
         _ => {
             let err = MettaValue::Error(
                 "lookup success branch must be a conjunction (,)".to_string(),
-                Box::new(success_goals.clone()),
+                Arc::new(success_goals.clone()),
             );
             return (vec![err], env);
         }
@@ -245,7 +247,7 @@ pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResul
         _ => {
             let err = MettaValue::Error(
                 "lookup failure branch must be a conjunction (,)".to_string(),
-                Box::new(failure_goals.clone()),
+                Arc::new(failure_goals.clone()),
             );
             return (vec![err], env);
         }
@@ -260,17 +262,13 @@ pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResul
     if pattern_found {
         // Evaluate success branch
         match success_goals {
-            MettaValue::Conjunction(goals) => {
-                eval_conjunction_for_exec(goals.clone(), env)
-            }
+            MettaValue::Conjunction(goals) => eval_conjunction_for_exec(goals.clone(), env),
             _ => unreachable!(), // Already checked above
         }
     } else {
         // Evaluate failure branch
         match failure_goals {
-            MettaValue::Conjunction(goals) => {
-                eval_conjunction_for_exec(goals.clone(), env)
-            }
+            MettaValue::Conjunction(goals) => eval_conjunction_for_exec(goals.clone(), env),
             _ => unreachable!(), // Already checked above
         }
     }
@@ -293,7 +291,7 @@ pub(super) fn eval_rulify(items: Vec<MettaValue>, env: Environment) -> EvalResul
         let err = MettaValue::Error(
             "rulify requires 5 arguments: name, pattern, templates, antecedent, consequent"
                 .to_string(),
-            Box::new(MettaValue::SExpr(args.to_vec())),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
     }
@@ -310,7 +308,7 @@ pub(super) fn eval_rulify(items: Vec<MettaValue>, env: Environment) -> EvalResul
         _ => {
             let err = MettaValue::Error(
                 "rulify pattern must be a unary conjunction (, $p0)".to_string(),
-                Box::new(pattern_conj.clone()),
+                Arc::new(pattern_conj.clone()),
             );
             return (vec![err], env);
         }
@@ -322,7 +320,7 @@ pub(super) fn eval_rulify(items: Vec<MettaValue>, env: Environment) -> EvalResul
         _ => {
             let err = MettaValue::Error(
                 "rulify templates must be a conjunction (, $t0 ...)".to_string(),
-                Box::new(templates_conj.clone()),
+                Arc::new(templates_conj.clone()),
             );
             return (vec![err], env);
         }
@@ -351,19 +349,22 @@ mod tests {
         let env = Environment::new();
 
         // (exec P0 (,) (, 42))
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("exec".to_string()),
-            MettaValue::Atom("P0".to_string()),
-            MettaValue::Conjunction(vec![]), // Empty antecedent - always succeeds
-            MettaValue::Conjunction(vec![MettaValue::Long(42)]),
-        ]);
+        // let value = MettaValue::SExpr(vec![
+        //     MettaValue::Atom("exec".to_string()),
+        //     MettaValue::Atom("P0".to_string()),
+        //     MettaValue::Conjunction(vec![]), // Empty antecedent - always succeeds
+        //     MettaValue::Conjunction(vec![MettaValue::Long(42)]),
+        // ]);
 
-        let (results, _) = eval_exec(vec![
-            MettaValue::Atom("exec".to_string()),
-            MettaValue::Atom("P0".to_string()),
-            MettaValue::Conjunction(vec![]),
-            MettaValue::Conjunction(vec![MettaValue::Long(42)]),
-        ], env);
+        let (results, _) = eval_exec(
+            vec![
+                MettaValue::Atom("exec".to_string()),
+                MettaValue::Atom("P0".to_string()),
+                MettaValue::Conjunction(vec![]),
+                MettaValue::Conjunction(vec![MettaValue::Long(42)]),
+            ],
+            env,
+        );
 
         assert!(!results.is_empty());
         // Empty antecedent succeeds, so consequent should be evaluated
@@ -374,16 +375,19 @@ mod tests {
         let env = Environment::new();
 
         // (exec P1 (,) (, (+ 1 2)))
-        let value = eval_exec(vec![
-            MettaValue::Atom("exec".to_string()),
-            MettaValue::Atom("P1".to_string()),
-            MettaValue::Conjunction(vec![]),
-            MettaValue::Conjunction(vec![MettaValue::SExpr(vec![
-                MettaValue::Atom("+".to_string()),
-                MettaValue::Long(1),
-                MettaValue::Long(2),
-            ])]),
-        ], env);
+        let value = eval_exec(
+            vec![
+                MettaValue::Atom("exec".to_string()),
+                MettaValue::Atom("P1".to_string()),
+                MettaValue::Conjunction(vec![]),
+                MettaValue::Conjunction(vec![MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Long(1),
+                    MettaValue::Long(2),
+                ])]),
+            ],
+            env,
+        );
 
         assert!(!value.0.is_empty());
     }
@@ -393,18 +397,21 @@ mod tests {
         let env = Environment::new();
 
         // (coalg (tree $t) (, (ctx $t nil)))
-        let value = eval_coalg(vec![
-            MettaValue::Atom("coalg".to_string()),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("tree".to_string()),
-                MettaValue::Atom("$t".to_string()),
-            ]),
-            MettaValue::Conjunction(vec![MettaValue::SExpr(vec![
-                MettaValue::Atom("ctx".to_string()),
-                MettaValue::Atom("$t".to_string()),
-                MettaValue::Atom("nil".to_string()),
-            ])]),
-        ], env);
+        let value = eval_coalg(
+            vec![
+                MettaValue::Atom("coalg".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("tree".to_string()),
+                    MettaValue::Atom("$t".to_string()),
+                ]),
+                MettaValue::Conjunction(vec![MettaValue::SExpr(vec![
+                    MettaValue::Atom("ctx".to_string()),
+                    MettaValue::Atom("$t".to_string()),
+                    MettaValue::Atom("nil".to_string()),
+                ])]),
+            ],
+            env,
+        );
 
         assert!(!value.0.is_empty());
         // Should return the coalg structure
@@ -415,12 +422,15 @@ mod tests {
         let env = Environment::new();
 
         // (lookup foo (, T) (, F))
-        let value = eval_lookup(vec![
-            MettaValue::Atom("lookup".to_string()),
-            MettaValue::Atom("foo".to_string()), // Not a variable, so "found"
-            MettaValue::Conjunction(vec![MettaValue::Atom("T".to_string())]),
-            MettaValue::Conjunction(vec![MettaValue::Atom("F".to_string())]),
-        ], env);
+        let value = eval_lookup(
+            vec![
+                MettaValue::Atom("lookup".to_string()),
+                MettaValue::Atom("foo".to_string()), // Not a variable, so "found"
+                MettaValue::Conjunction(vec![MettaValue::Atom("T".to_string())]),
+                MettaValue::Conjunction(vec![MettaValue::Atom("F".to_string())]),
+            ],
+            env,
+        );
 
         assert!(!value.0.is_empty());
         // Should execute success branch
@@ -431,12 +441,15 @@ mod tests {
         let env = Environment::new();
 
         // (lookup $x (, T) (, F))
-        let value = eval_lookup(vec![
-            MettaValue::Atom("lookup".to_string()),
-            MettaValue::Atom("$x".to_string()), // Variable, so "not found"
-            MettaValue::Conjunction(vec![MettaValue::Atom("T".to_string())]),
-            MettaValue::Conjunction(vec![MettaValue::Atom("F".to_string())]),
-        ], env);
+        let value = eval_lookup(
+            vec![
+                MettaValue::Atom("lookup".to_string()),
+                MettaValue::Atom("$x".to_string()), // Variable, so "not found"
+                MettaValue::Conjunction(vec![MettaValue::Atom("T".to_string())]),
+                MettaValue::Conjunction(vec![MettaValue::Atom("F".to_string())]),
+            ],
+            env,
+        );
 
         assert!(!value.0.is_empty());
         // Should execute failure branch

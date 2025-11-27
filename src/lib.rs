@@ -19,7 +19,7 @@ pub mod tree_sitter_parser;
 /// 1. **Lexical Analysis & S-expression Parsing** (`sexpr` module)
 ///    - Tokenizes input text into structured tokens
 ///    - Parses tokens into S-expressions
-///    - Handles comments: `//`, `/* */`, `;`
+///    - Handles comments: `;` (semicolon line comments)
 ///    - Supports special operators: `!`, `?`, `<-`, etc.
 ///
 /// 2. **Backend Evaluation** (`backend` module)

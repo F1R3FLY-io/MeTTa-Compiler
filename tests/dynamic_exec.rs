@@ -51,7 +51,8 @@ fn test_exec_in_consequent_not_executed() {
 
     // Create a rule that generates an exec in its consequent
     // (exec (0 0) (, (trigger)) (, (exec (1 0) (, (a $x)) (, (b $x)))))
-    let meta_rule = compile("(exec (0 0) (, (trigger)) (, (exec (1 0) (, (a $x)) (, (b $x)))))").unwrap();
+    let meta_rule =
+        compile("(exec (0 0) (, (trigger)) (, (exec (1 0) (, (a $x)) (, (b $x)))))").unwrap();
     env.add_to_space(&meta_rule.source[0]);
 
     // Add trigger fact
@@ -59,17 +60,16 @@ fn test_exec_in_consequent_not_executed() {
 
     // Evaluate the meta-rule (should NOT immediately execute the generated exec)
     let rule = ExecRule::from_sexpr(&meta_rule.source[0]).unwrap();
-    env = mettatron::backend::eval::fixed_point::eval_to_fixed_point(
-        vec![rule],
-        env,
-        10
-    ).env;
+    env = mettatron::backend::eval::fixed_point::eval_to_fixed_point(vec![rule], env, 10).env;
 
     // The generated exec should be in space as a fact
     let query = compile("(match &self (exec (1 0) $a $c) (exec (1 0) $a $c))").unwrap();
     let (results, _) = eval(query.source[0].clone(), env);
 
-    assert!(!results.is_empty(), "Generated exec should be stored as fact");
+    assert!(
+        !results.is_empty(),
+        "Generated exec should be stored as fact"
+    );
 }
 
 #[test]
@@ -100,12 +100,17 @@ fn test_simple_meta_programming() {
     // Debug: Check if (level Z) is in space
     let level_query = compile("(match &self (level Z) (level Z))").unwrap();
     let (level_matches, _) = eval(level_query.source[0].clone(), env.clone());
-    println!("(level Z) facts before fixed-point: {}", level_matches.len());
+    println!(
+        "(level Z) facts before fixed-point: {}",
+        level_matches.len()
+    );
 
     // Run to fixed point
     let (final_env, result) = eval_env_to_fixed_point(env, 10);
-    println!("Fixed-point result: iterations={}, converged={}, facts_added={}",
-        result.iterations, result.converged, result.facts_added);
+    println!(
+        "Fixed-point result: iterations={}, converged={}, facts_added={}",
+        result.iterations, result.converged, result.facts_added
+    );
 
     // Debug: Check all facts after fixed-point
     let after_all = compile("(match &self $x $x)").unwrap();
@@ -126,11 +131,14 @@ fn test_peano_successor_generation() {
     let mut env = Environment::new();
 
     // Rule that matches (level Z) and generates (level (S Z))
-    let rule = compile("
+    let rule = compile(
+        "
         (exec (0 0)
             (, (level Z))
             (, (level (S Z))))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
 
     env.add_to_space(&rule.source[0]);
     env.add_to_space(&compile("(level Z)").unwrap().source[0]);
@@ -152,11 +160,14 @@ fn test_generation_chain() {
 
     // Rule that generates next generation
     // Simulates ancestor.mm2 pattern without full complexity
-    let rule = compile("
+    let rule = compile(
+        "
         (exec (0 0)
             (, (gen Z $c $p))
             (, (gen (S Z) $c $gp) (parent $p $gp)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
 
     // Add initial facts
     env.add_to_space(&rule.source[0]);
@@ -188,18 +199,24 @@ fn test_ancestor_mm2_pattern_simplified() {
     let mut env = Environment::new();
 
     // Initial exec rule for generation tracking
-    let base_rule = compile("
+    let base_rule = compile(
+        "
         (exec (1 Z)
             (, (poi $c) (parent $c $p))
             (, (gen Z $c $p)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
 
     // Meta-rule that generates successor rules (simplified ancestor.mm2 lines 33-36)
-    let meta_rule = compile("
+    let meta_rule = compile(
+        "
         (exec (0 0)
             (, (exec (1 Z) $a $c) (gen Z $child $parent) (parent $parent $gp))
             (, (exec (1 (S Z)) $a $c) (gen (S Z) $child $gp)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
 
     // Add rules
     env.add_to_space(&base_rule.source[0]);
@@ -231,11 +248,14 @@ fn test_fixed_point_convergence() {
     let mut env = Environment::new();
 
     // Rule that only fires once (no infinite generation)
-    let rule = compile("
+    let rule = compile(
+        "
         (exec (0 0)
             (, (start))
             (, (done)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
 
     env.add_to_space(&rule.source[0]);
     env.add_to_space(&compile("(start)").unwrap().source[0]);
@@ -254,11 +274,14 @@ fn test_iteration_limit_safety() {
 
     // Rule that could generate infinite facts (if implemented poorly)
     // Our implementation should handle this gracefully
-    let rule = compile("
+    let rule = compile(
+        "
         (exec (0 0)
             (, (infinite))
             (, (more)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
 
     env.add_to_space(&rule.source[0]);
     env.add_to_space(&compile("(infinite)").unwrap().source[0]);
@@ -294,6 +317,9 @@ fn test_priority_ordering_with_dynamic_exec() {
     let (results_high, _) = eval(query_high.source[0].clone(), final_env);
 
     assert!(!results_low.is_empty(), "Low priority rule should execute");
-    assert!(!results_high.is_empty(), "High priority rule should execute");
+    assert!(
+        !results_high.is_empty(),
+        "High priority rule should execute"
+    );
     assert!(result.converged, "Should converge");
 }

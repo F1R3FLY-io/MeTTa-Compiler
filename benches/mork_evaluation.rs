@@ -23,9 +23,8 @@ fn bench_simple_derivation(c: &mut Criterion) {
                     }
 
                     // Add derivation rule: parent → child
-                    let rule = compile(
-                        "(exec (0 0) (, (parent $p $c)) (, (child $c $p)))"
-                    ).unwrap();
+                    let rule =
+                        compile("(exec (0 0) (, (parent $p $c)) (, (child $c $p)))").unwrap();
                     env.add_to_space(&rule.source[0]);
 
                     // Run to fixed point
@@ -45,48 +44,43 @@ fn bench_multi_generation(c: &mut Criterion) {
     let mut group = c.benchmark_group("mork_multi_generation");
 
     for depth in [3, 5, 10].iter() {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(depth),
-            depth,
-            |b, &d| {
-                b.iter(|| {
-                    let mut env = Environment::new();
+        group.bench_with_input(BenchmarkId::from_parameter(depth), depth, |b, &d| {
+            b.iter(|| {
+                let mut env = Environment::new();
 
-                    // Create linear family tree
-                    for i in 0..d {
-                        let fact = format!("(parent person{} person{})", i, i + 1);
-                        env.add_to_space(&compile(&fact).unwrap().source[0]);
-                    }
+                // Create linear family tree
+                for i in 0..d {
+                    let fact = format!("(parent person{} person{})", i, i + 1);
+                    env.add_to_space(&compile(&fact).unwrap().source[0]);
+                }
 
-                    // Point of interest (bottom of tree)
-                    let poi_fact = format!("(poi person{})", d);
-                    env.add_to_space(&compile(&poi_fact).unwrap().source[0]);
+                // Point of interest (bottom of tree)
+                let poi_fact = format!("(poi person{})", d);
+                env.add_to_space(&compile(&poi_fact).unwrap().source[0]);
 
-                    // Rule 1: parent → child
-                    let rule1 = compile(
-                        "(exec (0 0) (, (parent $p $c)) (, (child $c $p)))"
-                    ).unwrap();
-                    env.add_to_space(&rule1.source[0]);
+                // Rule 1: parent → child
+                let rule1 = compile("(exec (0 0) (, (parent $p $c)) (, (child $c $p)))").unwrap();
+                env.add_to_space(&rule1.source[0]);
 
-                    // Rule 2: poi + child → generation Z
-                    let rule2 = compile(
-                        "(exec (0 1) (, (poi $c) (child $c $p)) (, (generation Z $c $p)))"
-                    ).unwrap();
-                    env.add_to_space(&rule2.source[0]);
+                // Rule 2: poi + child → generation Z
+                let rule2 =
+                    compile("(exec (0 1) (, (poi $c) (child $c $p)) (, (generation Z $c $p)))")
+                        .unwrap();
+                env.add_to_space(&rule2.source[0]);
 
-                    // Rule 3: Meta-rule for generation tracking
-                    let rule3 = compile(
-                        "(exec (1 Z) (, (generation Z $c $p) (child $p $gp))
-                                    (, (generation (S Z) $c $gp)))"
-                    ).unwrap();
-                    env.add_to_space(&rule3.source[0]);
+                // Rule 3: Meta-rule for generation tracking
+                let rule3 = compile(
+                    "(exec (1 Z) (, (generation Z $c $p) (child $p $gp))
+                                    (, (generation (S Z) $c $gp)))",
+                )
+                .unwrap();
+                env.add_to_space(&rule3.source[0]);
 
-                    // Run to fixed point
-                    let (_, result) = eval_env_to_fixed_point(env, 100);
-                    black_box(result)
-                });
-            },
-        );
+                // Run to fixed point
+                let (_, result) = eval_env_to_fixed_point(env, 100);
+                black_box(result)
+            });
+        });
     }
 
     group.finish();
@@ -146,14 +140,11 @@ fn bench_full_ancestor_mm2(c: &mut Criterion) {
             env.add_to_space(&compile("(poi Vic)").unwrap().source[0]);
 
             // All 4 exec rules from ancestor.mm2
-            let rule1 = compile(
-                "(exec (0 0) (, (parent $p $c)) (, (child $c $p)))"
-            ).unwrap();
+            let rule1 = compile("(exec (0 0) (, (parent $p $c)) (, (child $c $p)))").unwrap();
             env.add_to_space(&rule1.source[0]);
 
-            let rule2 = compile(
-                "(exec (0 1) (, (poi $c) (child $c $p)) (, (generation Z $c $p)))"
-            ).unwrap();
+            let rule2 = compile("(exec (0 1) (, (poi $c) (child $c $p)) (, (generation Z $c $p)))")
+                .unwrap();
             env.add_to_space(&rule2.source[0]);
 
             let rule3 = compile(
@@ -161,13 +152,13 @@ fn bench_full_ancestor_mm2(c: &mut Criterion) {
                                (generation $l $c $p)
                                (child $p $gp))
                             (, (exec (1 (S $l)) $ps $ts)
-                               (generation (S $l) $c $gp)))"
-            ).unwrap();
+                               (generation (S $l) $c $gp)))",
+            )
+            .unwrap();
             env.add_to_space(&rule3.source[0]);
 
-            let rule4 = compile(
-                "(exec (2 0) (, (generation $_ $p $a)) (, (ancestor $p $a)))"
-            ).unwrap();
+            let rule4 =
+                compile("(exec (2 0) (, (generation $_ $p $a)) (, (ancestor $p $a)))").unwrap();
             env.add_to_space(&rule4.source[0]);
 
             // Run to fixed point
@@ -349,40 +340,33 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     let mut group = c.benchmark_group("mork_pattern_complexity");
 
     for nesting in [1, 2, 3, 4].iter() {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(nesting),
-            nesting,
-            |b, &n| {
-                b.iter(|| {
-                    let mut env = Environment::new();
+        group.bench_with_input(BenchmarkId::from_parameter(nesting), nesting, |b, &n| {
+            b.iter(|| {
+                let mut env = Environment::new();
 
-                    // Create nested structure
-                    let mut nested = String::from("value");
-                    for _ in 0..n {
-                        nested = format!("(nested {})", nested);
-                    }
+                // Create nested structure
+                let mut nested = String::from("value");
+                for _ in 0..n {
+                    nested = format!("(nested {})", nested);
+                }
 
-                    // Add fact
-                    env.add_to_space(&compile(&nested).unwrap().source[0]);
+                // Add fact
+                env.add_to_space(&compile(&nested).unwrap().source[0]);
 
-                    // Create pattern that matches
-                    let mut pattern = String::from("$v");
-                    for _ in 0..n {
-                        pattern = format!("(nested {})", pattern);
-                    }
+                // Create pattern that matches
+                let mut pattern = String::from("$v");
+                for _ in 0..n {
+                    pattern = format!("(nested {})", pattern);
+                }
 
-                    let rule = format!(
-                        "(exec (0 0) (, {}) (, (matched $v)))",
-                        pattern
-                    );
-                    env.add_to_space(&compile(&rule).unwrap().source[0]);
+                let rule = format!("(exec (0 0) (, {}) (, (matched $v)))", pattern);
+                env.add_to_space(&compile(&rule).unwrap().source[0]);
 
-                    // Run to fixed point
-                    let (_, result) = eval_env_to_fixed_point(env, 10);
-                    black_box(result)
-                });
-            },
-        );
+                // Run to fixed point
+                let (_, result) = eval_env_to_fixed_point(env, 10);
+                black_box(result)
+            });
+        });
     }
 
     group.finish();

@@ -1,17 +1,22 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{EvalResult, MettaValue};
+use std::sync::Arc;
 
-use super::{apply_bindings, eval, pattern_match, EvalOutput, EvalResult};
+use super::{apply_bindings, eval, pattern_match};
 
 /// Evaluate if control flow: (if condition then-branch else-branch)
 /// Only evaluates the chosen branch (lazy evaluation)
-pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
     if args.len() < 3 {
+        let got = args.len();
         let err = MettaValue::Error(
-            "if requires 3 arguments: condition, then-branch, else-branch".to_string(),
-            Box::new(MettaValue::SExpr(args.to_vec())),
+            format!(
+                "if requires exactly 3 arguments, got {}. Usage: (if condition then-branch else-branch)",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
     }
@@ -52,8 +57,14 @@ pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
 
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
-pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_two_args!("case", items, env);
+pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!(
+        "case",
+        items,
+        2,
+        env,
+        "(case expr ((pattern1 result1) ...))"
+    );
 
     let atom = items[1].clone();
     let cases = items[2].clone();
@@ -86,15 +97,27 @@ pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalOutput 
 
 /// Difference between `switch` and `case` is a way how they interpret `Empty` result.
 /// case interprets first argument inside itself and then manually checks whether result is empty.
-pub(super) fn eval_switch(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_two_args!("switch", items, env);
+pub(super) fn eval_switch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!(
+        "switch",
+        items,
+        2,
+        env,
+        "(switch expr ((pattern1 result1) ...))"
+    );
     let atom = items[1].clone();
     let cases = items[2].clone();
     eval_switch_minimal(atom, cases, env)
 }
 
-pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_two_args!("switch-minimal", items, env);
+pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!(
+        "switch-minimal",
+        items,
+        2,
+        env,
+        "(switch-minimal expr cases)"
+    );
     let atom = items[1].clone();
     let cases = items[2].clone();
     eval_switch_minimal(atom, cases, env)
@@ -102,8 +125,14 @@ pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environme
 
 /// This function is being called inside switch function to test one of the cases and it
 /// calls switch once again if current condition is not met
-pub(super) fn eval_switch_internal_handler(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_two_args!("switch-internal", items, env);
+pub(super) fn eval_switch_internal_handler(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!(
+        "switch-internal",
+        items,
+        2,
+        env,
+        "(switch-internal expr cases-data)"
+    );
     let atom = items[1].clone();
     let cases = items[2].clone();
     eval_switch_internal(atom, cases, env)
@@ -129,8 +158,11 @@ fn eval_switch_minimal(atom: MettaValue, cases: MettaValue, env: Environment) ->
     }
 
     let err = MettaValue::Error(
-        "switch-minimal expects expression as second argument".to_string(),
-        Box::new(cases),
+        format!(
+            "switch-minimal expects expression as second argument, got: {}",
+            super::friendly_value_repr(&cases)
+        ),
+        Arc::new(cases),
     );
     (vec![err], env)
 }
@@ -141,8 +173,12 @@ fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environme
     if let MettaValue::SExpr(cases_items) = cases_data {
         if cases_items.len() != 2 {
             let err = MettaValue::Error(
-                "switch-internal expects exactly 2 arguments".to_string(),
-                Box::new(MettaValue::SExpr(cases_items)),
+                format!(
+                    "switch-internal expects exactly 2 arguments, got {}. \
+                     Usage: (switch-internal expr (first-case remaining-cases))",
+                    cases_items.len()
+                ),
+                Arc::new(MettaValue::SExpr(cases_items)),
             );
             return (vec![err], env);
         }
@@ -153,8 +189,12 @@ fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environme
         if let MettaValue::SExpr(case_items) = first_case {
             if case_items.len() != 2 {
                 let err = MettaValue::Error(
-                    "switch case should be a pattern-template pair".to_string(),
-                    Box::new(MettaValue::SExpr(case_items)),
+                    format!(
+                        "switch case should be a pattern-template pair with exactly 2 elements, got {}. \
+Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
+                        case_items.len()
+                    ),
+                    Arc::new(MettaValue::SExpr(case_items)),
                 );
                 return (vec![err], env);
             }
@@ -170,16 +210,22 @@ fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environme
             }
         } else {
             let err = MettaValue::Error(
-                "switch case should be an expression".to_string(),
-                Box::new(first_case),
+                format!(
+                    "switch case should be an expression (pattern-template pair), got: {}",
+                    super::friendly_value_repr(&first_case)
+                ),
+                Arc::new(first_case),
             );
             return (vec![err], env);
         }
     }
 
     let err = MettaValue::Error(
-        "switch-internal expects expression argument".to_string(),
-        Box::new(cases_data),
+        format!(
+            "switch-internal expects expression argument, got: {}",
+            super::friendly_value_repr(&cases_data)
+        ),
+        Arc::new(cases_data),
     );
     (vec![err], env)
 }

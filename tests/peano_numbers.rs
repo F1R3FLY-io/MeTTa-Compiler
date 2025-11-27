@@ -87,7 +87,11 @@ fn test_peano_pattern_matching_successor() {
     // Query for pattern with variable
     let query2 = compile("(match &self (number (S $x)) (S $x))").unwrap();
     let (results2, _) = eval(query2.source[0].clone(), env);
-    assert_eq!(results2.len(), 2, "Should match both successors with variable");
+    assert_eq!(
+        results2.len(),
+        2,
+        "Should match both successors with variable"
+    );
 }
 
 #[test]
@@ -99,19 +103,25 @@ fn test_peano_nested_pattern_matching() {
     env.add_to_space(&fact.source[0]);
 
     // Query with exact match
-    let query1 = compile("(match &self (generation (S (S Z)) Alice Bob) (generation (S (S Z)) Alice Bob))").unwrap();
+    let query1 =
+        compile("(match &self (generation (S (S Z)) Alice Bob) (generation (S (S Z)) Alice Bob))")
+            .unwrap();
     let (results1, _) = eval(query1.source[0].clone(), env.clone());
     assert_eq!(results1.len(), 1, "Should match exact Peano structure");
 
     // Query with variable in Peano
     let query2 = compile("(match &self (generation $n Alice Bob) $n)").unwrap();
     let (results2, _) = eval(query2.source[0].clone(), env);
-    assert_eq!(results2.len(), 1, "Should match and bind Peano number to variable");
+    assert_eq!(
+        results2.len(),
+        1,
+        "Should match and bind Peano number to variable"
+    );
 }
 
 #[test]
 fn test_peano_in_rules() {
-    let mut env = Environment::new();
+    let env = Environment::new();
 
     // Define a rule using Peano numbers
     let rule_source = "(= (next Z) (S Z))";
@@ -140,7 +150,11 @@ fn test_peano_pattern_destructuring() {
     let (results, _) = eval(query.source[0].clone(), env);
 
     // Should match all three and bind Z, (S Z), (S (S Z))
-    assert_eq!(results.len(), 3, "Should destructure all three Peano numbers");
+    assert_eq!(
+        results.len(),
+        3,
+        "Should destructure all three Peano numbers"
+    );
 }
 
 #[test]

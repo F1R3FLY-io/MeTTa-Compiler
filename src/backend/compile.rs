@@ -9,19 +9,29 @@
 
 use crate::backend::models::{MettaState, MettaValue};
 use crate::ir::MettaExpr;
-use crate::tree_sitter_parser::TreeSitterMettaParser;
+use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind, TreeSitterMettaParser};
+use std::sync::Arc;
 
 /// Compile MeTTa source code into a MettaState ready for evaluation
 /// Returns a compiled state with pending expressions and empty environment
-pub fn compile(src: &str) -> Result<MettaState, String> {
+pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
     // Parse the source into s-expressions using Tree-Sitter
-    let mut parser =
-        TreeSitterMettaParser::new().map_err(|e| format!("Failed to initialize parser: {}", e))?;
+    let mut parser = TreeSitterMettaParser::new().map_err(|e| SyntaxError {
+        kind: SyntaxErrorKind::ParserInit(e),
+        line: 0,
+        column: 0,
+        text: String::new(),
+    })?;
     let sexprs = parser.parse(src)?;
 
     // Convert s-expressions to MettaValue representation using idiomatic TryFrom
     let metta_values: Result<Vec<_>, _> = sexprs.iter().map(MettaValue::try_from).collect();
-    let metta_values = metta_values?;
+    let metta_values = metta_values.map_err(|e| SyntaxError {
+        kind: SyntaxErrorKind::Generic,
+        line: 1,
+        column: 1,
+        text: e,
+    })?;
 
     Ok(MettaState::new_compiled(metta_values))
 }
@@ -51,16 +61,14 @@ impl TryFrom<&MettaExpr> for MettaValue {
                     Ok(MettaValue::Nil)
                 } else {
                     // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
-                    let is_conjunction = items.first().map_or(false, |first| {
-                        matches!(first, MettaExpr::Atom(s, _) if s == ",")
-                    });
+                    let is_conjunction = items
+                        .first()
+                        .is_some_and(|first| matches!(first, MettaExpr::Atom(s, _) if s == ","));
 
                     if is_conjunction {
                         // Convert to Conjunction variant (skip the comma operator)
-                        let goals: Result<Vec<_>, _> = items[1..]
-                            .iter()
-                            .map(MettaValue::try_from)
-                            .collect();
+                        let goals: Result<Vec<_>, _> =
+                            items[1..].iter().map(MettaValue::try_from).collect();
                         Ok(MettaValue::Conjunction(goals?))
                     } else {
                         // Regular S-expression
@@ -81,7 +89,7 @@ impl TryFrom<&MettaExpr> for MettaValue {
 
 /// Helper function to create an error value
 pub fn make_error(msg: &str, details: MettaValue) -> MettaValue {
-    MettaValue::Error(msg.to_string(), Box::new(details))
+    MettaValue::Error(msg.to_string(), Arc::new(details))
 }
 
 #[cfg(test)]
@@ -404,7 +412,4 @@ mod tests {
             panic!("Expected error");
         }
     }
-
-    // Note: URI literals with backticks are not yet supported by the lexer
-    // They would need to be added to sexpr.rs
 }

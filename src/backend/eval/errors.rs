@@ -1,10 +1,10 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{EvalResult, MettaValue};
 
-use super::{eval, EvalOutput};
+use super::eval;
 
 /// Error construction
-pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     if items.len() < 2 {
         return (vec![], env);
     }
@@ -24,8 +24,8 @@ pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalOutput
 }
 
 /// Is-error: check if value is an error (for error recovery)
-pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_one_arg!("is-error", items, env);
+pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("is-error", items, 1, env, "(is-error expr)");
 
     let (results, new_env) = eval(items[1].clone(), env);
     if let Some(first) = results.first() {
@@ -39,7 +39,7 @@ pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalOut
 /// Evaluate catch: error recovery mechanism
 /// (catch expr default) - if expr returns error, evaluate and return default
 /// This prevents error propagation (reduction prevention)
-pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
     if args.len() < 2 {

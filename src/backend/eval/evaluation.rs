@@ -1,11 +1,11 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{EvalResult, MettaValue};
 
-use super::{apply_bindings, eval, pattern_match, EvalOutput};
+use super::{apply_bindings, eval, pattern_match};
 
 /// Eval: force evaluation of quoted expressions
 /// (eval expr) - complementary to quote
-pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_one_arg!("eval", items, env);
 
     // First evaluate the argument to get the expression
@@ -19,7 +19,7 @@ pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalOutput 
 }
 
 /// Evaluation: ! expr - force evaluation
-pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_one_arg!("!", items, env);
     // Evaluate the expression after !
     eval(items[1].clone(), env)
@@ -27,7 +27,7 @@ pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalOutput
 
 /// Function: creates an evaluation loop that continues
 /// until it encounters a return value
-pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_one_arg!("function", items, env);
 
     let mut current_expr = items[1].clone();
@@ -87,7 +87,7 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalOut
 }
 
 /// Return: signals termination from a function evaluation loop
-pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_one_arg!("return", items, env);
 
     let (arg_results, arg_env) = eval(items[1].clone(), env);
@@ -107,7 +107,7 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalOutpu
 
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
-pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_three_args!("chain", items, env);
 
     let expr = &items[1];

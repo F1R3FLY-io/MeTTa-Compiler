@@ -1,10 +1,8 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
-
-use super::EvalOutput;
+use crate::backend::models::{EvalResult, MettaValue};
 
 /// Quote: return argument unevaluated
-pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_one_arg!("quote", items, env);
     (vec![items[1].clone()], env)
 }

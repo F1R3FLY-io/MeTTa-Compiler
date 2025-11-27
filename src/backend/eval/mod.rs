@@ -34,6 +34,42 @@ const MAX_EVAL_DEPTH: usize = 1000;
 /// This limits the total number of combinations explored during nondeterministic evaluation
 const MAX_CARTESIAN_RESULTS: usize = 10000;
 
+/// MeTTa special forms for "did you mean" suggestions during evaluation
+const SPECIAL_FORMS: &[&str] = &[
+    "=", "!", "quote", "if", "error", "is-error", "catch", "eval",
+    "function", "return", "chain", "match", "case", "switch", "let",
+    ":", "get-type", "check-type", "map-atom", "filter-atom", "foldl-atom",
+];
+
+/// Convert MettaValue to a friendly type name for error messages
+/// This provides user-friendly type names instead of debug format like "Long(5)"
+fn friendly_type_name(value: &MettaValue) -> &'static str {
+    match value {
+        MettaValue::Long(_) => "Number (integer)",
+        MettaValue::Float(_) => "Number (float)",
+        MettaValue::Bool(_) => "Bool",
+        MettaValue::String(_) => "String",
+        MettaValue::Atom(_) => "Atom",
+        MettaValue::Uri(_) => "URI",
+        MettaValue::Nil => "Nil",
+        MettaValue::SExpr(_) => "S-expression",
+        MettaValue::Error(_, _) => "Error",
+        MettaValue::Type(_) => "Type",
+    }
+}
+
+/// Check if an operator is close to a known special form
+/// Uses max edit distance of 1 to avoid false positives on short words
+fn suggest_special_form(op: &str) -> Option<String> {
+    use crate::backend::fuzzy_match::FuzzyMatcher;
+    use std::sync::OnceLock;
+
+    static MATCHER: OnceLock<FuzzyMatcher> = OnceLock::new();
+    let matcher = MATCHER.get_or_init(|| FuzzyMatcher::from_terms(SPECIAL_FORMS.iter().copied()));
+
+    matcher.did_you_mean(op, 1, 3)
+}
+
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)
 /// This is the public entry point that starts evaluation with depth tracking
@@ -48,7 +84,13 @@ fn eval_with_depth(value: MettaValue, env: Environment, depth: usize) -> EvalRes
     if depth > MAX_EVAL_DEPTH {
         return (
             vec![MettaValue::Error(
-                format!("Maximum evaluation depth ({}) exceeded - possible infinite recursion or combinatorial explosion", MAX_EVAL_DEPTH),
+                format!(
+                    "Maximum evaluation depth ({}) exceeded. Possible causes:\n\
+                     - Infinite recursion: check for missing base case in recursive rules\n\
+                     - Combinatorial explosion: rule produces too many branches\n\
+                     Hint: Use (function ...) and (return ...) for tail-recursive evaluation",
+                    MAX_EVAL_DEPTH
+                ),
                 Box::new(value),
             )],
             env,
@@ -236,11 +278,44 @@ fn eval_sexpr(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalRes
                 all_final_results.extend(results);
             }
         } else {
-            // No rule matched - add to space and return (official MeTTa ADD mode semantics)
-            // In official MeTTa's default ADD mode, bare expressions are automatically added to &self
-            // This matches the behavior: `(leaf1 leaf2)` -> auto-added, then `!(match &self ...)` can query it
-            unified_env.add_to_space(&sexpr);
-            all_final_results.push(sexpr);
+            // No rule matched - check for likely typos before falling back to ADD mode
+            // We only error if the symbol is close to a known term (suggesting a typo)
+            // Otherwise, use standard ADD mode semantics (add to space and return)
+            let mut is_likely_typo = false;
+
+            if let Some(MettaValue::Atom(head)) = evaled_items.first() {
+                // Only check for typos on symbols with 3+ characters to avoid false positives
+                // on short symbols like "a", "x", etc. which are often legitimate data constructors
+                if head.len() >= 3 {
+                    // Check if it looks like a misspelled special form
+                    if let Some(suggestion) = suggest_special_form(head) {
+                        let err = MettaValue::Error(
+                            format!("Unknown special form '{}'. {}", head, suggestion),
+                            Box::new(sexpr.clone()),
+                        );
+                        all_final_results.push(err);
+                        is_likely_typo = true;
+                    }
+                    // Check if it matches any known rule heads (max distance 1 to avoid false positives)
+                    else if let Some(suggestion) = unified_env.did_you_mean(head, 1) {
+                        let err = MettaValue::Error(
+                            format!("No rule matches '{}'. {}", head, suggestion),
+                            Box::new(sexpr.clone()),
+                        );
+                        all_final_results.push(err);
+                        is_likely_typo = true;
+                    }
+                }
+            }
+
+            // If not a likely typo, use standard ADD mode semantics
+            if !is_likely_typo {
+                // No rule matched - add to space and return (official MeTTa ADD mode semantics)
+                // In official MeTTa's default ADD mode, bare expressions are automatically added to &self
+                // This matches the behavior: `(leaf1 leaf2)` -> auto-added, then `!(match &self ...)` can query it
+                unified_env.add_to_space(&sexpr);
+                all_final_results.push(sexpr);
+            }
         }
     }
 
@@ -285,8 +360,11 @@ where
         MettaValue::Long(n) => *n,
         other => {
             return Some(MettaValue::Error(
-                format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string())),
+                format!(
+                    "Cannot perform arithmetic: expected Number (integer), got {}",
+                    friendly_type_name(other)
+                ),
+                Box::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -295,8 +373,11 @@ where
         MettaValue::Long(n) => *n,
         other => {
             return Some(MettaValue::Error(
-                format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string())),
+                format!(
+                    "Cannot perform arithmetic: expected Number (integer), got {}",
+                    friendly_type_name(other)
+                ),
+                Box::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -323,8 +404,11 @@ where
         MettaValue::Long(n) => *n,
         other => {
             return Some(MettaValue::Error(
-                format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string())),
+                format!(
+                    "Cannot compare: expected Number (integer), got {}",
+                    friendly_type_name(other)
+                ),
+                Box::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -333,8 +417,11 @@ where
         MettaValue::Long(n) => *n,
         other => {
             return Some(MettaValue::Error(
-                format!("{:?}", other),
-                Box::new(MettaValue::Atom("BadType".to_string())),
+                format!(
+                    "Cannot compare: expected Number (integer), got {}",
+                    friendly_type_name(other)
+                ),
+                Box::new(MettaValue::Atom("TypeError".to_string())),
             ));
         }
     };
@@ -1502,7 +1589,7 @@ mod tests {
     fn test_arithmetic_type_error_string() {
         let env = Environment::new();
 
-        // Test: !(+ 1 "a") should produce BadType error
+        // Test: !(+ 1 "a") should produce TypeError with friendly message
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
@@ -1514,10 +1601,19 @@ mod tests {
 
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                // Error message should contain the invalid value
-                assert!(msg.contains("String"));
-                // Error details should be BadType
-                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+                // Error message should contain the friendly type name
+                assert!(
+                    msg.contains("String"),
+                    "Expected 'String' in: {}",
+                    msg
+                );
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected 'expected Number (integer)' in: {}",
+                    msg
+                );
+                // Error details should be TypeError
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }
@@ -1539,8 +1635,13 @@ mod tests {
 
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"));
-                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected type info in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }
@@ -1562,8 +1663,13 @@ mod tests {
 
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                assert!(msg.contains("Bool"));
-                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected type info in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }
@@ -1585,8 +1691,13 @@ mod tests {
 
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"));
-                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert!(
+                    msg.contains("Cannot compare"),
+                    "Expected 'Cannot compare' in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }
@@ -1608,5 +1719,116 @@ mod tests {
             }
             other => panic!("Expected Error, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_misspelled_special_form() {
+        let env = Environment::new();
+
+        // Try to use "mach" instead of "match"
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("mach".to_string()),
+            MettaValue::Atom("&self".to_string()),
+            MettaValue::Atom("pattern".to_string()),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Did you mean"),
+                    "Expected suggestion in: {}",
+                    msg
+                );
+                assert!(msg.contains("match"), "Expected 'match' in: {}", msg);
+            }
+            other => panic!("Expected Error with suggestion, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_undefined_symbol_with_rule_suggestion() {
+        let mut env = Environment::new();
+
+        // Add a rule for "fibonacci"
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("fibonacci".to_string()),
+                MettaValue::Atom("$n".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Atom("$n".to_string()),
+                MettaValue::Atom("$n".to_string()),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // Try to call "fibonaci" (misspelled - missing 'n')
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("fibonaci".to_string()),
+            MettaValue::Long(5),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Did you mean"),
+                    "Expected suggestion in: {}",
+                    msg
+                );
+                assert!(
+                    msg.contains("fibonacci"),
+                    "Expected 'fibonacci' in: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected Error with suggestion, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unknown_symbol_returns_as_is() {
+        let env = Environment::new();
+
+        // Completely unknown symbols (not similar to any known term)
+        // should be returned as-is per ADD mode semantics
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("xyzzy".to_string()),
+            MettaValue::Long(1),
+        ]);
+
+        let (results, _) = eval(expr.clone(), env);
+        assert_eq!(results.len(), 1);
+
+        // Should return the expression as-is (ADD mode), not an error
+        assert_eq!(results[0], expr, "Expected expression to be returned as-is");
+    }
+
+    #[test]
+    fn test_short_symbol_not_flagged_as_typo() {
+        let env = Environment::new();
+
+        // Short symbols like "a" should NOT be flagged as typos even if
+        // they're close to special forms like "=" (edit distance 1)
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("a".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+
+        let (results, _) = eval(expr.clone(), env);
+        assert_eq!(results.len(), 1);
+
+        // Should return the expression as-is (ADD mode), not an error
+        assert_eq!(
+            results[0], expr,
+            "Short symbols should not be flagged as typos"
+        );
     }
 }

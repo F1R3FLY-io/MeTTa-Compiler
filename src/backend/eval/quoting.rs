@@ -476,23 +476,10 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_preserves_uri_and_special_types() {
+    fn test_quote_preserves_special_types() {
         let env = Environment::new();
 
-        // Test quoting URI values
-        let quote_uri = MettaValue::SExpr(vec![
-            MettaValue::Atom("quote".to_string()),
-            MettaValue::Uri("http://example.com".to_string()),
-        ]);
-
-        let (results, _) = eval(quote_uri, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0],
-            MettaValue::Uri("http://example.com".to_string())
-        );
-
-        // Test quoting Type values (if available)
+        // Test quoting Type values
         let quote_type = MettaValue::SExpr(vec![
             MettaValue::Atom("quote".to_string()),
             MettaValue::Type(Box::new(MettaValue::Atom("Number".to_string()))),

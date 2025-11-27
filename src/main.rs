@@ -141,7 +141,6 @@ fn format_result(value: &MettaValue) -> String {
         MettaValue::Long(n) => n.to_string(),
         MettaValue::Float(f) => f.to_string(),
         MettaValue::String(s) => format!("\"{}\"", s),
-        MettaValue::Uri(s) => format!("`{}`", s),
         MettaValue::Nil => "Nil".to_string(),
         MettaValue::Error(msg, details) => {
             // Format as (Error "msg" details) to match MeTTa spec
@@ -209,10 +208,23 @@ fn run_repl() {
 
     loop {
         print!("metta[{}]> ", line_num);
-        io::stdout().flush().unwrap();
+        if let Err(e) = io::stdout().flush() {
+            eprintln!("Warning: Failed to flush output: {}", e);
+        }
 
         let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
+        match io::stdin().read_line(&mut input) {
+            Ok(0) => {
+                // EOF received
+                println!("\nGoodbye!");
+                break;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error reading input: {}. Exiting REPL.", e);
+                break;
+            }
+        }
         let input = input.trim();
 
         if input == "exit" || input == "quit" {

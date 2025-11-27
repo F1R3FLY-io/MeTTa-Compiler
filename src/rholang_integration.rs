@@ -198,7 +198,6 @@ fn metta_value_to_json_string(value: &MettaValue) -> String {
         MettaValue::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
         MettaValue::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
         MettaValue::String(s) => format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s)),
-        MettaValue::Uri(s) => format!(r#"{{"type":"uri","value":"{}"}}"#, escape_json(s)),
         MettaValue::Nil => r#"{"type":"nil"}"#.to_string(),
         MettaValue::SExpr(items) => {
             let items_json: Vec<String> = items.iter().map(metta_value_to_json_string).collect();

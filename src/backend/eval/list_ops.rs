@@ -69,7 +69,10 @@ pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
         MettaValue::Nil => vec![],
         _ => {
             let err = MettaValue::Error(
-                "map-atom: first argument must be a list (S-expression)".to_string(),
+                format!(
+                    "map-atom: first argument must be a list, got {}. Usage: (map-atom list $var expr)",
+                    super::friendly_value_repr(list)
+                ),
                 Box::new(list.clone()),
             );
             return (vec![err], env);
@@ -144,7 +147,10 @@ pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> Eval
         MettaValue::Nil => vec![],
         _ => {
             let err = MettaValue::Error(
-                "filter-atom: first argument must be a list (S-expression)".to_string(),
+                format!(
+                    "filter-atom: first argument must be a list, got {}. Usage: (filter-atom list $var predicate)",
+                    super::friendly_value_repr(list)
+                ),
                 Box::new(list.clone()),
             );
             return (vec![err], env);
@@ -262,7 +268,10 @@ pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
         MettaValue::Nil => vec![],
         _ => {
             let err = MettaValue::Error(
-                "foldl-atom: first argument must be a list (S-expression)".to_string(),
+                format!(
+                    "foldl-atom: first argument must be a list, got {}. Usage: (foldl-atom list init $acc $elem expr)",
+                    super::friendly_value_repr(list)
+                ),
                 Box::new(list.clone()),
             );
             return (vec![err], env);

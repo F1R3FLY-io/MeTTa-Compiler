@@ -399,7 +399,4 @@ mod tests {
             panic!("Expected error");
         }
     }
-
-    // Note: URI literals with backticks are not yet supported by the lexer
-    // They would need to be added to sexpr.rs
 }

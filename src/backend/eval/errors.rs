@@ -1,10 +1,10 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{EvalResult, MettaValue};
 
-use super::{eval, EvalOutput};
+use super::eval;
 
 /// Error construction
-pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     if items.len() < 2 {
         return (vec![], env);
     }
@@ -24,8 +24,8 @@ pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalOutput
 }
 
 /// Is-error: check if value is an error (for error recovery)
-pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_one_arg!("is-error", items, env);
+pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("is-error", items, 1, env, "(is-error expr)");
 
     let (results, new_env) = eval(items[1].clone(), env);
     if let Some(first) = results.first() {
@@ -39,7 +39,7 @@ pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalOut
 /// Evaluate catch: error recovery mechanism
 /// (catch expr default) - if expr returns error, evaluate and return default
 /// This prevents error propagation (reduction prevention)
-pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
+pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
     if args.len() < 2 {
@@ -56,17 +56,20 @@ pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalOutput
     // Evaluate the expression
     let (results, env_after_eval) = eval(expr.clone(), env);
 
-    // Check if result is an error
-    if let Some(first) = results.first() {
-        if matches!(first, MettaValue::Error(_, _)) {
-            // Error occurred - evaluate and return default instead
-            // This PREVENTS the error from propagating further
-            return eval(default.clone(), env_after_eval);
-        }
-    }
+    // Handle nondeterministic evaluation: filter results into errors and non-errors
+    let (_errors, non_errors): (Vec<_>, Vec<_>) = results
+        .into_iter()
+        .partition(|r| matches!(r, MettaValue::Error(_, _)));
 
-    // No error - return the result
-    (results, env_after_eval)
+    if non_errors.is_empty() {
+        // All results were errors - evaluate and return default instead
+        // This PREVENTS the errors from propagating further
+        eval(default.clone(), env_after_eval)
+    } else {
+        // Some non-error results exist - return only those, filtering out errors
+        // This handles nondeterministic evaluation where some branches fail
+        (non_errors, env_after_eval)
+    }
 }
 
 #[cfg(test)]

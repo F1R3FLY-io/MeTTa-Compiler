@@ -26,10 +26,10 @@ impl MettaValueTestExt for MettaValue {
     fn to_display_string(&self) -> String {
         match self {
             MettaValue::Long(n) => n.to_string(),
+            MettaValue::Float(f) => f.to_string(),
             MettaValue::Bool(b) => b.to_string(),
             MettaValue::String(s) => format!("\"{}\"", s),
             MettaValue::Atom(s) => s.clone(),
-            MettaValue::Uri(s) => format!("`{}`", s),
             MettaValue::SExpr(exprs) => {
                 let inner: Vec<String> = exprs.iter().map(|e| e.to_display_string()).collect();
                 format!("({})", inner.join(" "))
@@ -45,13 +45,13 @@ impl MettaValueTestExt for MettaValue {
     fn matches_str(&self, s: &str) -> bool {
         match self {
             MettaValue::Long(n) => n.to_string() == s,
+            MettaValue::Float(f) => f.to_string() == s,
             MettaValue::Bool(b) => b.to_string() == s,
             MettaValue::String(inner) => {
                 // Match with or without quotes
                 inner == s || format!("\"{}\"", inner) == s
             }
             MettaValue::Atom(sym) => sym == s,
-            MettaValue::Uri(uri) => uri == s || format!("`{}`", uri) == s,
             MettaValue::SExpr(_) => self.to_display_string() == s,
             MettaValue::Error(_, _) => self.to_display_string() == s,
             MettaValue::Nil => s == "()" || s == "Nil",

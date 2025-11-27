@@ -1,15 +1,12 @@
-use std::collections::HashMap;
-
+pub mod bindings;
 pub mod metta_state;
 pub mod metta_value;
 
+pub use bindings::SmartBindings as Bindings;
 pub use metta_state::MettaState;
 pub use metta_value::MettaValue;
 
 use crate::backend::environment::Environment;
-
-/// Variable bindings for pattern matching
-pub type Bindings = HashMap<String, MettaValue>;
 
 /// Result of evaluation: (result, new_environment)
 pub type EvalResult = (Vec<MettaValue>, Environment);

@@ -12,7 +12,7 @@ macro_rules! require_args_with_usage {
                     got,
                     $usage
                 ),
-                Box::new(MettaValue::SExpr($items.to_vec())),
+                std::sync::Arc::new(MettaValue::SExpr($items.to_vec())),
             );
             return (vec![err], $env);
         }

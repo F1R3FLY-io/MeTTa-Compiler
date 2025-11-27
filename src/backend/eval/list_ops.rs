@@ -1,5 +1,6 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
+use std::sync::Arc;
 
 use super::eval;
 
@@ -52,13 +53,13 @@ pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
                     "map-atom: second argument must be a variable (starting with $)".to_string()
                 }
             };
-            let err = MettaValue::Error(msg, Box::new(var.clone()));
+            let err = MettaValue::Error(msg, Arc::new(var.clone()));
             return (vec![err], env);
         }
         _ => {
             let err = MettaValue::Error(
                 "map-atom: second argument must be a variable (starting with $)".to_string(),
-                Box::new(var.clone()),
+                Arc::new(var.clone()),
             );
             return (vec![err], env);
         }
@@ -73,7 +74,7 @@ pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
                     "map-atom: first argument must be a list, got {}. Usage: (map-atom list $var expr)",
                     super::friendly_value_repr(list)
                 ),
-                Box::new(list.clone()),
+                Arc::new(list.clone()),
             );
             return (vec![err], env);
         }
@@ -136,13 +137,13 @@ pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> Eval
                     "filter-atom: second argument must be a variable (starting with $)".to_string()
                 }
             };
-            let err = MettaValue::Error(msg, Box::new(var.clone()));
+            let err = MettaValue::Error(msg, Arc::new(var.clone()));
             return (vec![err], env);
         }
         _ => {
             let err = MettaValue::Error(
                 "filter-atom: second argument must be a variable (starting with $)".to_string(),
-                Box::new(var.clone()),
+                Arc::new(var.clone()),
             );
             return (vec![err], env);
         }
@@ -157,7 +158,7 @@ pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> Eval
                     "filter-atom: first argument must be a list, got {}. Usage: (filter-atom list $var predicate)",
                     super::friendly_value_repr(list)
                 ),
-                Box::new(list.clone()),
+                Arc::new(list.clone()),
             );
             return (vec![err], env);
         }
@@ -206,7 +207,7 @@ pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
         let err = MettaValue::Error(
             "foldl-atom requires exactly 5 arguments: list, init, acc-var, item-var, operation"
                 .to_string(),
-            Box::new(MettaValue::SExpr(items.to_vec())),
+            Arc::new(MettaValue::SExpr(items.to_vec())),
         );
         return (vec![err], env);
     }
@@ -231,13 +232,13 @@ pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
                     "foldl-atom: third argument must be a variable (starting with $)".to_string()
                 }
             };
-            let err = MettaValue::Error(msg, Box::new(acc_var.clone()));
+            let err = MettaValue::Error(msg, Arc::new(acc_var.clone()));
             return (vec![err], env);
         }
         _ => {
             let err = MettaValue::Error(
                 "foldl-atom: third argument must be a variable (starting with $)".to_string(),
-                Box::new(acc_var.clone()),
+                Arc::new(acc_var.clone()),
             );
             return (vec![err], env);
         }
@@ -257,13 +258,13 @@ pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
                     "foldl-atom: fourth argument must be a variable (starting with $)".to_string()
                 }
             };
-            let err = MettaValue::Error(msg, Box::new(item_var.clone()));
+            let err = MettaValue::Error(msg, Arc::new(item_var.clone()));
             return (vec![err], env);
         }
         _ => {
             let err = MettaValue::Error(
                 "foldl-atom: fourth argument must be a variable (starting with $)".to_string(),
-                Box::new(item_var.clone()),
+                Arc::new(item_var.clone()),
             );
             return (vec![err], env);
         }
@@ -278,7 +279,7 @@ pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
                     "foldl-atom: first argument must be a list, got {}. Usage: (foldl-atom list init $acc $elem expr)",
                     super::friendly_value_repr(list)
                 ),
-                Box::new(list.clone()),
+                Arc::new(list.clone()),
             );
             return (vec![err], env);
         }
@@ -319,7 +320,7 @@ fn substitute_variable(expr: &MettaValue, var_name: &str, value: &MettaValue) ->
         }
         MettaValue::Error(msg, details) => {
             let substituted_details = substitute_variable(details, var_name, value);
-            MettaValue::Error(msg.clone(), Box::new(substituted_details))
+            MettaValue::Error(msg.clone(), Arc::new(substituted_details))
         }
         _ => expr.clone(),
     }

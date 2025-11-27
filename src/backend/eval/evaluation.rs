@@ -1,5 +1,6 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
+use std::sync::Arc;
 
 use super::{apply_bindings, eval, pattern_match};
 
@@ -76,7 +77,7 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalRes
             return (
                 vec![MettaValue::Error(
                     format!("function exceeded maximum iterations ({})", MAX_ITERATIONS),
-                    Box::new(current_expr),
+                    Arc::new(current_expr),
                 )],
                 current_env,
             );

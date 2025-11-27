@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 /// Represents a MeTTa value as an s-expression
 /// S-expressions are nested lists with textual operator names
 #[derive(Debug, Clone, PartialEq)]
@@ -16,10 +18,10 @@ pub enum MettaValue {
     SExpr(Vec<MettaValue>),
     /// Nil/empty
     Nil,
-    /// An error with message and details
-    Error(String, Box<MettaValue>),
-    /// A type (first-class types as atoms)
-    Type(Box<MettaValue>),
+    /// An error with message and details (Arc for O(1) clone)
+    Error(String, Arc<MettaValue>),
+    /// A type (first-class types as atoms, Arc for O(1) clone)
+    Type(Arc<MettaValue>),
 }
 
 impl MettaValue {
@@ -120,7 +122,7 @@ impl MettaValue {
 
     /// Extract the head symbol from a pattern for indexing
     /// Returns None if the pattern doesn't have a clear head symbol
-    pub fn get_head_symbol(&self) -> Option<String> {
+    pub fn get_head_symbol(&self) -> Option<&str> {
         match self {
             // For s-expressions like (double $x), extract "double"
             // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
@@ -131,7 +133,7 @@ impl MettaValue {
                         && !head.starts_with('\'')
                         && head != "_" =>
                 {
-                    Some(head.clone())
+                    Some(head.as_str())
                 }
                 _ => None,
             },
@@ -143,7 +145,7 @@ impl MettaValue {
                     && !head.starts_with('\'')
                     && head != "_" =>
             {
-                Some(head.clone())
+                Some(head.as_str())
             }
             _ => None,
         }
@@ -362,12 +364,12 @@ mod tests {
 
     #[test]
     fn test_is_ground_type_error() {
-        assert!(!MettaValue::Error("msg".to_string(), Box::new(MettaValue::Nil)).is_ground_type());
+        assert!(!MettaValue::Error("msg".to_string(), Arc::new(MettaValue::Nil)).is_ground_type());
     }
 
     #[test]
     fn test_is_ground_type_type() {
-        assert!(!MettaValue::Type(Box::new(MettaValue::Atom("Int".to_string()))).is_ground_type());
+        assert!(!MettaValue::Type(Arc::new(MettaValue::Atom("Int".to_string()))).is_ground_type());
     }
 
     // Tests for is_eval_expr
@@ -639,24 +641,24 @@ mod tests {
 
     #[test]
     fn test_structurally_equivalent_errors() {
-        let e1 = MettaValue::Error("msg".to_string(), Box::new(MettaValue::Long(1)));
-        let e2 = MettaValue::Error("msg".to_string(), Box::new(MettaValue::Long(1)));
+        let e1 = MettaValue::Error("msg".to_string(), Arc::new(MettaValue::Long(1)));
+        let e2 = MettaValue::Error("msg".to_string(), Arc::new(MettaValue::Long(1)));
         assert!(e1.structurally_equivalent(&e2));
 
-        let e3 = MettaValue::Error("msg".to_string(), Box::new(MettaValue::Long(2)));
+        let e3 = MettaValue::Error("msg".to_string(), Arc::new(MettaValue::Long(2)));
         assert!(!e1.structurally_equivalent(&e3));
 
-        let e4 = MettaValue::Error("other".to_string(), Box::new(MettaValue::Long(1)));
+        let e4 = MettaValue::Error("other".to_string(), Arc::new(MettaValue::Long(1)));
         assert!(!e1.structurally_equivalent(&e4));
     }
 
     #[test]
     fn test_structurally_equivalent_types() {
-        let t1 = MettaValue::Type(Box::new(MettaValue::Atom("Int".to_string())));
-        let t2 = MettaValue::Type(Box::new(MettaValue::Atom("Int".to_string())));
+        let t1 = MettaValue::Type(Arc::new(MettaValue::Atom("Int".to_string())));
+        let t2 = MettaValue::Type(Arc::new(MettaValue::Atom("Int".to_string())));
         assert!(t1.structurally_equivalent(&t2));
 
-        let t3 = MettaValue::Type(Box::new(MettaValue::Atom("String".to_string())));
+        let t3 = MettaValue::Type(Arc::new(MettaValue::Atom("String".to_string())));
         assert!(!t1.structurally_equivalent(&t3));
     }
 
@@ -675,26 +677,26 @@ mod tests {
             MettaValue::Atom("double".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]);
-        assert_eq!(value.get_head_symbol(), Some("double".to_string()));
+        assert_eq!(value.get_head_symbol(), Some("double"));
     }
 
     #[test]
     fn test_get_head_symbol_bare_atom() {
         let value = MettaValue::Atom("foo".to_string());
-        assert_eq!(value.get_head_symbol(), Some("foo".to_string()));
+        assert_eq!(value.get_head_symbol(), Some("foo"));
     }
 
     #[test]
     fn test_get_head_symbol_standalone_ampersand() {
         // Standalone "&" is allowed as head symbol
         let value = MettaValue::Atom("&".to_string());
-        assert_eq!(value.get_head_symbol(), Some("&".to_string()));
+        assert_eq!(value.get_head_symbol(), Some("&"));
 
         let sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("&".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]);
-        assert_eq!(sexpr.get_head_symbol(), Some("&".to_string()));
+        assert_eq!(sexpr.get_head_symbol(), Some("&"));
     }
 
     #[test]
@@ -744,7 +746,7 @@ mod tests {
                 MettaValue::Long(3),
             ]),
         ]);
-        assert_eq!(value.get_head_symbol(), Some("add".to_string()));
+        assert_eq!(value.get_head_symbol(), Some("add"));
     }
 
     #[test]
@@ -865,13 +867,13 @@ mod tests {
 
     #[test]
     fn test_to_mork_string_error() {
-        let value = MettaValue::Error("test error".to_string(), Box::new(MettaValue::Long(42)));
+        let value = MettaValue::Error("test error".to_string(), Arc::new(MettaValue::Long(42)));
         assert_eq!(value.to_mork_string(), "(error \"test error\" 42)");
     }
 
     #[test]
     fn test_to_mork_string_type() {
-        let value = MettaValue::Type(Box::new(MettaValue::Atom("Int".to_string())));
+        let value = MettaValue::Type(Arc::new(MettaValue::Atom("Int".to_string())));
         assert_eq!(value.to_mork_string(), "Int");
     }
 

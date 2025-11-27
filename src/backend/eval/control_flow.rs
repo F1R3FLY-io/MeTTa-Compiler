@@ -1,5 +1,6 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
+use std::sync::Arc;
 
 use super::{apply_bindings, eval, pattern_match};
 
@@ -15,7 +16,7 @@ pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                 "if requires exactly 3 arguments, got {}. Usage: (if condition then-branch else-branch)",
                 got
             ),
-            Box::new(MettaValue::SExpr(args.to_vec())),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
     }
@@ -161,7 +162,7 @@ fn eval_switch_minimal(atom: MettaValue, cases: MettaValue, env: Environment) ->
             "switch-minimal expects expression as second argument, got: {}",
             super::friendly_value_repr(&cases)
         ),
-        Box::new(cases),
+        Arc::new(cases),
     );
     (vec![err], env)
 }
@@ -177,7 +178,7 @@ fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environme
                      Usage: (switch-internal expr (first-case remaining-cases))",
                     cases_items.len()
                 ),
-                Box::new(MettaValue::SExpr(cases_items)),
+                Arc::new(MettaValue::SExpr(cases_items)),
             );
             return (vec![err], env);
         }
@@ -193,7 +194,7 @@ fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environme
 Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
                         case_items.len()
                     ),
-                    Box::new(MettaValue::SExpr(case_items)),
+                    Arc::new(MettaValue::SExpr(case_items)),
                 );
                 return (vec![err], env);
             }
@@ -213,7 +214,7 @@ Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
                     "switch case should be an expression (pattern-template pair), got: {}",
                     super::friendly_value_repr(&first_case)
                 ),
-                Box::new(first_case),
+                Arc::new(first_case),
             );
             return (vec![err], env);
         }
@@ -224,7 +225,7 @@ Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
             "switch-internal expects expression argument, got: {}",
             super::friendly_value_repr(&cases_data)
         ),
-        Box::new(cases_data),
+        Arc::new(cases_data),
     );
     (vec![err], env)
 }

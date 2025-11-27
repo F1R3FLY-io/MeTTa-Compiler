@@ -11,6 +11,7 @@ pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult
 mod tests {
     use super::*;
     use crate::eval;
+    use std::sync::Arc;
 
     #[test]
     fn test_quote_missing_argument() {
@@ -270,7 +271,7 @@ mod tests {
         }
 
         // Test quoting an actual error value
-        let actual_error = MettaValue::Error("real-error".to_string(), Box::new(MettaValue::Nil));
+        let actual_error = MettaValue::Error("real-error".to_string(), Arc::new(MettaValue::Nil));
         let quote_actual_error = MettaValue::SExpr(vec![
             MettaValue::Atom("quote".to_string()),
             actual_error.clone(),
@@ -482,14 +483,14 @@ mod tests {
         // Test quoting Type values
         let quote_type = MettaValue::SExpr(vec![
             MettaValue::Atom("quote".to_string()),
-            MettaValue::Type(Box::new(MettaValue::Atom("Number".to_string()))),
+            MettaValue::Type(Arc::new(MettaValue::Atom("Number".to_string()))),
         ]);
 
         let (results, _) = eval(quote_type, env);
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0],
-            MettaValue::Type(Box::new(MettaValue::Atom("Number".to_string())))
+            MettaValue::Type(Arc::new(MettaValue::Atom("Number".to_string())))
         );
     }
 

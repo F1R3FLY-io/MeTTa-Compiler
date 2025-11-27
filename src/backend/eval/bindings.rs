@@ -1,5 +1,6 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
+use std::sync::Arc;
 
 use super::{apply_bindings, eval, pattern_match};
 
@@ -78,7 +79,7 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                 "let requires exactly 3 arguments, got {}. Usage: (let pattern value body)",
                 got
             ),
-            Box::new(MettaValue::SExpr(args.to_vec())),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
         );
         return (vec![err], env);
     }
@@ -110,7 +111,7 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                     super::friendly_value_repr(&value),
                     suggestion
                 ),
-                Box::new(MettaValue::SExpr(args.to_vec())),
+                Arc::new(MettaValue::SExpr(args.to_vec())),
             );
             all_results.push(err);
         }

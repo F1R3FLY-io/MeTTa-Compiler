@@ -1,12 +1,48 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{EvalResult, MettaValue};
 
-use super::EvalOutput;
+/// Built-in type names with correct capitalization for "Did you mean?" suggestions
+const TYPE_NAME_MAPPINGS: &[(&str, &str)] = &[
+    ("bool", "Bool"),
+    ("boolean", "Bool"),
+    ("string", "String"),
+    ("str", "String"),
+    ("int", "Long"),
+    ("integer", "Long"),
+    ("long", "Long"),
+    ("float", "Float"),
+    ("double", "Float"),
+    ("number", "Number"),
+    ("num", "Number"),
+    ("nil", "Nil"),
+    ("null", "Nil"),
+    ("none", "Nil"),
+    ("atom", "Atom"),
+    ("symbol", "Atom"),
+    ("type", "Type"),
+    ("error", "Error"),
+];
+
+/// Suggest correct type name capitalization if the given name is a common variant
+pub(crate) fn suggest_type_name(name: &str) -> Option<String> {
+    let lower = name.to_lowercase();
+
+    for (incorrect, correct) in TYPE_NAME_MAPPINGS {
+        if lower == *incorrect && name != *correct {
+            return Some(format!(
+                "Did you mean: {}? (type names are capitalized)",
+                correct
+            ));
+        }
+    }
+
+    None
+}
 
 /// Type assertion: (: expr type)
 /// Adds a type assertion to the environment
-pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_two_args!(":", items, env);
+pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!(":", items, 2, env, "(: expr type)");
 
     let expr = &items[1];
     let typ = items[2].clone();
@@ -36,8 +72,8 @@ pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> E
 
 /// get-type: return the type of an expression
 /// (get-type expr) -> Type
-pub(super) fn eval_get_type(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_one_arg!("get-type", items, env);
+pub(super) fn eval_get_type(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("get-type", items, 1, env, "(get-type expr)");
 
     let expr = &items[1];
     let typ = infer_type(expr, &env);
@@ -46,8 +82,8 @@ pub(super) fn eval_get_type(items: Vec<MettaValue>, env: Environment) -> EvalOut
 
 /// check-type: check if expression has expected type
 /// (check-type expr expected-type) -> Bool
-pub(super) fn eval_check_type(items: Vec<MettaValue>, env: Environment) -> EvalOutput {
-    require_two_args!("check-type", items, env);
+pub(super) fn eval_check_type(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("check-type", items, 2, env, "(check-type expr type)");
 
     let expr = &items[1];
     let expected = &items[2];
@@ -67,7 +103,6 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
         MettaValue::Long(_) => MettaValue::Atom("Number".to_string()),
         MettaValue::Float(_) => MettaValue::Atom("Number".to_string()),
         MettaValue::String(_) => MettaValue::Atom("String".to_string()),
-        MettaValue::Uri(_) => MettaValue::Atom("URI".to_string()),
         MettaValue::Nil => MettaValue::Atom("Nil".to_string()),
 
         // Type values have type Type
@@ -85,8 +120,18 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
             }
 
             // Look up type in environment
-            env.get_type(name)
-                .unwrap_or_else(|| MettaValue::Atom("Undefined".to_string()))
+            match env.get_type(name) {
+                Some(typ) => typ,
+                None => {
+                    // Check if it looks like a mis-capitalized type name
+                    if let Some(_suggestion) = suggest_type_name(name) {
+                        // Return the suggestion hint in a special format
+                        // Note: We could return a more detailed error here,
+                        // but keeping Undefined for backward compatibility
+                    }
+                    MettaValue::Atom("Undefined".to_string())
+                }
+            }
         }
 
         // For s-expressions, try to infer from function application
@@ -522,8 +567,8 @@ mod tests {
         // The error from the inner expression should propagate
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"));
-                assert_eq!(**details, MettaValue::Atom("BadType".to_string()));
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }

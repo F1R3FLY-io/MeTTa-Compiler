@@ -6,7 +6,7 @@ use super::{apply_bindings, eval, pattern_match};
 /// Eval: force evaluation of quoted expressions
 /// (eval expr) - complementary to quote
 pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_one_arg!("eval", items, env);
+    require_args_with_usage!("eval", items, 1, env, "(eval expr)");
 
     // First evaluate the argument to get the expression
     let (arg_results, arg_env) = eval(items[1].clone(), env);
@@ -20,7 +20,7 @@ pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 
 /// Evaluation: ! expr - force evaluation
 pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_one_arg!("!", items, env);
+    require_args_with_usage!("!", items, 1, env, "(! expr)");
     // Evaluate the expression after !
     eval(items[1].clone(), env)
 }
@@ -28,7 +28,7 @@ pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult
 /// Function: creates an evaluation loop that continues
 /// until it encounters a return value
 pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_one_arg!("function", items, env);
+    require_args_with_usage!("function", items, 1, env, "(function expr)");
 
     let mut current_expr = items[1].clone();
     let mut current_env = env;
@@ -88,7 +88,7 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
 /// Return: signals termination from a function evaluation loop
 pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_one_arg!("return", items, env);
+    require_args_with_usage!("return", items, 1, env, "(return value)");
 
     let (arg_results, arg_env) = eval(items[1].clone(), env);
     for result in &arg_results {
@@ -108,7 +108,7 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResul
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
 pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_three_args!("chain", items, env);
+    require_args_with_usage!("chain", items, 3, env, "(chain expr $var body)");
 
     let expr = &items[1];
     let var = &items[2];

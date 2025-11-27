@@ -3,7 +3,7 @@ use crate::backend::models::{EvalResult, MettaValue};
 
 /// Quote: return argument unevaluated
 pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_one_arg!("quote", items, env);
+    require_args_with_usage!("quote", items, 1, env, "(quote expr)");
     (vec![items[1].clone()], env)
 }
 

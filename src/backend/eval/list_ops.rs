@@ -32,7 +32,7 @@ fn suggest_variable_format(atom: &str) -> Option<String> {
 /// Maps a function over a list of atoms
 /// Example: (map-atom (1 2 3 4) $v (+ $v 1)) -> (2 3 4 5)
 pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_three_args!("map-atom", items, env);
+    require_args_with_usage!("map-atom", items, 3, env, "(map-atom list $var expr)");
 
     let list = &items[1];
     let var = &items[2];
@@ -110,7 +110,13 @@ pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// Filters a list keeping only elements that satisfy the predicate
 /// Example: (filter-atom (1 2 3 4) $v (> $v 2)) -> (3 4)
 pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_three_args!("filter-atom", items, env);
+    require_args_with_usage!(
+        "filter-atom",
+        items,
+        3,
+        env,
+        "(filter-atom list $var predicate)"
+    );
 
     let list = &items[1];
     let var = &items[2];

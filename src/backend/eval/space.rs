@@ -26,7 +26,7 @@ fn suggest_space_name(name: &str) -> Option<String> {
 
 /// Rule definition: (= lhs rhs) - add to MORK Space and rule cache
 pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_two_args!("=", items, env);
+    require_args_with_usage!("=", items, 2, env, "(= pattern body)");
 
     let lhs = items[1].clone();
     let rhs = items[2].clone();

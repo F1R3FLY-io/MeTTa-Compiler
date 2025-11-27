@@ -25,7 +25,7 @@ pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult
 
 /// Is-error: check if value is an error (for error recovery)
 pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_one_arg!("is-error", items, env);
+    require_args_with_usage!("is-error", items, 1, env, "(is-error expr)");
 
     let (results, new_env) = eval(items[1].clone(), env);
     if let Some(first) = results.first() {

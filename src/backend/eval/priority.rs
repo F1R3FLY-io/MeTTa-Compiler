@@ -1,5 +1,3 @@
-
-
 //! Priority Ordering for MORK Exec Rules
 //!
 //! This module implements priority comparison for exec rules, supporting:
@@ -219,10 +217,7 @@ mod tests {
         if n == 0 {
             MettaValue::Atom("Z".to_string())
         } else {
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("S".to_string()),
-                make_peano(n - 1),
-            ])
+            MettaValue::SExpr(vec![MettaValue::Atom("S".to_string()), make_peano(n - 1)])
         }
     }
 
@@ -314,7 +309,10 @@ mod tests {
         assert!(is_peano(&make_peano(5)));
 
         assert!(!is_peano(&MettaValue::Long(0)));
-        assert!(!is_peano(&make_tuple(vec![MettaValue::Long(1), MettaValue::Long(2)])));
+        assert!(!is_peano(&make_tuple(vec![
+            MettaValue::Long(1),
+            MettaValue::Long(2)
+        ])));
     }
 
     #[test]
@@ -338,9 +336,9 @@ mod tests {
 
         // Type precedence: Integer < Atom < SExpr
         // So: 0 < 1 < 2 < Z
-        assert_eq!(sorted[0].1, "low");      // 0 (Integer)
-        assert_eq!(sorted[1].1, "medium");   // 1 (Integer)
-        assert_eq!(sorted[2].1, "high");     // 2 (Integer)
-        assert_eq!(sorted[3].1, "zero");     // Z (Atom)
+        assert_eq!(sorted[0].1, "low"); // 0 (Integer)
+        assert_eq!(sorted[1].1, "medium"); // 1 (Integer)
+        assert_eq!(sorted[2].1, "high"); // 2 (Integer)
+        assert_eq!(sorted[3].1, "zero"); // Z (Atom)
     }
 }

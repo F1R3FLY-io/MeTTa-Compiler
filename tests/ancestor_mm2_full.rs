@@ -75,36 +75,48 @@ fn test_full_ancestor_mm2() {
     // ========== RULES (lines 27-39) ==========
 
     // Rule 1 (0 0): parent -> child
-    let rule1 = compile("
+    let rule1 = compile(
+        "
         (exec (0 0) (, (parent $p $c))
                     (, (child $c $p)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
     env.add_to_space(&rule1.source[0]);
 
     // Rule 2 (0 1): poi + child -> generation Z
-    let rule2 = compile("
+    let rule2 = compile(
+        "
         (exec (0 1) (, (poi $c) (child $c $p))
                     (, (generation Z $c $p)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
     env.add_to_space(&rule2.source[0]);
 
     // Rule 3 (1 Z): Meta-rule for dynamic exec generation
     // This is the key meta-programming pattern!
-    let rule3 = compile("
+    let rule3 = compile(
+        "
         (exec (1 Z) (, (exec (1 $l) $ps $ts)
                        (generation $l $c $p)
                        (child $p $gp))
                     (, (exec (1 (S $l)) $ps $ts)
                        (generation (S $l) $c $gp)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
     env.add_to_space(&rule3.source[0]);
 
     // Rule 4 (2 0): generation -> ancestor
     // NOTE: Original has typo "anscestor" - we use correct spelling
-    let rule4 = compile("
+    let rule4 = compile(
+        "
         (exec (2 0) (, (generation $_ $p $a))
                     (, (ancestor $p $a)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
     env.add_to_space(&rule4.source[0]);
 
     println!("Initial facts: {}", count_facts(&env));
@@ -133,9 +145,18 @@ fn test_full_ancestor_mm2() {
     let ann_pam = query_fact(&final_env, "(ancestor Ann Pam)");
     let ann_tom = query_fact(&final_env, "(ancestor Ann Tom)");
 
-    println!("(ancestor Ann Bob): {}", if !ann_bob.is_empty() { "✓" } else { "✗" });
-    println!("(ancestor Ann Pam): {}", if !ann_pam.is_empty() { "✓" } else { "✗" });
-    println!("(ancestor Ann Tom): {}", if !ann_tom.is_empty() { "✓" } else { "✗" });
+    println!(
+        "(ancestor Ann Bob): {}",
+        if !ann_bob.is_empty() { "✓" } else { "✗" }
+    );
+    println!(
+        "(ancestor Ann Pam): {}",
+        if !ann_pam.is_empty() { "✓" } else { "✗" }
+    );
+    println!(
+        "(ancestor Ann Tom): {}",
+        if !ann_tom.is_empty() { "✓" } else { "✗" }
+    );
 
     assert!(!ann_bob.is_empty(), "Should derive (ancestor Ann Bob)");
     assert!(!ann_pam.is_empty(), "Should derive (ancestor Ann Pam)");
@@ -147,8 +168,14 @@ fn test_full_ancestor_mm2() {
     let vic_whu = query_fact(&final_env, "(ancestor Vic Whu)");
     let vic_zac = query_fact(&final_env, "(ancestor Vic Zac)");
 
-    println!("(ancestor Vic Whu): {}", if !vic_whu.is_empty() { "✓" } else { "✗" });
-    println!("(ancestor Vic Zac): {}", if !vic_zac.is_empty() { "✓" } else { "✗" });
+    println!(
+        "(ancestor Vic Whu): {}",
+        if !vic_whu.is_empty() { "✓" } else { "✗" }
+    );
+    println!(
+        "(ancestor Vic Zac): {}",
+        if !vic_zac.is_empty() { "✓" } else { "✗" }
+    );
 
     assert!(!vic_whu.is_empty(), "Should derive (ancestor Vic Whu)");
     assert!(!vic_zac.is_empty(), "Should derive (ancestor Vic Zac)");
@@ -165,7 +192,10 @@ fn test_full_ancestor_mm2() {
     println!("Ann generation (S Z): {} matches", ann_gen_sz.len());
 
     assert!(!ann_gen_z.is_empty(), "Should have (generation Z Ann Bob)");
-    assert!(!ann_gen_sz.is_empty(), "Should have (generation (S Z) Ann ...)");
+    assert!(
+        !ann_gen_sz.is_empty(),
+        "Should have (generation (S Z) Ann ...)"
+    );
 
     // Vic's generations
     let vic_gen_z = query_fact(&final_env, "(generation Z Vic Whu)");
@@ -175,8 +205,10 @@ fn test_full_ancestor_mm2() {
     println!("Vic generation Z (Zac): {} matches", vic_gen_z2.len());
 
     // Note: Vic has two parents (Whu and Zac), so should have two gen Z facts
-    assert!(!vic_gen_z.is_empty() || !vic_gen_z2.is_empty(),
-            "Should have at least one (generation Z Vic ...)");
+    assert!(
+        !vic_gen_z.is_empty() || !vic_gen_z2.is_empty(),
+        "Should have at least one (generation Z Vic ...)"
+    );
 
     println!("\n=== Test Passed! ===");
     println!("Full ancestor.mm2 support verified ✓");
@@ -205,33 +237,43 @@ fn test_ancestor_mm2_with_incest_detection() {
     let rule1 = compile("(exec (0 0) (, (parent $p $c)) (, (child $c $p)))").unwrap();
     env.add_to_space(&rule1.source[0]);
 
-    let rule2 = compile("(exec (0 1) (, (poi $c) (child $c $p)) (, (generation Z $c $p)))").unwrap();
+    let rule2 =
+        compile("(exec (0 1) (, (poi $c) (child $c $p)) (, (generation Z $c $p)))").unwrap();
     env.add_to_space(&rule2.source[0]);
 
     // Meta-rule (simplified - just track one generation)
-    let rule3 = compile("
+    let rule3 = compile(
+        "
         (exec (1 Z) (, (generation Z $c $p) (child $p $gp))
                     (, (generation (S Z) $c $gp)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
     env.add_to_space(&rule3.source[0]);
 
     // Incest detection rule (line 47-48)
     let incest_levels = compile("(considered_incest (S Z))").unwrap();
     env.add_to_space(&incest_levels.source[0]);
 
-    let incest_rule = compile("
+    let incest_rule = compile(
+        "
         (exec (2 1) (, (considered_incest $x)
                        (generation $x $p $a)
                        (generation $x $q $a))
                     (, (incest $p $q)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
     env.add_to_space(&incest_rule.source[0]);
 
     // Incest self-removal rule (line 49)
-    let incest_self_remove = compile("
+    let incest_self_remove = compile(
+        "
         (exec (2 2) (, (incest $p $p))
                     (O (- (incest $p $p))))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
     env.add_to_space(&incest_self_remove.source[0]);
 
     // Run to fixed point
@@ -255,8 +297,14 @@ fn test_ancestor_mm2_with_incest_detection() {
         let self_incest_uru = query_fact(&final_env, "(incest Uru Uru)");
         let self_incest_vic = query_fact(&final_env, "(incest Vic Vic)");
 
-        assert!(self_incest_uru.is_empty(), "Self-incest should be removed for Uru");
-        assert!(self_incest_vic.is_empty(), "Self-incest should be removed for Vic");
+        assert!(
+            self_incest_uru.is_empty(),
+            "Self-incest should be removed for Uru"
+        );
+        assert!(
+            self_incest_vic.is_empty(),
+            "Self-incest should be removed for Vic"
+        );
     }
 }
 
@@ -276,17 +324,21 @@ fn test_ancestor_mm2_meta_rule_execution() {
     let rule1 = compile("(exec (0 0) (, (parent $p $c)) (, (child $c $p)))").unwrap();
     env.add_to_space(&rule1.source[0]);
 
-    let rule2 = compile("(exec (0 1) (, (poi $c) (child $c $p)) (, (generation Z $c $p)))").unwrap();
+    let rule2 =
+        compile("(exec (0 1) (, (poi $c) (child $c $p)) (, (generation Z $c $p)))").unwrap();
     env.add_to_space(&rule2.source[0]);
 
     // The meta-rule (key test!)
-    let meta_rule = compile("
+    let meta_rule = compile(
+        "
         (exec (1 Z) (, (exec (1 $l) $ps $ts)
                        (generation $l $c $p)
                        (child $p $gp))
                     (, (exec (1 (S $l)) $ps $ts)
                        (generation (S $l) $c $gp)))
-    ").unwrap();
+    ",
+    )
+    .unwrap();
     env.add_to_space(&meta_rule.source[0]);
 
     println!("\n=== Testing Meta-Rule Execution ===");
@@ -294,7 +346,10 @@ fn test_ancestor_mm2_meta_rule_execution() {
 
     let (final_env, result) = eval_env_to_fixed_point(env, 20);
 
-    println!("Final exec rules in space: {}", count_exec_rules(&final_env));
+    println!(
+        "Final exec rules in space: {}",
+        count_exec_rules(&final_env)
+    );
     println!("Iterations: {}", result.iterations);
     println!("Converged: {}", result.converged);
 

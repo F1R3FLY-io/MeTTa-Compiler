@@ -128,11 +128,18 @@ impl FuzzyMatcher {
             return None;
         }
 
+        // Filter out exact matches (distance 0) - if the term already exists,
+        // suggesting "Did you mean: X?" where X is exactly the query is unhelpful
         let suggestion_list: Vec<String> = suggestions
             .into_iter()
+            .filter(|(_, distance)| *distance > 0)
             .take(max_suggestions)
             .map(|(term, _)| term)
             .collect();
+
+        if suggestion_list.is_empty() {
+            return None;
+        }
 
         if suggestion_list.len() == 1 {
             Some(format!("Did you mean: {}?", suggestion_list[0]))

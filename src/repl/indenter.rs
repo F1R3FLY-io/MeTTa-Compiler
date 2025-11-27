@@ -59,27 +59,19 @@ impl SmartIndenter {
         let mut brace_depth: usize = 0;
         let mut in_string = false;
         let mut in_line_comment = false;
-        let mut in_block_comment = false;
         let mut escape_next = false;
-        let mut chars = buffer.chars().peekable();
+        let chars = buffer.chars().peekable();
 
-        while let Some(ch) = chars.next() {
+        for ch in chars {
             if escape_next {
                 escape_next = false;
                 continue;
             }
 
+            // Line comments (;) end at newline
             if in_line_comment {
                 if ch == '\n' {
                     in_line_comment = false;
-                }
-                continue;
-            }
-
-            if in_block_comment {
-                if ch == '*' && chars.peek() == Some(&'/') {
-                    chars.next();
-                    in_block_comment = false;
                 }
                 continue;
             }
@@ -93,22 +85,10 @@ impl SmartIndenter {
                 continue;
             }
 
-            // Check for comment start
+            // Start of line comment (MeTTa uses ; for comments)
             if ch == ';' {
                 in_line_comment = true;
                 continue;
-            }
-
-            if ch == '/' {
-                if chars.peek() == Some(&'/') {
-                    chars.next();
-                    in_line_comment = true;
-                    continue;
-                } else if chars.peek() == Some(&'*') {
-                    chars.next();
-                    in_block_comment = true;
-                    continue;
-                }
             }
 
             if ch == '"' {

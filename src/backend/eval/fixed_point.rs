@@ -41,11 +41,7 @@ pub struct ExecRule {
 
 impl ExecRule {
     /// Create a new exec rule from components
-    pub fn new(
-        priority: MettaValue,
-        antecedent: MettaValue,
-        consequent: MettaValue,
-    ) -> Self {
+    pub fn new(priority: MettaValue, antecedent: MettaValue, consequent: MettaValue) -> Self {
         // Construct full exec expression for storage
         let full_expr = MettaValue::SExpr(vec![
             MettaValue::Atom("exec".to_string()),
@@ -189,7 +185,7 @@ fn count_facts(env: &Environment) -> usize {
 /// Evaluates the rule's antecedent against current facts.
 /// If successful, executes consequent and returns updated environment.
 fn try_fire_rule(rule: &ExecRule, env: Environment) -> Environment {
-    use super::eval_with_depth;
+    use super::eval;
 
     // DEBUG: Check what facts are in environment before firing
     let wildcard = MettaValue::Atom("$_".to_string());
@@ -197,7 +193,7 @@ fn try_fire_rule(rule: &ExecRule, env: Environment) -> Environment {
 
     // Evaluate the full exec expression
     // This will handle antecedent matching and consequent execution
-    let (_results, new_env) = eval_with_depth(rule.full_expr.clone(), env, 0);
+    let (_results, new_env) = eval(rule.full_expr.clone(), env);
 
     // DEBUG: Check facts after firing
     let _after_facts = new_env.match_space(&wildcard, &wildcard);
@@ -264,10 +260,7 @@ fn extract_exec_rules(env: &Environment) -> Vec<ExecRule> {
     let matches = env.match_space(&exec_pattern, &exec_pattern);
 
     // Parse each match into an ExecRule
-    matches
-        .iter()
-        .filter_map(|m| ExecRule::from_sexpr(m))
-        .collect()
+    matches.iter().filter_map(ExecRule::from_sexpr).collect()
 }
 
 #[cfg(test)]
@@ -295,21 +288,9 @@ mod tests {
     #[test]
     fn test_sort_rules_by_priority() {
         // Create rules with different priorities
-        let r0 = ExecRule::new(
-            MettaValue::Long(2),
-            MettaValue::Nil,
-            MettaValue::Nil,
-        );
-        let r1 = ExecRule::new(
-            MettaValue::Long(0),
-            MettaValue::Nil,
-            MettaValue::Nil,
-        );
-        let r2 = ExecRule::new(
-            MettaValue::Long(1),
-            MettaValue::Nil,
-            MettaValue::Nil,
-        );
+        let r0 = ExecRule::new(MettaValue::Long(2), MettaValue::Nil, MettaValue::Nil);
+        let r1 = ExecRule::new(MettaValue::Long(0), MettaValue::Nil, MettaValue::Nil);
+        let r2 = ExecRule::new(MettaValue::Long(1), MettaValue::Nil, MettaValue::Nil);
 
         let mut rules = vec![r0, r1, r2];
         sort_rules_by_priority(&mut rules);

@@ -18,13 +18,39 @@ use std::sync::OnceLock;
 /// MeTTa built-in keywords for syntax-level "did you mean" suggestions
 const METTA_KEYWORDS: &[&str] = &[
     // Special forms
-    "=", "!", "quote", "if", "error", "is-error", "catch", "eval",
-    "function", "return", "chain", "match", "case", "switch", "let",
-    ":", "get-type", "check-type", "map-atom", "filter-atom", "foldl-atom",
+    "=",
+    "!",
+    "quote",
+    "if",
+    "error",
+    "is-error",
+    "catch",
+    "eval",
+    "function",
+    "return",
+    "chain",
+    "match",
+    "case",
+    "switch",
+    "let",
+    ":",
+    "get-type",
+    "check-type",
+    "map-atom",
+    "filter-atom",
+    "foldl-atom",
     // Arithmetic operators
-    "+", "-", "*", "/",
+    "+",
+    "-",
+    "*",
+    "/",
     // Comparison operators
-    "<", "<=", ">", ">=", "==", "!=",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "==",
+    "!=",
 ];
 
 /// Get fuzzy matcher for MeTTa keywords (lazily initialized)
@@ -1319,7 +1345,11 @@ mod tests {
             text: "quota".to_string(),
         };
         let msg = improve_error_message(&error);
-        assert!(msg.contains("Did you mean"), "Expected suggestion in: {}", msg);
+        assert!(
+            msg.contains("Did you mean"),
+            "Expected suggestion in: {}",
+            msg
+        );
         assert!(msg.contains("quote"), "Expected 'quote' in: {}", msg);
     }
 
@@ -1335,7 +1365,11 @@ mod tests {
             text: "iff".to_string(),
         };
         let msg = improve_error_message(&error);
-        assert!(msg.contains("Did you mean"), "Expected suggestion in: {}", msg);
+        assert!(
+            msg.contains("Did you mean"),
+            "Expected suggestion in: {}",
+            msg
+        );
         assert!(msg.contains("if"), "Expected 'if' in: {}", msg);
     }
 
@@ -1352,7 +1386,11 @@ mod tests {
         };
         let msg = improve_error_message(&error);
         // Should not contain "Did you mean" when no similar keyword
-        assert!(!msg.contains("Did you mean"), "Unexpected suggestion in: {}", msg);
+        assert!(
+            !msg.contains("Did you mean"),
+            "Unexpected suggestion in: {}",
+            msg
+        );
     }
 
     #[test]
@@ -1367,7 +1405,11 @@ mod tests {
             text: String::new(),
         };
         let msg = improve_error_message(&error);
-        assert!(!msg.contains("Did you mean"), "Unexpected suggestion for empty text: {}", msg);
+        assert!(
+            !msg.contains("Did you mean"),
+            "Unexpected suggestion for empty text: {}",
+            msg
+        );
     }
 
     #[test]

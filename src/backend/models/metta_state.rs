@@ -100,6 +100,18 @@ impl MettaState {
     }
 }
 
+impl From<MettaValue> for MettaState {
+    /// Create a compiled state containing an error s-expression
+    /// Used when parsing fails to allow error handling at the evaluation level
+    fn from(error_sexpr: MettaValue) -> Self {
+        MettaState {
+            source: vec![error_sexpr],
+            environment: Environment::new(),
+            output: Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

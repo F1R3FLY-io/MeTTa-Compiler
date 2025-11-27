@@ -1,6 +1,6 @@
 /// MeTTaTron - MeTTa Evaluator CLI
 use mettatron::backend::*;
-use mettatron::sexpr::*;
+use mettatron::tree_sitter_parser::TreeSitterMettaParser;
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -139,8 +139,8 @@ fn format_result(value: &MettaValue) -> String {
         MettaValue::Atom(s) => s.clone(),
         MettaValue::Bool(b) => b.to_string(),
         MettaValue::Long(n) => n.to_string(),
+        MettaValue::Float(f) => f.to_string(),
         MettaValue::String(s) => format!("\"{}\"", s),
-        MettaValue::Uri(s) => format!("`{}`", s),
         MettaValue::Nil => "Nil".to_string(),
         MettaValue::Error(msg, details) => {
             // Format as (Error "msg" details) to match MeTTa spec
@@ -163,15 +163,13 @@ fn format_results(results: &[MettaValue]) -> String {
 }
 
 fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
-    // Lexical analysis
-    let mut lexer = Lexer::new(input);
-    let tokens = lexer
-        .tokenize()
-        .map_err(|e| format!("Lexical error: {}", e))?;
-
     if options.show_sexpr {
-        let mut parser = Parser::new(tokens);
-        let sexprs = parser.parse().map_err(|e| format!("Parse error: {}", e))?;
+        // Parse and show s-expressions using Tree-Sitter
+        let mut parser = TreeSitterMettaParser::new()
+            .map_err(|e| format!("Failed to initialize parser: {}", e))?;
+        let sexprs = parser
+            .parse(input)
+            .map_err(|e| format!("Parse error: {}", e))?;
         let mut output = String::new();
         for sexpr in sexprs {
             output.push_str(&format!("{}\n", sexpr));
@@ -180,7 +178,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     }
 
     // Compile to MettaValue
-    let state = compile(input)?;
+    let state = compile(input).map_err(|e| e.to_string())?;
     let mut env = state.environment;
 
     // Evaluate each expression
@@ -210,10 +208,23 @@ fn run_repl() {
 
     loop {
         print!("metta[{}]> ", line_num);
-        io::stdout().flush().unwrap();
+        if let Err(e) = io::stdout().flush() {
+            eprintln!("Warning: Failed to flush output: {}", e);
+        }
 
         let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
+        match io::stdin().read_line(&mut input) {
+            Ok(0) => {
+                // EOF received
+                println!("\nGoodbye!");
+                break;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error reading input: {}. Exiting REPL.", e);
+                break;
+            }
+        }
         let input = input.trim();
 
         if input == "exit" || input == "quit" {

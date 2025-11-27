@@ -2,9 +2,9 @@
 //!
 //! This module handles the bidirectional conversion needed for query_multi integration:
 //! - MettaValue → MORK Expr (for pattern queries)
-//! - MORK bindings → HashMap<String, MettaValue> (for pattern match results)
+//! - MORK bindings → SmallVec<[(String, MettaValue); 8]> (for pattern match results)
 
-use super::models::MettaValue;
+use super::models::{Bindings, MettaValue};
 use mork::space::Space;
 use mork_expr::{Expr, ExprEnv, ExprZipper};
 use mork_frontend::bytestring_parser::Parser;
@@ -113,15 +113,14 @@ fn write_metta_value(
             write_symbol(s.as_bytes(), space, ez)?;
         }
 
+        MettaValue::Float(f) => {
+            let s = f.to_string();
+            write_symbol(s.as_bytes(), space, ez)?;
+        }
+
         MettaValue::String(s) => {
             // MORK uses quoted strings
             let quoted = format!("\"{}\"", s);
-            write_symbol(quoted.as_bytes(), space, ez)?;
-        }
-
-        MettaValue::Uri(u) => {
-            // MORK uses backticks for URIs
-            let quoted = format!("`{}`", u);
             write_symbol(quoted.as_bytes(), space, ez)?;
         }
 
@@ -176,23 +175,31 @@ fn write_symbol(bytes: &[u8], space: &Space, ez: &mut ExprZipper) -> Result<(), 
 /// Convert MORK bindings to our Bindings format
 ///
 /// MORK uses BTreeMap<(u8, u8), ExprEnv> where the key is (old_var, new_var).
-/// We need to convert this to HashMap<String, MettaValue> using the original variable names.
+/// We need to convert this to SmallVec<[(String, MettaValue); 8]> using the original variable names.
 ///
 /// FIXED: Uses mork_expr_to_metta_value() instead of serialize2() to avoid reserved byte panic
+/// Now properly reports conversion errors instead of silently skipping bindings.
 #[allow(unused_variables)]
 pub fn mork_bindings_to_metta(
     mork_bindings: &std::collections::BTreeMap<(u8, u8), ExprEnv>,
     ctx: &ConversionContext,
     space: &Space,
-) -> Result<HashMap<String, MettaValue>, String> {
+) -> Result<Bindings, String> {
     use super::environment::Environment;
 
-    let mut bindings = HashMap::new();
+    let mut bindings = Bindings::new();
+    let mut conversion_errors: Vec<String> = Vec::new();
 
     for (&(old_var, _new_var), expr_env) in mork_bindings {
         // Get the variable name from context
         if (old_var as usize) >= ctx.var_names.len() {
-            continue; // Skip if variable not in our context
+            // Variable index out of bounds - this indicates an internal inconsistency
+            conversion_errors.push(format!(
+                "Variable index {} exceeds known variables (max: {})",
+                old_var,
+                ctx.var_names.len().saturating_sub(1)
+            ));
+            continue;
         }
         let var_name = &ctx.var_names[old_var as usize];
 
@@ -200,9 +207,25 @@ pub fn mork_bindings_to_metta(
         // FIXED: Use mork_expr_to_metta_value() instead of serialize2()
         // This avoids the "reserved byte" panic when bindings contain symbols with reserved bytes
         let expr: Expr = expr_env.subsexpr();
-        if let Ok(value) = Environment::mork_expr_to_metta_value(&expr, space) {
-            bindings.insert(format!("${}", var_name), value);
+        match Environment::mork_expr_to_metta_value(&expr, space) {
+            Ok(value) => {
+                bindings.insert(format!("${}", var_name), value);
+            }
+            Err(e) => {
+                conversion_errors.push(format!(
+                    "Failed to convert binding for ${}: {}",
+                    var_name, e
+                ));
+            }
         }
+    }
+
+    // If there were any conversion errors, return an error with all failures listed
+    if !conversion_errors.is_empty() {
+        return Err(format!(
+            "MORK binding conversion failed:\n  - {}",
+            conversion_errors.join("\n  - ")
+        ));
     }
 
     Ok(bindings)
@@ -216,7 +239,7 @@ mod tests {
     #[test]
     fn test_simple_atom_conversion() {
         let env = Environment::new();
-        let space = env.space.lock().unwrap();
+        let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
         let atom = MettaValue::Atom("foo".to_string());
@@ -227,7 +250,7 @@ mod tests {
     #[test]
     fn test_variable_conversion() {
         let env = Environment::new();
-        let space = env.space.lock().unwrap();
+        let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
         // First occurrence should create NewVar
@@ -241,7 +264,7 @@ mod tests {
     #[test]
     fn test_sexpr_conversion() {
         let env = Environment::new();
-        let space = env.space.lock().unwrap();
+        let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
         // (double $x)
@@ -257,7 +280,7 @@ mod tests {
     #[test]
     fn test_repeated_variable() {
         let env = Environment::new();
-        let space = env.space.lock().unwrap();
+        let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
         // (* $x $x) - same variable twice

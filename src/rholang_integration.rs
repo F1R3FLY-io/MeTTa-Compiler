@@ -1,3 +1,4 @@
+use crate::backend::compile::compile;
 /// Rholang Integration Module - Evaluation Functions
 ///
 /// **PRIMARY INTEGRATION**: Use `pathmap_par_integration` module for Rholang interop
@@ -5,10 +6,265 @@
 /// This module provides:
 /// 1. **JSON export** for debugging and inspection (`metta_state_to_json`)
 /// 2. **State evaluation** for REPL-style interaction (`run_state`, `run_state_async`)
+/// 3. **Error handling** for safe compilation (`compile_safe`)
 ///
 /// **Note**: For Rholang integration, use the PathMap Par functions in
 /// `pathmap_par_integration` module, not the JSON functions here.
+use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::models::{MettaState, MettaValue};
+use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+use std::sync::OnceLock;
+
+/// MeTTa built-in keywords for syntax-level "did you mean" suggestions
+const METTA_KEYWORDS: &[&str] = &[
+    // Special forms
+    "=",
+    "!",
+    "quote",
+    "if",
+    "error",
+    "is-error",
+    "catch",
+    "eval",
+    "function",
+    "return",
+    "chain",
+    "match",
+    "case",
+    "switch",
+    "let",
+    ":",
+    "get-type",
+    "check-type",
+    "map-atom",
+    "filter-atom",
+    "foldl-atom",
+    // Arithmetic operators
+    "+",
+    "-",
+    "*",
+    "/",
+    // Comparison operators
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "==",
+    "!=",
+];
+
+/// Get fuzzy matcher for MeTTa keywords (lazily initialized)
+fn keyword_matcher() -> &'static FuzzyMatcher {
+    static MATCHER: OnceLock<FuzzyMatcher> = OnceLock::new();
+    MATCHER.get_or_init(|| FuzzyMatcher::from_terms(METTA_KEYWORDS.iter().copied()))
+}
+
+/// Safe compilation wrapper that never fails
+///
+/// This function wraps the `compile()` function and provides improved error handling
+/// for Rholang integration. Instead of returning `Result<MettaState, String>`,
+/// it always returns a `MettaState`:
+/// - On success: Normal compiled state with parsed expressions
+/// - On error: State containing an error s-expression: `(error "message")`
+///
+/// This allows Rholang contracts to handle syntax errors gracefully without
+/// requiring complex error propagation through the Rholang runtime.
+///
+/// # Error Messages
+///
+/// The function improves upon Tree-Sitter's raw error messages by:
+/// - Extracting line and column information
+/// - Providing context about the error type
+/// - Suggesting common fixes for known error patterns
+///
+/// # Example
+///
+/// ```ignore
+/// // Valid MeTTa code
+/// let state = compile_safe("(+ 1 2)");
+/// assert_eq!(state.source.len(), 1);
+///
+/// // Invalid syntax - returns error s-expression
+/// let state = compile_safe("(+ 1 2");  // Unclosed parenthesis
+/// // state.source[0] == (error "Syntax error at line 1, column 7: ...")
+/// ```
+pub fn compile_safe(src: &str) -> MettaState {
+    match compile(src) {
+        Ok(state) => state,
+        Err(error) => {
+            // Improve error message with additional context
+            let improved_msg = improve_error_message(&error);
+
+            // Create error s-expression: (error "message")
+            let error_sexpr = MettaValue::SExpr(vec![
+                MettaValue::Atom("error".to_string()),
+                MettaValue::String(improved_msg),
+            ]);
+
+            // Return a state containing the error
+            MettaState::from(error_sexpr)
+        }
+    }
+}
+
+/// Improve error messages with additional context and suggestions using pattern matching
+fn improve_error_message(error: &SyntaxError) -> String {
+    let base_msg = error.to_string();
+
+    let hint = match &error.kind {
+        SyntaxErrorKind::UnclosedDelimiter(c) => {
+            Some(format!("check for missing closing '{}'", matching_close(*c)))
+        }
+        SyntaxErrorKind::ExtraClosingDelimiter(c) => {
+            Some(format!("remove extra '{}' or add matching '{}'", c, matching_open(*c)))
+        }
+        SyntaxErrorKind::UnclosedString => Some("close the string with '\"'".into()),
+        SyntaxErrorKind::InvalidEscape(seq) => {
+            // Provide specific suggestions based on the invalid escape character
+            let suggestion = match seq.chars().next() {
+                Some('n') | Some('N') => "use \\n for newline",
+                Some('t') | Some('T') => "use \\t for tab",
+                Some('r') | Some('R') => "use \\r for carriage return",
+                Some('0') => "use \\x00 for null byte (hex escape)",
+                Some(c) if c.is_ascii_hexdigit() => "use \\x## format (two hex digits)",
+                Some('u') | Some('U') => "use \\u{####} for Unicode codepoint",
+                Some('b') | Some('B') => "use \\x08 for backspace (hex escape)",
+                Some('f') | Some('F') => "use \\x0C for form feed (hex escape)",
+                Some('e') | Some('E') => "use \\x1B for escape (hex escape)",
+                _ => "valid escapes: \\n, \\t, \\r, \\\\, \\\", \\x## (hex), \\u{...} (unicode)",
+            };
+            Some(format!(
+                "invalid escape \\{}. Hint: {}",
+                seq, suggestion
+            ))
+        }
+        SyntaxErrorKind::UnexpectedToken => {
+            // Try to suggest similar keywords
+            if !error.text.is_empty() {
+                keyword_matcher().did_you_mean(&error.text, 1, 3)
+            } else {
+                None
+            }
+        }
+        SyntaxErrorKind::UnknownNodeKind(kind) => {
+            Some(format!(
+                "Parser encountered unknown syntax '{}'. Check for typos or unsupported syntax.",
+                kind
+            ))
+        }
+        SyntaxErrorKind::ParserInit(msg) => {
+            Some(format!(
+                "Parser initialization failed: {}. This may indicate a corrupt grammar file or installation issue.",
+                msg
+            ))
+        }
+        SyntaxErrorKind::Generic => {
+            Some("Check syntax near the indicated position. Common issues: unclosed parentheses, missing quotes, invalid escape sequences.".into())
+        }
+    };
+
+    match hint {
+        Some(h) => format!("{} (Hint: {})", base_msg, h),
+        None => base_msg,
+    }
+}
+
+/// Get the matching closing delimiter
+fn matching_close(open: char) -> char {
+    match open {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        c => c,
+    }
+}
+
+/// Get the matching opening delimiter
+fn matching_open(close: char) -> char {
+    match close {
+        ')' => '(',
+        ']' => '[',
+        '}' => '{',
+        c => c,
+    }
+}
+
+/// Convert MettaValue to a JSON-like string representation
+/// Used for debugging and human-readable output
+fn metta_value_to_json_string(value: &MettaValue) -> String {
+    match value {
+        MettaValue::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
+        MettaValue::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
+        MettaValue::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
+        MettaValue::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
+        MettaValue::String(s) => format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s)),
+        MettaValue::Nil => r#"{"type":"nil"}"#.to_string(),
+        MettaValue::SExpr(items) => {
+            let items_json: Vec<String> = items.iter().map(metta_value_to_json_string).collect();
+            format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
+        }
+        MettaValue::Error(msg, details) => {
+            format!(
+                r#"{{"type":"error","message":"{}","details":{}}}"#,
+                escape_json(msg),
+                metta_value_to_json_string(details)
+            )
+        }
+        MettaValue::Type(t) => {
+            format!(
+                r#"{{"type":"metatype","value":{}}}"#,
+                metta_value_to_json_string(t)
+            )
+        }
+    }
+}
+
+/// Escape JSON special characters
+fn escape_json(s: &str) -> String {
+    s.replace('\\', r"\\")
+        .replace('"', r#"\""#)
+        .replace('\n', r"\n")
+        .replace('\r', r"\r")
+        .replace('\t', r"\t")
+}
+
+/// Convert MettaState to JSON representation for debugging
+///
+/// Returns a JSON string with the format:
+/// ```json
+/// {
+///   "source": [...],
+///   "environment": {"facts_count": N},
+///   "output": [...]
+/// }
+/// ```
+///
+/// **Use Case**: Debugging, logging, inspection
+/// **Not Recommended**: Rholang integration (use PathMap Par instead)
+pub fn metta_state_to_json(state: &MettaState) -> String {
+    let source_json: Vec<String> = state
+        .source
+        .iter()
+        .map(metta_value_to_json_string)
+        .collect();
+
+    let outputs_json: Vec<String> = state
+        .output
+        .iter()
+        .map(metta_value_to_json_string)
+        .collect();
+
+    // For environment, we'll serialize facts count as a placeholder
+    // Full serialization of MORK Space would require more complex handling
+    let env_json = format!(r#"{{"facts_count":{}}}"#, state.environment.rule_count());
+
+    format!(
+        r#"{{"source":[{}],"environment":{},"output":[{}]}}"#,
+        source_json.join(","),
+        env_json,
+        outputs_json.join(",")
+    )
+}
 
 /// Run compiled state against accumulated state
 ///
@@ -21,7 +277,7 @@ use crate::backend::models::{MettaState, MettaValue};
 /// Returns a new accumulated state with:
 /// - Empty source (all evaluated)
 /// - Updated environment (merged with new rules/facts)
-/// - Extended output (accumulated results)
+/// - Fresh output (only results from THIS invocation's `!` evaluations)
 ///
 /// **Threading**: Synchronous, single-threaded evaluation
 pub fn run_state(
@@ -32,7 +288,8 @@ pub fn run_state(
 
     // Start with accumulated environment
     let mut env = accumulated_state.environment;
-    let mut outputs = accumulated_state.output;
+    // Start with empty outputs - each .run() returns only its own results
+    let mut outputs = Vec::new();
 
     // Evaluate each pending expression from compiled state
     for expr in compiled_state.source {
@@ -74,9 +331,37 @@ pub async fn run_state_async(
 ) -> Result<MettaState, String> {
     use crate::backend::eval::eval;
 
-    // Start with accumulated environment
-    let mut env = accumulated_state.environment;
-    let mut outputs = accumulated_state.output;
+    // Start with accumulated environment, but if it's empty and compiled has data, use compiled's environment
+    use pathmap::zipper::ZipperIteration;
+
+    let acc_count = {
+        let space = accumulated_state.environment.create_space();
+        let mut rz = space.btm.read_zipper();
+        let mut count = 0;
+        while rz.to_next_val() {
+            count += 1;
+        }
+        count
+    };
+
+    let comp_count = {
+        let space = compiled_state.environment.create_space();
+        let mut rz = space.btm.read_zipper();
+        let mut count = 0;
+        while rz.to_next_val() {
+            count += 1;
+        }
+        count
+    };
+
+    // Use the environment that has data (prefer accumulated, fall back to compiled if accumulated is empty)
+    let mut env = if acc_count > 0 || comp_count == 0 {
+        accumulated_state.environment
+    } else {
+        compiled_state.environment.clone()
+    };
+    // Start with empty outputs - each .run() returns only its own results
+    let mut outputs = Vec::new();
 
     // Batch expressions into parallelizable groups
     let mut current_batch: Vec<(usize, MettaValue, bool)> = Vec::new();
@@ -86,8 +371,11 @@ pub async fn run_state_async(
         let is_eval_expr = expr.is_eval_expr();
         let is_rule_def = expr.is_rule_def();
 
-        // If this is a rule definition and we have a batch, evaluate the batch first
-        if is_rule_def && !current_batch.is_empty() {
+        // Check if this is a ground fact (S-expression that's not a rule and not an eval)
+        let is_ground_fact = matches!(&expr, MettaValue::SExpr(_)) && !is_rule_def && !is_eval_expr;
+
+        // If this is a rule definition or ground fact and we have a batch, evaluate the batch first
+        if (is_rule_def || is_ground_fact) && !current_batch.is_empty() {
             // Evaluate parallel batch
             let batch_results = evaluate_batch_parallel(current_batch, env.clone()).await;
             for (_batch_idx, results, should_output) in batch_results {
@@ -98,13 +386,16 @@ pub async fn run_state_async(
             current_batch = Vec::new();
         }
 
-        // If this is a rule definition, execute it sequentially
-        if is_rule_def {
+        // If this is a rule definition or ground fact, execute it sequentially
+        // (both modify the environment by adding to MORK Space)
+        if is_rule_def || is_ground_fact {
             let (_results, new_env) = eval(expr, env);
             env = new_env;
-            // Rule definitions don't produce output
+            // Neither rule definitions nor ground facts produce output
+            // They only modify the environment by adding to MORK Space
+            // (Ground facts are not wrapped in !, so they shouldn't generate output)
         } else {
-            // Add to current batch for parallel execution
+            // Only eval expressions go in parallel batch
             current_batch.push((idx, expr, is_eval_expr));
         }
     }
@@ -166,6 +457,121 @@ async fn evaluate_batch_parallel(
 mod tests {
     use super::*;
     use crate::backend::compile::compile;
+    use crate::backend::models::MettaValue;
+
+    #[test]
+    fn test_metta_state_to_json() {
+        let src = "(+ 1 2)";
+        let state = compile(src).unwrap();
+        let json = metta_state_to_json(&state);
+
+        // Should return full MettaState with source, environment, output
+        assert!(json.contains(r#""source""#));
+        assert!(json.contains(r#""environment""#));
+        assert!(json.contains(r#""output""#));
+        assert!(json.contains(r#""type":"sexpr""#));
+    }
+
+    #[test]
+    fn test_metta_value_atom() {
+        let value = MettaValue::Atom("test".to_string());
+        let json = metta_value_to_json_string(&value);
+        assert_eq!(json, r#"{"type":"atom","value":"test"}"#);
+    }
+
+    #[test]
+    fn test_metta_value_number() {
+        let value = MettaValue::Long(42);
+        let json = metta_value_to_json_string(&value);
+        assert_eq!(json, r#"{"type":"number","value":42}"#);
+    }
+
+    #[test]
+    fn test_metta_value_bool() {
+        let value = MettaValue::Bool(true);
+        let json = metta_value_to_json_string(&value);
+        assert_eq!(json, r#"{"type":"bool","value":true}"#);
+    }
+
+    #[test]
+    fn test_metta_value_string() {
+        let value = MettaValue::String("hello".to_string());
+        let json = metta_value_to_json_string(&value);
+        assert_eq!(json, r#"{"type":"string","value":"hello"}"#);
+    }
+
+    #[test]
+    fn test_metta_value_nil() {
+        let value = MettaValue::Nil;
+        let json = metta_value_to_json_string(&value);
+        assert_eq!(json, r#"{"type":"nil"}"#);
+    }
+
+    #[test]
+    fn test_metta_value_sexpr() {
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        let json = metta_value_to_json_string(&value);
+        assert!(json.contains(r#""type":"sexpr""#));
+        assert!(json.contains(r#""items""#));
+    }
+
+    #[test]
+    fn test_escape_json() {
+        let escaped = escape_json("hello\n\"world\"\\test");
+        assert_eq!(escaped, r#"hello\n\"world\"\\test"#);
+    }
+
+    #[test]
+    fn test_compile_safe_success() {
+        let state = compile_safe("(+ 1 2)");
+        assert_eq!(state.source.len(), 1);
+        // Should be a valid S-expression, not an error
+        match &state.source[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], MettaValue::Atom("+".to_string()));
+            }
+            _ => panic!("Expected SExpr for valid input"),
+        }
+    }
+
+    #[test]
+    fn test_compile_safe_syntax_error() {
+        let state = compile_safe("(+ 1 2");
+        assert_eq!(state.source.len(), 1);
+        // Should be an error s-expression
+        match &state.source[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], MettaValue::Atom("error".to_string()));
+                // Error message should be a string
+                assert!(matches!(&items[1], MettaValue::String(_)));
+                // Error message should mention the syntax issue
+                if let MettaValue::String(msg) = &items[1] {
+                    assert!(msg.contains("Syntax error") || msg.contains("unexpected"));
+                }
+            }
+            _ => panic!("Expected error s-expression for syntax error"),
+        }
+    }
+
+    #[test]
+    fn test_compile_safe_improves_error_message() {
+        let state = compile_safe("(+ 1 2");
+        match &state.source[0] {
+            MettaValue::SExpr(items) => {
+                if let MettaValue::String(msg) = &items[1] {
+                    // Should include hint about unclosed parenthesis
+                    assert!(msg.contains("Hint") && msg.contains("unclosed"));
+                }
+            }
+            _ => panic!("Expected error s-expression"),
+        }
+    }
 
     #[test]
     fn test_run_state_simple() {
@@ -252,6 +658,24 @@ mod tests {
         assert_eq!(result.output.len(), 2);
         assert_eq!(result.output[0], MettaValue::Long(10));
         assert_eq!(result.output[1], MettaValue::Long(20));
+    }
+
+    #[test]
+    fn test_ground_facts_not_in_output() {
+        // Regression test: verify ground facts are NOT added to output
+        let mut accumulated = MettaState::new_empty();
+
+        // Add ground facts
+        let compiled1 = compile("(connected room_a room_b) (connected room_b room_c)").unwrap();
+        accumulated = run_state(accumulated, compiled1).unwrap();
+        // Ground facts should NOT produce output
+        assert_eq!(accumulated.output.len(), 0);
+
+        // Verify ground facts are in environment (can be queried)
+        let compiled2 = compile("!(match &self (connected $from $to) ($from $to))").unwrap();
+        accumulated = run_state(accumulated, compiled2).unwrap();
+        // Now output should contain query results (2 matches)
+        assert_eq!(accumulated.output.len(), 2);
     }
 
     #[cfg(feature = "async")]
@@ -718,6 +1142,25 @@ mod tests {
 
     #[cfg(feature = "async")]
     #[tokio::test]
+    async fn test_ground_facts_not_in_output_async() {
+        // Regression test: verify ground facts are NOT added to output (async version)
+        let mut accumulated = MettaState::new_empty();
+
+        // Add ground facts
+        let compiled1 = compile("(connected room_a room_b) (connected room_b room_c)").unwrap();
+        accumulated = run_state_async(accumulated, compiled1).await.unwrap();
+        // Ground facts should NOT produce output
+        assert_eq!(accumulated.output.len(), 0);
+
+        // Verify ground facts are in environment (can be queried)
+        let compiled2 = compile("!(match &self (connected $from $to) ($from $to))").unwrap();
+        accumulated = run_state_async(accumulated, compiled2).await.unwrap();
+        // Now output should contain query results (2 matches)
+        assert_eq!(accumulated.output.len(), 2);
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
     async fn test_run_state_async_parallel_queries() {
         let accumulated = MettaState::new_empty();
         let compiled = compile(
@@ -775,5 +1218,244 @@ mod tests {
         let result = run_state(accumulated, compiled).unwrap();
 
         assert!(!result.output.is_empty());
+    }
+
+    // Tests for improve_error_message with different SyntaxErrorKind variants
+
+    #[test]
+    fn test_improve_error_message_unclosed_paren() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnclosedDelimiter('('),
+            line: 1,
+            column: 7,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("missing closing ')'"));
+    }
+
+    #[test]
+    fn test_improve_error_message_extra_close_paren() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::ExtraClosingDelimiter(')'),
+            line: 1,
+            column: 8,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("remove extra ')'") || msg.contains("add matching '('"));
+    }
+
+    #[test]
+    fn test_improve_error_message_unclosed_string() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnclosedString,
+            line: 1,
+            column: 10,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("close the string"));
+    }
+
+    #[test]
+    fn test_improve_error_message_invalid_escape() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::InvalidEscape("z".to_string()),
+            line: 1,
+            column: 5,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("valid escapes"));
+    }
+
+    #[test]
+    fn test_improve_error_message_generic_has_hint() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::Generic,
+            line: 1,
+            column: 1,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        // Generic errors now have a helpful hint
+        assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
+        assert!(
+            msg.contains("Common issues"),
+            "Expected 'Common issues' in: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_improve_error_message_unclosed_bracket() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnclosedDelimiter('['),
+            line: 1,
+            column: 5,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("missing closing ']'"));
+    }
+
+    #[test]
+    fn test_improve_error_message_unclosed_brace() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnclosedDelimiter('{'),
+            line: 1,
+            column: 5,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"));
+        assert!(msg.contains("missing closing '}'"));
+    }
+
+    #[test]
+    fn test_keyword_suggestion_quota_to_quote() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        // "quota" is close to "quote"
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnexpectedToken,
+            line: 1,
+            column: 1,
+            text: "quota".to_string(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(
+            msg.contains("Did you mean"),
+            "Expected suggestion in: {}",
+            msg
+        );
+        assert!(msg.contains("quote"), "Expected 'quote' in: {}", msg);
+    }
+
+    #[test]
+    fn test_keyword_suggestion_iff_to_if() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        // "iff" is close to "if"
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnexpectedToken,
+            line: 1,
+            column: 1,
+            text: "iff".to_string(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(
+            msg.contains("Did you mean"),
+            "Expected suggestion in: {}",
+            msg
+        );
+        assert!(msg.contains("if"), "Expected 'if' in: {}", msg);
+    }
+
+    #[test]
+    fn test_keyword_suggestion_no_match() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        // "xyzzy" is not close to any keyword
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnexpectedToken,
+            line: 1,
+            column: 1,
+            text: "xyzzy".to_string(),
+        };
+        let msg = improve_error_message(&error);
+        // Should not contain "Did you mean" when no similar keyword
+        assert!(
+            !msg.contains("Did you mean"),
+            "Unexpected suggestion in: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_keyword_suggestion_empty_text() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        // Empty text should not produce a suggestion
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnexpectedToken,
+            line: 1,
+            column: 1,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(
+            !msg.contains("Did you mean"),
+            "Unexpected suggestion for empty text: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_improve_error_message_unknown_node_kind() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::UnknownNodeKind("weird_node".to_string()),
+            line: 1,
+            column: 5,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
+        assert!(
+            msg.contains("weird_node"),
+            "Expected node kind name in: {}",
+            msg
+        );
+        assert!(
+            msg.contains("unknown syntax") || msg.contains("unsupported"),
+            "Expected helpful message in: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_improve_error_message_parser_init() {
+        use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
+
+        let error = SyntaxError {
+            kind: SyntaxErrorKind::ParserInit("failed to load grammar".to_string()),
+            line: 0,
+            column: 0,
+            text: String::new(),
+        };
+        let msg = improve_error_message(&error);
+        assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
+        assert!(
+            msg.contains("failed to load grammar"),
+            "Expected original message in: {}",
+            msg
+        );
+        assert!(
+            msg.contains("initialization") || msg.contains("grammar file"),
+            "Expected helpful context in: {}",
+            msg
+        );
     }
 }

@@ -21,13 +21,6 @@ fn create_int_par(n: i64) -> Par {
     }])
 }
 
-/// Helper function to create a Par with a URI value
-fn create_uri_par(uri: String) -> Par {
-    Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::GUri(uri)),
-    }])
-}
-
 // Magic numbers for MeTTa Environment byte arrays
 // These identify byte arrays as MeTTa-specific data for the pretty-printer
 const METTA_MULTIPLICITIES_MAGIC: &[u8] = b"MTTM"; // MeTTa Multiplicities
@@ -44,6 +37,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
             expr_instance: Some(ExprInstance::GBool(*b)),
         }]),
         MettaValue::Long(n) => create_int_par(*n),
+        MettaValue::Float(f) => create_string_par(f.to_string()),
         MettaValue::String(s) => {
             // Strings are quoted with escaped quotes to distinguish from atoms
             create_string_par(format!(
@@ -51,7 +45,6 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 s.replace("\\", "\\\\").replace("\"", "\\\"")
             ))
         }
-        MettaValue::Uri(s) => create_uri_par(s.clone()),
         MettaValue::Nil => {
             // Represent Nil as empty Par
             Par::default()
@@ -127,7 +120,7 @@ pub fn environment_to_par(env: &Environment) -> Par {
     // Instead, we collect RAW path bytes directly from the trie using read_zipper.
     // This preserves bytes exactly without interpretation.
 
-    let space = env.space.lock().unwrap();
+    let space = env.create_space();
 
     // Collect all raw path bytes from the PathMap trie
     let mut all_paths_data = Vec::new();
@@ -367,7 +360,6 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
             }
             Some(ExprInstance::GInt(n)) => Ok(MettaValue::Long(*n)),
             Some(ExprInstance::GBool(b)) => Ok(MettaValue::Bool(*b)),
-            Some(ExprInstance::GUri(u)) => Ok(MettaValue::Uri(u.clone())),
             Some(ExprInstance::EListBody(list)) => {
                 // Lists are also converted to S-expressions for compatibility
                 let items: Result<Vec<MettaValue>, String> =
@@ -565,7 +557,7 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
             // This avoids any interpretation of bytes as MORK tags.
             // We also restore the symbol table so symbol IDs match.
             {
-                let mut space = env.space.lock().unwrap();
+                let mut space = env.create_space();
                 if !space_dump_bytes.is_empty() {
                     // Read format: [magic: 4 bytes "MTTS"][sym_table_len: 8 bytes][sym_table_bytes][num_paths: 8 bytes][path1_len: 4 bytes][path1_bytes]...
                     if space_dump_bytes.len() >= 12 {
@@ -663,7 +655,13 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
                         }
                     }
                 }
+                // Update shared PathMap with modified Space
+                env.update_pathmap(space);
             }
+
+            // Rebuild the rule index from the restored MORK Space
+            // This is critical for rule matching to work after deserialization
+            env.rebuild_rule_index();
 
             Ok(env)
         } else {

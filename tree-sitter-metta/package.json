@@ -1,0 +1,28 @@
+{
+  "name": "tree-sitter-metta",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for MeTTa language",
+  "main": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "metta",
+    "parser"
+  ],
+  "author": "F1R3FLY",
+  "license": "MIT",
+  "dependencies": {
+    "nan": "^2.17.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.20.8"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.metta",
+      "file-types": [
+        "metta"
+      ],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

@@ -120,6 +120,8 @@ const SPECIAL_FORMS: &[&str] = &[
     "decons-atom",
     "size-atom",
     "max-atom",
+    "let*",
+    "unify",
 ];
 
 /// Convert MettaValue to a friendly type name for error messages
@@ -498,6 +500,8 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
                 return EvalStep::Done(control_flow::eval_switch_internal_handler(items, env))
             }
             "let" => return EvalStep::Done(bindings::eval_let(items, env)),
+            "let*" => return EvalStep::Done(bindings::eval_let_star(items, env)),
+            "unify" => return EvalStep::Done(bindings::eval_unify(items, env)),
             ":" => return EvalStep::Done(types::eval_type_assertion(items, env)),
             "get-type" => return EvalStep::Done(types::eval_get_type(items, env)),
             "check-type" => return EvalStep::Done(types::eval_check_type(items, env)),

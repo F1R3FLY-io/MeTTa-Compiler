@@ -4,6 +4,154 @@ use std::sync::Arc;
 
 use super::{apply_bindings, eval, pattern_match};
 
+/// let*: Sequential bindings - (let* (($x 1) ($y (+ $x 1))) body)
+/// Transforms to nested let: (let $x 1 (let $y (+ $x 1) body))
+/// Each binding can use variables from previous bindings
+pub(super) fn eval_let_star(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    let args = &items[1..];
+
+    if args.len() < 2 {
+        let got = args.len();
+        let err = MettaValue::Error(
+            format!(
+                "let* requires at least 2 arguments (bindings and body), got {}. Usage: (let* ((pattern value) ...) body)",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return (vec![err], env);
+    }
+
+    let bindings_expr = &args[0];
+    let body = &args[1];
+
+    // Extract bindings list
+    let bindings = match bindings_expr {
+        MettaValue::SExpr(items) => items,
+        MettaValue::Nil => {
+            // Empty bindings - just evaluate body
+            return eval(body.clone(), env);
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "let* bindings must be a list, got {}. Usage: (let* ((pattern value) ...) body)",
+                    super::friendly_value_repr(bindings_expr)
+                ),
+                Arc::new(bindings_expr.clone()),
+            );
+            return (vec![err], env);
+        }
+    };
+
+    if bindings.is_empty() {
+        // No bindings - just evaluate body
+        return eval(body.clone(), env);
+    }
+
+    // Transform to nested let
+    // (let* ((a 1) (b 2) (c 3)) body) -> (let a 1 (let b 2 (let c 3 body)))
+    let mut result_body = body.clone();
+
+    // Process bindings in reverse order to build nested structure
+    for binding in bindings.iter().rev() {
+        match binding {
+            MettaValue::SExpr(pair) if pair.len() == 2 => {
+                let pattern = &pair[0];
+                let value = &pair[1];
+
+                result_body = MettaValue::SExpr(vec![
+                    MettaValue::Atom("let".to_string()),
+                    pattern.clone(),
+                    value.clone(),
+                    result_body,
+                ]);
+            }
+            _ => {
+                let err = MettaValue::Error(
+                    format!(
+                        "let* binding must be (pattern value) pair, got {}. Usage: (let* ((pattern value) ...) body)",
+                        super::friendly_value_repr(binding)
+                    ),
+                    Arc::new(binding.clone()),
+                );
+                return (vec![err], env);
+            }
+        }
+    }
+
+    // Evaluate the nested let structure
+    eval(result_body, env)
+}
+
+/// unify: Pattern unification with success/failure branches
+/// (unify pattern1 pattern2 success-body failure-body)
+/// If pattern1 and pattern2 can be unified, evaluates success-body with bindings
+/// Otherwise evaluates failure-body
+pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    let args = &items[1..];
+
+    if args.len() < 4 {
+        let got = args.len();
+        let err = MettaValue::Error(
+            format!(
+                "unify requires 4 arguments, got {}. Usage: (unify pattern1 pattern2 success failure)",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return (vec![err], env);
+    }
+
+    let pattern1 = &args[0];
+    let pattern2 = &args[1];
+    let success_body = &args[2];
+    let failure_body = &args[3];
+
+    // First evaluate both patterns to get their values
+    let (results1, env1) = eval(pattern1.clone(), env);
+    if results1.is_empty() {
+        return eval(failure_body.clone(), env1);
+    }
+
+    let mut all_results = Vec::new();
+    let mut final_env = env1.clone();
+
+    for val1 in results1 {
+        let (results2, env2) = eval(pattern2.clone(), final_env.clone());
+        final_env = env2.clone();
+
+        for val2 in results2 {
+            // Try to unify val1 and val2
+            // First try pattern_match in one direction
+            if let Some(bindings) = pattern_match(&val1, &val2) {
+                // Apply bindings and evaluate success body
+                let instantiated = apply_bindings(success_body, &bindings);
+                let (body_results, body_env) = eval(instantiated, env2.clone());
+                final_env = body_env;
+                all_results.extend(body_results);
+            } else if let Some(bindings) = pattern_match(&val2, &val1) {
+                // Try the other direction
+                let instantiated = apply_bindings(success_body, &bindings);
+                let (body_results, body_env) = eval(instantiated, env2.clone());
+                final_env = body_env;
+                all_results.extend(body_results);
+            } else {
+                // Unification failed - evaluate failure body
+                let (failure_results, failure_env) = eval(failure_body.clone(), env2.clone());
+                final_env = failure_env;
+                all_results.extend(failure_results);
+            }
+        }
+    }
+
+    if all_results.is_empty() {
+        eval(failure_body.clone(), final_env)
+    } else {
+        (all_results, final_env)
+    }
+}
+
 /// Generate helpful message for pattern mismatch in let bindings
 fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaValue) -> String {
     let pattern_arity = match pattern {

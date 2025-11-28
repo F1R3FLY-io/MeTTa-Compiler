@@ -86,6 +86,19 @@ pub struct Environment {
 
     /// Counter for generating unique space IDs
     next_space_id: Arc<RwLock<u64>>,
+
+    /// Mutable state cells registry: Maps state_id -> current_value
+    /// Used for new-state, get-state, change-state! operations
+    /// RwLock allows concurrent reads for parallel state operations
+    states: Arc<RwLock<HashMap<u64, MettaValue>>>,
+
+    /// Counter for generating unique state IDs
+    next_state_id: Arc<RwLock<u64>>,
+
+    /// Symbol bindings registry: Maps symbol -> value
+    /// Used for bind! operation to register named values
+    /// RwLock allows concurrent reads for parallel symbol resolution
+    bindings: Arc<RwLock<HashMap<String, MettaValue>>>,
 }
 
 impl Environment {
@@ -106,6 +119,9 @@ impl Environment {
             type_index_dirty: Arc::new(RwLock::new(true)),
             named_spaces: Arc::new(RwLock::new(HashMap::new())),
             next_space_id: Arc::new(RwLock::new(1)), // Start from 1, 0 reserved for self
+            states: Arc::new(RwLock::new(HashMap::new())),
+            next_state_id: Arc::new(RwLock::new(1)), // Start from 1
+            bindings: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -129,6 +145,9 @@ impl Environment {
         let type_index_dirty_data = *self.type_index_dirty.read().unwrap();
         let named_spaces_data = self.named_spaces.read().unwrap().clone();
         let next_space_id_data = *self.next_space_id.read().unwrap();
+        let states_data = self.states.read().unwrap().clone();
+        let next_state_id_data = *self.next_state_id.read().unwrap();
+        let bindings_data = self.bindings.read().unwrap().clone();
 
         // Now assign the new Arc<RwLock<T>> instances
         self.btm = Arc::new(RwLock::new(btm_data));
@@ -140,6 +159,9 @@ impl Environment {
         self.type_index_dirty = Arc::new(RwLock::new(type_index_dirty_data));
         self.named_spaces = Arc::new(RwLock::new(named_spaces_data));
         self.next_space_id = Arc::new(RwLock::new(next_space_id_data));
+        self.states = Arc::new(RwLock::new(states_data));
+        self.next_state_id = Arc::new(RwLock::new(next_state_id_data));
+        self.bindings = Arc::new(RwLock::new(bindings_data));
 
         // Mark as owning data and modified
         self.owns_data = true;
@@ -1376,6 +1398,86 @@ impl Environment {
         self.named_spaces.read().unwrap().contains_key(&space_id)
     }
 
+    // ============================================================
+    // Mutable State Management (new-state, get-state, change-state!)
+    // ============================================================
+
+    /// Create a new mutable state cell with an initial value
+    /// Used by new-state operation
+    pub fn create_state(&mut self, initial_value: MettaValue) -> u64 {
+        self.make_owned();
+
+        let id = {
+            let mut next_id = self.next_state_id.write().unwrap();
+            let id = *next_id;
+            *next_id += 1;
+            id
+        };
+
+        self.states.write().unwrap().insert(id, initial_value);
+
+        self.modified.store(true, Ordering::Release);
+        id
+    }
+
+    /// Get the current value of a state cell
+    /// Used by get-state operation
+    pub fn get_state(&self, state_id: u64) -> Option<MettaValue> {
+        self.states.read().unwrap().get(&state_id).cloned()
+    }
+
+    /// Change the value of a state cell
+    /// Used by change-state! operation
+    /// Returns true if successful, false if state doesn't exist
+    pub fn change_state(&mut self, state_id: u64, new_value: MettaValue) -> bool {
+        self.make_owned();
+
+        let mut states = self.states.write().unwrap();
+        if states.contains_key(&state_id) {
+            states.insert(state_id, new_value);
+            self.modified.store(true, Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if a state cell exists
+    pub fn has_state(&self, state_id: u64) -> bool {
+        self.states.read().unwrap().contains_key(&state_id)
+    }
+
+    // ============================================================
+    // Symbol Bindings Management (bind!)
+    // ============================================================
+
+    /// Bind a symbol to a value
+    /// Used by bind! operation
+    pub fn bind(&mut self, symbol: &str, value: MettaValue) {
+        self.make_owned();
+
+        self.bindings
+            .write()
+            .unwrap()
+            .insert(symbol.to_string(), value);
+
+        // Also register in fuzzy matcher for suggestions
+        self.fuzzy_matcher.insert(symbol);
+
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Get the value bound to a symbol
+    /// Used for symbol resolution
+    pub fn get_binding(&self, symbol: &str) -> Option<MettaValue> {
+        self.bindings.read().unwrap().get(symbol).cloned()
+    }
+
+    /// Check if a symbol is bound
+    pub fn has_binding(&self, symbol: &str) -> bool {
+        self.bindings.read().unwrap().contains_key(symbol)
+    }
+
     /// Get rules matching a specific head symbol and arity
     /// Returns Vec<Rule> for O(1) lookup instead of O(n) iteration
     /// Also includes wildcard rules that must be checked against all queries
@@ -1467,6 +1569,9 @@ impl Environment {
         let type_index_dirty = self.type_index_dirty.clone();
         let named_spaces = self.named_spaces.clone();
         let next_space_id = self.next_space_id.clone();
+        let states = self.states.clone();
+        let next_state_id = self.next_state_id.clone();
+        let bindings = self.bindings.clone();
 
         Environment {
             shared_mapping,
@@ -1482,6 +1587,9 @@ impl Environment {
             type_index_dirty,
             named_spaces,
             next_space_id,
+            states,
+            next_state_id,
+            bindings,
         }
     }
 }
@@ -1504,6 +1612,9 @@ impl Clone for Environment {
             type_index_dirty: Arc::clone(&self.type_index_dirty),
             named_spaces: Arc::clone(&self.named_spaces),
             next_space_id: Arc::clone(&self.next_space_id),
+            states: Arc::clone(&self.states),
+            next_state_id: Arc::clone(&self.next_state_id),
+            bindings: Arc::clone(&self.bindings),
         }
     }
 }

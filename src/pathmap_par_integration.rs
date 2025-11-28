@@ -118,6 +118,21 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
+        MettaValue::State(id) => {
+            // Represent states as tagged tuples: ("state", id)
+            let ps = vec![
+                create_string_par("state".to_string()),
+                create_int_par(*id as i64),
+            ];
+
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
         MettaValue::Unit => {
             // Represent unit as empty tuple
             Par::default().with_exprs(vec![Expr {

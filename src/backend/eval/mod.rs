@@ -126,6 +126,10 @@ const SPECIAL_FORMS: &[&str] = &[
     "add-atom",
     "remove-atom",
     "collapse",
+    "new-state",
+    "get-state",
+    "change-state!",
+    "bind!",
 ];
 
 /// Convert MettaValue to a friendly type name for error messages
@@ -143,6 +147,7 @@ fn friendly_type_name(value: &MettaValue) -> &'static str {
         MettaValue::Type(_) => "Type",
         MettaValue::Conjunction(_) => "Conjunction",
         MettaValue::Space(_, _) => "Space",
+        MettaValue::State(_) => "State",
         MettaValue::Unit => "Unit",
     }
 }
@@ -174,6 +179,7 @@ pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
             format!("(, {})", inner.join(" "))
         }
         MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+        MettaValue::State(id) => format!("(State {})", id),
         MettaValue::Unit => "()".to_string(),
     }
 }
@@ -470,6 +476,7 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         | MettaValue::Nil
         | MettaValue::Type(_)
         | MettaValue::Space(_, _)
+        | MettaValue::State(_)
         | MettaValue::Unit => EvalStep::Done((vec![value], env)),
 
         // S-expressions need special handling
@@ -529,6 +536,11 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "add-atom" => return EvalStep::Done(space::eval_add_atom(items, env)),
             "remove-atom" => return EvalStep::Done(space::eval_remove_atom(items, env)),
             "collapse" => return EvalStep::Done(space::eval_collapse(items, env)),
+            // State Operations
+            "new-state" => return EvalStep::Done(space::eval_new_state(items, env)),
+            "get-state" => return EvalStep::Done(space::eval_get_state(items, env)),
+            "change-state!" => return EvalStep::Done(space::eval_change_state(items, env)),
+            "bind!" => return EvalStep::Done(space::eval_bind(items, env)),
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),
@@ -1191,6 +1203,7 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         | MettaValue::String(_)
         | MettaValue::Nil
         | MettaValue::Space(_, _)
+        | MettaValue::State(_)
         | MettaValue::Unit => {
             0 // Literals are most specific (including standalone "&")
         }

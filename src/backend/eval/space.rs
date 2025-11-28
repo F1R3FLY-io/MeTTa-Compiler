@@ -145,7 +145,7 @@ pub(super) fn eval_new_space(items: Vec<MettaValue>, mut env: Environment) -> Ev
 
 /// add-atom: Add an atom to a space
 /// Usage: (add-atom space-ref atom)
-pub(super) fn eval_add_atom(items: Vec<MettaValue>, mut env: Environment) -> EvalResult {
+pub(super) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("add-atom", items, 2, env, "(add-atom space atom)");
 
     let space_ref = &items[1];
@@ -201,7 +201,7 @@ pub(super) fn eval_add_atom(items: Vec<MettaValue>, mut env: Environment) -> Eva
 
 /// remove-atom: Remove an atom from a space
 /// Usage: (remove-atom space-ref atom)
-pub(super) fn eval_remove_atom(items: Vec<MettaValue>, mut env: Environment) -> EvalResult {
+pub(super) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("remove-atom", items, 2, env, "(remove-atom space atom)");
 
     let space_ref = &items[1];
@@ -287,6 +287,186 @@ pub(super) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalRes
             (vec![err], env1)
         }
     }
+}
+
+// ============================================================
+// State Operations (new-state, get-state, change-state!)
+// ============================================================
+
+/// new-state: Create a new mutable state cell with an initial value
+/// Usage: (new-state initial-value)
+pub(super) fn eval_new_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("new-state", items, 1, env, "(new-state initial-value)");
+
+    let initial_value = &items[1];
+
+    // Evaluate the initial value
+    let (value_results, mut env1) = eval(initial_value.clone(), env);
+    if value_results.is_empty() {
+        let err = MettaValue::Error(
+            "new-state: initial value evaluated to empty".to_string(),
+            Arc::new(initial_value.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    let value = value_results[0].clone();
+    let state_id = env1.create_state(value);
+    (vec![MettaValue::State(state_id)], env1)
+}
+
+/// get-state: Get the current value from a state cell
+/// Usage: (get-state state-ref)
+pub(super) fn eval_get_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("get-state", items, 1, env, "(get-state state)");
+
+    let state_ref = &items[1];
+
+    // Evaluate the state reference
+    let (state_results, env1) = eval(state_ref.clone(), env);
+    if state_results.is_empty() {
+        let err = MettaValue::Error(
+            "get-state: state evaluated to empty".to_string(),
+            Arc::new(state_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    let state_value = &state_results[0];
+
+    match state_value {
+        MettaValue::State(state_id) => {
+            if let Some(value) = env1.get_state(*state_id) {
+                (vec![value], env1)
+            } else {
+                let err = MettaValue::Error(
+                    format!("get-state: state {} not found", state_id),
+                    Arc::new(state_value.clone()),
+                );
+                (vec![err], env1)
+            }
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "get-state: argument must be a state reference, got {}. Usage: (get-state state)",
+                    super::friendly_value_repr(state_value)
+                ),
+                Arc::new(state_value.clone()),
+            );
+            (vec![err], env1)
+        }
+    }
+}
+
+/// change-state!: Change the value in a state cell
+/// Usage: (change-state! state-ref new-value)
+/// Returns the state reference for chaining
+pub(super) fn eval_change_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!(
+        "change-state!",
+        items,
+        2,
+        env,
+        "(change-state! state new-value)"
+    );
+
+    let state_ref = &items[1];
+    let new_value = &items[2];
+
+    // Evaluate the state reference
+    let (state_results, env1) = eval(state_ref.clone(), env);
+    if state_results.is_empty() {
+        let err = MettaValue::Error(
+            "change-state!: state evaluated to empty".to_string(),
+            Arc::new(state_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    // Evaluate the new value
+    let (value_results, mut env2) = eval(new_value.clone(), env1);
+    if value_results.is_empty() {
+        let err = MettaValue::Error(
+            "change-state!: new value evaluated to empty".to_string(),
+            Arc::new(new_value.clone()),
+        );
+        return (vec![err], env2);
+    }
+
+    let state_value = &state_results[0];
+    let value = value_results[0].clone();
+
+    match state_value {
+        MettaValue::State(state_id) => {
+            if env2.change_state(*state_id, value) {
+                // Return the state reference for chaining
+                (vec![state_value.clone()], env2)
+            } else {
+                let err = MettaValue::Error(
+                    format!("change-state!: state {} not found", state_id),
+                    Arc::new(state_value.clone()),
+                );
+                (vec![err], env2)
+            }
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "change-state!: first argument must be a state reference, got {}. Usage: (change-state! state new-value)",
+                    super::friendly_value_repr(state_value)
+                ),
+                Arc::new(state_value.clone()),
+            );
+            (vec![err], env2)
+        }
+    }
+}
+
+// ============================================================
+// Symbol Binding Operations (bind!)
+// ============================================================
+
+/// bind!: Bind a symbol to a value
+/// Usage: (bind! symbol value)
+/// The symbol can then be resolved to the value
+pub(super) fn eval_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("bind!", items, 2, env, "(bind! symbol value)");
+
+    let symbol = &items[1];
+    let value_expr = &items[2];
+
+    // Symbol must be an atom (typically starting with &)
+    let symbol_name = match symbol {
+        MettaValue::Atom(name) => name.clone(),
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "bind!: first argument must be a symbol, got {}. Usage: (bind! symbol value)",
+                    super::friendly_value_repr(symbol)
+                ),
+                Arc::new(symbol.clone()),
+            );
+            return (vec![err], env);
+        }
+    };
+
+    // Evaluate the value
+    let (value_results, mut env1) = eval(value_expr.clone(), env);
+    if value_results.is_empty() {
+        let err = MettaValue::Error(
+            "bind!: value evaluated to empty".to_string(),
+            Arc::new(value_expr.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    let value = value_results[0].clone();
+
+    // Bind the symbol to the value
+    env1.bind(&symbol_name, value);
+
+    (vec![MettaValue::Unit], env1)
 }
 
 #[cfg(test)]

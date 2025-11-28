@@ -29,6 +29,9 @@ pub enum MettaValue {
     /// A reference to a named space (id, name)
     /// Used for space operations: new-space, add-atom, remove-atom, collapse
     Space(u64, String),
+    /// A reference to a mutable state cell (id)
+    /// Used for state operations: new-state, get-state, change-state!
+    State(u64),
     /// Unit value for side-effecting operations that return nothing meaningful
     /// Displayed as () in output
     Unit,
@@ -140,6 +143,9 @@ impl MettaValue {
             // Spaces must have same id
             (MettaValue::Space(a_id, _), MettaValue::Space(b_id, _)) => a_id == b_id,
 
+            // States must have same id
+            (MettaValue::State(a_id), MettaValue::State(b_id)) => a_id == b_id,
+
             // Unit matches unit
             (MettaValue::Unit, MettaValue::Unit) => true,
 
@@ -229,6 +235,7 @@ impl MettaValue {
                 format!("(, {})", inner)
             }
             MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+            MettaValue::State(id) => format!("(State {})", id),
             MettaValue::Unit => "()".to_string(),
         }
     }
@@ -272,6 +279,9 @@ impl MettaValue {
                     id,
                     escape_json(name)
                 )
+            }
+            MettaValue::State(id) => {
+                format!(r#"{{"type":"state","id":{}}}"#, id)
             }
             MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
         }
@@ -339,6 +349,10 @@ impl std::hash::Hash for MettaValue {
                 11u8.hash(state);
                 id.hash(state);
                 name.hash(state);
+            }
+            MettaValue::State(id) => {
+                13u8.hash(state);
+                id.hash(state);
             }
             MettaValue::Unit => {
                 12u8.hash(state);

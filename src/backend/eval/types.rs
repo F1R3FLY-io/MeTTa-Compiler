@@ -192,6 +192,9 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
         // Space references have Space type
         MettaValue::Space(_, _) => MettaValue::Atom("Space".to_string()),
 
+        // State references have State type
+        MettaValue::State(_) => MettaValue::Atom("State".to_string()),
+
         // Unit has Unit type
         MettaValue::Unit => MettaValue::Atom("Unit".to_string()),
     }

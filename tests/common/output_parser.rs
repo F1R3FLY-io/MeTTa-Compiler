@@ -44,6 +44,7 @@ impl MettaValueTestExt for MettaValue {
                 format!("(, {})", inner.join(" "))
             }
             MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+            MettaValue::State(id) => format!("(State {})", id),
             MettaValue::Unit => "()".to_string(),
         }
     }
@@ -64,6 +65,7 @@ impl MettaValueTestExt for MettaValue {
             MettaValue::Type(_) => self.to_display_string() == s,
             MettaValue::Conjunction(_) => self.to_display_string() == s,
             MettaValue::Space(_, _) => self.to_display_string() == s,
+            MettaValue::State(_) => self.to_display_string() == s,
             MettaValue::Unit => s == "()",
         }
     }

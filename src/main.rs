@@ -159,6 +159,7 @@ fn format_result(value: &MettaValue) -> String {
             format!("(, {})", formatted.join(" "))
         }
         MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+        MettaValue::State(id) => format!("(State {})", id),
         MettaValue::Unit => "()".to_string(),
     }
 }

@@ -180,6 +180,14 @@ fn write_metta_value(
             write_symbol(format!("\"{}\"", name).as_bytes(), space, ez)?;
         }
 
+        // State references are written as (State id)
+        MettaValue::State(id) => {
+            ez.write_arity(2);
+            ez.loc += 1;
+            write_symbol(b"State", space, ez)?;
+            write_symbol(id.to_string().as_bytes(), space, ez)?;
+        }
+
         // Unit is written as ()
         MettaValue::Unit => {
             ez.write_arity(0);

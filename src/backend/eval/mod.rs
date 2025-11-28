@@ -20,6 +20,7 @@ mod mork_forms;
 pub mod priority;
 mod quoting;
 mod space;
+mod strings;
 mod types;
 
 use std::collections::VecDeque;
@@ -134,6 +135,8 @@ const SPECIAL_FORMS: &[&str] = &[
     "println!",
     "trace!",
     "nop",
+    "repr",
+    "format-args",
 ];
 
 /// Convert MettaValue to a friendly type name for error messages
@@ -549,6 +552,9 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "println!" => return EvalStep::Done(io::eval_println(items, env)),
             "trace!" => return EvalStep::Done(io::eval_trace(items, env)),
             "nop" => return EvalStep::Done(io::eval_nop(items, env)),
+            // String Operations
+            "repr" => return EvalStep::Done(strings::eval_repr(items, env)),
+            "format-args" => return EvalStep::Done(strings::eval_format_args(items, env)),
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),
@@ -727,12 +733,12 @@ fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaValue> {
         "-" => eval_checked_arithmetic(args, |a, b| a.checked_sub(b), "-"),
         "*" => eval_checked_arithmetic(args, |a, b| a.checked_mul(b), "*"),
         "/" => eval_division(args),
-        "<" => eval_comparison(args, |a, b| a < b),
-        "<=" => eval_comparison(args, |a, b| a <= b),
-        ">" => eval_comparison(args, |a, b| a > b),
-        ">=" => eval_comparison(args, |a, b| a >= b),
-        "==" => eval_comparison(args, |a, b| a == b),
-        "!=" => eval_comparison(args, |a, b| a != b),
+        "<" => eval_comparison(args, CompareOp::Less),
+        "<=" => eval_comparison(args, CompareOp::LessEq),
+        ">" => eval_comparison(args, CompareOp::Greater),
+        ">=" => eval_comparison(args, CompareOp::GreaterEq),
+        "==" => eval_comparison(args, CompareOp::Equal),
+        "!=" => eval_comparison(args, CompareOp::NotEqual),
         // Logical operators
         "and" => eval_logical_binary(args, |a, b| a && b, "and"),
         "or" => eval_logical_binary(args, |a, b| a || b, "or"),
@@ -849,11 +855,37 @@ fn eval_division(args: &[MettaValue]) -> Option<MettaValue> {
     }
 }
 
-/// Evaluate a comparison operation with strict type checking
-fn eval_comparison<F>(args: &[MettaValue], op: F) -> Option<MettaValue>
-where
-    F: Fn(i64, i64) -> bool,
-{
+/// Comparison operation types
+#[derive(Debug, Clone, Copy)]
+enum CompareOp {
+    Less,
+    LessEq,
+    Greater,
+    GreaterEq,
+    Equal,
+    NotEqual,
+}
+
+impl CompareOp {
+    /// Apply the comparison to two ordered values
+    #[inline]
+    fn apply<T: PartialOrd + PartialEq>(self, a: T, b: T) -> bool {
+        match self {
+            CompareOp::Less => a < b,
+            CompareOp::LessEq => a <= b,
+            CompareOp::Greater => a > b,
+            CompareOp::GreaterEq => a >= b,
+            CompareOp::Equal => a == b,
+            CompareOp::NotEqual => a != b,
+        }
+    }
+}
+
+/// Evaluate a polymorphic comparison operation (supports numbers and strings)
+/// When both arguments are integers, uses integer comparison.
+/// When both arguments are strings, uses lexicographic comparison.
+/// Mixed types result in a type error.
+fn eval_comparison(args: &[MettaValue], op: CompareOp) -> Option<MettaValue> {
     if args.len() != 2 {
         return Some(MettaValue::Error(
             format!(
@@ -864,33 +896,42 @@ where
         ));
     }
 
-    let a = match &args[0] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return Some(MettaValue::Error(
+    match (&args[0], &args[1]) {
+        (MettaValue::Long(a), MettaValue::Long(b)) => {
+            Some(MettaValue::Bool(op.apply(*a, *b)))
+        }
+        (MettaValue::String(a), MettaValue::String(b)) => {
+            Some(MettaValue::Bool(op.apply(a.as_str(), b.as_str())))
+        }
+        (MettaValue::Long(_), other) | (other, MettaValue::Long(_)) => {
+            Some(MettaValue::Error(
                 format!(
-                    "Cannot compare: expected Number (integer), got {}",
+                    "Cannot compare: type mismatch between Number (integer) and {}",
                     friendly_type_name(other)
                 ),
                 Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
+            ))
         }
-    };
-
-    let b = match &args[1] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return Some(MettaValue::Error(
+        (MettaValue::String(_), other) | (other, MettaValue::String(_)) => {
+            Some(MettaValue::Error(
                 format!(
-                    "Cannot compare: expected Number (integer), got {}",
+                    "Cannot compare: type mismatch between String and {}",
                     friendly_type_name(other)
                 ),
                 Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
+            ))
         }
-    };
-
-    Some(MettaValue::Bool(op(a, b)))
+        (other1, other2) => {
+            Some(MettaValue::Error(
+                format!(
+                    "Cannot compare: unsupported types {} and {}",
+                    friendly_type_name(other1),
+                    friendly_type_name(other2)
+                ),
+                Arc::new(MettaValue::Atom("TypeError".to_string())),
+            ))
+        }
+    }
 }
 
 /// Evaluate a binary logical operation (and, or)
@@ -2429,10 +2470,10 @@ mod tests {
     }
 
     #[test]
-    fn test_comparison_type_error() {
+    fn test_string_comparison() {
         let env = Environment::new();
 
-        // Test: !(< "a" "b") - strings not valid for comparison
+        // Test: !(< "a" "b") - lexicographic string comparison
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("<".to_string()),
             MettaValue::String("a".to_string()),
@@ -2441,15 +2482,26 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true)); // "a" < "b" lexicographically
+    }
+
+    #[test]
+    fn test_comparison_mixed_type_error() {
+        let env = Environment::new();
+
+        // Test: !(< "hello" 42) - mixed types should error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("<".to_string()),
+            MettaValue::String("hello".to_string()),
+            MettaValue::Long(42),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
 
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-                assert!(
-                    msg.contains("Cannot compare"),
-                    "Expected 'Cannot compare' in: {}",
-                    msg
-                );
+                assert!(msg.contains("type mismatch"), "Expected 'type mismatch' in: {}", msg);
                 assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),

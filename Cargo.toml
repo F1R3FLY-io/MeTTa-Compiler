@@ -120,9 +120,14 @@ tokio = { version = "1", features = [
 criterion = { version = "0.5", features = ["html_reports"] }
 divan = "0.1.21"
 paste = "1.0.15"
+clap = { version = "4.5", features = ["derive"] }
 
 [[bench]]
-name = "metta"
+name = "e2e"
+harness = false
+
+[[bench]]
+name = "e2e_throughput"
 harness = false
 
 [profile.release]
@@ -133,13 +138,13 @@ strip = true
 
 [profile.bench]
 inherits = "release"
-strip = false  # Keep debug symbols for profiling
-debug = true   # Enable line-level profiling
+strip = false        # Keep debug symbols for profiling
+debug = true         # Enable line-level profiling
 
 [profile.profiling]
 inherits = "release"
-strip = false  # Keep debug symbols for flamegraphs
-debug = 1      # Line tables only (smaller than debug = true)
+strip = false        # Keep debug symbols for flamegraphs
+debug = 1            # Line tables only (smaller than debug = true)
 
 # Debian package metadata
 [package.metadata.deb]

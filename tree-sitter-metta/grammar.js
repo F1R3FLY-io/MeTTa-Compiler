@@ -53,29 +53,30 @@ module.exports = grammar({
     ),
 
     // Variables: $var (for pattern variables)
-    // Note: & is an operator (space reference), not a variable prefix
-    // Note: 'var is handled by quote_prefix in prefixed_expression
+    // Uses blacklist approach: $ followed by any non-delimiter chars
+    // Delimiters: whitespace, (), ;, ", #
+    // Note: # is reserved for internal use per official MeTTa spec
     variable: $ => token(
-      seq('$', /[a-zA-Z0-9_'\-+*/&]*/)
+      seq('$', /[^\s()";#]*/)
     ),
 
     // Wildcard pattern
     wildcard: $ => '_',
 
-    // Boolean literals (higher precedence than identifier)
-    boolean_literal: $ => token(prec(3, choice('True', 'False'))),
+    // Boolean literals (high precedence to match before identifier)
+    boolean_literal: $ => token(prec(5, choice('True', 'False'))),
 
     // Special type symbols: %Undefined%, %Irreducible%, etc.
     // Used in official MeTTa stdlib for special type markers
-    special_type_symbol: $ => token(prec(3, /%[A-Za-z][A-Za-z0-9_-]*%/)),
+    // High precedence to match before identifier
+    special_type_symbol: $ => token(prec(5, /%[A-Za-z][A-Za-z0-9_-]*%/)),
 
     // Regular identifiers (no special prefix)
-    identifier: $ => token(prec(2, choice(
-      // Standard identifiers: letters, digits, allowed special chars
-      /[a-zA-Z][a-zA-Z0-9_'\-+*/]*/,
-      // Can start with some operators if followed by alphanumeric
-      /[+\-*/][a-zA-Z0-9_'\-+*/]+/,
-    ))),
+    // Uses blacklist approach: any sequence of non-delimiter characters
+    // Delimiters: whitespace, (), ;, ", $
+    // Also excludes: !, ?, ' (prefix operators), _ (wildcard), [], {} (reserved)
+    // Lower precedence (1) so specific tokens match first
+    identifier: $ => token(prec(1, /[^\s()\[\]{}"$;!?'_][^\s()\[\]{}"$;]*/)),
 
     // Operators (decomposed by type)
     operator: $ => choice(
@@ -97,26 +98,26 @@ module.exports = grammar({
       '<<-',
     ))),
 
-    // Comparison operators: ==, >, < (single char has lower precedence)
-    comparison_operator: $ => token(prec(1, choice(
+    // Comparison operators: ==, >, <
+    comparison_operator: $ => token(prec(2, choice(
       '==',
       '>',
       '<',
     ))),
 
     // Assignment operator: =
-    assignment_operator: $ => '=',
+    assignment_operator: $ => token(prec(2, '=')),
 
     // Type annotation operator: :
-    type_annotation_operator: $ => ':',
+    type_annotation_operator: $ => token(prec(2, ':')),
 
     // Rule definition operator: :=
-    rule_definition_operator: $ => ':=',
+    rule_definition_operator: $ => token(prec(3, ':=')),
 
     // Punctuation operators: ;, |, ,, @, &, ., ...
     // Note: : is now separate as type_annotation_operator
     // Note: % removed - now used only in special_type_symbol
-    punctuation_operator: $ => token(choice(
+    punctuation_operator: $ => token(prec(2, choice(
       ';',
       '|',
       ',',
@@ -124,16 +125,16 @@ module.exports = grammar({
       '&',
       '...',
       '.',
-    )),
+    ))),
 
     // Arithmetic operators (as standalone symbols): +, -, *, /
-    arithmetic_operator: $ => token(prec(1, /[+\-*/]/)),
+    arithmetic_operator: $ => token(prec(2, /[+\-*/]/)),
 
     // Logic operators: !?, ?!
-    logic_operator: $ => token(choice(
+    logic_operator: $ => token(prec(2, choice(
       '!?',
       '?!',
-    )),
+    ))),
 
     // String literals with escape sequences
     // Supports: \n, \t, \r, \\, \", \x##, \u{...}

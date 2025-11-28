@@ -144,7 +144,7 @@
           },
           {
             "type": "PATTERN",
-            "value": "[a-zA-Z0-9_'\\-+*/&]*"
+            "value": "[^\\s()\";#]*"
           }
         ]
       }
@@ -157,7 +157,7 @@
       "type": "TOKEN",
       "content": {
         "type": "PREC",
-        "value": 3,
+        "value": 5,
         "content": {
           "type": "CHOICE",
           "members": [
@@ -177,7 +177,7 @@
       "type": "TOKEN",
       "content": {
         "type": "PREC",
-        "value": 3,
+        "value": 5,
         "content": {
           "type": "PATTERN",
           "value": "%[A-Za-z][A-Za-z0-9_-]*%"
@@ -188,19 +188,10 @@
       "type": "TOKEN",
       "content": {
         "type": "PREC",
-        "value": 2,
+        "value": 1,
         "content": {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "PATTERN",
-              "value": "[a-zA-Z][a-zA-Z0-9_'\\-+*/]*"
-            },
-            {
-              "type": "PATTERN",
-              "value": "[+\\-*/][a-zA-Z0-9_'\\-+*/]+"
-            }
-          ]
+          "type": "PATTERN",
+          "value": "[^\\s()\\[\\]{}\"$;!?'_][^\\s()\\[\\]{}\"$;]*"
         }
       }
     },
@@ -273,7 +264,7 @@
       "type": "TOKEN",
       "content": {
         "type": "PREC",
-        "value": 1,
+        "value": 2,
         "content": {
           "type": "CHOICE",
           "members": [
@@ -294,58 +285,83 @@
       }
     },
     "assignment_operator": {
-      "type": "STRING",
-      "value": "="
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 2,
+        "content": {
+          "type": "STRING",
+          "value": "="
+        }
+      }
     },
     "type_annotation_operator": {
-      "type": "STRING",
-      "value": ":"
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 2,
+        "content": {
+          "type": "STRING",
+          "value": ":"
+        }
+      }
     },
     "rule_definition_operator": {
-      "type": "STRING",
-      "value": ":="
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 3,
+        "content": {
+          "type": "STRING",
+          "value": ":="
+        }
+      }
     },
     "punctuation_operator": {
       "type": "TOKEN",
       "content": {
-        "type": "CHOICE",
-        "members": [
-          {
-            "type": "STRING",
-            "value": ";"
-          },
-          {
-            "type": "STRING",
-            "value": "|"
-          },
-          {
-            "type": "STRING",
-            "value": ","
-          },
-          {
-            "type": "STRING",
-            "value": "@"
-          },
-          {
-            "type": "STRING",
-            "value": "&"
-          },
-          {
-            "type": "STRING",
-            "value": "..."
-          },
-          {
-            "type": "STRING",
-            "value": "."
-          }
-        ]
+        "type": "PREC",
+        "value": 2,
+        "content": {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": ";"
+            },
+            {
+              "type": "STRING",
+              "value": "|"
+            },
+            {
+              "type": "STRING",
+              "value": ","
+            },
+            {
+              "type": "STRING",
+              "value": "@"
+            },
+            {
+              "type": "STRING",
+              "value": "&"
+            },
+            {
+              "type": "STRING",
+              "value": "..."
+            },
+            {
+              "type": "STRING",
+              "value": "."
+            }
+          ]
+        }
       }
     },
     "arithmetic_operator": {
       "type": "TOKEN",
       "content": {
         "type": "PREC",
-        "value": 1,
+        "value": 2,
         "content": {
           "type": "PATTERN",
           "value": "[+\\-*/]"
@@ -355,17 +371,21 @@
     "logic_operator": {
       "type": "TOKEN",
       "content": {
-        "type": "CHOICE",
-        "members": [
-          {
-            "type": "STRING",
-            "value": "!?"
-          },
-          {
-            "type": "STRING",
-            "value": "?!"
-          }
-        ]
+        "type": "PREC",
+        "value": 2,
+        "content": {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "!?"
+            },
+            {
+              "type": "STRING",
+              "value": "?!"
+            }
+          ]
+        }
       }
     },
     "string_literal": {

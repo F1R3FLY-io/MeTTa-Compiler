@@ -14,6 +14,7 @@ mod control_flow;
 mod errors;
 mod evaluation;
 pub mod fixed_point;
+mod io;
 mod list_ops;
 mod mork_forms;
 pub mod priority;
@@ -130,6 +131,9 @@ const SPECIAL_FORMS: &[&str] = &[
     "get-state",
     "change-state!",
     "bind!",
+    "println!",
+    "trace!",
+    "nop",
 ];
 
 /// Convert MettaValue to a friendly type name for error messages
@@ -541,6 +545,10 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "get-state" => return EvalStep::Done(space::eval_get_state(items, env)),
             "change-state!" => return EvalStep::Done(space::eval_change_state(items, env)),
             "bind!" => return EvalStep::Done(space::eval_bind(items, env)),
+            // I/O Operations
+            "println!" => return EvalStep::Done(io::eval_println(items, env)),
+            "trace!" => return EvalStep::Done(io::eval_trace(items, env)),
+            "nop" => return EvalStep::Done(io::eval_nop(items, env)),
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),

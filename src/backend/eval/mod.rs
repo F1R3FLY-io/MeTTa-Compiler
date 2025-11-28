@@ -16,6 +16,7 @@ mod evaluation;
 pub mod fixed_point;
 mod io;
 mod list_ops;
+mod modules;
 mod mork_forms;
 pub mod priority;
 mod quoting;
@@ -140,6 +141,7 @@ const SPECIAL_FORMS: &[&str] = &[
     "format-args",
     "empty",
     "get-metatype",
+    "include",
 ];
 
 /// Convert MettaValue to a friendly type name for error messages
@@ -561,6 +563,8 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             // Utility Operations
             "empty" => return EvalStep::Done(utilities::eval_empty(items, env)),
             "get-metatype" => return EvalStep::Done(utilities::eval_get_metatype(items, env)),
+            // Module Operations
+            "include" => return EvalStep::Done(modules::eval_include(items, env)),
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),

@@ -22,6 +22,7 @@ mod quoting;
 mod space;
 mod strings;
 mod types;
+mod utilities;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -137,6 +138,8 @@ const SPECIAL_FORMS: &[&str] = &[
     "nop",
     "repr",
     "format-args",
+    "empty",
+    "get-metatype",
 ];
 
 /// Convert MettaValue to a friendly type name for error messages
@@ -555,6 +558,9 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             // String Operations
             "repr" => return EvalStep::Done(strings::eval_repr(items, env)),
             "format-args" => return EvalStep::Done(strings::eval_format_args(items, env)),
+            // Utility Operations
+            "empty" => return EvalStep::Done(utilities::eval_empty(items, env)),
+            "get-metatype" => return EvalStep::Done(utilities::eval_get_metatype(items, env)),
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),

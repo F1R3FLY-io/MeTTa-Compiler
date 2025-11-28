@@ -155,6 +155,21 @@ fn write_metta_value(
             // Types are just atoms/expressions
             write_metta_value(t, space, ctx, ez)?;
         }
+
+        MettaValue::Conjunction(goals) => {
+            // Conjunctions are written as (,)with comma as first symbol and goals as children
+            let arity = (goals.len() + 1) as u8; // +1 for the comma symbol
+            ez.write_arity(arity);
+            ez.loc += 1;
+
+            // Write the comma symbol as first child
+            write_symbol(b",", space, ez)?;
+
+            // Write each goal
+            for goal in goals {
+                write_metta_value(goal, space, ctx, ez)?;
+            }
+        }
     }
 
     Ok(())

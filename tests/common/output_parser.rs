@@ -39,6 +39,10 @@ impl MettaValueTestExt for MettaValue {
             }
             MettaValue::Nil => "()".to_string(),
             MettaValue::Type(t) => format!("Type({})", t.to_display_string()),
+            MettaValue::Conjunction(goals) => {
+                let inner: Vec<String> = goals.iter().map(|g| g.to_display_string()).collect();
+                format!("(, {})", inner.join(" "))
+            }
         }
     }
 
@@ -56,6 +60,7 @@ impl MettaValueTestExt for MettaValue {
             MettaValue::Error(_, _) => self.to_display_string() == s,
             MettaValue::Nil => s == "()" || s == "Nil",
             MettaValue::Type(_) => self.to_display_string() == s,
+            MettaValue::Conjunction(_) => self.to_display_string() == s,
         }
     }
 }

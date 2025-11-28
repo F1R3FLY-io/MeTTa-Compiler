@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use super::fuzzy_match::FuzzyMatcher;
-use super::modules::{ModId, ModuleRegistry};
+use super::modules::{ModId, ModuleRegistry, Tokenizer};
 use super::{MettaValue, Rule};
 
 /// The environment contains the fact database and type assertions
@@ -111,6 +111,11 @@ pub struct Environment {
     /// Used for relative path resolution (self:child notation)
     /// None when not inside a module evaluation
     current_module_path: Option<PathBuf>,
+
+    /// Per-module tokenizer for dynamic token registration
+    /// Used by bind! to register tokens that are replaced during evaluation
+    /// Tokens registered here are looked up when evaluating atoms
+    tokenizer: Arc<RwLock<Tokenizer>>,
 }
 
 impl Environment {
@@ -136,6 +141,7 @@ impl Environment {
             bindings: Arc::new(RwLock::new(HashMap::new())),
             module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
             current_module_path: None,
+            tokenizer: Arc::new(RwLock::new(Tokenizer::new())),
         }
     }
 
@@ -163,6 +169,7 @@ impl Environment {
         let next_state_id_data = *self.next_state_id.read().unwrap();
         let bindings_data = self.bindings.read().unwrap().clone();
         let module_registry_data = self.module_registry.read().unwrap().clone();
+        let tokenizer_data = self.tokenizer.read().unwrap().clone();
 
         // Now assign the new Arc<RwLock<T>> instances
         self.btm = Arc::new(RwLock::new(btm_data));
@@ -178,6 +185,7 @@ impl Environment {
         self.next_state_id = Arc::new(RwLock::new(next_state_id_data));
         self.bindings = Arc::new(RwLock::new(bindings_data));
         self.module_registry = Arc::new(RwLock::new(module_registry_data));
+        self.tokenizer = Arc::new(RwLock::new(tokenizer_data));
         // Note: current_module_path is not Arc-wrapped, so it's copied directly
 
         // Mark as owning data and modified
@@ -1496,6 +1504,35 @@ impl Environment {
     }
 
     // ============================================================
+    // Tokenizer Operations (bind! support)
+    // ============================================================
+
+    /// Register a token with its value in the tokenizer
+    /// Used by bind! to register tokens for later resolution
+    /// HE-compatible: tokens registered here affect subsequent atom resolution
+    pub fn register_token(&mut self, token: &str, value: MettaValue) {
+        self.make_owned();
+        self.tokenizer
+            .write()
+            .unwrap()
+            .register_token_value(token, value);
+        // Also register in fuzzy matcher for suggestions
+        self.fuzzy_matcher.insert(token);
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Look up a token in the tokenizer
+    /// Returns the bound value if found
+    pub fn lookup_token(&self, token: &str) -> Option<MettaValue> {
+        self.tokenizer.read().unwrap().lookup(token)
+    }
+
+    /// Check if a token is registered in the tokenizer
+    pub fn has_token(&self, token: &str) -> bool {
+        self.tokenizer.read().unwrap().has_token(token)
+    }
+
+    // ============================================================
     // Module Operations
     // ============================================================
 
@@ -1673,6 +1710,7 @@ impl Environment {
         let bindings = self.bindings.clone();
         let module_registry = self.module_registry.clone();
         let current_module_path = self.current_module_path.clone();
+        let tokenizer = self.tokenizer.clone();
 
         Environment {
             shared_mapping,
@@ -1693,6 +1731,7 @@ impl Environment {
             bindings,
             module_registry,
             current_module_path,
+            tokenizer,
         }
     }
 }
@@ -1720,6 +1759,7 @@ impl Clone for Environment {
             bindings: Arc::clone(&self.bindings),
             module_registry: Arc::clone(&self.module_registry),
             current_module_path: self.current_module_path.clone(),
+            tokenizer: Arc::clone(&self.tokenizer),
         }
     }
 }

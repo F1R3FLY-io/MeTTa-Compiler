@@ -423,52 +423,6 @@ pub(super) fn eval_change_state(items: Vec<MettaValue>, env: Environment) -> Eva
     }
 }
 
-// ============================================================
-// Symbol Binding Operations (bind!)
-// ============================================================
-
-/// bind!: Bind a symbol to a value
-/// Usage: (bind! symbol value)
-/// The symbol can then be resolved to the value
-pub(super) fn eval_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_args_with_usage!("bind!", items, 2, env, "(bind! symbol value)");
-
-    let symbol = &items[1];
-    let value_expr = &items[2];
-
-    // Symbol must be an atom (typically starting with &)
-    let symbol_name = match symbol {
-        MettaValue::Atom(name) => name.clone(),
-        _ => {
-            let err = MettaValue::Error(
-                format!(
-                    "bind!: first argument must be a symbol, got {}. Usage: (bind! symbol value)",
-                    super::friendly_value_repr(symbol)
-                ),
-                Arc::new(symbol.clone()),
-            );
-            return (vec![err], env);
-        }
-    };
-
-    // Evaluate the value
-    let (value_results, mut env1) = eval(value_expr.clone(), env);
-    if value_results.is_empty() {
-        let err = MettaValue::Error(
-            "bind!: value evaluated to empty".to_string(),
-            Arc::new(value_expr.clone()),
-        );
-        return (vec![err], env1);
-    }
-
-    let value = value_results[0].clone();
-
-    // Bind the symbol to the value
-    env1.bind(&symbol_name, value);
-
-    (vec![MettaValue::Unit], env1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

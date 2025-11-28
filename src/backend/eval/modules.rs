@@ -354,6 +354,66 @@ pub(super) fn eval_print_mods(items: Vec<MettaValue>, env: Environment) -> EvalR
     (vec![MettaValue::Unit], env)
 }
 
+// ============================================================
+// Token Binding Operations (bind!)
+// ============================================================
+
+/// bind!: Register a token in the current module's tokenizer (HE-compatible)
+/// Usage: (bind! token atom)
+///
+/// Registers a token which is replaced with an atom during evaluation.
+/// This is an evaluation-time token substitution, similar to MeTTa HE's bind!.
+///
+/// When the token is subsequently encountered during evaluation, it will be
+/// replaced with the bound atom value.
+///
+/// Example:
+///   (bind! &kb (new-space))   ; Create a space and bind it to &kb
+///   (add-atom &kb (foo bar))  ; &kb resolves to the space
+///
+/// Returns Unit on success
+pub(super) fn eval_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("bind!", items, 2, env, "(bind! token atom)");
+
+    let token = match &items[1] {
+        MettaValue::Atom(s) => s.clone(),
+        other => {
+            let err = MettaValue::Error(
+                format!(
+                    "bind!: expected symbol for token, got {}",
+                    super::friendly_type_name(other)
+                ),
+                Arc::new(other.clone()),
+            );
+            return (vec![err], env);
+        }
+    };
+
+    // Evaluate the atom expression (like HE does)
+    let (results, mut new_env) = eval(items[2].clone(), env);
+    if results.is_empty() {
+        return (
+            vec![MettaValue::Error(
+                "bind!: atom evaluated to empty".to_string(),
+                Arc::new(items[2].clone()),
+            )],
+            new_env,
+        );
+    }
+
+    // Check for errors in evaluation
+    if let MettaValue::Error(_, _) = &results[0] {
+        return (results, new_env);
+    }
+
+    let atom = results[0].clone();
+
+    // Register in the tokenizer for subsequent atom resolution
+    new_env.register_token(&token, atom);
+
+    (vec![MettaValue::Unit], new_env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +467,129 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Unit);
         assert_eq!(env.module_count(), 0);
+    }
+
+    // ============================================================
+    // bind! tests
+    // ============================================================
+
+    #[test]
+    fn test_bind_simple_value() {
+        let env = Environment::new();
+        let items = vec![
+            MettaValue::Atom("bind!".to_string()),
+            MettaValue::Atom("&my-value".to_string()),
+            MettaValue::Long(42),
+        ];
+
+        let (results, new_env) = eval_bind(items, env);
+
+        // bind! returns Unit
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+
+        // Token should be registered
+        assert!(new_env.has_token("&my-value"));
+        assert_eq!(new_env.lookup_token("&my-value"), Some(MettaValue::Long(42)));
+    }
+
+    #[test]
+    fn test_bind_atom_resolution() {
+        use crate::backend::eval::eval;
+
+        let env = Environment::new();
+
+        // First, bind a value
+        let bind_items = vec![
+            MettaValue::Atom("bind!".to_string()),
+            MettaValue::Atom("&answer".to_string()),
+            MettaValue::Long(42),
+        ];
+        let (_, env_with_binding) = eval_bind(bind_items, env);
+
+        // Now, evaluate the bound atom - it should resolve to 42
+        let atom = MettaValue::Atom("&answer".to_string());
+        let (results, _) = eval(atom, env_with_binding);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_bind_with_expression() {
+        use crate::backend::eval::eval;
+
+        let env = Environment::new();
+
+        // bind! with an expression that gets evaluated: (bind! &sum (+ 2 3))
+        let bind_items = vec![
+            MettaValue::Atom("bind!".to_string()),
+            MettaValue::Atom("&sum".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+        ];
+        let (results, new_env) = eval_bind(bind_items, env);
+
+        // bind! returns Unit
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+
+        // Token should resolve to the evaluated result (5)
+        assert_eq!(new_env.lookup_token("&sum"), Some(MettaValue::Long(5)));
+
+        // Evaluating the atom should also return 5
+        let atom = MettaValue::Atom("&sum".to_string());
+        let (eval_results, _) = eval(atom, new_env);
+        assert_eq!(eval_results.len(), 1);
+        assert_eq!(eval_results[0], MettaValue::Long(5));
+    }
+
+    #[test]
+    fn test_bind_error_non_symbol() {
+        let env = Environment::new();
+
+        // Try to bind with a non-symbol token
+        let items = vec![
+            MettaValue::Atom("bind!".to_string()),
+            MettaValue::Long(42), // Not a symbol!
+            MettaValue::Long(100),
+        ];
+
+        let (results, _) = eval_bind(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("expected symbol for token"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_bind_shadowing() {
+        let env = Environment::new();
+
+        // Bind &x to 1
+        let bind1 = vec![
+            MettaValue::Atom("bind!".to_string()),
+            MettaValue::Atom("&x".to_string()),
+            MettaValue::Long(1),
+        ];
+        let (_, env1) = eval_bind(bind1, env);
+
+        // Bind &x to 2 (shadows previous)
+        let bind2 = vec![
+            MettaValue::Atom("bind!".to_string()),
+            MettaValue::Atom("&x".to_string()),
+            MettaValue::Long(2),
+        ];
+        let (_, env2) = eval_bind(bind2, env1);
+
+        // Should resolve to the most recent binding
+        assert_eq!(env2.lookup_token("&x"), Some(MettaValue::Long(2)));
     }
 }

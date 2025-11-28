@@ -477,8 +477,17 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         // Errors propagate immediately
         MettaValue::Error(_, _) => EvalStep::Done((vec![value], env)),
 
-        // Atoms evaluate to themselves
-        MettaValue::Atom(_) => EvalStep::Done((vec![value], env)),
+        // Atoms: check tokenizer first for bound tokens, then evaluate to themselves
+        // This enables HE-compatible bind! semantics where tokens are replaced during evaluation
+        MettaValue::Atom(ref name) => {
+            if let Some(bound_value) = env.lookup_token(name) {
+                // Token was registered via bind! - return the bound value
+                EvalStep::Done((vec![bound_value], env))
+            } else {
+                // No binding - atom evaluates to itself
+                EvalStep::Done((vec![value], env))
+            }
+        }
 
         // Ground types evaluate to themselves
         MettaValue::Bool(_)
@@ -552,7 +561,8 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "new-state" => return EvalStep::Done(space::eval_new_state(items, env)),
             "get-state" => return EvalStep::Done(space::eval_get_state(items, env)),
             "change-state!" => return EvalStep::Done(space::eval_change_state(items, env)),
-            "bind!" => return EvalStep::Done(space::eval_bind(items, env)),
+            // Token Binding (HE-compatible tokenizer-based bind!)
+            "bind!" => return EvalStep::Done(modules::eval_bind(items, env)),
             // I/O Operations
             "println!" => return EvalStep::Done(io::eval_println(items, env)),
             "trace!" => return EvalStep::Done(io::eval_trace(items, env)),

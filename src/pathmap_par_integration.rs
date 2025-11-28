@@ -102,6 +102,32 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
+        MettaValue::Space(id, name) => {
+            // Represent spaces as tagged tuples: ("space", id, name)
+            let ps = vec![
+                create_string_par("space".to_string()),
+                create_int_par(*id as i64),
+                create_string_par(name.clone()),
+            ];
+
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
+        MettaValue::Unit => {
+            // Represent unit as empty tuple
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps: vec![],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
     }
 }
 

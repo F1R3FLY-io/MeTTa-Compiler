@@ -26,6 +26,12 @@ pub enum MettaValue {
     /// Represents (,), (, expr), or (, expr1 expr2 ...)
     /// Goals are evaluated left-to-right with variable binding threading
     Conjunction(Vec<MettaValue>),
+    /// A reference to a named space (id, name)
+    /// Used for space operations: new-space, add-atom, remove-atom, collapse
+    Space(u64, String),
+    /// Unit value for side-effecting operations that return nothing meaningful
+    /// Displayed as () in output
+    Unit,
 }
 
 impl MettaValue {
@@ -131,6 +137,12 @@ impl MettaValue {
                     .all(|(a, b)| a.structurally_equivalent(b))
             }
 
+            // Spaces must have same id
+            (MettaValue::Space(a_id, _), MettaValue::Space(b_id, _)) => a_id == b_id,
+
+            // Unit matches unit
+            (MettaValue::Unit, MettaValue::Unit) => true,
+
             _ => false,
         }
     }
@@ -216,6 +228,8 @@ impl MettaValue {
                     .join(" ");
                 format!("(, {})", inner)
             }
+            MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+            MettaValue::Unit => "()".to_string(),
         }
     }
 
@@ -252,6 +266,14 @@ impl MettaValue {
                     goals_json.join(",")
                 )
             }
+            MettaValue::Space(id, name) => {
+                format!(
+                    r#"{{"type":"space","id":{},"name":"{}"}}"#,
+                    id,
+                    escape_json(name)
+                )
+            }
+            MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
         }
     }
 }
@@ -312,6 +334,14 @@ impl std::hash::Hash for MettaValue {
             MettaValue::Conjunction(goals) => {
                 10u8.hash(state);
                 goals.hash(state);
+            }
+            MettaValue::Space(id, name) => {
+                11u8.hash(state);
+                id.hash(state);
+                name.hash(state);
+            }
+            MettaValue::Unit => {
+                12u8.hash(state);
             }
         }
     }

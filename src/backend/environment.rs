@@ -78,6 +78,14 @@ pub struct Environment {
     /// Causes type_index to be rebuilt on next get_type() call
     /// RwLock allows concurrent checks of dirty flag
     type_index_dirty: Arc<RwLock<bool>>,
+
+    /// Named spaces registry: Maps space_id -> (name, atoms)
+    /// Used for new-space, add-atom, remove-atom, collapse operations
+    /// RwLock allows concurrent reads for parallel space operations
+    named_spaces: Arc<RwLock<HashMap<u64, (String, Vec<MettaValue>)>>>,
+
+    /// Counter for generating unique space IDs
+    next_space_id: Arc<RwLock<u64>>,
 }
 
 impl Environment {
@@ -96,6 +104,8 @@ impl Environment {
             fuzzy_matcher: FuzzyMatcher::new(),
             type_index: Arc::new(RwLock::new(None)),
             type_index_dirty: Arc::new(RwLock::new(true)),
+            named_spaces: Arc::new(RwLock::new(HashMap::new())),
+            next_space_id: Arc::new(RwLock::new(1)), // Start from 1, 0 reserved for self
         }
     }
 
@@ -108,7 +118,7 @@ impl Environment {
             return;
         }
 
-        // Deep copy all 7 RwLock-wrapped fields
+        // Deep copy all RwLock-wrapped fields
         // Clone the data first to avoid borrowing issues
         let btm_data = self.btm.read().unwrap().clone();
         let rule_index_data = self.rule_index.read().unwrap().clone();
@@ -117,6 +127,8 @@ impl Environment {
         let pattern_cache_data = self.pattern_cache.read().unwrap().clone();
         let type_index_data = self.type_index.read().unwrap().clone();
         let type_index_dirty_data = *self.type_index_dirty.read().unwrap();
+        let named_spaces_data = self.named_spaces.read().unwrap().clone();
+        let next_space_id_data = *self.next_space_id.read().unwrap();
 
         // Now assign the new Arc<RwLock<T>> instances
         self.btm = Arc::new(RwLock::new(btm_data));
@@ -126,6 +138,8 @@ impl Environment {
         self.pattern_cache = Arc::new(RwLock::new(pattern_cache_data));
         self.type_index = Arc::new(RwLock::new(type_index_data));
         self.type_index_dirty = Arc::new(RwLock::new(type_index_dirty_data));
+        self.named_spaces = Arc::new(RwLock::new(named_spaces_data));
+        self.next_space_id = Arc::new(RwLock::new(next_space_id_data));
 
         // Mark as owning data and modified
         self.owns_data = true;
@@ -1289,6 +1303,79 @@ impl Environment {
         Ok(())
     }
 
+    // ============================================================
+    // Named Space Management (new-space, add-atom, remove-atom, collapse)
+    // ============================================================
+
+    /// Create a new named space and return its ID
+    /// Used by new-space operation
+    pub fn create_named_space(&mut self, name: &str) -> u64 {
+        self.make_owned();
+
+        let id = {
+            let mut next_id = self.next_space_id.write().unwrap();
+            let id = *next_id;
+            *next_id += 1;
+            id
+        };
+
+        self.named_spaces
+            .write()
+            .unwrap()
+            .insert(id, (name.to_string(), Vec::new()));
+
+        self.modified.store(true, Ordering::Release);
+        id
+    }
+
+    /// Add an atom to a named space by ID
+    /// Used by add-atom operation
+    pub fn add_to_named_space(&mut self, space_id: u64, value: &MettaValue) -> bool {
+        self.make_owned();
+
+        let mut spaces = self.named_spaces.write().unwrap();
+        if let Some((_, atoms)) = spaces.get_mut(&space_id) {
+            atoms.push(value.clone());
+            self.modified.store(true, Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove an atom from a named space by ID
+    /// Used by remove-atom operation
+    pub fn remove_from_named_space(&mut self, space_id: u64, value: &MettaValue) -> bool {
+        self.make_owned();
+
+        let mut spaces = self.named_spaces.write().unwrap();
+        if let Some((_, atoms)) = spaces.get_mut(&space_id) {
+            // Remove first matching atom
+            if let Some(pos) = atoms.iter().position(|x| x == value) {
+                atoms.remove(pos);
+                self.modified.store(true, Ordering::Release);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get all atoms from a named space as a list
+    /// Used by collapse operation
+    pub fn collapse_named_space(&self, space_id: u64) -> Vec<MettaValue> {
+        let spaces = self.named_spaces.read().unwrap();
+        if let Some((_, atoms)) = spaces.get(&space_id) {
+            atoms.clone()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Check if a named space exists
+    pub fn has_named_space(&self, space_id: u64) -> bool {
+        self.named_spaces.read().unwrap().contains_key(&space_id)
+    }
+
     /// Get rules matching a specific head symbol and arity
     /// Returns Vec<Rule> for O(1) lookup instead of O(n) iteration
     /// Also includes wildcard rules that must be checked against all queries
@@ -1378,6 +1465,8 @@ impl Environment {
         let fuzzy_matcher = self.fuzzy_matcher.clone();
         let type_index = self.type_index.clone();
         let type_index_dirty = self.type_index_dirty.clone();
+        let named_spaces = self.named_spaces.clone();
+        let next_space_id = self.next_space_id.clone();
 
         Environment {
             shared_mapping,
@@ -1391,6 +1480,8 @@ impl Environment {
             fuzzy_matcher,
             type_index,
             type_index_dirty,
+            named_spaces,
+            next_space_id,
         }
     }
 }
@@ -1411,6 +1502,8 @@ impl Clone for Environment {
             fuzzy_matcher: self.fuzzy_matcher.clone(),
             type_index: Arc::clone(&self.type_index),
             type_index_dirty: Arc::clone(&self.type_index_dirty),
+            named_spaces: Arc::clone(&self.named_spaces),
+            next_space_id: Arc::clone(&self.next_space_id),
         }
     }
 }

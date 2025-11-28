@@ -223,6 +223,14 @@ fn metta_value_to_json_string(value: &MettaValue) -> String {
                 goals_json.join(",")
             )
         }
+        MettaValue::Space(id, name) => {
+            format!(
+                r#"{{"type":"space","id":{},"name":"{}"}}"#,
+                id,
+                escape_json(name)
+            )
+        }
+        MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
     }
 }
 

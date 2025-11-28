@@ -122,6 +122,10 @@ const SPECIAL_FORMS: &[&str] = &[
     "max-atom",
     "let*",
     "unify",
+    "new-space",
+    "add-atom",
+    "remove-atom",
+    "collapse",
 ];
 
 /// Convert MettaValue to a friendly type name for error messages
@@ -138,6 +142,8 @@ fn friendly_type_name(value: &MettaValue) -> &'static str {
         MettaValue::Error(_, _) => "Error",
         MettaValue::Type(_) => "Type",
         MettaValue::Conjunction(_) => "Conjunction",
+        MettaValue::Space(_, _) => "Space",
+        MettaValue::Unit => "Unit",
     }
 }
 
@@ -167,6 +173,8 @@ pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
             let inner: Vec<String> = goals.iter().map(friendly_value_repr).collect();
             format!("(, {})", inner.join(" "))
         }
+        MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+        MettaValue::Unit => "()".to_string(),
     }
 }
 
@@ -460,7 +468,9 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         | MettaValue::Float(_)
         | MettaValue::String(_)
         | MettaValue::Nil
-        | MettaValue::Type(_) => EvalStep::Done((vec![value], env)),
+        | MettaValue::Type(_)
+        | MettaValue::Space(_, _)
+        | MettaValue::Unit => EvalStep::Done((vec![value], env)),
 
         // S-expressions need special handling
         MettaValue::SExpr(items) => eval_sexpr_step(items, env, depth),
@@ -514,6 +524,11 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "decons-atom" => return EvalStep::Done(list_ops::eval_decons_atom(items, env)),
             "size-atom" => return EvalStep::Done(list_ops::eval_size_atom(items, env)),
             "max-atom" => return EvalStep::Done(list_ops::eval_max_atom(items, env)),
+            // Space Operations
+            "new-space" => return EvalStep::Done(space::eval_new_space(items, env)),
+            "add-atom" => return EvalStep::Done(space::eval_add_atom(items, env)),
+            "remove-atom" => return EvalStep::Done(space::eval_remove_atom(items, env)),
+            "collapse" => return EvalStep::Done(space::eval_collapse(items, env)),
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),
@@ -1174,7 +1189,9 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         | MettaValue::Long(_)
         | MettaValue::Float(_)
         | MettaValue::String(_)
-        | MettaValue::Nil => {
+        | MettaValue::Nil
+        | MettaValue::Space(_, _)
+        | MettaValue::Unit => {
             0 // Literals are most specific (including standalone "&")
         }
         MettaValue::SExpr(items) => {

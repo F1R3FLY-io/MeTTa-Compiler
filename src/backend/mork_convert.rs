@@ -170,6 +170,21 @@ fn write_metta_value(
                 write_metta_value(goal, space, ctx, ez)?;
             }
         }
+
+        // Space references are written as (Space id name)
+        MettaValue::Space(id, name) => {
+            ez.write_arity(3);
+            ez.loc += 1;
+            write_symbol(b"Space", space, ez)?;
+            write_symbol(id.to_string().as_bytes(), space, ez)?;
+            write_symbol(format!("\"{}\"", name).as_bytes(), space, ez)?;
+        }
+
+        // Unit is written as ()
+        MettaValue::Unit => {
+            ez.write_arity(0);
+            ez.loc += 1;
+        }
     }
 
     Ok(())

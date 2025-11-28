@@ -4,10 +4,12 @@ use mork_interning::SharedMappingHandle;
 use pathmap::{zipper::*, PathMap};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use super::fuzzy_match::FuzzyMatcher;
+use super::modules::{ModId, ModuleRegistry};
 use super::{MettaValue, Rule};
 
 /// The environment contains the fact database and type assertions
@@ -99,6 +101,16 @@ pub struct Environment {
     /// Used for bind! operation to register named values
     /// RwLock allows concurrent reads for parallel symbol resolution
     bindings: Arc<RwLock<HashMap<String, MettaValue>>>,
+
+    /// Module registry: Tracks loaded modules and provides caching
+    /// Used for include, import!, and module operations
+    /// RwLock allows concurrent reads for parallel module resolution
+    module_registry: Arc<RwLock<ModuleRegistry>>,
+
+    /// Current module path: Directory of the currently-executing module
+    /// Used for relative path resolution (self:child notation)
+    /// None when not inside a module evaluation
+    current_module_path: Option<PathBuf>,
 }
 
 impl Environment {
@@ -122,6 +134,8 @@ impl Environment {
             states: Arc::new(RwLock::new(HashMap::new())),
             next_state_id: Arc::new(RwLock::new(1)), // Start from 1
             bindings: Arc::new(RwLock::new(HashMap::new())),
+            module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
+            current_module_path: None,
         }
     }
 
@@ -148,6 +162,7 @@ impl Environment {
         let states_data = self.states.read().unwrap().clone();
         let next_state_id_data = *self.next_state_id.read().unwrap();
         let bindings_data = self.bindings.read().unwrap().clone();
+        let module_registry_data = self.module_registry.read().unwrap().clone();
 
         // Now assign the new Arc<RwLock<T>> instances
         self.btm = Arc::new(RwLock::new(btm_data));
@@ -162,6 +177,8 @@ impl Environment {
         self.states = Arc::new(RwLock::new(states_data));
         self.next_state_id = Arc::new(RwLock::new(next_state_id_data));
         self.bindings = Arc::new(RwLock::new(bindings_data));
+        self.module_registry = Arc::new(RwLock::new(module_registry_data));
+        // Note: current_module_path is not Arc-wrapped, so it's copied directly
 
         // Mark as owning data and modified
         self.owns_data = true;
@@ -1478,6 +1495,88 @@ impl Environment {
         self.bindings.read().unwrap().contains_key(symbol)
     }
 
+    // ============================================================
+    // Module Operations
+    // ============================================================
+
+    /// Get the current module path (directory of the executing module)
+    pub fn current_module_dir(&self) -> Option<&std::path::Path> {
+        self.current_module_path.as_deref()
+    }
+
+    /// Set the current module path
+    pub fn set_current_module_path(&mut self, path: Option<PathBuf>) {
+        self.current_module_path = path;
+    }
+
+    /// Check if a module is cached by path
+    pub fn get_module_by_path(&self, path: &std::path::Path) -> Option<ModId> {
+        self.module_registry.read().unwrap().get_by_path(path)
+    }
+
+    /// Check if a module is cached by content hash
+    pub fn get_module_by_content(&self, content_hash: u64) -> Option<ModId> {
+        self.module_registry.read().unwrap().get_by_content(content_hash)
+    }
+
+    /// Check if a module is currently being loaded (cycle detection)
+    pub fn is_module_loading(&self, content_hash: u64) -> bool {
+        self.module_registry.read().unwrap().is_loading(content_hash)
+    }
+
+    /// Mark a module as being loaded
+    pub fn mark_module_loading(&self, content_hash: u64) {
+        self.module_registry.write().unwrap().mark_loading(content_hash);
+    }
+
+    /// Unmark a module as loading
+    pub fn unmark_module_loading(&self, content_hash: u64) {
+        self.module_registry.write().unwrap().unmark_loading(content_hash);
+    }
+
+    /// Register a new module in the registry
+    pub fn register_module(
+        &self,
+        mod_path: String,
+        file_path: &std::path::Path,
+        content_hash: u64,
+        resource_dir: Option<PathBuf>,
+    ) -> ModId {
+        self.module_registry.write().unwrap().register(
+            mod_path,
+            file_path,
+            content_hash,
+            resource_dir,
+        )
+    }
+
+    /// Add a path alias for an existing module
+    pub fn add_module_path_alias(&self, path: &std::path::Path, mod_id: ModId) {
+        self.module_registry.write().unwrap().add_path_alias(path, mod_id);
+    }
+
+    /// Get the number of loaded modules
+    pub fn module_count(&self) -> usize {
+        self.module_registry.read().unwrap().module_count()
+    }
+
+    /// Check if module imports are permissive
+    pub fn is_permissive_imports(&self) -> bool {
+        self.module_registry.read().unwrap().options().permissive_imports
+    }
+
+    /// Validate an import (submodule constraint)
+    pub fn validate_module_import(
+        &self,
+        current_module: &str,
+        target_module: &str,
+    ) -> Result<(), super::modules::LoadError> {
+        self.module_registry
+            .read()
+            .unwrap()
+            .validate_import(current_module, target_module)
+    }
+
     /// Get rules matching a specific head symbol and arity
     /// Returns Vec<Rule> for O(1) lookup instead of O(n) iteration
     /// Also includes wildcard rules that must be checked against all queries
@@ -1572,6 +1671,8 @@ impl Environment {
         let states = self.states.clone();
         let next_state_id = self.next_state_id.clone();
         let bindings = self.bindings.clone();
+        let module_registry = self.module_registry.clone();
+        let current_module_path = self.current_module_path.clone();
 
         Environment {
             shared_mapping,
@@ -1590,6 +1691,8 @@ impl Environment {
             states,
             next_state_id,
             bindings,
+            module_registry,
+            current_module_path,
         }
     }
 }
@@ -1615,6 +1718,8 @@ impl Clone for Environment {
             states: Arc::clone(&self.states),
             next_state_id: Arc::clone(&self.next_state_id),
             bindings: Arc::clone(&self.bindings),
+            module_registry: Arc::clone(&self.module_registry),
+            current_module_path: self.current_module_path.clone(),
         }
     }
 }

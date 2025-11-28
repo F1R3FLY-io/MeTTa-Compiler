@@ -114,6 +114,12 @@ const SPECIAL_FORMS: &[&str] = &[
     "map-atom",
     "filter-atom",
     "foldl-atom",
+    "car-atom",
+    "cdr-atom",
+    "cons-atom",
+    "decons-atom",
+    "size-atom",
+    "max-atom",
 ];
 
 /// Convert MettaValue to a friendly type name for error messages
@@ -498,6 +504,12 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "map-atom" => return EvalStep::Done(list_ops::eval_map_atom(items, env)),
             "filter-atom" => return EvalStep::Done(list_ops::eval_filter_atom(items, env)),
             "foldl-atom" => return EvalStep::Done(list_ops::eval_foldl_atom(items, env)),
+            "car-atom" => return EvalStep::Done(list_ops::eval_car_atom(items, env)),
+            "cdr-atom" => return EvalStep::Done(list_ops::eval_cdr_atom(items, env)),
+            "cons-atom" => return EvalStep::Done(list_ops::eval_cons_atom(items, env)),
+            "decons-atom" => return EvalStep::Done(list_ops::eval_decons_atom(items, env)),
+            "size-atom" => return EvalStep::Done(list_ops::eval_size_atom(items, env)),
+            "max-atom" => return EvalStep::Done(list_ops::eval_max_atom(items, env)),
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),

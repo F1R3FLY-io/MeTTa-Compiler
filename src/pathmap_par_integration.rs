@@ -89,6 +89,19 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
+        MettaValue::Conjunction(goals) => {
+            // Represent conjunctions as tagged tuples: ("conjunction", goal1, goal2, ...)
+            let mut ps = vec![create_string_par("conjunction".to_string())];
+            ps.extend(goals.iter().map(metta_value_to_par));
+
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
     }
 }
 

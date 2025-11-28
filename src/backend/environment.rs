@@ -1602,6 +1602,20 @@ impl Environment {
         self.module_registry.read().unwrap().options().permissive_imports
     }
 
+    /// Enable or disable permissive imports mode
+    /// When enabled, modules can be imported from any location.
+    /// When disabled, only submodules can be imported (strict mode).
+    pub fn set_permissive_imports(&mut self, permissive: bool) {
+        use super::modules::LoadOptions;
+        self.make_owned();
+        let options = if permissive {
+            LoadOptions::permissive()
+        } else {
+            LoadOptions::strict()
+        };
+        self.module_registry.write().unwrap().set_options(options);
+    }
+
     /// Validate an import (submodule constraint)
     pub fn validate_module_import(
         &self,

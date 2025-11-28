@@ -19,15 +19,16 @@ fn print_usage() {
     eprintln!("    mettatron [OPTIONS] <INPUT>");
     eprintln!();
     eprintln!("OPTIONS:");
-    eprintln!("    -h, --help           Print this help message");
-    eprintln!("    -v, --version        Print version information");
-    eprintln!("    -o, --output <FILE>  Write output to FILE (default: stdout)");
-    eprintln!("    --sexpr              Print S-expressions instead of evaluating");
-    eprintln!("    --repl               Start interactive REPL");
-    eprintln!("    --eval               Evaluate and print results (default)");
+    eprintln!("    -h, --help              Print this help message");
+    eprintln!("    -v, --version           Print version information");
+    eprintln!("    -o, --output <FILE>     Write output to FILE (default: stdout)");
+    eprintln!("    --sexpr                 Print S-expressions instead of evaluating");
+    eprintln!("    --repl                  Start interactive REPL");
+    eprintln!("    --eval                  Evaluate and print results (default)");
+    eprintln!("    --permissive-imports    Allow imports from any module (not just submodules)");
     eprintln!();
     eprintln!("ARGUMENTS:");
-    eprintln!("    <INPUT>              Input MeTTa file (use '-' for stdin)");
+    eprintln!("    <INPUT>                 Input MeTTa file (use '-' for stdin)");
     eprintln!();
     eprintln!("EXAMPLES:");
     eprintln!("    mettatron input.metta");
@@ -45,6 +46,7 @@ struct Options {
     output: Option<String>,
     show_sexpr: bool,
     repl_mode: bool,
+    permissive_imports: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -54,6 +56,7 @@ fn parse_args() -> Result<Options, String> {
     let mut output = None;
     let mut show_sexpr = false;
     let mut repl_mode = false;
+    let mut permissive_imports = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -82,6 +85,9 @@ fn parse_args() -> Result<Options, String> {
             "--eval" => {
                 // Default mode, no-op
             }
+            "--permissive-imports" => {
+                permissive_imports = true;
+            }
             arg if arg.starts_with('-') && arg != "-" => {
                 return Err(format!("Unknown option: {}", arg));
             }
@@ -100,6 +106,7 @@ fn parse_args() -> Result<Options, String> {
         output,
         show_sexpr,
         repl_mode,
+        permissive_imports,
     })
 }
 
@@ -189,6 +196,11 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     let state = compile(input).map_err(|e| e.to_string())?;
     let mut env = state.environment;
 
+    // Configure permissive imports if requested
+    if options.permissive_imports {
+        env.set_permissive_imports(true);
+    }
+
     // Evaluate each expression
     let mut output = String::new();
     for sexpr in state.source {
@@ -236,7 +248,7 @@ fn highlight_output(text: &str, highlighter: Option<&QueryHighlighter>) -> Strin
     }
 }
 
-fn run_repl() {
+fn run_repl(options: &Options) {
     println!("MeTTaTron REPL v{}", VERSION);
     println!("Enter MeTTa expressions. Type 'exit' or 'quit' to exit.");
     println!("Multi-line input: Press ENTER on incomplete expressions to continue.\n");
@@ -250,6 +262,11 @@ fn run_repl() {
     let output_highlighter = QueryHighlighter::new().ok();
 
     let mut env = Environment::new();
+
+    // Configure permissive imports if requested
+    if options.permissive_imports {
+        env.set_permissive_imports(true);
+    }
     let mut line_num = 1;
 
     loop {
@@ -338,7 +355,7 @@ fn main() {
 
     // REPL mode
     if options.repl_mode {
-        run_repl();
+        run_repl(&options);
         return;
     }
 

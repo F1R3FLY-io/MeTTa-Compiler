@@ -54,6 +54,10 @@ harness = false
 name = "branch_comparison"
 harness = false
 
+[[bench]]
+name = "mork_evaluation"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }

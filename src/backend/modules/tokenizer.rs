@@ -135,8 +135,12 @@ impl TokenEntry {
     }
 
     /// Create a new token entry with a pre-built pattern.
+    #[allow(dead_code)]
     pub fn with_pattern(pattern: TokenPattern, constructor: TokenConstructor) -> Self {
-        Self { pattern, constructor }
+        Self {
+            pattern,
+            constructor,
+        }
     }
 
     /// Get the pattern string for display.
@@ -150,6 +154,7 @@ impl TokenEntry {
     }
 
     /// Construct an atom for this token.
+    #[allow(dead_code)]
     pub fn construct(&self, matched: &str) -> MettaValue {
         (self.constructor)(matched)
     }
@@ -230,10 +235,8 @@ impl Tokenizer {
     where
         F: Fn(&str) -> MettaValue + Send + Sync + 'static,
     {
-        self.tokens.push(TokenEntry::new(
-            pattern.to_string(),
-            Arc::new(constructor),
-        ));
+        self.tokens
+            .push(TokenEntry::new(pattern.to_string(), Arc::new(constructor)));
     }
 
     /// Register a token with a regex pattern and constructor function.
@@ -261,8 +264,13 @@ impl Tokenizer {
     }
 
     /// Register a token with an existing constructor using exact match.
-    pub fn register_token_with_constructor(&mut self, pattern: &str, constructor: TokenConstructor) {
-        self.tokens.push(TokenEntry::new(pattern.to_string(), constructor));
+    pub fn register_token_with_constructor(
+        &mut self,
+        pattern: &str,
+        constructor: TokenConstructor,
+    ) {
+        self.tokens
+            .push(TokenEntry::new(pattern.to_string(), constructor));
     }
 
     /// Register a token with an existing constructor using regex pattern.
@@ -418,6 +426,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_register_token_with_constructor() {
         let mut tok = Tokenizer::new();
 
@@ -484,6 +493,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_patterns() {
         let mut tok = Tokenizer::new();
         tok.register_token_value("&kb", MettaValue::Long(1));
@@ -509,7 +519,10 @@ mod tests {
         // Should match
         assert!(tok.matches("$foo"));
         assert!(tok.matches("$bar"));
-        assert_eq!(tok.lookup("$xyz"), Some(MettaValue::Atom("var".to_string())));
+        assert_eq!(
+            tok.lookup("$xyz"),
+            Some(MettaValue::Atom("var".to_string()))
+        );
 
         // Should not match
         assert!(!tok.matches("foo"));

@@ -84,6 +84,7 @@ pub struct Environment {
     /// Named spaces registry: Maps space_id -> (name, atoms)
     /// Used for new-space, add-atom, remove-atom, collapse operations
     /// RwLock allows concurrent reads for parallel space operations
+    #[allow(clippy::type_complexity)]
     named_spaces: Arc<RwLock<HashMap<u64, (String, Vec<MettaValue>)>>>,
 
     /// Counter for generating unique space IDs
@@ -1466,8 +1467,8 @@ impl Environment {
         self.make_owned();
 
         let mut states = self.states.write().unwrap();
-        if states.contains_key(&state_id) {
-            states.insert(state_id, new_value);
+        if let std::collections::hash_map::Entry::Occupied(mut e) = states.entry(state_id) {
+            e.insert(new_value);
             self.modified.store(true, Ordering::Release);
             true
         } else {
@@ -1521,10 +1522,7 @@ impl Environment {
     pub fn export_symbol(&mut self, symbol: &str) {
         self.make_owned();
 
-        self.exports
-            .write()
-            .unwrap()
-            .insert(symbol.to_string());
+        self.exports.write().unwrap().insert(symbol.to_string());
 
         self.modified.store(true, Ordering::Release);
     }
@@ -1594,22 +1592,34 @@ impl Environment {
 
     /// Check if a module is cached by content hash
     pub fn get_module_by_content(&self, content_hash: u64) -> Option<ModId> {
-        self.module_registry.read().unwrap().get_by_content(content_hash)
+        self.module_registry
+            .read()
+            .unwrap()
+            .get_by_content(content_hash)
     }
 
     /// Check if a module is currently being loaded (cycle detection)
     pub fn is_module_loading(&self, content_hash: u64) -> bool {
-        self.module_registry.read().unwrap().is_loading(content_hash)
+        self.module_registry
+            .read()
+            .unwrap()
+            .is_loading(content_hash)
     }
 
     /// Mark a module as being loaded
     pub fn mark_module_loading(&self, content_hash: u64) {
-        self.module_registry.write().unwrap().mark_loading(content_hash);
+        self.module_registry
+            .write()
+            .unwrap()
+            .mark_loading(content_hash);
     }
 
     /// Unmark a module as loading
     pub fn unmark_module_loading(&self, content_hash: u64) {
-        self.module_registry.write().unwrap().unmark_loading(content_hash);
+        self.module_registry
+            .write()
+            .unwrap()
+            .unmark_loading(content_hash);
     }
 
     /// Register a new module in the registry
@@ -1630,7 +1640,10 @@ impl Environment {
 
     /// Add a path alias for an existing module
     pub fn add_module_path_alias(&self, path: &std::path::Path, mod_id: ModId) {
-        self.module_registry.write().unwrap().add_path_alias(path, mod_id);
+        self.module_registry
+            .write()
+            .unwrap()
+            .add_path_alias(path, mod_id);
     }
 
     /// Get the number of loaded modules
@@ -1643,11 +1656,13 @@ impl Environment {
         self.module_registry.read().unwrap().options().strict_mode
     }
 
-    /// Enable or disable strict mode
+    /// Enable or disable strict mode.
+    ///
     /// When enabled:
     /// - Only submodules can be imported
     /// - Transitive imports are disabled
     /// - Cyclic imports are disallowed
+    ///
     /// When disabled: HE-compatible permissive mode
     pub fn set_strict_mode(&mut self, strict: bool) {
         use super::modules::LoadOptions;

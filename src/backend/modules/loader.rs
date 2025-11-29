@@ -29,8 +29,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use super::cache::{hash_content, hash_path, ModuleDescriptor};
-use super::metta_mod::{MettaMod, ModId, ModuleState};
+use super::cache::hash_path;
+use super::metta_mod::{MettaMod, ModId};
 
 /// Result type for module loading operations.
 pub type LoadResult<T> = Result<T, LoadError>;
@@ -74,10 +74,12 @@ impl std::error::Error for LoadError {}
 #[derive(Debug, Clone)]
 pub struct LoadOptions {
     /// Strict mode: enables all strict checks.
+    ///
     /// When true:
     /// - Submodule constraint enforced (only submodules can be imported)
     /// - Transitive imports disabled (explicit imports only)
     /// - Cyclic imports disallowed (error on cycle detection)
+    ///
     /// Default: false (HE-compatible permissive mode)
     pub strict_mode: bool,
 }
@@ -94,9 +96,7 @@ impl LoadOptions {
     /// - Transitive imports enabled
     /// - Cyclic imports allowed (via two-pass loading)
     pub fn permissive() -> Self {
-        Self {
-            strict_mode: false,
-        }
+        Self { strict_mode: false }
     }
 
     /// Create options for strict mode.
@@ -104,9 +104,7 @@ impl LoadOptions {
     /// - Transitive imports disabled
     /// - Cyclic imports disallowed
     pub fn strict() -> Self {
-        Self {
-            strict_mode: true,
-        }
+        Self { strict_mode: true }
     }
 
     /// Check if transitive imports are enabled.
@@ -350,6 +348,8 @@ pub fn new_shared_registry() -> SharedModuleRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::modules::cache::hash_content;
+    use crate::backend::modules::metta_mod::ModuleState;
 
     #[test]
     fn test_registry_new() {
@@ -368,12 +368,7 @@ mod tests {
         let path = PathBuf::from("/test/module.metta");
         let content_hash = hash_content("(= (foo) bar)");
 
-        let id = registry.register(
-            "top:test:module".to_string(),
-            &path,
-            content_hash,
-            None,
-        );
+        let id = registry.register("top:test:module".to_string(), &path, content_hash, None);
 
         assert_eq!(id, ModId::new(0));
         assert_eq!(registry.module_count(), 1);
@@ -393,12 +388,7 @@ mod tests {
         let content_hash = hash_content("(= (foo) bar)");
 
         // Register first path
-        let id1 = registry.register(
-            "top:a:module".to_string(),
-            &path1,
-            content_hash,
-            None,
-        );
+        let id1 = registry.register("top:a:module".to_string(), &path1, content_hash, None);
 
         // Check content is already loaded
         assert_eq!(registry.get_by_content(content_hash), Some(id1));
@@ -449,9 +439,7 @@ mod tests {
             .is_err());
 
         // Non-submodule not allowed
-        assert!(registry
-            .validate_import("top:parent", "top:other")
-            .is_err());
+        assert!(registry.validate_import("top:parent", "top:other").is_err());
 
         // Parent not allowed
         assert!(registry
@@ -464,12 +452,8 @@ mod tests {
         let registry = ModuleRegistry::with_options(LoadOptions::permissive());
 
         // Everything allowed in permissive mode
-        assert!(registry
-            .validate_import("top:parent", "top:other")
-            .is_ok());
-        assert!(registry
-            .validate_import("top:a", "top:b:c:d")
-            .is_ok());
+        assert!(registry.validate_import("top:parent", "top:other").is_ok());
+        assert!(registry.validate_import("top:a", "top:b:c:d").is_ok());
     }
 
     #[test]
@@ -479,9 +463,7 @@ mod tests {
         assert!(!registry.options().strict_mode);
 
         // Non-submodule imports should be allowed by default
-        assert!(registry
-            .validate_import("top:parent", "top:other")
-            .is_ok());
+        assert!(registry.validate_import("top:parent", "top:other").is_ok());
     }
 
     #[test]
@@ -490,12 +472,7 @@ mod tests {
         let path = PathBuf::from("/test/module.metta");
         let content_hash = hash_content("content");
 
-        let id = registry.register(
-            "top:test".to_string(),
-            &path,
-            content_hash,
-            None,
-        );
+        let id = registry.register("top:test".to_string(), &path, content_hash, None);
 
         let module = registry.get(id).unwrap();
         assert_eq!(module.path(), "top:test");
@@ -560,17 +537,11 @@ mod tests {
 
     #[test]
     fn test_load_error_display() {
-        let err = LoadError::FileNotFound(
-            PathBuf::from("/test.metta"),
-            "No such file".to_string(),
-        );
+        let err = LoadError::FileNotFound(PathBuf::from("/test.metta"), "No such file".to_string());
         assert!(err.to_string().contains("/test.metta"));
         assert!(err.to_string().contains("No such file"));
 
-        let err = LoadError::ParseError(
-            PathBuf::from("/test.metta"),
-            "Syntax error".to_string(),
-        );
+        let err = LoadError::ParseError(PathBuf::from("/test.metta"), "Syntax error".to_string());
         assert!(err.to_string().contains("Syntax error"));
 
         let err = LoadError::ImportConstraint("Not a submodule".to_string());

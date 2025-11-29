@@ -131,10 +131,7 @@ impl MettaMod {
 
     /// Get the module's name (last component of path).
     pub fn name(&self) -> &str {
-        self.mod_path
-            .rsplit(':')
-            .next()
-            .unwrap_or(&self.mod_path)
+        self.mod_path.rsplit(':').next().unwrap_or(&self.mod_path)
     }
 
     /// Get a reference to the module's space.
@@ -270,12 +267,7 @@ mod tests {
 
     #[test]
     fn test_module_state_transitions() {
-        let module = MettaMod::new(
-            ModId::new(1),
-            "top:test".to_string(),
-            0,
-            None,
-        );
+        let module = MettaMod::new(ModId::new(1), "top:test".to_string(), 0, None);
 
         assert_eq!(module.state(), ModuleState::Loading);
         module.set_state(ModuleState::Loaded);
@@ -284,12 +276,7 @@ mod tests {
 
     #[test]
     fn test_dependency_tracking() {
-        let module = MettaMod::new(
-            ModId::new(1),
-            "top:test".to_string(),
-            0,
-            None,
-        );
+        let module = MettaMod::new(ModId::new(1), "top:test".to_string(), 0, None);
 
         let dep1 = ModId::new(2);
         let dep2 = ModId::new(3);

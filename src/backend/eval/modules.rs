@@ -153,12 +153,8 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
     // Register the module in the registry (after Pass 1, before Pass 2)
     let mod_path = path_str.replace('/', ":").replace(".metta", "");
     let resource_dir = resolved_path.parent().map(|p| p.to_path_buf());
-    let mod_id = current_env.register_module(
-        mod_path,
-        &resolved_path,
-        content_hash,
-        resource_dir.clone(),
-    );
+    let _mod_id =
+        current_env.register_module(mod_path, &resolved_path, content_hash, resource_dir.clone());
 
     // Update current module path for nested includes
     let prev_module_path = current_env.current_module_dir().map(|p| p.to_path_buf());
@@ -262,10 +258,7 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
         MettaValue::Atom(name) if name == "&self" => {
             // Import into current space
             // First, load the module
-            let include_items = vec![
-                MettaValue::Atom("include".to_string()),
-                module_arg.clone(),
-            ];
+            let include_items = vec![MettaValue::Atom("include".to_string()), module_arg.clone()];
             let (results, new_env) = eval_include(include_items, env);
 
             // Check for errors
@@ -292,10 +285,7 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
                         // Item not found or error - return what we got
                         if lookup_results.is_empty() {
                             let err = MettaValue::Error(
-                                format!(
-                                    "import!: item '{}' not found in module",
-                                    item_name
-                                ),
+                                format!("import!: item '{}' not found in module", item_name),
                                 Arc::new(MettaValue::Atom(item_name)),
                             );
                             return (vec![err], final_env);
@@ -316,12 +306,9 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
                 (vec![MettaValue::Unit], new_env)
             }
         }
-        MettaValue::Atom(alias) => {
+        MettaValue::Atom(_alias) => {
             // Import with alias - load module and bind alias to module reference
-            let include_items = vec![
-                MettaValue::Atom("include".to_string()),
-                module_arg.clone(),
-            ];
+            let include_items = vec![MettaValue::Atom("include".to_string()), module_arg.clone()];
             let (results, new_env) = eval_include(include_items, env);
 
             // If successful, we could bind the module reference here
@@ -383,10 +370,7 @@ pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: Environment) -> EvalRe
         (vec![MettaValue::Long(mod_id.value() as i64)], env)
     } else {
         // Module not loaded - try to load it first
-        let include_items = vec![
-            MettaValue::Atom("include".to_string()),
-            module_arg.clone(),
-        ];
+        let include_items = vec![MettaValue::Atom("include".to_string()), module_arg.clone()];
         let (_, new_env) = eval_include(include_items, env);
 
         // Check again
@@ -590,7 +574,10 @@ mod tests {
 
         // Token should be registered
         assert!(new_env.has_token("&my-value"));
-        assert_eq!(new_env.lookup_token("&my-value"), Some(MettaValue::Long(42)));
+        assert_eq!(
+            new_env.lookup_token("&my-value"),
+            Some(MettaValue::Long(42))
+        );
     }
 
     #[test]

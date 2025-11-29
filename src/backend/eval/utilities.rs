@@ -87,9 +87,18 @@ mod tests {
 
     #[test]
     fn test_get_metatype_variable() {
-        assert_eq!(get_metatype(&MettaValue::Atom("$x".to_string())), "Variable");
-        assert_eq!(get_metatype(&MettaValue::Atom("&ref".to_string())), "Variable");
-        assert_eq!(get_metatype(&MettaValue::Atom("'quoted".to_string())), "Variable");
+        assert_eq!(
+            get_metatype(&MettaValue::Atom("$x".to_string())),
+            "Variable"
+        );
+        assert_eq!(
+            get_metatype(&MettaValue::Atom("&ref".to_string())),
+            "Variable"
+        );
+        assert_eq!(
+            get_metatype(&MettaValue::Atom("'quoted".to_string())),
+            "Variable"
+        );
     }
 
     #[test]
@@ -104,10 +113,14 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_get_metatype_grounded() {
         assert_eq!(get_metatype(&MettaValue::Long(42)), "Grounded");
         assert_eq!(get_metatype(&MettaValue::Float(3.14)), "Grounded");
         assert_eq!(get_metatype(&MettaValue::Bool(true)), "Grounded");
-        assert_eq!(get_metatype(&MettaValue::String("hello".to_string())), "Grounded");
+        assert_eq!(
+            get_metatype(&MettaValue::String("hello".to_string())),
+            "Grounded"
+        );
     }
 }

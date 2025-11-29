@@ -8,12 +8,14 @@
 //! - `ModuleDescriptor` - Caching descriptor with path UID and content hash
 //! - `ModuleRegistry` - Registry for tracking and caching loaded modules
 //! - `LoadOptions` - Configuration for module loading behavior
+//! - `PackageInfo` - Package manifest (metta.toml) parsing and version constraints
 //! - Path resolution utilities for `self:` and `top:` notation
 
 mod cache;
 mod loader;
 mod metta_mod;
 mod module_space;
+mod package;
 mod path;
 mod tokenizer;
 
@@ -23,5 +25,6 @@ pub use loader::{
 };
 pub use metta_mod::{MettaMod, ModId, ModuleState};
 pub use module_space::ModuleSpace;
+pub use package::{Dependency, DependencyDetail, ExportConfig, PackageInfo, PackageMeta};
 pub use path::{is_submodule, normalize_module_path, parent_module_path, resolve_module_path};
 pub use tokenizer::Tokenizer;

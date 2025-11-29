@@ -921,40 +921,32 @@ fn eval_comparison(args: &[MettaValue], op: CompareOp) -> Option<MettaValue> {
     }
 
     match (&args[0], &args[1]) {
-        (MettaValue::Long(a), MettaValue::Long(b)) => {
-            Some(MettaValue::Bool(op.apply(*a, *b)))
-        }
+        (MettaValue::Long(a), MettaValue::Long(b)) => Some(MettaValue::Bool(op.apply(*a, *b))),
         (MettaValue::String(a), MettaValue::String(b)) => {
             Some(MettaValue::Bool(op.apply(a.as_str(), b.as_str())))
         }
-        (MettaValue::Long(_), other) | (other, MettaValue::Long(_)) => {
-            Some(MettaValue::Error(
-                format!(
-                    "Cannot compare: type mismatch between Number (integer) and {}",
-                    friendly_type_name(other)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ))
-        }
-        (MettaValue::String(_), other) | (other, MettaValue::String(_)) => {
-            Some(MettaValue::Error(
-                format!(
-                    "Cannot compare: type mismatch between String and {}",
-                    friendly_type_name(other)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ))
-        }
-        (other1, other2) => {
-            Some(MettaValue::Error(
-                format!(
-                    "Cannot compare: unsupported types {} and {}",
-                    friendly_type_name(other1),
-                    friendly_type_name(other2)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ))
-        }
+        (MettaValue::Long(_), other) | (other, MettaValue::Long(_)) => Some(MettaValue::Error(
+            format!(
+                "Cannot compare: type mismatch between Number (integer) and {}",
+                friendly_type_name(other)
+            ),
+            Arc::new(MettaValue::Atom("TypeError".to_string())),
+        )),
+        (MettaValue::String(_), other) | (other, MettaValue::String(_)) => Some(MettaValue::Error(
+            format!(
+                "Cannot compare: type mismatch between String and {}",
+                friendly_type_name(other)
+            ),
+            Arc::new(MettaValue::Atom("TypeError".to_string())),
+        )),
+        (other1, other2) => Some(MettaValue::Error(
+            format!(
+                "Cannot compare: unsupported types {} and {}",
+                friendly_type_name(other1),
+                friendly_type_name(other2)
+            ),
+            Arc::new(MettaValue::Atom("TypeError".to_string())),
+        )),
     }
 }
 
@@ -2525,7 +2517,11 @@ mod tests {
 
         match &results[0] {
             MettaValue::Error(msg, details) => {
-                assert!(msg.contains("type mismatch"), "Expected 'type mismatch' in: {}", msg);
+                assert!(
+                    msg.contains("type mismatch"),
+                    "Expected 'type mismatch' in: {}",
+                    msg
+                );
                 assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),

@@ -147,7 +147,10 @@ mod tests {
         assert_eq!(atom_to_string(&MettaValue::Long(42)), "42");
         assert_eq!(atom_to_string(&MettaValue::Bool(true)), "True");
         assert_eq!(atom_to_string(&MettaValue::Bool(false)), "False");
-        assert_eq!(atom_to_string(&MettaValue::String("hello".to_string())), "hello");
+        assert_eq!(
+            atom_to_string(&MettaValue::String("hello".to_string())),
+            "hello"
+        );
         assert_eq!(atom_to_string(&MettaValue::Atom("foo".to_string())), "foo");
         assert_eq!(atom_to_string(&MettaValue::Nil), "Nil");
         assert_eq!(atom_to_string(&MettaValue::Unit), "()");

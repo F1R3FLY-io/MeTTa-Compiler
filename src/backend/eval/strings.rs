@@ -201,7 +201,10 @@ mod tests {
     fn test_atom_repr() {
         assert_eq!(atom_repr(&MettaValue::Long(42)), "42");
         assert_eq!(atom_repr(&MettaValue::Bool(true)), "True");
-        assert_eq!(atom_repr(&MettaValue::String("hello".to_string())), "\"hello\"");
+        assert_eq!(
+            atom_repr(&MettaValue::String("hello".to_string())),
+            "\"hello\""
+        );
         assert_eq!(atom_repr(&MettaValue::Atom("foo".to_string())), "foo");
         assert_eq!(atom_repr(&MettaValue::Unit), "()");
     }
@@ -226,7 +229,10 @@ mod tests {
     #[test]
     fn test_format_string_escaped_braces() {
         let args: Vec<&MettaValue> = vec![];
-        assert_eq!(format_string("Use {{}} for placeholders", &args), "Use {} for placeholders");
+        assert_eq!(
+            format_string("Use {{}} for placeholders", &args),
+            "Use {} for placeholders"
+        );
     }
 
     #[test]

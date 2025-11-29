@@ -35,10 +35,7 @@ pub fn resolve_module_path(path: &str, current_dir: Option<&Path>) -> PathBuf {
 
     if path.starts_with("self:") {
         // Relative path: resolve against current module directory
-        let relative = path
-            .strip_prefix("self:")
-            .unwrap()
-            .replace(':', "/");
+        let relative = path.strip_prefix("self:").unwrap().replace(':', "/");
         let relative_with_ext = if relative.ends_with(".metta") {
             relative
         } else {
@@ -49,10 +46,7 @@ pub fn resolve_module_path(path: &str, current_dir: Option<&Path>) -> PathBuf {
             .join(relative_with_ext)
     } else if path.starts_with("top:") {
         // Absolute path from workspace root
-        let absolute = path
-            .strip_prefix("top:")
-            .unwrap()
-            .replace(':', "/");
+        let absolute = path.strip_prefix("top:").unwrap().replace(':', "/");
         let absolute_with_ext = if absolute.ends_with(".metta") {
             absolute
         } else {
@@ -137,7 +131,10 @@ mod tests {
     fn test_resolve_nested_self_path() {
         let current = Path::new("/home/user/project/lib");
         let result = resolve_module_path("self:math:trig", Some(current));
-        assert_eq!(result, PathBuf::from("/home/user/project/lib/math/trig.metta"));
+        assert_eq!(
+            result,
+            PathBuf::from("/home/user/project/lib/math/trig.metta")
+        );
     }
 
     #[test]

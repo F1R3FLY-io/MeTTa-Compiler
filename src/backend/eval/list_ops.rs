@@ -13,9 +13,7 @@ pub(super) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     let expr = &items[1];
 
     match expr {
-        MettaValue::SExpr(elements) if !elements.is_empty() => {
-            (vec![elements[0].clone()], env)
-        }
+        MettaValue::SExpr(elements) if !elements.is_empty() => (vec![elements[0].clone()], env),
         MettaValue::SExpr(_) => {
             let err = MettaValue::Error(
                 "car-atom: cannot get head of empty expression".to_string(),
@@ -102,9 +100,7 @@ pub(super) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
             result.extend(elements.iter().cloned());
             (vec![MettaValue::SExpr(result)], env)
         }
-        MettaValue::Nil => {
-            (vec![MettaValue::SExpr(vec![head.clone()])], env)
-        }
+        MettaValue::Nil => (vec![MettaValue::SExpr(vec![head.clone()])], env),
         _ => {
             let err = MettaValue::Error(
                 format!(
@@ -158,12 +154,8 @@ pub(super) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
     let expr = &items[1];
 
     match expr {
-        MettaValue::SExpr(elements) => {
-            (vec![MettaValue::Long(elements.len() as i64)], env)
-        }
-        MettaValue::Nil => {
-            (vec![MettaValue::Long(0)], env)
-        }
+        MettaValue::SExpr(elements) => (vec![MettaValue::Long(elements.len() as i64)], env),
+        MettaValue::Nil => (vec![MettaValue::Long(0)], env),
         _ => {
             let err = MettaValue::Error(
                 format!(

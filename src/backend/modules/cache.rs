@@ -110,6 +110,7 @@ pub fn hash_content(content: &str) -> u64 {
 
 /// Hash arbitrary bytes to a u64.
 #[inline]
+#[allow(dead_code)]
 pub fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);

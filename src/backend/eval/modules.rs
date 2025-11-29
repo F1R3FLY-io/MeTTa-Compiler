@@ -241,16 +241,6 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
         None
     };
 
-    // Parse options (e.g., :no-transitive)
-    let mut _no_transitive = false;
-    for opt in items.iter().skip(3) {
-        if let MettaValue::Atom(name) = opt {
-            if name == ":no-transitive" {
-                _no_transitive = true;
-            }
-        }
-    }
-
     // Get module path string
     let _module_path_str = match module_arg {
         MettaValue::String(s) => s.clone(),

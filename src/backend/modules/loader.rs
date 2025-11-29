@@ -73,36 +73,55 @@ impl std::error::Error for LoadError {}
 /// Module loading options.
 #[derive(Debug, Clone)]
 pub struct LoadOptions {
-    /// Allow imports from non-submodules (permissive mode).
-    /// Default: false (strict mode, only submodules allowed).
-    pub permissive_imports: bool,
-
-    /// Enable transitive imports (import dependencies of imported modules).
-    /// Default: true (HE-compatible).
-    pub transitive_imports: bool,
+    /// Strict mode: enables all strict checks.
+    /// When true:
+    /// - Submodule constraint enforced (only submodules can be imported)
+    /// - Transitive imports disabled (explicit imports only)
+    /// - Cyclic imports disallowed (error on cycle detection)
+    /// Default: false (HE-compatible permissive mode)
+    pub strict_mode: bool,
 }
 
 impl Default for LoadOptions {
     fn default() -> Self {
-        Self::strict()
+        Self::permissive()
     }
 }
 
 impl LoadOptions {
-    /// Create options for strict mode (HE-compatible defaults).
-    pub fn strict() -> Self {
+    /// Create options for permissive mode (HE-compatible defaults).
+    /// - Any module can import any other module
+    /// - Transitive imports enabled
+    /// - Cyclic imports allowed (via two-pass loading)
+    pub fn permissive() -> Self {
         Self {
-            permissive_imports: false,
-            transitive_imports: true,
+            strict_mode: false,
         }
     }
 
-    /// Create options for permissive mode.
-    pub fn permissive() -> Self {
+    /// Create options for strict mode.
+    /// - Only submodules can be imported
+    /// - Transitive imports disabled
+    /// - Cyclic imports disallowed
+    pub fn strict() -> Self {
         Self {
-            permissive_imports: true,
-            transitive_imports: true,
+            strict_mode: true,
         }
+    }
+
+    /// Check if transitive imports are enabled.
+    pub fn transitive_imports(&self) -> bool {
+        !self.strict_mode
+    }
+
+    /// Check if submodule constraint is enforced.
+    pub fn submodule_constraint(&self) -> bool {
+        self.strict_mode
+    }
+
+    /// Check if cyclic imports are allowed.
+    pub fn allow_cyclic(&self) -> bool {
+        !self.strict_mode
     }
 }
 
@@ -256,17 +275,17 @@ impl ModuleRegistry {
     /// Check if an import is allowed (submodule constraint).
     ///
     /// In strict mode, only submodules can be imported.
-    /// In permissive mode, any module can be imported.
+    /// In permissive mode (default), any module can be imported.
     pub fn validate_import(
         &self,
         current_module: &str,
         target_module: &str,
     ) -> Result<(), LoadError> {
-        if self.options.permissive_imports {
-            return Ok(());
+        if !self.options.submodule_constraint() {
+            return Ok(()); // Permissive mode: allow any import
         }
 
-        // Check if target is a submodule of current
+        // Strict mode: only submodules can be imported
         if target_module.starts_with(&format!("{}:", current_module)) {
             Ok(())
         } else if target_module == current_module {
@@ -276,11 +295,18 @@ impl ModuleRegistry {
             )))
         } else {
             Err(LoadError::ImportConstraint(format!(
-                "Module '{}' cannot import '{}': only submodules allowed. \
-                 Use --permissive-imports to allow.",
+                "strict-mode: '{}' cannot import '{}' (only submodules allowed)",
                 current_module, target_module
             )))
         }
+    }
+
+    /// Check if a cyclic import should be rejected.
+    ///
+    /// In strict mode, cyclic imports are disallowed.
+    /// In permissive mode (default), cyclic imports are allowed via two-pass loading.
+    pub fn reject_cyclic_import(&self) -> bool {
+        !self.options.allow_cyclic()
     }
 }
 
@@ -308,7 +334,7 @@ impl std::fmt::Debug for ModuleRegistry {
         f.debug_struct("ModuleRegistry")
             .field("module_count", &self.modules.len())
             .field("loading_count", &self.loading_modules.len())
-            .field("permissive", &self.options.permissive_imports)
+            .field("strict_mode", &self.options.strict_mode)
             .finish()
     }
 }
@@ -329,8 +355,11 @@ mod tests {
     fn test_registry_new() {
         let registry = ModuleRegistry::new();
         assert_eq!(registry.module_count(), 0);
-        assert!(!registry.options().permissive_imports);
-        assert!(registry.options().transitive_imports);
+        // Default is permissive mode (HE-compatible)
+        assert!(!registry.options().strict_mode);
+        assert!(registry.options().transitive_imports());
+        assert!(!registry.options().submodule_constraint());
+        assert!(registry.options().allow_cyclic());
     }
 
     #[test]
@@ -401,7 +430,8 @@ mod tests {
 
     #[test]
     fn test_import_validation_strict() {
-        let registry = ModuleRegistry::new();
+        // Explicitly use strict mode for this test
+        let registry = ModuleRegistry::with_options(LoadOptions::strict());
 
         // Submodule import allowed
         assert!(registry
@@ -439,6 +469,18 @@ mod tests {
             .is_ok());
         assert!(registry
             .validate_import("top:a", "top:b:c:d")
+            .is_ok());
+    }
+
+    #[test]
+    fn test_default_is_permissive() {
+        // Default registry should use permissive mode (HE-compatible)
+        let registry = ModuleRegistry::new();
+        assert!(!registry.options().strict_mode);
+
+        // Non-submodule imports should be allowed by default
+        assert!(registry
+            .validate_import("top:parent", "top:other")
             .is_ok());
     }
 

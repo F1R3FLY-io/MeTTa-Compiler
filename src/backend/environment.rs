@@ -1597,21 +1597,24 @@ impl Environment {
         self.module_registry.read().unwrap().module_count()
     }
 
-    /// Check if module imports are permissive
-    pub fn is_permissive_imports(&self) -> bool {
-        self.module_registry.read().unwrap().options().permissive_imports
+    /// Check if strict mode is enabled
+    pub fn is_strict_mode(&self) -> bool {
+        self.module_registry.read().unwrap().options().strict_mode
     }
 
-    /// Enable or disable permissive imports mode
-    /// When enabled, modules can be imported from any location.
-    /// When disabled, only submodules can be imported (strict mode).
-    pub fn set_permissive_imports(&mut self, permissive: bool) {
+    /// Enable or disable strict mode
+    /// When enabled:
+    /// - Only submodules can be imported
+    /// - Transitive imports are disabled
+    /// - Cyclic imports are disallowed
+    /// When disabled: HE-compatible permissive mode
+    pub fn set_strict_mode(&mut self, strict: bool) {
         use super::modules::LoadOptions;
         self.make_owned();
-        let options = if permissive {
-            LoadOptions::permissive()
-        } else {
+        let options = if strict {
             LoadOptions::strict()
+        } else {
+            LoadOptions::permissive()
         };
         self.module_registry.write().unwrap().set_options(options);
     }

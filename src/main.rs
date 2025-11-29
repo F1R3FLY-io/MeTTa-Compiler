@@ -25,7 +25,8 @@ fn print_usage() {
     eprintln!("    --sexpr                 Print S-expressions instead of evaluating");
     eprintln!("    --repl                  Start interactive REPL");
     eprintln!("    --eval                  Evaluate and print results (default)");
-    eprintln!("    --permissive-imports    Allow imports from any module (not just submodules)");
+    eprintln!("    --strict-mode           Enable strict mode: submodule-only imports,");
+    eprintln!("                            no transitive imports, no cyclic dependencies");
     eprintln!();
     eprintln!("ARGUMENTS:");
     eprintln!("    <INPUT>                 Input MeTTa file (use '-' for stdin)");
@@ -46,7 +47,7 @@ struct Options {
     output: Option<String>,
     show_sexpr: bool,
     repl_mode: bool,
-    permissive_imports: bool,
+    strict_mode: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -56,7 +57,7 @@ fn parse_args() -> Result<Options, String> {
     let mut output = None;
     let mut show_sexpr = false;
     let mut repl_mode = false;
-    let mut permissive_imports = false;
+    let mut strict_mode = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -85,8 +86,8 @@ fn parse_args() -> Result<Options, String> {
             "--eval" => {
                 // Default mode, no-op
             }
-            "--permissive-imports" => {
-                permissive_imports = true;
+            "--strict-mode" => {
+                strict_mode = true;
             }
             arg if arg.starts_with('-') && arg != "-" => {
                 return Err(format!("Unknown option: {}", arg));
@@ -106,7 +107,7 @@ fn parse_args() -> Result<Options, String> {
         output,
         show_sexpr,
         repl_mode,
-        permissive_imports,
+        strict_mode,
     })
 }
 
@@ -196,9 +197,9 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     let state = compile(input).map_err(|e| e.to_string())?;
     let mut env = state.environment;
 
-    // Configure permissive imports if requested
-    if options.permissive_imports {
-        env.set_permissive_imports(true);
+    // Configure strict mode if requested
+    if options.strict_mode {
+        env.set_strict_mode(true);
     }
 
     // Evaluate each expression
@@ -263,9 +264,9 @@ fn run_repl(options: &Options) {
 
     let mut env = Environment::new();
 
-    // Configure permissive imports if requested
-    if options.permissive_imports {
-        env.set_permissive_imports(true);
+    // Configure strict mode if requested
+    if options.strict_mode {
+        env.set_strict_mode(true);
     }
     let mut line_num = 1;
 

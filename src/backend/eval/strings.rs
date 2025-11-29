@@ -119,7 +119,7 @@ fn atom_repr(value: &MettaValue) -> String {
             let inner: Vec<String> = goals.iter().map(atom_repr).collect();
             format!("(, {})", inner.join(" "))
         }
-        MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+        MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
         MettaValue::State(id) => format!("(State {})", id),
         MettaValue::Unit => "()".to_string(),
     }
@@ -187,7 +187,7 @@ fn atom_to_string(value: &MettaValue) -> String {
             let inner: Vec<String> = goals.iter().map(atom_to_string).collect();
             format!("(, {})", inner.join(" "))
         }
-        MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+        MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
         MettaValue::State(id) => format!("(State {})", id),
         MettaValue::Unit => "()".to_string(),
     }

@@ -102,12 +102,12 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValue::Space(id, name) => {
+        MettaValue::Space(handle) => {
             // Represent spaces as tagged tuples: ("space", id, name)
             let ps = vec![
                 create_string_par("space".to_string()),
-                create_int_par(*id as i64),
-                create_string_par(name.clone()),
+                create_int_par(handle.id as i64),
+                create_string_par(handle.name.clone()),
             ];
 
             Par::default().with_exprs(vec![Expr {

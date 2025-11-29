@@ -43,7 +43,7 @@ impl MettaValueTestExt for MettaValue {
                 let inner: Vec<String> = goals.iter().map(|g| g.to_display_string()).collect();
                 format!("(, {})", inner.join(" "))
             }
-            MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+            MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
             MettaValue::State(id) => format!("(State {})", id),
             MettaValue::Unit => "()".to_string(),
         }
@@ -64,7 +64,7 @@ impl MettaValueTestExt for MettaValue {
             MettaValue::Nil => s == "()" || s == "Nil",
             MettaValue::Type(_) => self.to_display_string() == s,
             MettaValue::Conjunction(_) => self.to_display_string() == s,
-            MettaValue::Space(_, _) => self.to_display_string() == s,
+            MettaValue::Space(_) => self.to_display_string() == s,
             MettaValue::State(_) => self.to_display_string() == s,
             MettaValue::Unit => s == "()",
         }

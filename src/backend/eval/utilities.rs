@@ -59,7 +59,7 @@ fn get_metatype(value: &MettaValue) -> &'static str {
         MettaValue::Unit => "Expression", // () is an empty expression
         MettaValue::Type(_) => "Expression",
         MettaValue::Conjunction(_) => "Expression",
-        MettaValue::Space(_, _) => "Grounded",
+        MettaValue::Space(_) => "Grounded",
         MettaValue::State(_) => "Grounded",
         MettaValue::Error(_, _) => "Expression",
     }

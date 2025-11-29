@@ -166,7 +166,7 @@ fn format_result(value: &MettaValue) -> String {
             let formatted: Vec<String> = goals.iter().map(format_result).collect();
             format!("(, {})", formatted.join(" "))
         }
-        MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+        MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
         MettaValue::State(id) => format!("(State {})", id),
         MettaValue::Unit => "()".to_string(),
     }

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use super::SpaceHandle;
+
 /// Represents a MeTTa value as an s-expression
 /// S-expressions are nested lists with textual operator names
 #[derive(Debug, Clone, PartialEq)]
@@ -26,9 +28,9 @@ pub enum MettaValue {
     /// Represents (,), (, expr), or (, expr1 expr2 ...)
     /// Goals are evaluated left-to-right with variable binding threading
     Conjunction(Vec<MettaValue>),
-    /// A reference to a named space (id, name)
-    /// Used for space operations: new-space, add-atom, remove-atom, collapse
-    Space(u64, String),
+    /// A first-class space value with queryable data
+    /// Used for space operations: new-space, add-atom, remove-atom, collapse, match
+    Space(SpaceHandle),
     /// A reference to a mutable state cell (id)
     /// Used for state operations: new-state, get-state, change-state!
     State(u64),
@@ -140,8 +142,8 @@ impl MettaValue {
                     .all(|(a, b)| a.structurally_equivalent(b))
             }
 
-            // Spaces must have same id
-            (MettaValue::Space(a_id, _), MettaValue::Space(b_id, _)) => a_id == b_id,
+            // Spaces are equal if they have the same id
+            (MettaValue::Space(a), MettaValue::Space(b)) => a.id == b.id,
 
             // States must have same id
             (MettaValue::State(a_id), MettaValue::State(b_id)) => a_id == b_id,
@@ -234,7 +236,7 @@ impl MettaValue {
                     .join(" ");
                 format!("(, {})", inner)
             }
-            MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+            MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
             MettaValue::State(id) => format!("(State {})", id),
             MettaValue::Unit => "()".to_string(),
         }
@@ -273,11 +275,11 @@ impl MettaValue {
                     goals_json.join(",")
                 )
             }
-            MettaValue::Space(id, name) => {
+            MettaValue::Space(handle) => {
                 format!(
                     r#"{{"type":"space","id":{},"name":"{}"}}"#,
-                    id,
-                    escape_json(name)
+                    handle.id,
+                    escape_json(&handle.name)
                 )
             }
             MettaValue::State(id) => {
@@ -345,10 +347,9 @@ impl std::hash::Hash for MettaValue {
                 10u8.hash(state);
                 goals.hash(state);
             }
-            MettaValue::Space(id, name) => {
+            MettaValue::Space(handle) => {
                 11u8.hash(state);
-                id.hash(state);
-                name.hash(state);
+                handle.hash(state);
             }
             MettaValue::State(id) => {
                 13u8.hash(state);

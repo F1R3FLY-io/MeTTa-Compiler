@@ -1,10 +1,12 @@
 pub mod bindings;
 pub mod metta_state;
 pub mod metta_value;
+pub mod space_handle;
 
 pub use bindings::SmartBindings as Bindings;
 pub use metta_state::MettaState;
 pub use metta_value::MettaValue;
+pub use space_handle::SpaceHandle;
 
 use crate::backend::environment::Environment;
 

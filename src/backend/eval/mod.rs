@@ -158,7 +158,7 @@ fn friendly_type_name(value: &MettaValue) -> &'static str {
         MettaValue::Error(_, _) => "Error",
         MettaValue::Type(_) => "Type",
         MettaValue::Conjunction(_) => "Conjunction",
-        MettaValue::Space(_, _) => "Space",
+        MettaValue::Space(_) => "Space",
         MettaValue::State(_) => "State",
         MettaValue::Unit => "Unit",
     }
@@ -190,7 +190,7 @@ pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
             let inner: Vec<String> = goals.iter().map(friendly_value_repr).collect();
             format!("(, {})", inner.join(" "))
         }
-        MettaValue::Space(id, name) => format!("(Space {} \"{}\")", id, name),
+        MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
         MettaValue::State(id) => format!("(State {})", id),
         MettaValue::Unit => "()".to_string(),
     }
@@ -496,7 +496,7 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         | MettaValue::String(_)
         | MettaValue::Nil
         | MettaValue::Type(_)
-        | MettaValue::Space(_, _)
+        | MettaValue::Space(_)
         | MettaValue::State(_)
         | MettaValue::Unit => EvalStep::Done((vec![value], env)),
 
@@ -1274,7 +1274,7 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         | MettaValue::Float(_)
         | MettaValue::String(_)
         | MettaValue::Nil
-        | MettaValue::Space(_, _)
+        | MettaValue::Space(_)
         | MettaValue::State(_)
         | MettaValue::Unit => {
             0 // Literals are most specific (including standalone "&")

@@ -1,6 +1,6 @@
 use crate::backend::environment::Environment;
 use crate::backend::fuzzy_match::FuzzyMatcher;
-use crate::backend::models::{EvalResult, MettaValue, Rule};
+use crate::backend::models::{EvalResult, MettaValue, Rule, SpaceHandle};
 use std::sync::{Arc, OnceLock};
 
 use super::eval;
@@ -140,7 +140,8 @@ pub(super) fn eval_new_space(items: Vec<MettaValue>, mut env: Environment) -> Ev
     };
 
     let space_id = env.create_named_space(&name);
-    (vec![MettaValue::Space(space_id, name)], env)
+    let handle = SpaceHandle::new(space_id, name);
+    (vec![MettaValue::Space(handle)], env)
 }
 
 /// add-atom: Add an atom to a space
@@ -175,12 +176,12 @@ pub(super) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     let atom_value = &atom_results[0];
 
     match space_value {
-        MettaValue::Space(space_id, _) => {
-            if env2.add_to_named_space(*space_id, atom_value) {
+        MettaValue::Space(handle) => {
+            if env2.add_to_named_space(handle.id, atom_value) {
                 (vec![MettaValue::Unit], env2)
             } else {
                 let err = MettaValue::Error(
-                    format!("add-atom: failed to add to space {}", space_id),
+                    format!("add-atom: failed to add to space {}", handle.id),
                     Arc::new(atom_value.clone()),
                 );
                 (vec![err], env2)
@@ -231,8 +232,8 @@ pub(super) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> Eval
     let atom_value = &atom_results[0];
 
     match space_value {
-        MettaValue::Space(space_id, _) => {
-            env2.remove_from_named_space(*space_id, atom_value);
+        MettaValue::Space(handle) => {
+            env2.remove_from_named_space(handle.id, atom_value);
             (vec![MettaValue::Unit], env2)
         }
         _ => {
@@ -268,8 +269,8 @@ pub(super) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalRes
     let space_value = &space_results[0];
 
     match space_value {
-        MettaValue::Space(space_id, _) => {
-            let atoms = env1.collapse_named_space(*space_id);
+        MettaValue::Space(handle) => {
+            let atoms = env1.collapse_named_space(handle.id);
             if atoms.is_empty() {
                 (vec![MettaValue::Nil], env1)
             } else {

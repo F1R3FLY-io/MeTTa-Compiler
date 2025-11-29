@@ -172,12 +172,12 @@ fn write_metta_value(
         }
 
         // Space references are written as (Space id name)
-        MettaValue::Space(id, name) => {
+        MettaValue::Space(handle) => {
             ez.write_arity(3);
             ez.loc += 1;
             write_symbol(b"Space", space, ez)?;
-            write_symbol(id.to_string().as_bytes(), space, ez)?;
-            write_symbol(format!("\"{}\"", name).as_bytes(), space, ez)?;
+            write_symbol(handle.id.to_string().as_bytes(), space, ez)?;
+            write_symbol(format!("\"{}\"", handle.name).as_bytes(), space, ez)?;
         }
 
         // State references are written as (State id)

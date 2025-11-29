@@ -576,6 +576,7 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             // Module Operations
             "include" => return EvalStep::Done(modules::eval_include(items, env)),
             "import!" => return EvalStep::Done(modules::eval_import(items, env)),
+            "export!" => return EvalStep::Done(modules::eval_export(items, env)),
             "mod-space!" => return EvalStep::Done(modules::eval_mod_space(items, env)),
             "print-mods!" => return EvalStep::Done(modules::eval_print_mods(items, env)),
             // MORK Special Forms

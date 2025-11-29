@@ -481,6 +481,39 @@ pub(super) fn eval_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     (vec![MettaValue::Unit], new_env)
 }
 
+/// export!: Mark a symbol as exported (public)
+/// Usage: (export! symbol)
+///
+/// Exported symbols are visible to other modules during import.
+/// In strict mode, only exported symbols can be selectively imported.
+///
+/// Examples:
+///   (export! my-function)   ; Makes my-function importable
+///   (export! MyType)        ; Makes MyType importable
+pub(super) fn eval_export(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("export!", items, 1, env, "(export! symbol)");
+
+    let symbol = match &items[1] {
+        MettaValue::Atom(s) => s.clone(),
+        other => {
+            let err = MettaValue::Error(
+                format!(
+                    "export!: expected symbol, got {}. Usage: (export! symbol)",
+                    super::friendly_type_name(other)
+                ),
+                Arc::new(other.clone()),
+            );
+            return (vec![err], env);
+        }
+    };
+
+    // Mark the symbol as exported in the current module
+    let mut new_env = env.clone();
+    new_env.export_symbol(&symbol);
+
+    (vec![MettaValue::Unit], new_env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,5 +691,88 @@ mod tests {
 
         // Should resolve to the most recent binding
         assert_eq!(env2.lookup_token("&x"), Some(MettaValue::Long(2)));
+    }
+
+    // ============================================================
+    // export! tests
+    // ============================================================
+
+    #[test]
+    fn test_export_basic() {
+        let env = Environment::new();
+
+        let items = vec![
+            MettaValue::Atom("export!".to_string()),
+            MettaValue::Atom("my-function".to_string()),
+        ];
+
+        let (results, new_env) = eval_export(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+        assert!(new_env.is_exported("my-function"));
+    }
+
+    #[test]
+    fn test_export_multiple() {
+        let env = Environment::new();
+
+        // Export first symbol
+        let items1 = vec![
+            MettaValue::Atom("export!".to_string()),
+            MettaValue::Atom("func1".to_string()),
+        ];
+        let (_, env1) = eval_export(items1, env);
+
+        // Export second symbol
+        let items2 = vec![
+            MettaValue::Atom("export!".to_string()),
+            MettaValue::Atom("func2".to_string()),
+        ];
+        let (_, env2) = eval_export(items2, env1);
+
+        assert!(env2.is_exported("func1"));
+        assert!(env2.is_exported("func2"));
+        assert!(!env2.is_exported("func3"));
+        assert_eq!(env2.export_count(), 2);
+    }
+
+    #[test]
+    fn test_export_error_non_symbol() {
+        let env = Environment::new();
+
+        // Try to export a non-symbol
+        let items = vec![
+            MettaValue::Atom("export!".to_string()),
+            MettaValue::Long(42),
+        ];
+
+        let (results, _) = eval_export(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("expected symbol"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_export_error_wrong_args() {
+        let env = Environment::new();
+
+        // Missing argument
+        let items = vec![MettaValue::Atom("export!".to_string())];
+
+        let (results, _) = eval_export(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("requires exactly 1 argument"));
+            }
+            _ => panic!("Expected error"),
+        }
     }
 }

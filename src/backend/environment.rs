@@ -1675,18 +1675,6 @@ impl Environment {
         self.module_registry.write().unwrap().set_options(options);
     }
 
-    /// Validate an import (submodule constraint)
-    pub fn validate_module_import(
-        &self,
-        current_module: &str,
-        target_module: &str,
-    ) -> Result<(), super::modules::LoadError> {
-        self.module_registry
-            .read()
-            .unwrap()
-            .validate_import(current_module, target_module)
-    }
-
     /// Get rules matching a specific head symbol and arity
     /// Returns Vec<Rule> for O(1) lookup instead of O(n) iteration
     /// Also includes wildcard rules that must be checked against all queries

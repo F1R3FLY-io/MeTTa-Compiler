@@ -25,8 +25,7 @@ fn print_usage() {
     eprintln!("    --sexpr                 Print S-expressions instead of evaluating");
     eprintln!("    --repl                  Start interactive REPL");
     eprintln!("    --eval                  Evaluate and print results (default)");
-    eprintln!("    --strict-mode           Enable strict mode: submodule-only imports,");
-    eprintln!("                            no transitive imports, no cyclic dependencies");
+    eprintln!("    --strict-mode           Disable transitive imports (explicit deps only)");
     eprintln!();
     eprintln!("ARGUMENTS:");
     eprintln!("    <INPUT>                 Input MeTTa file (use '-' for stdin)");

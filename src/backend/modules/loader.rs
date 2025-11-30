@@ -73,14 +73,16 @@ impl std::error::Error for LoadError {}
 /// Module loading options.
 #[derive(Debug, Clone)]
 pub struct LoadOptions {
-    /// Strict mode: enables all strict checks.
+    /// Strict mode: disables transitive imports.
     ///
     /// When true:
-    /// - Submodule constraint enforced (only submodules can be imported)
     /// - Transitive imports disabled (explicit imports only)
-    /// - Cyclic imports disallowed (error on cycle detection)
     ///
-    /// Default: false (HE-compatible permissive mode)
+    /// When false (default, HE-compatible):
+    /// - Transitive imports enabled (dependencies auto-imported)
+    ///
+    /// Note: Cyclic imports are always allowed via two-pass loading.
+    /// Any module can import any other module regardless of this setting.
     pub strict_mode: bool,
 }
 
@@ -92,33 +94,27 @@ impl Default for LoadOptions {
 
 impl LoadOptions {
     /// Create options for permissive mode (HE-compatible defaults).
+    ///
+    /// - Transitive imports enabled (dependencies auto-imported)
     /// - Any module can import any other module
-    /// - Transitive imports enabled
     /// - Cyclic imports allowed (via two-pass loading)
     pub fn permissive() -> Self {
         Self { strict_mode: false }
     }
 
     /// Create options for strict mode.
-    /// - Only submodules can be imported
-    /// - Transitive imports disabled
-    /// - Cyclic imports disallowed
+    ///
+    /// - Transitive imports disabled (explicit imports only)
+    /// - Any module can still import any other module
+    /// - Cyclic imports still allowed (via two-pass loading)
     pub fn strict() -> Self {
         Self { strict_mode: true }
     }
 
     /// Check if transitive imports are enabled.
+    ///
+    /// Returns `true` in permissive mode (default), `false` in strict mode.
     pub fn transitive_imports(&self) -> bool {
-        !self.strict_mode
-    }
-
-    /// Check if submodule constraint is enforced.
-    pub fn submodule_constraint(&self) -> bool {
-        self.strict_mode
-    }
-
-    /// Check if cyclic imports are allowed.
-    pub fn allow_cyclic(&self) -> bool {
         !self.strict_mode
     }
 }
@@ -270,42 +266,6 @@ impl ModuleRegistry {
         self.modules.iter()
     }
 
-    /// Check if an import is allowed (submodule constraint).
-    ///
-    /// In strict mode, only submodules can be imported.
-    /// In permissive mode (default), any module can be imported.
-    pub fn validate_import(
-        &self,
-        current_module: &str,
-        target_module: &str,
-    ) -> Result<(), LoadError> {
-        if !self.options.submodule_constraint() {
-            return Ok(()); // Permissive mode: allow any import
-        }
-
-        // Strict mode: only submodules can be imported
-        if target_module.starts_with(&format!("{}:", current_module)) {
-            Ok(())
-        } else if target_module == current_module {
-            Err(LoadError::ImportConstraint(format!(
-                "Cannot import module '{}' from within itself",
-                current_module
-            )))
-        } else {
-            Err(LoadError::ImportConstraint(format!(
-                "strict-mode: '{}' cannot import '{}' (only submodules allowed)",
-                current_module, target_module
-            )))
-        }
-    }
-
-    /// Check if a cyclic import should be rejected.
-    ///
-    /// In strict mode, cyclic imports are disallowed.
-    /// In permissive mode (default), cyclic imports are allowed via two-pass loading.
-    pub fn reject_cyclic_import(&self) -> bool {
-        !self.options.allow_cyclic()
-    }
 }
 
 impl Default for ModuleRegistry {
@@ -358,8 +318,6 @@ mod tests {
         // Default is permissive mode (HE-compatible)
         assert!(!registry.options().strict_mode);
         assert!(registry.options().transitive_imports());
-        assert!(!registry.options().submodule_constraint());
-        assert!(registry.options().allow_cyclic());
     }
 
     #[test]
@@ -419,41 +377,16 @@ mod tests {
     }
 
     #[test]
-    fn test_import_validation_strict() {
-        // Explicitly use strict mode for this test
-        let registry = ModuleRegistry::with_options(LoadOptions::strict());
+    fn test_strict_mode_disables_transitive() {
+        // Strict mode only affects transitive imports
+        let strict_registry = ModuleRegistry::with_options(LoadOptions::strict());
+        let permissive_registry = ModuleRegistry::with_options(LoadOptions::permissive());
 
-        // Submodule import allowed
-        assert!(registry
-            .validate_import("top:parent", "top:parent:child")
-            .is_ok());
+        // Strict mode: transitive imports disabled
+        assert!(!strict_registry.options().transitive_imports());
 
-        // Deep submodule allowed
-        assert!(registry
-            .validate_import("top:parent", "top:parent:child:grandchild")
-            .is_ok());
-
-        // Self-import not allowed
-        assert!(registry
-            .validate_import("top:parent", "top:parent")
-            .is_err());
-
-        // Non-submodule not allowed
-        assert!(registry.validate_import("top:parent", "top:other").is_err());
-
-        // Parent not allowed
-        assert!(registry
-            .validate_import("top:parent:child", "top:parent")
-            .is_err());
-    }
-
-    #[test]
-    fn test_import_validation_permissive() {
-        let registry = ModuleRegistry::with_options(LoadOptions::permissive());
-
-        // Everything allowed in permissive mode
-        assert!(registry.validate_import("top:parent", "top:other").is_ok());
-        assert!(registry.validate_import("top:a", "top:b:c:d").is_ok());
+        // Permissive mode: transitive imports enabled
+        assert!(permissive_registry.options().transitive_imports());
     }
 
     #[test]
@@ -461,9 +394,7 @@ mod tests {
         // Default registry should use permissive mode (HE-compatible)
         let registry = ModuleRegistry::new();
         assert!(!registry.options().strict_mode);
-
-        // Non-submodule imports should be allowed by default
-        assert!(registry.validate_import("top:parent", "top:other").is_ok());
+        assert!(registry.options().transitive_imports());
     }
 
     #[test]

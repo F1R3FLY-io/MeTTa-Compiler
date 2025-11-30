@@ -335,10 +335,17 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
 /// mod-space!: Get a module's space (for direct querying)
 /// Usage: (mod-space! module-path)
 ///
-/// Returns a Space value that can be used with match and other space operations.
-/// Note: Currently returns the module count as a placeholder.
-///       Full implementation requires Space values in MettaValue.
+/// Returns a Space value that can be used with match, get-atoms, add-atom, etc.
+/// The returned space provides a live reference - mutations are immediately visible.
+///
+/// Example:
+/// ```metta
+/// !(let $s (mod-space! "mymodule.metta")
+///     (match $s (person $name) $name))
+/// ```
 pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    use crate::backend::models::SpaceHandle;
+
     require_args_with_usage!("mod-space!", items, 1, env, "(mod-space! module-path)");
 
     let module_arg = &items[1];
@@ -362,12 +369,29 @@ pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: Environment) -> EvalRe
     // Resolve the path
     let resolved_path = resolve_module_path(&module_path_str, env.current_module_dir());
 
+    // Helper to create Space from module
+    let create_space = |mod_id, module_path: &str, env: &Environment| -> Option<MettaValue> {
+        env.get_module_space(mod_id).map(|space| {
+            let handle = SpaceHandle::for_module(mod_id, module_path.to_string(), space);
+            MettaValue::Space(handle)
+        })
+    };
+
     // Check if module is loaded
     if let Some(mod_id) = env.get_module_by_path(&resolved_path) {
-        // Module is loaded - return a reference to it
-        // For now, return the module ID as a Long (placeholder)
-        // Full implementation would return a Space value
-        (vec![MettaValue::Long(mod_id.value() as i64)], env)
+        // Module is loaded - return a Space reference
+        if let Some(space_value) = create_space(mod_id, &module_path_str, &env) {
+            (vec![space_value], env)
+        } else {
+            let err = MettaValue::Error(
+                format!(
+                    "mod-space!: module '{}' exists but space not accessible",
+                    module_path_str
+                ),
+                Arc::new(MettaValue::Atom(module_path_str)),
+            );
+            (vec![err], env)
+        }
     } else {
         // Module not loaded - try to load it first
         let include_items = vec![MettaValue::Atom("include".to_string()), module_arg.clone()];
@@ -375,7 +399,18 @@ pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: Environment) -> EvalRe
 
         // Check again
         if let Some(mod_id) = new_env.get_module_by_path(&resolved_path) {
-            (vec![MettaValue::Long(mod_id.value() as i64)], new_env)
+            if let Some(space_value) = create_space(mod_id, &module_path_str, &new_env) {
+                (vec![space_value], new_env)
+            } else {
+                let err = MettaValue::Error(
+                    format!(
+                        "mod-space!: module '{}' loaded but space not accessible",
+                        module_path_str
+                    ),
+                    Arc::new(MettaValue::Atom(module_path_str)),
+                );
+                (vec![err], new_env)
+            }
         } else {
             let err = MettaValue::Error(
                 format!("mod-space!: failed to load module '{}'", module_path_str),

@@ -130,6 +130,7 @@ const SPECIAL_FORMS: &[&str] = &[
     "add-atom",
     "remove-atom",
     "collapse",
+    "get-atoms",
     "new-state",
     "get-state",
     "change-state!",
@@ -477,9 +478,16 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         // Errors propagate immediately
         MettaValue::Error(_, _) => EvalStep::Done((vec![value], env)),
 
-        // Atoms: check tokenizer first for bound tokens, then evaluate to themselves
+        // Atoms: check special tokens first, then tokenizer, then evaluate to themselves
         // This enables HE-compatible bind! semantics where tokens are replaced during evaluation
         MettaValue::Atom(ref name) => {
+            // Special handling for &self - evaluates to the current module's space
+            // This is HE-compatible behavior where &self is a space reference
+            if name == "&self" {
+                let space_handle = env.self_space();
+                return EvalStep::Done((vec![MettaValue::Space(space_handle)], env));
+            }
+
             if let Some(bound_value) = env.lookup_token(name) {
                 // Token was registered via bind! - return the bound value
                 EvalStep::Done((vec![bound_value], env))
@@ -508,8 +516,42 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
     }
 }
 
+/// Preprocess S-expression items to combine `& self` into `&self`.
+/// The Tree-Sitter parser treats `&self` as two tokens, but we need it as one
+/// for HE-compatible space reference semantics.
+/// Also recursively processes nested S-expressions.
+fn preprocess_space_refs(items: Vec<MettaValue>) -> Vec<MettaValue> {
+    let mut result = Vec::with_capacity(items.len());
+    let mut i = 0;
+    while i < items.len() {
+        // Check for `& self` pattern
+        if i + 1 < items.len() {
+            if let (MettaValue::Atom(ref a), MettaValue::Atom(ref b)) = (&items[i], &items[i + 1]) {
+                if a == "&" && b == "self" {
+                    result.push(MettaValue::Atom("&self".to_string()));
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        // Recursively process nested S-expressions
+        let item = match &items[i] {
+            MettaValue::SExpr(nested) => {
+                MettaValue::SExpr(preprocess_space_refs(nested.clone()))
+            }
+            other => other.clone(),
+        };
+        result.push(item);
+        i += 1;
+    }
+    result
+}
+
 /// Evaluate an S-expression step - handles special forms and delegates to iterative collection
 fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+    // Preprocess to combine `& self` into `&self` for HE-compatible space references
+    let items = preprocess_space_refs(items);
+
     if items.is_empty() {
         return EvalStep::Done((vec![MettaValue::Nil], env));
     }
@@ -557,6 +599,7 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "add-atom" => return EvalStep::Done(space::eval_add_atom(items, env)),
             "remove-atom" => return EvalStep::Done(space::eval_remove_atom(items, env)),
             "collapse" => return EvalStep::Done(space::eval_collapse(items, env)),
+            "get-atoms" => return EvalStep::Done(space::eval_get_atoms(items, env)),
             // State Operations
             "new-state" => return EvalStep::Done(space::eval_new_state(items, env)),
             "get-state" => return EvalStep::Done(space::eval_get_state(items, env)),

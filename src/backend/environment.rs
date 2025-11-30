@@ -1651,6 +1651,41 @@ impl Environment {
         self.module_registry.read().unwrap().module_count()
     }
 
+    /// Get a module's space by its ModId.
+    ///
+    /// Returns an Arc reference to the module's ModuleSpace for live access.
+    /// This is used by `mod-space!` to create live space references.
+    pub fn get_module_space(
+        &self,
+        mod_id: ModId,
+    ) -> Option<std::sync::Arc<RwLock<crate::backend::modules::ModuleSpace>>> {
+        let registry = self.module_registry.read().unwrap();
+        registry.get(mod_id).map(|module| module.space().clone())
+    }
+
+    /// Get the current module's space as a SpaceHandle ("&self" reference).
+    ///
+    /// Returns a SpaceHandle for the current module's space, or a new empty
+    /// space if not currently inside a module evaluation.
+    ///
+    /// This is used to implement the `&self` token for match and space operations.
+    pub fn self_space(&self) -> crate::backend::models::SpaceHandle {
+        use crate::backend::models::SpaceHandle;
+
+        // If we're inside a module, return its space
+        if let Some(mod_path) = &self.current_module_path {
+            if let Some(mod_id) = self.get_module_by_path(mod_path) {
+                if let Some(space) = self.get_module_space(mod_id) {
+                    return SpaceHandle::for_module(mod_id, "self".to_string(), space);
+                }
+            }
+        }
+
+        // Fallback: return the "self" named space if it exists, otherwise create empty
+        // Use ID 0 for the global "self" space
+        SpaceHandle::new(0, "self".to_string())
+    }
+
     /// Check if strict mode is enabled
     pub fn is_strict_mode(&self) -> bool {
         self.module_registry.read().unwrap().options().strict_mode

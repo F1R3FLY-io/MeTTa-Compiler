@@ -3,10 +3,31 @@
 //! SpaceHandle allows spaces to be passed around as values and queried
 //! independently of the Environment. This matches HE's design where
 //! spaces are first-class values.
+//!
+//! SpaceHandle supports two backing stores:
+//! - `SpaceData` - For dynamically created spaces (`new-space`)
+//! - `ModuleSpace` - For module-backed spaces (`mod-space!`) with live references
 
 use std::sync::{Arc, RwLock};
 
 use super::{MettaValue, Rule};
+use crate::backend::modules::{ModId, ModuleSpace};
+
+/// The backing store for a SpaceHandle.
+///
+/// This enum allows SpaceHandle to work with both:
+/// - Standalone spaces (from `new-space`)
+/// - Module spaces (from `mod-space!`) with live references
+#[derive(Debug, Clone)]
+pub enum SpaceBacking {
+    /// Owned space data (for new-space)
+    Owned(Arc<RwLock<SpaceData>>),
+    /// Module-backed space (for mod-space!) with live reference
+    Module {
+        mod_id: ModId,
+        space: Arc<RwLock<ModuleSpace>>,
+    },
+}
 
 /// Thread-safe handle to a space's data.
 ///
@@ -14,14 +35,17 @@ use super::{MettaValue, Rule};
 /// - Cheap cloning (O(1) - just increments ref count)
 /// - Thread-safe read/write access
 /// - Shared ownership across MettaValue instances
+///
+/// For module-backed spaces, mutations are immediately visible to all
+/// holders of the space reference (live reference semantics).
 #[derive(Debug, Clone)]
 pub struct SpaceHandle {
     /// Unique identifier for this space
     pub id: u64,
     /// Human-readable name
     pub name: String,
-    /// Thread-safe reference to the actual space data
-    data: Arc<RwLock<SpaceData>>,
+    /// The backing store (owned SpaceData or live ModuleSpace reference)
+    backing: SpaceBacking,
 }
 
 /// The actual data stored in a space.
@@ -39,7 +63,7 @@ impl SpaceHandle {
         Self {
             id,
             name,
-            data: Arc::new(RwLock::new(SpaceData::default())),
+            backing: SpaceBacking::Owned(Arc::new(RwLock::new(SpaceData::default()))),
         }
     }
 
@@ -48,10 +72,40 @@ impl SpaceHandle {
         Self {
             id,
             name,
-            data: Arc::new(RwLock::new(SpaceData {
+            backing: SpaceBacking::Owned(Arc::new(RwLock::new(SpaceData {
                 atoms,
                 rules: Vec::new(),
-            })),
+            }))),
+        }
+    }
+
+    /// Create a space handle backed by a module's space (live reference).
+    ///
+    /// This provides live reference semantics where mutations are immediately
+    /// visible to all holders of the space reference.
+    ///
+    /// # Arguments
+    /// - `mod_id` - The module's unique identifier
+    /// - `name` - Human-readable name for the space
+    /// - `space` - Arc reference to the module's ModuleSpace
+    pub fn for_module(mod_id: ModId, name: String, space: Arc<RwLock<ModuleSpace>>) -> Self {
+        Self {
+            id: mod_id.value(),
+            name,
+            backing: SpaceBacking::Module { mod_id, space },
+        }
+    }
+
+    /// Check if this space is backed by a module.
+    pub fn is_module_space(&self) -> bool {
+        matches!(self.backing, SpaceBacking::Module { .. })
+    }
+
+    /// Get the ModId if this is a module-backed space.
+    pub fn module_id(&self) -> Option<ModId> {
+        match &self.backing {
+            SpaceBacking::Module { mod_id, .. } => Some(*mod_id),
+            SpaceBacking::Owned(_) => None,
         }
     }
 
@@ -61,61 +115,126 @@ impl SpaceHandle {
         Self {
             id: new_id,
             name: new_name,
-            data: Arc::clone(&self.data),
+            backing: self.backing.clone(),
         }
     }
 
     /// Add an atom to this space.
     pub fn add_atom(&self, atom: MettaValue) {
-        let mut data = self.data.write().unwrap();
-        data.atoms.push(atom);
+        match &self.backing {
+            SpaceBacking::Owned(data) => {
+                let mut data = data.write().unwrap();
+                data.atoms.push(atom);
+            }
+            SpaceBacking::Module { space, .. } => {
+                let mut space = space.write().unwrap();
+                space.add_atom(atom);
+            }
+        }
     }
 
     /// Remove an atom from this space.
     /// Returns true if the atom was found and removed.
     pub fn remove_atom(&self, atom: &MettaValue) -> bool {
-        let mut data = self.data.write().unwrap();
-        if let Some(pos) = data.atoms.iter().position(|a| a == atom) {
-            data.atoms.remove(pos);
-            true
-        } else {
-            false
+        match &self.backing {
+            SpaceBacking::Owned(data) => {
+                let mut data = data.write().unwrap();
+                if let Some(pos) = data.atoms.iter().position(|a| a == atom) {
+                    data.atoms.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
+            SpaceBacking::Module { space, .. } => {
+                let mut space = space.write().unwrap();
+                space.remove_atom(atom)
+            }
         }
     }
 
     /// Get all atoms in this space (collapse).
     pub fn collapse(&self) -> Vec<MettaValue> {
-        let data = self.data.read().unwrap();
-        data.atoms.clone()
+        match &self.backing {
+            SpaceBacking::Owned(data) => {
+                let data = data.read().unwrap();
+                data.atoms.clone()
+            }
+            SpaceBacking::Module { space, .. } => {
+                let space = space.read().unwrap();
+                space.get_all_atoms()
+            }
+        }
     }
 
     /// Get the number of atoms in this space.
     pub fn atom_count(&self) -> usize {
-        let data = self.data.read().unwrap();
-        data.atoms.len()
+        match &self.backing {
+            SpaceBacking::Owned(data) => {
+                let data = data.read().unwrap();
+                data.atoms.len()
+            }
+            SpaceBacking::Module { space, .. } => {
+                let space = space.read().unwrap();
+                space.get_all_atoms().len()
+            }
+        }
     }
 
     /// Check if the space contains a specific atom.
     pub fn contains(&self, atom: &MettaValue) -> bool {
-        let data = self.data.read().unwrap();
-        data.atoms.contains(atom)
+        match &self.backing {
+            SpaceBacking::Owned(data) => {
+                let data = data.read().unwrap();
+                data.atoms.contains(atom)
+            }
+            SpaceBacking::Module { space, .. } => {
+                let space = space.read().unwrap();
+                space.contains(atom)
+            }
+        }
     }
 
     /// Add a rule to this space.
+    /// Note: For module spaces, rules are stored in the Environment, not ModuleSpace.
     pub fn add_rule(&self, rule: Rule) {
-        let mut data = self.data.write().unwrap();
-        data.rules.push(rule);
+        match &self.backing {
+            SpaceBacking::Owned(data) => {
+                let mut data = data.write().unwrap();
+                data.rules.push(rule);
+            }
+            SpaceBacking::Module { .. } => {
+                // Module spaces store rules in Environment, not here
+                // This is a no-op for module spaces (rules added via eval)
+            }
+        }
     }
 
     /// Get all rules in this space.
+    /// Note: For module spaces, returns empty (rules are in Environment).
     pub fn rules(&self) -> Vec<Rule> {
-        let data = self.data.read().unwrap();
-        data.rules.clone()
+        match &self.backing {
+            SpaceBacking::Owned(data) => {
+                let data = data.read().unwrap();
+                data.rules.clone()
+            }
+            SpaceBacking::Module { .. } => {
+                // Module rules are stored in Environment, not ModuleSpace
+                Vec::new()
+            }
+        }
     }
 
     /// Check if two space handles point to the same underlying data.
     pub fn same_space(&self, other: &SpaceHandle) -> bool {
-        Arc::ptr_eq(&self.data, &other.data)
+        match (&self.backing, &other.backing) {
+            (SpaceBacking::Owned(a), SpaceBacking::Owned(b)) => Arc::ptr_eq(a, b),
+            (
+                SpaceBacking::Module { mod_id: a, .. },
+                SpaceBacking::Module { mod_id: b, .. },
+            ) => a == b,
+            _ => false,
+        }
     }
 }
 

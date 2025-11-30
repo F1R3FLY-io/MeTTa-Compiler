@@ -165,4 +165,231 @@ mod tests {
         ]);
         assert_eq!(atom_to_string(&sexpr), "(add 1 2)");
     }
+
+    // ============================================================
+    // println! tests
+    // ============================================================
+
+    #[test]
+    fn test_println_basic_value() {
+        let env = Environment::new();
+
+        // (println! 42) - basic value printing
+        let items = vec![
+            MettaValue::Atom("println!".to_string()),
+            MettaValue::Long(42),
+        ];
+        let (results, _) = eval_println(items, env);
+
+        // println! returns Unit
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+    }
+
+    #[test]
+    fn test_println_string() {
+        let env = Environment::new();
+
+        // (println! "Hello, World!")
+        let items = vec![
+            MettaValue::Atom("println!".to_string()),
+            MettaValue::String("Hello, World!".to_string()),
+        ];
+        let (results, _) = eval_println(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+    }
+
+    #[test]
+    fn test_println_atom() {
+        let env = Environment::new();
+
+        // (println! foo)
+        let items = vec![
+            MettaValue::Atom("println!".to_string()),
+            MettaValue::Atom("foo".to_string()),
+        ];
+        let (results, _) = eval_println(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+    }
+
+    #[test]
+    fn test_println_sexpr() {
+        let env = Environment::new();
+
+        // (println! (foo bar))
+        let items = vec![
+            MettaValue::Atom("println!".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("foo".to_string()),
+                MettaValue::Atom("bar".to_string()),
+            ]),
+        ];
+        let (results, _) = eval_println(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+    }
+
+    #[test]
+    fn test_println_missing_args() {
+        let env = Environment::new();
+
+        // (println!) - missing argument
+        let items = vec![MettaValue::Atom("println!".to_string())];
+        let (results, _) = eval_println(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("requires exactly 1 argument"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_println_with_expression() {
+        let env = Environment::new();
+
+        // (println! (+ 2 3)) - prints the result of the expression
+        let items = vec![
+            MettaValue::Atom("println!".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+        ];
+        let (results, _) = eval_println(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+    }
+
+    // ============================================================
+    // trace! tests
+    // ============================================================
+
+    #[test]
+    fn test_trace_returns_value() {
+        let env = Environment::new();
+
+        // (trace! "debug" 42) - should return 42
+        let items = vec![
+            MettaValue::Atom("trace!".to_string()),
+            MettaValue::String("debug".to_string()),
+            MettaValue::Long(42),
+        ];
+        let (results, _) = eval_trace(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_trace_with_complex_value() {
+        let env = Environment::new();
+
+        // (trace! "msg" (foo bar)) - should return (foo bar)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("bar".to_string()),
+        ]);
+        let items = vec![
+            MettaValue::Atom("trace!".to_string()),
+            MettaValue::String("checking value".to_string()),
+            value.clone(),
+        ];
+        let (results, _) = eval_trace(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], value);
+    }
+
+    #[test]
+    fn test_trace_missing_args() {
+        let env = Environment::new();
+
+        // (trace! "msg") - missing value
+        let items = vec![
+            MettaValue::Atom("trace!".to_string()),
+            MettaValue::String("msg".to_string()),
+        ];
+        let (results, _) = eval_trace(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("requires exactly 2 argument"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_trace_no_args() {
+        let env = Environment::new();
+
+        // (trace!) - missing both args
+        let items = vec![MettaValue::Atom("trace!".to_string())];
+        let (results, _) = eval_trace(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("requires exactly 2 argument"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    // ============================================================
+    // atom_to_string tests (additional)
+    // ============================================================
+
+    #[test]
+    fn test_atom_to_string_float() {
+        assert_eq!(atom_to_string(&MettaValue::Float(3.25)), "3.25");
+        assert_eq!(atom_to_string(&MettaValue::Float(-2.5)), "-2.5");
+    }
+
+    #[test]
+    fn test_atom_to_string_conjunction() {
+        let conj = MettaValue::Conjunction(vec![
+            MettaValue::Atom("a".to_string()),
+            MettaValue::Atom("b".to_string()),
+        ]);
+        assert_eq!(atom_to_string(&conj), "(, a b)");
+    }
+
+    #[test]
+    fn test_atom_to_string_error() {
+        let err = MettaValue::Error(
+            "test error".to_string(),
+            std::sync::Arc::new(MettaValue::Nil),
+        );
+        assert_eq!(atom_to_string(&err), "(Error \"test error\")");
+    }
+
+    #[test]
+    fn test_atom_to_string_type() {
+        let typ = MettaValue::Type(std::sync::Arc::new(MettaValue::Atom("Int".to_string())));
+        assert_eq!(atom_to_string(&typ), "(: Int)");
+    }
+
+    #[test]
+    fn test_atom_to_string_nested_sexpr() {
+        let nested = MettaValue::SExpr(vec![
+            MettaValue::Atom("outer".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("inner".to_string()),
+                MettaValue::Long(1),
+            ]),
+        ]);
+        assert_eq!(atom_to_string(&nested), "(outer (inner 1))");
+    }
 }

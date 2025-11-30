@@ -86,8 +86,10 @@ This document provides a comprehensive reference of the implementation status of
 - [ ] **`get-type-space`** - Returns type relative to a specific space
   - Reference: [stdlib.metta:967-972](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L967-L972), [atom.rs:453](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L453)
 
-- [ ] **`get-metatype`** - Returns metatype (Symbol, Expression, Grounded, Variable)
+- [x] **`get-metatype`** - Returns metatype (Symbol, Expression, Grounded, Variable)
+  - Location: `src/backend/eval/utilities.rs:35`
   - Reference: [stdlib.metta:974-978](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L974-L978), [atom.rs:455](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L455)
+  - Usage: `(get-metatype expr)` - returns Symbol, Expression, Grounded, or Variable
 
 - [x] **`check-type`** - Checks if atom matches expected type
   - Location: `src/backend/eval.rs:238`
@@ -104,17 +106,23 @@ This document provides a comprehensive reference of the implementation status of
 
 ## Expression Manipulation
 
-- [ ] **`cons-atom`** - Constructs expression from head and tail
+- [x] **`cons-atom`** - Constructs expression from head and tail
+  - Location: `src/backend/eval/list_ops.rs`
   - Reference: [stdlib.metta:90-96](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L90-L96)
+  - Usage: `(cons-atom head tail)` - constructs `(head . tail-elements)`
 
 - [ ] **`decons-atom`** - Deconstructs expression into head and tail
   - Reference: [stdlib.metta:98-103](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L98-L103)
 
-- [ ] **`car-atom`** - Extracts first atom of expression
+- [x] **`car-atom`** - Extracts first atom of expression
+  - Location: `src/backend/eval/list_ops.rs`
   - Reference: [stdlib.metta:576-585](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L576-L585)
+  - Usage: `(car-atom expr)` - returns first element
 
-- [ ] **`cdr-atom`** - Extracts tail of expression
+- [x] **`cdr-atom`** - Extracts tail of expression
+  - Location: `src/backend/eval/list_ops.rs`
   - Reference: [stdlib.metta:587-596](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L587-L596)
+  - Usage: `(cdr-atom expr)` - returns remaining elements
 
 - [ ] **`size-atom`** - Returns size of expression
   - Reference: [stdlib.metta:123-127](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L123-L127), [atom.rs:461](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L461)
@@ -382,14 +390,20 @@ This document provides a comprehensive reference of the implementation status of
 
 ## I/O & System
 
-- [ ] **`println!`** - Prints to console
+- [x] **`println!`** - Prints to console
+  - Location: `src/backend/eval/io.rs:20`
   - Reference: [stdlib.metta:1250-1254](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1250-L1254)
+  - Usage: `(println! value)` or `(println! "format string" arg1 arg2 ...)`
 
-- [ ] **`trace!`** - Prints first arg and returns second
+- [x] **`trace!`** - Prints first arg and returns second
+  - Location: `src/backend/eval/io.rs:66`
   - Reference: [stdlib.metta:1243-1248](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1243-L1248)
+  - Usage: `(trace! message value)` - prints message, returns value
 
-- [ ] **`format-args`** - String formatting with `{}`
-  - Reference: [stdlib.metta:1256-1261](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1256-L1261)
+- [x] **`nop`** - No operation (returns unit)
+  - Location: `src/backend/eval/io.rs:128`
+  - Reference: [stdlib.metta:616-621](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L616-L621)
+  - Usage: `(nop)` - returns Unit, useful for side-effect-only operations
 
 - [ ] **`help!`** - Shows documentation
   - Reference: [stdlib.metta:882-914](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L882-L914)
@@ -399,23 +413,41 @@ This document provides a comprehensive reference of the implementation status of
 
 ## Module System
 
-- [ ] **`import!`** - Imports module
+- [x] **`import!`** - Imports module with optional aliasing and selective imports
+  - Location: `src/backend/eval/modules.rs:199`
   - Reference: [stdlib.metta:1223-1228](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1223-L1228)
+  - Usage: `(import! &self module-path)`, `(import! alias module-path)`, `(import! &self module-path item as alias)`
+  - Supports selective imports and transitive dependency control with `--strict-mode`
 
-- [ ] **`include`** - Includes file in current space
+- [x] **`include`** - Includes file in current space
+  - Location: `src/backend/eval/modules.rs:57`
   - Reference: [stdlib.metta:1230-1234](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1230-L1234)
+  - Usage: `(include "path/to/module.metta")`
+  - Supports module caching, absolute/relative paths, and transitive dependencies
 
-- [ ] **`bind!`** - Registers token replacement
+- [x] **`bind!`** - Registers token replacement in tokenizer
+  - Location: `src/backend/eval/modules.rs:426`
   - Reference: [stdlib.metta:1236-1241](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1236-L1241)
+  - Usage: `(bind! token-name value)`
+  - HE-compatible: tokens registered here affect subsequent atom resolution
+
+- [x] **`export!`** - Marks symbol as exported (public)
+  - Location: `src/backend/eval/modules.rs:477`
+  - Usage: `(export! symbol-name)`
+  - Exported symbols are visible to other modules during import
 
 - [ ] **`register-module!`** - Loads module from filesystem
   - Reference: [stdlib.metta:1039-1043](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1039-L1043)
 
-- [ ] **`mod-space!`** - Returns module space
+- [x] **`mod-space!`** - Returns module's space for querying
+  - Location: `src/backend/eval/modules.rs:361`
   - Reference: [stdlib.metta:1045-1049](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1045-L1049)
+  - Usage: `(mod-space! "path/to/module.metta")`
 
-- [ ] **`print-mods!`** - Prints all modules
+- [x] **`print-mods!`** - Prints all loaded modules
+  - Location: `src/backend/eval/modules.rs:384`
   - Reference: [stdlib.metta:1051-1054](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1051-L1054)
+  - Usage: `(print-mods!)`
 
 - [ ] **`git-module!`** - Access remote git repo module
   - Reference: [stdlib.metta:1382-1386](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1382-L1386)
@@ -428,11 +460,19 @@ This document provides a comprehensive reference of the implementation status of
 - [ ] **`noeval`** - Returns argument without evaluation
   - Reference: [stdlib.metta:265-271](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L265-L271)
 
-- [ ] **`nop`** - No operation (returns unit)
-  - Reference: [stdlib.metta:616-621](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L616-L621), [core.rs:273](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/core.rs#L273)
-
-- [ ] **`empty`** - Returns Empty atom
+- [x] **`empty`** - Returns Empty atom (no results)
+  - Location: `src/backend/eval/utilities.rs:17`
   - Reference: [stdlib.metta:623-628](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L623-L628)
+  - Usage: `(empty)` - returns no results (empty set)
+
+- [x] **`repr`** - Returns string representation of atom
+  - Location: `src/backend/eval/strings.rs:19`
+  - Usage: `(repr value)` - returns string representation
+
+- [x] **`format-args`** - String formatting with `{}`
+  - Location: `src/backend/eval/strings.rs:96`
+  - Reference: [stdlib.metta:1256-1261](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1256-L1261)
+  - Usage: `(format-args "Hello, {}!" "World")` - returns "Hello, World!"
 
 - [ ] **`atom-subst`** - Substitutes variable in template
   - Reference: [stdlib.metta:273-282](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L273-L282)
@@ -513,8 +553,15 @@ This document provides a comprehensive reference of the implementation status of
 ## Summary Statistics
 
 - **Total Functions:** 147
-- **Implemented:** 26 (17.7%)
-- **Not Implemented:** 121 (82.3%)
+- **Implemented:** 41 (27.9%)
+- **Not Implemented:** 106 (72.1%)
+
+### Newly Implemented (Phase 10)
+- **Module System:** `include`, `import!`, `bind!`, `export!`, `mod-space!`, `print-mods!`
+- **I/O Operations:** `println!`, `trace!`, `nop`
+- **String Operations:** `repr`, `format-args`
+- **Utility Operations:** `empty`, `get-metatype`
+- **List Operations:** `cons-atom`, `car-atom`, `cdr-atom`
 
 ## Implementation Notes
 
@@ -541,4 +588,4 @@ For maximum compatibility with official MeTTa, prioritize:
 
 ---
 
-Last Updated: 2025-10-20
+Last Updated: 2025-11-30

@@ -100,7 +100,7 @@ pub enum Dependency {
 }
 
 /// Detailed dependency specification.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct DependencyDetail {
     /// Version constraint (e.g., `"^1.0"`).
     #[serde(default)]
@@ -530,5 +530,210 @@ mod tests {
         } else {
             panic!("Expected detailed dependency");
         }
+    }
+
+    // ============================================================
+    // Additional edge case tests
+    // ============================================================
+
+    #[test]
+    fn test_parse_invalid_toml() {
+        let content = "this is not valid toml";
+        assert!(PackageInfo::parse(content).is_err());
+    }
+
+    #[test]
+    fn test_parse_missing_required_fields() {
+        // Missing version
+        let content = r#"
+            [package]
+            name = "test"
+        "#;
+        assert!(PackageInfo::parse(content).is_err());
+
+        // Missing name
+        let content = r#"
+            [package]
+            version = "1.0.0"
+        "#;
+        assert!(PackageInfo::parse(content).is_err());
+    }
+
+    #[test]
+    fn test_load_nonexistent_path() {
+        let result = PackageInfo::load(Path::new("/nonexistent/path"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_load_from_nonexistent_file() {
+        let result = PackageInfo::load_from_path(Path::new("/nonexistent/metta.toml"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_exported_symbols() {
+        let content = r#"
+            [package]
+            name = "test"
+            version = "1.0.0"
+
+            [exports]
+            public = ["sym1", "sym2", "sym3"]
+        "#;
+
+        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let symbols = pkg.exported_symbols();
+        assert_eq!(symbols.len(), 3);
+        assert!(symbols.contains(&"sym1".to_string()));
+        assert!(symbols.contains(&"sym2".to_string()));
+        assert!(symbols.contains(&"sym3".to_string()));
+    }
+
+    #[test]
+    fn test_git_dependency_with_branch() {
+        let content = r#"
+            [package]
+            name = "test"
+            version = "1.0.0"
+
+            [dependencies]
+            dev-lib = { git = "https://github.com/user/repo", branch = "develop" }
+        "#;
+
+        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        if let Dependency::Detailed(d) = pkg.get_dependency("dev-lib").unwrap() {
+            assert_eq!(d.git, Some("https://github.com/user/repo".to_string()));
+            assert_eq!(d.branch, Some("develop".to_string()));
+            assert!(d.tag.is_none());
+        } else {
+            panic!("Expected detailed dependency");
+        }
+    }
+
+    #[test]
+    fn test_git_dependency_with_rev() {
+        let content = r#"
+            [package]
+            name = "test"
+            version = "1.0.0"
+
+            [dependencies]
+            pinned-lib = { git = "https://github.com/user/repo", rev = "abc123" }
+        "#;
+
+        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        if let Dependency::Detailed(d) = pkg.get_dependency("pinned-lib").unwrap() {
+            assert_eq!(d.git, Some("https://github.com/user/repo".to_string()));
+            assert_eq!(d.rev, Some("abc123".to_string()));
+        } else {
+            panic!("Expected detailed dependency");
+        }
+    }
+
+    #[test]
+    fn test_package_metadata() {
+        let content = r#"
+            [package]
+            name = "full-meta"
+            version = "1.0.0"
+            description = "Test package"
+            authors = ["Author One", "Author Two"]
+            license = "Apache-2.0"
+            repository = "https://github.com/user/repo"
+            documentation = "https://docs.example.com"
+            homepage = "https://example.com"
+            keywords = ["metta", "test"]
+            categories = ["utilities"]
+        "#;
+
+        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        assert_eq!(pkg.package.repository, Some("https://github.com/user/repo".to_string()));
+        assert_eq!(pkg.package.documentation, Some("https://docs.example.com".to_string()));
+        assert_eq!(pkg.package.homepage, Some("https://example.com".to_string()));
+        assert_eq!(pkg.package.keywords, vec!["metta", "test"]);
+        assert_eq!(pkg.package.categories, vec!["utilities"]);
+    }
+
+    #[test]
+    fn test_version_prerelease() {
+        use super::version::*;
+
+        assert!(is_valid("1.0.0-alpha"));
+        assert!(is_valid("1.0.0-beta.1"));
+        assert!(is_valid("1.0.0-rc.1"));
+
+        // Prerelease versions should be less than release
+        assert_eq!(compare("1.0.0-alpha", "1.0.0"), Some(std::cmp::Ordering::Less));
+    }
+
+    #[test]
+    fn test_version_build_metadata() {
+        use super::version::*;
+
+        assert!(is_valid("1.0.0+build.123"));
+        assert!(is_valid("1.0.0+20230101"));
+
+        // Build metadata affects ordering in semver crate (lexicographically)
+        // Both versions without metadata should be equal
+        assert_eq!(compare("1.0.0", "1.0.0"), Some(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn test_version_invalid_versions() {
+        use super::version::*;
+
+        assert!(!is_valid(""));
+        assert!(!is_valid("v1.0.0")); // no 'v' prefix in semver
+        assert!(!is_valid("1"));
+        assert!(!is_valid("1.0")); // requires 3 components
+        assert!(!is_valid("a.b.c"));
+    }
+
+    #[test]
+    fn test_satisfies_invalid_inputs() {
+        use super::version::*;
+
+        // Invalid constraint
+        assert!(!satisfies("not-valid", "1.0.0"));
+
+        // Invalid version
+        assert!(!satisfies("^1.0", "not-a-version"));
+
+        // Both invalid
+        assert!(!satisfies("invalid", "also-invalid"));
+    }
+
+    #[test]
+    fn test_compare_invalid_versions() {
+        use super::version::*;
+
+        assert!(compare("invalid", "1.0.0").is_none());
+        assert!(compare("1.0.0", "invalid").is_none());
+        assert!(compare("invalid", "also-invalid").is_none());
+    }
+
+    #[test]
+    fn test_dependency_type_detection() {
+        let simple = Dependency::Version("^1.0".to_string());
+        assert!(simple.is_registry());
+        assert!(!simple.is_path());
+        assert!(!simple.is_git());
+
+        let path_dep = Dependency::Detailed(DependencyDetail {
+            path: Some("../lib".to_string()),
+            ..Default::default()
+        });
+        assert!(path_dep.is_path());
+        assert!(!path_dep.is_registry());
+        assert!(!path_dep.is_git());
+
+        let git_dep = Dependency::Detailed(DependencyDetail {
+            git: Some("https://github.com/user/repo".to_string()),
+            ..Default::default()
+        });
+        assert!(git_dep.is_git());
+        assert!(!git_dep.is_registry());
+        assert!(!git_dep.is_path());
     }
 }

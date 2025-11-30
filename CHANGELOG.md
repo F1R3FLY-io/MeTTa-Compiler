@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added - Module System (Phase 10)
+- **Module Operations:**
+  - `include` - Load and evaluate MeTTa files with module caching
+  - `import!` - Import modules with aliasing and selective imports
+  - `bind!` - Register tokens for runtime substitution (HE-compatible)
+  - `export!` - Mark symbols as exported (public)
+  - `mod-space!` - Get a module's space for querying
+  - `print-mods!` - Print information about loaded modules
+
+- **I/O Operations:**
+  - `println!` - Print values to console with format string support
+  - `trace!` - Debug printing that returns its value
+  - `nop` - No-operation (returns Unit)
+
+- **String Operations:**
+  - `repr` - Get string representation of atoms
+  - `format-args` - String formatting with `{}` placeholders
+
+- **Utility Operations:**
+  - `empty` - Return no results (empty set)
+  - `get-metatype` - Return metatype (Symbol, Expression, Grounded, Variable)
+
+- **Package Management:**
+  - TOML manifest support (`metta.toml`)
+  - Version constraint parsing (semver compatible)
+  - Dependency declaration and tracking
+
+- **CLI:**
+  - `--strict-mode` flag to control transitive imports
+
+### Added - Testing Infrastructure
+- Integration test suite for module system (`tests/module_system.rs`)
+- Test fixtures in `tests/fixtures/`
+- 88 new unit tests across module, I/O, string, and utility operations
+- Package management tests
+
+### Added - Documentation
+- Module System Guide (`docs/guides/MODULE_SYSTEM_GUIDE.md`)
+- Updated Built-in Functions Reference with 15 newly implemented functions
+
+### Changed
+- Simplified `--strict-mode` to only control transitive imports (user decision)
+- Environment now supports module caching, tokenizer integration, and export tracking
+
+---
+
 ## [0.2.0] - 2025-11-27
 
 ### Added

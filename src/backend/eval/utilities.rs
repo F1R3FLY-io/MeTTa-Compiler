@@ -123,4 +123,184 @@ mod tests {
             "Grounded"
         );
     }
+
+    // ============================================================
+    // empty tests (additional)
+    // ============================================================
+
+    #[test]
+    fn test_empty_with_arguments() {
+        let env = Environment::new();
+
+        // (empty 1 2 3) - arguments should be ignored
+        let items = vec![
+            MettaValue::Atom("empty".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+            MettaValue::Long(3),
+        ];
+        let (results, _) = eval_empty(items, env);
+
+        // Still returns empty
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_empty_environment_unchanged() {
+        let env = Environment::new();
+
+        let items = vec![MettaValue::Atom("empty".to_string())];
+        let (results, _) = eval_empty(items, env);
+
+        // empty returns no values and doesn't modify the environment
+        assert!(results.is_empty());
+    }
+
+    // ============================================================
+    // get-metatype tests (additional)
+    // ============================================================
+
+    #[test]
+    fn test_eval_get_metatype_symbol() {
+        let env = Environment::new();
+
+        let items = vec![
+            MettaValue::Atom("get-metatype".to_string()),
+            MettaValue::Atom("my-symbol".to_string()),
+        ];
+        let (results, _) = eval_get_metatype(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Atom("Symbol".to_string()));
+    }
+
+    #[test]
+    fn test_eval_get_metatype_variable() {
+        let env = Environment::new();
+
+        let items = vec![
+            MettaValue::Atom("get-metatype".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ];
+        let (results, _) = eval_get_metatype(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Atom("Variable".to_string()));
+    }
+
+    #[test]
+    fn test_eval_get_metatype_grounded() {
+        let env = Environment::new();
+
+        let items = vec![
+            MettaValue::Atom("get-metatype".to_string()),
+            MettaValue::Long(42),
+        ];
+        let (results, _) = eval_get_metatype(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Atom("Grounded".to_string()));
+    }
+
+    #[test]
+    fn test_eval_get_metatype_expression() {
+        let env = Environment::new();
+
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("bar".to_string()),
+        ]);
+        let items = vec![MettaValue::Atom("get-metatype".to_string()), expr];
+        let (results, _) = eval_get_metatype(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Atom("Expression".to_string()));
+    }
+
+    #[test]
+    fn test_eval_get_metatype_missing_args() {
+        let env = Environment::new();
+
+        let items = vec![MettaValue::Atom("get-metatype".to_string())];
+        let (results, _) = eval_get_metatype(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("requires exactly 1 argument"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_get_metatype_nil() {
+        assert_eq!(get_metatype(&MettaValue::Nil), "Symbol");
+    }
+
+    #[test]
+    fn test_get_metatype_type() {
+        let typ = MettaValue::Type(std::sync::Arc::new(MettaValue::Atom("Int".to_string())));
+        assert_eq!(get_metatype(&typ), "Expression");
+    }
+
+    #[test]
+    fn test_get_metatype_conjunction() {
+        let conj = MettaValue::Conjunction(vec![
+            MettaValue::Atom("a".to_string()),
+            MettaValue::Atom("b".to_string()),
+        ]);
+        assert_eq!(get_metatype(&conj), "Expression");
+    }
+
+    #[test]
+    fn test_get_metatype_error() {
+        let err = MettaValue::Error(
+            "test error".to_string(),
+            std::sync::Arc::new(MettaValue::Nil),
+        );
+        assert_eq!(get_metatype(&err), "Expression");
+    }
+
+    #[test]
+    fn test_get_metatype_state() {
+        let state = MettaValue::State(42);
+        assert_eq!(get_metatype(&state), "Grounded");
+    }
+
+    #[test]
+    fn test_get_metatype_bool_false() {
+        assert_eq!(get_metatype(&MettaValue::Bool(false)), "Grounded");
+    }
+
+    #[test]
+    fn test_get_metatype_string_empty() {
+        assert_eq!(
+            get_metatype(&MettaValue::String("".to_string())),
+            "Grounded"
+        );
+    }
+
+    #[test]
+    fn test_get_metatype_variable_patterns() {
+        // All variable prefixes should return "Variable"
+        assert_eq!(
+            get_metatype(&MettaValue::Atom("$var".to_string())),
+            "Variable"
+        );
+        assert_eq!(
+            get_metatype(&MettaValue::Atom("&space".to_string())),
+            "Variable"
+        );
+        assert_eq!(
+            get_metatype(&MettaValue::Atom("'quote".to_string())),
+            "Variable"
+        );
+    }
+
+    #[test]
+    fn test_get_metatype_underscore_is_symbol() {
+        // Underscore should be a symbol (wildcard pattern, but still a symbol)
+        assert_eq!(get_metatype(&MettaValue::Atom("_".to_string())), "Symbol");
+    }
 }

@@ -762,4 +762,346 @@ mod tests {
             _ => panic!("Expected error"),
         }
     }
+
+    // ============================================================
+    // import! tests
+    // ============================================================
+
+    #[test]
+    fn test_import_missing_args() {
+        let env = Environment::new();
+
+        // Only one argument - missing module path
+        let items = vec![
+            MettaValue::Atom("import!".to_string()),
+            MettaValue::Atom("&self".to_string()),
+        ];
+
+        let (results, _) = eval_import(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("expected at least 2 arguments"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_import_invalid_destination() {
+        let env = Environment::new();
+
+        // Invalid destination type
+        let items = vec![
+            MettaValue::Atom("import!".to_string()),
+            MettaValue::Long(42), // Not a valid destination
+            MettaValue::String("module.metta".to_string()),
+        ];
+
+        let (results, _) = eval_import(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("destination must be &self or a symbol alias"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_import_invalid_module_path() {
+        let env = Environment::new();
+
+        // Invalid module path type (Long instead of String/Atom)
+        let items = vec![
+            MettaValue::Atom("import!".to_string()),
+            MettaValue::Atom("&self".to_string()),
+            MettaValue::Long(42), // Not a valid path
+        ];
+
+        let (results, _) = eval_import(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("expected string or symbol for module path"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_import_nonexistent_module() {
+        let env = Environment::new();
+
+        // Try to import a module that doesn't exist
+        let items = vec![
+            MettaValue::Atom("import!".to_string()),
+            MettaValue::Atom("&self".to_string()),
+            MettaValue::String("/nonexistent/module.metta".to_string()),
+        ];
+
+        let (results, _) = eval_import(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("failed to read file"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_import_with_alias_destination() {
+        let env = Environment::new();
+
+        // Import with alias - should fail since module doesn't exist
+        let items = vec![
+            MettaValue::Atom("import!".to_string()),
+            MettaValue::Atom("my-module".to_string()), // Alias destination
+            MettaValue::String("/nonexistent/module.metta".to_string()),
+        ];
+
+        let (results, _) = eval_import(items, env);
+
+        // Should fail with file not found
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("failed to read file"));
+            }
+            _ => panic!("Expected error for nonexistent file"),
+        }
+    }
+
+    #[test]
+    fn test_import_selective_item_not_found() {
+        // This tests the selective import path - trying to import a specific item
+        // Since we can't create real files in unit tests, we test the error handling
+        let env = Environment::new();
+
+        // Try selective import (import! &self module item)
+        let items = vec![
+            MettaValue::Atom("import!".to_string()),
+            MettaValue::Atom("&self".to_string()),
+            MettaValue::String("/nonexistent/module.metta".to_string()),
+            MettaValue::Atom("some-function".to_string()),
+        ];
+
+        let (results, _) = eval_import(items, env);
+
+        // Should fail with file not found (can't test item lookup without real file)
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("failed to read file"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_import_selective_with_as_alias() {
+        // Test selective import with "as" syntax
+        let env = Environment::new();
+
+        // (import! &self module item as new-name)
+        let items = vec![
+            MettaValue::Atom("import!".to_string()),
+            MettaValue::Atom("&self".to_string()),
+            MettaValue::String("/nonexistent/module.metta".to_string()),
+            MettaValue::Atom("original-name".to_string()),
+            MettaValue::Atom("as".to_string()),
+            MettaValue::Atom("new-name".to_string()),
+        ];
+
+        let (results, _) = eval_import(items, env);
+
+        // Should fail with file not found
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("failed to read file"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    // ============================================================
+    // mod-space! tests
+    // ============================================================
+
+    #[test]
+    fn test_mod_space_missing_args() {
+        let env = Environment::new();
+
+        let items = vec![MettaValue::Atom("mod-space!".to_string())];
+
+        let (results, _) = eval_mod_space(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("requires exactly 1 argument"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_mod_space_invalid_path_type() {
+        let env = Environment::new();
+
+        let items = vec![
+            MettaValue::Atom("mod-space!".to_string()),
+            MettaValue::Long(42), // Not a valid path
+        ];
+
+        let (results, _) = eval_mod_space(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("expected string or symbol for module path"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_mod_space_nonexistent_module() {
+        let env = Environment::new();
+
+        let items = vec![
+            MettaValue::Atom("mod-space!".to_string()),
+            MettaValue::String("/nonexistent/module.metta".to_string()),
+        ];
+
+        let (results, _) = eval_mod_space(items, env);
+
+        // Should fail because module doesn't exist
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("failed to load module") || msg.contains("failed to read"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    // ============================================================
+    // print-mods! tests
+    // ============================================================
+
+    #[test]
+    fn test_print_mods_with_extra_args() {
+        let env = Environment::new();
+
+        let items = vec![
+            MettaValue::Atom("print-mods!".to_string()),
+            MettaValue::Long(42), // Extra unwanted argument
+        ];
+
+        let (results, _) = eval_print_mods(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("takes no arguments"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_print_mods_returns_unit() {
+        let env = Environment::new();
+
+        let items = vec![MettaValue::Atom("print-mods!".to_string())];
+
+        let (results, _) = eval_print_mods(items, env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+    }
+
+    // ============================================================
+    // include tests (additional)
+    // ============================================================
+
+    #[test]
+    fn test_include_missing_args() {
+        let env = Environment::new();
+
+        let items = vec![MettaValue::Atom("include".to_string())];
+
+        let (results, _) = eval_include(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("requires exactly 1 argument"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_include_invalid_path_type() {
+        let env = Environment::new();
+
+        let items = vec![
+            MettaValue::Atom("include".to_string()),
+            MettaValue::Long(42), // Not a valid path
+        ];
+
+        let (results, _) = eval_include(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("expected string or symbol path"));
+            }
+            _ => panic!("Expected error"),
+        }
+    }
+
+    // ============================================================
+    // Strict mode tests
+    // ============================================================
+
+    #[test]
+    fn test_strict_mode_default_is_permissive() {
+        let env = Environment::new();
+
+        // Default should be permissive (not strict)
+        assert!(!env.is_strict_mode());
+    }
+
+    #[test]
+    fn test_strict_mode_can_be_enabled() {
+        let mut env = Environment::new();
+        env.set_strict_mode(true);
+
+        assert!(env.is_strict_mode());
+    }
+
+    #[test]
+    fn test_strict_mode_toggle() {
+        let mut env = Environment::new();
+
+        // Default is false
+        assert!(!env.is_strict_mode());
+
+        // Enable
+        env.set_strict_mode(true);
+        assert!(env.is_strict_mode());
+
+        // Disable
+        env.set_strict_mode(false);
+        assert!(!env.is_strict_mode());
+    }
 }

@@ -24,7 +24,8 @@ MeTTaTron is a direct evaluator for the MeTTa language featuring lazy evaluation
 - **MORK/PathMap integration** - Efficient pattern matching with MORK zipper optimization
 - **REPL mode** - Interactive evaluation environment
 - **CLI and library** - Use as a command-line tool or integrate into your Rust projects
-- **Comprehensive tests** - 287 tests covering all language features
+- **Module system** - Include files, import modules, token binding, and export control
+- **Comprehensive tests** - 800+ tests covering all language features
 - **Nondeterministic evaluation** - Multiply-defined patterns with Cartesian product semantics
 
 ## Prerequisites
@@ -215,6 +216,34 @@ MeTTa uses S-expression syntax similar to Lisp:
 - **`error`** - Create error: `(error msg details)`
 - **`catch`** - Error recovery: `(catch expr default)` returns default if expr errors
 - **`is-error`** - Error check: `(is-error expr)` returns true if expr is an error
+
+### Module System
+
+MeTTaTron provides a comprehensive module system for code organization:
+
+**Module Operations:**
+- **`include`** - Load and evaluate a MeTTa file: `(include "path/to/module.metta")`
+- **`import!`** - Import modules with optional aliasing: `(import! &self "module.metta")`
+- **`bind!`** - Register tokens for runtime substitution: `(bind! my-token 42)`
+- **`export!`** - Mark symbols as public: `(export! my-function)`
+- **`mod-space!`** - Get a module's space: `(mod-space! "module.metta")`
+- **`print-mods!`** - Print all loaded modules: `(print-mods!)`
+
+**Example - Module Usage:**
+```lisp
+; math_utils.metta
+(= (square $x) (* $x $x))
+(export! square)
+
+; main.metta
+(include "math_utils.metta")
+!(square 5)  ; Returns 25
+```
+
+**Strict Mode:**
+Run with `--strict-mode` to disable transitive imports (each module must explicitly declare dependencies).
+
+See **`docs/guides/MODULE_SYSTEM_GUIDE.md`** for complete documentation.
 
 ### Type System
 

@@ -225,7 +225,6 @@ MeTTaTron provides a comprehensive module system for code organization:
 - **`include`** - Load and evaluate a MeTTa file: `(include "path/to/module.metta")`
 - **`import!`** - Import modules with optional aliasing: `(import! &self "module.metta")`
 - **`bind!`** - Register tokens for runtime substitution: `(bind! my-token 42)`
-- **`export!`** - Mark symbols as public: `(export! my-function)`
 - **`mod-space!`** - Get a module's space: `(mod-space! "module.metta")`
 - **`print-mods!`** - Print all loaded modules: `(print-mods!)`
 
@@ -233,12 +232,13 @@ MeTTaTron provides a comprehensive module system for code organization:
 ```lisp
 ; math_utils.metta
 (= (square $x) (* $x $x))
-(export! square)
 
 ; main.metta
 (include "math_utils.metta")
 !(square 5)  ; Returns 25
 ```
+
+**Visibility Control:** Use `metta.toml` `[exports]` section to declare public symbols.
 
 **Strict Mode:**
 Run with `--strict-mode` to disable transitive imports (each module must explicitly declare dependencies).

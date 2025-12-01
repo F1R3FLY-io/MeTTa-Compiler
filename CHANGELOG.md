@@ -14,7 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `include` - Load and evaluate MeTTa files with module caching
   - `import!` - Import modules with aliasing and selective imports
   - `bind!` - Register tokens for runtime substitution (HE-compatible)
-  - `export!` - Mark symbols as exported (public)
   - `mod-space!` - Get a module's space for querying
   - `print-mods!` - Print information about loaded modules
 
@@ -51,7 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Simplified `--strict-mode` to only control transitive imports (user decision)
-- Environment now supports module caching, tokenizer integration, and export tracking
+- Environment now supports module caching and tokenizer integration
+- Removed `export!` special form - use `metta.toml` `[exports]` section for visibility control
 
 ---
 

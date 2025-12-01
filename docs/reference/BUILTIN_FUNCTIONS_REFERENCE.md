@@ -431,11 +431,6 @@ This document provides a comprehensive reference of the implementation status of
   - Usage: `(bind! token-name value)`
   - HE-compatible: tokens registered here affect subsequent atom resolution
 
-- [x] **`export!`** - Marks symbol as exported (public)
-  - Location: `src/backend/eval/modules.rs:477`
-  - Usage: `(export! symbol-name)`
-  - Exported symbols are visible to other modules during import
-
 - [ ] **`register-module!`** - Loads module from filesystem
   - Reference: [stdlib.metta:1039-1043](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1039-L1043)
 
@@ -557,7 +552,7 @@ This document provides a comprehensive reference of the implementation status of
 - **Not Implemented:** 106 (72.1%)
 
 ### Newly Implemented (Phase 10)
-- **Module System:** `include`, `import!`, `bind!`, `export!`, `mod-space!`, `print-mods!`
+- **Module System:** `include`, `import!`, `bind!`, `mod-space!`, `print-mods!`
 - **I/O Operations:** `println!`, `trace!`, `nop`
 - **String Operations:** `repr`, `format-args`
 - **Utility Operations:** `empty`, `get-metatype`

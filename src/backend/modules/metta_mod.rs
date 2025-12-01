@@ -3,7 +3,7 @@
 //! A `MettaMod` represents a loaded MeTTa module with its own isolated space,
 //! tokenizer, and dependency tracking.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -86,10 +86,6 @@ pub struct MettaMod {
     /// Content hash for deduplication.
     /// Modules with the same content hash are considered identical.
     content_hash: u64,
-
-    /// Exported symbols (public API).
-    /// In strict mode, only exported symbols can be imported by other modules.
-    exports: Arc<RwLock<HashSet<String>>>,
 }
 
 impl MettaMod {
@@ -115,7 +111,6 @@ impl MettaMod {
             resource_dir,
             state: Arc::new(RwLock::new(ModuleState::Loading)),
             content_hash,
-            exports: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -183,27 +178,6 @@ impl MettaMod {
     pub fn imported_dep_count(&self) -> usize {
         self.imported_deps.read().unwrap().len()
     }
-
-    /// Mark a symbol as exported (public).
-    /// Exported symbols can be imported by other modules even in strict mode.
-    pub fn export_symbol(&self, symbol: &str) {
-        self.exports.write().unwrap().insert(symbol.to_string());
-    }
-
-    /// Check if a symbol is exported.
-    pub fn is_exported(&self, symbol: &str) -> bool {
-        self.exports.read().unwrap().contains(symbol)
-    }
-
-    /// Get all exported symbols.
-    pub fn exported_symbols(&self) -> Vec<String> {
-        self.exports.read().unwrap().iter().cloned().collect()
-    }
-
-    /// Get the number of exported symbols.
-    pub fn export_count(&self) -> usize {
-        self.exports.read().unwrap().len()
-    }
 }
 
 impl Clone for MettaMod {
@@ -217,7 +191,6 @@ impl Clone for MettaMod {
             resource_dir: self.resource_dir.clone(),
             state: Arc::clone(&self.state),
             content_hash: self.content_hash,
-            exports: Arc::clone(&self.exports),
         }
     }
 }

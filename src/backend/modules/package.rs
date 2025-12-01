@@ -1,10 +1,12 @@
 //! Package Management for MeTTa Modules
 //!
 //! This module provides package manifest parsing and version constraint
-//! validation for MeTTa modules. It supports `metta.toml` manifests that
-//! define module metadata, dependencies, and exports.
+//! validation for MeTTa modules. It supports two manifest formats:
 //!
-//! ## Manifest Format
+//! 1. **`_pkg-info.metta`** (HE-compatible, preferred)
+//! 2. **`metta.toml`** (MeTTaTron-native)
+//!
+//! ## TOML Manifest Format (`metta.toml`)
 //!
 //! ```toml
 //! [package]
@@ -20,11 +22,35 @@
 //! [exports]
 //! public = ["my-function", "my-type"]
 //! ```
+//!
+//! ## MeTTa Manifest Format (`_pkg-info.metta`)
+//!
+//! Uses HE-compatible Atom-Serde format with `#`-prefixed keys:
+//!
+//! ```metta
+//! (#package
+//!     (#name "my-module")
+//!     (#version "1.0.0")
+//!     (#description "My awesome MeTTa module")
+//! )
+//!
+//! (#dependencies
+//!     (#std "^1.0")
+//!     (#my-lib (#path "../my-lib"))
+//!     (#external (#git "https://github.com/user/repo" #tag "v1.0"))
+//! )
+//!
+//! (#exports
+//!     (#public (my-function my-type))
+//! )
+//! ```
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
+
+use super::pkg_info_metta::load_pkg_info_metta;
 
 /// Package metadata from `metta.toml`.
 #[derive(Debug, Clone, Deserialize)]
@@ -150,26 +176,62 @@ pub struct ExportConfig {
 impl PackageInfo {
     /// Load a package manifest from a directory.
     ///
-    /// Looks for `metta.toml` in the given directory.
-    /// Returns `None` if the file doesn't exist or can't be parsed.
+    /// Tries the following formats in order:
+    /// 1. `_pkg-info.metta` (HE-compatible Atom-Serde format, preferred)
+    /// 2. `metta.toml` (TOML format)
+    ///
+    /// Returns `None` if neither file exists or can be parsed.
     pub fn load(module_dir: &Path) -> Option<Self> {
+        // Try _pkg-info.metta first (HE-compatible format)
+        match load_pkg_info_metta(module_dir) {
+            Ok(Some(pkg_info)) => return Some(pkg_info),
+            Ok(None) => {
+                // File doesn't exist, try TOML
+            }
+            Err(e) => {
+                // Log error but continue to try TOML
+                eprintln!(
+                    "Warning: Failed to parse _pkg-info.metta in {}: {}",
+                    module_dir.display(),
+                    e
+                );
+            }
+        }
+
+        // Fall back to metta.toml
         let toml_path = module_dir.join("metta.toml");
-        Self::load_from_path(&toml_path)
+        Self::load_from_toml_path(&toml_path)
     }
 
-    /// Load a package manifest from a specific file path.
-    pub fn load_from_path(path: &Path) -> Option<Self> {
+    /// Load a package manifest from a TOML file path.
+    pub fn load_from_toml_path(path: &Path) -> Option<Self> {
         if !path.exists() {
             return None;
         }
 
         let content = std::fs::read_to_string(path).ok()?;
-        Self::parse(&content).ok()
+        Self::parse_toml(&content).ok()
+    }
+
+    /// Load a package manifest from a specific file path.
+    ///
+    /// Deprecated: Use `load()` for unified loading or `load_from_toml_path()` for TOML only.
+    #[deprecated(since = "0.2.0", note = "Use load() or load_from_toml_path() instead")]
+    pub fn load_from_path(path: &Path) -> Option<Self> {
+        Self::load_from_toml_path(path)
     }
 
     /// Parse a package manifest from TOML content.
-    pub fn parse(content: &str) -> Result<Self, toml::de::Error> {
+    pub fn parse_toml(content: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(content)
+    }
+
+    /// Parse a package manifest from TOML content.
+    ///
+    /// Deprecated: Use `parse_toml()` for explicit TOML parsing.
+    #[deprecated(since = "0.2.0", note = "Use parse_toml() instead")]
+    pub fn parse(content: &str) -> Result<Self, toml::de::Error> {
+        Self::parse_toml(content)
     }
 
     /// Get the package name.
@@ -345,7 +407,7 @@ mod tests {
             version = "1.0.0"
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         assert_eq!(pkg.name(), "test-pkg");
         assert_eq!(pkg.version_str(), "1.0.0");
         assert!(pkg.description().is_none());
@@ -370,7 +432,7 @@ mod tests {
             public = ["foo", "bar"]
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         assert_eq!(pkg.name(), "my-module");
         assert_eq!(pkg.version_str(), "2.1.0");
         assert_eq!(pkg.description(), Some("A test module"));
@@ -411,7 +473,7 @@ mod tests {
             all = true
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         assert!(pkg.is_exported("anything"));
         assert!(pkg.is_exported("everything"));
     }
@@ -424,7 +486,7 @@ mod tests {
             version = "1.2.3"
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         let ver = pkg.version().expect("valid semver");
         assert_eq!(ver.major, 1);
         assert_eq!(ver.minor, 2);
@@ -489,7 +551,7 @@ mod tests {
             version = "1.0.0"
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         assert!(pkg.dependencies().is_empty());
         assert!(!pkg.has_dependency("anything"));
     }
@@ -505,7 +567,7 @@ mod tests {
             optional-dep = { version = "1.0", optional = true }
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         if let Dependency::Detailed(d) = pkg.get_dependency("optional-dep").unwrap() {
             assert!(d.optional);
         } else {
@@ -524,7 +586,7 @@ mod tests {
             feature-dep = { version = "1.0", features = ["foo", "bar"] }
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         if let Dependency::Detailed(d) = pkg.get_dependency("feature-dep").unwrap() {
             assert_eq!(d.features, vec!["foo", "bar"]);
         } else {
@@ -539,7 +601,7 @@ mod tests {
     #[test]
     fn test_parse_invalid_toml() {
         let content = "this is not valid toml";
-        assert!(PackageInfo::parse(content).is_err());
+        assert!(PackageInfo::parse_toml(content).is_err());
     }
 
     #[test]
@@ -549,14 +611,14 @@ mod tests {
             [package]
             name = "test"
         "#;
-        assert!(PackageInfo::parse(content).is_err());
+        assert!(PackageInfo::parse_toml(content).is_err());
 
         // Missing name
         let content = r#"
             [package]
             version = "1.0.0"
         "#;
-        assert!(PackageInfo::parse(content).is_err());
+        assert!(PackageInfo::parse_toml(content).is_err());
     }
 
     #[test]
@@ -567,7 +629,7 @@ mod tests {
 
     #[test]
     fn test_load_from_nonexistent_file() {
-        let result = PackageInfo::load_from_path(Path::new("/nonexistent/metta.toml"));
+        let result = PackageInfo::load_from_toml_path(Path::new("/nonexistent/metta.toml"));
         assert!(result.is_none());
     }
 
@@ -582,7 +644,7 @@ mod tests {
             public = ["sym1", "sym2", "sym3"]
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         let symbols = pkg.exported_symbols();
         assert_eq!(symbols.len(), 3);
         assert!(symbols.contains(&"sym1".to_string()));
@@ -601,7 +663,7 @@ mod tests {
             dev-lib = { git = "https://github.com/user/repo", branch = "develop" }
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         if let Dependency::Detailed(d) = pkg.get_dependency("dev-lib").unwrap() {
             assert_eq!(d.git, Some("https://github.com/user/repo".to_string()));
             assert_eq!(d.branch, Some("develop".to_string()));
@@ -622,7 +684,7 @@ mod tests {
             pinned-lib = { git = "https://github.com/user/repo", rev = "abc123" }
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         if let Dependency::Detailed(d) = pkg.get_dependency("pinned-lib").unwrap() {
             assert_eq!(d.git, Some("https://github.com/user/repo".to_string()));
             assert_eq!(d.rev, Some("abc123".to_string()));
@@ -647,7 +709,7 @@ mod tests {
             categories = ["utilities"]
         "#;
 
-        let pkg = PackageInfo::parse(content).expect("valid manifest");
+        let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
         assert_eq!(pkg.package.repository, Some("https://github.com/user/repo".to_string()));
         assert_eq!(pkg.package.documentation, Some("https://docs.example.com".to_string()));
         assert_eq!(pkg.package.homepage, Some("https://example.com".to_string()));

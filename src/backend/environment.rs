@@ -103,11 +103,6 @@ pub struct Environment {
     /// RwLock allows concurrent reads for parallel symbol resolution
     bindings: Arc<RwLock<HashMap<String, MettaValue>>>,
 
-    /// Exported symbols: Set of symbols marked as public
-    /// Used by export! to mark symbols that can be imported by other modules
-    /// In strict mode, only exported symbols can be selectively imported
-    exports: Arc<RwLock<std::collections::HashSet<String>>>,
-
     /// Module registry: Tracks loaded modules and provides caching
     /// Used for include, import!, and module operations
     /// RwLock allows concurrent reads for parallel module resolution
@@ -145,7 +140,6 @@ impl Environment {
             states: Arc::new(RwLock::new(HashMap::new())),
             next_state_id: Arc::new(RwLock::new(1)), // Start from 1
             bindings: Arc::new(RwLock::new(HashMap::new())),
-            exports: Arc::new(RwLock::new(std::collections::HashSet::new())),
             module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
             current_module_path: None,
             tokenizer: Arc::new(RwLock::new(Tokenizer::new())),
@@ -175,7 +169,6 @@ impl Environment {
         let states_data = self.states.read().unwrap().clone();
         let next_state_id_data = *self.next_state_id.read().unwrap();
         let bindings_data = self.bindings.read().unwrap().clone();
-        let exports_data = self.exports.read().unwrap().clone();
         let module_registry_data = self.module_registry.read().unwrap().clone();
         let tokenizer_data = self.tokenizer.read().unwrap().clone();
 
@@ -192,7 +185,6 @@ impl Environment {
         self.states = Arc::new(RwLock::new(states_data));
         self.next_state_id = Arc::new(RwLock::new(next_state_id_data));
         self.bindings = Arc::new(RwLock::new(bindings_data));
-        self.exports = Arc::new(RwLock::new(exports_data));
         self.module_registry = Arc::new(RwLock::new(module_registry_data));
         self.tokenizer = Arc::new(RwLock::new(tokenizer_data));
         // Note: current_module_path is not Arc-wrapped, so it's copied directly
@@ -1513,36 +1505,6 @@ impl Environment {
     }
 
     // ============================================================
-    // Symbol Exports Management (export!)
-    // ============================================================
-
-    /// Mark a symbol as exported (public)
-    /// Used by export! operation to make symbols visible to other modules
-    /// In strict mode, only exported symbols can be selectively imported
-    pub fn export_symbol(&mut self, symbol: &str) {
-        self.make_owned();
-
-        self.exports.write().unwrap().insert(symbol.to_string());
-
-        self.modified.store(true, Ordering::Release);
-    }
-
-    /// Check if a symbol is exported
-    pub fn is_exported(&self, symbol: &str) -> bool {
-        self.exports.read().unwrap().contains(symbol)
-    }
-
-    /// Get all exported symbols
-    pub fn exported_symbols(&self) -> Vec<String> {
-        self.exports.read().unwrap().iter().cloned().collect()
-    }
-
-    /// Get the number of exported symbols
-    pub fn export_count(&self) -> usize {
-        self.exports.read().unwrap().len()
-    }
-
-    // ============================================================
     // Tokenizer Operations (bind! support)
     // ============================================================
 
@@ -1804,7 +1766,6 @@ impl Environment {
         let states = self.states.clone();
         let next_state_id = self.next_state_id.clone();
         let bindings = self.bindings.clone();
-        let exports = self.exports.clone();
         let module_registry = self.module_registry.clone();
         let current_module_path = self.current_module_path.clone();
         let tokenizer = self.tokenizer.clone();
@@ -1826,7 +1787,6 @@ impl Environment {
             states,
             next_state_id,
             bindings,
-            exports,
             module_registry,
             current_module_path,
             tokenizer,
@@ -1855,7 +1815,6 @@ impl Clone for Environment {
             states: Arc::clone(&self.states),
             next_state_id: Arc::clone(&self.next_state_id),
             bindings: Arc::clone(&self.bindings),
-            exports: Arc::clone(&self.exports),
             module_registry: Arc::clone(&self.module_registry),
             current_module_path: self.current_module_path.clone(),
             tokenizer: Arc::clone(&self.tokenizer),

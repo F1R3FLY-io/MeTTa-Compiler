@@ -49,6 +49,9 @@ enum WorkItem {
         env: Environment,
         depth: usize,
         cont_id: usize,
+        /// If true, this is a tail call - don't increment depth
+        /// Tail calls include: rule RHS, if branches, let* final body, match templates
+        is_tail_call: bool,
     },
     /// Resume a continuation with a result
     Resume { cont_id: usize, result: EvalResult },
@@ -228,6 +231,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
         env: env.clone(),
         depth: 0,
         cont_id: 0, // Done continuation
+        is_tail_call: false, // Initial evaluation is not a tail call
     }];
 
     // Continuation storage - index 0 is always Done
@@ -244,9 +248,12 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                 env,
                 depth,
                 cont_id,
+                is_tail_call,
             } => {
                 // Perform one step of evaluation
+                // For tail calls, we don't increment depth - this enables TCO
                 let step_result = eval_step(value, env.clone(), depth);
+                let _ = is_tail_call; // Used to determine depth in push sites
 
                 match step_result {
                     // Direct result - resume continuation
@@ -279,11 +286,13 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             });
 
                             // Evaluate first item (moved, not cloned)
+                            // NOT a tail call - more items to process after this
                             work_stack.push(WorkItem::Eval {
                                 value: first,
                                 env,
                                 depth: depth + 1,
                                 cont_id: collect_cont_id,
+                                is_tail_call: false,
                             });
                         }
                     }
@@ -350,13 +359,15 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                             parent_cont,
                                         });
 
-                                        // Evaluate first rule RHS (values moved, not cloned)
+                                        // Evaluate first rule RHS - THIS IS A TAIL CALL
+                                        // TCO: Don't increment depth for tail calls
                                         let instantiated_rhs = apply_bindings(&rhs, &bindings);
                                         work_stack.push(WorkItem::Eval {
                                             value: instantiated_rhs,
                                             env,
-                                            depth: depth + 1,
+                                            depth, // TCO: reuse depth
                                             cont_id: match_cont_id,
+                                            is_tail_call: true,
                                         });
                                     }
                                 }
@@ -375,11 +386,13 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             };
 
                             // Evaluate next item
+                            // NOT a tail call - collecting results for S-expr
                             work_stack.push(WorkItem::Eval {
                                 value: next,
                                 env: original_env,
                                 depth: depth + 1,
                                 cont_id,
+                                is_tail_call: false,
                             });
                         }
                     }
@@ -413,13 +426,15 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 parent_cont,
                             };
 
-                            // Evaluate next rule RHS
+                            // Evaluate next rule RHS - THIS IS A TAIL CALL
+                            // TCO: Don't increment depth for tail calls
                             let instantiated_rhs = apply_bindings(&rhs, &bindings);
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated_rhs,
                                 env,
-                                depth: depth + 1,
+                                depth, // TCO: reuse depth
                                 cont_id,
+                                is_tail_call: true,
                             });
                         }
                     }

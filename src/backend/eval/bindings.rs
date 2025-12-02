@@ -86,8 +86,14 @@ pub(super) fn eval_let_star(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
 /// unify: Pattern unification with success/failure branches
 /// (unify pattern1 pattern2 success-body failure-body)
+///
 /// If pattern1 and pattern2 can be unified, evaluates success-body with bindings
 /// Otherwise evaluates failure-body
+///
+/// HE-compatible space-aware behavior:
+/// (unify space pattern success-body failure-body)
+/// When the first argument is a space (like &kb), searches all atoms in the space
+/// for ones matching the pattern, and evaluates success-body for each match.
 pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
@@ -108,7 +114,7 @@ pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
     let success_body = &args[2];
     let failure_body = &args[3];
 
-    // First evaluate both patterns to get their values
+    // First evaluate the first argument to see if it's a space
     let (results1, env1) = eval(pattern1.clone(), env);
     if results1.is_empty() {
         return eval(failure_body.clone(), env1);
@@ -118,29 +124,67 @@ pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
     let mut final_env = env1.clone();
 
     for val1 in results1 {
-        let (results2, env2) = eval(pattern2.clone(), final_env.clone());
-        final_env = env2.clone();
+        // HE-compatible: If val1 is a Space, search atoms in the space
+        if let MettaValue::Space(ref handle) = val1 {
+            // Get all atoms from the space
+            let space_atoms = handle.collapse();
 
-        for val2 in results2 {
-            // Try to unify val1 and val2
-            // First try pattern_match in one direction
-            if let Some(bindings) = pattern_match(&val1, &val2) {
-                // Apply bindings and evaluate success body
-                let instantiated = apply_bindings(success_body, &bindings);
-                let (body_results, body_env) = eval(instantiated, env2.clone());
-                final_env = body_env;
-                all_results.extend(body_results);
-            } else if let Some(bindings) = pattern_match(&val2, &val1) {
-                // Try the other direction
-                let instantiated = apply_bindings(success_body, &bindings);
-                let (body_results, body_env) = eval(instantiated, env2.clone());
-                final_env = body_env;
-                all_results.extend(body_results);
-            } else {
-                // Unification failed - evaluate failure body
-                let (failure_results, failure_env) = eval(failure_body.clone(), env2.clone());
+            // Pattern2 is treated as a pattern to match against space atoms
+            // It should NOT be evaluated - it's a pattern template
+            let pattern = pattern2.clone();
+
+            let mut found_match = false;
+            for atom in space_atoms {
+                // Try to match the pattern against this atom
+                if let Some(bindings) = pattern_match(&pattern, &atom) {
+                    found_match = true;
+                    // Apply bindings and evaluate success body
+                    let instantiated = apply_bindings(success_body, &bindings);
+                    let (body_results, body_env) = eval(instantiated, final_env.clone());
+                    final_env = body_env;
+                    all_results.extend(body_results);
+                } else if let Some(bindings) = pattern_match(&atom, &pattern) {
+                    // Try reverse direction too
+                    found_match = true;
+                    let instantiated = apply_bindings(success_body, &bindings);
+                    let (body_results, body_env) = eval(instantiated, final_env.clone());
+                    final_env = body_env;
+                    all_results.extend(body_results);
+                }
+            }
+
+            // If no matches found, evaluate failure body once
+            if !found_match {
+                let (failure_results, failure_env) = eval(failure_body.clone(), final_env.clone());
                 final_env = failure_env;
                 all_results.extend(failure_results);
+            }
+        } else {
+            // Normal unification (not space-aware)
+            let (results2, env2) = eval(pattern2.clone(), final_env.clone());
+            final_env = env2.clone();
+
+            for val2 in results2 {
+                // Try to unify val1 and val2
+                // First try pattern_match in one direction
+                if let Some(bindings) = pattern_match(&val1, &val2) {
+                    // Apply bindings and evaluate success body
+                    let instantiated = apply_bindings(success_body, &bindings);
+                    let (body_results, body_env) = eval(instantiated, env2.clone());
+                    final_env = body_env;
+                    all_results.extend(body_results);
+                } else if let Some(bindings) = pattern_match(&val2, &val1) {
+                    // Try the other direction
+                    let instantiated = apply_bindings(success_body, &bindings);
+                    let (body_results, body_env) = eval(instantiated, env2.clone());
+                    final_env = body_env;
+                    all_results.extend(body_results);
+                } else {
+                    // Unification failed - evaluate failure body
+                    let (failure_results, failure_env) = eval(failure_body.clone(), env2.clone());
+                    final_env = failure_env;
+                    all_results.extend(failure_results);
+                }
             }
         }
     }
@@ -923,5 +967,119 @@ mod tests {
         let (results, _) = eval(complex_body, env);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Long(30)); // (5 * 5) + 5 = 30
+    }
+
+    #[test]
+    fn test_let_star_with_discard_pattern() {
+        // Test that empty S-expression () works as a discard pattern in let*
+        // This is HE-compatible behavior for side-effect expressions
+        let env = Environment::new();
+
+        // (let* ((() 42)) "success") should succeed, discarding 42
+        let discard_binding = MettaValue::SExpr(vec![
+            MettaValue::Atom("let*".to_string()),
+            MettaValue::SExpr(vec![MettaValue::SExpr(vec![
+                MettaValue::SExpr(vec![]), // () - discard pattern
+                MettaValue::Long(42),
+            ])]),
+            MettaValue::String("success".to_string()),
+        ]);
+
+        let (results, _) = eval(discard_binding, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("success".to_string()));
+    }
+
+    #[test]
+    fn test_let_star_with_discard_and_binding() {
+        // (let* ((() (+ 1 2)) ($x 5)) $x) should return 5
+        let env = Environment::new();
+
+        let mixed_bindings = MettaValue::SExpr(vec![
+            MettaValue::Atom("let*".to_string()),
+            MettaValue::SExpr(vec![
+                // First binding: discard the result of (+ 1 2)
+                MettaValue::SExpr(vec![
+                    MettaValue::SExpr(vec![]), // () - discard pattern
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("+".to_string()),
+                        MettaValue::Long(1),
+                        MettaValue::Long(2),
+                    ]),
+                ]),
+                // Second binding: $x = 5
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("$x".to_string()),
+                    MettaValue::Long(5),
+                ]),
+            ]),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        let (results, _) = eval(mixed_bindings, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(5));
+    }
+
+    #[test]
+    fn test_let_with_discard_pattern() {
+        // (let () "any-value" "ok") should succeed
+        let env = Environment::new();
+
+        let discard_let = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            MettaValue::SExpr(vec![]), // () - discard pattern
+            MettaValue::String("any-value".to_string()),
+            MettaValue::String("ok".to_string()),
+        ]);
+
+        let (results, _) = eval(discard_let, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("ok".to_string()));
+    }
+
+    #[test]
+    fn test_let_star_discard_matches_any_type() {
+        // Test that () matches different types in let*
+        let env = Environment::new();
+
+        // Discard a string
+        let discard_string = MettaValue::SExpr(vec![
+            MettaValue::Atom("let*".to_string()),
+            MettaValue::SExpr(vec![MettaValue::SExpr(vec![
+                MettaValue::SExpr(vec![]),
+                MettaValue::String("ignored".to_string()),
+            ])]),
+            MettaValue::Long(1),
+        ]);
+        let (results, _) = eval(discard_string, env.clone());
+        assert_eq!(results[0], MettaValue::Long(1));
+
+        // Discard a boolean
+        let discard_bool = MettaValue::SExpr(vec![
+            MettaValue::Atom("let*".to_string()),
+            MettaValue::SExpr(vec![MettaValue::SExpr(vec![
+                MettaValue::SExpr(vec![]),
+                MettaValue::Bool(true),
+            ])]),
+            MettaValue::Long(2),
+        ]);
+        let (results, _) = eval(discard_bool, env.clone());
+        assert_eq!(results[0], MettaValue::Long(2));
+
+        // Discard an S-expression
+        let discard_sexpr = MettaValue::SExpr(vec![
+            MettaValue::Atom("let*".to_string()),
+            MettaValue::SExpr(vec![MettaValue::SExpr(vec![
+                MettaValue::SExpr(vec![]),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("some".to_string()),
+                    MettaValue::Atom("expression".to_string()),
+                ]),
+            ])]),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(discard_sexpr, env);
+        assert_eq!(results[0], MettaValue::Long(3));
     }
 }

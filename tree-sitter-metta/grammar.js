@@ -45,6 +45,7 @@ module.exports = grammar({
       $.wildcard,
       $.boolean_literal,  // Must come before identifier
       $.special_type_symbol,  // Must come before operator (contains %)
+      $.space_reference,  // Must come before identifier (starts with &)
       $.operator,
       $.string_literal,
       $.float_literal,
@@ -63,6 +64,12 @@ module.exports = grammar({
     // Wildcard pattern
     wildcard: $ => '_',
 
+    // Space references: &name (HE-compatible single-token approach)
+    // Used for referencing spaces like &self, &kb, etc.
+    // High precedence to match before identifier
+    // Uses same delimiter rules as variable: whitespace, (), ;, ", #
+    space_reference: $ => token(prec(5, seq('&', /[^\s()";#]+/))),
+
     // Boolean literals (high precedence to match before identifier)
     boolean_literal: $ => token(prec(5, choice('True', 'False'))),
 
@@ -74,9 +81,9 @@ module.exports = grammar({
     // Regular identifiers (no special prefix)
     // Uses blacklist approach: any sequence of non-delimiter characters
     // Delimiters: whitespace, (), ;, ", $
-    // Also excludes: !, ?, ' (prefix operators), _ (wildcard), [], {} (reserved)
+    // Also excludes: !, ?, ' (prefix operators), & (space reference), _ (wildcard), [], {} (reserved)
     // Lower precedence (1) so specific tokens match first
-    identifier: $ => token(prec(1, /[^\s()\[\]{}"$;!?'_][^\s()\[\]{}"$;]*/)),
+    identifier: $ => token(prec(1, /[^\s()\[\]{}"$;!?'_&][^\s()\[\]{}"$;]*/)),
 
     // Operators (decomposed by type)
     operator: $ => choice(
@@ -114,15 +121,15 @@ module.exports = grammar({
     // Rule definition operator: :=
     rule_definition_operator: $ => token(prec(3, ':=')),
 
-    // Punctuation operators: ;, |, ,, @, &, ., ...
+    // Punctuation operators: ;, |, ,, @, ., ...
     // Note: : is now separate as type_annotation_operator
     // Note: % removed - now used only in special_type_symbol
+    // Note: & removed - now used only in space_reference token
     punctuation_operator: $ => token(prec(2, choice(
       ';',
       '|',
       ',',
       '@',
-      '&',
       '...',
       '.',
     ))),

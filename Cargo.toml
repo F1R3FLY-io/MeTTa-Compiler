@@ -95,6 +95,9 @@ lru = "0.12"
 # SmallVec - Stack-allocated vector for optimizing pattern matching bindings
 smallvec = "1.11"
 
+# Itertools - Lazy iterator combinators for cartesian products and nondeterminism
+itertools = "0.14"
+
 # liblevenshtein - Fuzzy string matching for "Did you mean?" suggestions
 # liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
 liblevenshtein = { version = "^0.7", features = ["pathmap-backend"] }

@@ -516,19 +516,20 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
     }
 }
 
-/// Preprocess S-expression items to combine `& self` into `&self`.
-/// The Tree-Sitter parser treats `&self` as two tokens, but we need it as one
-/// for HE-compatible space reference semantics.
+/// Preprocess S-expression items to combine `& name` into `&name`.
+/// The Tree-Sitter parser treats `&foo` as two tokens (`&` and `foo`), but we need
+/// them combined for HE-compatible space reference semantics (e.g., `&self`, `&kb`, `&stack`).
 /// Also recursively processes nested S-expressions.
 fn preprocess_space_refs(items: Vec<MettaValue>) -> Vec<MettaValue> {
     let mut result = Vec::with_capacity(items.len());
     let mut i = 0;
     while i < items.len() {
-        // Check for `& self` pattern
+        // Check for `& name` pattern - combine any `&` followed by an atom
         if i + 1 < items.len() {
             if let (MettaValue::Atom(ref a), MettaValue::Atom(ref b)) = (&items[i], &items[i + 1]) {
-                if a == "&" && b == "self" {
-                    result.push(MettaValue::Atom("&self".to_string()));
+                if a == "&" {
+                    // Combine `& name` into `&name`
+                    result.push(MettaValue::Atom(format!("&{}", b)));
                     i += 2;
                     continue;
                 }
@@ -949,10 +950,14 @@ impl CompareOp {
     }
 }
 
-/// Evaluate a polymorphic comparison operation (supports numbers and strings)
-/// When both arguments are integers, uses integer comparison.
-/// When both arguments are strings, uses lexicographic comparison.
-/// Mixed types result in a type error.
+/// Evaluate a polymorphic comparison operation
+/// Supports:
+/// - Numbers (integers): numeric comparison
+/// - Strings: lexicographic comparison
+/// - Atoms, Bools, Nil, SExpr: structural equality (for == and !=)
+///
+/// For ordering comparisons (<, <=, >, >=), only numbers and strings are supported.
+/// For equality comparisons (==, !=), all types are supported via structural equality.
 fn eval_comparison(args: &[MettaValue], op: CompareOp) -> Option<MettaValue> {
     if args.len() != 2 {
         return Some(MettaValue::Error(
@@ -964,6 +969,18 @@ fn eval_comparison(args: &[MettaValue], op: CompareOp) -> Option<MettaValue> {
         ));
     }
 
+    // For equality operations, use structural equality
+    if matches!(op, CompareOp::Equal | CompareOp::NotEqual) {
+        let equal = values_equal(&args[0], &args[1]);
+        let result = match op {
+            CompareOp::Equal => equal,
+            CompareOp::NotEqual => !equal,
+            _ => unreachable!(),
+        };
+        return Some(MettaValue::Bool(result));
+    }
+
+    // For ordering comparisons, only numbers and strings are supported
     match (&args[0], &args[1]) {
         (MettaValue::Long(a), MettaValue::Long(b)) => Some(MettaValue::Bool(op.apply(*a, *b))),
         (MettaValue::String(a), MettaValue::String(b)) => {
@@ -991,6 +1008,69 @@ fn eval_comparison(args: &[MettaValue], op: CompareOp) -> Option<MettaValue> {
             ),
             Arc::new(MettaValue::Atom("TypeError".to_string())),
         )),
+    }
+}
+
+/// Check structural equality between two MettaValues
+/// HE-compatible: Nil and empty SExpr are considered equal
+fn values_equal(a: &MettaValue, b: &MettaValue) -> bool {
+    match (a, b) {
+        // Same-type comparisons
+        (MettaValue::Atom(a), MettaValue::Atom(b)) => a == b,
+        (MettaValue::Bool(a), MettaValue::Bool(b)) => a == b,
+        (MettaValue::Long(a), MettaValue::Long(b)) => a == b,
+        (MettaValue::Float(a), MettaValue::Float(b)) => a == b,
+        (MettaValue::String(a), MettaValue::String(b)) => a == b,
+        (MettaValue::Nil, MettaValue::Nil) => true,
+        (MettaValue::Unit, MettaValue::Unit) => true,
+
+        // HE-compatible: Nil equals empty SExpr
+        (MettaValue::Nil, MettaValue::SExpr(items)) | (MettaValue::SExpr(items), MettaValue::Nil) => {
+            items.is_empty()
+        }
+
+        // HE-compatible: Nil equals Unit
+        (MettaValue::Nil, MettaValue::Unit) | (MettaValue::Unit, MettaValue::Nil) => true,
+
+        // HE-compatible: Nil (value) equals Nil (atom symbol)
+        (MettaValue::Nil, MettaValue::Atom(s)) | (MettaValue::Atom(s), MettaValue::Nil) => s == "Nil",
+
+        // S-expression structural equality
+        (MettaValue::SExpr(a_items), MettaValue::SExpr(b_items)) => {
+            if a_items.len() != b_items.len() {
+                return false;
+            }
+            a_items
+                .iter()
+                .zip(b_items.iter())
+                .all(|(a, b)| values_equal(a, b))
+        }
+
+        // Conjunction structural equality
+        (MettaValue::Conjunction(a_goals), MettaValue::Conjunction(b_goals)) => {
+            if a_goals.len() != b_goals.len() {
+                return false;
+            }
+            a_goals
+                .iter()
+                .zip(b_goals.iter())
+                .all(|(a, b)| values_equal(a, b))
+        }
+
+        // Error equality (message and details must match)
+        (MettaValue::Error(a_msg, a_details), MettaValue::Error(b_msg, b_details)) => {
+            a_msg == b_msg && values_equal(a_details, b_details)
+        }
+
+        // Space and State equality by identity
+        (MettaValue::Space(a), MettaValue::Space(b)) => a.id == b.id,
+        (MettaValue::State(a), MettaValue::State(b)) => a == b,
+
+        // Type equality
+        (MettaValue::Type(a), MettaValue::Type(b)) => a == b,
+
+        // Different types are not equal
+        _ => false,
     }
 }
 
@@ -1115,6 +1195,15 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         (MettaValue::Float(p), MettaValue::Float(v)) => p == v,
         (MettaValue::String(p), MettaValue::String(v)) => p == v,
         (MettaValue::Nil, MettaValue::Nil) => true,
+        // Nil also matches Unit (HE-compatible: both represent "nothing")
+        (MettaValue::Nil, MettaValue::Unit) => true,
+        // Unit also matches Nil and other Units
+        (MettaValue::Unit, MettaValue::Unit) => true,
+        (MettaValue::Unit, MettaValue::Nil) => true,
+
+        // Empty S-expression () matches anything (HE-compatible discard pattern)
+        // Used in let* to evaluate expressions for side effects: (() (println! "debug"))
+        (MettaValue::SExpr(p_items), _) if p_items.is_empty() => true,
 
         // S-expressions must have same length and all elements must match
         (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items)) => {
@@ -1710,6 +1799,47 @@ mod tests {
                 .map(|(_, val)| val),
             Some(&MettaValue::Long(1))
         );
+    }
+
+    #[test]
+    fn test_pattern_match_empty_sexpr_discard() {
+        // Empty S-expression () should match ANY value (HE-compatible discard pattern)
+        let pattern = MettaValue::SExpr(vec![]);
+
+        // Should match Long
+        let value = MettaValue::Long(42);
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_some());
+        assert!(bindings.unwrap().is_empty()); // No bindings captured
+
+        // Should match String
+        let value = MettaValue::String("hello".to_string());
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_some());
+
+        // Should match S-expression
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_some());
+
+        // Should match Nil
+        let value = MettaValue::Nil;
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_some());
+
+        // Should match another empty S-expression
+        let value = MettaValue::SExpr(vec![]);
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_some());
+
+        // Should match Bool
+        let value = MettaValue::Bool(true);
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_some());
     }
 
     #[test]

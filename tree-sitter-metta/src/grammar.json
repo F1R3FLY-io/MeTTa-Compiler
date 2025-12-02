@@ -113,6 +113,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "space_reference"
+        },
+        {
+          "type": "SYMBOL",
           "name": "operator"
         },
         {
@@ -153,6 +157,26 @@
       "type": "STRING",
       "value": "_"
     },
+    "space_reference": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PREC",
+        "value": 5,
+        "content": {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "&"
+            },
+            {
+              "type": "PATTERN",
+              "value": "[^\\s()\";#]+"
+            }
+          ]
+        }
+      }
+    },
     "boolean_literal": {
       "type": "TOKEN",
       "content": {
@@ -191,7 +215,7 @@
         "value": 1,
         "content": {
           "type": "PATTERN",
-          "value": "[^\\s()\\[\\]{}\"$;!?'_][^\\s()\\[\\]{}\"$;]*"
+          "value": "[^\\s()\\[\\]{}\"$;!?'_&][^\\s()\\[\\]{}\"$;]*"
         }
       }
     },
@@ -340,10 +364,6 @@
             {
               "type": "STRING",
               "value": "@"
-            },
-            {
-              "type": "STRING",
-              "value": "&"
             },
             {
               "type": "STRING",

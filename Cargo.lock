@@ -1889,6 +1889,7 @@ dependencies = [
  "criterion",
  "dirs",
  "divan",
+ "itertools 0.14.0",
  "liblevenshtein",
  "lru",
  "models",

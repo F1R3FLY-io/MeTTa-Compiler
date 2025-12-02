@@ -246,15 +246,9 @@ pub(super) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
     match space_value {
         MettaValue::Space(handle) => {
-            if env2.add_to_named_space(handle.id, atom_value) {
-                (vec![MettaValue::Unit], env2)
-            } else {
-                let err = MettaValue::Error(
-                    format!("add-atom: failed to add to space {}", handle.id),
-                    Arc::new(atom_value.clone()),
-                );
-                (vec![err], env2)
-            }
+            // Use SpaceHandle's add_atom method directly (it has its own backing store)
+            handle.add_atom(atom_value.clone());
+            (vec![MettaValue::Unit], env2)
         }
         _ => {
             let err = MettaValue::Error(
@@ -302,7 +296,8 @@ pub(super) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 
     match space_value {
         MettaValue::Space(handle) => {
-            env2.remove_from_named_space(handle.id, atom_value);
+            // Use SpaceHandle's remove_atom method directly (it has its own backing store)
+            handle.remove_atom(atom_value);
             (vec![MettaValue::Unit], env2)
         }
         _ => {
@@ -318,45 +313,47 @@ pub(super) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> Eval
     }
 }
 
-/// collapse: Get all atoms from a space as a list
-/// Usage: (collapse space-ref)
+/// collapse: Gather all nondeterministic results into a list
+/// Usage: (collapse expr)
+///
+/// HE-compatible behavior:
+/// - If expr evaluates to multiple results (superposition), gathers them into a list
+/// - If expr is a space, returns all atoms in the space as a list
+/// - If expr is empty, returns Nil
+///
+/// Example:
+/// ```metta
+/// !(collapse (get-atoms &self))  ; Wraps atoms in a list
+/// !(collapse &myspace)           ; Gets atoms from space as list
+/// ```
 pub(super) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_args_with_usage!("collapse", items, 1, env, "(collapse space)");
+    require_args_with_usage!("collapse", items, 1, env, "(collapse expr)");
 
-    let space_ref = &items[1];
+    let expr = &items[1];
 
-    // Evaluate the space reference
-    let (space_results, env1) = eval(space_ref.clone(), env);
-    if space_results.is_empty() {
-        let err = MettaValue::Error(
-            "collapse: space evaluated to empty".to_string(),
-            Arc::new(space_ref.clone()),
-        );
-        return (vec![err], env1);
+    // Evaluate the expression - this may return multiple results (superposition)
+    let (results, env1) = eval(expr.clone(), env);
+
+    if results.is_empty() {
+        // Empty superposition returns Nil
+        return (vec![MettaValue::Nil], env1);
     }
 
-    let space_value = &space_results[0];
-
-    match space_value {
-        MettaValue::Space(handle) => {
-            let atoms = env1.collapse_named_space(handle.id);
+    // Check if the single result is a space (direct space collapse)
+    if results.len() == 1 {
+        if let MettaValue::Space(handle) = &results[0] {
+            // Use SpaceHandle's collapse method directly
+            let atoms = handle.collapse();
             if atoms.is_empty() {
-                (vec![MettaValue::Nil], env1)
+                return (vec![MettaValue::Nil], env1);
             } else {
-                (vec![MettaValue::SExpr(atoms)], env1)
+                return (vec![MettaValue::SExpr(atoms)], env1);
             }
         }
-        _ => {
-            let err = MettaValue::Error(
-                format!(
-                    "collapse: argument must be a space reference, got {}. Usage: (collapse space)",
-                    super::friendly_value_repr(space_value)
-                ),
-                Arc::new(space_value.clone()),
-            );
-            (vec![err], env1)
-        }
     }
+
+    // For any other expression, gather all results into a list
+    (vec![MettaValue::SExpr(results)], env1)
 }
 
 /// get-atoms: Get all atoms from a space as a superposition
@@ -961,11 +958,12 @@ mod tests {
             _ => panic!("Expected error for wrong space reference"),
         }
 
-        // Test match with unsupported space name
+        // Test match with unsupported space name (new-style syntax)
+        // Note: With the new space_ref token, `& other` is preprocessed to `&other`
+        // which triggers 3-arg new-style syntax, producing a "must be a space" error
         let match_wrong_space = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("other".to_string()), // Only "self" supported
+            MettaValue::Atom("&other".to_string()), // Unrecognized space reference
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
         ]);
@@ -973,7 +971,11 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(msg.contains("only supports 'self'"));
+                assert!(
+                    msg.contains("must be a space"),
+                    "Expected 'must be a space' in: {}",
+                    msg
+                );
             }
             _ => panic!("Expected error for unsupported space name"),
         }
@@ -1218,11 +1220,11 @@ mod tests {
     fn test_space_name_case_sensitivity_suggestion() {
         let env = Environment::new();
 
-        // Test "Self" (capital S) -> should suggest "self"
+        // Test "&Self" (capital S) -> should error (unrecognized space reference)
+        // Note: With the new space_ref token, &Self is a single atom, triggering new-style syntax
         let match_expr = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("Self".to_string()), // Wrong case
+            MettaValue::Atom("&Self".to_string()), // Wrong case - combined as single token
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
         ]);
@@ -1231,18 +1233,14 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
+                // New-style syntax produces different error (no suggestion)
                 assert!(
-                    msg.contains("Did you mean: self"),
-                    "Expected 'Did you mean: self' in: {}",
-                    msg
-                );
-                assert!(
-                    msg.contains("case-sensitive"),
-                    "Expected 'case-sensitive' in: {}",
+                    msg.contains("must be a space"),
+                    "Expected 'must be a space' in: {}",
                     msg
                 );
             }
-            _ => panic!("Expected error with suggestion"),
+            _ => panic!("Expected error for unrecognized space reference"),
         }
     }
 
@@ -1250,11 +1248,11 @@ mod tests {
     fn test_space_name_typo_suggestion() {
         let env = Environment::new();
 
-        // Test "slef" (typo) -> should suggest "self"
+        // Test "&slef" (typo) -> should error (unrecognized space reference)
+        // Note: With the new space_ref token, &slef is a single atom, triggering new-style syntax
         let match_expr = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("slef".to_string()), // Typo
+            MettaValue::Atom("&slef".to_string()), // Typo - combined as single token
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
         ]);
@@ -1263,13 +1261,14 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
+                // New-style syntax produces different error (no suggestion)
                 assert!(
-                    msg.contains("Did you mean: self"),
-                    "Expected 'Did you mean: self' in: {}",
+                    msg.contains("must be a space"),
+                    "Expected 'must be a space' in: {}",
                     msg
                 );
             }
-            _ => panic!("Expected error with suggestion"),
+            _ => panic!("Expected error for typo space reference"),
         }
     }
 

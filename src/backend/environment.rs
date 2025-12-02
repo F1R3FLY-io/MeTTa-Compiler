@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use super::fuzzy_match::FuzzyMatcher;
+use super::grounded::GroundedRegistry;
 use super::modules::{ModId, ModuleRegistry, Tokenizer};
 use super::{MettaValue, Rule};
 
@@ -117,6 +118,11 @@ pub struct Environment {
     /// Used by bind! to register tokens that are replaced during evaluation
     /// Tokens registered here are looked up when evaluating atoms
     tokenizer: Arc<RwLock<Tokenizer>>,
+
+    /// Grounded operations registry: Maps op_name -> GroundedOperation
+    /// Used for lazy evaluation of built-in operations (+, -, *, /, comparisons, etc.)
+    /// Operations receive unevaluated arguments and evaluate internally (HE-compatible)
+    grounded_registry: Arc<RwLock<GroundedRegistry>>,
 }
 
 impl Environment {
@@ -143,6 +149,7 @@ impl Environment {
             module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
             current_module_path: None,
             tokenizer: Arc::new(RwLock::new(Tokenizer::new())),
+            grounded_registry: Arc::new(RwLock::new(GroundedRegistry::with_standard_ops())),
         }
     }
 
@@ -171,6 +178,7 @@ impl Environment {
         let bindings_data = self.bindings.read().unwrap().clone();
         let module_registry_data = self.module_registry.read().unwrap().clone();
         let tokenizer_data = self.tokenizer.read().unwrap().clone();
+        let grounded_registry_data = self.grounded_registry.read().unwrap().clone();
 
         // Now assign the new Arc<RwLock<T>> instances
         self.btm = Arc::new(RwLock::new(btm_data));
@@ -187,6 +195,7 @@ impl Environment {
         self.bindings = Arc::new(RwLock::new(bindings_data));
         self.module_registry = Arc::new(RwLock::new(module_registry_data));
         self.tokenizer = Arc::new(RwLock::new(tokenizer_data));
+        self.grounded_registry = Arc::new(RwLock::new(grounded_registry_data));
         // Note: current_module_path is not Arc-wrapped, so it's copied directly
 
         // Mark as owning data and modified
@@ -1741,6 +1750,19 @@ impl Environment {
         self.fuzzy_matcher.did_you_mean(symbol, max_distance, 3)
     }
 
+    // ============================================================
+    // Grounded Operations
+    // ============================================================
+
+    /// Get a grounded operation by name (e.g., "+", "-", "and")
+    /// Used for lazy evaluation of built-in operations
+    pub fn get_grounded_operation(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<dyn super::grounded::GroundedOperation>> {
+        self.grounded_registry.read().unwrap().get(name)
+    }
+
     /// Union two environments (monotonic merge)
     /// PathMap and shared_mapping are shared via Arc, so facts (including type assertions) are automatically merged
     /// Multiplicities and rule indices are also merged via shared Arc
@@ -1769,6 +1791,7 @@ impl Environment {
         let module_registry = self.module_registry.clone();
         let current_module_path = self.current_module_path.clone();
         let tokenizer = self.tokenizer.clone();
+        let grounded_registry = self.grounded_registry.clone();
 
         Environment {
             shared_mapping,
@@ -1790,6 +1813,7 @@ impl Environment {
             module_registry,
             current_module_path,
             tokenizer,
+            grounded_registry,
         }
     }
 }
@@ -1818,6 +1842,7 @@ impl Clone for Environment {
             module_registry: Arc::clone(&self.module_registry),
             current_module_path: self.current_module_path.clone(),
             tokenizer: Arc::clone(&self.tokenizer),
+            grounded_registry: Arc::clone(&self.grounded_registry),
         }
     }
 }

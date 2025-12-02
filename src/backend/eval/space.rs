@@ -53,12 +53,25 @@ pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
+    // Debug: Show what eval_match receives
+    let debug = std::env::var("METTA_DEBUG_MATCH").is_ok();
+    if debug {
+        eprintln!("[DEBUG eval_match] items={:?}", items);
+        eprintln!("[DEBUG eval_match] args.len()={}", args.len());
+    }
+
     // Support both: (match space pattern template) and (match & self pattern template)
     if args.len() == 3 {
         // New-style syntax: (match space pattern template)
         let space_arg = &args[0];
         let pattern = &args[1];
         let template = &args[2];
+
+        if debug {
+            eprintln!("[DEBUG eval_match] space_arg={:?}", space_arg);
+            eprintln!("[DEBUG eval_match] pattern={:?}", pattern);
+            eprintln!("[DEBUG eval_match] template={:?}", template);
+        }
 
         // Evaluate the space argument
         let (space_results, env1) = eval(space_arg.clone(), env);
@@ -151,30 +164,60 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
     }
 }
 
-/// Pattern match against a SpaceHandle and return instantiated templates.
+/// Pattern match against a SpaceHandle and return evaluated instantiated templates.
+/// HE-compatible: After pattern matching, the template is evaluated with bindings applied.
 fn match_with_space_handle(
     handle: &SpaceHandle,
     pattern: &MettaValue,
     template: &MettaValue,
     env: &Environment,
 ) -> Vec<MettaValue> {
-    use super::{apply_bindings, pattern_match};
+    use super::{apply_bindings, eval, pattern_match};
+
+    // Debug logging
+    let debug = std::env::var("METTA_DEBUG_MATCH").is_ok();
+    if debug {
+        eprintln!("[DEBUG match] handle.name={}, is_module_space={}", handle.name, handle.is_module_space());
+        eprintln!("[DEBUG match] pattern={:?}", pattern);
+        eprintln!("[DEBUG match] template={:?}", template);
+    }
 
     // For module-backed spaces or the global "self" space, use Environment's MORK-based matching
     // For other owned spaces (from new-space), match against the atoms in the space
     if handle.is_module_space() || handle.name == "self" {
         // Module space or global "self" space - use Environment's match_space for MORK integration
         // The Environment has the rules from (= ...) definitions
+        if debug {
+            eprintln!("[DEBUG match] Using env.match_space (module/self path)");
+        }
         env.match_space(pattern, template)
     } else {
         // Owned space (from new-space) - match against atoms stored in SpaceHandle
         let atoms = handle.collapse();
+        if debug {
+            eprintln!("[DEBUG match] Using owned space path, {} atoms", atoms.len());
+        }
         let mut results = Vec::new();
 
         for atom in &atoms {
+            if debug {
+                eprintln!("[DEBUG match] Trying to match atom={:?}", atom);
+            }
             if let Some(bindings) = pattern_match(pattern, atom) {
+                if debug {
+                    eprintln!("[DEBUG match] MATCH! bindings={:?}", bindings);
+                }
                 let instantiated = apply_bindings(template, &bindings);
-                results.push(instantiated);
+                if debug {
+                    eprintln!("[DEBUG match] instantiated={:?}", instantiated);
+                }
+                // HE-compatible: Evaluate the instantiated template
+                // This allows templates like (let () (add-atom ...) (remove-atom ...)) to be executed
+                let (eval_results, _) = eval(instantiated, env.clone());
+                if debug {
+                    eprintln!("[DEBUG match] eval_results={:?}", eval_results);
+                }
+                results.extend(eval_results);
             }
         }
 

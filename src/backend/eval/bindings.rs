@@ -120,6 +120,18 @@ pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
         return eval(failure_body.clone(), env1);
     }
 
+    // DEBUG: Log what results1 contains
+    if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
+        eprintln!(
+            "[DEBUG unify] results1 count={}, values={:?}",
+            results1.len(),
+            results1.iter().map(|v| match v {
+                MettaValue::Space(h) => format!("Space({})", h.name),
+                other => format!("{:?}", other)
+            }).collect::<Vec<_>>()
+        );
+    }
+
     let mut all_results = Vec::new();
     let mut final_env = env1.clone();
 
@@ -133,19 +145,33 @@ pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
             // It should NOT be evaluated - it's a pattern template
             let pattern = pattern2.clone();
 
+            // DEBUG: Log pattern and space atoms count
+            if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
+                eprintln!(
+                    "[DEBUG unify] Space query: pattern={:?}, space_atoms_count={}",
+                    pattern, space_atoms.len()
+                );
+            }
+
             let mut found_match = false;
-            for atom in space_atoms {
+            for atom in &space_atoms {
                 // Try to match the pattern against this atom
-                if let Some(bindings) = pattern_match(&pattern, &atom) {
+                if let Some(bindings) = pattern_match(&pattern, atom) {
                     found_match = true;
+                    if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
+                        eprintln!("[DEBUG unify] MATCH: atom={:?}, bindings={:?}", atom, bindings);
+                    }
                     // Apply bindings and evaluate success body
                     let instantiated = apply_bindings(success_body, &bindings);
                     let (body_results, body_env) = eval(instantiated, final_env.clone());
                     final_env = body_env;
                     all_results.extend(body_results);
-                } else if let Some(bindings) = pattern_match(&atom, &pattern) {
+                } else if let Some(bindings) = pattern_match(atom, &pattern) {
                     // Try reverse direction too
                     found_match = true;
+                    if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
+                        eprintln!("[DEBUG unify] MATCH (reverse): atom={:?}, bindings={:?}", atom, bindings);
+                    }
                     let instantiated = apply_bindings(success_body, &bindings);
                     let (body_results, body_env) = eval(instantiated, final_env.clone());
                     final_env = body_env;
@@ -155,12 +181,24 @@ pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
 
             // If no matches found, evaluate failure body once
             if !found_match {
+                if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
+                    eprintln!(
+                        "[DEBUG unify] NO MATCH FOUND - evaluating failure. pattern={:?}, atoms={:?}",
+                        pattern, space_atoms
+                    );
+                }
                 let (failure_results, failure_env) = eval(failure_body.clone(), final_env.clone());
                 final_env = failure_env;
                 all_results.extend(failure_results);
             }
         } else {
             // Normal unification (not space-aware)
+            if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
+                eprintln!(
+                    "[DEBUG unify] NON-SPACE branch! val1={:?}",
+                    val1
+                );
+            }
             let (results2, env2) = eval(pattern2.clone(), final_env.clone());
             final_env = env2.clone();
 

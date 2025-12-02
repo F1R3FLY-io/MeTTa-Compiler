@@ -72,6 +72,16 @@ pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     let (atom_results, atom_env) = eval(atom, env);
     let mut final_results = Vec::new();
 
+    // Handle case when evaluation returns no results (empty) - treat as Empty
+    if atom_results.is_empty() {
+        let switch_result = eval_switch_minimal(
+            MettaValue::Atom("Empty".to_string()),
+            cases,
+            atom_env.clone(),
+        );
+        return (switch_result.0, atom_env);
+    }
+
     for atom_result in atom_results {
         let is_empty = match &atom_result {
             MettaValue::Nil => true,

@@ -29,6 +29,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::backend::environment::Environment;
+use crate::backend::grounded::ExecError;
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
 use crate::backend::mork_convert::{mork_bindings_to_metta, ConversionContext};
 use mork_expr::Expr;
@@ -286,6 +287,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             });
                         }
                     }
+
                 }
             }
 
@@ -633,8 +635,125 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
         }
     }
 
-    // Not a special form - need to evaluate all sub-expressions iteratively
-    EvalStep::EvalSExpr { items, env, depth }
+    // HE-compatible lazy evaluation: try grounded operations and rules with UNEVALUATED args first
+    let sexpr = MettaValue::SExpr(items.clone());
+
+    // Step 1: Try grounded operations with RAW (unevaluated) arguments
+    if let Some(MettaValue::Atom(op)) = items.first() {
+        if let Some(grounded_op) = env.get_grounded_operation(op) {
+            // Create an eval function closure for grounded operations to use
+            let eval_fn = |value: MettaValue, env_inner: Environment| -> (Vec<MettaValue>, Environment) {
+                eval(value, env_inner)
+            };
+
+            match grounded_op.execute_raw(&items[1..], &env, &eval_fn) {
+                Ok(results) => {
+                    // Grounded operation succeeded
+                    let values: Vec<MettaValue> = results.into_iter().map(|(v, _)| v).collect();
+                    return EvalStep::Done((values, env));
+                }
+                Err(ExecError::NoReduce) => {
+                    // Not applicable - fall through to rule matching
+                }
+                Err(ExecError::Runtime(msg)) => {
+                    return EvalStep::Done((
+                        vec![MettaValue::Error(
+                            msg,
+                            Arc::new(MettaValue::Atom("TypeError".to_string())),
+                        )],
+                        env,
+                    ));
+                }
+                Err(ExecError::IncorrectArgument(msg)) => {
+                    return EvalStep::Done((
+                        vec![MettaValue::Error(
+                            msg,
+                            Arc::new(MettaValue::Atom("ArityError".to_string())),
+                        )],
+                        env,
+                    ));
+                }
+            }
+        }
+    }
+
+    // Step 2: Evaluate S-expression arguments before rule matching
+    // This ensures recursive functions work correctly (e.g., (fact (- 5 1)) -> (fact 4))
+    // Also handles Cartesian products for nondeterministic evaluation
+    let mut arg_results_list: Vec<Vec<MettaValue>> = vec![vec![items[0].clone()]]; // Keep function name
+    let mut current_env = env.clone();
+    let mut any_changed = false;
+
+    for arg in &items[1..] {
+        // Only evaluate S-expressions (not atoms, numbers, etc.)
+        if matches!(arg, MettaValue::SExpr(_)) {
+            let (arg_results, new_env) = eval(arg.clone(), current_env);
+            current_env = new_env;
+            // Check if evaluation changed the argument
+            if arg_results.len() != 1 || &arg_results[0] != arg {
+                any_changed = true;
+            }
+            arg_results_list.push(arg_results);
+        } else {
+            arg_results_list.push(vec![arg.clone()]);
+        }
+    }
+
+    // If no arguments changed, use original expression for rule matching
+    if !any_changed {
+        let rule_matches = try_match_all_rules(&sexpr, &env);
+
+        if !rule_matches.is_empty() {
+            // Rules matched - evaluate the RHS with bindings applied
+            let mut all_results = Vec::new();
+            let mut final_env = env.clone();
+
+            for (rhs, bindings) in rule_matches {
+                let instantiated = apply_bindings(&rhs, &bindings);
+                let (results, new_env) = eval(instantiated, final_env.clone());
+                all_results.extend(results);
+                final_env = new_env;
+            }
+
+            return EvalStep::Done((all_results, final_env));
+        }
+
+        // No match - ADD mode: add expression to space and return as-is
+        let mut final_env = env;
+        final_env.add_to_space(&sexpr);
+        return EvalStep::Done((vec![sexpr], final_env));
+    }
+
+    // Step 3: Generate Cartesian product of all argument results
+    let combinations = match cartesian_product(&arg_results_list) {
+        Ok(c) => c,
+        Err(err) => return EvalStep::Done((vec![err], current_env)),
+    };
+
+    // Step 4: For each combination, try rule matching and collect results
+    let mut all_results = Vec::new();
+    let mut final_env = current_env;
+
+    for combo in combinations {
+        let evaluated_sexpr = MettaValue::SExpr(combo);
+        let rule_matches = try_match_all_rules(&evaluated_sexpr, &final_env);
+
+        if !rule_matches.is_empty() {
+            // Rules matched - evaluate the RHS with bindings applied
+            for (rhs, bindings) in rule_matches {
+                let instantiated = apply_bindings(&rhs, &bindings);
+                let (results, new_env) = eval(instantiated, final_env.clone());
+                all_results.extend(results);
+                final_env = new_env;
+            }
+        } else {
+            // No match - ADD mode: add to space and return as-is
+            final_env.add_to_space(&evaluated_sexpr);
+            all_results.push(evaluated_sexpr);
+        }
+    }
+
+    EvalStep::Done((all_results, final_env))
 }
 
 /// Process collected S-expression evaluation results.
@@ -1197,6 +1316,11 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         (MettaValue::Nil, MettaValue::Nil) => true,
         // Nil also matches Unit (HE-compatible: both represent "nothing")
         (MettaValue::Nil, MettaValue::Unit) => true,
+        // Nil pattern matches Empty atom (HE-compatible: () pattern in case matches Empty)
+        // This is needed because case converts empty results to Atom("Empty") internally
+        (MettaValue::Nil, MettaValue::Atom(v)) if v == "Empty" => true,
+        // Empty atom pattern matches Nil (symmetry: Empty pattern matches () values)
+        (MettaValue::Atom(p), MettaValue::Nil) if p == "Empty" => true,
         // Unit also matches Nil and other Units
         (MettaValue::Unit, MettaValue::Unit) => true,
         (MettaValue::Unit, MettaValue::Nil) => true,
@@ -1717,11 +1841,12 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], MettaValue::Error(_, _)));
 
-        // or with non-boolean should error
+        // or with non-boolean FIRST arg should error
+        // (With short-circuit, (or True "hello") returns True without checking second arg)
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("or".to_string()),
-            MettaValue::Bool(true),
             MettaValue::String("hello".to_string()),
+            MettaValue::Bool(true),
         ]);
         let (results, _) = eval(value, env.clone());
         assert_eq!(results.len(), 1);
@@ -2891,6 +3016,9 @@ mod tests {
 
     #[test]
     fn test_misspelled_special_form() {
+        // In ADD mode, unrecognized expressions are added to space and returned as-is
+        // This matches HE-compatible behavior where expressions without matching rules
+        // become facts in the space rather than generating errors
         let env = Environment::new();
 
         // Try to use "mach" instead of "match"
@@ -2900,24 +3028,20 @@ mod tests {
             MettaValue::Atom("pattern".to_string()),
         ]);
 
-        let (results, _) = eval(expr, env);
+        let (results, new_env) = eval(expr.clone(), env);
         assert_eq!(results.len(), 1);
 
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(
-                    msg.contains("Did you mean"),
-                    "Expected suggestion in: {}",
-                    msg
-                );
-                assert!(msg.contains("match"), "Expected 'match' in: {}", msg);
-            }
-            other => panic!("Expected Error with suggestion, got {:?}", other),
-        }
+        // In ADD mode, the expression is returned as-is and added to space
+        assert_eq!(results[0], expr);
+        // Verify the expression was added to space
+        assert!(new_env.has_sexpr_fact(&expr));
     }
 
     #[test]
     fn test_undefined_symbol_with_rule_suggestion() {
+        // In ADD mode, unrecognized expressions are added to space and returned as-is
+        // This matches HE-compatible behavior where expressions without matching rules
+        // become facts in the space rather than generating errors
         let mut env = Environment::new();
 
         // Add a rule for "fibonacci"
@@ -2935,29 +3059,19 @@ mod tests {
         env.add_rule(rule);
 
         // Try to call "fibonaci" (misspelled - missing 'n')
+        // In ADD mode, this becomes a fact in the space
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("fibonaci".to_string()),
             MettaValue::Long(5),
         ]);
 
-        let (results, _) = eval(expr, env);
+        let (results, new_env) = eval(expr.clone(), env);
         assert_eq!(results.len(), 1);
 
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(
-                    msg.contains("Did you mean"),
-                    "Expected suggestion in: {}",
-                    msg
-                );
-                assert!(
-                    msg.contains("fibonacci"),
-                    "Expected 'fibonacci' in: {}",
-                    msg
-                );
-            }
-            other => panic!("Expected Error with suggestion, got {:?}", other),
-        }
+        // In ADD mode, the expression is returned as-is and added to space
+        assert_eq!(results[0], expr);
+        // Verify the expression was added to space
+        assert!(new_env.has_sexpr_fact(&expr));
     }
 
     #[test]

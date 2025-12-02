@@ -54,7 +54,7 @@ pub fn metta_to_mork_bytes(
     space: &Space,
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
-    let mut buffer = vec![0u8; 4096];
+    let mut buffer = vec![0u8; 16384];
     let expr = Expr {
         ptr: buffer.as_mut_ptr(),
     };

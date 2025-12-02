@@ -564,6 +564,8 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "quote" => return EvalStep::Done(quoting::eval_quote(items, env)),
             "if" => return EvalStep::Done(control_flow::eval_if(items, env)),
             "error" => return EvalStep::Done(errors::eval_error(items, env)),
+            // HE compatibility: (Error details msg) -> adapt to MeTTaTron's (error msg details)
+            "Error" => return EvalStep::Done(errors::eval_error_he(items, env)),
             "is-error" => return EvalStep::Done(errors::eval_if_error(items, env)),
             "catch" => return EvalStep::Done(errors::eval_catch(items, env)),
             "eval" => return EvalStep::Done(evaluation::eval_eval(items, env)),

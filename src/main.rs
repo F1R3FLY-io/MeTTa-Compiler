@@ -196,6 +196,22 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     let state = compile(input).map_err(|e| e.to_string())?;
     let mut env = state.environment;
 
+    // Set the current module path for relative includes
+    if let Some(ref input_path) = options.input {
+        if input_path != "-" {
+            let path = Path::new(input_path);
+            // Canonicalize to get absolute path, then get parent directory
+            if let Ok(canonical) = path.canonicalize() {
+                if let Some(parent) = canonical.parent() {
+                    env.set_current_module_path(Some(parent.to_path_buf()));
+                }
+            } else if let Some(parent) = path.parent() {
+                // Fallback if file doesn't exist yet (shouldn't happen, but be safe)
+                env.set_current_module_path(Some(parent.to_path_buf()));
+            }
+        }
+    }
+
     // Configure strict mode if requested
     if options.strict_mode {
         env.set_strict_mode(true);

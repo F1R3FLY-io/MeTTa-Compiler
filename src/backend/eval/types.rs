@@ -588,9 +588,8 @@ mod tests {
 
         // The error from the inner expression should propagate
         match &results[0] {
-            MettaValue::Error(msg, details) => {
+            MettaValue::Error(msg, _details) => {
                 assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }

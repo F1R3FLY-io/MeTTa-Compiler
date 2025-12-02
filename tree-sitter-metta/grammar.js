@@ -97,17 +97,22 @@ module.exports = grammar({
       $.logic_operator,
     ),
 
-    // Arrow operators: ->, <-, <=, <<- (higher precedence than single-char operators)
-    arrow_operator: $ => token(prec(2, choice(
+    // Arrow operators: ->, <-, <<- (higher precedence than comparison operators)
+    // Note: <= moved to comparison_operator for consistent handling
+    // prec(4) to ensure <- and <<- match before < is matched as comparison
+    arrow_operator: $ => token(prec(4, choice(
       '->',
       '<-',
-      '<=',
       '<<-',
     ))),
 
-    // Comparison operators: ==, >, <
-    comparison_operator: $ => token(prec(2, choice(
+    // Comparison operators: ==, !=, <=, >=, >, <
+    // Use prec(3) to ensure multi-char operators match before single-char ones
+    comparison_operator: $ => token(prec(3, choice(
       '==',
+      '!=',
+      '<=',
+      '>=',
       '>',
       '<',
     ))),

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use super::fuzzy_match::FuzzyMatcher;
-use super::grounded::GroundedRegistry;
+use super::grounded::{GroundedRegistry, GroundedRegistryTCO};
 use super::modules::{ModId, ModuleRegistry, Tokenizer};
 use super::{MettaValue, Rule};
 
@@ -123,6 +123,11 @@ pub struct Environment {
     /// Used for lazy evaluation of built-in operations (+, -, *, /, comparisons, etc.)
     /// Operations receive unevaluated arguments and evaluate internally (HE-compatible)
     grounded_registry: Arc<RwLock<GroundedRegistry>>,
+
+    /// TCO-compatible grounded operations registry: Maps op_name -> GroundedOperationTCO
+    /// Unlike GroundedOperation, TCO operations return work items instead of calling eval internally
+    /// This keeps evaluation on the trampoline work stack, enabling deep recursion without stack overflow
+    grounded_registry_tco: Arc<RwLock<GroundedRegistryTCO>>,
 }
 
 impl Environment {
@@ -150,6 +155,7 @@ impl Environment {
             current_module_path: None,
             tokenizer: Arc::new(RwLock::new(Tokenizer::new())),
             grounded_registry: Arc::new(RwLock::new(GroundedRegistry::with_standard_ops())),
+            grounded_registry_tco: Arc::new(RwLock::new(GroundedRegistryTCO::with_standard_ops())),
         }
     }
 
@@ -179,6 +185,7 @@ impl Environment {
         let module_registry_data = self.module_registry.read().unwrap().clone();
         let tokenizer_data = self.tokenizer.read().unwrap().clone();
         let grounded_registry_data = self.grounded_registry.read().unwrap().clone();
+        let grounded_registry_tco_data = self.grounded_registry_tco.read().unwrap().clone();
 
         // Now assign the new Arc<RwLock<T>> instances
         self.btm = Arc::new(RwLock::new(btm_data));
@@ -196,6 +203,7 @@ impl Environment {
         self.module_registry = Arc::new(RwLock::new(module_registry_data));
         self.tokenizer = Arc::new(RwLock::new(tokenizer_data));
         self.grounded_registry = Arc::new(RwLock::new(grounded_registry_data));
+        self.grounded_registry_tco = Arc::new(RwLock::new(grounded_registry_tco_data));
         // Note: current_module_path is not Arc-wrapped, so it's copied directly
 
         // Mark as owning data and modified
@@ -1763,6 +1771,16 @@ impl Environment {
         self.grounded_registry.read().unwrap().get(name)
     }
 
+    /// Get a TCO-compatible grounded operation by name (e.g., "+", "-", "and")
+    /// TCO operations return work items instead of calling eval internally,
+    /// enabling deep recursion without stack overflow
+    pub fn get_grounded_operation_tco(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<dyn super::grounded::GroundedOperationTCO>> {
+        self.grounded_registry_tco.read().unwrap().get(name)
+    }
+
     /// Union two environments (monotonic merge)
     /// PathMap and shared_mapping are shared via Arc, so facts (including type assertions) are automatically merged
     /// Multiplicities and rule indices are also merged via shared Arc
@@ -1792,6 +1810,7 @@ impl Environment {
         let current_module_path = self.current_module_path.clone();
         let tokenizer = self.tokenizer.clone();
         let grounded_registry = self.grounded_registry.clone();
+        let grounded_registry_tco = self.grounded_registry_tco.clone();
 
         Environment {
             shared_mapping,
@@ -1814,6 +1833,7 @@ impl Environment {
             current_module_path,
             tokenizer,
             grounded_registry,
+            grounded_registry_tco,
         }
     }
 }
@@ -1843,6 +1863,7 @@ impl Clone for Environment {
             current_module_path: self.current_module_path.clone(),
             tokenizer: Arc::clone(&self.tokenizer),
             grounded_registry: Arc::clone(&self.grounded_registry),
+            grounded_registry_tco: Arc::clone(&self.grounded_registry_tco),
         }
     }
 }

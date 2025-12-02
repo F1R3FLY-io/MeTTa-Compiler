@@ -954,6 +954,1107 @@ impl GroundedOperation for NotOp {
     }
 }
 
+// =============================================================================
+// TCO (Tail Call Optimization) Support for Grounded Operations
+// =============================================================================
+//
+// The standard `GroundedOperation` trait calls `eval_fn` internally, which
+// creates nested Rust stack frames and bypasses the trampoline. This causes
+// stack overflow for deep recursion using grounded ops like `(- $n 1)`.
+//
+// The TCO versions return `GroundedWork` enum that describes what work needs
+// to be done. The trampoline processes this work and calls the operation back
+// with results, keeping evaluation on the work stack instead of the Rust stack.
+
+/// Work returned by grounded operations for TCO.
+///
+/// Instead of calling `eval_fn` internally, operations return this enum
+/// to request argument evaluation. The trampoline processes the request
+/// and calls the operation back with results.
+#[derive(Debug, Clone)]
+pub enum GroundedWork {
+    /// Operation complete - return these results
+    Done(Vec<(MettaValue, Option<Bindings>)>),
+
+    /// Need to evaluate an argument before continuing
+    EvalArg {
+        /// Which argument index to evaluate (0-based)
+        arg_idx: usize,
+        /// Operation state to restore when resuming
+        state: GroundedState,
+    },
+
+    /// Error during execution
+    Error(ExecError),
+}
+
+/// State saved between grounded operation steps.
+///
+/// This struct is passed to `execute_step` and contains all state needed
+/// to resume the operation after argument evaluation completes.
+#[derive(Debug, Clone)]
+pub struct GroundedState {
+    /// Operation name (to look up the operation again)
+    pub op_name: String,
+    /// Original unevaluated arguments
+    pub args: Vec<MettaValue>,
+    /// Results from previously evaluated arguments: arg_idx -> Vec<MettaValue>
+    pub evaluated_args: HashMap<usize, Vec<MettaValue>>,
+    /// Current step in the operation's state machine
+    pub step: usize,
+    /// Accumulated results so far (for short-circuit ops like `and`/`or`)
+    pub accumulated_results: Vec<(MettaValue, Option<Bindings>)>,
+}
+
+impl GroundedState {
+    /// Create a new state for starting an operation
+    pub fn new(op_name: String, args: Vec<MettaValue>) -> Self {
+        GroundedState {
+            op_name,
+            args,
+            evaluated_args: HashMap::new(),
+            step: 0,
+            accumulated_results: Vec::new(),
+        }
+    }
+
+    /// Get evaluated arg results, or None if not yet evaluated
+    pub fn get_arg(&self, idx: usize) -> Option<&Vec<MettaValue>> {
+        self.evaluated_args.get(&idx)
+    }
+
+    /// Set evaluated arg results
+    pub fn set_arg(&mut self, idx: usize, results: Vec<MettaValue>) {
+        self.evaluated_args.insert(idx, results);
+    }
+}
+
+/// TCO-compatible trait for grounded operations.
+///
+/// Unlike `GroundedOperation`, this trait does NOT receive an `eval_fn`.
+/// Instead, operations return `GroundedWork::EvalArg` to request argument
+/// evaluation, and the trampoline handles it.
+///
+/// # State Machine Pattern
+///
+/// Operations are implemented as state machines:
+/// - Step 0: Validate args, request first argument evaluation
+/// - Step 1: Process first arg results, request second argument (or compute)
+/// - Step 2+: Continue until `GroundedWork::Done` or `GroundedWork::Error`
+///
+/// # Example
+///
+/// ```ignore
+/// impl GroundedOperationTCO for AddOpTCO {
+///     fn name(&self) -> &str { "+" }
+///
+///     fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+///         match state.step {
+///             0 => {
+///                 if state.args.len() != 2 {
+///                     return GroundedWork::Error(...);
+///                 }
+///                 state.step = 1;
+///                 GroundedWork::EvalArg { arg_idx: 0, state: state.clone() }
+///             }
+///             1 => {
+///                 state.step = 2;
+///                 GroundedWork::EvalArg { arg_idx: 1, state: state.clone() }
+///             }
+///             2 => {
+///                 // Compute result from evaluated args
+///                 let a = state.get_arg(0).unwrap();
+///                 let b = state.get_arg(1).unwrap();
+///                 // ... compute Cartesian product ...
+///                 GroundedWork::Done(results)
+///             }
+///             _ => unreachable!()
+///         }
+///     }
+/// }
+/// ```
+pub trait GroundedOperationTCO: Send + Sync {
+    /// The name of this operation (e.g., "+", "-", "and")
+    fn name(&self) -> &str;
+
+    /// Execute one step of the operation.
+    ///
+    /// Called initially with `state.step == 0` and empty `state.evaluated_args`.
+    /// Called again after each `EvalArg` request with the results added.
+    ///
+    /// # Arguments
+    /// * `state` - Mutable state that persists across steps
+    ///
+    /// # Returns
+    /// * `Done(results)` - Operation complete, return these values
+    /// * `EvalArg { arg_idx, state }` - Evaluate argument at index, then call again
+    /// * `Error(e)` - Operation failed with error
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork;
+}
+
+/// Registry of TCO-compatible grounded operations
+pub struct GroundedRegistryTCO {
+    operations: HashMap<String, Arc<dyn GroundedOperationTCO>>,
+}
+
+impl GroundedRegistryTCO {
+    /// Create a new empty registry
+    pub fn new() -> Self {
+        GroundedRegistryTCO {
+            operations: HashMap::new(),
+        }
+    }
+
+    /// Create a registry with standard TCO operations
+    pub fn with_standard_ops() -> Self {
+        let mut registry = Self::new();
+
+        // Arithmetic operations
+        registry.register(Arc::new(AddOpTCO));
+        registry.register(Arc::new(SubOpTCO));
+        registry.register(Arc::new(MulOpTCO));
+        registry.register(Arc::new(DivOpTCO));
+        registry.register(Arc::new(ModOpTCO));
+
+        // Comparison operations
+        registry.register(Arc::new(LessOpTCO));
+        registry.register(Arc::new(LessEqOpTCO));
+        registry.register(Arc::new(GreaterOpTCO));
+        registry.register(Arc::new(GreaterEqOpTCO));
+        registry.register(Arc::new(EqualOpTCO));
+        registry.register(Arc::new(NotEqualOpTCO));
+
+        // Logical operations
+        registry.register(Arc::new(AndOpTCO));
+        registry.register(Arc::new(OrOpTCO));
+        registry.register(Arc::new(NotOpTCO));
+
+        registry
+    }
+
+    /// Register a TCO grounded operation
+    pub fn register(&mut self, op: Arc<dyn GroundedOperationTCO>) {
+        self.operations.insert(op.name().to_string(), op);
+    }
+
+    /// Look up a TCO grounded operation by name
+    pub fn get(&self, name: &str) -> Option<Arc<dyn GroundedOperationTCO>> {
+        self.operations.get(name).cloned()
+    }
+}
+
+impl Default for GroundedRegistryTCO {
+    fn default() -> Self {
+        Self::with_standard_ops()
+    }
+}
+
+impl Clone for GroundedRegistryTCO {
+    fn clone(&self) -> Self {
+        GroundedRegistryTCO {
+            operations: self.operations.clone(),
+        }
+    }
+}
+
+// =============================================================================
+// TCO Arithmetic Operations
+// =============================================================================
+
+/// TCO Addition operation: (+ a b)
+pub struct AddOpTCO;
+
+impl GroundedOperationTCO for AddOpTCO {
+    fn name(&self) -> &str {
+        "+"
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        match state.step {
+            0 => {
+                // Step 0: Validate arity and request first argument
+                if state.args.len() != 2 {
+                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "+ requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                // Step 1: Check first arg for errors, request second argument
+                let a_results = state.get_arg(0).unwrap();
+                if let Some(err) = find_error(a_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                state.step = 2;
+                GroundedWork::EvalArg {
+                    arg_idx: 1,
+                    state: state.clone(),
+                }
+            }
+            2 => {
+                // Step 2: Compute Cartesian product of results
+                let a_results = state.get_arg(0).unwrap();
+                let b_results = state.get_arg(1).unwrap();
+
+                if let Some(err) = find_error(b_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for a in a_results {
+                    for b in b_results {
+                        match (a, b) {
+                            (MettaValue::Long(x), MettaValue::Long(y)) => {
+                                match x.checked_add(*y) {
+                                    Some(sum) => results.push((MettaValue::Long(sum), None)),
+                                    None => {
+                                        return GroundedWork::Error(ExecError::Runtime(format!(
+                                            "Integer overflow: {} + {}",
+                                            x, y
+                                        )))
+                                    }
+                                }
+                            }
+                            (MettaValue::Float(x), MettaValue::Float(y)) => {
+                                results.push((MettaValue::Float(x + y), None));
+                            }
+                            (MettaValue::Long(x), MettaValue::Float(y)) => {
+                                results.push((MettaValue::Float(*x as f64 + y), None));
+                            }
+                            (MettaValue::Float(x), MettaValue::Long(y)) => {
+                                results.push((MettaValue::Float(x + *y as f64), None));
+                            }
+                            _ => {
+                                return GroundedWork::Error(ExecError::Runtime(format!(
+                                    "Cannot perform '+': expected Number (integer), got {}",
+                                    friendly_type_name(
+                                        if !matches!(a, MettaValue::Long(_) | MettaValue::Float(_)) {
+                                            a
+                                        } else {
+                                            b
+                                        }
+                                    )
+                                )))
+                            }
+                        }
+                    }
+                }
+                GroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for AddOpTCO", state.step),
+        }
+    }
+}
+
+/// TCO Subtraction operation: (- a b)
+pub struct SubOpTCO;
+
+impl GroundedOperationTCO for SubOpTCO {
+    fn name(&self) -> &str {
+        "-"
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        match state.step {
+            0 => {
+                if state.args.len() != 2 {
+                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "- requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let a_results = state.get_arg(0).unwrap();
+                if let Some(err) = find_error(a_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                state.step = 2;
+                GroundedWork::EvalArg {
+                    arg_idx: 1,
+                    state: state.clone(),
+                }
+            }
+            2 => {
+                let a_results = state.get_arg(0).unwrap();
+                let b_results = state.get_arg(1).unwrap();
+
+                if let Some(err) = find_error(b_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for a in a_results {
+                    for b in b_results {
+                        match (a, b) {
+                            (MettaValue::Long(x), MettaValue::Long(y)) => {
+                                match x.checked_sub(*y) {
+                                    Some(diff) => results.push((MettaValue::Long(diff), None)),
+                                    None => {
+                                        return GroundedWork::Error(ExecError::Runtime(format!(
+                                            "Integer overflow: {} - {}",
+                                            x, y
+                                        )))
+                                    }
+                                }
+                            }
+                            (MettaValue::Float(x), MettaValue::Float(y)) => {
+                                results.push((MettaValue::Float(x - y), None));
+                            }
+                            (MettaValue::Long(x), MettaValue::Float(y)) => {
+                                results.push((MettaValue::Float(*x as f64 - y), None));
+                            }
+                            (MettaValue::Float(x), MettaValue::Long(y)) => {
+                                results.push((MettaValue::Float(x - *y as f64), None));
+                            }
+                            _ => {
+                                return GroundedWork::Error(ExecError::Runtime(format!(
+                                    "Cannot perform '-': expected Number (integer), got {}",
+                                    friendly_type_name(
+                                        if !matches!(a, MettaValue::Long(_) | MettaValue::Float(_)) {
+                                            a
+                                        } else {
+                                            b
+                                        }
+                                    )
+                                )))
+                            }
+                        }
+                    }
+                }
+                GroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for SubOpTCO", state.step),
+        }
+    }
+}
+
+/// TCO Multiplication operation: (* a b)
+pub struct MulOpTCO;
+
+impl GroundedOperationTCO for MulOpTCO {
+    fn name(&self) -> &str {
+        "*"
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        match state.step {
+            0 => {
+                if state.args.len() != 2 {
+                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "* requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let a_results = state.get_arg(0).unwrap();
+                if let Some(err) = find_error(a_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                state.step = 2;
+                GroundedWork::EvalArg {
+                    arg_idx: 1,
+                    state: state.clone(),
+                }
+            }
+            2 => {
+                let a_results = state.get_arg(0).unwrap();
+                let b_results = state.get_arg(1).unwrap();
+
+                if let Some(err) = find_error(b_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for a in a_results {
+                    for b in b_results {
+                        match (a, b) {
+                            (MettaValue::Long(x), MettaValue::Long(y)) => {
+                                match x.checked_mul(*y) {
+                                    Some(prod) => results.push((MettaValue::Long(prod), None)),
+                                    None => {
+                                        return GroundedWork::Error(ExecError::Runtime(format!(
+                                            "Integer overflow: {} * {}",
+                                            x, y
+                                        )))
+                                    }
+                                }
+                            }
+                            (MettaValue::Float(x), MettaValue::Float(y)) => {
+                                results.push((MettaValue::Float(x * y), None));
+                            }
+                            (MettaValue::Long(x), MettaValue::Float(y)) => {
+                                results.push((MettaValue::Float(*x as f64 * y), None));
+                            }
+                            (MettaValue::Float(x), MettaValue::Long(y)) => {
+                                results.push((MettaValue::Float(x * *y as f64), None));
+                            }
+                            _ => {
+                                return GroundedWork::Error(ExecError::Runtime(format!(
+                                    "Cannot perform '*': expected Number (integer), got {}",
+                                    friendly_type_name(
+                                        if !matches!(a, MettaValue::Long(_) | MettaValue::Float(_)) {
+                                            a
+                                        } else {
+                                            b
+                                        }
+                                    )
+                                )))
+                            }
+                        }
+                    }
+                }
+                GroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for MulOpTCO", state.step),
+        }
+    }
+}
+
+/// TCO Division operation: (/ a b)
+pub struct DivOpTCO;
+
+impl GroundedOperationTCO for DivOpTCO {
+    fn name(&self) -> &str {
+        "/"
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        match state.step {
+            0 => {
+                if state.args.len() != 2 {
+                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "/ requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let a_results = state.get_arg(0).unwrap();
+                if let Some(err) = find_error(a_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                state.step = 2;
+                GroundedWork::EvalArg {
+                    arg_idx: 1,
+                    state: state.clone(),
+                }
+            }
+            2 => {
+                let a_results = state.get_arg(0).unwrap();
+                let b_results = state.get_arg(1).unwrap();
+
+                if let Some(err) = find_error(b_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for a in a_results {
+                    for b in b_results {
+                        match (a, b) {
+                            (MettaValue::Long(x), MettaValue::Long(y)) => {
+                                if *y == 0 {
+                                    return GroundedWork::Error(ExecError::Runtime(
+                                        "Division by zero".to_string(),
+                                    ));
+                                }
+                                results.push((MettaValue::Long(x / y), None));
+                            }
+                            (MettaValue::Float(x), MettaValue::Float(y)) => {
+                                if *y == 0.0 {
+                                    return GroundedWork::Error(ExecError::Runtime(
+                                        "Division by zero".to_string(),
+                                    ));
+                                }
+                                results.push((MettaValue::Float(x / y), None));
+                            }
+                            (MettaValue::Long(x), MettaValue::Float(y)) => {
+                                if *y == 0.0 {
+                                    return GroundedWork::Error(ExecError::Runtime(
+                                        "Division by zero".to_string(),
+                                    ));
+                                }
+                                results.push((MettaValue::Float(*x as f64 / y), None));
+                            }
+                            (MettaValue::Float(x), MettaValue::Long(y)) => {
+                                if *y == 0 {
+                                    return GroundedWork::Error(ExecError::Runtime(
+                                        "Division by zero".to_string(),
+                                    ));
+                                }
+                                results.push((MettaValue::Float(x / *y as f64), None));
+                            }
+                            _ => {
+                                return GroundedWork::Error(ExecError::Runtime(format!(
+                                    "Cannot perform '/': expected Number (integer), got {}",
+                                    friendly_type_name(
+                                        if !matches!(a, MettaValue::Long(_) | MettaValue::Float(_)) {
+                                            a
+                                        } else {
+                                            b
+                                        }
+                                    )
+                                )))
+                            }
+                        }
+                    }
+                }
+                GroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for DivOpTCO", state.step),
+        }
+    }
+}
+
+/// TCO Modulo operation: (% a b)
+pub struct ModOpTCO;
+
+impl GroundedOperationTCO for ModOpTCO {
+    fn name(&self) -> &str {
+        "%"
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        match state.step {
+            0 => {
+                if state.args.len() != 2 {
+                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "% requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let a_results = state.get_arg(0).unwrap();
+                if let Some(err) = find_error(a_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+                state.step = 2;
+                GroundedWork::EvalArg {
+                    arg_idx: 1,
+                    state: state.clone(),
+                }
+            }
+            2 => {
+                let a_results = state.get_arg(0).unwrap();
+                let b_results = state.get_arg(1).unwrap();
+
+                if let Some(err) = find_error(b_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for a in a_results {
+                    for b in b_results {
+                        match (a, b) {
+                            (MettaValue::Long(x), MettaValue::Long(y)) => {
+                                if *y == 0 {
+                                    return GroundedWork::Error(ExecError::Runtime(
+                                        "Modulo by zero".to_string(),
+                                    ));
+                                }
+                                results.push((MettaValue::Long(x % y), None));
+                            }
+                            _ => {
+                                return GroundedWork::Error(ExecError::Runtime(format!(
+                                    "Cannot perform '%': expected Number (integer), got {}",
+                                    friendly_type_name(if !matches!(a, MettaValue::Long(_)) {
+                                        a
+                                    } else {
+                                        b
+                                    })
+                                )))
+                            }
+                        }
+                    }
+                }
+                GroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for ModOpTCO", state.step),
+        }
+    }
+}
+
+// =============================================================================
+// TCO Comparison Operations
+// =============================================================================
+
+/// TCO Less than operation: (< a b)
+pub struct LessOpTCO;
+
+impl GroundedOperationTCO for LessOpTCO {
+    fn name(&self) -> &str {
+        "<"
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        eval_comparison_tco(state, CompareKind::Less)
+    }
+}
+
+/// TCO Less than or equal operation: (<= a b)
+pub struct LessEqOpTCO;
+
+impl GroundedOperationTCO for LessEqOpTCO {
+    fn name(&self) -> &str {
+        "<="
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        eval_comparison_tco(state, CompareKind::LessEq)
+    }
+}
+
+/// TCO Greater than operation: (> a b)
+pub struct GreaterOpTCO;
+
+impl GroundedOperationTCO for GreaterOpTCO {
+    fn name(&self) -> &str {
+        ">"
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        eval_comparison_tco(state, CompareKind::Greater)
+    }
+}
+
+/// TCO Greater than or equal operation: (>= a b)
+pub struct GreaterEqOpTCO;
+
+impl GroundedOperationTCO for GreaterEqOpTCO {
+    fn name(&self) -> &str {
+        ">="
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        eval_comparison_tco(state, CompareKind::GreaterEq)
+    }
+}
+
+/// TCO Equality operation: (== a b)
+pub struct EqualOpTCO;
+
+impl GroundedOperationTCO for EqualOpTCO {
+    fn name(&self) -> &str {
+        "=="
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        eval_equality_tco(state, true)
+    }
+}
+
+/// TCO Inequality operation: (!= a b)
+pub struct NotEqualOpTCO;
+
+impl GroundedOperationTCO for NotEqualOpTCO {
+    fn name(&self) -> &str {
+        "!="
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        eval_equality_tco(state, false)
+    }
+}
+
+/// Helper function for TCO comparison operations
+fn eval_comparison_tco(state: &mut GroundedState, kind: CompareKind) -> GroundedWork {
+    match state.step {
+        0 => {
+            if state.args.len() != 2 {
+                return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                    "Comparison requires 2 arguments, got {}",
+                    state.args.len()
+                )));
+            }
+            state.step = 1;
+            GroundedWork::EvalArg {
+                arg_idx: 0,
+                state: state.clone(),
+            }
+        }
+        1 => {
+            let a_results = state.get_arg(0).unwrap();
+            if let Some(err) = find_error(a_results) {
+                return GroundedWork::Done(vec![(err.clone(), None)]);
+            }
+            state.step = 2;
+            GroundedWork::EvalArg {
+                arg_idx: 1,
+                state: state.clone(),
+            }
+        }
+        2 => {
+            let a_results = state.get_arg(0).unwrap();
+            let b_results = state.get_arg(1).unwrap();
+
+            if let Some(err) = find_error(b_results) {
+                return GroundedWork::Done(vec![(err.clone(), None)]);
+            }
+
+            let mut results = Vec::new();
+            for a in a_results {
+                for b in b_results {
+                    match (a, b) {
+                        (MettaValue::Long(x), MettaValue::Long(y)) => {
+                            results.push((MettaValue::Bool(kind.compare(x, y)), None));
+                        }
+                        (MettaValue::Float(x), MettaValue::Float(y)) => {
+                            results.push((MettaValue::Bool(kind.compare(x, y)), None));
+                        }
+                        (MettaValue::Long(x), MettaValue::Float(y)) => {
+                            results.push((MettaValue::Bool(kind.compare(&(*x as f64), y)), None));
+                        }
+                        (MettaValue::Float(x), MettaValue::Long(y)) => {
+                            results.push((MettaValue::Bool(kind.compare(x, &(*y as f64))), None));
+                        }
+                        (MettaValue::String(x), MettaValue::String(y)) => {
+                            results.push((MettaValue::Bool(kind.compare(x, y)), None));
+                        }
+                        _ => {
+                            return GroundedWork::Error(ExecError::Runtime(format!(
+                                "Cannot compare: type mismatch between {} and {}",
+                                friendly_type_name(a),
+                                friendly_type_name(b)
+                            )))
+                        }
+                    }
+                }
+            }
+            GroundedWork::Done(results)
+        }
+        _ => unreachable!("Invalid step {} for comparison", state.step),
+    }
+}
+
+/// Helper function for TCO equality/inequality operations
+fn eval_equality_tco(state: &mut GroundedState, is_equal: bool) -> GroundedWork {
+    match state.step {
+        0 => {
+            if state.args.len() != 2 {
+                return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                    "Equality comparison requires 2 arguments, got {}",
+                    state.args.len()
+                )));
+            }
+            state.step = 1;
+            GroundedWork::EvalArg {
+                arg_idx: 0,
+                state: state.clone(),
+            }
+        }
+        1 => {
+            let a_results = state.get_arg(0).unwrap();
+            if let Some(err) = find_error(a_results) {
+                return GroundedWork::Done(vec![(err.clone(), None)]);
+            }
+            state.step = 2;
+            GroundedWork::EvalArg {
+                arg_idx: 1,
+                state: state.clone(),
+            }
+        }
+        2 => {
+            let a_results = state.get_arg(0).unwrap();
+            let b_results = state.get_arg(1).unwrap();
+
+            if let Some(err) = find_error(b_results) {
+                return GroundedWork::Done(vec![(err.clone(), None)]);
+            }
+
+            let mut results = Vec::new();
+            for a in a_results {
+                for b in b_results {
+                    let equal = values_equal(a, b);
+                    let result = if is_equal { equal } else { !equal };
+                    results.push((MettaValue::Bool(result), None));
+                }
+            }
+            GroundedWork::Done(results)
+        }
+        _ => unreachable!("Invalid step {} for equality", state.step),
+    }
+}
+
+// =============================================================================
+// TCO Logical Operations (with short-circuit support)
+// =============================================================================
+
+/// TCO Logical AND operation: (and a b)
+/// Preserves short-circuit semantics: False AND _ = False without evaluating second arg
+pub struct AndOpTCO;
+
+impl GroundedOperationTCO for AndOpTCO {
+    fn name(&self) -> &str {
+        "and"
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        match state.step {
+            0 => {
+                // Step 0: Validate arity and request first argument
+                if state.args.len() != 2 {
+                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "and requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                // Step 1: Check first arg - short-circuit if all False
+                // Clone the results to avoid borrow conflict with accumulated_results
+                let a_results: Vec<_> = state.get_arg(0).unwrap().iter().cloned().collect();
+                if let Some(err) = find_error(&a_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut need_second_arg = false;
+                for a in &a_results {
+                    match a {
+                        MettaValue::Bool(false) => {
+                            // SHORT-CIRCUIT: False and _ = False
+                            state.accumulated_results.push((MettaValue::Bool(false), None));
+                        }
+                        MettaValue::Bool(true) => {
+                            // Need to evaluate second argument for this branch
+                            need_second_arg = true;
+                        }
+                        _ => {
+                            return GroundedWork::Error(ExecError::Runtime(format!(
+                                "Cannot perform 'and': expected Bool, got {}",
+                                friendly_type_name(a)
+                            )));
+                        }
+                    }
+                }
+
+                if need_second_arg {
+                    // At least one True - need to evaluate second arg
+                    state.step = 2;
+                    GroundedWork::EvalArg {
+                        arg_idx: 1,
+                        state: state.clone(),
+                    }
+                } else {
+                    // All results were False (short-circuited)
+                    GroundedWork::Done(state.accumulated_results.clone())
+                }
+            }
+            2 => {
+                // Step 2: Second arg evaluated for True branches
+                // Clone both to avoid borrow conflict with accumulated_results
+                let a_results: Vec<_> = state.get_arg(0).unwrap().iter().cloned().collect();
+                let b_results: Vec<_> = state.get_arg(1).unwrap().iter().cloned().collect();
+
+                if let Some(err) = find_error(&b_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                // For each True in first arg, add second arg's results
+                for a in &a_results {
+                    if matches!(a, MettaValue::Bool(true)) {
+                        for b in &b_results {
+                            match b {
+                                MettaValue::Bool(val) => {
+                                    state.accumulated_results.push((MettaValue::Bool(*val), None));
+                                }
+                                _ => {
+                                    return GroundedWork::Error(ExecError::Runtime(format!(
+                                        "Cannot perform 'and': expected Bool, got {}",
+                                        friendly_type_name(b)
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                GroundedWork::Done(state.accumulated_results.clone())
+            }
+            _ => unreachable!("Invalid step {} for AndOpTCO", state.step),
+        }
+    }
+}
+
+/// TCO Logical OR operation: (or a b)
+/// Preserves short-circuit semantics: True OR _ = True without evaluating second arg
+pub struct OrOpTCO;
+
+impl GroundedOperationTCO for OrOpTCO {
+    fn name(&self) -> &str {
+        "or"
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        match state.step {
+            0 => {
+                if state.args.len() != 2 {
+                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "or requires 2 arguments, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                // Clone to avoid borrow conflict with accumulated_results
+                let a_results: Vec<_> = state.get_arg(0).unwrap().iter().cloned().collect();
+                if let Some(err) = find_error(&a_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut need_second_arg = false;
+                for a in &a_results {
+                    match a {
+                        MettaValue::Bool(true) => {
+                            // SHORT-CIRCUIT: True or _ = True
+                            state.accumulated_results.push((MettaValue::Bool(true), None));
+                        }
+                        MettaValue::Bool(false) => {
+                            // Need to evaluate second argument for this branch
+                            need_second_arg = true;
+                        }
+                        _ => {
+                            return GroundedWork::Error(ExecError::Runtime(format!(
+                                "Cannot perform 'or': expected Bool, got {}",
+                                friendly_type_name(a)
+                            )));
+                        }
+                    }
+                }
+
+                if need_second_arg {
+                    state.step = 2;
+                    GroundedWork::EvalArg {
+                        arg_idx: 1,
+                        state: state.clone(),
+                    }
+                } else {
+                    // All results were True (short-circuited)
+                    GroundedWork::Done(state.accumulated_results.clone())
+                }
+            }
+            2 => {
+                // Clone both to avoid borrow conflict with accumulated_results
+                let a_results: Vec<_> = state.get_arg(0).unwrap().iter().cloned().collect();
+                let b_results: Vec<_> = state.get_arg(1).unwrap().iter().cloned().collect();
+
+                if let Some(err) = find_error(&b_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                // For each False in first arg, add second arg's results
+                for a in &a_results {
+                    if matches!(a, MettaValue::Bool(false)) {
+                        for b in &b_results {
+                            match b {
+                                MettaValue::Bool(val) => {
+                                    state.accumulated_results.push((MettaValue::Bool(*val), None));
+                                }
+                                _ => {
+                                    return GroundedWork::Error(ExecError::Runtime(format!(
+                                        "Cannot perform 'or': expected Bool, got {}",
+                                        friendly_type_name(b)
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                GroundedWork::Done(state.accumulated_results.clone())
+            }
+            _ => unreachable!("Invalid step {} for OrOpTCO", state.step),
+        }
+    }
+}
+
+/// TCO Logical NOT operation: (not a)
+pub struct NotOpTCO;
+
+impl GroundedOperationTCO for NotOpTCO {
+    fn name(&self) -> &str {
+        "not"
+    }
+
+    fn execute_step(&self, state: &mut GroundedState) -> GroundedWork {
+        match state.step {
+            0 => {
+                if state.args.len() != 1 {
+                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                        "not requires 1 argument, got {}",
+                        state.args.len()
+                    )));
+                }
+                state.step = 1;
+                GroundedWork::EvalArg {
+                    arg_idx: 0,
+                    state: state.clone(),
+                }
+            }
+            1 => {
+                let a_results = state.get_arg(0).unwrap();
+                if let Some(err) = find_error(a_results) {
+                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                }
+
+                let mut results = Vec::new();
+                for a in a_results {
+                    match a {
+                        MettaValue::Bool(v) => {
+                            results.push((MettaValue::Bool(!v), None));
+                        }
+                        _ => {
+                            return GroundedWork::Error(ExecError::Runtime(format!(
+                                "Cannot perform 'not': expected Bool, got {}",
+                                friendly_type_name(a)
+                            )));
+                        }
+                    }
+                }
+                GroundedWork::Done(results)
+            }
+            _ => unreachable!("Invalid step {} for NotOpTCO", state.step),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

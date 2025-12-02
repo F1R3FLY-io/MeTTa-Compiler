@@ -294,18 +294,19 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
             let (body_results, _) = eval(instantiated_body, value_env.clone());
             all_results.extend(body_results);
         } else {
-            // Pattern match failed - provide helpful suggestion
-            let suggestion = pattern_mismatch_suggestion(pattern, &value);
-            let err = MettaValue::Error(
-                format!(
-                    "let pattern {} does not match value {}. {}",
+            // Pattern match failure - return Empty (HE-compatible)
+            // In strict mode, print a warning with helpful diagnostics to stderr
+            if value_env.is_strict_mode() {
+                let suggestion = pattern_mismatch_suggestion(pattern, &value);
+                eprintln!(
+                    "Warning: let pattern {} does not match value {}. {}",
                     super::friendly_value_repr(pattern),
                     super::friendly_value_repr(&value),
                     suggestion
-                ),
-                Arc::new(MettaValue::SExpr(args.to_vec())),
-            );
-            all_results.push(err);
+                );
+            }
+            // Return Empty (no results) - allows nondeterministic alternatives to be tried
+            // In HE, let is defined as: (= (let $pattern $atom $template) (unify $atom $pattern $template Empty))
         }
     }
 
@@ -447,7 +448,7 @@ mod tests {
     fn test_let_pattern_mismatch() {
         let env = Environment::new();
 
-        // (let (foo $x) (bar 42) $x) - pattern mismatch should error
+        // (let (foo $x) (bar 42) $x) - pattern mismatch returns Empty (HE-compatible)
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("let".to_string()),
             MettaValue::SExpr(vec![
@@ -462,13 +463,8 @@ mod tests {
         ]);
 
         let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(msg.contains("does not match"));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
+        // HE-compatible: pattern mismatch returns Empty (no results)
+        assert_eq!(results.len(), 0);
     }
 
     #[test]
@@ -559,7 +555,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Long(10)); // 5 * 2
 
-        // Test inconsistent variables should fail
+        // Test inconsistent variables - returns Empty (HE-compatible)
         // (let (same $x $x) (same 5 7) (* $x 2))
         let inconsistent_vars = MettaValue::SExpr(vec![
             MettaValue::Atom("let".to_string()),
@@ -571,7 +567,7 @@ mod tests {
             MettaValue::SExpr(vec![
                 MettaValue::Atom("same".to_string()),
                 MettaValue::Long(5),
-                MettaValue::Long(7), // Different value - should fail
+                MettaValue::Long(7), // Different value - pattern doesn't match
             ]),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("*".to_string()),
@@ -581,13 +577,8 @@ mod tests {
         ]);
 
         let (results, _) = eval(inconsistent_vars, env);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(msg.contains("does not match"));
-            }
-            _ => panic!("Expected pattern match error"),
-        }
+        // HE-compatible: pattern mismatch returns Empty (no results)
+        assert_eq!(results.len(), 0);
     }
 
     #[test]
@@ -751,13 +742,15 @@ mod tests {
         }
     }
 
-    // === Tests for "Did You Mean" pattern mismatch suggestions ===
+    // === Tests for pattern mismatch scenarios (HE-compatible Empty semantics) ===
+    // Note: In strict mode, these would log warnings. Here we just verify Empty is returned.
 
     #[test]
     fn test_pattern_mismatch_arity_hint() {
         let env = Environment::new();
 
-        // (let ($a $b) (tuple 1 2 3) ...) - pattern has 2 elements, value has 3
+        // (let ($a $b) (tuple 1 2 3) ...) - pattern has 2 elements, value has 4
+        // Pattern mismatch returns Empty (HE-compatible)
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("let".to_string()),
             MettaValue::SExpr(vec![
@@ -774,18 +767,7 @@ mod tests {
         ]);
 
         let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
-                assert!(
-                    msg.contains("2 element"),
-                    "Expected arity mismatch hint in: {}",
-                    msg
-                );
-            }
-            _ => panic!("Expected error with pattern mismatch hint"),
-        }
+        assert_eq!(results.len(), 0); // HE-compatible: Empty on pattern mismatch
     }
 
     #[test]
@@ -793,6 +775,7 @@ mod tests {
         let env = Environment::new();
 
         // (let (foo $x) (bar 42) $x) - head atoms don't match
+        // Pattern mismatch returns Empty (HE-compatible)
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("let".to_string()),
             MettaValue::SExpr(vec![
@@ -807,18 +790,7 @@ mod tests {
         ]);
 
         let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
-                assert!(
-                    msg.contains("foo") && msg.contains("bar"),
-                    "Expected head mismatch hint in: {}",
-                    msg
-                );
-            }
-            _ => panic!("Expected error with pattern mismatch hint"),
-        }
+        assert_eq!(results.len(), 0); // HE-compatible: Empty on pattern mismatch
     }
 
     #[test]
@@ -826,6 +798,7 @@ mod tests {
         let env = Environment::new();
 
         // (let (pair 42 $x) (pair 99 hello) $x) - literal 42 doesn't match 99
+        // Pattern mismatch returns Empty (HE-compatible)
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("let".to_string()),
             MettaValue::SExpr(vec![
@@ -842,19 +815,7 @@ mod tests {
         ]);
 
         let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
-                // Should mention the position and values that don't match
-                assert!(
-                    msg.contains("position") || msg.contains("doesn't match"),
-                    "Expected position mismatch hint in: {}",
-                    msg
-                );
-            }
-            _ => panic!("Expected error with pattern mismatch hint"),
-        }
+        assert_eq!(results.len(), 0); // HE-compatible: Empty on pattern mismatch
     }
 
     #[test]
@@ -890,7 +851,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Long(300)); // 100 + 200
 
-        // Test failure case where literal doesn't match
+        // Test failure case where literal doesn't match - returns Empty (HE-compatible)
         // (let (mixed 42 $x "literal" $y) (mixed 43 100 "literal" 200) (+ $x $y))
         let mixed_fail = MettaValue::SExpr(vec![
             MettaValue::Atom("let".to_string()),
@@ -903,7 +864,7 @@ mod tests {
             ]),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("mixed".to_string()),
-                MettaValue::Long(43), // Different literal - should fail
+                MettaValue::Long(43), // Different literal - pattern doesn't match
                 MettaValue::Long(100),
                 MettaValue::String("literal".to_string()),
                 MettaValue::Long(200),
@@ -916,13 +877,8 @@ mod tests {
         ]);
 
         let (results, _) = eval(mixed_fail, env);
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(msg.contains("does not match"));
-            }
-            _ => panic!("Expected pattern match error"),
-        }
+        // HE-compatible: pattern mismatch returns Empty (no results)
+        assert_eq!(results.len(), 0);
     }
 
     #[test]

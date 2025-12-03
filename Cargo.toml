@@ -58,6 +58,10 @@ harness = false
 name = "mork_evaluation"
 harness = false
 
+[[bench]]
+name = "simd_micro"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }

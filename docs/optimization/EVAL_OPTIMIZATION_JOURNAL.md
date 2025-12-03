@@ -663,31 +663,59 @@ The cartesian product regression is expected and will be addressed in Phase 3 (C
 
 **Recommendation**: This optimization is approved for merge. Consider implementing Phase 3 to address the cartesian product regression.
 
-### Phase 3 Follow-up Analysis
+### Phase 3 Implementation Results
 
 **Date**: 2025-12-03
-**Purpose**: Verify whether Phase 3 (CartesianProductIter with Arc) is necessary
+**Branch**: `opt/arc-mettavalue-full`
+**Commit**: 5b37143
 
-Follow-up benchmarking shows the cartesian_product regression from the initial run is **within noise threshold**:
+Phase 3 implemented three optimizations:
+1. **Phase 3.1**: CartesianProductIter with `Vec<Arc<Vec<MettaValue>>>` for O(1) source data sharing
+2. **Phase 3.2**: GroundedState with `Arc<Vec<MettaValue>>` for O(1) args cloning
+3. **Phase 3.3**: Continuation storage with `VecDeque<(Arc<MettaValue>, Bindings)>` for O(1) RHS sharing
 
-| Benchmark | Initial Change | Follow-up Change | Notes |
-|-----------|----------------|------------------|-------|
-| cartesian_product/binary_depth/2 | - | +0.74% | Within noise |
-| cartesian_product/binary_depth/3 | - | -0.11% | No change detected |
-| cartesian_product/binary_depth/4 | - | +1.47% | Within noise |
-| cartesian_product/binary_depth/5 | - | +1.19% | Within noise |
-| cartesian_product/quinary_3vars_125combos | +3.4% | - | Initial variance |
-| full_programs/cartesian_product_stress | - | -0.36% | Within noise |
+**Benchmark Results**:
 
-**Conclusion**: The initial +3.4% regression on `quinary_3vars_125combos` was measurement variance. Follow-up benchmarks show cartesian product performance is stable. **Phase 3 optimizations are deemed unnecessary**.
+| Benchmark | Change | p-value | Significance |
+|-----------|--------|---------|--------------|
+| grounded_tco/lazy_chain/2 | **-15.7%** | < 0.05 | **Improved** |
+| grounded_tco/lazy_chain/4 | **-19.3%** | < 0.05 | **Improved** |
+| grounded_tco/lazy_chain/8 | **-21.3%** | < 0.05 | **Improved** |
+| grounded_tco/lazy_chain/16 | **-19.5%** | < 0.05 | **Improved** |
+| grounded_tco/lazy_chain/32 | **-18.5%** | < 0.05 | **Improved** |
+| grounded_tco/comparison_chain/2 | **-6.6%** | < 0.05 | **Improved** |
+| grounded_tco/comparison_chain/4 | **-12.7%** | < 0.05 | **Improved** |
+| grounded_tco/comparison_chain/8 | **-18.0%** | < 0.05 | **Improved** |
+| grounded_tco/arithmetic_chain/2 | **-3.8%** | < 0.05 | **Improved** |
+| grounded_tco/arithmetic_chain/4 | **-11.4%** | < 0.05 | **Improved** |
+| grounded_tco/arithmetic_chain/8 | **-18.2%** | < 0.05 | **Improved** |
+| rule_matching_nondet/rules_same_head/2 | **-3.8%** | < 0.05 | **Improved** |
+| pattern_matching/variable_extraction | **-2.9%** | < 0.05 | Improved |
+| pattern_matching/nested_structures | **-2.2%** | < 0.05 | Improved |
+| tco_recursion/countdown_depth/500 | **-3.0%** | < 0.05 | Improved |
+| tco_recursion/countdown_depth/900 | **-3.3%** | < 0.05 | **Improved** |
+| continuation_overhead/nested_lets/4 | +3.9% | < 0.05 | Regression |
+| full_programs/tco_deep_recursion | +3.7% | < 0.05 | Regression |
 
-**Rationale for not implementing Phase 3**:
-1. All cartesian product benchmarks now within noise threshold
-2. The initial regression was not reproducible
-3. Wrapping `Vec<Vec<MettaValue>>` in `Arc` would only help if the outer vectors were cloned (they're not)
-4. The actual clone cost in CartesianProductIter is element-level (`list[idx].clone()`), not container-level
+**Key Findings**:
 
-**Status**: Phase 3.1-3.3 (CartesianProductIter, GroundedState, Continuation storage with Arc) marked as **NOT NEEDED**.
+1. **Massive improvements in grounded_tco**: Up to **21.3% faster** on lazy chains, 18% on comparisons
+2. **Consistent improvement pattern**: Larger chain sizes benefit more from Arc sharing
+3. **Rule matching improved**: -3.8% on rule_matching_nondet/rules_same_head/2
+4. **Minor regressions**: continuation_overhead/nested_lets/4 (+3.9%) and tco_deep_recursion (+3.7%)
+
+**Root Cause Analysis**:
+
+The dramatic improvements in grounded_tco benchmarks are explained by:
+1. **GroundedState.args now Arc-wrapped**: Each grounded operation no longer clones the entire args vector
+2. **try_match_all_rules uses Arc::clone for RHS**: Rule matching returns `Arc<MettaValue>` instead of deep cloning
+3. **Continuation storage uses Arc**: ProcessRuleMatches stores `Arc<MettaValue>` avoiding clones during continuation creation
+
+The minor regressions in continuation_overhead are likely due to:
+1. Arc overhead for small values (atomic reference counting has non-zero cost)
+2. Increased indirection for simple let bindings
+
+**Status**: Phase 3 **COMPLETE**. All 839 tests pass.
 
 ---
 
@@ -701,6 +729,7 @@ Follow-up benchmarking shows the cartesian_product regression from the initial r
 | 4. Arc<MettaValue> | 20-40% clone reduction | 20-40% | - | - | ABANDONED |
 | 5. Extended TCO | 2x depth | - | - | - | Pending |
 | 6. Arc + Cow apply_bindings | 5-10% clone reduction | 5-10% | **-5.2%** (best) | < 0.05 | **ACCEPT** |
+| 6.Phase3. Arc for Iterator/State/Cont | 10-20% grounded ops | 10-20% | **-21.3%** (best) | < 0.05 | **ACCEPT** |
 
 ## Lessons Learned
 
@@ -719,6 +748,17 @@ Follow-up benchmarking shows the cartesian_product regression from the initial r
 4. **Environment is already optimized**: Environment uses Arc for rules, bindings, etc. - the bottleneck is MettaValue cloning during substitution
 5. **Future work**: Consider persistent data structures with structural sharing for true clone elimination
 
+### From Experiment 6 Phase 3 (Arc for Iterator/State/Continuation)
+
+1. **Arc overhead is negligible for complex values**: The atomic reference counting cost is dominated by deep clone savings
+2. **Grounded operations benefit most**: GroundedState.args was cloned frequently; Arc wrapping yields 15-21% improvement
+3. **Rule RHS sharing is critical**: Using `rule.rhs_arc()` instead of deep cloning RHS yields significant gains
+4. **Minor trade-offs acceptable**: Small regressions in continuation_overhead (+3.9%) are acceptable given 21% improvement elsewhere
+5. **Pattern**: Larger data structures benefit more from Arc (higher clone costs avoided)
+
 ## Future Work
 
-(to be filled after experiments)
+1. **Extended TCO Recognition** (Experiment 5): Implement tail call detection in `if`/`let`/`case` branches
+2. **Continuation Pool**: May still benefit from pre-allocated continuation slots
+3. **VecDeque Elimination**: Index-based iteration for CollectSExpr continuation
+4. **Environment Clone Reduction**: Apply similar Arc wrapping to Environment internals

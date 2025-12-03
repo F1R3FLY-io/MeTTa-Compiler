@@ -28,6 +28,8 @@ mod utilities;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use smallvec::SmallVec;
+
 use crate::backend::environment::Environment;
 use crate::backend::grounded::{ExecError, GroundedState, GroundedWork};
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
@@ -129,14 +131,21 @@ const MAX_EVAL_DEPTH: usize = 1000;
 // Generates Cartesian products on-demand using an index-based "multi-digit counter"
 // pattern. Memory usage is O(n) for indices regardless of product size.
 
+/// SmallVec type for Cartesian product combinations.
+/// Stack-allocated for arity <= 8 (common case), heap-allocated otherwise.
+/// This reduces allocation overhead for typical MeTTa expressions.
+pub type Combination = SmallVec<[MettaValue; 8]>;
+
 /// Lazy Cartesian product iterator using multi-digit counter approach.
 /// Memory: O(n) for indices regardless of total product size.
+/// Uses SmallVec for combinations to avoid heap allocation for small expressions.
 #[derive(Debug)]
 pub struct CartesianProductIter {
     /// Owned result lists from sub-expression evaluation
     results: Vec<Vec<MettaValue>>,
     /// Current indices into each result list (the "counter")
-    indices: Vec<usize>,
+    /// SmallVec<[usize; 8]> for stack allocation with typical arity
+    indices: SmallVec<[usize; 8]>,
     /// Whether the iterator is exhausted
     exhausted: bool,
 }
@@ -150,8 +159,11 @@ impl CartesianProductIter {
             return None;
         }
 
+        // Use SmallVec for indices - stack allocated for arity <= 8
+        let indices = smallvec::smallvec![0; results.len()];
+
         Some(CartesianProductIter {
-            indices: vec![0; results.len()],
+            indices,
             results,
             exhausted: false,
         })
@@ -173,20 +185,19 @@ impl CartesianProductIter {
 }
 
 impl Iterator for CartesianProductIter {
-    type Item = Vec<MettaValue>;
+    type Item = Combination;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.exhausted || self.results.is_empty() {
             return None;
         }
 
-        // Build current combination from indices
-        let combo: Vec<MettaValue> = self
-            .indices
-            .iter()
-            .zip(self.results.iter())
-            .map(|(&idx, list)| list[idx].clone())
-            .collect();
+        // Build current combination from indices using SmallVec
+        // Stack-allocated for arity <= 8, avoiding heap allocation for common cases
+        let mut combo = SmallVec::with_capacity(self.indices.len());
+        for (&idx, list) in self.indices.iter().zip(self.results.iter()) {
+            combo.push(list[idx].clone());
+        }
 
         self.advance_indices();
         Some(combo)
@@ -198,7 +209,8 @@ impl Iterator for CartesianProductIter {
 pub enum CartesianProductResult {
     /// Fast path: exactly one combination (deterministic evaluation)
     /// This is the common case for arithmetic and most builtin operations
-    Single(Vec<MettaValue>),
+    /// Uses Combination (SmallVec) for stack allocation
+    Single(Combination),
     /// Lazy iterator over multiple combinations
     Lazy(CartesianProductIter),
     /// No combinations (empty input or empty result list)
@@ -209,15 +221,16 @@ pub enum CartesianProductResult {
 /// Preserves fast path for deterministic evaluation (all single-element results).
 fn cartesian_product_lazy(results: Vec<Vec<MettaValue>>) -> CartesianProductResult {
     if results.is_empty() {
-        // Empty input produces single empty combination
-        return CartesianProductResult::Single(vec![]);
+        // Empty input produces single empty combination (stack-allocated)
+        return CartesianProductResult::Single(SmallVec::new());
     }
 
     // FAST PATH: If all result lists have exactly 1 item (deterministic evaluation),
     // we can just concatenate them directly in O(n) instead of using the iterator
     // This is the common case for arithmetic and most builtin operations
     if results.iter().all(|r| r.len() == 1) {
-        let single_combo: Vec<MettaValue> = results.into_iter().map(|mut r| r.pop().unwrap()).collect();
+        // Use SmallVec for stack allocation with typical arity
+        let single_combo: Combination = results.into_iter().map(|mut r| r.pop().unwrap()).collect();
         return CartesianProductResult::Single(single_combo);
     }
 
@@ -827,7 +840,9 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     }
 
                                     // Try to match against rules
-                                    let sexpr = MettaValue::SExpr(evaled_items.clone());
+                                    // Convert SmallVec to Vec for SExpr construction
+                                    let evaled_vec: Vec<MettaValue> = evaled_items.into_vec();
+                                    let sexpr = MettaValue::SExpr(evaled_vec.clone());
                                     let all_matches = try_match_all_rules(&sexpr, &env);
 
                                     if !all_matches.is_empty() {
@@ -857,7 +872,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     } else {
                                         // No rule matched - handle ADD mode
                                         let result_value =
-                                            handle_no_rule_match(evaled_items, &sexpr, &mut env);
+                                            handle_no_rule_match(evaled_vec, &sexpr, &mut env);
                                         results.push(result_value);
 
                                         // Continue to next combination
@@ -1203,7 +1218,8 @@ fn process_collected_sexpr(
         CartesianProductResult::Single(evaled_items) => {
             // FAST PATH: Single combination (deterministic evaluation)
             // Process it directly without creating continuation
-            process_single_combination(evaled_items, unified_env, depth)
+            // Convert SmallVec to Vec for downstream functions
+            process_single_combination(evaled_items.into_vec(), unified_env, depth)
         }
         CartesianProductResult::Lazy(combinations) => {
             // LAZY PATH: Multiple combinations - process via continuation
@@ -3491,13 +3507,13 @@ mod tests {
         ];
         let iter = CartesianProductIter::new(results).expect("Should create iterator");
 
-        let combos: Vec<Vec<MettaValue>> = iter.collect();
+        let combos: Vec<Combination> = iter.collect();
 
         assert_eq!(combos.len(), 4);
-        assert_eq!(combos[0], vec![MettaValue::Long(1), MettaValue::Long(10)]);
-        assert_eq!(combos[1], vec![MettaValue::Long(1), MettaValue::Long(20)]);
-        assert_eq!(combos[2], vec![MettaValue::Long(2), MettaValue::Long(10)]);
-        assert_eq!(combos[3], vec![MettaValue::Long(2), MettaValue::Long(20)]);
+        assert_eq!(combos[0].as_slice(), &[MettaValue::Long(1), MettaValue::Long(10)]);
+        assert_eq!(combos[1].as_slice(), &[MettaValue::Long(1), MettaValue::Long(20)]);
+        assert_eq!(combos[2].as_slice(), &[MettaValue::Long(2), MettaValue::Long(10)]);
+        assert_eq!(combos[3].as_slice(), &[MettaValue::Long(2), MettaValue::Long(20)]);
     }
 
     #[test]
@@ -3510,12 +3526,12 @@ mod tests {
         ];
         let iter = CartesianProductIter::new(results).expect("Should create iterator");
 
-        let combos: Vec<Vec<MettaValue>> = iter.collect();
+        let combos: Vec<Combination> = iter.collect();
 
         assert_eq!(combos.len(), 1);
         assert_eq!(
-            combos[0],
-            vec![MettaValue::Long(1), MettaValue::Long(2), MettaValue::Long(3)]
+            combos[0].as_slice(),
+            &[MettaValue::Long(1), MettaValue::Long(2), MettaValue::Long(3)]
         );
     }
 
@@ -3528,7 +3544,7 @@ mod tests {
 
         // Iterator is created (Some) but produces no items because results.is_empty() check in next()
         assert!(iter.is_some());
-        let combos: Vec<Vec<MettaValue>> = iter.unwrap().collect();
+        let combos: Vec<Combination> = iter.unwrap().collect();
         assert!(combos.is_empty());
     }
 
@@ -3559,18 +3575,18 @@ mod tests {
         ];
         let iter = CartesianProductIter::new(results).expect("Should create iterator");
 
-        let combos: Vec<Vec<MettaValue>> = iter.collect();
+        let combos: Vec<Combination> = iter.collect();
 
         assert_eq!(combos.len(), 27);
 
         // Verify first and last combinations
         assert_eq!(
-            combos[0],
-            vec![MettaValue::Long(1), MettaValue::Atom("a".into()), MettaValue::Bool(true)]
+            combos[0].as_slice(),
+            &[MettaValue::Long(1), MettaValue::Atom("a".into()), MettaValue::Bool(true)]
         );
         assert_eq!(
-            combos[26],
-            vec![MettaValue::Long(3), MettaValue::Atom("c".into()), MettaValue::Nil]
+            combos[26].as_slice(),
+            &[MettaValue::Long(3), MettaValue::Atom("c".into()), MettaValue::Nil]
         );
     }
 
@@ -3602,7 +3618,7 @@ mod tests {
 
         match results {
             CartesianProductResult::Single(combo) => {
-                assert_eq!(combo, vec![MettaValue::Long(1), MettaValue::Long(2)]);
+                assert_eq!(combo.as_slice(), &[MettaValue::Long(1), MettaValue::Long(2)]);
             }
             _ => panic!("Expected Single variant for deterministic case"),
         }
@@ -3645,14 +3661,14 @@ mod tests {
         ];
         let iter = CartesianProductIter::new(results).expect("Should create iterator");
 
-        let combos: Vec<Vec<MettaValue>> = iter.collect();
+        let combos: Vec<Combination> = iter.collect();
 
         // Ordering: (1,10), (1,20), (2,10), (2,20)
         // Rightmost index varies fastest
-        assert_eq!(combos[0], vec![MettaValue::Long(1), MettaValue::Long(10)]);
-        assert_eq!(combos[1], vec![MettaValue::Long(1), MettaValue::Long(20)]);
-        assert_eq!(combos[2], vec![MettaValue::Long(2), MettaValue::Long(10)]);
-        assert_eq!(combos[3], vec![MettaValue::Long(2), MettaValue::Long(20)]);
+        assert_eq!(combos[0].as_slice(), &[MettaValue::Long(1), MettaValue::Long(10)]);
+        assert_eq!(combos[1].as_slice(), &[MettaValue::Long(1), MettaValue::Long(20)]);
+        assert_eq!(combos[2].as_slice(), &[MettaValue::Long(2), MettaValue::Long(10)]);
+        assert_eq!(combos[3].as_slice(), &[MettaValue::Long(2), MettaValue::Long(20)]);
     }
 
     #[test]

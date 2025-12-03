@@ -139,6 +139,10 @@ paste = "1.0.15"
 name = "metta"
 harness = false
 
+[[bench]]
+name = "eval_profiling"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = true

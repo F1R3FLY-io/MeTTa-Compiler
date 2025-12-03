@@ -100,7 +100,7 @@ itertools = "0.14"
 
 # liblevenshtein - Fuzzy string matching for "Did you mean?" suggestions
 # liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
-liblevenshtein = { version = "^0.7", features = ["pathmap-backend"] }
+liblevenshtein = { version = "^0.7", features = ["pathmap-backend", "simd"] }
 
 # TOML - Package manifest parsing (metta.toml)
 toml = "0.8"

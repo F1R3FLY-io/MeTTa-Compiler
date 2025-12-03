@@ -17,6 +17,13 @@
 //! **Unicode Support**: Uses DynamicDawgChar for character-level Levenshtein
 //! distances, providing correct Unicode semantics for multi-byte UTF-8 sequences.
 //! Example: "ñ" → "n" = distance 1 (character-level), not distance 2 (byte-level).
+//!
+//! **Sophisticated Recommendation Heuristics** (issue #51):
+//! To distinguish typos from intentional data constructors, we apply:
+//! - **Relative distance threshold**: distance/min_len must be < 0.33 (avoid `lit`→`let`)
+//! - **Minimum length**: Require query length >= 4 for distance-1 suggestions
+//! - **Data constructor detection**: Skip suggestions for PascalCase, hyphenated names
+//! - **Prefix type detection**: Don't suggest across prefix boundaries (`$x` vs `&x`)
 
 use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
 use liblevenshtein::dictionary::Dictionary; // Trait for contains()
@@ -289,6 +296,221 @@ impl FuzzyMatcher {
             self.pending.read().unwrap().is_empty()
         }
     }
+
+    /// Smart "Did you mean?" with sophisticated heuristics to avoid false positives.
+    ///
+    /// This method applies multiple heuristics to determine if a suggestion is
+    /// likely a typo vs an intentional data constructor name (issue #51):
+    ///
+    /// 1. **Relative distance**: Rejects if distance/min_len > 0.33
+    ///    - `lit` → `let` (distance 1, len 3): 1/3 = 0.33 → REJECTED
+    ///    - `fibonacci` → `fibonaci` (distance 1, len 8): 1/8 = 0.125 → ACCEPTED
+    ///
+    /// 2. **Minimum length for short distances**: For distance 1, requires query >= 4 chars
+    ///    - `lit` (3 chars) → no distance-1 suggestions
+    ///    - `lett` (4 chars) → distance-1 suggestions allowed
+    ///
+    /// 3. **Data constructor patterns**: Skip suggestions for PascalCase, hyphenated names
+    ///    - `MyType`, `DataConstructor`, `is-valid` → skip suggestions
+    ///
+    /// 4. **Prefix type mismatch**: Don't suggest across identifier prefix boundaries
+    ///    - `$x` vs `&x` → different semantics, skip
+    ///
+    /// Returns `(Option<String>, SuggestionConfidence)` where confidence indicates
+    /// whether this should be shown as an error, warning, or not at all.
+    pub fn smart_did_you_mean(
+        &self,
+        query: &str,
+        max_distance: usize,
+        max_suggestions: usize,
+    ) -> Option<SmartSuggestion> {
+        // Check if query looks like an intentional data constructor
+        if is_likely_data_constructor(query) {
+            return None;
+        }
+
+        let suggestions = self.suggest(query, max_distance);
+        if suggestions.is_empty() {
+            return None;
+        }
+
+        // Filter suggestions using sophisticated heuristics
+        let query_len = query.chars().count();
+        let filtered: Vec<(String, usize, SuggestionConfidence)> = suggestions
+            .into_iter()
+            .filter(|(_, distance)| *distance > 0) // No exact matches
+            .filter_map(|(term, distance)| {
+                // Check prefix type compatibility
+                if !are_prefixes_compatible(query, &term) {
+                    return None;
+                }
+
+                let confidence = compute_suggestion_confidence(query, &term, distance, query_len);
+                match confidence {
+                    SuggestionConfidence::None => None,
+                    conf => Some((term, distance, conf)),
+                }
+            })
+            .take(max_suggestions)
+            .collect();
+
+        if filtered.is_empty() {
+            return None;
+        }
+
+        // Determine overall confidence (highest among suggestions)
+        let overall_confidence = filtered
+            .iter()
+            .map(|(_, _, conf)| *conf)
+            .max()
+            .unwrap_or(SuggestionConfidence::None);
+
+        let terms: Vec<String> = filtered.into_iter().map(|(t, _, _)| t).collect();
+
+        let message = if terms.len() == 1 {
+            format!("Did you mean: {}?", terms[0])
+        } else {
+            format!("Did you mean one of: {}?", terms.join(", "))
+        };
+
+        Some(SmartSuggestion {
+            message,
+            confidence: overall_confidence,
+            suggestions: terms,
+        })
+    }
+}
+
+/// Result of a smart suggestion query with confidence level
+#[derive(Debug, Clone)]
+pub struct SmartSuggestion {
+    /// The formatted "Did you mean: X?" message
+    pub message: String,
+    /// How confident we are this is a typo vs intentional
+    pub confidence: SuggestionConfidence,
+    /// The suggested terms
+    pub suggestions: Vec<String>,
+}
+
+/// Confidence level for typo suggestions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SuggestionConfidence {
+    /// No suggestion should be made
+    None,
+    /// Low confidence - only show as a note, don't affect evaluation
+    Low,
+    /// High confidence - likely a typo, show as warning
+    High,
+}
+
+/// Check if a term looks like an intentional data constructor
+///
+/// Data constructors in MeTTa typically follow these patterns:
+/// - PascalCase: `MyType`, `DataConstructor`, `True`, `False`
+/// - Contains hyphens: `is-valid`, `get-value`, `my-function`
+/// - All uppercase: `NIL`, `VOID`, `ERROR`
+/// - Contains underscores: `my_value`, `data_type`
+fn is_likely_data_constructor(term: &str) -> bool {
+    // Skip empty terms
+    if term.is_empty() {
+        return false;
+    }
+
+    let first_char = term.chars().next().unwrap();
+
+    // Skip if starts with special prefix (these are handled elsewhere)
+    if matches!(first_char, '$' | '&' | '\'' | '%') {
+        return false;
+    }
+
+    // PascalCase: starts with uppercase letter followed by lowercase
+    if first_char.is_uppercase() {
+        let has_lowercase = term.chars().skip(1).any(|c| c.is_lowercase());
+        if has_lowercase {
+            return true;
+        }
+    }
+
+    // All uppercase (constants): `NIL`, `VOID`
+    let all_upper = term.chars().all(|c| c.is_uppercase() || c == '_');
+    if term.len() >= 2 && all_upper {
+        return true;
+    }
+
+    // Contains hyphen (compound names): `is-valid`, `my-func`
+    if term.contains('-') {
+        return true;
+    }
+
+    // Contains underscore (snake_case): `my_value`
+    if term.contains('_') {
+        return true;
+    }
+
+    // Contains digits (likely intentional): `value1`, `test2`
+    if term.chars().any(|c| c.is_ascii_digit()) {
+        return true;
+    }
+
+    false
+}
+
+/// Check if two terms have compatible prefix types
+///
+/// Different prefixes have different semantics:
+/// - `$x` - pattern variable
+/// - `&x` - space reference
+/// - `'x` - quoted symbol
+///
+/// Suggesting across these boundaries would be unhelpful.
+fn are_prefixes_compatible(query: &str, suggestion: &str) -> bool {
+    let query_prefix = query.chars().next();
+    let suggestion_prefix = suggestion.chars().next();
+
+    match (query_prefix, suggestion_prefix) {
+        (Some('$'), Some('$')) => true,
+        (Some('&'), Some('&')) => true,
+        (Some('\''), Some('\'')) => true,
+        (Some('%'), Some('%')) => true,
+        // Both are regular identifiers (no special prefix)
+        (Some(q), Some(s)) if !matches!(q, '$' | '&' | '\'' | '%') && !matches!(s, '$' | '&' | '\'' | '%') => true,
+        _ => false,
+    }
+}
+
+/// Compute suggestion confidence based on distance and length heuristics
+fn compute_suggestion_confidence(
+    query: &str,
+    suggested: &str,
+    distance: usize,
+    query_len: usize,
+) -> SuggestionConfidence {
+    let suggested_len = suggested.chars().count();
+    let min_len = query_len.min(suggested_len);
+
+    // Relative distance threshold: distance/min_len must be < 0.33
+    // This prevents short-word false positives like lit→let
+    let relative_distance = distance as f64 / min_len as f64;
+    if relative_distance >= 0.33 {
+        return SuggestionConfidence::None;
+    }
+
+    // For distance 1, require minimum length of 4
+    if distance == 1 && query_len < 4 {
+        return SuggestionConfidence::None;
+    }
+
+    // For distance 2, require minimum length of 6
+    if distance == 2 && query_len < 6 {
+        return SuggestionConfidence::Low;
+    }
+
+    // High confidence for longer words with small relative distance
+    if relative_distance < 0.20 {
+        SuggestionConfidence::High
+    } else {
+        SuggestionConfidence::Low
+    }
 }
 
 impl Default for FuzzyMatcher {
@@ -405,5 +627,167 @@ mod tests {
 
         let suggestions = matcher.suggest("anything", 2);
         assert!(suggestions.is_empty());
+    }
+
+    // ============================================================
+    // Smart Suggestion Heuristic Tests (issue #51)
+    // ============================================================
+
+    #[test]
+    fn test_issue_51_lit_vs_let_not_suggested() {
+        // This is the exact case from issue #51:
+        // `lit` should NOT suggest `let` because it's too short (3 chars)
+        let matcher = FuzzyMatcher::from_terms(vec!["let", "if", "case", "match"]);
+
+        let result = matcher.smart_did_you_mean("lit", 2, 3);
+        assert!(
+            result.is_none(),
+            "lit→let should NOT be suggested (short word false positive)"
+        );
+    }
+
+    #[test]
+    fn test_smart_suggestion_longer_words_accepted() {
+        // Longer words with small relative distance should be suggested
+        let matcher = FuzzyMatcher::from_terms(vec!["fibonacci", "factorial", "function"]);
+
+        let result = matcher.smart_did_you_mean("fibonaci", 2, 3);
+        assert!(result.is_some(), "fibonaci→fibonacci should be suggested");
+        let suggestion = result.unwrap();
+        assert_eq!(suggestion.confidence, SuggestionConfidence::High);
+        assert!(suggestion.message.contains("fibonacci"));
+    }
+
+    #[test]
+    fn test_smart_suggestion_4_char_word_accepted() {
+        // 4-char word with distance 1 should be accepted (barely)
+        let matcher = FuzzyMatcher::from_terms(vec!["lett", "test", "case"]);
+
+        // "lest" → "lett" (distance 1, len 4) = 0.25 relative distance
+        let result = matcher.smart_did_you_mean("lest", 1, 3);
+        assert!(result.is_some(), "lest→lett should be suggested (4 chars)");
+    }
+
+    #[test]
+    fn test_smart_suggestion_pascal_case_skipped() {
+        // PascalCase names should not trigger suggestions (likely data constructors)
+        let matcher = FuzzyMatcher::from_terms(vec!["MyType", "DataCon"]);
+
+        // Even though "MyTipe" is close to "MyType", it's PascalCase so skip
+        let result = matcher.smart_did_you_mean("MyTipe", 1, 3);
+        assert!(
+            result.is_none(),
+            "PascalCase should not trigger suggestions"
+        );
+    }
+
+    #[test]
+    fn test_smart_suggestion_hyphenated_skipped() {
+        // Hyphenated names should not trigger suggestions (compound identifiers)
+        let matcher = FuzzyMatcher::from_terms(vec!["is-valid", "get-value"]);
+
+        let result = matcher.smart_did_you_mean("is-valud", 1, 3);
+        assert!(
+            result.is_none(),
+            "Hyphenated names should not trigger suggestions"
+        );
+    }
+
+    #[test]
+    fn test_smart_suggestion_prefix_mismatch_rejected() {
+        // Different prefixes should not match
+        let matcher = FuzzyMatcher::from_terms(vec!["$stack", "&stack"]);
+
+        // Querying "$stack" should not suggest "&stack"
+        let result = matcher.smart_did_you_mean("$steck", 1, 3);
+        if let Some(suggestion) = result {
+            // If we get a suggestion, it should only be $stack, not &stack
+            for term in &suggestion.suggestions {
+                assert!(
+                    term.starts_with('$'),
+                    "Should not suggest &stack for $steck"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_likely_data_constructor() {
+        // PascalCase
+        assert!(is_likely_data_constructor("MyType"));
+        assert!(is_likely_data_constructor("DataConstructor"));
+        assert!(is_likely_data_constructor("True"));
+        assert!(is_likely_data_constructor("False"));
+
+        // All uppercase
+        assert!(is_likely_data_constructor("NIL"));
+        assert!(is_likely_data_constructor("VOID"));
+
+        // Hyphenated
+        assert!(is_likely_data_constructor("is-valid"));
+        assert!(is_likely_data_constructor("get-value"));
+
+        // Underscored
+        assert!(is_likely_data_constructor("my_value"));
+
+        // With digits
+        assert!(is_likely_data_constructor("value1"));
+        assert!(is_likely_data_constructor("test2"));
+
+        // Regular lowercase words - NOT data constructors
+        assert!(!is_likely_data_constructor("let"));
+        assert!(!is_likely_data_constructor("if"));
+        assert!(!is_likely_data_constructor("match"));
+        assert!(!is_likely_data_constructor("factorial"));
+    }
+
+    #[test]
+    fn test_are_prefixes_compatible() {
+        // Same prefix types should be compatible
+        assert!(are_prefixes_compatible("$x", "$y"));
+        assert!(are_prefixes_compatible("&space", "&other"));
+        assert!(are_prefixes_compatible("foo", "bar"));
+
+        // Different prefix types should NOT be compatible
+        assert!(!are_prefixes_compatible("$x", "&x"));
+        assert!(!are_prefixes_compatible("&space", "$space"));
+        assert!(!are_prefixes_compatible("$var", "var"));
+    }
+
+    #[test]
+    fn test_compute_suggestion_confidence() {
+        // High confidence: long word, small relative distance
+        assert_eq!(
+            compute_suggestion_confidence("fibonacci", "fibonaci", 1, 9),
+            SuggestionConfidence::High
+        );
+
+        // Low confidence: medium word, medium relative distance
+        assert_eq!(
+            compute_suggestion_confidence("match", "matsh", 1, 5),
+            SuggestionConfidence::Low
+        );
+
+        // None: short word, high relative distance
+        assert_eq!(
+            compute_suggestion_confidence("lit", "let", 1, 3),
+            SuggestionConfidence::None
+        );
+
+        // None: 3-char word with distance 1 (min length check)
+        assert_eq!(
+            compute_suggestion_confidence("add", "adn", 1, 3),
+            SuggestionConfidence::None
+        );
+    }
+
+    #[test]
+    fn test_smart_suggestion_confidence_levels() {
+        let matcher = FuzzyMatcher::from_terms(vec!["fibonacci", "factorial"]);
+
+        // Long word should have high confidence
+        let result = matcher.smart_did_you_mean("fibonaci", 2, 3);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().confidence, SuggestionConfidence::High);
     }
 }

@@ -389,16 +389,25 @@ pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
     }
 }
 
-/// Check if an operator is close to a known special form
-/// Uses max edit distance of 1 to avoid false positives on short words
-fn suggest_special_form(op: &str) -> Option<String> {
+/// Check if an operator is close to a known special form using smart heuristics
+///
+/// Returns a SmartSuggestion with confidence level to determine how to present
+/// the suggestion (as a warning/note vs. error vs. not at all).
+///
+/// Uses sophisticated heuristics to avoid false positives like `lit` → `let`:
+/// - Minimum length requirements
+/// - Relative distance thresholds
+/// - Data constructor detection
+fn suggest_special_form(op: &str) -> Option<crate::backend::fuzzy_match::SmartSuggestion> {
     use crate::backend::fuzzy_match::FuzzyMatcher;
     use std::sync::OnceLock;
 
     static MATCHER: OnceLock<FuzzyMatcher> = OnceLock::new();
     let matcher = MATCHER.get_or_init(|| FuzzyMatcher::from_terms(SPECIAL_FORMS.iter().copied()));
 
-    matcher.did_you_mean(op, 1, 3)
+    // Use smart suggestion with max distance 2 for transposition detection
+    // The smart heuristics will filter out false positives
+    matcher.smart_did_you_mean(op, 2, 3)
 }
 
 /// Evaluate a MettaValue in the given environment
@@ -1490,45 +1499,62 @@ fn process_single_combination(
 }
 
 /// Handle the case where no rule matches an s-expression
+///
+/// Uses smart suggestion heuristics (issue #51) to avoid false positives:
+/// - Rejects suggestions for short words (< 4 chars for distance 1)
+/// - Detects data constructor patterns (PascalCase, hyphenated names)
+/// - Emits warnings (notes) instead of errors for suggestions
+///
+/// This allows intentional data constructors like `lit` to work without
+/// triggering spurious "Did you mean: let?" errors.
 fn handle_no_rule_match(
     evaled_items: Vec<MettaValue>,
     sexpr: &MettaValue,
     unified_env: &mut Environment,
 ) -> MettaValue {
+    use crate::backend::fuzzy_match::SuggestionConfidence;
+
     // Check for likely typos before falling back to ADD mode
     if let Some(MettaValue::Atom(head)) = evaled_items.first() {
-        if head.len() >= 3 {
-            // Check for misspelled special form
-            if let Some(suggestion) = suggest_special_form(head) {
-                return MettaValue::Error(
-                    format!("Unknown special form '{}'. {}", head, suggestion),
-                    Arc::new(sexpr.clone()),
-                );
-            }
-            // Check for misspelled rule head
-            // Skip suggestions where the only difference is a prefix character (&, $)
-            // since these are semantically different identifier types
-            if let Some(suggestion_msg) = unified_env.did_you_mean(head, 1) {
-                // Extract the suggested term from "Did you mean: X?"
-                if let Some(suggested) = suggestion_msg
-                    .strip_prefix("Did you mean: ")
-                    .and_then(|s| s.strip_suffix('?'))
-                {
-                    // Don't suggest space references for regular atoms or vice versa
-                    let head_is_space_ref = head.starts_with('&');
-                    let suggested_is_space_ref = suggested.starts_with('&');
-
-                    if head_is_space_ref == suggested_is_space_ref {
-                        // Same category - this is a valid typo suggestion
-                        return MettaValue::Error(
-                            format!("No rule matches '{}'. {}", head, suggestion_msg),
-                            Arc::new(sexpr.clone()),
-                        );
-                    }
-                    // Different categories (stack vs &stack) - skip the suggestion
-                    // Fall through to ADD mode
+        // Check for misspelled special form using smart heuristics
+        // Only show suggestions if the heuristics determine it's likely a typo
+        if let Some(suggestion) = suggest_special_form(head) {
+            // Always emit as a note/warning, never as an error
+            // This allows the expression to continue evaluating in ADD mode
+            match suggestion.confidence {
+                SuggestionConfidence::High => {
+                    eprintln!(
+                        "Warning: '{}' is not defined. {}",
+                        head, suggestion.message
+                    );
+                }
+                SuggestionConfidence::Low => {
+                    eprintln!("Note: '{}' is not defined. {}", head, suggestion.message);
+                }
+                SuggestionConfidence::None => {
+                    // No suggestion - don't print anything
                 }
             }
+            // Fall through to ADD mode (don't return error)
+        }
+
+        // Check for misspelled rule head using smart heuristics
+        if let Some(suggestion) = unified_env.smart_did_you_mean(head, 2) {
+            match suggestion.confidence {
+                SuggestionConfidence::High => {
+                    eprintln!(
+                        "Warning: No rule matches '{}'. {}",
+                        head, suggestion.message
+                    );
+                }
+                SuggestionConfidence::Low => {
+                    eprintln!("Note: No rule matches '{}'. {}", head, suggestion.message);
+                }
+                SuggestionConfidence::None => {
+                    // No suggestion - don't print anything
+                }
+            }
+            // Fall through to ADD mode (don't return error)
         }
     }
 
@@ -3665,10 +3691,12 @@ mod tests {
 
     #[test]
     fn test_misspelled_special_form() {
-        // When a misspelled special form is detected, an error with suggestion is returned
+        // Issue #51: When a misspelled special form is detected, a warning is printed
+        // to stderr but the expression is returned as-is (ADD mode semantics).
+        // This allows intentional data constructors like `lit` to work without errors.
         let env = Environment::new();
 
-        // Try to use "mach" instead of "match"
+        // Try to use "mach" instead of "match" (4 chars, passes min length check)
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("mach".to_string()),
             MettaValue::Atom("&self".to_string()),
@@ -3678,35 +3706,37 @@ mod tests {
         let (results, _) = eval(expr.clone(), env);
         assert_eq!(results.len(), 1);
 
-        // Should get an error with a suggestion
-        if let MettaValue::Error(msg, _) = &results[0] {
-            assert!(
-                msg.contains("mach") && msg.contains("match"),
-                "Expected suggestion for 'mach' -> 'match', got: {}",
-                msg
-            );
+        // Per issue #51: Should return the expression unchanged (ADD mode)
+        // A warning is printed to stderr, but no error is returned
+        if let MettaValue::SExpr(items) = &results[0] {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0], MettaValue::Atom("mach".to_string()));
         } else {
-            panic!("Expected Error, got: {:?}", results[0]);
+            panic!(
+                "Expected SExpr returned unchanged (ADD mode), got: {:?}",
+                results[0]
+            );
         }
     }
 
     #[test]
     fn test_undefined_symbol_with_rule_suggestion() {
-        // When a misspelled function is detected, an error with suggestion is returned
+        // Issue #51: When a misspelled function is detected, a warning is printed
+        // to stderr but the expression is returned as-is (ADD mode semantics).
         let mut env = Environment::new();
 
         // Add a rule for "fibonacci"
         let rule = Rule::new(
-        MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("fibonacci".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-        MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$n".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-    );
+        );
         env.add_rule(rule);
 
         // Try to call "fibonaci" (misspelled - missing 'n')
@@ -3718,15 +3748,17 @@ mod tests {
         let (results, _) = eval(expr.clone(), env);
         assert_eq!(results.len(), 1);
 
-        // Should get an error with a suggestion
-        if let MettaValue::Error(msg, _) = &results[0] {
-            assert!(
-                msg.contains("fibonaci") && msg.contains("fibonacci"),
-                "Expected suggestion for 'fibonaci' -> 'fibonacci', got: {}",
-                msg
-            );
+        // Per issue #51: Should return the expression unchanged (ADD mode)
+        // A warning is printed to stderr, but no error is returned
+        if let MettaValue::SExpr(items) = &results[0] {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], MettaValue::Atom("fibonaci".to_string()));
+            assert_eq!(items[1], MettaValue::Long(5));
         } else {
-            panic!("Expected Error, got: {:?}", results[0]);
+            panic!(
+                "Expected SExpr returned unchanged (ADD mode), got: {:?}",
+                results[0]
+            );
         }
     }
 

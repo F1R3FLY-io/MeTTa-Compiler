@@ -1759,6 +1759,40 @@ impl Environment {
         self.shared.fuzzy_matcher.read().unwrap().did_you_mean(symbol, max_distance, 3)
     }
 
+    /// Get a smart "Did you mean?" suggestion with sophisticated heuristics
+    ///
+    /// Unlike `did_you_mean`, this method applies heuristics to avoid false positives:
+    /// - Rejects suggestions for short words (< 4 chars for distance 1)
+    /// - Detects data constructor patterns (PascalCase, hyphenated names)
+    /// - Considers relative edit distance (distance/length ratio)
+    /// - Returns confidence level for appropriate error/warning handling
+    ///
+    /// # Returns
+    /// - `Some(SmartSuggestion)` with message and confidence level
+    /// - `None` if no appropriate suggestion is found
+    ///
+    /// # Example
+    /// ```ignore
+    /// if let Some(suggestion) = env.smart_did_you_mean("fibonaci", 2) {
+    ///     match suggestion.confidence {
+    ///         SuggestionConfidence::High => eprintln!("Warning: {}", suggestion.message),
+    ///         SuggestionConfidence::Low => eprintln!("Note: {}", suggestion.message),
+    ///         SuggestionConfidence::None => {} // Don't show anything
+    ///     }
+    /// }
+    /// ```
+    pub fn smart_did_you_mean(
+        &self,
+        symbol: &str,
+        max_distance: usize,
+    ) -> Option<super::fuzzy_match::SmartSuggestion> {
+        self.shared
+            .fuzzy_matcher
+            .read()
+            .unwrap()
+            .smart_did_you_mean(symbol, max_distance, 3)
+    }
+
     // ============================================================
     // Grounded Operations
     // ============================================================

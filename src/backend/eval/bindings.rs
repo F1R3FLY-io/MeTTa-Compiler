@@ -2,7 +2,7 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
 
-use super::{apply_bindings, eval, pattern_match};
+use super::{apply_bindings, eval, pattern_match, EvalStep};
 
 /// let*: Sequential bindings - (let* (($x 1) ($y (+ $x 1))) body)
 /// Transforms to nested let: (let $x 1 (let $y (+ $x 1) body))
@@ -349,6 +349,47 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     }
 
     (all_results, value_env)
+}
+
+/// Evaluate let binding with trampoline integration (TCO-enabled)
+/// Returns EvalStep::StartLetBinding to defer evaluation to the trampoline,
+/// enabling the let body to participate in tail call optimization.
+///
+/// This is the TCO-enabled version of eval_let(). Instead of calling eval()
+/// directly for the value and body, it returns an EvalStep that the trampoline
+/// will process, preventing nested trampolines.
+pub(super) fn eval_let_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+    let args = &items[1..];
+
+    // Validate arity - same as eval_let
+    if args.len() < 3 {
+        let got = args.len();
+        let err = MettaValue::Error(
+            format!(
+                "let requires exactly 3 arguments, got {}. Usage: (let pattern value body)",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let pattern = args[0].clone();
+    let value_expr = args[1].clone();
+    let body = args[2].clone();
+
+    // Return EvalStep to start let binding evaluation via trampoline
+    // The trampoline will:
+    // 1. Create a ProcessLet continuation
+    // 2. Push value_expr evaluation
+    // 3. When value eval completes, match pattern and evaluate body
+    EvalStep::StartLetBinding {
+        pattern,
+        value_expr,
+        body,
+        env,
+        depth,
+    }
 }
 
 #[cfg(test)]

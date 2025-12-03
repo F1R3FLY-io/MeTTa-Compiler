@@ -120,6 +120,24 @@ enum Continuation {
         /// Parent continuation to resume after all combinations processed
         parent_cont: usize,
     },
+    /// Processing let binding - tracks state across value and body evaluations
+    /// This enables let body evaluation to participate in the trampoline (TCO)
+    ProcessLet {
+        /// Value results to process (None if awaiting value evaluation)
+        pending_values: Option<VecDeque<MettaValue>>,
+        /// Pattern to match against values
+        pattern: MettaValue,
+        /// Body template to instantiate with bindings
+        body: MettaValue,
+        /// Collected body evaluation results
+        results: Vec<MettaValue>,
+        /// Environment for body evaluation
+        env: Environment,
+        /// Evaluation depth (preserved for TCO)
+        depth: usize,
+        /// Parent continuation to resume after all values processed
+        parent_cont: usize,
+    },
 }
 
 /// Maximum evaluation depth to prevent stack overflow
@@ -541,6 +559,49 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             });
                         }
                     }
+
+                    // Start let binding evaluation - evaluate value expression first
+                    EvalStep::StartLetBinding {
+                        pattern,
+                        value_expr,
+                        body,
+                        env,
+                        depth,
+                    } => {
+                        // Create ProcessLet continuation to handle value results
+                        let let_cont_id = continuations.len();
+                        continuations.push(Continuation::ProcessLet {
+                            pending_values: None, // Will be filled when value eval completes
+                            pattern,
+                            body,
+                            results: Vec::new(),
+                            env: env.clone(),
+                            depth,
+                            parent_cont: cont_id,
+                        });
+
+                        // Push value expression evaluation
+                        work_stack.push(WorkItem::Eval {
+                            value: value_expr,
+                            env,
+                            depth: depth + 1, // Value is not tail position
+                            cont_id: let_cont_id,
+                            is_tail_call: false,
+                        });
+                    }
+
+                    // Evaluate if branch - condition already evaluated, now evaluate selected branch
+                    EvalStep::EvalIfBranch { branch, env, depth } => {
+                        // Push branch evaluation - THIS IS TAIL CALL (TCO)
+                        // The branch inherits the continuation from the if expression
+                        work_stack.push(WorkItem::Eval {
+                            value: branch,
+                            env,
+                            depth, // TCO: reuse depth for branch eval
+                            cont_id,
+                            is_tail_call: true,
+                        });
+                    }
                 }
             }
 
@@ -918,6 +979,121 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             }
                         }
                     }
+
+                    // Handle let binding continuation
+                    Continuation::ProcessLet {
+                        pending_values,
+                        pattern,
+                        body,
+                        mut results,
+                        env: _let_env, // Unused - we use result_env from the resumed result
+                        depth,
+                        parent_cont,
+                    } => {
+                        let (result_values, result_env) = result;
+
+                        match pending_values {
+                            None => {
+                                // First resumption: received value evaluation results
+                                // Now process each value, trying to match pattern
+                                let mut values = VecDeque::from(result_values);
+
+                                // Try to find a matching value - use explicit loop for ownership clarity
+                                loop {
+                                    match values.pop_front() {
+                                        Some(value) => {
+                                            if let Some(bindings) = pattern_match(&pattern, &value)
+                                            {
+                                                // Pattern matches - evaluate body with bindings
+                                                let instantiated_body =
+                                                    apply_bindings(&body, &bindings).into_owned();
+
+                                                // Restore continuation for collecting more results
+                                                continuations[cont_id] = Continuation::ProcessLet {
+                                                    pending_values: Some(values),
+                                                    pattern,
+                                                    body,
+                                                    results,
+                                                    env: result_env.clone(),
+                                                    depth,
+                                                    parent_cont,
+                                                };
+
+                                                // Push body evaluation - THIS IS TAIL CALL (TCO)
+                                                work_stack.push(WorkItem::Eval {
+                                                    value: instantiated_body,
+                                                    env: result_env,
+                                                    depth, // TCO: reuse depth for body eval
+                                                    cont_id,
+                                                    is_tail_call: true,
+                                                });
+                                                break; // Exit loop, work is pushed
+                                            }
+                                            // Pattern doesn't match - continue to next value
+                                        }
+                                        None => {
+                                            // No pattern matched - return results to parent
+                                            work_stack.push(WorkItem::Resume {
+                                                cont_id: parent_cont,
+                                                result: (results, result_env),
+                                            });
+                                            break; // Exit loop
+                                        }
+                                    }
+                                }
+                            }
+
+                            Some(mut remaining_values) => {
+                                // Subsequent resumption: received body evaluation results
+                                // Add body results to collected results
+                                results.extend(result_values);
+
+                                // Try next value - use explicit loop for ownership clarity
+                                loop {
+                                    match remaining_values.pop_front() {
+                                        Some(value) => {
+                                            if let Some(bindings) = pattern_match(&pattern, &value)
+                                            {
+                                                // Pattern matches - evaluate body with bindings
+                                                let instantiated_body =
+                                                    apply_bindings(&body, &bindings).into_owned();
+
+                                                // Restore continuation for collecting more results
+                                                continuations[cont_id] = Continuation::ProcessLet {
+                                                    pending_values: Some(remaining_values),
+                                                    pattern,
+                                                    body,
+                                                    results,
+                                                    env: result_env.clone(),
+                                                    depth,
+                                                    parent_cont,
+                                                };
+
+                                                // Push body evaluation - THIS IS TAIL CALL (TCO)
+                                                work_stack.push(WorkItem::Eval {
+                                                    value: instantiated_body,
+                                                    env: result_env,
+                                                    depth, // TCO: reuse depth for body eval
+                                                    cont_id,
+                                                    is_tail_call: true,
+                                                });
+                                                break; // Exit loop, work is pushed
+                                            }
+                                            // Pattern doesn't match - continue to next value
+                                        }
+                                        None => {
+                                            // All values processed - return results to parent
+                                            work_stack.push(WorkItem::Resume {
+                                                cont_id: parent_cont,
+                                                result: (results, result_env),
+                                            });
+                                            break; // Exit loop
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -941,6 +1117,30 @@ enum EvalStep {
     StartGroundedOp {
         state: GroundedState,
         env: Environment,
+        depth: usize,
+    },
+    /// Start let binding - first evaluates value expression, then pattern matches
+    /// and evaluates body. This enables let body to participate in trampoline (TCO).
+    StartLetBinding {
+        /// Pattern to match against evaluated value
+        pattern: MettaValue,
+        /// Value expression to evaluate first
+        value_expr: MettaValue,
+        /// Body template to instantiate with bindings
+        body: MettaValue,
+        /// Environment for evaluation
+        env: Environment,
+        /// Evaluation depth (preserved for TCO)
+        depth: usize,
+    },
+    /// Evaluate if branch - condition has been evaluated, now evaluate selected branch.
+    /// This enables if branches to participate in trampoline (TCO).
+    EvalIfBranch {
+        /// Branch expression to evaluate (then or else)
+        branch: MettaValue,
+        /// Environment after condition evaluation
+        env: Environment,
+        /// Evaluation depth (preserved for TCO)
         depth: usize,
     },
 }
@@ -1074,7 +1274,7 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "=" => return EvalStep::Done(space::eval_add(items, env)),
             "!" => return EvalStep::Done(evaluation::force_eval(items, env)),
             "quote" => return EvalStep::Done(quoting::eval_quote(items, env)),
-            "if" => return EvalStep::Done(control_flow::eval_if(items, env)),
+            "if" => return control_flow::eval_if_step(items, env, depth),
             "error" => return EvalStep::Done(errors::eval_error(items, env)),
             // HE compatibility: (Error details msg) -> adapt to MeTTaTron's (error msg details)
             "Error" => return EvalStep::Done(errors::eval_error_he(items, env)),
@@ -1093,7 +1293,7 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "switch-internal" => {
                 return EvalStep::Done(control_flow::eval_switch_internal_handler(items, env))
             }
-            "let" => return EvalStep::Done(bindings::eval_let(items, env)),
+            "let" => return bindings::eval_let_step(items, env, depth),
             "let*" => return EvalStep::Done(bindings::eval_let_star(items, env)),
             "unify" => return EvalStep::Done(bindings::eval_unify(items, env)),
             ":" => return EvalStep::Done(types::eval_type_assertion(items, env)),

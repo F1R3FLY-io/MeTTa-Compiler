@@ -2,7 +2,7 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
 
-use super::{apply_bindings, eval, pattern_match};
+use super::{apply_bindings, eval, pattern_match, EvalStep};
 
 /// Evaluate if control flow: (if condition then-branch else-branch)
 /// Only evaluates the chosen branch (lazy evaluation)
@@ -52,6 +52,74 @@ pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     } else {
         // No result from condition - treat as false
         eval(else_branch.clone(), env_after_cond)
+    }
+}
+
+/// Evaluate if control flow with trampoline integration (TCO-enabled)
+/// Returns EvalStep::EvalIfBranch to defer branch evaluation to the trampoline,
+/// enabling if branches to participate in tail call optimization.
+///
+/// This is the TCO-enabled version of eval_if(). The condition is still evaluated
+/// synchronously, but the branch evaluation is deferred to the trampoline.
+pub(super) fn eval_if_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+    let args = &items[1..];
+
+    // Validate arity - same as eval_if
+    if args.len() < 3 {
+        let got = args.len();
+        let err = MettaValue::Error(
+            format!(
+                "if requires exactly 3 arguments, got {}. Usage: (if condition then-branch else-branch)",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let condition = &args[0];
+    let then_branch = args[1].clone();
+    let else_branch = args[2].clone();
+
+    // Evaluate the condition (synchronously - starts fresh trampoline)
+    let (cond_results, env_after_cond) = eval(condition.clone(), env);
+
+    // Check for error in condition
+    if let Some(first) = cond_results.first() {
+        if matches!(first, MettaValue::Error(_, _)) {
+            return EvalStep::Done((vec![first.clone()], env_after_cond));
+        }
+
+        // Check if condition is true
+        let is_true = match first {
+            MettaValue::Bool(true) => true,
+            MettaValue::Bool(false) => false,
+            // Non-boolean values: treat as true if not Nil
+            MettaValue::Nil => false,
+            _ => true,
+        };
+
+        // Return EvalStep for branch evaluation - THIS IS TAIL CALL (TCO)
+        if is_true {
+            EvalStep::EvalIfBranch {
+                branch: then_branch,
+                env: env_after_cond,
+                depth,
+            }
+        } else {
+            EvalStep::EvalIfBranch {
+                branch: else_branch,
+                env: env_after_cond,
+                depth,
+            }
+        }
+    } else {
+        // No result from condition - treat as false
+        EvalStep::EvalIfBranch {
+            branch: else_branch,
+            env: env_after_cond,
+            depth,
+        }
     }
 }
 

@@ -31,7 +31,7 @@ use std::sync::Arc;
 use crate::backend::environment::Environment;
 use crate::backend::grounded::{ExecError, GroundedState, GroundedWork};
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
-use crate::backend::mork_convert::{mork_bindings_to_metta, ConversionContext};
+use crate::backend::mork_convert::{metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext};
 use mork_expr::Expr;
 
 // =============================================================================
@@ -100,6 +100,22 @@ enum Continuation {
         /// Evaluation depth
         depth: usize,
     },
+    /// Processing lazy Cartesian product combinations one at a time
+    /// This continuation enables memory-efficient nondeterministic evaluation
+    ProcessCombinations {
+        /// Iterator over remaining combinations (lazy evaluation)
+        combinations: CartesianProductIter,
+        /// Results accumulated so far from processing combinations
+        results: Vec<MettaValue>,
+        /// Pending rule matches for the current combination (VecDeque for O(1) pop_front)
+        pending_rule_matches: VecDeque<(MettaValue, Bindings)>,
+        /// Environment for evaluation
+        env: Environment,
+        /// Evaluation depth
+        depth: usize,
+        /// Parent continuation to resume after all combinations processed
+        parent_cont: usize,
+    },
 }
 
 /// Maximum evaluation depth to prevent stack overflow
@@ -107,9 +123,115 @@ enum Continuation {
 /// Set to 1000 to allow legitimate deep nesting while still catching runaway recursion
 const MAX_EVAL_DEPTH: usize = 1000;
 
-/// Maximum number of results in Cartesian product to prevent combinatorial explosion
-/// This limits the total number of combinations explored during nondeterministic evaluation
-const MAX_CARTESIAN_RESULTS: usize = 10000;
+// =============================================================================
+// Lazy Cartesian Product Iterator
+// =============================================================================
+// Generates Cartesian products on-demand using an index-based "multi-digit counter"
+// pattern. Memory usage is O(n) for indices regardless of product size.
+
+/// Lazy Cartesian product iterator using multi-digit counter approach.
+/// Memory: O(n) for indices regardless of total product size.
+#[derive(Debug)]
+pub struct CartesianProductIter {
+    /// Owned result lists from sub-expression evaluation
+    results: Vec<Vec<MettaValue>>,
+    /// Current indices into each result list (the "counter")
+    indices: Vec<usize>,
+    /// Whether the iterator is exhausted
+    exhausted: bool,
+}
+
+impl CartesianProductIter {
+    /// Create a new lazy Cartesian product iterator.
+    /// Returns None if any result list is empty (no combinations possible).
+    pub fn new(results: Vec<Vec<MettaValue>>) -> Option<Self> {
+        // Check for empty result lists - no combinations possible
+        if results.iter().any(|r| r.is_empty()) {
+            return None;
+        }
+
+        Some(CartesianProductIter {
+            indices: vec![0; results.len()],
+            results,
+            exhausted: false,
+        })
+    }
+
+    /// Advance indices like a multi-digit counter (rightmost varies fastest).
+    /// Returns false when counter overflows (all combinations exhausted).
+    fn advance_indices(&mut self) {
+        for i in (0..self.indices.len()).rev() {
+            self.indices[i] += 1;
+            if self.indices[i] < self.results[i].len() {
+                return; // No carry needed
+            }
+            self.indices[i] = 0; // Carry to next digit
+        }
+        // Counter overflowed - all combinations exhausted
+        self.exhausted = true;
+    }
+}
+
+impl Iterator for CartesianProductIter {
+    type Item = Vec<MettaValue>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.exhausted || self.results.is_empty() {
+            return None;
+        }
+
+        // Build current combination from indices
+        let combo: Vec<MettaValue> = self
+            .indices
+            .iter()
+            .zip(self.results.iter())
+            .map(|(&idx, list)| list[idx].clone())
+            .collect();
+
+        self.advance_indices();
+        Some(combo)
+    }
+}
+
+/// Result of creating a lazy Cartesian product
+#[derive(Debug)]
+pub enum CartesianProductResult {
+    /// Fast path: exactly one combination (deterministic evaluation)
+    /// This is the common case for arithmetic and most builtin operations
+    Single(Vec<MettaValue>),
+    /// Lazy iterator over multiple combinations
+    Lazy(CartesianProductIter),
+    /// No combinations (empty input or empty result list)
+    Empty,
+}
+
+/// Create a lazy Cartesian product from evaluation results.
+/// Preserves fast path for deterministic evaluation (all single-element results).
+fn cartesian_product_lazy(results: Vec<Vec<MettaValue>>) -> CartesianProductResult {
+    if results.is_empty() {
+        // Empty input produces single empty combination
+        return CartesianProductResult::Single(vec![]);
+    }
+
+    // FAST PATH: If all result lists have exactly 1 item (deterministic evaluation),
+    // we can just concatenate them directly in O(n) instead of using the iterator
+    // This is the common case for arithmetic and most builtin operations
+    if results.iter().all(|r| r.len() == 1) {
+        let single_combo: Vec<MettaValue> = results.into_iter().map(|mut r| r.pop().unwrap()).collect();
+        return CartesianProductResult::Single(single_combo);
+    }
+
+    // Check for empty result lists
+    if results.iter().any(|r| r.is_empty()) {
+        return CartesianProductResult::Empty;
+    }
+
+    // Create lazy iterator for nondeterministic evaluation
+    match CartesianProductIter::new(results) {
+        Some(iter) => CartesianProductResult::Lazy(iter),
+        None => CartesianProductResult::Empty,
+    }
+}
 
 /// MeTTa special forms for "did you mean" suggestions during evaluation
 const SPECIAL_FORMS: &[&str] = &[
@@ -457,6 +579,28 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         });
                                     }
                                 }
+                                ProcessedSExpr::EvalCombinations {
+                                    combinations,
+                                    env,
+                                    depth,
+                                } => {
+                                    // Create continuation to process combinations lazily
+                                    let combo_cont_id = continuations.len();
+                                    continuations.push(Continuation::ProcessCombinations {
+                                        combinations,
+                                        results: vec![],
+                                        pending_rule_matches: VecDeque::new(),
+                                        env: env.clone(),
+                                        depth,
+                                        parent_cont,
+                                    });
+
+                                    // Resume to process first combination
+                                    work_stack.push(WorkItem::Resume {
+                                        cont_id: combo_cont_id,
+                                        result: (vec![], env),
+                                    });
+                                }
                             }
                         } else {
                             // More items to evaluate - O(1) pop from VecDeque front
@@ -608,6 +752,134 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             });
                         }
                     }
+
+                    Continuation::ProcessCombinations {
+                        mut combinations,
+                        mut results,
+                        mut pending_rule_matches,
+                        mut env,
+                        depth,
+                        parent_cont,
+                    } => {
+                        // First, add any results from rule evaluation
+                        results.extend(result.0);
+
+                        // If we have pending rule matches, process the next one
+                        if !pending_rule_matches.is_empty() {
+                            let (rhs, bindings) = pending_rule_matches.pop_front().unwrap();
+
+                            // Update continuation with remaining matches
+                            continuations[cont_id] = Continuation::ProcessCombinations {
+                                combinations,
+                                results,
+                                pending_rule_matches,
+                                env: env.clone(),
+                                depth,
+                                parent_cont,
+                            };
+
+                            // Evaluate the rule RHS - THIS IS A TAIL CALL
+                            let instantiated_rhs = apply_bindings(&rhs, &bindings);
+                            work_stack.push(WorkItem::Eval {
+                                value: instantiated_rhs,
+                                env,
+                                depth,
+                                cont_id,
+                                is_tail_call: true,
+                            });
+                        } else {
+                            // No pending rule matches - get next combination
+                            match combinations.next() {
+                                None => {
+                                    // All combinations processed, return results
+                                    work_stack.push(WorkItem::Resume {
+                                        cont_id: parent_cont,
+                                        result: (results, env),
+                                    });
+                                }
+                                Some(evaled_items) => {
+                                    // Process this combination
+                                    // Check if this is a grounded operation
+                                    if let Some(MettaValue::Atom(op)) = evaled_items.first() {
+                                        if let Some(builtin_result) =
+                                            try_eval_builtin(op, &evaled_items[1..])
+                                        {
+                                            results.push(builtin_result);
+
+                                            // Continue to next combination
+                                            continuations[cont_id] =
+                                                Continuation::ProcessCombinations {
+                                                    combinations,
+                                                    results,
+                                                    pending_rule_matches: VecDeque::new(),
+                                                    env: env.clone(),
+                                                    depth,
+                                                    parent_cont,
+                                                };
+
+                                            // Resume to process next combination
+                                            work_stack.push(WorkItem::Resume {
+                                                cont_id,
+                                                result: (vec![], env),
+                                            });
+                                            continue;
+                                        }
+                                    }
+
+                                    // Try to match against rules
+                                    let sexpr = MettaValue::SExpr(evaled_items.clone());
+                                    let all_matches = try_match_all_rules(&sexpr, &env);
+
+                                    if !all_matches.is_empty() {
+                                        // Queue up rule matches for evaluation
+                                        let mut matches_deque: VecDeque<_> =
+                                            all_matches.into_iter().collect();
+                                        let (rhs, bindings) = matches_deque.pop_front().unwrap();
+
+                                        continuations[cont_id] = Continuation::ProcessCombinations {
+                                            combinations,
+                                            results,
+                                            pending_rule_matches: matches_deque,
+                                            env: env.clone(),
+                                            depth,
+                                            parent_cont,
+                                        };
+
+                                        // Evaluate first rule RHS
+                                        let instantiated_rhs = apply_bindings(&rhs, &bindings);
+                                        work_stack.push(WorkItem::Eval {
+                                            value: instantiated_rhs,
+                                            env,
+                                            depth,
+                                            cont_id,
+                                            is_tail_call: true,
+                                        });
+                                    } else {
+                                        // No rule matched - handle ADD mode
+                                        let result_value =
+                                            handle_no_rule_match(evaled_items, &sexpr, &mut env);
+                                        results.push(result_value);
+
+                                        // Continue to next combination
+                                        continuations[cont_id] = Continuation::ProcessCombinations {
+                                            combinations,
+                                            results,
+                                            pending_rule_matches: VecDeque::new(),
+                                            env: env.clone(),
+                                            depth,
+                                            parent_cont,
+                                        };
+
+                                        // Resume to process next combination
+                                        work_stack.push(WorkItem::Resume {
+                                            cont_id,
+                                            result: (vec![], env),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -645,6 +917,12 @@ enum ProcessedSExpr {
         env: Environment,
         depth: usize,
         base_results: Vec<MettaValue>,
+    },
+    /// Need to lazily process Cartesian product combinations
+    EvalCombinations {
+        combinations: CartesianProductIter,
+        env: Environment,
+        depth: usize,
     },
 }
 
@@ -892,6 +1170,7 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
 
 /// Process collected S-expression evaluation results.
 /// This handles Cartesian products, builtins, and rule matching.
+/// Uses lazy Cartesian product for memory-efficient nondeterministic evaluation.
 fn process_collected_sexpr(
     collected: Vec<EvalResult>,
     original_env: Environment,
@@ -915,52 +1194,58 @@ fn process_collected_sexpr(
         unified_env = unified_env.union(&e);
     }
 
-    // Generate Cartesian product of all sub-expression results
-    let combinations = match cartesian_product(&eval_results) {
-        Ok(c) => c,
-        Err(err) => {
-            return ProcessedSExpr::Done((vec![err], unified_env));
+    // Generate lazy Cartesian product of all sub-expression results
+    match cartesian_product_lazy(eval_results) {
+        CartesianProductResult::Empty => {
+            // No combinations possible (empty result list)
+            ProcessedSExpr::Done((vec![], unified_env))
         }
-    };
-
-    // Collect results and rule matches that need evaluation
-    let mut all_final_results = Vec::new();
-    let mut rule_matches_to_eval: Vec<(MettaValue, Bindings)> = Vec::new();
-
-    for evaled_items in combinations {
-        // Check if this is a grounded operation
-        if let Some(MettaValue::Atom(op)) = evaled_items.first() {
-            if let Some(result) = try_eval_builtin(op, &evaled_items[1..]) {
-                all_final_results.push(result);
-                continue;
+        CartesianProductResult::Single(evaled_items) => {
+            // FAST PATH: Single combination (deterministic evaluation)
+            // Process it directly without creating continuation
+            process_single_combination(evaled_items, unified_env, depth)
+        }
+        CartesianProductResult::Lazy(combinations) => {
+            // LAZY PATH: Multiple combinations - process via continuation
+            ProcessedSExpr::EvalCombinations {
+                combinations,
+                env: unified_env,
+                depth,
             }
         }
+    }
+}
 
-        // Try to match against rules
-        let sexpr = MettaValue::SExpr(evaled_items.clone());
-        let all_matches = try_match_all_rules(&sexpr, &unified_env);
-
-        if !all_matches.is_empty() {
-            // Collect rule matches for later evaluation
-            rule_matches_to_eval.extend(all_matches);
-        } else {
-            // No rule matched - check for typos and handle ADD mode
-            let result = handle_no_rule_match(evaled_items, &sexpr, &mut unified_env);
-            all_final_results.push(result);
+/// Process a single combination (fast path for deterministic evaluation).
+/// This avoids creating a continuation when there's only one combination to process.
+fn process_single_combination(
+    evaled_items: Vec<MettaValue>,
+    mut unified_env: Environment,
+    depth: usize,
+) -> ProcessedSExpr {
+    // Check if this is a grounded operation
+    if let Some(MettaValue::Atom(op)) = evaled_items.first() {
+        if let Some(result) = try_eval_builtin(op, &evaled_items[1..]) {
+            return ProcessedSExpr::Done((vec![result], unified_env));
         }
     }
 
-    if rule_matches_to_eval.is_empty() {
-        // No rules to evaluate, we're done
-        ProcessedSExpr::Done((all_final_results, unified_env))
-    } else {
+    // Try to match against rules
+    let sexpr = MettaValue::SExpr(evaled_items.clone());
+    let all_matches = try_match_all_rules(&sexpr, &unified_env);
+
+    if !all_matches.is_empty() {
         // Need to evaluate rule matches iteratively
         ProcessedSExpr::EvalRuleMatches {
-            matches: rule_matches_to_eval,
+            matches: all_matches,
             env: unified_env,
             depth,
-            base_results: all_final_results,
+            base_results: vec![],
         }
+    } else {
+        // No rule matched - check for typos and handle ADD mode
+        let result = handle_no_rule_match(evaled_items, &sexpr, &mut unified_env);
+        ProcessedSExpr::Done((vec![result], unified_env))
     }
 }
 
@@ -981,11 +1266,28 @@ fn handle_no_rule_match(
                 );
             }
             // Check for misspelled rule head
-            if let Some(suggestion) = unified_env.did_you_mean(head, 1) {
-                return MettaValue::Error(
-                    format!("No rule matches '{}'. {}", head, suggestion),
-                    Arc::new(sexpr.clone()),
-                );
+            // Skip suggestions where the only difference is a prefix character (&, $)
+            // since these are semantically different identifier types
+            if let Some(suggestion_msg) = unified_env.did_you_mean(head, 1) {
+                // Extract the suggested term from "Did you mean: X?"
+                if let Some(suggested) = suggestion_msg
+                    .strip_prefix("Did you mean: ")
+                    .and_then(|s| s.strip_suffix('?'))
+                {
+                    // Don't suggest space references for regular atoms or vice versa
+                    let head_is_space_ref = head.starts_with('&');
+                    let suggested_is_space_ref = suggested.starts_with('&');
+
+                    if head_is_space_ref == suggested_is_space_ref {
+                        // Same category - this is a valid typo suggestion
+                        return MettaValue::Error(
+                            format!("No rule matches '{}'. {}", head, suggestion_msg),
+                            Arc::new(sexpr.clone()),
+                        );
+                    }
+                    // Different categories (stack vs &stack) - skip the suggestion
+                    // Fall through to ADD mode
+                }
             }
         }
     }
@@ -1498,79 +1800,6 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
     }
 }
 
-/// Generate Cartesian product of evaluation results for nondeterministic evaluation
-/// When sub-expressions return multiple results, we need to try all combinations
-///
-/// Example: [[a, b], [1, 2]] -> [[a, 1], [a, 2], [b, 1], [b, 2]]
-///
-/// This function has a built-in limit (MAX_CARTESIAN_RESULTS) to prevent combinatorial explosion.
-/// Returns Err with an error message if the limit is exceeded.
-fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>, MettaValue> {
-    if results.is_empty() {
-        return Ok(vec![vec![]]);
-    }
-
-    // FAST PATH: If all result lists have exactly 1 item (deterministic evaluation),
-    // we can just concatenate them directly in O(n) instead of O(n²)
-    // This is the common case for arithmetic and most builtin operations
-    if results.iter().all(|r| r.len() == 1) {
-        let single_combo: Vec<MettaValue> = results.iter().map(|r| r[0].clone()).collect();
-        return Ok(vec![single_combo]);
-    }
-
-    // Calculate the total product size first to check if it would exceed the limit
-    let total_size: usize = results
-        .iter()
-        .map(|r| r.len().max(1))
-        .fold(1usize, |acc, len| acc.saturating_mul(len));
-
-    if total_size > MAX_CARTESIAN_RESULTS {
-        return Err(MettaValue::Error(
-            format!(
-                "Combinatorial explosion: evaluation would produce {} results, exceeding limit of {}. \
-                 Consider simplifying the expression or adding constraints.",
-                total_size, MAX_CARTESIAN_RESULTS
-            ),
-            Arc::new(MettaValue::Atom("LimitExceeded".to_string())),
-        ));
-    }
-
-    // Iterative Cartesian product for non-deterministic cases
-    // Start with a single empty combination
-    let mut product = vec![Vec::with_capacity(results.len())];
-
-    // Process each result list and extend all existing combinations
-    for result_list in results {
-        if result_list.is_empty() {
-            // Empty list contributes nothing to combinations
-            continue;
-        }
-
-        let new_capacity = product
-            .len()
-            .checked_mul(result_list.len())
-            .ok_or_else(|| {
-                MettaValue::Error(
-                    "Combinatorial explosion: integer overflow in cartesian product".to_string(),
-                    Arc::new(MettaValue::Atom("Overflow".to_string())),
-                )
-            })?;
-        let mut new_product = Vec::with_capacity(new_capacity);
-
-        for combo in &product {
-            for item in result_list {
-                let mut new_combo = combo.clone();
-                new_combo.push(item.clone());
-                new_product.push(new_combo);
-            }
-        }
-
-        product = new_product;
-    }
-
-    Ok(product)
-}
-
 /// Apply variable bindings to a value
 ///
 /// This is made public to support optimized match operations in Environment
@@ -1682,7 +1911,8 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
 /// This function supports MeTTa's non-deterministic semantics where multiple rules
 /// can match the same expression and all results should be returned.
 fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
-    // Try query_multi optimization first
+    // Try MORK's query_multi first for O(k) matching where k = number of matching rules
+    // Falls back to iterative O(n) matching if query_multi fails (e.g., arity >= 64)
     let query_multi_results = try_match_all_rules_query_multi(expr, env);
     if !query_multi_results.is_empty() {
         return query_multi_results;
@@ -1700,34 +1930,30 @@ fn try_match_all_rules_query_multi(
     // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
     // This will find all rules where the LHS matches our expression
 
-    // Convert expression to MORK format for querying (using cache)
-    let expr_bytes = match env.metta_to_mork_bytes_cached(expr) {
+    let space = env.create_space();
+
+    // IMPORTANT: Use shared ConversionContext for pattern building AND binding conversion
+    // This ensures variable names are properly registered and can be looked up later
+    // FIX: Previously ctx was empty, causing mork_bindings_to_metta to fail
+    let mut ctx = ConversionContext::new();
+
+    // Build pattern as MettaValue: (= <expr> $rhs)
+    let rhs_var = MettaValue::Atom("$rhs".to_string());
+    let pattern = MettaValue::SExpr(vec![
+        MettaValue::Atom("=".to_string()),
+        expr.clone(),
+        rhs_var,
+    ]);
+
+    // Convert to MORK bytes using metta_to_mork_bytes with shared context
+    // This registers the $rhs variable (and any variables in expr) in ctx
+    let pattern_bytes = match metta_to_mork_bytes(&pattern, &space, &mut ctx) {
         Ok(bytes) => bytes,
-        Err(_) => return Vec::new(), // Fallback to iterative if conversion fails
+        Err(_) => return Vec::new(), // Fallback if conversion fails
     };
 
-    let space = env.create_space();
-    let ctx = ConversionContext::new();
-
-    // Create a query pattern: (= <expr> $rhs)
-    let pattern_str = format!("(= {} $rhs)", String::from_utf8_lossy(&expr_bytes));
-    let pattern_bytes = pattern_str.as_bytes();
-
-    // Parse the pattern using MORK's parser
-    let mut parse_buffer = vec![0u8; 4096];
-    let mut pdp = mork::space::ParDataParser::new(&space.sm);
-    use mork_frontend::bytestring_parser::Parser;
-    let mut ez = mork_expr::ExprZipper::new(Expr {
-        ptr: parse_buffer.as_mut_ptr(),
-    });
-    let mut context = mork_frontend::bytestring_parser::Context::new(pattern_bytes);
-
-    if pdp.sexpr(&mut context, &mut ez).is_err() {
-        return Vec::new(); // Fallback if parsing fails
-    }
-
     let pattern_expr = Expr {
-        ptr: parse_buffer.as_ptr().cast_mut(),
+        ptr: pattern_bytes.as_ptr().cast_mut(),
     };
 
     // Collect ALL matches using query_multi
@@ -1738,11 +1964,12 @@ fn try_match_all_rules_query_multi(
     mork::space::Space::query_multi(&space.btm, pattern_expr, |result, _matched_expr| {
         if let Err(bindings) = result {
             // Convert MORK bindings to our format
+            // The ctx now has variable names registered from metta_to_mork_bytes
             if let Ok(our_bindings) = mork_bindings_to_metta(&bindings, &ctx, &space) {
-                // Extract the RHS from bindings
+                // Extract the RHS from bindings - variable name is "rhs" (without $)
                 if let Some((_, rhs)) = our_bindings
                     .iter()
-                    .find(|(name, _)| name.as_str() == "$rhs")
+                    .find(|(name, _)| name.as_str() == "rhs")
                 {
                     matches.push((rhs.clone(), our_bindings));
                 }
@@ -3249,5 +3476,238 @@ mod tests {
             results[0], expr,
             "Short symbols should not be flagged as typos"
         );
+    }
+
+    // ==========================================================================
+    // Lazy Cartesian Product Iterator Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_cartesian_product_iter_basic() {
+        // Test basic 2x2 cartesian product
+        let results = vec![
+            vec![MettaValue::Long(1), MettaValue::Long(2)],
+            vec![MettaValue::Long(10), MettaValue::Long(20)],
+        ];
+        let iter = CartesianProductIter::new(results).expect("Should create iterator");
+
+        let combos: Vec<Vec<MettaValue>> = iter.collect();
+
+        assert_eq!(combos.len(), 4);
+        assert_eq!(combos[0], vec![MettaValue::Long(1), MettaValue::Long(10)]);
+        assert_eq!(combos[1], vec![MettaValue::Long(1), MettaValue::Long(20)]);
+        assert_eq!(combos[2], vec![MettaValue::Long(2), MettaValue::Long(10)]);
+        assert_eq!(combos[3], vec![MettaValue::Long(2), MettaValue::Long(20)]);
+    }
+
+    #[test]
+    fn test_cartesian_product_iter_single_element() {
+        // All single-element lists - deterministic case
+        let results = vec![
+            vec![MettaValue::Long(1)],
+            vec![MettaValue::Long(2)],
+            vec![MettaValue::Long(3)],
+        ];
+        let iter = CartesianProductIter::new(results).expect("Should create iterator");
+
+        let combos: Vec<Vec<MettaValue>> = iter.collect();
+
+        assert_eq!(combos.len(), 1);
+        assert_eq!(
+            combos[0],
+            vec![MettaValue::Long(1), MettaValue::Long(2), MettaValue::Long(3)]
+        );
+    }
+
+    #[test]
+    fn test_cartesian_product_iter_empty_input() {
+        // Empty outer vector - the iterator is created but produces no combinations
+        // Note: cartesian_product_lazy handles this case specially by returning Single(vec![])
+        let results: Vec<Vec<MettaValue>> = vec![];
+        let iter = CartesianProductIter::new(results);
+
+        // Iterator is created (Some) but produces no items because results.is_empty() check in next()
+        assert!(iter.is_some());
+        let combos: Vec<Vec<MettaValue>> = iter.unwrap().collect();
+        assert!(combos.is_empty());
+    }
+
+    #[test]
+    fn test_cartesian_product_iter_empty_list() {
+        // One empty list should return None
+        let results = vec![
+            vec![MettaValue::Long(1), MettaValue::Long(2)],
+            vec![], // Empty list
+            vec![MettaValue::Long(10), MettaValue::Long(20)],
+        ];
+        let iter = CartesianProductIter::new(results);
+
+        assert!(iter.is_none());
+    }
+
+    #[test]
+    fn test_cartesian_product_iter_3x3x3() {
+        // Test 3x3x3 = 27 combinations
+        let results = vec![
+            vec![MettaValue::Long(1), MettaValue::Long(2), MettaValue::Long(3)],
+            vec![
+                MettaValue::Atom("a".into()),
+                MettaValue::Atom("b".into()),
+                MettaValue::Atom("c".into()),
+            ],
+            vec![MettaValue::Bool(true), MettaValue::Bool(false), MettaValue::Nil],
+        ];
+        let iter = CartesianProductIter::new(results).expect("Should create iterator");
+
+        let combos: Vec<Vec<MettaValue>> = iter.collect();
+
+        assert_eq!(combos.len(), 27);
+
+        // Verify first and last combinations
+        assert_eq!(
+            combos[0],
+            vec![MettaValue::Long(1), MettaValue::Atom("a".into()), MettaValue::Bool(true)]
+        );
+        assert_eq!(
+            combos[26],
+            vec![MettaValue::Long(3), MettaValue::Atom("c".into()), MettaValue::Nil]
+        );
+    }
+
+    #[test]
+    fn test_cartesian_product_lazy_count() {
+        // Verify iterator is lazy by checking memory usage pattern
+        let results = cartesian_product_lazy(vec![
+            vec![MettaValue::Long(1), MettaValue::Long(2)],
+            vec![MettaValue::Long(10), MettaValue::Long(20), MettaValue::Long(30)],
+        ]);
+
+        match results {
+            CartesianProductResult::Lazy(iter) => {
+                // Count combinations without storing them all
+                let count = iter.count();
+                assert_eq!(count, 6);
+            }
+            _ => panic!("Expected Lazy variant for nondeterministic case"),
+        }
+    }
+
+    #[test]
+    fn test_cartesian_product_lazy_single_returns_single() {
+        // Fast path: single combination returns Single variant
+        let results = cartesian_product_lazy(vec![
+            vec![MettaValue::Long(1)],
+            vec![MettaValue::Long(2)],
+        ]);
+
+        match results {
+            CartesianProductResult::Single(combo) => {
+                assert_eq!(combo, vec![MettaValue::Long(1), MettaValue::Long(2)]);
+            }
+            _ => panic!("Expected Single variant for deterministic case"),
+        }
+    }
+
+    #[test]
+    fn test_cartesian_product_lazy_empty_returns_single_empty() {
+        // Empty input returns Single(vec![]) - the identity element
+        // The Cartesian product of nothing is a single empty tuple
+        let results = cartesian_product_lazy(vec![]);
+
+        match results {
+            CartesianProductResult::Single(combo) => {
+                assert!(combo.is_empty(), "Should be empty tuple");
+            }
+            _ => panic!("Expected Single(vec![]) for empty input"),
+        }
+    }
+
+    #[test]
+    fn test_cartesian_product_lazy_with_empty_list_returns_empty() {
+        // Empty list in results returns Empty variant
+        let results = cartesian_product_lazy(vec![
+            vec![MettaValue::Long(1)],
+            vec![], // Empty
+        ]);
+
+        match results {
+            CartesianProductResult::Empty => {}
+            _ => panic!("Expected Empty variant when one list is empty"),
+        }
+    }
+
+    #[test]
+    fn test_cartesian_product_ordering_preserved() {
+        // Verify outer-product ordering is preserved (rightmost index varies fastest)
+        let results = vec![
+            vec![MettaValue::Long(1), MettaValue::Long(2)],     // First dimension
+            vec![MettaValue::Long(10), MettaValue::Long(20)],   // Second dimension
+        ];
+        let iter = CartesianProductIter::new(results).expect("Should create iterator");
+
+        let combos: Vec<Vec<MettaValue>> = iter.collect();
+
+        // Ordering: (1,10), (1,20), (2,10), (2,20)
+        // Rightmost index varies fastest
+        assert_eq!(combos[0], vec![MettaValue::Long(1), MettaValue::Long(10)]);
+        assert_eq!(combos[1], vec![MettaValue::Long(1), MettaValue::Long(20)]);
+        assert_eq!(combos[2], vec![MettaValue::Long(2), MettaValue::Long(10)]);
+        assert_eq!(combos[3], vec![MettaValue::Long(2), MettaValue::Long(20)]);
+    }
+
+    #[test]
+    fn test_nondeterministic_cartesian_product() {
+        // Integration test: nondeterministic evaluation using lazy Cartesian product
+        // (= (a) 1)
+        // (= (a) 2)
+        // (= (b) 10)
+        // (= (b) 20)
+        // !(+ (a) (b))
+        // Expected: [11, 21, 12, 22]
+
+        let mut env = Environment::new();
+
+        // Add rules for (a) -> 1 and (a) -> 2
+        env.add_rule(Rule {
+            lhs: MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
+            rhs: MettaValue::Long(1),
+        });
+        env.add_rule(Rule {
+            lhs: MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
+            rhs: MettaValue::Long(2),
+        });
+
+        // Add rules for (b) -> 10 and (b) -> 20
+        env.add_rule(Rule {
+            lhs: MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
+            rhs: MettaValue::Long(10),
+        });
+        env.add_rule(Rule {
+            lhs: MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
+            rhs: MettaValue::Long(20),
+        });
+
+        // Evaluate (+ (a) (b))
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
+            MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
+        ]);
+
+        let (results, _) = eval(expr, env);
+
+        // Should have 4 results: 1+10=11, 1+20=21, 2+10=12, 2+20=22
+        assert_eq!(results.len(), 4);
+
+        let mut result_values: Vec<i64> = results
+            .iter()
+            .filter_map(|v| match v {
+                MettaValue::Long(n) => Some(*n),
+                _ => None,
+            })
+            .collect();
+        result_values.sort();
+
+        assert_eq!(result_values, vec![11, 12, 21, 22]);
     }
 }

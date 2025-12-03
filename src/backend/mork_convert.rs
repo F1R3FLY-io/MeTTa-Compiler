@@ -76,9 +76,11 @@ fn write_metta_value(
         MettaValue::Atom(name) => {
             // Check if it's a variable
             // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            if (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
-                && name != "&"
-            {
+            // EXCEPT: "&self", "&kb", "&stack" are space references, not variables
+            if name == "&" || name == "&self" || name == "&kb" || name == "&stack" {
+                // Space references and standalone & are NOT variables - write as symbols
+                write_symbol(name.as_bytes(), space, ez)?;
+            } else if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
                 // Variable - use De Bruijn encoding
                 let var_id = &name[1..]; // Remove prefix
                 match ctx.get_or_create_var(var_id)? {
@@ -98,7 +100,7 @@ fn write_metta_value(
                 ez.write_new_var();
                 ez.loc += 1;
             } else {
-                // Regular atom - write as symbol (including standalone "&")
+                // Regular atom - write as symbol
                 write_symbol(name.as_bytes(), space, ez)?;
             }
         }
@@ -131,6 +133,13 @@ fn write_metta_value(
         }
 
         MettaValue::SExpr(items) => {
+            // MORK arity is limited to 6 bits (0-63)
+            if items.len() >= 64 {
+                return Err(format!(
+                    "Expression has too many children ({}) - MORK arity limit is 63",
+                    items.len()
+                ));
+            }
             // Write arity tag
             let arity = items.len() as u8;
             ez.write_arity(arity);
@@ -157,9 +166,17 @@ fn write_metta_value(
         }
 
         MettaValue::Conjunction(goals) => {
-            // Conjunctions are written as (,)with comma as first symbol and goals as children
-            let arity = (goals.len() + 1) as u8; // +1 for the comma symbol
-            ez.write_arity(arity);
+            // MORK arity is limited to 6 bits (0-63)
+            // +1 for the comma symbol
+            let total_arity = goals.len() + 1;
+            if total_arity >= 64 {
+                return Err(format!(
+                    "Conjunction has too many goals ({}) - MORK arity limit is 63",
+                    goals.len()
+                ));
+            }
+            // Conjunctions are written as (, goal1 goal2 ...) with comma as first symbol
+            ez.write_arity(total_arity as u8);
             ez.loc += 1;
 
             // Write the comma symbol as first child

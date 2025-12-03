@@ -128,6 +128,13 @@ pub struct Environment {
     /// Unlike GroundedOperation, TCO operations return work items instead of calling eval internally
     /// This keeps evaluation on the trampoline work stack, enabling deep recursion without stack overflow
     grounded_registry_tco: Arc<RwLock<GroundedRegistryTCO>>,
+
+    /// Fallback store for expressions exceeding MORK's 63-arity limit.
+    /// Wrapped in Option - only allocated on first use (lazy initialization).
+    /// Uses PathMap with varint encoding (no arity limit)
+    /// Key: varint-encoded MettaValue bytes
+    /// Value: MettaValue (stored for retrieval during pattern matching)
+    large_expr_pathmap: Arc<RwLock<Option<PathMap<MettaValue>>>>,
 }
 
 impl Environment {
@@ -156,6 +163,7 @@ impl Environment {
             tokenizer: Arc::new(RwLock::new(Tokenizer::new())),
             grounded_registry: Arc::new(RwLock::new(GroundedRegistry::with_standard_ops())),
             grounded_registry_tco: Arc::new(RwLock::new(GroundedRegistryTCO::with_standard_ops())),
+            large_expr_pathmap: Arc::new(RwLock::new(None)), // Lazy: not allocated until needed
         }
     }
 
@@ -186,6 +194,7 @@ impl Environment {
         let tokenizer_data = self.tokenizer.read().unwrap().clone();
         let grounded_registry_data = self.grounded_registry.read().unwrap().clone();
         let grounded_registry_tco_data = self.grounded_registry_tco.read().unwrap().clone();
+        let large_expr_pathmap_data = self.large_expr_pathmap.read().unwrap().clone();
 
         // Now assign the new Arc<RwLock<T>> instances
         self.btm = Arc::new(RwLock::new(btm_data));
@@ -204,6 +213,7 @@ impl Environment {
         self.tokenizer = Arc::new(RwLock::new(tokenizer_data));
         self.grounded_registry = Arc::new(RwLock::new(grounded_registry_data));
         self.grounded_registry_tco = Arc::new(RwLock::new(grounded_registry_tco_data));
+        self.large_expr_pathmap = Arc::new(RwLock::new(large_expr_pathmap_data));
         // Note: current_module_path is not Arc-wrapped, so it's copied directly
 
         // Mark as owning data and modified
@@ -714,7 +724,7 @@ impl Environment {
         let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
 
-        // Directly iterate through all values in the trie
+        // 1. Iterate through MORK PathMap (primary storage)
         while rz.to_next_val() {
             // Get the s-expression at this position
             let expr = Expr {
@@ -734,6 +744,19 @@ impl Environment {
         }
 
         drop(space);
+
+        // 2. Also check large expression fallback PathMap (if allocated)
+        // These are expressions with arity >= 64 that couldn't fit in MORK
+        let guard = self.large_expr_pathmap.read().unwrap();
+        if let Some(ref fallback) = *guard {
+            for (_key, stored_value) in fallback.iter() {
+                if let Some(bindings) = pattern_match(pattern, stored_value) {
+                    let instantiated = apply_bindings(template, &bindings);
+                    results.push(instantiated);
+                }
+            }
+        }
+
         results
     }
 
@@ -911,6 +934,28 @@ impl Environment {
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
+    /// Get read access to the large expression fallback PathMap
+    ///
+    /// Returns the fallback PathMap that stores expressions with arity >= 64
+    /// (which exceed MORK's 63-arity limit). Uses varint encoding for keys.
+    /// Returns None if no large expressions have been stored.
+    pub fn get_large_expr_pathmap(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, Option<PathMap<MettaValue>>> {
+        self.large_expr_pathmap.read().unwrap()
+    }
+
+    /// Insert a value into the large expressions fallback PathMap
+    /// Used during deserialization to restore large expressions (arity >= 64)
+    /// that exceed MORK's 63-arity limit
+    pub fn insert_large_expr(&self, value: MettaValue) {
+        use crate::backend::varint_encoding::metta_to_varint_key;
+        let key = metta_to_varint_key(&value);
+        let mut guard = self.large_expr_pathmap.write().unwrap();
+        let fallback = guard.get_or_insert_with(PathMap::new);
+        fallback.insert(&key, value);
+    }
+
     /// Check if an atom fact exists (queries MORK Space)
     /// OPTIMIZED: Uses O(p) exact match via descend_to_check() where p = pattern depth
     ///
@@ -1073,11 +1118,15 @@ impl Environment {
     }
 
     /// Check if a MettaValue contains variables ($x, &y, 'z, or _)
+    /// Space references like &self, &kb, &stack are NOT variables
     fn contains_variables(value: &MettaValue) -> bool {
         match value {
             MettaValue::Atom(s) => {
-                s == "_"
-                    || (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&"
+                // Space references are NOT variables
+                if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
+                    return false;
+                }
+                s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
             }
             MettaValue::SExpr(items) => items.iter().any(Self::contains_variables),
             MettaValue::Error(_, details) => Self::contains_variables(details),
@@ -1175,39 +1224,37 @@ impl Environment {
     /// To query nested parts, use pattern matching with variables, e.g., (Outer $x)
     pub fn add_to_space(&mut self, value: &MettaValue) {
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
+        use crate::backend::varint_encoding::metta_to_varint_key;
 
-        // Try direct byte conversion first (Variant C)
+        // Always try direct byte conversion first (handles both ground and non-ground values)
         // This skips string serialization + parsing for 10-20× speedup
-        let is_ground = !Self::contains_variables(value);
+        // Also properly handles arity limits (returns error instead of panicking)
+        let space = self.create_space();
+        let mut ctx = ConversionContext::new();
 
-        if is_ground {
-            // Ground values: use direct MORK byte conversion (no parsing needed)
-            let space = self.create_space();
-            let mut ctx = ConversionContext::new();
-
-            if let Ok(mork_bytes) = metta_to_mork_bytes(value, &space, &mut ctx) {
-                // Direct PathMap insertion without parsing
+        match metta_to_mork_bytes(value, &space, &mut ctx) {
+            Ok(mork_bytes) => {
+                // Primary: Store in MORK PathMap (fast O(k) query_multi)
                 let mut space_mut = self.create_space();
                 space_mut.btm.insert(&mork_bytes, ());
                 self.update_pathmap(space_mut);
-                return;
+            }
+            Err(_e) => {
+                // Fallback: Store in PathMap with varint encoding (arity >= 64)
+                // Lazy allocation: only create PathMap on first use
+                let key = metta_to_varint_key(value);
+                self.make_owned(); // CoW: ensure we own data before modifying
+                let mut guard = self.large_expr_pathmap.write().unwrap();
+                let fallback = guard.get_or_insert_with(PathMap::new);
+                fallback.insert(&key, value.clone());
+
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "Info: large expression stored in fallback PathMap: {}",
+                    _e
+                );
             }
         }
-
-        // Fallback: use string path for variable-containing values
-        let mork_str = value.to_mork_string();
-        let mork_bytes = mork_str.as_bytes();
-
-        // Create thread-local Space
-        let mut space = self.create_space();
-
-        // Use MORK's parser to load the s-expression into PathMap trie
-        if let Ok(_count) = space.load_all_sexpr_impl(mork_bytes, true) {
-            // Successfully added to space
-        }
-
-        // Update shared PathMap with modified Space
-        self.update_pathmap(space);
     }
 
     /// Remove a fact from MORK Space by exact match
@@ -1230,43 +1277,29 @@ impl Environment {
     /// - Marks environment as modified (CoW)
     pub fn remove_from_space(&mut self, value: &MettaValue) {
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
+        use crate::backend::varint_encoding::metta_to_varint_key;
 
-        // Try direct byte conversion first (same optimization as add_to_space)
-        let is_ground = !Self::contains_variables(value);
+        // Always try direct byte conversion (handles both ground and non-ground values)
+        // Also properly handles arity limits (returns error instead of panicking)
+        let space = self.create_space();
+        let mut ctx = ConversionContext::new();
 
-        if is_ground {
-            // Ground values: use direct MORK byte conversion
-            let space = self.create_space();
-            let mut ctx = ConversionContext::new();
-
-            if let Ok(mork_bytes) = metta_to_mork_bytes(value, &space, &mut ctx) {
-                // Direct PathMap removal
+        match metta_to_mork_bytes(value, &space, &mut ctx) {
+            Ok(mork_bytes) => {
+                // Remove from primary MORK PathMap
                 let mut space_mut = self.create_space();
                 space_mut.btm.remove(&mork_bytes);
                 self.update_pathmap(space_mut);
-                return;
+            }
+            Err(_) => {
+                // Remove from fallback PathMap (if it exists)
+                let key = metta_to_varint_key(value);
+                let mut guard = self.large_expr_pathmap.write().unwrap();
+                if let Some(ref mut fallback) = *guard {
+                    fallback.remove(&key);
+                }
             }
         }
-
-        // Fallback: use string path for variable-containing values
-        // Note: This should rarely happen as remove typically targets ground facts
-        let mork_str = value.to_mork_string();
-        let mork_bytes = mork_str.as_bytes();
-
-        // Create thread-local Space
-        let mut space = self.create_space();
-
-        // Parse to get MORK bytes, then remove
-        // We need to parse it to get the actual bytes used by PathMap
-        if space.load_all_sexpr_impl(mork_bytes, false).is_ok() {
-            // The parsed bytes are now in the temporary space
-            // We need to extract them and remove from our space
-            // For now, use the simpler approach: rebuild space without this fact
-            // This is less efficient but handles the edge case
-        }
-
-        // For variable-containing values (rare case), we don't support pattern-based removal yet
-        // Fall back to no-op - pattern-based removal will be added in remove_matching
     }
 
     /// Remove all facts matching a pattern from MORK Space
@@ -1811,6 +1844,7 @@ impl Environment {
         let tokenizer = self.tokenizer.clone();
         let grounded_registry = self.grounded_registry.clone();
         let grounded_registry_tco = self.grounded_registry_tco.clone();
+        let large_expr_pathmap = self.large_expr_pathmap.clone();
 
         Environment {
             shared_mapping,
@@ -1834,6 +1868,7 @@ impl Environment {
             tokenizer,
             grounded_registry,
             grounded_registry_tco,
+            large_expr_pathmap,
         }
     }
 }
@@ -1864,6 +1899,7 @@ impl Clone for Environment {
             tokenizer: Arc::clone(&self.tokenizer),
             grounded_registry: Arc::clone(&self.grounded_registry),
             grounded_registry_tco: Arc::clone(&self.grounded_registry_tco),
+            large_expr_pathmap: Arc::clone(&self.large_expr_pathmap),
         }
     }
 }

@@ -378,17 +378,28 @@ pub(super) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalRes
     let (results, env1) = eval(expr.clone(), env);
 
     if results.is_empty() {
-        // Empty superposition returns Nil
-        return (vec![MettaValue::Nil], env1);
+        // Empty superposition returns empty list ()
+        return (vec![MettaValue::SExpr(vec![])], env1);
+    }
+
+    // Filter out Nil values from results (they represent "no result" in nondeterministic evaluation)
+    let filtered: Vec<MettaValue> = results
+        .into_iter()
+        .filter(|v| !matches!(v, MettaValue::Nil))
+        .collect();
+
+    if filtered.is_empty() {
+        // All results were Nil → return empty list ()
+        return (vec![MettaValue::SExpr(vec![])], env1);
     }
 
     // Check if the single result is a space (direct space collapse)
-    if results.len() == 1 {
-        if let MettaValue::Space(handle) = &results[0] {
+    if filtered.len() == 1 {
+        if let MettaValue::Space(handle) = &filtered[0] {
             // Use SpaceHandle's collapse method directly
             let atoms = handle.collapse();
             if atoms.is_empty() {
-                return (vec![MettaValue::Nil], env1);
+                return (vec![MettaValue::SExpr(vec![])], env1);
             } else {
                 return (vec![MettaValue::SExpr(atoms)], env1);
             }
@@ -396,7 +407,7 @@ pub(super) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalRes
     }
 
     // For any other expression, gather all results into a list
-    (vec![MettaValue::SExpr(results)], env1)
+    (vec![MettaValue::SExpr(filtered)], env1)
 }
 
 /// get-atoms: Get all atoms from a space as a superposition

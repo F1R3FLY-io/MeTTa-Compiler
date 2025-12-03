@@ -26,6 +26,7 @@ fn create_int_par(n: i64) -> Par {
 // These identify byte arrays as MeTTa-specific data for the pretty-printer
 const METTA_MULTIPLICITIES_MAGIC: &[u8] = b"MTTM"; // MeTTa Multiplicities
 const METTA_SPACE_MAGIC: &[u8] = b"MTTS"; // MeTTa Space
+const METTA_LARGE_EXPRS_MAGIC: &[u8] = b"MTTL"; // MeTTa Large Expressions (arity >= 64)
 
 /// Convert a MettaValue to a Rholang Par object
 pub fn metta_value_to_par(value: &MettaValue) -> Par {
@@ -250,6 +251,49 @@ pub fn environment_to_par(env: &Environment) -> Par {
     // The space is now a single GByteArray with raw path bytes
     let space_epathmap = space_bytes_par;
 
+    // Serialize large expressions (arity >= 64) from fallback PathMap
+    // Format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes]...
+    // Uses varint encoding (not MORK) for expressions that exceed 63-arity limit
+    let mut large_exprs_bytes = Vec::new();
+    large_exprs_bytes.extend_from_slice(METTA_LARGE_EXPRS_MAGIC);
+
+    let guard = env.get_large_expr_pathmap();
+    let large_expr_count;
+    if let Some(ref fallback) = *guard {
+        // Reserve space for count
+        let count_offset = large_exprs_bytes.len();
+        large_exprs_bytes.extend_from_slice(&[0u8; 8]);
+
+        let mut count = 0u64;
+        for (_key, metta_value) in fallback.iter() {
+            // Serialize each value using varint encoding
+            use crate::backend::varint_encoding::metta_to_varint_key;
+            let value_bytes = metta_to_varint_key(metta_value);
+            // Write length (4 bytes, big-endian)
+            let len = value_bytes.len() as u32;
+            large_exprs_bytes.extend_from_slice(&len.to_be_bytes());
+            // Write value bytes
+            large_exprs_bytes.extend_from_slice(&value_bytes);
+            count += 1;
+        }
+
+        // Write actual count
+        large_exprs_bytes[count_offset..count_offset + 8].copy_from_slice(&count.to_be_bytes());
+        large_expr_count = count;
+    } else {
+        // No large expressions - write count = 0
+        large_exprs_bytes.extend_from_slice(&0u64.to_be_bytes());
+        large_expr_count = 0;
+    }
+    drop(guard);
+
+    let large_exprs_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(large_exprs_bytes)),
+    }]);
+
+    // Only include large_exprs tuple if there are any
+    let _has_large_exprs = large_expr_count > 0;
+
     // Serialize multiplicities as a byte array for efficiency and consistency
     // Format: [magic: 4 bytes "MTTM"][count: 8 bytes][key1_len: 4 bytes][key1_bytes][value1: 8 bytes]...
     let multiplicities_map = env.get_multiplicities();
@@ -278,10 +322,21 @@ pub fn environment_to_par(env: &Environment) -> Par {
         expr_instance: Some(ExprInstance::GByteArray(multiplicities_bytes)),
     }]);
 
-    // Build ETuple with named fields: (("space", ...), ("multiplicities", ...))
+    // Build ETuple with named fields: (("space", ...), ("large_exprs", ...), ("multiplicities", ...))
     let space_tuple = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::ETupleBody(ETuple {
             ps: vec![create_string_par("space".to_string()), space_epathmap],
+            locally_free: Vec::new(),
+            connective_used: false,
+        })),
+    }]);
+
+    let large_exprs_tuple = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            ps: vec![
+                create_string_par("large_exprs".to_string()),
+                large_exprs_par,
+            ],
             locally_free: Vec::new(),
             connective_used: false,
         })),
@@ -298,10 +353,11 @@ pub fn environment_to_par(env: &Environment) -> Par {
         })),
     }]);
 
-    // Return ETuple with 2 named field tuples
+    // Return ETuple with 2 or 3 named field tuples (3 if large_exprs present)
+    // Order: [space, multiplicities, large_exprs] for backwards compatibility
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-            ps: vec![space_tuple, multiplicities_tuple],
+            ps: vec![space_tuple, multiplicities_tuple, large_exprs_tuple],
             locally_free: Vec::new(),
             connective_used: false,
         })),
@@ -490,16 +546,17 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
 /// Deserializes the Space's PathMap and multiplicities from byte arrays
 /// Expects an ETuple with named fields:
 ///   (("space", GByteArray), ("multiplicities", GByteArray))
+///   or (("space", GByteArray), ("multiplicities", GByteArray), ("large_exprs", GByteArray))
 /// Note: Type assertions are stored within the space, not separately
 pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
     use std::collections::HashMap;
 
-    // The par should be an ETuple with 2 named field tuples
+    // The par should be an ETuple with 2 or 3 named field tuples (3 if large_exprs present)
     if let Some(expr) = par.exprs.first() {
         if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
-            if tuple.ps.len() != 2 {
+            if tuple.ps.len() < 2 || tuple.ps.len() > 3 {
                 return Err(format!(
-                    "Expected 2 elements in environment tuple, got {}",
+                    "Expected 2 or 3 elements in environment tuple, got {}",
                     tuple.ps.len()
                 ));
             }
@@ -714,6 +771,71 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
                 env.update_pathmap(space);
             }
 
+            // Extract and restore large expressions (element 2) if present
+            // These are expressions with arity >= 64 that exceed MORK's 63-arity limit
+            if tuple.ps.len() >= 3 {
+                let large_exprs_par = extract_tuple_value(&tuple.ps[2])?;
+                if let Some(expr) = large_exprs_par.exprs.first() {
+                    if let Some(ExprInstance::GByteArray(large_bytes)) = &expr.expr_instance {
+                        // Read format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes]...
+                        if large_bytes.len() >= 12 {
+                            let mut offset = 0;
+
+                            // Check and skip magic number if present
+                            if large_bytes.len() >= 4
+                                && &large_bytes[0..4] == METTA_LARGE_EXPRS_MAGIC
+                            {
+                                offset += 4;
+                            }
+
+                            // Read count
+                            if offset + 8 <= large_bytes.len() {
+                                let count = u64::from_be_bytes([
+                                    large_bytes[offset],
+                                    large_bytes[offset + 1],
+                                    large_bytes[offset + 2],
+                                    large_bytes[offset + 3],
+                                    large_bytes[offset + 4],
+                                    large_bytes[offset + 5],
+                                    large_bytes[offset + 6],
+                                    large_bytes[offset + 7],
+                                ]);
+                                offset += 8;
+
+                                // Read and restore each large expression
+                                use crate::backend::varint_encoding::varint_key_to_metta;
+                                for _ in 0..count {
+                                    if offset + 4 > large_bytes.len() {
+                                        break;
+                                    }
+
+                                    // Read expression length
+                                    let len = u32::from_be_bytes([
+                                        large_bytes[offset],
+                                        large_bytes[offset + 1],
+                                        large_bytes[offset + 2],
+                                        large_bytes[offset + 3],
+                                    ]) as usize;
+                                    offset += 4;
+
+                                    if offset + len > large_bytes.len() {
+                                        break;
+                                    }
+
+                                    // Decode varint-encoded expression and insert
+                                    let expr_bytes = &large_bytes[offset..offset + len];
+                                    if let Some((metta_value, _)) = varint_key_to_metta(expr_bytes)
+                                    {
+                                        env.insert_large_expr(metta_value);
+                                    }
+                                    offset += len;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Rebuild the rule index from the restored MORK Space
             // This is critical for rule matching to work after deserialization
             env.rebuild_rule_index();
@@ -845,13 +967,13 @@ mod tests {
         let par = environment_to_par(&env);
         println!("Serialized to Par");
 
-        // Check that the serialized Par is an ETuple with 2 named field tuples
+        // Check that the serialized Par is an ETuple with 2 or 3 named field tuples
+        // (3 if large_exprs are present)
         assert_eq!(par.exprs.len(), 1);
         if let Some(ExprInstance::ETupleBody(env_tuple)) = par.exprs[0].expr_instance.as_ref() {
-            assert_eq!(
-                env_tuple.ps.len(),
-                2,
-                "Expected ETuple with 2 fields (space, multiplicities), got {}",
+            assert!(
+                env_tuple.ps.len() == 2 || env_tuple.ps.len() == 3,
+                "Expected ETuple with 2 or 3 fields, got {}",
                 env_tuple.ps.len()
             );
 

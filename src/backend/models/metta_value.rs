@@ -87,15 +87,18 @@ impl MettaValue {
     /// Two expressions are structurally equivalent if they have the same structure,
     /// with variables in the same positions (regardless of variable names)
     pub fn structurally_equivalent(&self, other: &MettaValue) -> bool {
+        // Helper to check if an atom is a variable (not a space reference or operator)
+        fn is_variable(s: &str) -> bool {
+            if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
+                return false; // Space references are NOT variables
+            }
+            s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
+        }
+
         match (self, other) {
             // Variables match any other variable (names don't matter)
-            // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            (MettaValue::Atom(a), MettaValue::Atom(b))
-                if (a.starts_with('$') || a.starts_with('&') || a.starts_with('\''))
-                    && (b.starts_with('$') || b.starts_with('&') || b.starts_with('\''))
-                    && a != "&"
-                    && b != "&" =>
-            {
+            // EXCEPT: space references like "&self" must match exactly
+            (MettaValue::Atom(a), MettaValue::Atom(b)) if is_variable(a) && is_variable(b) => {
                 true
             }
 
@@ -158,13 +161,18 @@ impl MettaValue {
     /// Extract the head symbol from a pattern for indexing
     /// Returns None if the pattern doesn't have a clear head symbol
     pub fn get_head_symbol(&self) -> Option<&str> {
+        // Helper to check if an atom is a space reference (not a variable)
+        fn is_space_ref(s: &str) -> bool {
+            s == "&" || s == "&self" || s == "&kb" || s == "&stack"
+        }
+
         match self {
             // For s-expressions like (double $x), extract "double"
-            // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
+            // Space references like "&self" are allowed as head symbols
             MettaValue::SExpr(items) if !items.is_empty() => match &items[0] {
                 MettaValue::Atom(head)
                     if !head.starts_with('$')
-                        && (!head.starts_with('&') || head == "&")
+                        && (!head.starts_with('&') || is_space_ref(head))
                         && !head.starts_with('\'')
                         && head != "_" =>
                 {
@@ -173,10 +181,10 @@ impl MettaValue {
                 _ => None,
             },
             // For bare atoms like foo, use the atom itself
-            // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
+            // Space references like "&self" are allowed as head symbols
             MettaValue::Atom(head)
                 if !head.starts_with('$')
-                    && (!head.starts_with('&') || head == "&")
+                    && (!head.starts_with('&') || is_space_ref(head))
                     && !head.starts_with('\'')
                     && head != "_" =>
             {
@@ -203,7 +211,11 @@ impl MettaValue {
             MettaValue::Atom(s) => {
                 // Variables need to start with $ in MORK format
                 // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-                if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" {
+                // EXCEPT: "&self" and other space references should be preserved as-is
+                if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
+                    // Space references and standalone & are NOT variables - preserve as-is
+                    s.clone()
+                } else if s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') {
                     format!("${}", &s[1..]) // Keep $ prefix, remove original prefix
                 } else if s == "_" {
                     "$".to_string() // Wildcard becomes $
@@ -868,6 +880,18 @@ mod tests {
     fn test_to_mork_string_standalone_ampersand() {
         // Standalone "&" is NOT converted (it's a literal operator)
         assert_eq!(MettaValue::Atom("&".to_string()).to_mork_string(), "&");
+    }
+
+    #[test]
+    fn test_to_mork_string_space_references() {
+        // Space references like &self are NOT variables - they should be preserved
+        assert_eq!(MettaValue::Atom("&self".to_string()).to_mork_string(), "&self");
+        assert_eq!(MettaValue::Atom("&kb".to_string()).to_mork_string(), "&kb");
+        assert_eq!(MettaValue::Atom("&stack".to_string()).to_mork_string(), "&stack");
+
+        // But regular &-prefixed atoms ARE variables and get converted
+        assert_eq!(MettaValue::Atom("&x".to_string()).to_mork_string(), "$x");
+        assert_eq!(MettaValue::Atom("&foo".to_string()).to_mork_string(), "$foo");
     }
 
     #[test]

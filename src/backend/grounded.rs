@@ -996,8 +996,8 @@ pub enum GroundedWork {
 pub struct GroundedState {
     /// Operation name (to look up the operation again)
     pub op_name: String,
-    /// Original unevaluated arguments
-    pub args: Vec<MettaValue>,
+    /// Original unevaluated arguments (Arc-wrapped for O(1) clone)
+    pub args: Arc<Vec<MettaValue>>,
     /// Results from previously evaluated arguments: arg_idx -> Vec<MettaValue>
     pub evaluated_args: HashMap<usize, Vec<MettaValue>>,
     /// Current step in the operation's state machine
@@ -1011,11 +1011,28 @@ impl GroundedState {
     pub fn new(op_name: String, args: Vec<MettaValue>) -> Self {
         GroundedState {
             op_name,
+            args: Arc::new(args),
+            evaluated_args: HashMap::new(),
+            step: 0,
+            accumulated_results: Vec::new(),
+        }
+    }
+
+    /// Create a new state from pre-wrapped Arc args (avoids re-wrapping)
+    pub fn from_arc(op_name: String, args: Arc<Vec<MettaValue>>) -> Self {
+        GroundedState {
+            op_name,
             args,
             evaluated_args: HashMap::new(),
             step: 0,
             accumulated_results: Vec::new(),
         }
+    }
+
+    /// Get the args slice
+    #[inline]
+    pub fn args(&self) -> &[MettaValue] {
+        &self.args
     }
 
     /// Get evaluated arg results, or None if not yet evaluated

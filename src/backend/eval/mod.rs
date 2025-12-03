@@ -80,7 +80,8 @@ enum Continuation {
     /// Processing rule match results
     ProcessRuleMatches {
         /// Remaining (rhs, bindings) pairs to evaluate (VecDeque for O(1) pop_front)
-        remaining_matches: VecDeque<(MettaValue, Bindings)>,
+        /// RHS is Arc-wrapped for O(1) cloning
+        remaining_matches: VecDeque<(Arc<MettaValue>, Bindings)>,
         /// Results accumulated so far
         results: Vec<MettaValue>,
         /// Environment
@@ -110,7 +111,8 @@ enum Continuation {
         /// Results accumulated so far from processing combinations
         results: Vec<MettaValue>,
         /// Pending rule matches for the current combination (VecDeque for O(1) pop_front)
-        pending_rule_matches: VecDeque<(MettaValue, Bindings)>,
+        /// RHS is Arc-wrapped for O(1) cloning
+        pending_rule_matches: VecDeque<(Arc<MettaValue>, Bindings)>,
         /// Environment for evaluation
         env: Environment,
         /// Evaluation depth
@@ -139,10 +141,11 @@ pub type Combination = SmallVec<[MettaValue; 8]>;
 /// Lazy Cartesian product iterator using multi-digit counter approach.
 /// Memory: O(n) for indices regardless of total product size.
 /// Uses SmallVec for combinations to avoid heap allocation for small expressions.
-#[derive(Debug)]
+/// Uses Arc<Vec<MettaValue>> for result lists to enable O(1) cloning of the iterator.
+#[derive(Debug, Clone)]
 pub struct CartesianProductIter {
-    /// Owned result lists from sub-expression evaluation
-    results: Vec<Vec<MettaValue>>,
+    /// Arc-wrapped result lists for O(1) cloning of source data
+    results: Vec<Arc<Vec<MettaValue>>>,
     /// Current indices into each result list (the "counter")
     /// SmallVec<[usize; 8]> for stack allocation with typical arity
     indices: SmallVec<[usize; 8]>,
@@ -160,6 +163,26 @@ impl CartesianProductIter {
         }
 
         // Use SmallVec for indices - stack allocated for arity <= 8
+        let indices = smallvec::smallvec![0; results.len()];
+
+        // Wrap each result list in Arc for O(1) cloning
+        let arc_results: Vec<Arc<Vec<MettaValue>>> =
+            results.into_iter().map(Arc::new).collect();
+
+        Some(CartesianProductIter {
+            indices,
+            results: arc_results,
+            exhausted: false,
+        })
+    }
+
+    /// Create from pre-wrapped Arc results (avoids re-wrapping).
+    pub fn from_arc(results: Vec<Arc<Vec<MettaValue>>>) -> Option<Self> {
+        // Check for empty result lists - no combinations possible
+        if results.iter().any(|r| r.is_empty()) {
+            return None;
+        }
+
         let indices = smallvec::smallvec![0; results.len()];
 
         Some(CartesianProductIter {
@@ -927,8 +950,9 @@ enum ProcessedSExpr {
     /// Processing complete, return this result
     Done(EvalResult),
     /// Need to evaluate rule matches
+    /// RHS is Arc-wrapped for O(1) cloning
     EvalRuleMatches {
-        matches: Vec<(MettaValue, Bindings)>,
+        matches: Vec<(Arc<MettaValue>, Bindings)>,
         env: Environment,
         depth: usize,
         base_results: Vec<MettaValue>,
@@ -1969,10 +1993,11 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
 
 /// Find ALL rules in the environment that match the given expression
 /// Returns Vec<(rhs, bindings)> with all matching rules
+/// RHS is Arc-wrapped for O(1) cloning
 ///
 /// This function supports MeTTa's non-deterministic semantics where multiple rules
 /// can match the same expression and all results should be returned.
-fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
+fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(Arc<MettaValue>, Bindings)> {
     // Try MORK's query_multi first for O(k) matching where k = number of matching rules
     // Falls back to iterative O(n) matching if query_multi fails (e.g., arity >= 64)
     let query_multi_results = try_match_all_rules_query_multi(expr, env);
@@ -1985,10 +2010,11 @@ fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue,
 }
 
 /// Try pattern matching using MORK's query_multi to find ALL matching rules (O(k) where k = matching rules)
+/// RHS is Arc-wrapped for O(1) cloning
 fn try_match_all_rules_query_multi(
     expr: &MettaValue,
     env: &Environment,
-) -> Vec<(MettaValue, Bindings)> {
+) -> Vec<(Arc<MettaValue>, Bindings)> {
     // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
     // This will find all rules where the LHS matches our expression
 
@@ -2021,7 +2047,7 @@ fn try_match_all_rules_query_multi(
     // Collect ALL matches using query_multi
     // Note: All matches from query_multi will have the same LHS pattern (since we're querying for it)
     // Therefore, they all have the same LHS specificity and we should return all of them
-    let mut matches: Vec<(MettaValue, Bindings)> = Vec::new();
+    let mut matches: Vec<(Arc<MettaValue>, Bindings)> = Vec::new();
 
     mork::space::Space::query_multi(&space.btm, pattern_expr, |result, _matched_expr| {
         if let Err(bindings) = result {
@@ -2033,7 +2059,7 @@ fn try_match_all_rules_query_multi(
                     .iter()
                     .find(|(name, _)| name.as_str() == "rhs")
                 {
-                    matches.push((rhs.clone(), our_bindings));
+                    matches.push((Arc::new(rhs.clone()), our_bindings));
                 }
             }
         }
@@ -2047,10 +2073,11 @@ fn try_match_all_rules_query_multi(
 /// Optimized: Try pattern matching using indexed lookup to find ALL matching rules
 /// Uses O(1) index lookup instead of O(n) iteration
 /// Complexity: O(k) where k = rules with matching head symbol (typically k << n)
+/// RHS is Arc-wrapped for O(1) cloning
 fn try_match_all_rules_iterative(
     expr: &MettaValue,
     env: &Environment,
-) -> Vec<(MettaValue, Bindings)> {
+) -> Vec<(Arc<MettaValue>, Bindings)> {
     // Extract head symbol and arity for indexed lookup
     let matching_rules = if let Some(head) = get_head_symbol(expr) {
         let arity = expr.get_arity();
@@ -2067,12 +2094,13 @@ fn try_match_all_rules_iterative(
     sorted_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
 
     // Collect ALL matching rules, tracking LHS specificity
-    let mut matches: Vec<(MettaValue, Bindings, usize, Rule)> = Vec::new();
+    // Keep Arc<MettaValue> from Rule struct for O(1) cloning
+    let mut matches: Vec<(Arc<MettaValue>, Bindings, usize, Rule)> = Vec::new();
     for rule in sorted_rules {
         if let Some(bindings) = pattern_match(&rule.lhs, expr) {
             let lhs_specificity = pattern_specificity(&rule.lhs);
-            // Dereference Arc to get MettaValue
-            matches.push(((*rule.rhs).clone(), bindings, lhs_specificity, rule));
+            // Use Arc::clone for O(1) cloning instead of deep copy
+            matches.push((rule.rhs_arc(), bindings, lhs_specificity, rule));
         }
     }
 
@@ -2089,7 +2117,8 @@ fn try_match_all_rules_iterative(
         for (rhs, bindings, _, rule) in best_matches {
             let count = env.get_rule_count(&rule);
             for _ in 0..count {
-                final_matches.push((rhs.clone(), bindings.clone()));
+                // Arc::clone is O(1) - just increments reference count
+                final_matches.push((Arc::clone(&rhs), bindings.clone()));
             }
         }
         final_matches

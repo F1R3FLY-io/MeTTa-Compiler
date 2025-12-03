@@ -506,17 +506,17 @@ mod tests {
         env = new_env;
 
         // Add rule: (= (double $x) (mul $x 2))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
-        };
+    );
         env.add_rule(rule);
 
         // Check type of double

@@ -162,7 +162,7 @@ pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
                         eprintln!("[DEBUG unify] MATCH: atom={:?}, bindings={:?}", atom, bindings);
                     }
                     // Apply bindings and evaluate success body
-                    let instantiated = apply_bindings(success_body, &bindings);
+                    let instantiated = apply_bindings(success_body, &bindings).into_owned();
                     let (body_results, body_env) = eval(instantiated, final_env.clone());
                     final_env = body_env;
                     all_results.extend(body_results);
@@ -172,7 +172,7 @@ pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
                     if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
                         eprintln!("[DEBUG unify] MATCH (reverse): atom={:?}, bindings={:?}", atom, bindings);
                     }
-                    let instantiated = apply_bindings(success_body, &bindings);
+                    let instantiated = apply_bindings(success_body, &bindings).into_owned();
                     let (body_results, body_env) = eval(instantiated, final_env.clone());
                     final_env = body_env;
                     all_results.extend(body_results);
@@ -207,13 +207,13 @@ pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
                 // First try pattern_match in one direction
                 if let Some(bindings) = pattern_match(&val1, &val2) {
                     // Apply bindings and evaluate success body
-                    let instantiated = apply_bindings(success_body, &bindings);
+                    let instantiated = apply_bindings(success_body, &bindings).into_owned();
                     let (body_results, body_env) = eval(instantiated, env2.clone());
                     final_env = body_env;
                     all_results.extend(body_results);
                 } else if let Some(bindings) = pattern_match(&val2, &val1) {
                     // Try the other direction
-                    let instantiated = apply_bindings(success_body, &bindings);
+                    let instantiated = apply_bindings(success_body, &bindings).into_owned();
                     let (body_results, body_env) = eval(instantiated, env2.clone());
                     final_env = body_env;
                     all_results.extend(body_results);
@@ -328,7 +328,7 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
         // Try to match the pattern against the value
         if let Some(bindings) = pattern_match(pattern, &value) {
             // Apply bindings to the body and evaluate it
-            let instantiated_body = apply_bindings(body, &bindings);
+            let instantiated_body = apply_bindings(body, &bindings).into_owned();
             let (body_results, _) = eval(instantiated_body, value_env.clone());
             all_results.extend(body_results);
         } else {

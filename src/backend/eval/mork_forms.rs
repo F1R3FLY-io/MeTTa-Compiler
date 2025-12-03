@@ -88,7 +88,7 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalRes
         for (_name, _value) in bindings.iter() {}
 
         // Apply bindings to consequent before evaluation
-        let instantiated_consequent = apply_bindings(consequent, &bindings);
+        let instantiated_consequent = apply_bindings(consequent, &bindings).into_owned();
 
         // Consequent can be either a conjunction or an operation
         match &instantiated_consequent {
@@ -193,7 +193,7 @@ fn thread_bindings_through_goals(
         for (_name, _value) in bindings.iter() {}
 
         // Apply current bindings to this goal
-        let instantiated_goal = apply_bindings(goal, &bindings);
+        let instantiated_goal = apply_bindings(goal, &bindings).into_owned();
 
         // Get all facts from space (we'll match against all of them)
         let wildcard = MettaValue::Atom("$_".to_string());
@@ -255,7 +255,7 @@ fn eval_consequent_conjunction_with_bindings(
     let mut current_bindings = initial_bindings.clone();
 
     for goal in goals.iter() {
-        let instantiated_goal = apply_bindings(goal, &current_bindings);
+        let instantiated_goal = apply_bindings(goal, &current_bindings).into_owned();
 
         // Skip exec forms in pass 1
         if is_exec_form(&instantiated_goal) {
@@ -283,7 +283,7 @@ fn eval_consequent_conjunction_with_bindings(
     let mut all_results = Vec::new();
 
     for goal in goals.iter() {
-        let fully_instantiated = apply_bindings(goal, &current_bindings);
+        let fully_instantiated = apply_bindings(goal, &current_bindings).into_owned();
 
         if is_exec_form(&fully_instantiated) {
             // exec forms: add as facts (don't execute)

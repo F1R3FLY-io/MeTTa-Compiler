@@ -582,7 +582,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                                         // Evaluate first rule RHS - THIS IS A TAIL CALL
                                         // TCO: Don't increment depth for tail calls
-                                        let instantiated_rhs = apply_bindings(&rhs, &bindings);
+                                        let instantiated_rhs = apply_bindings(&rhs, &bindings).into_owned();
                                         work_stack.push(WorkItem::Eval {
                                             value: instantiated_rhs,
                                             env,
@@ -671,7 +671,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                             // Evaluate next rule RHS - THIS IS A TAIL CALL
                             // TCO: Don't increment depth for tail calls
-                            let instantiated_rhs = apply_bindings(&rhs, &bindings);
+                            let instantiated_rhs = apply_bindings(&rhs, &bindings).into_owned();
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated_rhs,
                                 env,
@@ -792,7 +792,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             };
 
                             // Evaluate the rule RHS - THIS IS A TAIL CALL
-                            let instantiated_rhs = apply_bindings(&rhs, &bindings);
+                            let instantiated_rhs = apply_bindings(&rhs, &bindings).into_owned();
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated_rhs,
                                 env,
@@ -861,7 +861,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         };
 
                                         // Evaluate first rule RHS
-                                        let instantiated_rhs = apply_bindings(&rhs, &bindings);
+                                        let instantiated_rhs = apply_bindings(&rhs, &bindings).into_owned();
                                         work_stack.push(WorkItem::Eval {
                                             value: instantiated_rhs,
                                             env,
@@ -1819,38 +1819,84 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
 /// Apply variable bindings to a value
 ///
 /// This is made public to support optimized match operations in Environment
-pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaValue {
+///
+/// Uses Cow<'a, MettaValue> to avoid cloning when no substitution is needed.
+/// Returns Cow::Borrowed(value) when the expression contains no variables bound in `bindings`.
+/// Returns Cow::Owned(new_value) only when actual substitution occurred.
+pub(crate) fn apply_bindings<'a>(
+    value: &'a MettaValue,
+    bindings: &Bindings,
+) -> std::borrow::Cow<'a, MettaValue> {
+    use std::borrow::Cow;
+
+    // Fast path: empty bindings means no substitutions possible
+    if bindings.is_empty() {
+        return Cow::Borrowed(value);
+    }
+
     match value {
         // Apply bindings to variables (atoms starting with $, &, or ')
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
         MettaValue::Atom(s)
             if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" =>
         {
-            bindings
-                .iter()
-                .find(|(name, _)| name.as_str() == s)
-                .map(|(_, val)| val.clone())
-                .unwrap_or_else(|| value.clone())
+            match bindings.iter().find(|(name, _)| name.as_str() == s) {
+                Some((_, val)) => Cow::Owned(val.clone()),
+                None => Cow::Borrowed(value),
+            }
         }
         MettaValue::SExpr(items) => {
-            let new_items: Vec<_> = items
-                .iter()
-                .map(|item| apply_bindings(item, bindings))
-                .collect();
-            MettaValue::SExpr(new_items)
+            // Check if any substitution will occur before allocating
+            let mut needs_copy = false;
+            let mut results: Vec<Cow<'_, MettaValue>> = Vec::with_capacity(items.len());
+
+            for item in items {
+                let result = apply_bindings(item, bindings);
+                if matches!(result, Cow::Owned(_)) {
+                    needs_copy = true;
+                }
+                results.push(result);
+            }
+
+            if needs_copy {
+                Cow::Owned(MettaValue::SExpr(
+                    results.into_iter().map(|cow| cow.into_owned()).collect(),
+                ))
+            } else {
+                Cow::Borrowed(value)
+            }
         }
         MettaValue::Conjunction(goals) => {
-            let new_goals: Vec<_> = goals
-                .iter()
-                .map(|goal| apply_bindings(goal, bindings))
-                .collect();
-            MettaValue::Conjunction(new_goals)
+            // Check if any substitution will occur before allocating
+            let mut needs_copy = false;
+            let mut results: Vec<Cow<'_, MettaValue>> = Vec::with_capacity(goals.len());
+
+            for goal in goals {
+                let result = apply_bindings(goal, bindings);
+                if matches!(result, Cow::Owned(_)) {
+                    needs_copy = true;
+                }
+                results.push(result);
+            }
+
+            if needs_copy {
+                Cow::Owned(MettaValue::Conjunction(
+                    results.into_iter().map(|cow| cow.into_owned()).collect(),
+                ))
+            } else {
+                Cow::Borrowed(value)
+            }
         }
         MettaValue::Error(msg, details) => {
             let new_details = apply_bindings(details, bindings);
-            MettaValue::Error(msg.clone(), Arc::new(new_details))
+            if matches!(new_details, Cow::Owned(_)) {
+                Cow::Owned(MettaValue::Error(msg.clone(), Arc::new(new_details.into_owned())))
+            } else {
+                Cow::Borrowed(value)
+            }
         }
-        _ => value.clone(),
+        // Literals don't need substitution - return borrowed reference
+        _ => Cow::Borrowed(value),
     }
 }
 
@@ -2025,7 +2071,8 @@ fn try_match_all_rules_iterative(
     for rule in sorted_rules {
         if let Some(bindings) = pattern_match(&rule.lhs, expr) {
             let lhs_specificity = pattern_specificity(&rule.lhs);
-            matches.push((rule.rhs.clone(), bindings, lhs_specificity, rule));
+            // Dereference Arc to get MettaValue
+            matches.push(((*rule.rhs).clone(), bindings, lhs_specificity, rule));
         }
     }
 
@@ -2349,17 +2396,17 @@ mod tests {
         let mut env = Environment::new();
 
         // Add rule: (= (double $x) (mul $x 2))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
-        };
+    );
         env.add_rule(rule);
 
         // Evaluate (double 5)
@@ -2403,13 +2450,13 @@ mod tests {
         let mut env = Environment::new();
 
         // Add a rule: (= (safe-div $x $y) (if (== $y 0) (error "division by zero" $y) (div $x $y)))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("safe-div".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Atom("$y".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("==".to_string()),
@@ -2427,7 +2474,7 @@ mod tests {
                     MettaValue::Atom("$y".to_string()),
                 ]),
             ]),
-        };
+    );
         env.add_rule(rule);
 
         // Test successful division: (safe-div 10 2) -> 5
@@ -2534,12 +2581,12 @@ mod tests {
         // (= (fact $n) (if (> $n 0) (* $n (fact (- $n 1))) 1))
         let mut env = Environment::new();
 
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("fact".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 // Condition: (> $n 0)
                 MettaValue::SExpr(vec![
@@ -2563,7 +2610,7 @@ mod tests {
                 // Else branch: 1
                 MettaValue::Long(1),
             ]),
-        };
+    );
         env.add_rule(rule);
 
         // Test (fact 3) = 6
@@ -2638,14 +2685,14 @@ mod tests {
         let mut env = Environment::new();
 
         // Define rule: (= (f) (+ 2 3))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![MettaValue::Atom("f".to_string())]),
-            rhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+        MettaValue::SExpr(vec![MettaValue::Atom("f".to_string())]),
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("+".to_string()),
                 MettaValue::Long(2),
                 MettaValue::Long(3),
             ]),
-        };
+    );
         env.add_rule(rule);
 
         // Evaluate (f)
@@ -2660,14 +2707,14 @@ mod tests {
         let mut env = Environment::new();
 
         // (= (add3 $a $b $c) (+ $a (+ $b $c)))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("add3".to_string()),
                 MettaValue::Atom("$a".to_string()),
                 MettaValue::Atom("$b".to_string()),
                 MettaValue::Atom("$c".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("+".to_string()),
                 MettaValue::Atom("$a".to_string()),
                 MettaValue::SExpr(vec![
@@ -2676,7 +2723,7 @@ mod tests {
                     MettaValue::Atom("$c".to_string()),
                 ]),
             ]),
-        };
+    );
         env.add_rule(rule);
 
         // (add3 10 20 30) = 60
@@ -2696,8 +2743,8 @@ mod tests {
         let mut env = Environment::new();
 
         // (= (eval-pair (pair $x $y)) (+ $x $y))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("eval-pair".to_string()),
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("pair".to_string()),
@@ -2705,12 +2752,12 @@ mod tests {
                     MettaValue::Atom("$y".to_string()),
                 ]),
             ]),
-            rhs: MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("+".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Atom("$y".to_string()),
             ]),
-        };
+    );
         env.add_rule(rule);
 
         // (eval-pair (pair 5 7)) = 12
@@ -2771,12 +2818,12 @@ mod tests {
         let mut env = Environment::new();
 
         // (= (abs $x) (if (< $x 0) (- 0 $x) $x))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("abs".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("<".to_string()),
@@ -2790,7 +2837,7 @@ mod tests {
                 ]),
                 MettaValue::Atom("$x".to_string()),
             ]),
-        };
+    );
         env.add_rule(rule);
 
         // abs(-5) = 5
@@ -3420,17 +3467,17 @@ mod tests {
         let mut env = Environment::new();
 
         // Add a rule for "fibonacci"
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("fibonacci".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$n".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-        };
+    );
         env.add_rule(rule);
 
         // Try to call "fibonaci" (misspelled - missing 'n')
@@ -3684,24 +3731,24 @@ mod tests {
         let mut env = Environment::new();
 
         // Add rules for (a) -> 1 and (a) -> 2
-        env.add_rule(Rule {
-            lhs: MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
-            rhs: MettaValue::Long(1),
-        });
-        env.add_rule(Rule {
-            lhs: MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
-            rhs: MettaValue::Long(2),
-        });
+        env.add_rule(Rule::new(
+        MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
+        MettaValue::Long(1),
+    ));
+        env.add_rule(Rule::new(
+        MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
+        MettaValue::Long(2),
+    ));
 
         // Add rules for (b) -> 10 and (b) -> 20
-        env.add_rule(Rule {
-            lhs: MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
-            rhs: MettaValue::Long(10),
-        });
-        env.add_rule(Rule {
-            lhs: MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
-            rhs: MettaValue::Long(20),
-        });
+        env.add_rule(Rule::new(
+        MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
+        MettaValue::Long(10),
+    ));
+        env.add_rule(Rule::new(
+        MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
+        MettaValue::Long(20),
+    ));
 
         // Evaluate (+ (a) (b))
         let expr = MettaValue::SExpr(vec![

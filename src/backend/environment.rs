@@ -654,10 +654,10 @@ impl Environment {
                     if items.len() == 3 {
                         if let MettaValue::Atom(op) = &items[0] {
                             if op == "=" {
-                                rules.push(Rule {
-                                    lhs: items[1].clone(),
-                                    rhs: items[2].clone(),
-                                });
+                                rules.push(Rule::new(
+                                    items[1].clone(),
+                                    items[2].clone(),
+                                ));
                             }
                         }
                     }
@@ -737,7 +737,7 @@ impl Environment {
                 // Try to match the pattern against this atom
                 if let Some(bindings) = pattern_match(pattern, &atom) {
                     // Apply bindings to the template
-                    let instantiated = apply_bindings(template, &bindings);
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
                     results.push(instantiated);
                 }
             }
@@ -751,7 +751,7 @@ impl Environment {
         if let Some(ref fallback) = *guard {
             for (_key, stored_value) in fallback.iter() {
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
-                    let instantiated = apply_bindings(template, &bindings);
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
                     results.push(instantiated);
                 }
             }
@@ -768,10 +768,11 @@ impl Environment {
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // Create a rule s-expression: (= lhs rhs)
+        // Dereference the Arc to get the MettaValue
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
-            rule.lhs.clone(),
-            rule.rhs.clone(),
+            (*rule.lhs).clone(),
+            (*rule.rhs).clone(),
         ]);
 
         // Generate a canonical key for the rule
@@ -832,10 +833,11 @@ impl Environment {
 
         for rule in rules {
             // Create rule s-expression: (= lhs rhs)
+            // Dereference the Arc to get the MettaValue
             let rule_sexpr = MettaValue::SExpr(vec![
                 MettaValue::Atom("=".to_string()),
-                rule.lhs.clone(),
-                rule.rhs.clone(),
+                (*rule.lhs).clone(),
+                (*rule.rhs).clone(),
             ]);
 
             // Track multiplicity
@@ -911,10 +913,11 @@ impl Environment {
     /// Get the number of times a rule has been defined (multiplicity)
     /// Returns 1 if the rule exists but count wasn't tracked (for backward compatibility)
     pub fn get_rule_count(&self, rule: &Rule) -> usize {
+        // Dereference the Arc to get the MettaValue
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
-            rule.lhs.clone(),
-            rule.rhs.clone(),
+            (*rule.lhs).clone(),
+            (*rule.rhs).clone(),
         ]);
         let rule_key = rule_sexpr.to_mork_string();
 
@@ -1928,10 +1931,10 @@ mod cow_tests {
 
     /// Helper: Create a simple rule for testing
     fn make_test_rule(lhs: &str, rhs: &str) -> Rule {
-        Rule {
-            lhs: MettaValue::Atom(lhs.to_string()),
-            rhs: MettaValue::Atom(rhs.to_string()),
-        }
+        Rule::new(
+            MettaValue::Atom(lhs.to_string()),
+            MettaValue::Atom(rhs.to_string()),
+        )
     }
 
     /// Helper: Extract head symbol and arity from a MettaValue (for get_matching_rules)
@@ -2559,7 +2562,7 @@ mod thread_safety_tests {
             MettaValue::Atom(body.to_string())
         };
 
-        Rule { lhs, rhs }
+        Rule::new(lhs, rhs)
     }
 
     // Helper: Extract head and arity from a pattern
@@ -2736,10 +2739,10 @@ mod thread_safety_tests {
                 // Verify other thread's rules DON'T exist
                 for i in 0..RULES_PER_THREAD {
                     let pattern = format!("(t{}_r{} $x)", other_id, i);
-                    let rule = Rule {
-                        lhs: MettaValue::Atom(pattern),
-                        rhs: MettaValue::Atom(format!("(res{} $x)", i)),
-                    };
+                    let rule = Rule::new(
+        MettaValue::Atom(pattern),
+        MettaValue::Atom(format!("(res{} $x)", i)),
+    );
                     let (head, arity) = extract_head_arity(&rule.lhs);
                     let matches = clone.get_matching_rules(head, arity);
                     assert!(

@@ -39,6 +39,11 @@ pub enum MettaValue {
     Unit,
 }
 
+/// Arc-wrapped MettaValue for O(1) cloning in evaluation hot paths.
+/// Use this type when passing MettaValue through continuations, rule matches,
+/// or other locations where cloning is frequent but modification is rare.
+pub type ArcValue = Arc<MettaValue>;
+
 impl MettaValue {
     /// Create a quoted expression: (quote inner)
     ///

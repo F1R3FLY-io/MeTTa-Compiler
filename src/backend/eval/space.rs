@@ -35,7 +35,7 @@ pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let mut new_env = env.clone();
 
     // Add rule using add_rule (stores in both rule_cache and MORK Space)
-    new_env.add_rule(Rule { lhs, rhs });
+    new_env.add_rule(Rule::new(lhs, rhs));
 
     // Return empty list (rule definitions don't produce output)
     (vec![], new_env)
@@ -207,7 +207,7 @@ fn match_with_space_handle(
                 if debug {
                     eprintln!("[DEBUG match] MATCH! bindings={:?}", bindings);
                 }
-                let instantiated = apply_bindings(template, &bindings);
+                let instantiated = apply_bindings(template, &bindings).into_owned();
                 if debug {
                     eprintln!("[DEBUG match] instantiated={:?}", instantiated);
                 }

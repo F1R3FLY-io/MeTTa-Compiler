@@ -407,7 +407,81 @@ The 40-60% improvement hypothesis is **REJECTED**. However:
 
 ---
 
-## Experiment 4: Extended TCO Recognition
+## Experiment 4: Arc<MettaValue> for Rule.rhs
+
+### Hypothesis
+
+Using `Arc<MettaValue>` for `Rule.rhs` will reduce clone overhead by enabling O(1) reference-counted sharing instead of O(n) deep clones.
+
+**Rationale**: Perf analysis showed 12.41% of CPU time is spent in clone/drop operations. Rules are frequently matched and their RHS cloned for substitution.
+
+### Predicted Improvement
+
+- 20-40% reduction in clone overhead for rule application
+- Reduced memory churn during pattern matching
+
+### Implementation Attempt
+
+**Target File**: `src/backend/models/mod.rs`
+
+**Changes Attempted**:
+```rust
+use std::sync::Arc;
+
+pub struct Rule {
+    pub lhs: MettaValue,
+    pub rhs: Arc<MettaValue>,  // Changed from MettaValue
+}
+
+impl Rule {
+    pub fn new(lhs: MettaValue, rhs: MettaValue) -> Self {
+        Rule { lhs, rhs: Arc::new(rhs) }
+    }
+
+    pub fn rhs_ref(&self) -> &MettaValue { &self.rhs }
+    pub fn rhs_owned(&self) -> MettaValue { (*self.rhs).clone() }
+}
+```
+
+### Result: ABANDONED
+
+**Date**: 2025-12-03
+**Branch**: `opt/rc-metta-value`
+
+**Reason for Abandonment**:
+
+1. **Invasive Refactoring**: The change required modifying 37+ test files that construct `Rule` directly
+
+2. **Limited Benefit**: Using `rhs_owned()` in the hot path still performs O(n) clone - the optimization only helps if we can propagate `Arc<MettaValue>` through the entire evaluation pipeline
+
+3. **Architectural Mismatch**: Current evaluation semantics require owned `MettaValue` for variable substitution. True Arc benefits require:
+   - Persistent data structures with structural sharing
+   - Copy-on-write substitution
+   - Immutable value semantics throughout
+
+**Files Modified Then Reverted**:
+- `src/backend/models/mod.rs`
+- `src/backend/environment.rs`
+- `src/backend/eval/mod.rs`
+- `src/backend/eval/modules.rs`
+- `src/backend/eval/space.rs`
+
+### Conclusion
+
+**Result**: ABANDONED
+
+The hypothesis is likely correct, but the implementation requires deeper architectural changes that are beyond the scope of incremental optimization. This should be revisited as part of a larger architectural refactoring effort.
+
+**Key Insight**: Environment already uses Arc extensively for its fields (rules, bindings, etc.). The bottleneck is in `MettaValue` cloning during evaluation, which requires owned values for substitution.
+
+**Recommendation**: Consider a future major refactoring to use:
+1. `Arc<MettaValue>` throughout the evaluation pipeline
+2. Copy-on-write substitution semantics
+3. Persistent data structures for rule matching results
+
+---
+
+## Experiment 5: Extended TCO Recognition
 
 ### Hypothesis
 
@@ -451,7 +525,8 @@ Extending tail call recognition to `if` branches, `let` body, and `case`/`switch
 | 1. Continuation Pool | 30-50% reduction | - | - | - | Not attempted |
 | 2. VecDeque Elimination | 10-20% improvement | - | - | - | Not attempted |
 | 3. Cartesian SmallVec | 40-60% reduction | 40-60% | -2.4% (large) | < 0.05 | PARTIAL ACCEPT |
-| 4. Extended TCO | 2x depth | - | - | - | Pending |
+| 4. Arc<MettaValue> | 20-40% clone reduction | 20-40% | - | - | ABANDONED |
+| 5. Extended TCO | 2x depth | - | - | - | Pending |
 
 ## Lessons Learned
 
@@ -461,6 +536,14 @@ Extending tail call recognition to `if` branches, `let` body, and `case`/`switch
 2. **SmallVec has overhead**: The spill check and capacity management has non-zero cost for small vectors
 3. **Benefits scale with size**: Improvement is most apparent for larger product spaces (125+ combinations)
 4. **Next priority should be clone reduction**: Use Rc<MettaValue> to address the actual bottleneck
+
+### From Experiment 4 (Arc<MettaValue>)
+
+1. **Incremental refactoring has limits**: Some optimizations require architectural changes that cannot be incrementally applied
+2. **Arc needs full pipeline propagation**: Wrapping values in Arc but calling `.clone()` in hot paths defeats the purpose
+3. **Test coverage impacts refactoring**: 37+ test files needed updates - high test coverage is good but makes invasive changes harder
+4. **Environment is already optimized**: Environment uses Arc for rules, bindings, etc. - the bottleneck is MettaValue cloning during substitution
+5. **Future work**: Consider persistent data structures with structural sharing for true clone elimination
 
 ## Future Work
 

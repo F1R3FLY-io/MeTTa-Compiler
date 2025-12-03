@@ -8,13 +8,20 @@
 // Operator symbols like +, -, * are preserved as-is (not normalized to add, sub, mul)
 
 use crate::backend::models::{MettaState, MettaValue};
-use crate::ir::MettaExpr;
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind, TreeSitterMettaParser};
-use std::sync::Arc;
+
+use tracing::{debug, error, info, instrument, warn};
 
 /// Compile MeTTa source code into a MettaState ready for evaluation
 /// Returns a compiled state with pending expressions and empty environment
+#[instrument(level = "info", skip(src))]
 pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
+    info!(
+        line_count = src.lines().count(),
+        char_count = src.chars().count(),
+        "Compiling MeTTa source"
+    );
+
     // Parse the source into s-expressions using Tree-Sitter
     let mut parser = TreeSitterMettaParser::new().map_err(|e| SyntaxError {
         kind: SyntaxErrorKind::ParserInit(e),
@@ -22,62 +29,33 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         column: 0,
         text: String::new(),
     })?;
-    let sexprs = parser.parse(src)?;
 
-    // Convert s-expressions to MettaValue representation using idiomatic TryFrom
+    let sexprs = parser.parse(src).map_err(|e| {
+        error!(
+            kind = ?e.kind,
+            text = %e,
+            "Syntax error from parsing MeTTa source code"
+        );
+        debug!(src, %e);
+        e
+    })?;
+
     let metta_values: Result<Vec<_>, _> = sexprs.iter().map(MettaValue::try_from).collect();
-    let metta_values = metta_values.map_err(|e| SyntaxError {
-        kind: SyntaxErrorKind::Generic,
-        line: 1,
-        column: 1,
-        text: e,
+    let metta_values = metta_values.map_err(|e| {
+        error!(
+            text = %e,
+            "Error during converting MeTTa expressions to MeTTa values"
+        );
+        debug!(src, %e);
+        SyntaxError {
+            kind: SyntaxErrorKind::Generic,
+            line: 1,
+            column: 1,
+            text: e,
+        }
     })?;
 
     Ok(MettaState::new_compiled(metta_values))
-}
-
-/// Implement idiomatic Rust conversion from MettaExpr to MettaValue
-impl TryFrom<&MettaExpr> for MettaValue {
-    type Error = String;
-
-    fn try_from(sexpr: &MettaExpr) -> Result<Self, String> {
-        match sexpr {
-            MettaExpr::Atom(s, _span) => {
-                // Parse literals (MeTTa uses capitalized True/False per hyperon-experimental)
-                match s.as_str() {
-                    "True" => Ok(MettaValue::Bool(true)),
-                    "False" => Ok(MettaValue::Bool(false)),
-                    _ => {
-                        // Keep the original symbol as-is (including operators like +, -, *, etc.)
-                        Ok(MettaValue::Atom(s.clone()))
-                    }
-                }
-            }
-            MettaExpr::String(s, _span) => Ok(MettaValue::String(s.clone())),
-            MettaExpr::Integer(n, _span) => Ok(MettaValue::Long(*n)),
-            MettaExpr::Float(f, _span) => Ok(MettaValue::Float(*f)),
-            MettaExpr::List(items, _span) => {
-                if items.is_empty() {
-                    Ok(MettaValue::Nil)
-                } else {
-                    // Use iterator and collect for idiomatic Rust
-                    let values: Result<Vec<_>, _> =
-                        items.iter().map(MettaValue::try_from).collect();
-                    Ok(MettaValue::SExpr(values?))
-                }
-            }
-            MettaExpr::Quoted(expr, _span) => {
-                // For quoted expressions, wrap in a quote operator
-                let inner = MettaValue::try_from(expr.as_ref())?;
-                Ok(MettaValue::quote(inner))
-            }
-        }
-    }
-}
-
-/// Helper function to create an error value
-pub fn make_error(msg: &str, details: MettaValue) -> MettaValue {
-    MettaValue::Error(msg.to_string(), Arc::new(details))
 }
 
 #[cfg(test)]

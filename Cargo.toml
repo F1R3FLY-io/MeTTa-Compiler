@@ -95,6 +95,9 @@ smallvec = "1.11"
 # liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
 liblevenshtein = { version = "^0.7", features = ["pathmap-backend"] }
 
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
 # Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
 # PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup
 
@@ -133,13 +136,13 @@ strip = true
 
 [profile.bench]
 inherits = "release"
-strip = false  # Keep debug symbols for profiling
-debug = true   # Enable line-level profiling
+strip = false        # Keep debug symbols for profiling
+debug = true         # Enable line-level profiling
 
 [profile.profiling]
 inherits = "release"
-strip = false  # Keep debug symbols for flamegraphs
-debug = 1      # Line tables only (smaller than debug = true)
+strip = false        # Keep debug symbols for flamegraphs
+debug = 1            # Line tables only (smaller than debug = true)
 
 # Debian package metadata
 [package.metadata.deb]

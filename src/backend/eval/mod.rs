@@ -578,12 +578,9 @@ fn handle_no_rule_match(
     // Check for likely typos before falling back to ADD mode
     if let Some(MettaValue::Atom(head)) = evaled_items.first() {
         if head.len() >= 3 {
-            // Check for misspelled special form
+            // Suggest possible misspelling of special form, but don't error
             if let Some(suggestion) = suggest_special_form(head) {
-                return MettaValue::Error(
-                    format!("Unknown special form '{}'. {}", head, suggestion),
-                    Arc::new(sexpr.clone()),
-                );
+                eprintln!("Note: '{}' is not defined. {}", head, suggestion);
             }
             // Check for misspelled rule head
             if let Some(suggestion) = unified_env.did_you_mean(head, 1) {
@@ -2346,16 +2343,16 @@ mod tests {
         let (results, _) = eval(expr, env);
         assert_eq!(results.len(), 1);
 
+        // After fix: undefined symbols are treated as data (ADD mode)
+        // A warning is printed to stderr, but the expression is returned as data
         match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(
-                    msg.contains("Did you mean"),
-                    "Expected suggestion in: {}",
-                    msg
-                );
-                assert!(msg.contains("match"), "Expected 'match' in: {}", msg);
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], MettaValue::Atom("mach".to_string()));
+                assert_eq!(items[1], MettaValue::Atom("&self".to_string()));
+                assert_eq!(items[2], MettaValue::Atom("pattern".to_string()));
             }
-            other => panic!("Expected Error with suggestion, got {:?}", other),
+            other => panic!("Expected SExpr (data), got {:?}", other),
         }
     }
 

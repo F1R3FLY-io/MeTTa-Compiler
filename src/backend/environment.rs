@@ -13,6 +13,69 @@ use super::grounded::{GroundedRegistry, GroundedRegistryTCO};
 use super::modules::{ModId, ModuleRegistry, Tokenizer};
 use super::{MettaValue, Rule};
 
+/// Shared state across all Environment clones.
+/// Consolidates 17 Arc<RwLock<T>> fields into a single Arc<EnvironmentShared>
+/// for O(1) clone operations (1 atomic increment instead of 17).
+///
+/// Thread-safe: All fields use RwLock for concurrent read/exclusive write access.
+struct EnvironmentShared {
+    /// PathMap trie for fact storage
+    btm: RwLock<PathMap<()>>,
+
+    /// Rule index: Maps (head_symbol, arity) -> Vec<Rule> for O(1) rule lookup
+    #[allow(clippy::type_complexity)]
+    rule_index: RwLock<HashMap<(String, usize), Vec<Rule>>>,
+
+    /// Wildcard rules: Rules without a clear head symbol
+    wildcard_rules: RwLock<Vec<Rule>>,
+
+    /// Multiplicities: tracks how many times each rule is defined
+    multiplicities: RwLock<HashMap<String, usize>>,
+
+    /// Pattern cache: LRU cache for MORK serialization results
+    pattern_cache: RwLock<LruCache<MettaValue, Vec<u8>>>,
+
+    /// Type index: Lazy-initialized subtrie containing only type assertions
+    type_index: RwLock<Option<PathMap<()>>>,
+
+    /// Type index invalidation flag
+    type_index_dirty: RwLock<bool>,
+
+    /// Named spaces registry: Maps space_id -> (name, atoms)
+    #[allow(clippy::type_complexity)]
+    named_spaces: RwLock<HashMap<u64, (String, Vec<MettaValue>)>>,
+
+    /// Counter for generating unique space IDs
+    next_space_id: RwLock<u64>,
+
+    /// Mutable state cells registry
+    states: RwLock<HashMap<u64, MettaValue>>,
+
+    /// Counter for generating unique state IDs
+    next_state_id: RwLock<u64>,
+
+    /// Symbol bindings registry
+    bindings: RwLock<HashMap<String, MettaValue>>,
+
+    /// Module registry
+    module_registry: RwLock<ModuleRegistry>,
+
+    /// Per-module tokenizer
+    tokenizer: RwLock<Tokenizer>,
+
+    /// Grounded operations registry (legacy)
+    grounded_registry: RwLock<GroundedRegistry>,
+
+    /// TCO-compatible grounded operations registry
+    grounded_registry_tco: RwLock<GroundedRegistryTCO>,
+
+    /// Fallback store for large expressions
+    large_expr_pathmap: RwLock<Option<PathMap<MettaValue>>>,
+
+    /// Fuzzy matcher for "Did you mean?" suggestions
+    fuzzy_matcher: RwLock<FuzzyMatcher>,
+}
+
 /// The environment contains the fact database and type assertions
 /// All facts (rules, atoms, s-expressions, type assertions) are stored in MORK PathMap
 ///
@@ -21,9 +84,17 @@ use super::{MettaValue, Rule};
 /// - First mutation triggers deep copy via make_owned() (owns_data = true)
 /// - RwLock enables concurrent reads (4× improvement over Mutex)
 /// - Modifications tracked via Arc<AtomicBool> for fast union() paths
+///
+/// Performance optimization: All shared state is consolidated into a single
+/// Arc<EnvironmentShared> for O(1) clone operations (1 atomic increment instead of 17).
 pub struct Environment {
+    /// Consolidated shared state - single Arc for O(1) cloning
+    /// Contains all RwLock-wrapped fields that can be shared across clones
+    shared: Arc<EnvironmentShared>,
+
     /// THREAD-SAFE: SharedMappingHandle for symbol interning (string → u64)
     /// Can be cloned and shared across threads (Send + Sync)
+    /// Kept separate as it has its own sharing semantics
     shared_mapping: SharedMappingHandle,
 
     /// CoW: Tracks if this clone owns its data (true = can modify in-place, false = must deep copy first)
@@ -35,135 +106,44 @@ pub struct Environment {
     /// Arc-wrapped to allow independent tracking per clone
     modified: Arc<AtomicBool>,
 
-    /// THREAD-SAFE: PathMap trie for fact storage
-    /// Cloning is O(1) via structural sharing (immutable after clone)
-    /// PathMap provides O(m) prefix queries and O(m) existence checks
-    /// RwLock allows concurrent reads (multiple threads can read simultaneously)
-    btm: Arc<RwLock<PathMap<()>>>,
-
-    /// Rule index: Maps (head_symbol, arity) -> Vec<Rule> for O(1) rule lookup
-    /// This enables O(k) rule matching where k = rules with matching head symbol
-    /// Instead of O(n) iteration through all rules
-    /// RwLock allows concurrent reads for parallel rule matching
-    #[allow(clippy::type_complexity)]
-    rule_index: Arc<RwLock<HashMap<(String, usize), Vec<Rule>>>>,
-
-    /// Wildcard rules: Rules without a clear head symbol (e.g., variable patterns, wildcards)
-    /// These rules must be checked against all queries
-    /// RwLock allows concurrent reads during parallel evaluation
-    wildcard_rules: Arc<RwLock<Vec<Rule>>>,
-
-    /// Multiplicities: tracks how many times each rule is defined
-    /// Maps a normalized rule key to its definition count
-    /// This allows multiply-defined rules to produce multiple results
-    /// RwLock allows concurrent reads for parallel rule application
-    multiplicities: Arc<RwLock<HashMap<String, usize>>>,
-
-    /// Pattern cache: LRU cache for MORK serialization results
-    /// Maps MettaValue -> MORK bytes to avoid redundant conversions
-    /// Cache size: 1000 entries (typical REPL/program has <1000 unique patterns)
-    /// Expected speedup: 3-10x for repeated pattern matching
-    /// RwLock allows concurrent reads (cache hits don't require exclusive lock)
-    pattern_cache: Arc<RwLock<LruCache<MettaValue, Vec<u8>>>>,
-
-    /// Fuzzy matcher: Tracks known symbols for "Did you mean?" suggestions
-    /// Populated automatically as rules and functions are added to environment
-    /// Used to suggest similar symbols when encountering undefined atoms
-    fuzzy_matcher: FuzzyMatcher,
-
-    /// Type index: Lazy-initialized subtrie containing only type assertions
-    /// Extracted via PathMap::restrict() for O(1) type lookups
-    /// Invalidated on type assertion additions
-    /// RwLock allows concurrent type lookups during parallel evaluation
-    type_index: Arc<RwLock<Option<PathMap<()>>>>,
-
-    /// Type index invalidation flag: Set to true when types are added
-    /// Causes type_index to be rebuilt on next get_type() call
-    /// RwLock allows concurrent checks of dirty flag
-    type_index_dirty: Arc<RwLock<bool>>,
-
-    /// Named spaces registry: Maps space_id -> (name, atoms)
-    /// Used for new-space, add-atom, remove-atom, collapse operations
-    /// RwLock allows concurrent reads for parallel space operations
-    #[allow(clippy::type_complexity)]
-    named_spaces: Arc<RwLock<HashMap<u64, (String, Vec<MettaValue>)>>>,
-
-    /// Counter for generating unique space IDs
-    next_space_id: Arc<RwLock<u64>>,
-
-    /// Mutable state cells registry: Maps state_id -> current_value
-    /// Used for new-state, get-state, change-state! operations
-    /// RwLock allows concurrent reads for parallel state operations
-    states: Arc<RwLock<HashMap<u64, MettaValue>>>,
-
-    /// Counter for generating unique state IDs
-    next_state_id: Arc<RwLock<u64>>,
-
-    /// Symbol bindings registry: Maps symbol -> value
-    /// Used for bind! operation to register named values
-    /// RwLock allows concurrent reads for parallel symbol resolution
-    bindings: Arc<RwLock<HashMap<String, MettaValue>>>,
-
-    /// Module registry: Tracks loaded modules and provides caching
-    /// Used for include, import!, and module operations
-    /// RwLock allows concurrent reads for parallel module resolution
-    module_registry: Arc<RwLock<ModuleRegistry>>,
-
     /// Current module path: Directory of the currently-executing module
     /// Used for relative path resolution (self:child notation)
     /// None when not inside a module evaluation
+    /// Kept separate as it's per-clone state
     current_module_path: Option<PathBuf>,
-
-    /// Per-module tokenizer for dynamic token registration
-    /// Used by bind! to register tokens that are replaced during evaluation
-    /// Tokens registered here are looked up when evaluating atoms
-    tokenizer: Arc<RwLock<Tokenizer>>,
-
-    /// Grounded operations registry: Maps op_name -> GroundedOperation
-    /// Used for lazy evaluation of built-in operations (+, -, *, /, comparisons, etc.)
-    /// Operations receive unevaluated arguments and evaluate internally (HE-compatible)
-    grounded_registry: Arc<RwLock<GroundedRegistry>>,
-
-    /// TCO-compatible grounded operations registry: Maps op_name -> GroundedOperationTCO
-    /// Unlike GroundedOperation, TCO operations return work items instead of calling eval internally
-    /// This keeps evaluation on the trampoline work stack, enabling deep recursion without stack overflow
-    grounded_registry_tco: Arc<RwLock<GroundedRegistryTCO>>,
-
-    /// Fallback store for expressions exceeding MORK's 63-arity limit.
-    /// Wrapped in Option - only allocated on first use (lazy initialization).
-    /// Uses PathMap with varint encoding (no arity limit)
-    /// Key: varint-encoded MettaValue bytes
-    /// Value: MettaValue (stored for retrieval during pattern matching)
-    large_expr_pathmap: Arc<RwLock<Option<PathMap<MettaValue>>>>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         use mork_interning::SharedMapping;
 
+        let shared = Arc::new(EnvironmentShared {
+            btm: RwLock::new(PathMap::new()),
+            rule_index: RwLock::new(HashMap::new()),
+            wildcard_rules: RwLock::new(Vec::new()),
+            multiplicities: RwLock::new(HashMap::new()),
+            pattern_cache: RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
+            type_index: RwLock::new(None),
+            type_index_dirty: RwLock::new(true),
+            named_spaces: RwLock::new(HashMap::new()),
+            next_space_id: RwLock::new(1), // Start from 1, 0 reserved for self
+            states: RwLock::new(HashMap::new()),
+            next_state_id: RwLock::new(1), // Start from 1
+            bindings: RwLock::new(HashMap::new()),
+            module_registry: RwLock::new(ModuleRegistry::new()),
+            tokenizer: RwLock::new(Tokenizer::new()),
+            grounded_registry: RwLock::new(GroundedRegistry::with_standard_ops()),
+            grounded_registry_tco: RwLock::new(GroundedRegistryTCO::with_standard_ops()),
+            large_expr_pathmap: RwLock::new(None), // Lazy: not allocated until needed
+            fuzzy_matcher: RwLock::new(FuzzyMatcher::new()),
+        });
+
         Environment {
+            shared,
             shared_mapping: SharedMapping::new(),
             owns_data: true, // CoW: new environments own their data
             modified: Arc::new(AtomicBool::new(false)), // CoW: track modifications
-            btm: Arc::new(RwLock::new(PathMap::new())),
-            rule_index: Arc::new(RwLock::new(HashMap::new())),
-            wildcard_rules: Arc::new(RwLock::new(Vec::new())),
-            multiplicities: Arc::new(RwLock::new(HashMap::new())),
-            pattern_cache: Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap()))),
-            fuzzy_matcher: FuzzyMatcher::new(),
-            type_index: Arc::new(RwLock::new(None)),
-            type_index_dirty: Arc::new(RwLock::new(true)),
-            named_spaces: Arc::new(RwLock::new(HashMap::new())),
-            next_space_id: Arc::new(RwLock::new(1)), // Start from 1, 0 reserved for self
-            states: Arc::new(RwLock::new(HashMap::new())),
-            next_state_id: Arc::new(RwLock::new(1)), // Start from 1
-            bindings: Arc::new(RwLock::new(HashMap::new())),
-            module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
             current_module_path: None,
-            tokenizer: Arc::new(RwLock::new(Tokenizer::new())),
-            grounded_registry: Arc::new(RwLock::new(GroundedRegistry::with_standard_ops())),
-            grounded_registry_tco: Arc::new(RwLock::new(GroundedRegistryTCO::with_standard_ops())),
-            large_expr_pathmap: Arc::new(RwLock::new(None)), // Lazy: not allocated until needed
         }
     }
 
@@ -176,45 +156,30 @@ impl Environment {
             return;
         }
 
-        // Deep copy all RwLock-wrapped fields
+        // Deep copy the entire shared state structure
         // Clone the data first to avoid borrowing issues
-        let btm_data = self.btm.read().unwrap().clone();
-        let rule_index_data = self.rule_index.read().unwrap().clone();
-        let wildcard_rules_data = self.wildcard_rules.read().unwrap().clone();
-        let multiplicities_data = self.multiplicities.read().unwrap().clone();
-        let pattern_cache_data = self.pattern_cache.read().unwrap().clone();
-        let type_index_data = self.type_index.read().unwrap().clone();
-        let type_index_dirty_data = *self.type_index_dirty.read().unwrap();
-        let named_spaces_data = self.named_spaces.read().unwrap().clone();
-        let next_space_id_data = *self.next_space_id.read().unwrap();
-        let states_data = self.states.read().unwrap().clone();
-        let next_state_id_data = *self.next_state_id.read().unwrap();
-        let bindings_data = self.bindings.read().unwrap().clone();
-        let module_registry_data = self.module_registry.read().unwrap().clone();
-        let tokenizer_data = self.tokenizer.read().unwrap().clone();
-        let grounded_registry_data = self.grounded_registry.read().unwrap().clone();
-        let grounded_registry_tco_data = self.grounded_registry_tco.read().unwrap().clone();
-        let large_expr_pathmap_data = self.large_expr_pathmap.read().unwrap().clone();
+        let new_shared = Arc::new(EnvironmentShared {
+            btm: RwLock::new(self.shared.btm.read().unwrap().clone()),
+            rule_index: RwLock::new(self.shared.rule_index.read().unwrap().clone()),
+            wildcard_rules: RwLock::new(self.shared.wildcard_rules.read().unwrap().clone()),
+            multiplicities: RwLock::new(self.shared.multiplicities.read().unwrap().clone()),
+            pattern_cache: RwLock::new(self.shared.pattern_cache.read().unwrap().clone()),
+            type_index: RwLock::new(self.shared.type_index.read().unwrap().clone()),
+            type_index_dirty: RwLock::new(*self.shared.type_index_dirty.read().unwrap()),
+            named_spaces: RwLock::new(self.shared.named_spaces.read().unwrap().clone()),
+            next_space_id: RwLock::new(*self.shared.next_space_id.read().unwrap()),
+            states: RwLock::new(self.shared.states.read().unwrap().clone()),
+            next_state_id: RwLock::new(*self.shared.next_state_id.read().unwrap()),
+            bindings: RwLock::new(self.shared.bindings.read().unwrap().clone()),
+            module_registry: RwLock::new(self.shared.module_registry.read().unwrap().clone()),
+            tokenizer: RwLock::new(self.shared.tokenizer.read().unwrap().clone()),
+            grounded_registry: RwLock::new(self.shared.grounded_registry.read().unwrap().clone()),
+            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().unwrap().clone()),
+            large_expr_pathmap: RwLock::new(self.shared.large_expr_pathmap.read().unwrap().clone()),
+            fuzzy_matcher: RwLock::new(self.shared.fuzzy_matcher.read().unwrap().clone()),
+        });
 
-        // Now assign the new Arc<RwLock<T>> instances
-        self.btm = Arc::new(RwLock::new(btm_data));
-        self.rule_index = Arc::new(RwLock::new(rule_index_data));
-        self.wildcard_rules = Arc::new(RwLock::new(wildcard_rules_data));
-        self.multiplicities = Arc::new(RwLock::new(multiplicities_data));
-        self.pattern_cache = Arc::new(RwLock::new(pattern_cache_data));
-        self.type_index = Arc::new(RwLock::new(type_index_data));
-        self.type_index_dirty = Arc::new(RwLock::new(type_index_dirty_data));
-        self.named_spaces = Arc::new(RwLock::new(named_spaces_data));
-        self.next_space_id = Arc::new(RwLock::new(next_space_id_data));
-        self.states = Arc::new(RwLock::new(states_data));
-        self.next_state_id = Arc::new(RwLock::new(next_state_id_data));
-        self.bindings = Arc::new(RwLock::new(bindings_data));
-        self.module_registry = Arc::new(RwLock::new(module_registry_data));
-        self.tokenizer = Arc::new(RwLock::new(tokenizer_data));
-        self.grounded_registry = Arc::new(RwLock::new(grounded_registry_data));
-        self.grounded_registry_tco = Arc::new(RwLock::new(grounded_registry_tco_data));
-        self.large_expr_pathmap = Arc::new(RwLock::new(large_expr_pathmap_data));
-        // Note: current_module_path is not Arc-wrapped, so it's copied directly
+        self.shared = new_shared;
 
         // Mark as owning data and modified
         self.owns_data = true;
@@ -227,7 +192,7 @@ impl Environment {
     /// This is useful for advanced operations that need direct access to the Space,
     /// such as debugging or custom MORK queries.
     pub fn create_space(&self) -> Space {
-        let btm = self.btm.read().unwrap().clone(); // CoW: read lock for concurrent reads
+        let btm = self.shared.btm.read().unwrap().clone(); // CoW: read lock for concurrent reads
         Space {
             btm,
             sm: self.shared_mapping.clone(),
@@ -239,7 +204,7 @@ impl Environment {
     /// This updates both the PathMap (btm) and the SharedMappingHandle (sm)
     pub(crate) fn update_pathmap(&mut self, space: Space) {
         self.make_owned(); // CoW: ensure we own data before modifying
-        *self.btm.write().unwrap() = space.btm; // CoW: write lock for exclusive access
+        *self.shared.btm.write().unwrap() = space.btm; // CoW: write lock for exclusive access
         self.shared_mapping = space.sm;
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
@@ -470,7 +435,7 @@ impl Environment {
         self.add_to_space(&type_assertion);
 
         // Invalidate type index cache
-        *self.type_index_dirty.write().unwrap() = true;
+        *self.shared.type_index_dirty.write().unwrap() = true;
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
@@ -480,14 +445,14 @@ impl Environment {
     ///
     /// The type index is lazily initialized and cached until invalidated
     fn ensure_type_index(&self) {
-        let dirty = *self.type_index_dirty.read().unwrap();
+        let dirty = *self.shared.type_index_dirty.read().unwrap();
         if !dirty {
             return; // Index is up to date
         }
 
         // Build type index using PathMap::restrict()
         // This extracts a subtrie containing only paths that start with ":"
-        let btm = self.btm.read().unwrap();
+        let btm = self.shared.btm.read().unwrap();
 
         // Create a PathMap containing only the ":" prefix
         // restrict() will return all paths in btm that have matching prefixes in this map
@@ -507,8 +472,8 @@ impl Environment {
         let type_subtrie = btm.restrict(&type_prefix_map);
 
         // Cache the subtrie
-        *self.type_index.write().unwrap() = Some(type_subtrie);
-        *self.type_index_dirty.write().unwrap() = false;
+        *self.shared.type_index.write().unwrap() = Some(type_subtrie);
+        *self.shared.type_index_dirty.write().unwrap() = false;
     }
 
     /// Get type for an atom by querying MORK Space
@@ -526,7 +491,7 @@ impl Environment {
         self.ensure_type_index();
 
         // Get the type index subtrie
-        let type_index_opt = self.type_index.read().unwrap();
+        let type_index_opt = self.shared.type_index.read().unwrap();
         let type_index = match type_index_opt.as_ref() {
             Some(index) => index,
             None => {
@@ -677,11 +642,11 @@ impl Environment {
 
         // Clear existing indices
         {
-            let mut index = self.rule_index.write().unwrap();
+            let mut index = self.shared.rule_index.write().unwrap();
             index.clear();
         }
         {
-            let mut wildcards = self.wildcard_rules.write().unwrap();
+            let mut wildcards = self.shared.wildcard_rules.write().unwrap();
             wildcards.clear();
         }
 
@@ -691,12 +656,12 @@ impl Environment {
                 let arity = rule.lhs.get_arity();
                 let head_owned = head.to_owned();
                 // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-                self.fuzzy_matcher.insert(&head_owned);
-                let mut index = self.rule_index.write().unwrap();
+                self.shared.fuzzy_matcher.write().unwrap().insert(&head_owned);
+                let mut index = self.shared.rule_index.write().unwrap();
                 index.entry((head_owned, arity)).or_default().push(rule);
             } else {
                 // Rules without head symbol (wildcards, variables) go to wildcard list
-                let mut wildcards = self.wildcard_rules.write().unwrap();
+                let mut wildcards = self.shared.wildcard_rules.write().unwrap();
                 wildcards.push(rule);
             }
         }
@@ -747,7 +712,7 @@ impl Environment {
 
         // 2. Also check large expression fallback PathMap (if allocated)
         // These are expressions with arity >= 64 that couldn't fit in MORK
-        let guard = self.large_expr_pathmap.read().unwrap();
+        let guard = self.shared.large_expr_pathmap.read().unwrap();
         if let Some(ref fallback) = *guard {
             for (_key, stored_value) in fallback.iter() {
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
@@ -781,7 +746,7 @@ impl Environment {
 
         // Increment the count for this rule
         {
-            let mut counts = self.multiplicities.write().unwrap();
+            let mut counts = self.shared.multiplicities.write().unwrap();
             let new_count = *counts.entry(rule_key.clone()).or_insert(0) + 1;
             counts.insert(rule_key.clone(), new_count);
         } // Drop the RefMut borrow before add_to_space
@@ -793,12 +758,12 @@ impl Environment {
             let arity = rule.lhs.get_arity();
             let head_owned = head.to_owned();
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-            self.fuzzy_matcher.insert(&head_owned);
-            let mut index = self.rule_index.write().unwrap();
+            self.shared.fuzzy_matcher.write().unwrap().insert(&head_owned);
+            let mut index = self.shared.rule_index.write().unwrap();
             index.entry((head_owned, arity)).or_default().push(rule); // Move instead of clone
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
-            let mut wildcards = self.wildcard_rules.write().unwrap();
+            let mut wildcards = self.shared.wildcard_rules.write().unwrap();
             wildcards.push(rule); // Move instead of clone
         }
 
@@ -849,7 +814,7 @@ impl Environment {
                 let arity = rule.lhs.get_arity();
                 let head_owned = head.to_owned();
                 // Track symbol for fuzzy matching
-                self.fuzzy_matcher.insert(&head_owned);
+                self.shared.fuzzy_matcher.write().unwrap().insert(&head_owned);
                 rule_index_updates
                     .entry((head_owned, arity))
                     .or_default()
@@ -881,7 +846,7 @@ impl Environment {
 
         // Update multiplicities
         {
-            let mut counts = self.multiplicities.write().unwrap();
+            let mut counts = self.shared.multiplicities.write().unwrap();
             for (key, delta) in multiplicity_updates {
                 *counts.entry(key).or_insert(0) += delta;
             }
@@ -889,7 +854,7 @@ impl Environment {
 
         // Update rule index
         {
-            let mut index = self.rule_index.write().unwrap();
+            let mut index = self.shared.rule_index.write().unwrap();
             for ((head, arity), mut rules) in rule_index_updates {
                 index.entry((head, arity)).or_default().append(&mut rules);
             }
@@ -897,13 +862,13 @@ impl Environment {
 
         // Update wildcard rules
         {
-            let mut wildcards = self.wildcard_rules.write().unwrap();
+            let mut wildcards = self.shared.wildcard_rules.write().unwrap();
             wildcards.extend(wildcard_updates);
         }
 
         // Single PathMap union (minimal critical section)
         {
-            let mut btm = self.btm.write().unwrap();
+            let mut btm = self.shared.btm.write().unwrap();
             *btm = btm.join(&rule_trie);
         }
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
@@ -921,19 +886,19 @@ impl Environment {
         ]);
         let rule_key = rule_sexpr.to_mork_string();
 
-        let counts = self.multiplicities.read().unwrap();
+        let counts = self.shared.multiplicities.read().unwrap();
         *counts.get(&rule_key).unwrap_or(&1)
     }
 
     /// Get the multiplicities (for serialization)
     pub fn get_multiplicities(&self) -> HashMap<String, usize> {
-        self.multiplicities.read().unwrap().clone()
+        self.shared.multiplicities.read().unwrap().clone()
     }
 
     /// Set the multiplicities (used for deserialization)
     pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
         self.make_owned(); // CoW: ensure we own data before modifying
-        *self.multiplicities.write().unwrap() = counts;
+        *self.shared.multiplicities.write().unwrap() = counts;
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
@@ -945,7 +910,7 @@ impl Environment {
     pub fn get_large_expr_pathmap(
         &self,
     ) -> std::sync::RwLockReadGuard<'_, Option<PathMap<MettaValue>>> {
-        self.large_expr_pathmap.read().unwrap()
+        self.shared.large_expr_pathmap.read().unwrap()
     }
 
     /// Insert a value into the large expressions fallback PathMap
@@ -954,7 +919,7 @@ impl Environment {
     pub fn insert_large_expr(&self, value: MettaValue) {
         use crate::backend::varint_encoding::metta_to_varint_key;
         let key = metta_to_varint_key(&value);
-        let mut guard = self.large_expr_pathmap.write().unwrap();
+        let mut guard = self.shared.large_expr_pathmap.write().unwrap();
         let fallback = guard.get_or_insert_with(PathMap::new);
         fallback.insert(&key, value);
     }
@@ -1099,7 +1064,7 @@ impl Environment {
         if is_ground {
             // Check cache first for ground patterns (read-only access)
             {
-                let mut cache = self.pattern_cache.write().unwrap();
+                let mut cache = self.shared.pattern_cache.write().unwrap();
                 if let Some(bytes) = cache.get(value) {
                     return Ok(bytes.clone());
                 }
@@ -1113,7 +1078,7 @@ impl Environment {
 
         if is_ground {
             // Store ground patterns in cache for future use (write access)
-            let mut cache = self.pattern_cache.write().unwrap();
+            let mut cache = self.shared.pattern_cache.write().unwrap();
             cache.put(value.clone(), bytes.clone());
         }
 
@@ -1247,7 +1212,7 @@ impl Environment {
                 // Lazy allocation: only create PathMap on first use
                 let key = metta_to_varint_key(value);
                 self.make_owned(); // CoW: ensure we own data before modifying
-                let mut guard = self.large_expr_pathmap.write().unwrap();
+                let mut guard = self.shared.large_expr_pathmap.write().unwrap();
                 let fallback = guard.get_or_insert_with(PathMap::new);
                 fallback.insert(&key, value.clone());
 
@@ -1297,7 +1262,7 @@ impl Environment {
             Err(_) => {
                 // Remove from fallback PathMap (if it exists)
                 let key = metta_to_varint_key(value);
-                let mut guard = self.large_expr_pathmap.write().unwrap();
+                let mut guard = self.shared.large_expr_pathmap.write().unwrap();
                 if let Some(ref mut fallback) = *guard {
                     fallback.remove(&key);
                 }
@@ -1392,13 +1357,13 @@ impl Environment {
         // Single lock acquisition → union → unlock
         // This is the only critical section, minimizing lock contention
         {
-            let mut btm = self.btm.write().unwrap();
+            let mut btm = self.shared.btm.write().unwrap();
             *btm = btm.join(&fact_trie);
         }
 
         // Invalidate type index if any facts were type assertions
         // Conservative: Assume any bulk insert might contain types
-        *self.type_index_dirty.write().unwrap() = true;
+        *self.shared.type_index_dirty.write().unwrap() = true;
 
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
         Ok(())
@@ -1414,13 +1379,13 @@ impl Environment {
         self.make_owned();
 
         let id = {
-            let mut next_id = self.next_space_id.write().unwrap();
+            let mut next_id = self.shared.next_space_id.write().unwrap();
             let id = *next_id;
             *next_id += 1;
             id
         };
 
-        self.named_spaces
+        self.shared.named_spaces
             .write()
             .unwrap()
             .insert(id, (name.to_string(), Vec::new()));
@@ -1434,7 +1399,7 @@ impl Environment {
     pub fn add_to_named_space(&mut self, space_id: u64, value: &MettaValue) -> bool {
         self.make_owned();
 
-        let mut spaces = self.named_spaces.write().unwrap();
+        let mut spaces = self.shared.named_spaces.write().unwrap();
         if let Some((_, atoms)) = spaces.get_mut(&space_id) {
             atoms.push(value.clone());
             self.modified.store(true, Ordering::Release);
@@ -1449,7 +1414,7 @@ impl Environment {
     pub fn remove_from_named_space(&mut self, space_id: u64, value: &MettaValue) -> bool {
         self.make_owned();
 
-        let mut spaces = self.named_spaces.write().unwrap();
+        let mut spaces = self.shared.named_spaces.write().unwrap();
         if let Some((_, atoms)) = spaces.get_mut(&space_id) {
             // Remove first matching atom
             if let Some(pos) = atoms.iter().position(|x| x == value) {
@@ -1464,7 +1429,7 @@ impl Environment {
     /// Get all atoms from a named space as a list
     /// Used by collapse operation
     pub fn collapse_named_space(&self, space_id: u64) -> Vec<MettaValue> {
-        let spaces = self.named_spaces.read().unwrap();
+        let spaces = self.shared.named_spaces.read().unwrap();
         if let Some((_, atoms)) = spaces.get(&space_id) {
             atoms.clone()
         } else {
@@ -1474,7 +1439,7 @@ impl Environment {
 
     /// Check if a named space exists
     pub fn has_named_space(&self, space_id: u64) -> bool {
-        self.named_spaces.read().unwrap().contains_key(&space_id)
+        self.shared.named_spaces.read().unwrap().contains_key(&space_id)
     }
 
     // ============================================================
@@ -1487,13 +1452,13 @@ impl Environment {
         self.make_owned();
 
         let id = {
-            let mut next_id = self.next_state_id.write().unwrap();
+            let mut next_id = self.shared.next_state_id.write().unwrap();
             let id = *next_id;
             *next_id += 1;
             id
         };
 
-        self.states.write().unwrap().insert(id, initial_value);
+        self.shared.states.write().unwrap().insert(id, initial_value);
 
         self.modified.store(true, Ordering::Release);
         id
@@ -1502,7 +1467,7 @@ impl Environment {
     /// Get the current value of a state cell
     /// Used by get-state operation
     pub fn get_state(&self, state_id: u64) -> Option<MettaValue> {
-        self.states.read().unwrap().get(&state_id).cloned()
+        self.shared.states.read().unwrap().get(&state_id).cloned()
     }
 
     /// Change the value of a state cell
@@ -1511,7 +1476,7 @@ impl Environment {
     pub fn change_state(&mut self, state_id: u64, new_value: MettaValue) -> bool {
         self.make_owned();
 
-        let mut states = self.states.write().unwrap();
+        let mut states = self.shared.states.write().unwrap();
         if let std::collections::hash_map::Entry::Occupied(mut e) = states.entry(state_id) {
             e.insert(new_value);
             self.modified.store(true, Ordering::Release);
@@ -1523,7 +1488,7 @@ impl Environment {
 
     /// Check if a state cell exists
     pub fn has_state(&self, state_id: u64) -> bool {
-        self.states.read().unwrap().contains_key(&state_id)
+        self.shared.states.read().unwrap().contains_key(&state_id)
     }
 
     // ============================================================
@@ -1535,13 +1500,13 @@ impl Environment {
     pub fn bind(&mut self, symbol: &str, value: MettaValue) {
         self.make_owned();
 
-        self.bindings
+        self.shared.bindings
             .write()
             .unwrap()
             .insert(symbol.to_string(), value);
 
         // Also register in fuzzy matcher for suggestions
-        self.fuzzy_matcher.insert(symbol);
+        self.shared.fuzzy_matcher.write().unwrap().insert(symbol);
 
         self.modified.store(true, Ordering::Release);
     }
@@ -1549,12 +1514,12 @@ impl Environment {
     /// Get the value bound to a symbol
     /// Used for symbol resolution
     pub fn get_binding(&self, symbol: &str) -> Option<MettaValue> {
-        self.bindings.read().unwrap().get(symbol).cloned()
+        self.shared.bindings.read().unwrap().get(symbol).cloned()
     }
 
     /// Check if a symbol is bound
     pub fn has_binding(&self, symbol: &str) -> bool {
-        self.bindings.read().unwrap().contains_key(symbol)
+        self.shared.bindings.read().unwrap().contains_key(symbol)
     }
 
     // ============================================================
@@ -1566,24 +1531,24 @@ impl Environment {
     /// HE-compatible: tokens registered here affect subsequent atom resolution
     pub fn register_token(&mut self, token: &str, value: MettaValue) {
         self.make_owned();
-        self.tokenizer
+        self.shared.tokenizer
             .write()
             .unwrap()
             .register_token_value(token, value);
         // Also register in fuzzy matcher for suggestions
-        self.fuzzy_matcher.insert(token);
+        self.shared.fuzzy_matcher.write().unwrap().insert(token);
         self.modified.store(true, Ordering::Release);
     }
 
     /// Look up a token in the tokenizer
     /// Returns the bound value if found
     pub fn lookup_token(&self, token: &str) -> Option<MettaValue> {
-        self.tokenizer.read().unwrap().lookup(token)
+        self.shared.tokenizer.read().unwrap().lookup(token)
     }
 
     /// Check if a token is registered in the tokenizer
     pub fn has_token(&self, token: &str) -> bool {
-        self.tokenizer.read().unwrap().has_token(token)
+        self.shared.tokenizer.read().unwrap().has_token(token)
     }
 
     // ============================================================
@@ -1602,12 +1567,12 @@ impl Environment {
 
     /// Check if a module is cached by path
     pub fn get_module_by_path(&self, path: &std::path::Path) -> Option<ModId> {
-        self.module_registry.read().unwrap().get_by_path(path)
+        self.shared.module_registry.read().unwrap().get_by_path(path)
     }
 
     /// Check if a module is cached by content hash
     pub fn get_module_by_content(&self, content_hash: u64) -> Option<ModId> {
-        self.module_registry
+        self.shared.module_registry
             .read()
             .unwrap()
             .get_by_content(content_hash)
@@ -1615,7 +1580,7 @@ impl Environment {
 
     /// Check if a module is currently being loaded (cycle detection)
     pub fn is_module_loading(&self, content_hash: u64) -> bool {
-        self.module_registry
+        self.shared.module_registry
             .read()
             .unwrap()
             .is_loading(content_hash)
@@ -1623,7 +1588,7 @@ impl Environment {
 
     /// Mark a module as being loaded
     pub fn mark_module_loading(&self, content_hash: u64) {
-        self.module_registry
+        self.shared.module_registry
             .write()
             .unwrap()
             .mark_loading(content_hash);
@@ -1631,7 +1596,7 @@ impl Environment {
 
     /// Unmark a module as loading
     pub fn unmark_module_loading(&self, content_hash: u64) {
-        self.module_registry
+        self.shared.module_registry
             .write()
             .unwrap()
             .unmark_loading(content_hash);
@@ -1645,7 +1610,7 @@ impl Environment {
         content_hash: u64,
         resource_dir: Option<PathBuf>,
     ) -> ModId {
-        self.module_registry.write().unwrap().register(
+        self.shared.module_registry.write().unwrap().register(
             mod_path,
             file_path,
             content_hash,
@@ -1655,7 +1620,7 @@ impl Environment {
 
     /// Add a path alias for an existing module
     pub fn add_module_path_alias(&self, path: &std::path::Path, mod_id: ModId) {
-        self.module_registry
+        self.shared.module_registry
             .write()
             .unwrap()
             .add_path_alias(path, mod_id);
@@ -1663,7 +1628,7 @@ impl Environment {
 
     /// Get the number of loaded modules
     pub fn module_count(&self) -> usize {
-        self.module_registry.read().unwrap().module_count()
+        self.shared.module_registry.read().unwrap().module_count()
     }
 
     /// Get a module's space by its ModId.
@@ -1674,7 +1639,7 @@ impl Environment {
         &self,
         mod_id: ModId,
     ) -> Option<std::sync::Arc<RwLock<crate::backend::modules::ModuleSpace>>> {
-        let registry = self.module_registry.read().unwrap();
+        let registry = self.shared.module_registry.read().unwrap();
         registry.get(mod_id).map(|module| module.space().clone())
     }
 
@@ -1703,7 +1668,7 @@ impl Environment {
 
     /// Check if strict mode is enabled
     pub fn is_strict_mode(&self) -> bool {
-        self.module_registry.read().unwrap().options().strict_mode
+        self.shared.module_registry.read().unwrap().options().strict_mode
     }
 
     /// Enable or disable strict mode.
@@ -1722,7 +1687,7 @@ impl Environment {
         } else {
             LoadOptions::permissive()
         };
-        self.module_registry.write().unwrap().set_options(options);
+        self.shared.module_registry.write().unwrap().set_options(options);
     }
 
     /// Get rules matching a specific head symbol and arity
@@ -1733,8 +1698,8 @@ impl Environment {
         let key = (head.to_owned(), arity);
 
         // Get indexed rules and wildcards in single lock scope where possible
-        let index = self.rule_index.read().unwrap();
-        let wildcards = self.wildcard_rules.read().unwrap();
+        let index = self.shared.rule_index.read().unwrap();
+        let wildcards = self.shared.wildcard_rules.read().unwrap();
 
         let indexed_rules = index.get(&key);
         let indexed_len = indexed_rules.map_or(0, |r| r.len());
@@ -1772,7 +1737,7 @@ impl Environment {
         query: &str,
         max_distance: usize,
     ) -> Vec<(String, usize)> {
-        self.fuzzy_matcher.suggest(query, max_distance)
+        self.shared.fuzzy_matcher.read().unwrap().suggest(query, max_distance)
     }
 
     /// Generate a "Did you mean?" error message for an undefined symbol
@@ -1791,7 +1756,7 @@ impl Environment {
     /// // Prints: "Error: Undefined symbol 'fibonaci'. Did you mean: fibonacci?"
     /// ```
     pub fn did_you_mean(&self, symbol: &str, max_distance: usize) -> Option<String> {
-        self.fuzzy_matcher.did_you_mean(symbol, max_distance, 3)
+        self.shared.fuzzy_matcher.read().unwrap().did_you_mean(symbol, max_distance, 3)
     }
 
     // ============================================================
@@ -1804,7 +1769,7 @@ impl Environment {
         &self,
         name: &str,
     ) -> Option<std::sync::Arc<dyn super::grounded::GroundedOperation>> {
-        self.grounded_registry.read().unwrap().get(name)
+        self.shared.grounded_registry.read().unwrap().get(name)
     }
 
     /// Get a TCO-compatible grounded operation by name (e.g., "+", "-", "and")
@@ -1814,95 +1779,38 @@ impl Environment {
         &self,
         name: &str,
     ) -> Option<std::sync::Arc<dyn super::grounded::GroundedOperationTCO>> {
-        self.grounded_registry_tco.read().unwrap().get(name)
+        self.shared.grounded_registry_tco.read().unwrap().get(name)
     }
 
     /// Union two environments (monotonic merge)
     /// PathMap and shared_mapping are shared via Arc, so facts (including type assertions) are automatically merged
     /// Multiplicities and rule indices are also merged via shared Arc
     pub fn union(&self, _other: &Environment) -> Environment {
-        // PathMap and SharedMappingHandle are shared via Arc/Clone
-        // Facts (including type assertions) added to either are automatically visible in both
-        let shared_mapping = self.shared_mapping.clone();
-        let btm = self.btm.clone();
-
-        // Merge rule index and wildcard rules (both are Arc<Mutex>, so they're already shared)
-        let rule_index = self.rule_index.clone();
-        let wildcard_rules = self.wildcard_rules.clone();
-
-        // Merge multiplicities (both are Arc<Mutex>, so they're already shared)
-        // The counts are automatically shared via the Arc
-        let multiplicities = self.multiplicities.clone();
-        let pattern_cache = self.pattern_cache.clone();
-        let fuzzy_matcher = self.fuzzy_matcher.clone();
-        let type_index = self.type_index.clone();
-        let type_index_dirty = self.type_index_dirty.clone();
-        let named_spaces = self.named_spaces.clone();
-        let next_space_id = self.next_space_id.clone();
-        let states = self.states.clone();
-        let next_state_id = self.next_state_id.clone();
-        let bindings = self.bindings.clone();
-        let module_registry = self.module_registry.clone();
-        let current_module_path = self.current_module_path.clone();
-        let tokenizer = self.tokenizer.clone();
-        let grounded_registry = self.grounded_registry.clone();
-        let grounded_registry_tco = self.grounded_registry_tco.clone();
-        let large_expr_pathmap = self.large_expr_pathmap.clone();
-
+        // All shared state is now consolidated into single Arc<EnvironmentShared>
+        // Clone is O(1) - just one atomic increment instead of 17
         Environment {
-            shared_mapping,
+            shared: Arc::clone(&self.shared),
+            shared_mapping: self.shared_mapping.clone(),
             owns_data: false, // CoW: union creates a new shared environment
             modified: Arc::new(AtomicBool::new(false)), // CoW: fresh modification tracker
-            btm,
-            rule_index,
-            wildcard_rules,
-            multiplicities,
-            pattern_cache,
-            fuzzy_matcher,
-            type_index,
-            type_index_dirty,
-            named_spaces,
-            next_space_id,
-            states,
-            next_state_id,
-            bindings,
-            module_registry,
-            current_module_path,
-            tokenizer,
-            grounded_registry,
-            grounded_registry_tco,
-            large_expr_pathmap,
+            current_module_path: self.current_module_path.clone(),
         }
     }
 }
 
 /// CoW: Manual Clone implementation
 /// Clones share data (owns_data = false) until first modification triggers make_owned()
+///
+/// Performance: O(1) clone via single Arc increment instead of 17 separate Arc clones
 impl Clone for Environment {
     fn clone(&self) -> Self {
         Environment {
+            // O(1): Single atomic increment for all shared state
+            shared: Arc::clone(&self.shared),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: false, // CoW: clones do not own data initially
             modified: Arc::new(AtomicBool::new(false)), // CoW: fresh modification tracker
-            btm: Arc::clone(&self.btm),
-            rule_index: Arc::clone(&self.rule_index),
-            wildcard_rules: Arc::clone(&self.wildcard_rules),
-            multiplicities: Arc::clone(&self.multiplicities),
-            pattern_cache: Arc::clone(&self.pattern_cache),
-            fuzzy_matcher: self.fuzzy_matcher.clone(),
-            type_index: Arc::clone(&self.type_index),
-            type_index_dirty: Arc::clone(&self.type_index_dirty),
-            named_spaces: Arc::clone(&self.named_spaces),
-            next_space_id: Arc::clone(&self.next_space_id),
-            states: Arc::clone(&self.states),
-            next_state_id: Arc::clone(&self.next_state_id),
-            bindings: Arc::clone(&self.bindings),
-            module_registry: Arc::clone(&self.module_registry),
             current_module_path: self.current_module_path.clone(),
-            tokenizer: Arc::clone(&self.tokenizer),
-            grounded_registry: Arc::clone(&self.grounded_registry),
-            grounded_registry_tco: Arc::clone(&self.grounded_registry_tco),
-            large_expr_pathmap: Arc::clone(&self.large_expr_pathmap),
         }
     }
 }
@@ -1995,21 +1903,18 @@ mod cow_tests {
         // Test: Clone should share Arc pointers (cheap O(1) clone)
         let env = Environment::new();
 
-        // Get Arc pointer addresses before clone
-        let btm_ptr_before = StdArc::as_ptr(&env.btm);
-        let rule_index_ptr_before = StdArc::as_ptr(&env.rule_index);
+        // Get Arc pointer addresses before clone (consolidated shared pointer)
+        let shared_ptr_before = StdArc::as_ptr(&env.shared);
 
         let clone = env.clone();
 
         // Get Arc pointer addresses after clone
-        let btm_ptr_after = StdArc::as_ptr(&clone.btm);
-        let rule_index_ptr_after = StdArc::as_ptr(&clone.rule_index);
+        let shared_ptr_after = StdArc::as_ptr(&clone.shared);
 
-        // Pointers should be identical (shared)
-        assert_eq!(btm_ptr_before, btm_ptr_after, "Clone should share btm Arc");
+        // Pointers should be identical (shared) - O(1) clone
         assert_eq!(
-            rule_index_ptr_before, rule_index_ptr_after,
-            "Clone should share rule_index Arc"
+            shared_ptr_before, shared_ptr_after,
+            "Clone should share consolidated Arc"
         );
     }
 
@@ -2032,7 +1937,7 @@ mod cow_tests {
         assert!(!clone.owns_data, "Clone should not own data initially");
 
         // Get Arc pointers before mutation
-        let btm_ptr_before = StdArc::as_ptr(&clone.btm);
+        let btm_ptr_before = StdArc::as_ptr(&clone.shared);
 
         // First mutation triggers make_owned()
         clone.add_rule(make_test_rule("(clone $y)", "(cloned $y)"));
@@ -2045,7 +1950,7 @@ mod cow_tests {
         );
 
         // Arc pointers should be different (deep copy occurred)
-        let btm_ptr_after = StdArc::as_ptr(&clone.btm);
+        let btm_ptr_after = StdArc::as_ptr(&clone.shared);
         assert_ne!(
             btm_ptr_before, btm_ptr_after,
             "make_owned() should create new Arc"
@@ -2123,73 +2028,41 @@ mod cow_tests {
         );
 
         // Get Arc pointers after first make_owned()
-        let btm_ptr_first = StdArc::as_ptr(&clone.btm);
+        let shared_ptr_first = StdArc::as_ptr(&clone.shared);
 
         // Second mutation should NOT trigger another make_owned()
         clone.add_rule(make_test_rule("(test2 $y)", "(result2 $y)"));
 
         // Arc pointers should be same (no second deep copy)
-        let btm_ptr_second = StdArc::as_ptr(&clone.btm);
+        let shared_ptr_second = StdArc::as_ptr(&clone.shared);
         assert_eq!(
-            btm_ptr_first, btm_ptr_second,
+            shared_ptr_first, shared_ptr_second,
             "make_owned() should not run twice"
         );
     }
 
     #[test]
     fn test_deep_clone_copies_all_fields() {
-        // Test: make_owned() should deep copy all 7 RwLock fields
+        // Test: make_owned() should deep copy the consolidated shared state
+        // (All 17 RwLock fields are now in one Arc<EnvironmentShared>)
         let mut env = Environment::new();
         env.add_rule(make_test_rule("(test $x)", "(result $x)"));
 
         let mut clone = env.clone();
 
-        // Get Arc pointers before mutation
-        let btm_before = StdArc::as_ptr(&clone.btm);
-        let rule_index_before = StdArc::as_ptr(&clone.rule_index);
-        let wildcard_rules_before = StdArc::as_ptr(&clone.wildcard_rules);
-        let multiplicities_before = StdArc::as_ptr(&clone.multiplicities);
-        let pattern_cache_before = StdArc::as_ptr(&clone.pattern_cache);
-        let type_index_before = StdArc::as_ptr(&clone.type_index);
-        let type_index_dirty_before = StdArc::as_ptr(&clone.type_index_dirty);
+        // Get Arc pointer before mutation (single consolidated pointer)
+        let shared_before = StdArc::as_ptr(&clone.shared);
 
         // Trigger make_owned()
         clone.add_rule(make_test_rule("(clone $y)", "(cloned $y)"));
 
-        // Get Arc pointers after mutation
-        let btm_after = StdArc::as_ptr(&clone.btm);
-        let rule_index_after = StdArc::as_ptr(&clone.rule_index);
-        let wildcard_rules_after = StdArc::as_ptr(&clone.wildcard_rules);
-        let multiplicities_after = StdArc::as_ptr(&clone.multiplicities);
-        let pattern_cache_after = StdArc::as_ptr(&clone.pattern_cache);
-        let type_index_after = StdArc::as_ptr(&clone.type_index);
-        let type_index_dirty_after = StdArc::as_ptr(&clone.type_index_dirty);
+        // Get Arc pointer after mutation
+        let shared_after = StdArc::as_ptr(&clone.shared);
 
-        // All 7 Arc pointers should be different (deep copy occurred)
-        assert_ne!(btm_before, btm_after, "btm should be deep copied");
+        // The consolidated Arc should be different (deep copy occurred)
         assert_ne!(
-            rule_index_before, rule_index_after,
-            "rule_index should be deep copied"
-        );
-        assert_ne!(
-            wildcard_rules_before, wildcard_rules_after,
-            "wildcard_rules should be deep copied"
-        );
-        assert_ne!(
-            multiplicities_before, multiplicities_after,
-            "multiplicities should be deep copied"
-        );
-        assert_ne!(
-            pattern_cache_before, pattern_cache_after,
-            "pattern_cache should be deep copied"
-        );
-        assert_ne!(
-            type_index_before, type_index_after,
-            "type_index should be deep copied"
-        );
-        assert_ne!(
-            type_index_dirty_before, type_index_dirty_after,
-            "type_index_dirty should be deep copied"
+            shared_before, shared_after,
+            "shared should be deep copied after make_owned()"
         );
     }
 
@@ -2234,9 +2107,9 @@ mod cow_tests {
             let mut clone = env.clone();
             clone.add_rule(make_test_rule(&format!("(clone{} $y)", i), "(cloned $y)"));
 
-            // Verify Arc pointers are different
-            let env_ptr = StdArc::as_ptr(&env.btm);
-            let clone_ptr = StdArc::as_ptr(&clone.btm);
+            // Verify Arc pointers are different (consolidated shared pointer)
+            let env_ptr = StdArc::as_ptr(&env.shared);
+            let clone_ptr = StdArc::as_ptr(&clone.shared);
             assert_ne!(
                 env_ptr, clone_ptr,
                 "Property violated: clone shares mutable state after write (iteration {})",

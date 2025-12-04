@@ -257,8 +257,15 @@ inspection reveals two unnecessary clone operations:
 | Experiment | Hypothesis | Predicted | Actual | p-value | Result |
 |------------|------------|-----------|--------|---------|--------|
 | 1 | Eliminate redundant clones | 1-3% | **24.5%** | 0.00 | **ACCEPT** |
+| 2 | Intern variable names | 1-2% | - | - | **DEFERRED** |
 
 **Cumulative Improvement**: 1.325x speedup (from 16.406s to 12.382s)
+
+**Final Performance**:
+- Baseline: 16.406s ± 565.7ms
+- Optimized: 12.382s ± 48.1ms
+- Improvement: 4.024s saved per verification (24.5%)
+- Variance reduction: 91.5% (more deterministic execution)
 
 ---
 
@@ -280,14 +287,112 @@ inspection reveals two unnecessary clone operations:
 
 ---
 
+## Post-Experiment 1 Profile (2025-12-04)
+
+Re-profiled after Experiment 1 to identify new hotspots:
+
+| Rank | Function | Before Exp1 | After Exp1 | Change |
+|------|----------|-------------|------------|--------|
+| 1 | `k_path_default_internal` | 9.16% | 11.93% | +2.77% (relative increase) |
+| 2 | `ProductZipper::child_mask` | 8.66% | 11.01% | +2.35% |
+| 3 | `coreferential_transition` | 8.32% | 10.62% | +2.30% |
+| 4 | `mork_expr_to_metta_value` | 5.80% | 8.37% | +2.57% |
+| 5 | `MettaValue::clone` | **8.99%** | **0.63%** | **-93%** |
+| 6 | `drop_in_place<MettaValue>` | **5.62%** | **1.73%** | **-69%** |
+| 7 | `_rjem_malloc` | 5.29% | 1.97% | -63% |
+| 8 | `_rjem_sdallocx` | 4.70% | 2.02% | -57% |
+
+**Key Insight**: The "relative increase" of PathMap functions is actually due to the
+denominator shrinking - they now represent a larger fraction of a smaller total.
+The actual CPU time spent in these functions is unchanged; we've simply eliminated
+other overhead.
+
+**New Hotspot Summary**:
+- PathMap/MORK operations: ~50% (external library - cannot optimize directly)
+- `mork_expr_to_metta_value`: 8.37% (next optimization target)
+- Allocation/deallocation: ~4% (significantly reduced)
+
+---
+
+### Experiment 2: Avoid Repeated Variable Name String Allocation
+
+### Hypothesis
+**H2**: Using static string slices for variable names instead of allocating
+new Strings will reduce `mork_expr_to_metta_value` overhead.
+
+**Rationale**: The function currently calls `VARNAMES[i].to_string()` which allocates
+a new String for each variable reference. Since variable names are static, we can
+use `Cow<'static, str>` or change `Atom(String)` to avoid the allocation.
+
+### Predicted Improvement
+- 1-2% improvement in e2e verification time
+- Expected speedup: 1.01x - 1.02x
+
+### Implementation Analysis (2025-12-04)
+
+**Implementation Options Evaluated**:
+
+1. **Change `MettaValue::Atom(String)` to `MettaValue::Atom(Cow<'static, str>)`**
+   - Would allow zero-copy for static VARNAMES strings
+   - Impact: 1955 occurrences across 33 files require updating
+   - Risk: High (large refactor across evaluation engine)
+
+2. **Enable `symbol-interning` feature**
+   - Existing `Symbol` type uses lasso for O(1) interning
+   - Would still require changing MettaValue::Atom to use Symbol
+   - Impact: Same 1955 occurrences need updating
+
+3. **Pre-compute static String array with `once_cell::Lazy`**
+   - Would avoid `.to_string()` call but `String::clone()` still allocates
+   - No benefit: Rust's String does not have Small String Optimization (SSO)
+
+**Cost-Benefit Analysis**:
+
+| Factor | Value |
+|--------|-------|
+| Current allocation overhead | ~4% (post-Experiment 1) |
+| VARNAMES contribution estimate | 0.5-1% of total (small portion of 4%) |
+| Expected improvement | 0.5-1% |
+| Files to modify | 33 |
+| Code locations to update | 1,955 |
+| Risk of introducing bugs | Moderate-High |
+
+**Decision**: **NOT PROCEED** - The cost-benefit ratio is unfavorable:
+- Very large refactor (1955 changes across 33 files)
+- Minimal expected benefit (0.5-1% vs 24.5% already achieved)
+- High risk of introducing bugs in the evaluation hot path
+- The optimization target (VARNAMES strings) are very short (2-4 bytes)
+  which are efficiently handled by jemalloc's small object allocator
+
+### Conclusion
+
+**Result**: **DEFERRED** - Experiment not executed due to unfavorable cost-benefit analysis
+
+**Reasoning**:
+1. Experiment 1 already achieved 24.5% improvement (far exceeding goals)
+2. Allocation overhead reduced from 9.99% to ~4% (60% reduction)
+3. Remaining VARNAMES allocation overhead estimated at 0.5-1%
+4. Large refactor required (1955 locations, 33 files) for minimal gain
+5. Better to focus on algorithmic optimizations if further improvement needed
+
+**Recommendation for Future Work**:
+- If further optimization is required, consider enabling `symbol-interning` feature
+  as a holistic solution rather than targeted VARNAMES fix
+- Alternative: Focus on reducing PathMap/MORK overhead (~50% of CPU) through
+  algorithmic improvements (e.g., caching query results)
+
+---
+
 ## Future Work
 
-1. **Profile after optimization**: Re-run perf to identify the new hotspots
-2. **Experiment 2**: Consider Arc<Vec<MettaValue>> for SExpr if cloning is still
-   a significant overhead after this optimization
-3. **Experiment 3**: Intern variable names to reduce string allocations
-4. **Target 10s barrier**: Current time is 12.382s, aim to break 10s with additional
-   optimizations
+1. ~~**Profile after optimization**: Re-run perf to identify the new hotspots~~ ✓ Done
+2. ~~**Experiment 2**: Consider Arc<Vec<MettaValue>> for SExpr~~ - Not needed (clone dropped to 0.63%)
+3. ~~**Experiment 2**: Intern variable names to reduce string allocations~~ - Deferred (unfavorable cost-benefit)
+4. **Target 10s barrier**: Current time is 12.382s, aim to break 10s with additional optimizations
+   - PathMap/MORK operations now dominate (~50% CPU) - external library
+   - Consider caching `mork_expr_to_metta_value` results for repeated patterns
+   - Consider enabling `symbol-interning` feature as holistic solution if string allocation becomes bottleneck
+5. **Algorithmic improvements**: Focus on reducing call frequency to MORK rather than micro-optimizations
 
 ---
 

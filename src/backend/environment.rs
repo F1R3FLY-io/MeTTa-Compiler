@@ -221,7 +221,9 @@ impl Environment {
 
         let shared = Arc::new(EnvironmentShared {
             btm: RwLock::new(PathMap::new()),
-            rule_index: RwLock::new(HashMap::new()),
+            // Pre-size to 128 to avoid resize threshold at ~100 entries
+            // This fixes a regression with symbol-interning at fibonacci_lookup/100
+            rule_index: RwLock::new(HashMap::with_capacity(128)),
             wildcard_rules: RwLock::new(Vec::new()),
             multiplicities: RwLock::new(HashMap::new()),
             pattern_cache: RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),

@@ -172,7 +172,7 @@ fn write_symbol(bytes: &[u8], space: &Space, ez: &mut ExprZipper) -> Result<(), 
     Ok(())
 }
 
-/// Convert MORK bindings to our Bindings format
+/// Convert MORK bindings to Mettatron Bindings format
 ///
 /// MORK uses BTreeMap<(u8, u8), ExprEnv> where the key is (old_var, new_var).
 /// We need to convert this to SmallVec<[(String, MettaValue); 8]> using the original variable names.

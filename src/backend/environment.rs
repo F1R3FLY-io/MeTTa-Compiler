@@ -288,6 +288,71 @@ impl Environment {
         self.modified.store(true, Ordering::Release);
     }
 
+    /// Create a forked environment for nondeterministic branch isolation.
+    ///
+    /// This is critical for correct evaluation of nondeterministic MeTTa programs.
+    /// When evaluation forks (e.g., from `match` returning multiple results),
+    /// each branch needs its own isolated view of mutable state.
+    ///
+    /// This method:
+    /// 1. Clones the environment (CoW for states)
+    /// 2. Forks all SpaceHandles in bindings for branch isolation
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Original env has &stack bound to a space
+    /// let forked = env.fork_for_nondeterminism();
+    /// // forked's &stack is isolated from original's
+    /// ```
+    pub fn fork_for_nondeterminism(&self) -> Environment {
+        let mut forked = self.clone();
+        forked.make_owned(); // Ensure we have our own copy of state
+
+        // Fork all SpaceHandles in bindings
+        let mut forked_bindings = forked.shared.bindings.write().unwrap();
+        for (_name, value) in forked_bindings.iter_mut() {
+            Self::fork_spaces_in_value(value);
+        }
+        drop(forked_bindings);
+
+        forked
+    }
+
+    /// Recursively fork all SpaceHandles in a MettaValue.
+    fn fork_spaces_in_value(value: &mut MettaValue) {
+        match value {
+            MettaValue::Space(handle) => {
+                // Fork the space handle for isolation
+                *handle = handle.fork();
+            }
+            MettaValue::SExpr(items) => {
+                for item in items.iter_mut() {
+                    Self::fork_spaces_in_value(item);
+                }
+            }
+            MettaValue::Conjunction(goals) => {
+                for goal in goals.iter_mut() {
+                    Self::fork_spaces_in_value(goal);
+                }
+            }
+            MettaValue::Type(_) => {
+                // Arc<MettaValue> - can't mutate through Arc, but types rarely contain spaces
+            }
+            MettaValue::Error(_, _) => {
+                // Arc<MettaValue> - can't mutate, but errors rarely contain spaces
+            }
+            // Primitives don't contain spaces
+            MettaValue::Atom(_)
+            | MettaValue::Bool(_)
+            | MettaValue::Long(_)
+            | MettaValue::Float(_)
+            | MettaValue::String(_)
+            | MettaValue::Nil
+            | MettaValue::State(_)
+            | MettaValue::Unit => {}
+        }
+    }
+
     /// Create a thread-local Space for operations
     /// Following the Rholang LSP pattern: cheap clone via structural sharing
     ///

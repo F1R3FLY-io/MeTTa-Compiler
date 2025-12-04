@@ -58,7 +58,9 @@ impl TryFrom<&MettaExpr> for MettaValue {
             MettaExpr::Float(f, _span) => Ok(MettaValue::Float(*f)),
             MettaExpr::List(items, _span) => {
                 if items.is_empty() {
-                    Ok(MettaValue::Nil)
+                    // HE-compatible: () is an empty S-expression, not Nil
+                    // This allows collapse to produce (()) and () to evaluate to ()
+                    Ok(MettaValue::SExpr(vec![]))
                 } else {
                     // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
                     let is_conjunction = items
@@ -224,7 +226,8 @@ mod tests {
             assert_eq!(items[4], MettaValue::Bool(true));
             assert_eq!(items[5], MettaValue::Bool(false));
             assert_eq!(items[6], MettaValue::String("text".to_string()));
-            assert_eq!(items[7], MettaValue::Nil);
+            // () compiles to empty SExpr for HE compatibility
+            assert_eq!(items[7], MettaValue::SExpr(vec![]));
         } else {
             panic!("Expected SExpr with mixed literals");
         }

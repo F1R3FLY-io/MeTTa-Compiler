@@ -54,13 +54,23 @@ pub fn metta_to_mork_bytes(
     space: &Space,
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
-    let mut buffer = vec![0u8; 16384];
+    // 256KB buffer for complex expressions (mmverify can have large nested structures)
+    const BUFFER_SIZE: usize = 262144;
+    let mut buffer = vec![0u8; BUFFER_SIZE];
     let expr = Expr {
         ptr: buffer.as_mut_ptr(),
     };
     let mut ez = ExprZipper::new(expr);
 
     write_metta_value(value, space, ctx, &mut ez)?;
+
+    // Safety check: ensure we didn't overflow the buffer
+    if ez.loc > BUFFER_SIZE {
+        return Err(format!(
+            "Expression too large for MORK conversion: {} bytes (max {})",
+            ez.loc, BUFFER_SIZE
+        ));
+    }
 
     Ok(buffer[..ez.loc].to_vec())
 }

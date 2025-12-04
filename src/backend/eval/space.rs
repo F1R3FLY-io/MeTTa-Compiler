@@ -166,6 +166,10 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
 
 /// Pattern match against a SpaceHandle and return evaluated instantiated templates.
 /// HE-compatible: After pattern matching, the template is evaluated with bindings applied.
+///
+/// IMPORTANT: Each match result is evaluated in a forked environment to provide
+/// nondeterministic branch isolation. This prevents one branch's mutations from
+/// affecting other branches.
 fn match_with_space_handle(
     handle: &SpaceHandle,
     pattern: &MettaValue,
@@ -197,8 +201,9 @@ fn match_with_space_handle(
         if debug {
             eprintln!("[DEBUG match] Using owned space path, {} atoms", atoms.len());
         }
-        let mut results = Vec::new();
 
+        // Collect all matching atoms first (don't evaluate yet)
+        let mut matching_bindings: Vec<_> = Vec::new();
         for atom in &atoms {
             if debug {
                 eprintln!("[DEBUG match] Trying to match atom={:?}", atom);
@@ -207,18 +212,41 @@ fn match_with_space_handle(
                 if debug {
                     eprintln!("[DEBUG match] MATCH! bindings={:?}", bindings);
                 }
-                let instantiated = apply_bindings(template, &bindings).into_owned();
-                if debug {
-                    eprintln!("[DEBUG match] instantiated={:?}", instantiated);
-                }
-                // HE-compatible: Evaluate the instantiated template
-                // This allows templates like (let () (add-atom ...) (remove-atom ...)) to be executed
-                let (eval_results, _) = eval(instantiated, env.clone());
-                if debug {
-                    eprintln!("[DEBUG match] eval_results={:?}", eval_results);
-                }
-                results.extend(eval_results);
+                matching_bindings.push(bindings);
             }
+        }
+
+        // If only one match, no need for forking (optimization)
+        if matching_bindings.len() == 1 {
+            let bindings = &matching_bindings[0];
+            let instantiated = apply_bindings(template, bindings).into_owned();
+            if debug {
+                eprintln!("[DEBUG match] Single match, instantiated={:?}", instantiated);
+            }
+            let (eval_results, _) = eval(instantiated, env.clone());
+            if debug {
+                eprintln!("[DEBUG match] eval_results={:?}", eval_results);
+            }
+            return eval_results;
+        }
+
+        // Multiple matches - fork environment for each to isolate mutations
+        let mut results = Vec::new();
+        for bindings in &matching_bindings {
+            let instantiated = apply_bindings(template, bindings).into_owned();
+            if debug {
+                eprintln!("[DEBUG match] Multi-match, instantiated={:?}", instantiated);
+            }
+
+            // Fork environment for this branch to isolate space mutations
+            let forked_env = env.fork_for_nondeterminism();
+
+            // HE-compatible: Evaluate the instantiated template in forked environment
+            let (eval_results, _) = eval(instantiated, forked_env);
+            if debug {
+                eprintln!("[DEBUG match] eval_results={:?}", eval_results);
+            }
+            results.extend(eval_results);
         }
 
         results

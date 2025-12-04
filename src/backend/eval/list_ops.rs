@@ -10,35 +10,44 @@ use super::eval;
 pub(super) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("car-atom", items, 1, env, "(car-atom expr)");
 
-    let expr = &items[1];
+    // EVALUATE the argument first to handle lazy evaluation
+    let (expr_results, new_env) = eval(items[1].clone(), env);
 
-    match expr {
-        MettaValue::SExpr(elements) if !elements.is_empty() => (vec![elements[0].clone()], env),
-        MettaValue::SExpr(_) => {
-            let err = MettaValue::Error(
-                "car-atom: cannot get head of empty expression".to_string(),
-                Arc::new(expr.clone()),
-            );
-            (vec![err], env)
-        }
-        MettaValue::Nil => {
-            let err = MettaValue::Error(
-                "car-atom: cannot get head of empty expression".to_string(),
-                Arc::new(expr.clone()),
-            );
-            (vec![err], env)
-        }
-        _ => {
-            let err = MettaValue::Error(
-                format!(
-                    "car-atom: expected expression, got {}. Usage: (car-atom expr)",
-                    super::friendly_value_repr(expr)
-                ),
-                Arc::new(expr.clone()),
-            );
-            (vec![err], env)
+    // Handle nondeterminism - car-atom on each result
+    let mut all_results = vec![];
+    for expr in expr_results {
+        match &expr {
+            MettaValue::SExpr(elements) if !elements.is_empty() => {
+                all_results.push(elements[0].clone());
+            }
+            MettaValue::SExpr(_) => {
+                let err = MettaValue::Error(
+                    "car-atom: cannot get head of empty expression".to_string(),
+                    Arc::new(expr.clone()),
+                );
+                all_results.push(err);
+            }
+            MettaValue::Nil => {
+                let err = MettaValue::Error(
+                    "car-atom: cannot get head of empty expression".to_string(),
+                    Arc::new(expr.clone()),
+                );
+                all_results.push(err);
+            }
+            _ => {
+                let err = MettaValue::Error(
+                    format!(
+                        "car-atom: expected expression, got {}. Usage: (car-atom expr)",
+                        super::friendly_value_repr(&expr)
+                    ),
+                    Arc::new(expr.clone()),
+                );
+                all_results.push(err);
+            }
         }
     }
+
+    (all_results, new_env)
 }
 
 /// cdr-atom: (cdr-atom expr) -> rest of expression (tail)
@@ -47,42 +56,49 @@ pub(super) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 pub(super) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("cdr-atom", items, 1, env, "(cdr-atom expr)");
 
-    let expr = &items[1];
+    // EVALUATE the argument first to handle lazy evaluation
+    let (expr_results, new_env) = eval(items[1].clone(), env);
 
-    match expr {
-        MettaValue::SExpr(elements) if !elements.is_empty() => {
-            let tail = elements[1..].to_vec();
-            if tail.is_empty() {
-                (vec![MettaValue::SExpr(vec![])], env)
-            } else {
-                (vec![MettaValue::SExpr(tail)], env)
+    // Handle nondeterminism - cdr-atom on each result
+    let mut all_results = vec![];
+    for expr in expr_results {
+        match &expr {
+            MettaValue::SExpr(elements) if !elements.is_empty() => {
+                let tail = elements[1..].to_vec();
+                all_results.push(if tail.is_empty() {
+                    MettaValue::SExpr(vec![])
+                } else {
+                    MettaValue::SExpr(tail)
+                });
+            }
+            MettaValue::SExpr(_) => {
+                let err = MettaValue::Error(
+                    "cdr-atom: cannot get tail of empty expression".to_string(),
+                    Arc::new(expr.clone()),
+                );
+                all_results.push(err);
+            }
+            MettaValue::Nil => {
+                let err = MettaValue::Error(
+                    "cdr-atom: cannot get tail of empty expression".to_string(),
+                    Arc::new(expr.clone()),
+                );
+                all_results.push(err);
+            }
+            _ => {
+                let err = MettaValue::Error(
+                    format!(
+                        "cdr-atom: expected expression, got {}. Usage: (cdr-atom expr)",
+                        super::friendly_value_repr(&expr)
+                    ),
+                    Arc::new(expr.clone()),
+                );
+                all_results.push(err);
             }
         }
-        MettaValue::SExpr(_) => {
-            let err = MettaValue::Error(
-                "cdr-atom: cannot get tail of empty expression".to_string(),
-                Arc::new(expr.clone()),
-            );
-            (vec![err], env)
-        }
-        MettaValue::Nil => {
-            let err = MettaValue::Error(
-                "cdr-atom: cannot get tail of empty expression".to_string(),
-                Arc::new(expr.clone()),
-            );
-            (vec![err], env)
-        }
-        _ => {
-            let err = MettaValue::Error(
-                format!(
-                    "cdr-atom: expected expression, got {}. Usage: (cdr-atom expr)",
-                    super::friendly_value_repr(expr)
-                ),
-                Arc::new(expr.clone()),
-            );
-            (vec![err], env)
-        }
     }
+
+    (all_results, new_env)
 }
 
 /// cons-atom: (cons-atom head tail) -> (head elements...)
@@ -91,27 +107,38 @@ pub(super) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 pub(super) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("cons-atom", items, 2, env, "(cons-atom head tail)");
 
-    let head = &items[1];
-    let tail = &items[2];
+    // EVALUATE both arguments first to handle lazy evaluation
+    let (head_results, env1) = eval(items[1].clone(), env);
+    let (tail_results, new_env) = eval(items[2].clone(), env1);
 
-    match tail {
-        MettaValue::SExpr(elements) => {
-            let mut result = vec![head.clone()];
-            result.extend(elements.iter().cloned());
-            (vec![MettaValue::SExpr(result)], env)
-        }
-        MettaValue::Nil => (vec![MettaValue::SExpr(vec![head.clone()])], env),
-        _ => {
-            let err = MettaValue::Error(
-                format!(
-                    "cons-atom: tail must be an expression, got {}. Usage: (cons-atom head tail)",
-                    super::friendly_value_repr(tail)
-                ),
-                Arc::new(tail.clone()),
-            );
-            (vec![err], env)
+    // Handle nondeterminism - cons-atom on each combination
+    let mut all_results = vec![];
+    for head in &head_results {
+        for tail in &tail_results {
+            match tail {
+                MettaValue::SExpr(elements) => {
+                    let mut result = vec![head.clone()];
+                    result.extend(elements.iter().cloned());
+                    all_results.push(MettaValue::SExpr(result));
+                }
+                MettaValue::Nil => {
+                    all_results.push(MettaValue::SExpr(vec![head.clone()]));
+                }
+                _ => {
+                    let err = MettaValue::Error(
+                        format!(
+                            "cons-atom: tail must be an expression, got {}. Usage: (cons-atom head tail)",
+                            super::friendly_value_repr(tail)
+                        ),
+                        Arc::new(tail.clone()),
+                    );
+                    all_results.push(err);
+                }
+            }
         }
     }
+
+    (all_results, new_env)
 }
 
 /// decons-atom: (decons-atom expr) -> (head tail)
@@ -120,29 +147,35 @@ pub(super) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
 pub(super) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("decons-atom", items, 1, env, "(decons-atom expr)");
 
-    let expr = &items[1];
+    // EVALUATE the argument first to handle lazy evaluation
+    let (expr_results, new_env) = eval(items[1].clone(), env);
 
-    match expr {
-        MettaValue::SExpr(elements) if !elements.is_empty() => {
-            let head = elements[0].clone();
-            let tail = MettaValue::SExpr(elements[1..].to_vec());
-            (vec![MettaValue::SExpr(vec![head, tail])], env)
-        }
-        MettaValue::SExpr(_) | MettaValue::Nil => {
-            // Empty expression - return empty result (non-deterministic failure)
-            (vec![], env)
-        }
-        _ => {
-            let err = MettaValue::Error(
-                format!(
-                    "decons-atom: expected expression, got {}. Usage: (decons-atom expr)",
-                    super::friendly_value_repr(expr)
-                ),
-                Arc::new(expr.clone()),
-            );
-            (vec![err], env)
+    // Handle nondeterminism - decons-atom on each result
+    let mut all_results = vec![];
+    for expr in expr_results {
+        match &expr {
+            MettaValue::SExpr(elements) if !elements.is_empty() => {
+                let head = elements[0].clone();
+                let tail = MettaValue::SExpr(elements[1..].to_vec());
+                all_results.push(MettaValue::SExpr(vec![head, tail]));
+            }
+            MettaValue::SExpr(_) | MettaValue::Nil => {
+                // Empty expression - non-deterministic failure (return nothing for this result)
+            }
+            _ => {
+                let err = MettaValue::Error(
+                    format!(
+                        "decons-atom: expected expression, got {}. Usage: (decons-atom expr)",
+                        super::friendly_value_repr(&expr)
+                    ),
+                    Arc::new(expr.clone()),
+                );
+                all_results.push(err);
+            }
         }
     }
+
+    (all_results, new_env)
 }
 
 /// size-atom: (size-atom expr) -> number
@@ -151,22 +184,33 @@ pub(super) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 pub(super) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("size-atom", items, 1, env, "(size-atom expr)");
 
-    let expr = &items[1];
+    // EVALUATE the argument first to handle lazy evaluation
+    let (expr_results, new_env) = eval(items[1].clone(), env);
 
-    match expr {
-        MettaValue::SExpr(elements) => (vec![MettaValue::Long(elements.len() as i64)], env),
-        MettaValue::Nil => (vec![MettaValue::Long(0)], env),
-        _ => {
-            let err = MettaValue::Error(
-                format!(
-                    "size-atom: expected expression, got {}. Usage: (size-atom expr)",
-                    super::friendly_value_repr(expr)
-                ),
-                Arc::new(expr.clone()),
-            );
-            (vec![err], env)
+    // Handle nondeterminism - size-atom on each result
+    let mut all_results = vec![];
+    for expr in expr_results {
+        match &expr {
+            MettaValue::SExpr(elements) => {
+                all_results.push(MettaValue::Long(elements.len() as i64));
+            }
+            MettaValue::Nil => {
+                all_results.push(MettaValue::Long(0));
+            }
+            _ => {
+                let err = MettaValue::Error(
+                    format!(
+                        "size-atom: expected expression, got {}. Usage: (size-atom expr)",
+                        super::friendly_value_repr(&expr)
+                    ),
+                    Arc::new(expr.clone()),
+                );
+                all_results.push(err);
+            }
         }
     }
+
+    (all_results, new_env)
 }
 
 /// max-atom: (max-atom expr) -> maximum number
@@ -175,50 +219,62 @@ pub(super) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
 pub(super) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("max-atom", items, 1, env, "(max-atom expr)");
 
-    let expr = &items[1];
+    // EVALUATE the argument first to handle lazy evaluation
+    let (expr_results, new_env) = eval(items[1].clone(), env);
 
-    match expr {
-        MettaValue::SExpr(elements) if !elements.is_empty() => {
-            let mut max_val: Option<i64> = None;
+    // Handle nondeterminism - max-atom on each result
+    let mut all_results = vec![];
+    for expr in expr_results {
+        match &expr {
+            MettaValue::SExpr(elements) if !elements.is_empty() => {
+                let mut max_val: Option<i64> = None;
+                let mut error_result = None;
 
-            for elem in elements {
-                match elem {
-                    MettaValue::Long(n) => {
-                        max_val = Some(max_val.map_or(*n, |m| m.max(*n)));
-                    }
-                    _ => {
-                        let err = MettaValue::Error(
-                            format!(
-                                "max-atom: all elements must be numbers, got {}",
-                                super::friendly_value_repr(elem)
-                            ),
-                            Arc::new(elem.clone()),
-                        );
-                        return (vec![err], env);
+                for elem in elements {
+                    match elem {
+                        MettaValue::Long(n) => {
+                            max_val = Some(max_val.map_or(*n, |m| m.max(*n)));
+                        }
+                        _ => {
+                            error_result = Some(MettaValue::Error(
+                                format!(
+                                    "max-atom: all elements must be numbers, got {}",
+                                    super::friendly_value_repr(elem)
+                                ),
+                                Arc::new(elem.clone()),
+                            ));
+                            break;
+                        }
                     }
                 }
-            }
 
-            (vec![MettaValue::Long(max_val.unwrap())], env)
-        }
-        MettaValue::SExpr(_) | MettaValue::Nil => {
-            let err = MettaValue::Error(
-                "max-atom: cannot find maximum of empty expression".to_string(),
-                Arc::new(expr.clone()),
-            );
-            (vec![err], env)
-        }
-        _ => {
-            let err = MettaValue::Error(
-                format!(
-                    "max-atom: expected expression of numbers, got {}. Usage: (max-atom expr)",
-                    super::friendly_value_repr(expr)
-                ),
-                Arc::new(expr.clone()),
-            );
-            (vec![err], env)
+                if let Some(err) = error_result {
+                    all_results.push(err);
+                } else {
+                    all_results.push(MettaValue::Long(max_val.unwrap()));
+                }
+            }
+            MettaValue::SExpr(_) | MettaValue::Nil => {
+                let err = MettaValue::Error(
+                    "max-atom: cannot find maximum of empty expression".to_string(),
+                    Arc::new(expr.clone()),
+                );
+                all_results.push(err);
+            }
+            _ => {
+                let err = MettaValue::Error(
+                    format!(
+                        "max-atom: expected expression of numbers, got {}. Usage: (max-atom expr)",
+                        super::friendly_value_repr(&expr)
+                    ),
+                    Arc::new(expr.clone()),
+                );
+                all_results.push(err);
+            }
         }
     }
+
+    (all_results, new_env)
 }
 
 /// Suggest variable format when user provides a plain atom instead of `$var`

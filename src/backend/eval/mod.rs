@@ -434,6 +434,10 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
 /// This prevents stack overflow by using heap-allocated work items instead of
 /// recursive function calls.
 fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
+    // Debug tracing controlled by environment variable
+    let debug_eval = std::env::var("METTA_DEBUG_EVAL").is_ok();
+    let mut eval_count: u64 = 0;
+
     // Initialize work stack with the initial evaluation
     let mut work_stack: Vec<WorkItem> = vec![WorkItem::Eval {
         value,
@@ -459,6 +463,21 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                 cont_id,
                 is_tail_call,
             } => {
+                // Debug trace
+                if debug_eval {
+                    eval_count += 1;
+                    if eval_count % 1000 == 0 || eval_count < 100 {
+                        eprintln!(
+                            "[EVAL#{}] depth={} work_stack={} conts={} value={}",
+                            eval_count,
+                            depth,
+                            work_stack.len(),
+                            continuations.len(),
+                            friendly_value_repr(&value)
+                        );
+                    }
+                }
+
                 // Perform one step of evaluation
                 // For tail calls, we don't increment depth - this enables TCO
                 let step_result = eval_step(value, env.clone(), depth);
@@ -622,6 +641,44 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             cont_id,
                             is_tail_call: true,
                         });
+                    }
+
+                    // Evaluate rule matches with UNEVALUATED arguments (lazy evaluation)
+                    // This is used when user-defined rules match before argument evaluation.
+                    EvalStep::EvalRuleMatchesLazy { matches, env, depth } => {
+                        if matches.is_empty() {
+                            // No rule matches - shouldn't happen (this variant is only used when matches exist)
+                            work_stack.push(WorkItem::Resume {
+                                cont_id,
+                                result: (vec![], env),
+                            });
+                        } else {
+                            // Convert to VecDeque ONCE and pop front (O(n) + O(1) vs O(n²))
+                            let mut matches_deque: VecDeque<_> = matches.into_iter().collect();
+                            let (rhs, bindings) = matches_deque.pop_front().unwrap();
+
+                            // Create continuation to process remaining rule matches
+                            let match_cont_id = continuations.len();
+                            continuations.push(Continuation::ProcessRuleMatches {
+                                remaining_matches: matches_deque,
+                                results: vec![],
+                                env: env.clone(),
+                                depth,
+                                parent_cont: cont_id,
+                            });
+
+                            // Evaluate first rule RHS with bindings - THIS IS A TAIL CALL
+                            // The bindings contain UNEVALUATED expressions from pattern match
+                            // TCO: Don't increment depth for tail calls
+                            let instantiated_rhs = apply_bindings(&rhs, &bindings).into_owned();
+                            work_stack.push(WorkItem::Eval {
+                                value: instantiated_rhs,
+                                env,
+                                depth, // TCO: reuse depth
+                                cont_id: match_cont_id,
+                                is_tail_call: true,
+                            });
+                        }
                     }
                 }
             }
@@ -944,28 +1001,31 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         }
                                     }
 
-                                    // Try to match against rules
-                                    // Convert SmallVec to Vec for SExpr construction
+                                    // MeTTa HE semantics: After argument evaluation, try rule matching AGAIN.
+                                    // The evaluated arguments may now match rules that didn't match before.
+                                    // Example: (intensity (color)) → (intensity red) → 100
                                     let evaled_vec: Vec<MettaValue> = evaled_items.into_vec();
                                     let sexpr = MettaValue::SExpr(evaled_vec.clone());
                                     let all_matches = try_match_all_rules(&sexpr, &env);
 
                                     if !all_matches.is_empty() {
-                                        // Queue up rule matches for evaluation
-                                        let mut matches_deque: VecDeque<_> =
-                                            all_matches.into_iter().collect();
-                                        let (rhs, bindings) = matches_deque.pop_front().unwrap();
+                                        // Rules match! Queue them for evaluation
+                                        pending_rule_matches = all_matches.into_iter().collect();
 
+                                        // Take the first match and evaluate it
+                                        let (rhs, bindings) = pending_rule_matches.pop_front().unwrap();
+
+                                        // Update continuation with pending matches
                                         continuations[cont_id] = Continuation::ProcessCombinations {
                                             combinations,
                                             results,
-                                            pending_rule_matches: matches_deque,
+                                            pending_rule_matches,
                                             env: env.clone(),
                                             depth,
                                             parent_cont,
                                         };
 
-                                        // Evaluate first rule RHS
+                                        // Evaluate the rule RHS
                                         let instantiated_rhs = apply_bindings(&rhs, &bindings).into_owned();
                                         work_stack.push(WorkItem::Eval {
                                             value: instantiated_rhs,
@@ -974,28 +1034,28 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                             cont_id,
                                             is_tail_call: true,
                                         });
-                                    } else {
-                                        // No rule matched - handle ADD mode
-                                        let result_value =
-                                            handle_no_rule_match(evaled_vec, &sexpr, &mut env);
-                                        results.push(result_value);
-
-                                        // Continue to next combination
-                                        continuations[cont_id] = Continuation::ProcessCombinations {
-                                            combinations,
-                                            results,
-                                            pending_rule_matches: VecDeque::new(),
-                                            env: env.clone(),
-                                            depth,
-                                            parent_cont,
-                                        };
-
-                                        // Resume to process next combination
-                                        work_stack.push(WorkItem::Resume {
-                                            cont_id,
-                                            result: (vec![], env),
-                                        });
+                                        continue;
                                     }
+
+                                    // No rules matched even with evaluated arguments - data constructor
+                                    let result_value = handle_no_rule_match(evaled_vec, &sexpr, &mut env);
+                                    results.push(result_value);
+
+                                    // Continue to next combination
+                                    continuations[cont_id] = Continuation::ProcessCombinations {
+                                        combinations,
+                                        results,
+                                        pending_rule_matches: VecDeque::new(),
+                                        env: env.clone(),
+                                        depth,
+                                        parent_cont,
+                                    };
+
+                                    // Resume to process next combination
+                                    work_stack.push(WorkItem::Resume {
+                                        cont_id,
+                                        result: (vec![], env),
+                                    });
                                 }
                             }
                         }
@@ -1164,6 +1224,18 @@ enum EvalStep {
         /// Evaluation depth (preserved for TCO)
         depth: usize,
     },
+    /// Evaluate rule matches with UNEVALUATED arguments (lazy evaluation semantics).
+    /// This is used when user-defined rules match before argument evaluation.
+    /// MeTTa HE uses normal-order (lazy) evaluation for rule arguments.
+    EvalRuleMatchesLazy {
+        /// Matched rules: (RHS expression, bindings from pattern match)
+        /// RHS is Arc-wrapped for O(1) cloning
+        matches: Vec<(Arc<MettaValue>, Bindings)>,
+        /// Environment for evaluation
+        env: Environment,
+        /// Evaluation depth
+        depth: usize,
+    },
 }
 
 /// Result of processing collected S-expression results
@@ -1248,6 +1320,119 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
     }
 }
 
+/// Set of grounded operation names that should be evaluated eagerly in arguments.
+/// These are pure operations that don't have side effects and whose arguments
+/// need to be concrete values for pattern matching to work correctly.
+const GROUNDED_OPS: &[&str] = &[
+    // Arithmetic operations
+    "+", "-", "*", "/", "%",
+    // Comparison operations
+    "==", "!=", "<", ">", "<=", ">=",
+    // Boolean operations
+    "not", "and", "or",
+    // Type operations that return concrete values
+    "get-type",
+];
+
+/// Check if an atom name is a grounded operation that should be eagerly evaluated.
+fn is_grounded_op(name: &str) -> bool {
+    GROUNDED_OPS.contains(&name)
+}
+
+/// Evaluate arguments that are grounded operations (hybrid lazy/eager evaluation).
+///
+/// This function implements a key insight for MeTTa evaluation:
+/// - Grounded operations (like arithmetic) should be evaluated BEFORE pattern matching
+/// - User-defined expressions should remain unevaluated for lazy pattern matching
+///
+/// Example: For `(countdown (- 3 1))`:
+/// - The argument `(- 3 1)` is a grounded operation, so evaluate it to `2`
+/// - Result: `(countdown 2)` - now pattern matching works correctly
+///
+/// Example: For `(wrapper $a (add-atom &stack x))`:
+/// - The argument `(add-atom &stack x)` is NOT grounded (user-defined side effect)
+/// - Keep it unevaluated for lazy pattern matching
+fn evaluate_grounded_args(items: &[MettaValue], env: &Environment) -> Vec<MettaValue> {
+    if items.is_empty() {
+        return items.to_vec();
+    }
+
+    let mut result = Vec::with_capacity(items.len());
+
+    // Keep the first item (operator) as-is
+    result.push(items[0].clone());
+
+    // Process arguments (items after the first)
+    for item in &items[1..] {
+        match item {
+            MettaValue::SExpr(sub_items) if !sub_items.is_empty() => {
+                // Check if this is a grounded operation
+                if let Some(MettaValue::Atom(op)) = sub_items.first() {
+                    if is_grounded_op(op) {
+                        // This is a grounded operation - evaluate it eagerly
+                        // Recursively evaluate grounded args in sub-expression first
+                        let evaluated_sub = evaluate_grounded_args(sub_items, env);
+                        let (results, _) = eval(MettaValue::SExpr(evaluated_sub), env.clone());
+
+                        // Use the first result (deterministic evaluation for grounded ops)
+                        if let Some(first_result) = results.first() {
+                            result.push(first_result.clone());
+                        } else {
+                            // Evaluation returned nothing - keep original
+                            result.push(item.clone());
+                        }
+                        continue;
+                    }
+                }
+                // Not a grounded operation - keep unevaluated (lazy)
+                result.push(item.clone());
+            }
+            _ => {
+                // Not an S-expression - keep as-is
+                result.push(item.clone());
+            }
+        }
+    }
+
+    result
+}
+
+/// Resolve registered tokens (like &stack → Space) at the top level only.
+/// This is a "shallow resolution" for lazy evaluation:
+/// - Atoms that are registered tokens are replaced with their values
+/// - Variables ($x) are kept as-is (they're for pattern matching)
+/// - S-expressions are kept unevaluated (lazy evaluation)
+/// - Special tokens like &self are NOT resolved here (handled in eval_step)
+fn resolve_tokens_shallow(items: &[MettaValue], env: &Environment) -> Vec<MettaValue> {
+    items
+        .iter()
+        .map(|item| {
+            match item {
+                MettaValue::Atom(name) => {
+                    // Skip variables - they're for pattern matching
+                    if name.starts_with('$') {
+                        return item.clone();
+                    }
+                    // Skip special atoms like &self, &kb that might be handled elsewhere
+                    // or are truly space references
+                    if name == "&self" {
+                        // Let &self be resolved later in eval_step
+                        return item.clone();
+                    }
+                    // Try to resolve registered tokens (e.g., &stack → Space)
+                    if let Some(bound_value) = env.lookup_token(name) {
+                        bound_value
+                    } else {
+                        item.clone()
+                    }
+                }
+                // Keep everything else unchanged (S-expressions, literals, etc.)
+                _ => item.clone(),
+            }
+        })
+        .collect()
+}
+
 /// Preprocess S-expression items to combine `& name` into `&name`.
 /// The Tree-Sitter parser treats `&foo` as two tokens (`&` and `foo`), but we need
 /// them combined for HE-compatible space reference semantics (e.g., `&self`, `&kb`, `&stack`).
@@ -1286,7 +1471,9 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
     let items = preprocess_space_refs(items);
 
     if items.is_empty() {
-        return EvalStep::Done((vec![MettaValue::Nil], env));
+        // HE-compatible: empty SExpr () evaluates to itself, not Nil
+        // This is important for collapse semantics: collapse of one () result is (())
+        return EvalStep::Done((vec![MettaValue::SExpr(vec![])], env));
     }
 
     // Check for special forms - these are handled directly (they manage their own recursion)
@@ -1419,13 +1606,37 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
         }
     }
 
-    // Step 2: Delegate argument evaluation to the trampoline
-    // This prevents Rust stack overflow by using the explicit work stack
-    // The trampoline will:
-    // 1. Evaluate each item via CollectSExpr continuation
-    // 2. Call process_collected_sexpr() with the results
-    // 3. Handle rule matching via ProcessRuleMatches continuation
-    EvalStep::EvalSExpr { items, env, depth }
+    // Step 2: Evaluate grounded sub-expressions BEFORE rule matching (hybrid lazy/eager)
+    // This ensures that arithmetic operations like (- 3 1) are evaluated to values
+    // before being used in pattern matching, while keeping user-defined expressions lazy.
+    //
+    // WHY: Pure lazy evaluation causes infinite loops with recursive rules like:
+    //   (= (countdown $n) (countdown (- $n 1)))
+    // Because `$n` binds to `(- 3 1)` instead of `2`, the expression grows infinitely.
+    //
+    // SOLUTION: Evaluate arguments that are GROUNDED operations (like +, -, *, /)
+    // but keep user-defined expressions unevaluated (for lazy pattern matching).
+    let items_with_grounded_evaluated = evaluate_grounded_args(&items, &env);
+
+    // Step 3: Try user rule matching with partially-evaluated arguments
+    // Grounded operations in arguments are now values, user-defined expressions are still lazy.
+    let resolved_items = resolve_tokens_shallow(&items_with_grounded_evaluated, &env);
+    let resolved_sexpr = MettaValue::SExpr(resolved_items.clone());
+    let all_matches = try_match_all_rules(&resolved_sexpr, &env);
+
+    if !all_matches.is_empty() {
+        // User rules matched - evaluate RHS with bindings from pattern match
+        return EvalStep::EvalRuleMatchesLazy {
+            matches: all_matches,
+            env,
+            depth,
+        };
+    }
+
+    // Step 4: No lazy rules matched - expression is irreducible (data constructor).
+    // In HE semantics, if no rule matches the unevaluated expression, it's a data constructor.
+    // We still evaluate arguments (for grounded operations within them) but don't retry rule matching.
+    EvalStep::EvalSExpr { items: items_with_grounded_evaluated, env, depth }
 }
 
 /// Process collected S-expression evaluation results.
@@ -1479,9 +1690,15 @@ fn process_collected_sexpr(
 
 /// Process a single combination (fast path for deterministic evaluation).
 /// This avoids creating a continuation when there's only one combination to process.
+///
+/// MeTTa HE semantics: After evaluating arguments, TRY RULE MATCHING AGAIN.
+/// This is essential for patterns like (intensity (color)) where:
+/// 1. (intensity (color)) doesn't match any rule (lazy)
+/// 2. Evaluate args: (color) → [red, green, blue]
+/// 3. (intensity red), (intensity green), (intensity blue) NOW match intensity rules
 fn process_single_combination(
     evaled_items: Vec<MettaValue>,
-    mut unified_env: Environment,
+    unified_env: Environment,
     depth: usize,
 ) -> ProcessedSExpr {
     // Check if this is a grounded operation
@@ -1491,23 +1708,27 @@ fn process_single_combination(
         }
     }
 
-    // Try to match against rules
+    // MeTTa HE semantics: After argument evaluation, try rule matching AGAIN.
+    // The newly-evaluated arguments may now match rules that didn't match before.
+    // Example: (intensity (color)) → (intensity red) → 100
     let sexpr = MettaValue::SExpr(evaled_items.clone());
     let all_matches = try_match_all_rules(&sexpr, &unified_env);
 
     if !all_matches.is_empty() {
-        // Need to evaluate rule matches iteratively
-        ProcessedSExpr::EvalRuleMatches {
+        // Rules match with evaluated arguments - evaluate the rule RHS
+        return ProcessedSExpr::EvalRuleMatches {
             matches: all_matches,
             env: unified_env,
             depth,
             base_results: vec![],
-        }
-    } else {
-        // No rule matched - check for typos and handle ADD mode
-        let result = handle_no_rule_match(evaled_items, &sexpr, &mut unified_env);
-        ProcessedSExpr::Done((vec![result], unified_env))
+        };
     }
+
+    // No rules matched even with evaluated arguments - this is a data constructor.
+    // Check for typos and emit helpful warnings
+    let mut env = unified_env;
+    let result = handle_no_rule_match(evaled_items, &sexpr, &mut env);
+    ProcessedSExpr::Done((vec![result], env))
 }
 
 /// Handle the case where no rule matches an s-expression
@@ -2043,6 +2264,11 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         (MettaValue::Unit, MettaValue::Unit) => true,
         (MettaValue::Unit, MettaValue::Nil) => true,
 
+        // Nil as pattern matches ANYTHING (HE-compatible discard pattern)
+        // In compilation, () becomes MettaValue::Nil, so Nil must be a wildcard
+        // Used in let* to evaluate expressions for side effects: (let () side-effect body)
+        (MettaValue::Nil, _) => true,
+
         // Empty S-expression () matches anything (HE-compatible discard pattern)
         // Used in let* to evaluate expressions for side effects: (() (println! "debug"))
         (MettaValue::SExpr(p_items), _) if p_items.is_empty() => true,
@@ -2107,7 +2333,7 @@ pub(crate) fn apply_bindings<'a>(
             if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" =>
         {
             match bindings.iter().find(|(name, _)| name.as_str() == s) {
-                Some((_, val)) => Cow::Owned(val.clone()),
+                Some((_name, val)) => Cow::Owned(val.clone()),
                 None => Cow::Borrowed(value),
             }
         }

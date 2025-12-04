@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{Bindings, MettaValue};
 
 use super::{eval, EvalResult};
 
@@ -29,7 +29,7 @@ use super::{eval, EvalResult};
 /// - (exec P0 (,) (, (always-true)))  ; Empty antecedent, always fires
 /// - (exec P1 (, (parent $x Alice)) (, (result $x)))  ; Simple pattern match
 /// - (exec P2 (, (a $x) (b $x)) (, (c $x)))  ; Binary conjunction with shared variable
-pub(super) fn eval_exec(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalResult {
     let args = &items[1..]; // Skip "exec" operator
 
     if args.len() < 3 {
@@ -44,9 +44,22 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     let antecedent = &args[1];
     let consequent = &args[2];
 
+    // PHASE 3: Store exec as a fact for dynamic exec generation
+    // This allows exec rules to be matched in antecedents: (exec (1 $l) $ps $ts)
+    let exec_fact = MettaValue::SExpr(items.clone());
+    env.add_to_space(&exec_fact);
+
     // Antecedent must be a conjunction
+    // Handle both MettaValue::Conjunction and SExpr representation (,  ...)
+    // The latter occurs when exec is retrieved from PathMap space
     let antecedent_goals = match antecedent {
-        MettaValue::Conjunction(goals) => goals,
+        MettaValue::Conjunction(goals) => goals.clone(),
+        MettaValue::SExpr(items)
+            if !items.is_empty() && matches!(&items[0], MettaValue::Atom(op) if op == ",") =>
+        {
+            // Conjunction represented as SExpr: (, goal1 goal2 ...)
+            items[1..].to_vec() // Skip the "," operator
+        }
         _ => {
             let err = MettaValue::Error(
                 "exec antecedent must be a conjunction (,)".to_string(),
@@ -57,38 +70,63 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     };
 
     // Evaluate antecedent conjunction to get bindings
-    let (antecedent_results, antecedent_env) =
-        eval_conjunction_for_exec(antecedent_goals.clone(), env);
+    let binding_sets = match_conjunction_goals_with_bindings(&antecedent_goals, &env);
 
-    // If antecedent failed (no results or error), rule doesn't fire
-    if antecedent_results.is_empty() {
-        return (vec![], antecedent_env);
+    // If antecedent failed (no binding sets), rule doesn't fire
+    if binding_sets.is_empty() {
+        return (vec![], env);
     }
 
-    // For each antecedent result (non-deterministic), evaluate consequent
+    // For each binding set (non-deterministic), evaluate consequent with those bindings
     let mut all_results = Vec::new();
-    let mut final_env = antecedent_env.clone();
+    let mut final_env = env;
 
-    for _result in antecedent_results {
+    for bindings in binding_sets {
+        use crate::backend::eval::apply_bindings;
+
+        // DEBUG: Print all bindings
+        for (_name, _value) in bindings.iter() {}
+
+        // Apply bindings to consequent before evaluation
+        let instantiated_consequent = apply_bindings(consequent, &bindings);
+
         // Consequent can be either a conjunction or an operation
-        match consequent {
+        match &instantiated_consequent {
             MettaValue::Conjunction(goals) => {
-                // Evaluate consequent conjunction
-                let (conseq_results, conseq_env) =
-                    eval_conjunction_for_exec(goals.clone(), antecedent_env.clone());
+                // PHASE 3: Check for exec in consequent goals and thread bindings
+                let (conseq_results, conseq_env) = eval_consequent_conjunction_with_bindings(
+                    goals.clone(),
+                    bindings.clone(),
+                    final_env.clone(),
+                );
                 all_results.extend(conseq_results);
-                final_env = final_env.union(&conseq_env);
+                // Use conseq_env directly since it has the updated facts
+                final_env = conseq_env;
+            }
+            MettaValue::SExpr(items)
+                if !items.is_empty() && matches!(&items[0], MettaValue::Atom(op) if op == ",") =>
+            {
+                // Conjunction represented as SExpr (from PathMap)
+                let goals = items[1..].to_vec();
+                let (conseq_results, conseq_env) = eval_consequent_conjunction_with_bindings(
+                    goals,
+                    bindings.clone(),
+                    final_env.clone(),
+                );
+                all_results.extend(conseq_results);
+                // Use conseq_env directly since it has the updated facts
+                final_env = conseq_env;
             }
             MettaValue::SExpr(items) if matches_operation(items) => {
                 // Handle operation: (O (+ fact) (- fact) ...)
-                let op_result = eval_operation(items, antecedent_env.clone());
+                let op_result = eval_operation(items, final_env.clone());
                 all_results.extend(op_result.0);
-                final_env = final_env.union(&op_result.1);
+                final_env = op_result.1; // Use operation result environment directly
             }
             _ => {
                 let err = MettaValue::Error(
                     "exec consequent must be a conjunction or operation (O ...)".to_string(),
-                    Arc::new(consequent.clone()),
+                    Arc::new(instantiated_consequent.clone()),
                 );
                 all_results.push(err);
             }
@@ -98,17 +136,211 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     (all_results, final_env)
 }
 
-/// Helper function to evaluate a conjunction for exec
-/// Returns results with binding information preserved
-fn eval_conjunction_for_exec(goals: Vec<MettaValue>, env: Environment) -> EvalResult {
+/// Match conjunction goals as patterns against space facts with binding threading
+///
+/// Core pattern matching logic for exec antecedents:
+/// 1. Start with empty bindings
+/// 2. For each goal:
+///    a. Apply current bindings to the goal (substitute already-bound variables)
+///    b. Match the instantiated goal against space facts
+///    c. For each match, extract new bindings and merge with current bindings
+///    d. Thread merged bindings to next goal
+/// 3. Return all successful binding combinations
+///
+/// This properly implements variable binding threading across multiple goals,
+/// enabling patterns like:
+/// - (, (gen Z $c $p)) - binds $c and $p
+/// - (, (parent $p $gp)) - uses bound $p, binds $gp
+/// - (, (exec $p $a $c) (gen Z $child $parent)) - multiple goals with shared vars
+///
+/// Returns: Vec<Bindings> - all successful binding sets (empty if antecedent fails)
+fn match_conjunction_goals_with_bindings(goals: &[MettaValue], env: &Environment) -> Vec<Bindings> {
     if goals.is_empty() {
-        // Empty conjunction succeeds
+        // Empty conjunction succeeds with empty bindings
+        return vec![Bindings::new()];
+    }
+
+    // Recursively thread bindings through goals
+    // Start with a single empty binding set
+    let initial_bindings = vec![Bindings::new()];
+
+    thread_bindings_through_goals(goals, initial_bindings, env)
+}
+
+/// Recursively thread bindings through conjunction goals
+///
+/// For each binding set from previous goals, try to match the next goal
+/// and produce new binding sets with the matched variables added.
+fn thread_bindings_through_goals(
+    goals: &[MettaValue],
+    current_bindings: Vec<Bindings>,
+    env: &Environment,
+) -> Vec<Bindings> {
+    use crate::backend::eval::{apply_bindings, pattern_match};
+
+    if goals.is_empty() {
+        // Base case: no more goals, return current bindings
+        return current_bindings;
+    }
+
+    let goal = &goals[0];
+    let remaining_goals = &goals[1..];
+
+    let mut next_bindings = Vec::new();
+
+    // For each current binding set
+    for bindings in current_bindings {
+        for (_name, _value) in bindings.iter() {}
+
+        // Apply current bindings to this goal
+        let instantiated_goal = apply_bindings(goal, &bindings);
+
+        // Get all facts from space (we'll match against all of them)
+        let wildcard = MettaValue::Atom("$_".to_string());
+        let all_facts = env.match_space(&wildcard, &wildcard);
+
+        // Try to match instantiated goal against each fact
+        for fact in &all_facts {
+            if let Some(new_bindings) = pattern_match(&instantiated_goal, fact) {
+                // Merge new bindings with current bindings
+                let mut merged = bindings.clone();
+                for (name, value) in new_bindings.iter() {
+                    // Check for conflicts (same variable bound to different values)
+                    if let Some(existing_value) = merged.get(name) {
+                        if existing_value != value {
+                            // Conflict - skip this match
+                            continue;
+                        }
+                    }
+                    merged.insert(name.clone(), value.clone());
+                }
+                next_bindings.push(merged);
+            }
+        }
+    }
+
+    // If no bindings succeeded, return empty
+    if next_bindings.is_empty() {
+        return vec![];
+    }
+
+    // Recurse with remaining goals and new binding sets
+    thread_bindings_through_goals(remaining_goals, next_bindings, env)
+}
+
+/// Evaluate a consequent conjunction with binding threading
+///
+/// PHASE 3: Dynamic exec generation and consequent binding threading
+///
+/// Algorithm:
+/// 1. Pass 1: Thread bindings through goals that match against space
+/// 2. Pass 2: Add all goals (now fully instantiated) to space
+///
+/// Consequent goals can be:
+/// 1. exec forms - added as facts for next iteration (not executed)
+/// 2. Facts with variables - matched against space to collect bindings
+/// 3. Ground facts - added directly to space
+fn eval_consequent_conjunction_with_bindings(
+    goals: Vec<MettaValue>,
+    initial_bindings: Bindings,
+    mut env: Environment,
+) -> EvalResult {
+    use crate::backend::eval::{apply_bindings, pattern_match};
+
+    if goals.is_empty() {
         return (vec![MettaValue::Nil], env);
     }
 
-    // Evaluate the conjunction directly
-    let conjunction = MettaValue::Conjunction(goals);
-    eval(conjunction, env)
+    // Pass 1: Collect bindings by matching goals against space
+    let mut current_bindings = initial_bindings.clone();
+
+    for goal in goals.iter() {
+        let instantiated_goal = apply_bindings(goal, &current_bindings);
+
+        // Skip exec forms in pass 1
+        if is_exec_form(&instantiated_goal) {
+            continue;
+        }
+
+        // If goal has variables, try to match against space
+        if has_variables(&instantiated_goal) {
+            let wildcard = MettaValue::Atom("$_".to_string());
+            let all_facts = env.match_space(&wildcard, &wildcard);
+
+            for fact in &all_facts {
+                if let Some(new_bindings) = pattern_match(&instantiated_goal, fact) {
+                    // Merge new bindings
+                    for (name, value) in new_bindings.iter() {
+                        current_bindings.insert(name.clone(), value.clone());
+                    }
+                    break; // Use first match
+                }
+            }
+        }
+    }
+
+    // Pass 2: Add all goals (now fully instantiated) to space
+    let mut all_results = Vec::new();
+
+    for goal in goals.iter() {
+        let fully_instantiated = apply_bindings(goal, &current_bindings);
+
+        if is_exec_form(&fully_instantiated) {
+            // exec forms: add as facts (don't execute)
+            env.add_to_space(&fully_instantiated);
+            all_results.push(MettaValue::Atom("ok".to_string()));
+        } else if is_operation_form(&fully_instantiated) {
+            // operation forms: execute them
+            let (op_results, op_env) = eval_operation_from_value(&fully_instantiated, env);
+            all_results.extend(op_results);
+            env = op_env;
+        } else {
+            // Regular facts: add to space
+            env.add_to_space(&fully_instantiated);
+            all_results.push(fully_instantiated.clone());
+        }
+    }
+
+    (all_results, env)
+}
+
+/// Check if a MettaValue contains any variables
+fn has_variables(value: &MettaValue) -> bool {
+    match value {
+        MettaValue::Atom(s) => s.starts_with('$') || s.starts_with('&') || s.starts_with('\''),
+        MettaValue::SExpr(items) => items.iter().any(has_variables),
+        MettaValue::Conjunction(goals) => goals.iter().any(has_variables),
+        MettaValue::Error(_, details) => has_variables(details),
+        _ => false,
+    }
+}
+
+/// Check if a MettaValue is an exec form: (exec ...)
+fn is_exec_form(value: &MettaValue) -> bool {
+    match value {
+        MettaValue::SExpr(items) if !items.is_empty() => {
+            matches!(&items[0], MettaValue::Atom(op) if op == "exec")
+        }
+        _ => false,
+    }
+}
+
+/// Check if a MettaValue is an operation form: (O ...)
+fn is_operation_form(value: &MettaValue) -> bool {
+    match value {
+        MettaValue::SExpr(items) if !items.is_empty() => {
+            matches!(&items[0], MettaValue::Atom(op) if op == "O")
+        }
+        _ => false,
+    }
+}
+
+/// Evaluate an operation from a MettaValue
+fn eval_operation_from_value(value: &MettaValue, env: Environment) -> EvalResult {
+    match value {
+        MettaValue::SExpr(items) => eval_operation(items, env),
+        _ => (vec![], env),
+    }
 }
 
 /// Check if an S-expression is an operation (starts with "O")
@@ -262,16 +494,29 @@ pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResul
     if pattern_found {
         // Evaluate success branch
         match success_goals {
-            MettaValue::Conjunction(goals) => eval_conjunction_for_exec(goals.clone(), env),
+            MettaValue::Conjunction(goals) => eval_conjunction_goals(goals.clone(), env),
             _ => unreachable!(), // Already checked above
         }
     } else {
         // Evaluate failure branch
         match failure_goals {
-            MettaValue::Conjunction(goals) => eval_conjunction_for_exec(goals.clone(), env),
+            MettaValue::Conjunction(goals) => eval_conjunction_goals(goals.clone(), env),
             _ => unreachable!(), // Already checked above
         }
     }
+}
+
+/// Helper to evaluate conjunction goals sequentially (for lookup branches, not exec antecedents)
+fn eval_conjunction_goals(goals: Vec<MettaValue>, mut env: Environment) -> EvalResult {
+    let mut all_results = Vec::new();
+
+    for goal in goals {
+        let (results, new_env) = eval(goal, env);
+        all_results.extend(results);
+        env = new_env;
+    }
+
+    (all_results, env)
 }
 
 /// Evaluate rulify meta-program: (rulify $name (, $p0) (, $t0 ...) <antecedent> <consequent>)

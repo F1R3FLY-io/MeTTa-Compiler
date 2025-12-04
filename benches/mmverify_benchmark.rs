@@ -18,11 +18,21 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use mettatron::config::{configure_eval, EvalConfig};
 use mettatron::{compile, run_state, MettaState};
+use std::sync::Once;
 use std::time::Duration;
 
 // Include mmverify sources - utils are inlined before the demo body
 const MMVERIFY_UTILS: &str = include_str!("../examples/mmverify/mmverify-utils.metta");
 const VERIFY_DEMO0_BODY: &str = include_str!("mmverify_samples/verify_demo0_body.metta");
+
+// Ensure EvalConfig is only configured once across all benchmarks
+static INIT: Once = Once::new();
+
+fn init_config() {
+    INIT.call_once(|| {
+        configure_eval(EvalConfig::cpu_optimized());
+    });
+}
 
 /// Build complete self-contained mmverify program by concatenating utils + demo
 fn build_mmverify_program() -> String {
@@ -39,8 +49,8 @@ fn run_program(src: &str) {
 
 /// End-to-end mmverify verification benchmark
 fn bench_mmverify_e2e(c: &mut Criterion) {
-    // Configure evaluator for CPU-optimized performance
-    configure_eval(EvalConfig::cpu_optimized());
+    // Configure evaluator for CPU-optimized performance (once)
+    init_config();
 
     let mut group = c.benchmark_group("mmverify_e2e");
 
@@ -81,7 +91,7 @@ fn bench_mmverify_compile(c: &mut Criterion) {
 
 /// Benchmark utilities-only evaluation (without proof verification)
 fn bench_mmverify_utils_load(c: &mut Criterion) {
-    configure_eval(EvalConfig::cpu_optimized());
+    init_config();
 
     let mut group = c.benchmark_group("mmverify_utils_load");
     group.measurement_time(Duration::from_secs(10));

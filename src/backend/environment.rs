@@ -532,28 +532,36 @@ impl Environment {
             };
 
             // Value is complete - add to parent or return
-            let mut value = value; // Make value mutable for the popping loop
+            // OPTIMIZATION: Use Option to make ownership transfer explicit and avoid clones
+            let mut current_value = Some(value);
             'popping: loop {
-                match stack.last_mut() {
-                    None => {
-                        // No parent - this is the final result
-                        return Ok(value);
-                    }
-                    Some(StackFrame::Arity { remaining, items }) => {
-                        items.push(value.clone());
-                        *remaining -= 1;
+                let v = current_value.take().expect("value must be Some at start of popping loop");
 
-                        if *remaining == 0 {
-                            // S-expression is complete
-                            let completed_items = items.clone();
-                            stack.pop();
-                            value = MettaValue::SExpr(completed_items); // Mutate, don't shadow!
-                            continue 'popping;
-                        } else {
-                            // More items needed
-                            continue 'parsing;
-                        }
+                // Check if stack is empty - if so, return the value
+                if stack.is_empty() {
+                    return Ok(v);
+                }
+
+                // Add value to parent frame
+                let should_pop = match stack.last_mut() {
+                    None => unreachable!(), // Already checked above
+                    Some(StackFrame::Arity { remaining, items }) => {
+                        items.push(v); // OPTIMIZATION: No clone needed - value is consumed
+                        *remaining -= 1;
+                        *remaining == 0
                     }
+                };
+
+                if should_pop {
+                    // S-expression is complete - pop and take ownership of items
+                    // OPTIMIZATION: Take ownership instead of cloning
+                    if let Some(StackFrame::Arity { items, .. }) = stack.pop() {
+                        current_value = Some(MettaValue::SExpr(items));
+                        continue 'popping;
+                    }
+                } else {
+                    // More items needed - go back to parsing
+                    continue 'parsing;
                 }
             }
         }

@@ -389,25 +389,37 @@ pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
     }
 }
 
-/// Check if an operator is close to a known special form using smart heuristics
+/// Check if an operator is close to a known special form using context-aware heuristics
 ///
 /// Returns a SmartSuggestion with confidence level to determine how to present
 /// the suggestion (as a warning/note vs. error vs. not at all).
 ///
-/// Uses sophisticated heuristics to avoid false positives like `lit` → `let`:
-/// - Minimum length requirements
-/// - Relative distance thresholds
-/// - Data constructor detection
-fn suggest_special_form(op: &str) -> Option<crate::backend::fuzzy_match::SmartSuggestion> {
-    use crate::backend::fuzzy_match::FuzzyMatcher;
+/// Uses the three-pillar context-aware approach to avoid false positives:
+/// - **Arity compatibility**: Expression arity must match candidate's min/max arity
+/// - **Type compatibility**: Argument types must match expected types from signatures
+/// - **Prefix compatibility**: $vars vs &spaces vs plain atoms
+///
+/// # Arguments
+/// - `op`: The operator/head of the expression (potentially misspelled)
+/// - `expr`: The full expression (for arity/type checking)
+/// - `env`: The environment (for type inference)
+fn suggest_special_form_with_context(
+    op: &str,
+    expr: &[MettaValue],
+    env: &Environment,
+) -> Option<crate::backend::fuzzy_match::SmartSuggestion> {
+    use crate::backend::fuzzy_match::{FuzzyMatcher, SuggestionContext};
     use std::sync::OnceLock;
 
     static MATCHER: OnceLock<FuzzyMatcher> = OnceLock::new();
     let matcher = MATCHER.get_or_init(|| FuzzyMatcher::from_terms(SPECIAL_FORMS.iter().copied()));
 
-    // Use smart suggestion with max distance 2 for transposition detection
-    // The smart heuristics will filter out false positives
-    matcher.smart_did_you_mean(op, 2, 3)
+    // Build context for position 0 (head position)
+    let ctx = SuggestionContext::for_head(expr, env);
+
+    // Use context-aware suggestion with max distance 2
+    // The three-pillar validation filters out structurally incompatible suggestions
+    matcher.smart_suggest_with_context(op, 2, &ctx)
 }
 
 /// Evaluate a MettaValue in the given environment
@@ -1500,8 +1512,10 @@ fn process_single_combination(
 
 /// Handle the case where no rule matches an s-expression
 ///
-/// Uses smart suggestion heuristics (issue #51) to avoid false positives:
-/// - Rejects suggestions for short words (< 4 chars for distance 1)
+/// Uses context-aware smart suggestion heuristics (issue #51) to avoid false positives:
+/// - **Arity filtering**: `(lit p)` won't suggest `let` (arity 1 != 3)
+/// - **Type filtering**: `(match "hello" ...)` won't suggest match (String != Space)
+/// - **Prefix compatibility**: `$steck` suggests `$stack`, not `&stack`
 /// - Detects data constructor patterns (PascalCase, hyphenated names)
 /// - Emits warnings (notes) instead of errors for suggestions
 ///
@@ -1516,9 +1530,10 @@ fn handle_no_rule_match(
 
     // Check for likely typos before falling back to ADD mode
     if let Some(MettaValue::Atom(head)) = evaled_items.first() {
-        // Check for misspelled special form using smart heuristics
-        // Only show suggestions if the heuristics determine it's likely a typo
-        if let Some(suggestion) = suggest_special_form(head) {
+        // Check for misspelled special form using context-aware heuristics
+        // The three-pillar validation filters out structurally incompatible suggestions
+        if let Some(suggestion) = suggest_special_form_with_context(head, &evaled_items, unified_env)
+        {
             // Always emit as a note/warning, never as an error
             // This allows the expression to continue evaluating in ADD mode
             match suggestion.confidence {
@@ -1539,6 +1554,7 @@ fn handle_no_rule_match(
         }
 
         // Check for misspelled rule head using smart heuristics
+        // TODO: Add context-aware version for user-defined rules
         if let Some(suggestion) = unified_env.smart_did_you_mean(head, 2) {
             match suggestion.confidence {
                 SuggestionConfidence::High => {

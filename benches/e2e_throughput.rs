@@ -92,8 +92,12 @@ struct Args {
     #[arg(short, long, default_value_t = 30)]
     duration: u64,
 
+    /// Warm-up duration in seconds before each measurement
+    #[arg(short, long, default_value_t = 5)]
+    warmup: u64,
+
     /// List of sample names to benchmark
-    /// Available: simple_fib, knowledge_graph, pattern_matching, concurrent_space_operations,
+    /// Available: fib, knowledge_graph, pattern_matching_stress, concurrent_space_operations,
     /// constraint_search_simple, metta_programming_stress, multi_space_reasoning
     #[arg(short, long, value_delimiter = ',', default_value = "knowledge_graph")]
     samples: Vec<String>,
@@ -130,6 +134,72 @@ async fn evaluate_full_program_async(
     let program = compile(source)?;
     let _result = run_state_async(state, program).await?;
     Ok(())
+}
+
+// ============================================================================
+// Warm-up Functions
+// ============================================================================
+// Warm-up is critical for accurate benchmarking because:
+// 1. CPU frequency scaling: CPUs start at base frequency and turbo boost under load
+// 2. Cache warming: Instruction cache, data cache, and TLB need to be populated
+// 3. Branch predictor training: CPU needs time to learn branch patterns
+// 4. Thread pool initialization: Worker threads need to be spawned and ready
+
+fn warmup_sequential(source: &str, duration: Duration) {
+    println!("  Warming up for {}s...", duration.as_secs());
+    let start = Instant::now();
+    while start.elapsed() < duration {
+        let _ = evaluate_full_program(source);
+    }
+}
+
+fn warmup_parallel(source: &str, duration: Duration, num_workers: usize) {
+    println!(
+        "  Warming up parallel-{} for {}s...",
+        num_workers,
+        duration.as_secs()
+    );
+    let start = Instant::now();
+    thread::scope(|s| {
+        for _ in 0..num_workers {
+            s.spawn(|| {
+                while start.elapsed() < duration {
+                    let _ = evaluate_full_program(source);
+                }
+            });
+        }
+    });
+}
+
+fn warmup_async(source: &'static str, duration: Duration, concurrency: usize) {
+    let config = get_eval_config();
+    println!(
+        "  Warming up async-{} for {}s...",
+        concurrency,
+        duration.as_secs()
+    );
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .max_blocking_threads(config.max_blocking_threads)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let start = Instant::now();
+    rt.block_on(async {
+        let mut handles = Vec::with_capacity(concurrency);
+        for _ in 0..concurrency {
+            let handle = tokio::spawn(async move {
+                while start.elapsed() < duration {
+                    let _ = evaluate_full_program_async(source).await;
+                }
+            });
+            handles.push(handle);
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+    });
 }
 
 fn measure_sequential(sample_name: &str, source: &str, duration: Duration) -> ThroughputReport {
@@ -354,6 +424,7 @@ fn main() {
         .unwrap_or(4);
 
     let test_duration = Duration::from_secs(args.duration);
+    let warmup_duration = Duration::from_secs(args.warmup);
 
     // Filter samples based on CLI args
     let samples_to_run: Vec<_> = SAMPLES
@@ -376,6 +447,7 @@ fn main() {
         config.max_blocking_threads, config.batch_size_hint
     );
     println!("Test duration per mode: {}s", test_duration.as_secs());
+    println!("Warm-up duration per mode: {}s", warmup_duration.as_secs());
     println!(
         "Samples: {}",
         samples_to_run
@@ -390,18 +462,26 @@ fn main() {
     for (name, source) in samples_to_run {
         println!("\n==== ==== ==== Benchmarking: {} ==== ==== ====", name);
 
+        // Sequential mode
+        warmup_sequential(source, warmup_duration);
         let seq = measure_sequential(name, source, test_duration);
         print_report(&seq);
         reports.push(seq);
 
+        // Parallel mode (4 workers)
+        warmup_parallel(source, warmup_duration, 4);
         let par4 = measure_parallel(name, source, test_duration, 4);
         print_report(&par4);
         reports.push(par4);
 
+        // Parallel mode (all CPUs)
+        warmup_parallel(source, warmup_duration, num_cpus);
         let par_full = measure_parallel(name, source, test_duration, num_cpus);
         print_report(&par_full);
         reports.push(par_full);
 
+        // Async mode
+        warmup_async(source, warmup_duration, num_cpus);
         let async_report = measure_async(name, source, test_duration, num_cpus);
         print_report(&async_report);
         reports.push(async_report);

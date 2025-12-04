@@ -29,6 +29,21 @@ The **comma operator** (`,`) in MORK represents logical conjunction (AND) and is
 
 This documentation is organized pedagogically into digestible sections:
 
+### Implementation Documentation (NEW!)
+
+**✅ [Fixed-Point Evaluation Implementation](./COMPLETION_SUMMARY.md)**
+- Complete implementation of MORK fixed-point evaluation
+- Variable binding threading across conjunction goals
+- Dynamic exec generation (meta-programming)
+- **All tests passing (14/14)** ✅
+- Verified with real ancestor.mm2 patterns
+
+**📚 [Technical Deep Dive](./IMPLEMENTATION.md)**
+- Detailed algorithms and data flow
+- PathMap serialization handling
+- Performance characteristics
+- Architecture diagrams
+
 ### Core Documentation
 
 1. **[Introduction](01-introduction.md)** (~8-10 KB)

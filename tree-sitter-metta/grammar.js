@@ -126,12 +126,12 @@ module.exports = grammar({
     // Rule definition operator: :=
     rule_definition_operator: $ => token(prec(3, ':=')),
 
-    // Punctuation operators: ;, |, ,, @, ., ...
+    // Punctuation operators: |, ,, @, ., ...
     // Note: : is now separate as type_annotation_operator
     // Note: % removed - now used only in special_type_symbol
     // Note: & removed - now used only in space_reference token
+    // Note: ; removed - semicolon is comment-only in MeTTa (see line_comment)
     punctuation_operator: $ => token(prec(2, choice(
-      ';',
       '|',
       ',',
       '@',
@@ -169,13 +169,25 @@ module.exports = grammar({
     )),
 
     // Float literals (with optional minus) - highest precedence to match before integer
-    // Supports: 3.14, -2.5, 1.0e10, -1.5e-3, 2.0E+5
-    float_literal: $ => token(prec(4, seq(
-      optional('-'),
-      /\d+/,
-      '.',
-      /\d+/,
-      optional(seq(/[eE]/, optional(/[+-]/), /\d+/))
+    // Supports: 3.14, -2.5, 1.0e10, -1.5e-3, 2.0E+5, 1e10, -2E+5
+    // MeTTa HE regex: [\-\+]?\d+(\.\d+)?[eE][\-\+]?\d+ (decimal optional with exponent)
+    float_literal: $ => token(prec(4, choice(
+      // Standard float: 1.5, 1.5e10, -2.5E-3
+      seq(
+        optional('-'),
+        /\d+/,
+        '.',
+        /\d+/,
+        optional(seq(/[eE]/, optional(/[+-]/), /\d+/))
+      ),
+      // Scientific notation without decimal: 1e10, -2E+5
+      seq(
+        optional('-'),
+        /\d+/,
+        /[eE]/,
+        optional(/[+-]/),
+        /\d+/
+      )
     ))),
 
     // Integer literals (with optional minus) - high precedence to match before identifier

@@ -1249,6 +1249,7 @@ mod tests {
             line: 1,
             column: 7,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1264,6 +1265,7 @@ mod tests {
             line: 1,
             column: 8,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1279,6 +1281,7 @@ mod tests {
             line: 1,
             column: 10,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1294,6 +1297,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1309,6 +1313,7 @@ mod tests {
             line: 1,
             column: 1,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         // Generic errors now have a helpful hint
@@ -1329,6 +1334,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1344,6 +1350,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1360,6 +1367,7 @@ mod tests {
             line: 1,
             column: 1,
             text: "quota".to_string(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(
@@ -1380,6 +1388,7 @@ mod tests {
             line: 1,
             column: 1,
             text: "iff".to_string(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(
@@ -1400,6 +1409,7 @@ mod tests {
             line: 1,
             column: 1,
             text: "xyzzy".to_string(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         // Should not contain "Did you mean" when no similar keyword
@@ -1420,6 +1430,7 @@ mod tests {
             line: 1,
             column: 1,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(
@@ -1438,6 +1449,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
@@ -1462,6 +1474,7 @@ mod tests {
             line: 0,
             column: 0,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);

@@ -192,8 +192,9 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         return Ok(output);
     }
 
-    // Compile to MettaValue
-    let state = compile(input).map_err(|e| e.to_string())?;
+    // Compile to MettaValue (include file path in error messages)
+    let file_path = options.input.as_ref().filter(|p| *p != "-").map(|s| s.as_str());
+    let state = compile_with_path(input, file_path).map_err(|e| e.to_string())?;
     let mut env = state.environment;
 
     // Set the current module path for relative includes

@@ -21,6 +21,7 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         line: 0,
         column: 0,
         text: String::new(),
+        file_path: None,
     })?;
     let sexprs = parser.parse(src)?;
 
@@ -31,9 +32,19 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         line: 1,
         column: 1,
         text: e,
+        file_path: None,
     })?;
 
     Ok(MettaState::new_compiled(metta_values))
+}
+
+/// Compile MeTTa source code with a file path for error reporting
+/// The file path will be included in any syntax error messages
+pub fn compile_with_path(src: &str, file_path: Option<&str>) -> Result<MettaState, SyntaxError> {
+    compile(src).map_err(|e| match file_path {
+        Some(path) => e.with_file_path(path),
+        None => e,
+    })
 }
 
 /// Implement idiomatic Rust conversion from MettaExpr to MettaValue

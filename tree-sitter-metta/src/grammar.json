@@ -359,10 +359,6 @@
           "members": [
             {
               "type": "STRING",
-              "value": ";"
-            },
-            {
-              "type": "STRING",
               "value": "|"
             },
             {
@@ -522,62 +518,108 @@
         "type": "PREC",
         "value": 4,
         "content": {
-          "type": "SEQ",
+          "type": "CHOICE",
           "members": [
             {
-              "type": "CHOICE",
+              "type": "SEQ",
               "members": [
                 {
-                  "type": "STRING",
-                  "value": "-"
-                },
-                {
-                  "type": "BLANK"
-                }
-              ]
-            },
-            {
-              "type": "PATTERN",
-              "value": "\\d+"
-            },
-            {
-              "type": "STRING",
-              "value": "."
-            },
-            {
-              "type": "PATTERN",
-              "value": "\\d+"
-            },
-            {
-              "type": "CHOICE",
-              "members": [
-                {
-                  "type": "SEQ",
+                  "type": "CHOICE",
                   "members": [
                     {
-                      "type": "PATTERN",
-                      "value": "[eE]"
+                      "type": "STRING",
+                      "value": "-"
                     },
                     {
-                      "type": "CHOICE",
-                      "members": [
-                        {
-                          "type": "PATTERN",
-                          "value": "[+-]"
-                        },
-                        {
-                          "type": "BLANK"
-                        }
-                      ]
-                    },
-                    {
-                      "type": "PATTERN",
-                      "value": "\\d+"
+                      "type": "BLANK"
                     }
                   ]
                 },
                 {
-                  "type": "BLANK"
+                  "type": "PATTERN",
+                  "value": "\\d+"
+                },
+                {
+                  "type": "STRING",
+                  "value": "."
+                },
+                {
+                  "type": "PATTERN",
+                  "value": "\\d+"
+                },
+                {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "SEQ",
+                      "members": [
+                        {
+                          "type": "PATTERN",
+                          "value": "[eE]"
+                        },
+                        {
+                          "type": "CHOICE",
+                          "members": [
+                            {
+                              "type": "PATTERN",
+                              "value": "[+-]"
+                            },
+                            {
+                              "type": "BLANK"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "PATTERN",
+                          "value": "\\d+"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "BLANK"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "-"
+                    },
+                    {
+                      "type": "BLANK"
+                    }
+                  ]
+                },
+                {
+                  "type": "PATTERN",
+                  "value": "\\d+"
+                },
+                {
+                  "type": "PATTERN",
+                  "value": "[eE]"
+                },
+                {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "PATTERN",
+                      "value": "[+-]"
+                    },
+                    {
+                      "type": "BLANK"
+                    }
+                  ]
+                },
+                {
+                  "type": "PATTERN",
+                  "value": "\\d+"
                 }
               ]
             }

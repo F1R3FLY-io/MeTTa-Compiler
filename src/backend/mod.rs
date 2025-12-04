@@ -20,7 +20,7 @@ pub mod varint_encoding;
 pub use builtin_signatures::{
     get_arg_types, get_return_type, get_signature, is_builtin, BuiltinSignature, TypeExpr,
 };
-pub use compile::compile;
+pub use compile::{compile, compile_with_path};
 pub use environment::{Environment, ScopeTracker};
 pub use eval::{eval, pattern_match};
 pub use fuzzy_match::FuzzyMatcher;

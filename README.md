@@ -212,6 +212,7 @@ MeTTa uses S-expression syntax similar to Lisp:
 - **`if`** - Conditional: `(if cond then else)` with lazy branch evaluation
 - **`match`** - Pattern matching: `(match space pattern template)` queries atom space
 - **`quote`** - Prevent evaluation: `(quote expr)` returns expr unevaluated
+  - **Shorthand**: `'expr` is equivalent to `(quote expr)` *(MeTTaTron extension)*
 - **`eval`** - Force evaluation: `(eval expr)` evaluates quoted expressions
 - **`error`** - Create error: `(error msg details)`
 - **`catch`** - Error recovery: `(catch expr default)` returns default if expr errors

@@ -11,6 +11,7 @@ use std::sync::{Arc, RwLock};
 use super::fuzzy_match::FuzzyMatcher;
 use super::grounded::{GroundedRegistry, GroundedRegistryTCO};
 use super::modules::{ModId, ModuleRegistry, Tokenizer};
+use super::symbol::Symbol;
 use super::{MettaValue, Rule};
 
 /// Hierarchical scope tracker for context-aware symbol resolution.
@@ -120,8 +121,9 @@ struct EnvironmentShared {
     btm: RwLock<PathMap<()>>,
 
     /// Rule index: Maps (head_symbol, arity) -> Vec<Rule> for O(1) rule lookup
+    /// Uses Symbol for O(1) comparison when symbol-interning feature is enabled
     #[allow(clippy::type_complexity)]
-    rule_index: RwLock<HashMap<(String, usize), Vec<Rule>>>,
+    rule_index: RwLock<HashMap<(Symbol, usize), Vec<Rule>>>,
 
     /// Wildcard rules: Rules without a clear head symbol
     wildcard_rules: RwLock<Vec<Rule>>,
@@ -821,11 +823,11 @@ impl Environment {
         for rule in self.iter_rules() {
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
-                let head_owned = head.to_owned();
+                let head_symbol = Symbol::from(head);
                 // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-                self.shared.fuzzy_matcher.write().unwrap().insert(&head_owned);
+                self.shared.fuzzy_matcher.write().unwrap().insert(head_symbol.as_ref());
                 let mut index = self.shared.rule_index.write().unwrap();
-                index.entry((head_owned, arity)).or_default().push(rule);
+                index.entry((head_symbol, arity)).or_default().push(rule);
             } else {
                 // Rules without head symbol (wildcards, variables) go to wildcard list
                 let mut wildcards = self.shared.wildcard_rules.write().unwrap();
@@ -923,11 +925,11 @@ impl Environment {
         // to avoid unnecessary clones. The rule is already in MORK Space.
         if let Some(head) = rule.lhs.get_head_symbol() {
             let arity = rule.lhs.get_arity();
-            let head_owned = head.to_owned();
+            let head_symbol = Symbol::from(head);
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-            self.shared.fuzzy_matcher.write().unwrap().insert(&head_owned);
+            self.shared.fuzzy_matcher.write().unwrap().insert(head_symbol.as_ref());
             let mut index = self.shared.rule_index.write().unwrap();
-            index.entry((head_owned, arity)).or_default().push(rule); // Move instead of clone
+            index.entry((head_symbol, arity)).or_default().push(rule); // Move instead of clone
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
             let mut wildcards = self.shared.wildcard_rules.write().unwrap();
@@ -959,7 +961,7 @@ impl Environment {
         let mut rule_trie = PathMap::new();
 
         // Track rule metadata while building trie
-        let mut rule_index_updates: HashMap<(String, usize), Vec<Rule>> = HashMap::new();
+        let mut rule_index_updates: HashMap<(Symbol, usize), Vec<Rule>> = HashMap::new();
         let mut wildcard_updates: Vec<Rule> = Vec::new();
         let mut multiplicity_updates: HashMap<String, usize> = HashMap::new();
 
@@ -979,11 +981,11 @@ impl Environment {
             // Prepare rule index updates
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
-                let head_owned = head.to_owned();
+                let head_symbol = Symbol::from(head);
                 // Track symbol for fuzzy matching
-                self.shared.fuzzy_matcher.write().unwrap().insert(&head_owned);
+                self.shared.fuzzy_matcher.write().unwrap().insert(head_symbol.as_ref());
                 rule_index_updates
-                    .entry((head_owned, arity))
+                    .entry((head_symbol, arity))
                     .or_default()
                     .push(rule);
             } else {
@@ -1861,8 +1863,8 @@ impl Environment {
     /// Returns Vec<Rule> for O(1) lookup instead of O(n) iteration
     /// Also includes wildcard rules that must be checked against all queries
     pub fn get_matching_rules(&self, head: &str, arity: usize) -> Vec<Rule> {
-        // OPTIMIZATION: Single allocation for key to avoid double allocation
-        let key = (head.to_owned(), arity);
+        // OPTIMIZATION: Symbol interning for O(1) comparison when feature enabled
+        let key = (Symbol::from(head), arity);
 
         // Get indexed rules and wildcards in single lock scope where possible
         let index = self.shared.rule_index.read().unwrap();

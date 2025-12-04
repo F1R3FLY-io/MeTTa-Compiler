@@ -14,6 +14,7 @@ pub mod grounded;
 pub mod models;
 pub mod modules;
 pub mod mork_convert;
+pub mod symbol;
 pub mod varint_encoding;
 
 pub use builtin_signatures::{

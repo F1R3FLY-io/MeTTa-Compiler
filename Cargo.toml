@@ -113,6 +113,10 @@ serde = { version = "1.0", features = ["derive"] }
 # Semver - Version constraint parsing and validation
 semver = "1.0"
 
+# lasso - Fast, concurrent string interner for symbol tables (optional)
+# Provides O(1) symbol comparison via interned Spur keys instead of String
+lasso = { version = "0.7", features = ["multi-threaded"], optional = true }
+
 # Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
 # PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup
 
@@ -120,6 +124,7 @@ semver = "1.0"
 default = ["interning", "async"]
 async = ["tokio"]
 interning = []
+symbol-interning = ["lasso"]  # Use lasso string interning for rule_index keys
 
 [dev-dependencies]
 # For integration tests

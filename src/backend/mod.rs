@@ -14,6 +14,7 @@ pub mod grounded;
 pub mod models;
 pub mod modules;
 pub mod mork_convert;
+pub mod symbol;
 pub mod varint_encoding;
 
 pub use builtin_signatures::{
@@ -25,3 +26,4 @@ pub use eval::{eval, pattern_match};
 pub use fuzzy_match::FuzzyMatcher;
 pub use grounded::{ExecError, GroundedOperation, GroundedRegistry, GroundedResult};
 pub use models::*;
+pub use symbol::{intern, intern_string, Symbol};

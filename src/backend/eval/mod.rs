@@ -1504,6 +1504,8 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "let" => return bindings::eval_let_step(items, env, depth),
             "let*" => return EvalStep::Done(bindings::eval_let_star(items, env)),
             "unify" => return EvalStep::Done(bindings::eval_unify(items, env)),
+            "sealed" => return EvalStep::Done(bindings::eval_sealed(items, env)),
+            "atom-subst" => return EvalStep::Done(bindings::eval_atom_subst(items, env)),
             ":" => return EvalStep::Done(types::eval_type_assertion(items, env)),
             "get-type" => return EvalStep::Done(types::eval_get_type(items, env)),
             "check-type" => return EvalStep::Done(types::eval_check_type(items, env)),
@@ -1521,6 +1523,7 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "add-atom" => return EvalStep::Done(space::eval_add_atom(items, env)),
             "remove-atom" => return EvalStep::Done(space::eval_remove_atom(items, env)),
             "collapse" => return EvalStep::Done(space::eval_collapse(items, env)),
+            "collapse-bind" => return EvalStep::Done(space::eval_collapse_bind(items, env)),
             "get-atoms" => return EvalStep::Done(space::eval_get_atoms(items, env)),
             // State Operations
             "new-state" => return EvalStep::Done(space::eval_new_state(items, env)),

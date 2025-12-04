@@ -438,6 +438,35 @@ pub(super) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalRes
     (vec![MettaValue::SExpr(filtered)], env1)
 }
 
+/// collapse-bind: Gather all nondeterministic results into a list WITHOUT filtering
+/// Usage: (collapse-bind expr)
+///
+/// Unlike `collapse` which filters out Empty/Nil values, `collapse-bind` preserves
+/// ALL results including Empty. This is important for introspection and checking
+/// whether an expression produced Empty as a result.
+///
+/// HE-compatible behavior:
+/// - Returns ALL alternatives from nondeterministic evaluation
+/// - Does NOT filter Empty/Nil values
+///
+/// Example:
+/// ```metta
+/// !(collapse-bind (superpose (1 2 3)))  ; Returns [(1 2 3)]
+/// !(collapse-bind Empty)                 ; Returns [Empty] not []
+/// ```
+pub(super) fn eval_collapse_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("collapse-bind", items, 1, env, "(collapse-bind expr)");
+
+    let expr = &items[1];
+
+    // Evaluate the expression - this may return multiple results (superposition)
+    let (results, env1) = eval(expr.clone(), env);
+
+    // Unlike collapse, do NOT filter Empty/Nil values
+    // Return ALL results as a single list, preserving everything
+    (vec![MettaValue::SExpr(results)], env1)
+}
+
 /// get-atoms: Get all atoms from a space as a superposition
 /// Usage: (get-atoms space)
 ///

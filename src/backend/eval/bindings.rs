@@ -1,8 +1,13 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::{apply_bindings, eval, pattern_match, EvalStep};
+
+/// Global counter for generating unique variable IDs in `sealed`
+static SEALED_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// let*: Sequential bindings - (let* (($x 1) ($y (+ $x 1))) body)
 /// Transforms to nested let: (let $x 1 (let $y (+ $x 1) body))
@@ -389,6 +394,132 @@ pub(super) fn eval_let_step(items: Vec<MettaValue>, env: Environment, depth: usi
         body,
         env,
         depth,
+    }
+}
+
+/// sealed: Create locally scoped variables by replacing free variables with unique ones
+/// Usage: (sealed ignore-vars expr)
+///
+/// HE-compatible behavior:
+/// - Takes a list of variables to preserve (ignore-vars)
+/// - Replaces all other variables in expr with unique versions
+/// - Critical for preventing variable capture in higher-order functions
+///
+/// Example:
+/// ```metta
+/// !(sealed ($x) (foo $x $y $z))
+/// ; → (foo $x $y_123 $z_123)  ; $x preserved, $y and $z made unique
+/// ```
+pub(super) fn eval_sealed(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    if items.len() < 3 {
+        let got = items.len() - 1;
+        let err = MettaValue::Error(
+            format!(
+                "sealed requires 2 arguments, got {}. Usage: (sealed ignore-vars expr)",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return (vec![err], env);
+    }
+
+    let ignore_vars = &items[1]; // Variables to preserve
+    let expr = &items[2]; // Expression to seal
+
+    // 1. Collect variables to ignore (from first arg, typically ($x $y))
+    let ignore_set = collect_variables(ignore_vars);
+
+    // 2. Generate unique variable ID using atomic counter
+    let unique_id = SEALED_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+    // 3. Recursively replace free variables NOT in ignore_set
+    let sealed_expr = seal_variables(expr, &ignore_set, unique_id);
+
+    (vec![sealed_expr], env)
+}
+
+/// Collect all variable names from an expression (variables start with $)
+fn collect_variables(expr: &MettaValue) -> HashSet<String> {
+    let mut vars = HashSet::new();
+    collect_variables_impl(expr, &mut vars);
+    vars
+}
+
+fn collect_variables_impl(expr: &MettaValue, vars: &mut HashSet<String>) {
+    match expr {
+        MettaValue::Atom(name) if name.starts_with('$') => {
+            vars.insert(name.clone());
+        }
+        MettaValue::SExpr(items) => {
+            for item in items {
+                collect_variables_impl(item, vars);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Recursively replace variables in expr with unique versions, except those in ignore set
+fn seal_variables(expr: &MettaValue, ignore: &HashSet<String>, unique_id: u64) -> MettaValue {
+    match expr {
+        MettaValue::Atom(name) if name.starts_with('$') && !ignore.contains(name) => {
+            // Replace $var with $var_unique_id
+            MettaValue::Atom(format!("{}_{}", name, unique_id))
+        }
+        MettaValue::SExpr(items) => MettaValue::SExpr(
+            items
+                .iter()
+                .map(|item| seal_variables(item, ignore, unique_id))
+                .collect(),
+        ),
+        MettaValue::Conjunction(goals) => MettaValue::Conjunction(
+            goals
+                .iter()
+                .map(|goal| seal_variables(goal, ignore, unique_id))
+                .collect(),
+        ),
+        // All other values pass through unchanged
+        _ => expr.clone(),
+    }
+}
+
+/// atom-subst: Variable substitution through pattern matching
+/// Usage: (atom-subst value $var template)
+///
+/// HE-compatible behavior:
+/// - Substitutes value for $var in template via pattern matching
+/// - Uses the same binding mechanism as let/unify
+///
+/// Example:
+/// ```metta
+/// !(atom-subst 42 $x (+ $x 1))
+/// ; → (+ 42 1)
+/// ```
+pub(super) fn eval_atom_subst(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    if items.len() < 4 {
+        let got = items.len() - 1;
+        let err = MettaValue::Error(
+            format!(
+                "atom-subst requires 3 arguments, got {}. Usage: (atom-subst value $var template)",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return (vec![err], env);
+    }
+
+    let value = &items[1];
+    let var = &items[2];
+    let template = &items[3];
+
+    // Use pattern matching semantics: bind value to var, apply to template
+    if let Some(bindings) = pattern_match(var, value) {
+        let instantiated = apply_bindings(template, &bindings).into_owned();
+        (vec![instantiated], env)
+    } else {
+        // Pattern didn't match - return empty (nondeterministic failure)
+        // This shouldn't happen with a simple variable pattern like $x
+        (vec![], env)
     }
 }
 

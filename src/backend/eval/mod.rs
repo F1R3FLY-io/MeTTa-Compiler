@@ -20,6 +20,7 @@ mod types;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
@@ -171,6 +172,11 @@ fn suggest_special_form(op: &str) -> Option<String> {
 /// This is the public entry point that uses iterative evaluation with an explicit work stack
 /// to prevent stack overflow for large expressions.
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
+    debug!(
+        metta_val = ?value,
+        "Evaluate MeTTa value"
+    );
+
     eval_trampoline(value, env)
 }
 
@@ -178,6 +184,12 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
 /// This prevents stack overflow by using heap-allocated work items instead of
 /// recursive function calls.
 fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
+    debug!(
+        target: "mettatron::backend::eval::eval_trampoline",
+        metta_val = ?value,
+        "Eval trampoline"
+    );
+
     // Initialize work stack with the initial evaluation
     let mut work_stack: Vec<WorkItem> = vec![WorkItem::Eval {
         value,
@@ -201,6 +213,8 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                 depth,
                 cont_id,
             } => {
+                trace!(?value, depth, cont_id, "Processing work item");
+
                 // Perform one step of evaluation
                 let step_result = eval_step(value, env.clone(), depth);
 
@@ -414,8 +428,21 @@ enum ProcessedSExpr {
 /// Perform a single step of evaluation.
 /// Returns either a final result or indicates more work is needed.
 fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
+    trace!(
+        target: "mettatron::backend::eval::step",
+        ?value,
+        depth,
+        "Eval step",
+    );
+
     // Check depth limit
     if depth > MAX_EVAL_DEPTH {
+        warn!(
+            depth = depth,
+            max_depth = MAX_EVAL_DEPTH,
+            "Maximum evaluation depth exceeded - possible infinite recursion or combinatorial explosion"
+        );
+
         return EvalStep::Done((
             vec![MettaValue::Error(
                 format!(
@@ -453,6 +480,13 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
 
 /// Evaluate an S-expression step - handles special forms and delegates to iterative collection
 fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+    trace!(
+        target: "mettatron::backend::eval::eval_sexpr_step",
+        ?items,
+        depth,
+        "Eval sexpr step",
+    );
+
     if items.is_empty() {
         return EvalStep::Done((vec![MettaValue::Nil], env));
     }

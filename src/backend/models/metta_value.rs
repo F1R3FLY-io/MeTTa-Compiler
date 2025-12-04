@@ -227,7 +227,7 @@ impl MettaValue {
     }
 }
 
-fn escape_json(s: &str) -> String {
+pub fn escape_json(s: &str) -> String {
     s.replace('\\', r"\\")
         .replace('"', r#"\""#)
         .replace('\n', r"\n")

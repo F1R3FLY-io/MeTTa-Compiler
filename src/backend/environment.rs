@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 
 use super::fuzzy_match::FuzzyMatcher;
 use super::grounded::{GroundedRegistry, GroundedRegistryTCO};
+use super::hash_utils::{FastHashMap, FastHashSet};
 use super::modules::{ModId, ModuleRegistry, Tokenizer};
 use super::{MettaValue, Rule};
 
@@ -35,20 +36,20 @@ use super::{MettaValue, Rule};
 #[derive(Debug, Clone)]
 pub struct ScopeTracker {
     /// Stack of scopes, from global (index 0) to innermost (last)
-    scopes: Vec<HashSet<String>>,
+    scopes: Vec<FastHashSet<String>>,
 }
 
 impl ScopeTracker {
     /// Create a new scope tracker with a single global scope
     pub fn new() -> Self {
         Self {
-            scopes: vec![HashSet::new()],
+            scopes: vec![FastHashSet::default()],
         }
     }
 
     /// Push a new scope onto the stack (entering a new lexical context)
     pub fn push_scope(&mut self) {
-        self.scopes.push(HashSet::new());
+        self.scopes.push(FastHashSet::default());
     }
 
     /// Pop the innermost scope (leaving a lexical context)
@@ -121,13 +122,13 @@ struct EnvironmentShared {
 
     /// Rule index: Maps (head_symbol, arity) -> Vec<Rule> for O(1) rule lookup
     #[allow(clippy::type_complexity)]
-    rule_index: RwLock<HashMap<(String, usize), Vec<Rule>>>,
+    rule_index: RwLock<FastHashMap<(String, usize), Vec<Rule>>>,
 
     /// Wildcard rules: Rules without a clear head symbol
     wildcard_rules: RwLock<Vec<Rule>>,
 
     /// Multiplicities: tracks how many times each rule is defined
-    multiplicities: RwLock<HashMap<String, usize>>,
+    multiplicities: RwLock<FastHashMap<String, usize>>,
 
     /// Pattern cache: LRU cache for MORK serialization results
     pattern_cache: RwLock<LruCache<MettaValue, Vec<u8>>>,
@@ -140,19 +141,19 @@ struct EnvironmentShared {
 
     /// Named spaces registry: Maps space_id -> (name, atoms)
     #[allow(clippy::type_complexity)]
-    named_spaces: RwLock<HashMap<u64, (String, Vec<MettaValue>)>>,
+    named_spaces: RwLock<FastHashMap<u64, (String, Vec<MettaValue>)>>,
 
     /// Counter for generating unique space IDs
     next_space_id: RwLock<u64>,
 
     /// Mutable state cells registry
-    states: RwLock<HashMap<u64, MettaValue>>,
+    states: RwLock<FastHashMap<u64, MettaValue>>,
 
     /// Counter for generating unique state IDs
     next_state_id: RwLock<u64>,
 
     /// Symbol bindings registry
-    bindings: RwLock<HashMap<String, MettaValue>>,
+    bindings: RwLock<FastHashMap<String, MettaValue>>,
 
     /// Module registry
     module_registry: RwLock<ModuleRegistry>,
@@ -219,17 +220,17 @@ impl Environment {
 
         let shared = Arc::new(EnvironmentShared {
             btm: RwLock::new(PathMap::new()),
-            rule_index: RwLock::new(HashMap::new()),
+            rule_index: RwLock::new(FastHashMap::default()),
             wildcard_rules: RwLock::new(Vec::new()),
-            multiplicities: RwLock::new(HashMap::new()),
+            multiplicities: RwLock::new(FastHashMap::default()),
             pattern_cache: RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
             type_index: RwLock::new(None),
             type_index_dirty: RwLock::new(true),
-            named_spaces: RwLock::new(HashMap::new()),
+            named_spaces: RwLock::new(FastHashMap::default()),
             next_space_id: RwLock::new(1), // Start from 1, 0 reserved for self
-            states: RwLock::new(HashMap::new()),
+            states: RwLock::new(FastHashMap::default()),
             next_state_id: RwLock::new(1), // Start from 1
-            bindings: RwLock::new(HashMap::new()),
+            bindings: RwLock::new(FastHashMap::default()),
             module_registry: RwLock::new(ModuleRegistry::new()),
             tokenizer: RwLock::new(Tokenizer::new()),
             grounded_registry: RwLock::new(GroundedRegistry::with_standard_ops()),
@@ -959,9 +960,9 @@ impl Environment {
         let mut rule_trie = PathMap::new();
 
         // Track rule metadata while building trie
-        let mut rule_index_updates: HashMap<(String, usize), Vec<Rule>> = HashMap::new();
+        let mut rule_index_updates: FastHashMap<(String, usize), Vec<Rule>> = FastHashMap::default();
         let mut wildcard_updates: Vec<Rule> = Vec::new();
-        let mut multiplicity_updates: HashMap<String, usize> = HashMap::new();
+        let mut multiplicity_updates: FastHashMap<String, usize> = FastHashMap::default();
 
         for rule in rules {
             // Create rule s-expression: (= lhs rhs)
@@ -1058,12 +1059,12 @@ impl Environment {
     }
 
     /// Get the multiplicities (for serialization)
-    pub fn get_multiplicities(&self) -> HashMap<String, usize> {
+    pub fn get_multiplicities(&self) -> FastHashMap<String, usize> {
         self.shared.multiplicities.read().unwrap().clone()
     }
 
     /// Set the multiplicities (used for deserialization)
-    pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
+    pub fn set_multiplicities(&mut self, counts: FastHashMap<String, usize>) {
         self.make_owned(); // CoW: ensure we own data before modifying
         *self.shared.multiplicities.write().unwrap() = counts;
         self.modified.store(true, Ordering::Release); // CoW: mark as modified

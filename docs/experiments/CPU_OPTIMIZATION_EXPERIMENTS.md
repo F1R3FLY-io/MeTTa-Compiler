@@ -139,23 +139,71 @@ Memory allocation/deallocation dominates (~40% combined kernel overhead).
 
 **Branch**: `perf/cpu-opt-ahash`
 **Hypothesis**: Replacing std HashMap hasher with ahash will improve HashMap operations by 30-50%
-**Status**: PENDING
+**Status**: COMPLETED
 
 ### Changes
 - Add `ahash = { version = "0.8", optional = true }` to Cargo.toml
-- Create `src/backend/hash_utils.rs` with FastHashMap type alias
-- Replace HashMap imports in `environment.rs`
+- Create `src/backend/hash_utils.rs` with FastHashMap/FastHashSet type aliases
+- Replace HashMap imports in `environment.rs` (rule_index, multiplicities, bindings, named_spaces, states)
+- Replace HashSet in ScopeTracker
 
 ### Results
 
-| Benchmark | Baseline | Treatment | Change | p-value | Cohen's d |
-|-----------|----------|-----------|--------|---------|-----------|
-| TBD | TBD | TBD | TBD | TBD | TBD |
+**pattern_match benchmarks** (uses SmartBindings, not HashMap):
 
-### Decision: TBD
+| Benchmark | Baseline | Treatment | Change | p-value | Verdict |
+|-----------|----------|-----------|--------|---------|---------|
+| simple_variable | 194.52 ns | 195.94 ns | +0.73% | < 0.05 | Within noise |
+| mixed_complexity | 606.19 ns | 599.69 ns | -1.07% | < 0.05 | Within noise |
+| failures/type_mismatch | 139.45 ns | 138.37 ns | -0.77% | < 0.05 | Within noise |
+
+**rule_matching benchmarks** (uses HashMap for rule_index):
+
+| Benchmark | Baseline | Treatment | Change | p-value | Verdict |
+|-----------|----------|-----------|--------|---------|---------|
+| fibonacci_lookup/10 | 759.64 µs | 745.07 µs | -1.9% | > 0.05 | Not significant |
+| fibonacci_lookup/100 | 5.54 ms | 5.63 ms | +1.7% | < 0.05 | Regression |
+| fibonacci_lookup/1000 | 51.22 ms | 52.42 ms | +2.3% | < 0.05 | Regression |
+| pattern_matching/simple | 81.68 µs | 79.30 µs | -2.9% | < 0.05 | Improvement |
+| pattern_matching/nested | 172.25 µs | 180.80 µs | +5.0% | < 0.05 | Regression |
+| worst_case_lookup/1000 | 60.54 ms | 57.74 ms | -4.6% | < 0.05 | Improvement |
+
+**metta end-to-end benchmarks** (divan):
+
+| Benchmark | Baseline | Treatment | Change | Verdict |
+|-----------|----------|-----------|--------|---------|
+| async_fib | 7.302 ms | 7.330 ms | +0.4% | Within noise |
+| async_knowledge_graph | 2.759 ms | 2.701 ms | -2.1% | Marginal improvement |
+
+### Decision: **REJECT**
+
+Does not meet acceptance criteria:
+- No consistent > 2% improvement across benchmarks
+- Several statistically significant regressions detected (+2.3% to +5.0%)
+- Hypothesis of 30-50% improvement not supported
 
 ### Analysis
-TBD
+
+The ahash optimization showed mixed results:
+
+1. **Pattern matching benchmarks**: Mostly unchanged because SmartBindings uses a custom hybrid
+   data structure (Empty/Single/SmallVec), not HashMap. ahash optimization only affects HashMap.
+
+2. **Rule matching benchmarks**: Mixed results with both improvements and regressions.
+   The regressions may be due to:
+   - ahash's AES-NI optimization has higher setup cost for small HashMap sizes
+   - The rule_index is accessed via read locks which dominate the hash time
+   - String key hashing may not benefit as much as integer keys
+
+3. **End-to-end evaluation**: Minimal impact (-2% to +0.4%), within measurement noise.
+
+4. **Key insight**: The bottleneck is not hashing but rather:
+   - Lock contention on shared structures (rule_index, bindings)
+   - Memory allocation/deallocation (40% of perf profile)
+   - MORK serialization and PathMap operations
+
+The feature will be reverted from this branch. Consider alternative optimizations that address
+the actual bottlenecks (lock-free data structures, arena allocation).
 
 ---
 

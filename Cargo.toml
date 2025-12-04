@@ -113,6 +113,9 @@ serde = { version = "1.0", features = ["derive"] }
 # Semver - Version constraint parsing and validation
 semver = "1.0"
 
+# ahash - Fast, DOS-resistant hashing using AES-NI (optional, for HashMap optimization)
+ahash = { version = "0.8", optional = true }
+
 # Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
 # PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup
 
@@ -120,6 +123,7 @@ semver = "1.0"
 default = ["interning", "async"]
 async = ["tokio"]
 interning = []
+ahash-hasher = ["ahash"]  # Use AES-NI accelerated hashing for HashMaps
 
 [dev-dependencies]
 # For integration tests

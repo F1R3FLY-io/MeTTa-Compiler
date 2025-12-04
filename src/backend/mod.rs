@@ -11,6 +11,7 @@ pub mod environment;
 pub mod eval;
 pub mod fuzzy_match;
 pub mod grounded;
+pub mod hash_utils;
 pub mod models;
 pub mod modules;
 pub mod mork_convert;

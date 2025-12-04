@@ -1,4 +1,5 @@
 use crate::backend::environment::Environment;
+use crate::backend::hash_utils::FastHashMap;
 /// PathMap Par Integration Module
 ///
 /// Provides conversion between MeTTa types and Rholang PathMap-based Par types.
@@ -587,7 +588,7 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
 
             // Extract multiplicities (element 1) - now stored as GByteArray
             let multiplicities_par = extract_tuple_value(&tuple.ps[1])?;
-            let mut multiplicities_map: HashMap<String, usize> = HashMap::new();
+            let mut multiplicities_map: FastHashMap<String, usize> = FastHashMap::default();
             if let Some(expr) = multiplicities_par.exprs.first() {
                 if let Some(ExprInstance::GByteArray(mult_bytes)) = &expr.expr_instance {
                     // Read format: [magic: 4 bytes "MTTM"][count: 8 bytes][key1_len: 4 bytes][key1_bytes][value1: 8 bytes]...

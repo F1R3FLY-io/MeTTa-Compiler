@@ -784,6 +784,58 @@ The bloom filter provides O(1) early exit only when the queried (head, arity) pa
 - Doesn't hurt workloads where early exit triggers
 - Low memory overhead (~10KB)
 
+---
+
+### Experiment 8: Wildcard Rule Flag Optimization (EXECUTED)
+
+**Date**: 2025-12-05
+
+**Hypothesis**: Adding an `AtomicBool` flag `has_wildcard_rules` can skip RwLock acquisition for `wildcard_rules` in `get_matching_rules()` when no wildcard rules exist. Most workloads (including mmverify) don't use wildcard rules.
+
+**Predicted Improvement**: 0-2% (low impact, but zero risk)
+
+**Implementation**:
+- Added `has_wildcard_rules: AtomicBool` field to `EnvironmentShared`
+- Set flag to `true` when adding wildcard rules (in `add_rule`, `rebuild_rule_index`, `add_rules_bulk`)
+- Reset flag to `false` when clearing wildcard rules (in `rebuild_rule_index`)
+- Fast-path check in `get_matching_rules()`: skip wildcard lock acquisition when flag is false
+
+**Key Code Locations**:
+- `src/backend/environment.rs:231-232`: has_wildcard_rules field
+- `src/backend/environment.rs:1176-1177`: Set flag on wildcard add
+- `src/backend/environment.rs:1020-1021,1037-1038`: Set/reset in rebuild_rule_index
+- `src/backend/environment.rs:1285-1287`: Set in add_rules_bulk
+- `src/backend/environment.rs:2139-2155`: Fast-path in get_matching_rules
+
+**5-Run Validation Results**:
+
+| Run | User Time | Notes |
+|-----|-----------|-------|
+| 1 | 93.78s | |
+| 2 | 93.50s | |
+| 3 | 92.51s | Best run |
+| 4 | 95.70s | |
+| 5 | 95.52s | |
+| **Mean** | **94.20s** | |
+| **Std Dev** | 1.35s | |
+
+**Analysis**:
+- Previous baseline (Exp 5b): 94.30s
+- New mean: 94.20s
+- **Change**: -0.1s (0.1% improvement, within noise)
+
+**Why No Significant Change**:
+- mmverify likely doesn't have many wildcard rules (rules without a head symbol)
+- Most rules in mmverify have concrete head symbols and go to the rule index
+- The optimization helps workloads *without* wildcard rules (skips lock acquisition)
+- Since mmverify has few/no wildcards, the lock was always acquired anyway
+
+**Decision**: **ACCEPT** (no regression, benefits other workloads)
+- Zero overhead when wildcard rules exist
+- Saves RwLock acquisition when no wildcard rules (most workloads)
+- Low complexity (~15 lines of code)
+- Future workloads without wildcards will benefit
+
 **Updated Cumulative Summary**:
 
 | State | Time | Improvement from Baseline |

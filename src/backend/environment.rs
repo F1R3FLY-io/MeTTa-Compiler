@@ -228,6 +228,9 @@ struct EnvironmentShared {
     /// Wildcard rules: Rules without a clear head symbol
     wildcard_rules: RwLock<Vec<Rule>>,
 
+    /// Fast flag: true if any wildcard rules exist (avoids lock acquisition when empty)
+    has_wildcard_rules: AtomicBool,
+
     /// Multiplicities: tracks how many times each rule is defined
     multiplicities: RwLock<HashMap<String, usize>>,
 
@@ -327,6 +330,7 @@ impl Environment {
             btm: RwLock::new(PathMap::new()),
             rule_index: RwLock::new(HashMap::with_capacity(128)),
             wildcard_rules: RwLock::new(Vec::new()),
+            has_wildcard_rules: AtomicBool::new(false),
             multiplicities: RwLock::new(HashMap::new()),
             pattern_cache: RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
             type_index: RwLock::new(None),
@@ -370,6 +374,7 @@ impl Environment {
             btm: RwLock::new(self.shared.btm.read().unwrap().clone()),
             rule_index: RwLock::new(self.shared.rule_index.read().unwrap().clone()),
             wildcard_rules: RwLock::new(self.shared.wildcard_rules.read().unwrap().clone()),
+            has_wildcard_rules: AtomicBool::new(self.shared.has_wildcard_rules.load(Ordering::Acquire)),
             multiplicities: RwLock::new(self.shared.multiplicities.read().unwrap().clone()),
             pattern_cache: RwLock::new(self.shared.pattern_cache.read().unwrap().clone()),
             type_index: RwLock::new(self.shared.type_index.read().unwrap().clone()),
@@ -1012,6 +1017,8 @@ impl Environment {
             let mut wildcards = self.shared.wildcard_rules.write().unwrap();
             wildcards.clear();
         }
+        // Reset wildcard flag - will be set again if wildcards are added
+        self.shared.has_wildcard_rules.store(false, Ordering::Release);
 
         // Rebuild from MORK Space
         for rule in self.iter_rules() {
@@ -1027,6 +1034,8 @@ impl Environment {
                 // Rules without head symbol (wildcards, variables) go to wildcard list
                 let mut wildcards = self.shared.wildcard_rules.write().unwrap();
                 wildcards.push(rule);
+                // Mark that we have wildcard rules
+                self.shared.has_wildcard_rules.store(true, Ordering::Release);
             }
         }
 
@@ -1168,6 +1177,8 @@ impl Environment {
             // Rules without head symbol (wildcards, variables) go to wildcard list
             let mut wildcards = self.shared.wildcard_rules.write().unwrap();
             wildcards.push(rule); // Move instead of clone
+            // Mark that we have wildcard rules (for fast-path in get_matching_rules)
+            self.shared.has_wildcard_rules.store(true, Ordering::Release);
         }
 
         // Add to MORK Space (only once - PathMap will deduplicate)
@@ -1266,9 +1277,13 @@ impl Environment {
         }
 
         // Update wildcard rules
+        let has_new_wildcards = !wildcard_updates.is_empty();
         {
             let mut wildcards = self.shared.wildcard_rules.write().unwrap();
             wildcards.extend(wildcard_updates);
+        }
+        if has_new_wildcards {
+            self.shared.has_wildcard_rules.store(true, Ordering::Release);
         }
 
         // Single PathMap union (minimal critical section)
@@ -2129,12 +2144,26 @@ impl Environment {
         // Use Symbol for O(1) comparison when symbol-interning is enabled
         let key = (Symbol::new(head), arity);
 
-        // Get indexed rules and wildcards in single lock scope where possible
-        let index = self.shared.rule_index.read().unwrap();
-        let wildcards = self.shared.wildcard_rules.read().unwrap();
+        // Fast-path: Check if we have any wildcard rules before acquiring the lock
+        let has_wildcards = self.shared.has_wildcard_rules.load(Ordering::Acquire);
 
+        // Get indexed rules first
+        let index = self.shared.rule_index.read().unwrap();
         let indexed_rules = index.get(&key);
         let indexed_len = indexed_rules.map_or(0, |r| r.len());
+
+        // OPTIMIZATION: Skip wildcard lock acquisition if no wildcard rules exist
+        if !has_wildcards {
+            // No wildcard rules - just return indexed rules
+            let mut matching_rules = Vec::with_capacity(indexed_len);
+            if let Some(rules) = indexed_rules {
+                matching_rules.extend(rules.iter().cloned());
+            }
+            return matching_rules;
+        }
+
+        // Have wildcard rules - need to acquire lock
+        let wildcards = self.shared.wildcard_rules.read().unwrap();
         let wildcard_len = wildcards.len();
 
         // OPTIMIZATION: Preallocate capacity to avoid reallocation

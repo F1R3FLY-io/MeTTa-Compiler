@@ -140,22 +140,85 @@ pub(super) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
     let mut all_results = Vec::new();
     let mut final_env = env1.clone();
 
+    // OPTIMIZATION: Detect boolean existence check pattern: (unify &space pattern True False)
+    // This avoids iterating all atoms when we only need to check if ANY match exists
+    let is_boolean_check = match (success_body, failure_body) {
+        (MettaValue::Bool(true), MettaValue::Bool(false)) => true,
+        (MettaValue::Atom(s), MettaValue::Atom(f)) if s == "True" && f == "False" => true,
+        _ => false,
+    };
+
     for val1 in results1 {
         // HE-compatible: If val1 is a Space, search atoms in the space
         if let MettaValue::Space(ref handle) = val1 {
-            // Get all atoms from the space
-            let space_atoms = handle.collapse();
-
             // Pattern2 is treated as a pattern to match against space atoms
             // It should NOT be evaluated - it's a pattern template
             let pattern = pattern2.clone();
 
-            // DEBUG: Log pattern and space atoms count
+            // DEBUG: Log pattern and space info
             if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
                 eprintln!(
-                    "[DEBUG unify] Space query: pattern={:?}, space_atoms_count={}",
-                    pattern, space_atoms.len()
+                    "[DEBUG unify] Space query: pattern={:?}, is_module={}, is_boolean_check={}",
+                    pattern, handle.is_module_space(), is_boolean_check
                 );
+            }
+
+            // OPTIMIZATION: For module-backed spaces, use Environment's optimized match functions
+            // which have bloom filter pre-filtering and early-exit capabilities
+            if handle.is_module_space() || handle.name == "self" {
+                // FAST PATH: Boolean existence check uses match_space_exists (early exit)
+                if is_boolean_check {
+                    let exists = final_env.match_space_exists(&pattern);
+                    if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
+                        eprintln!("[DEBUG unify] Boolean check result: exists={}", exists);
+                    }
+                    let result = if exists {
+                        MettaValue::Bool(true)
+                    } else {
+                        MettaValue::Bool(false)
+                    };
+                    all_results.push(result);
+                    continue;
+                }
+
+                // For non-boolean patterns on module spaces, use match_space for all matches
+                // This path benefits from bloom filter + head filtering but returns all matches
+                let matches = final_env.match_space(&pattern, &pattern);
+                if matches.is_empty() {
+                    // No matches - evaluate failure body
+                    if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
+                        eprintln!("[DEBUG unify] NO MATCH FOUND (module space path)");
+                    }
+                    let (failure_results, failure_env) = eval(failure_body.clone(), final_env.clone());
+                    final_env = failure_env;
+                    all_results.extend(failure_results);
+                } else {
+                    // Apply bindings and evaluate success body for each match
+                    for matched_atom in matches {
+                        if let Some(bindings) = pattern_match(&pattern, &matched_atom) {
+                            if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
+                                eprintln!("[DEBUG unify] MATCH (module): atom={:?}, bindings={:?}", matched_atom, bindings);
+                            }
+                            let instantiated = apply_bindings(success_body, &bindings).into_owned();
+                            let (body_results, body_env) = eval(instantiated, final_env.clone());
+                            final_env = body_env;
+                            all_results.extend(body_results);
+                        } else if let Some(bindings) = pattern_match(&matched_atom, &pattern) {
+                            // Try reverse direction
+                            let instantiated = apply_bindings(success_body, &bindings).into_owned();
+                            let (body_results, body_env) = eval(instantiated, final_env.clone());
+                            final_env = body_env;
+                            all_results.extend(body_results);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // SLOW PATH: Owned spaces (from new-space) - use collapse() and iterate
+            let space_atoms = handle.collapse();
+            if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
+                eprintln!("[DEBUG unify] Owned space, {} atoms", space_atoms.len());
             }
 
             let mut found_match = false;

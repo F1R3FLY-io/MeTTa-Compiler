@@ -304,6 +304,9 @@ fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaValue) -> Stri
 /// Supports both simple variable binding and pattern matching:
 ///   - (let $x 42 body) - simple binding
 ///   - (let ($a $b) (tuple 1 2) body) - destructuring pattern
+///
+/// IMPORTANT: This function propagates environment changes (including state mutations)
+/// through each iteration to ensure side effects like change-state! are visible.
 pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
@@ -324,7 +327,7 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let body = &args[2];
 
     // Evaluate the value expression first
-    let (value_results, value_env) = eval(value_expr.clone(), env);
+    let (value_results, mut current_env) = eval(value_expr.clone(), env);
 
     // Handle nondeterminism: if value evaluates to multiple results, try each one
     let mut all_results = Vec::new();
@@ -333,13 +336,15 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
         // Try to match the pattern against the value
         if let Some(bindings) = pattern_match(pattern, &value) {
             // Apply bindings to the body and evaluate it
+            // Propagate environment through iterations to preserve state changes
             let instantiated_body = apply_bindings(body, &bindings).into_owned();
-            let (body_results, _) = eval(instantiated_body, value_env.clone());
+            let (body_results, body_env) = eval(instantiated_body, current_env);
+            current_env = body_env;
             all_results.extend(body_results);
         } else {
             // Pattern match failure - return Empty (HE-compatible)
             // In strict mode, print a warning with helpful diagnostics to stderr
-            if value_env.is_strict_mode() {
+            if current_env.is_strict_mode() {
                 let suggestion = pattern_mismatch_suggestion(pattern, &value);
                 eprintln!(
                     "Warning: let pattern {} does not match value {}. {}",
@@ -353,7 +358,7 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
         }
     }
 
-    (all_results, value_env)
+    (all_results, current_env)
 }
 
 /// Evaluate let binding with trampoline integration (TCO-enabled)
@@ -1137,15 +1142,15 @@ mod tests {
 
     #[test]
     fn test_let_star_with_discard_pattern() {
-        // Test that empty S-expression () works as a discard pattern in let*
-        // This is HE-compatible behavior for side-effect expressions
+        // Test that wildcard _ works as a discard pattern in let*
+        // This is the proper way to discard values
         let env = Environment::new();
 
-        // (let* ((() 42)) "success") should succeed, discarding 42
+        // (let* ((_ 42)) "success") should succeed, discarding 42
         let discard_binding = MettaValue::SExpr(vec![
             MettaValue::Atom("let*".to_string()),
             MettaValue::SExpr(vec![MettaValue::SExpr(vec![
-                MettaValue::SExpr(vec![]), // () - discard pattern
+                MettaValue::Atom("_".to_string()), // _ - wildcard discard pattern
                 MettaValue::Long(42),
             ])]),
             MettaValue::String("success".to_string()),
@@ -1158,7 +1163,7 @@ mod tests {
 
     #[test]
     fn test_let_star_with_discard_and_binding() {
-        // (let* ((() (+ 1 2)) ($x 5)) $x) should return 5
+        // (let* ((_ (+ 1 2)) ($x 5)) $x) should return 5
         let env = Environment::new();
 
         let mixed_bindings = MettaValue::SExpr(vec![
@@ -1166,7 +1171,7 @@ mod tests {
             MettaValue::SExpr(vec![
                 // First binding: discard the result of (+ 1 2)
                 MettaValue::SExpr(vec![
-                    MettaValue::SExpr(vec![]), // () - discard pattern
+                    MettaValue::Atom("_".to_string()), // _ - wildcard discard pattern
                     MettaValue::SExpr(vec![
                         MettaValue::Atom("+".to_string()),
                         MettaValue::Long(1),
@@ -1189,12 +1194,12 @@ mod tests {
 
     #[test]
     fn test_let_with_discard_pattern() {
-        // (let () "any-value" "ok") should succeed
+        // (let _ "any-value" "ok") should succeed
         let env = Environment::new();
 
         let discard_let = MettaValue::SExpr(vec![
             MettaValue::Atom("let".to_string()),
-            MettaValue::SExpr(vec![]), // () - discard pattern
+            MettaValue::Atom("_".to_string()), // _ - wildcard discard pattern
             MettaValue::String("any-value".to_string()),
             MettaValue::String("ok".to_string()),
         ]);
@@ -1205,15 +1210,15 @@ mod tests {
     }
 
     #[test]
-    fn test_let_star_discard_matches_any_type() {
-        // Test that () matches different types in let*
+    fn test_let_star_wildcard_matches_any_type() {
+        // Test that _ wildcard matches different types in let*
         let env = Environment::new();
 
         // Discard a string
         let discard_string = MettaValue::SExpr(vec![
             MettaValue::Atom("let*".to_string()),
             MettaValue::SExpr(vec![MettaValue::SExpr(vec![
-                MettaValue::SExpr(vec![]),
+                MettaValue::Atom("_".to_string()), // _ - wildcard
                 MettaValue::String("ignored".to_string()),
             ])]),
             MettaValue::Long(1),
@@ -1225,7 +1230,7 @@ mod tests {
         let discard_bool = MettaValue::SExpr(vec![
             MettaValue::Atom("let*".to_string()),
             MettaValue::SExpr(vec![MettaValue::SExpr(vec![
-                MettaValue::SExpr(vec![]),
+                MettaValue::Atom("_".to_string()), // _ - wildcard
                 MettaValue::Bool(true),
             ])]),
             MettaValue::Long(2),
@@ -1237,7 +1242,7 @@ mod tests {
         let discard_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("let*".to_string()),
             MettaValue::SExpr(vec![MettaValue::SExpr(vec![
-                MettaValue::SExpr(vec![]),
+                MettaValue::Atom("_".to_string()), // _ - wildcard
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("some".to_string()),
                     MettaValue::Atom("expression".to_string()),

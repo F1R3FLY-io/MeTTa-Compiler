@@ -1629,9 +1629,13 @@ impl Environment {
 
     /// Create a new mutable state cell with an initial value
     /// Used by new-state operation
+    ///
+    /// NOTE: States are truly mutable - they are created in the shared store
+    /// and visible to all environments sharing the same Arc<EnvironmentShared>.
+    /// We intentionally do NOT call make_owned() here because new states should
+    /// be globally visible, matching MeTTa HE semantics.
     pub fn create_state(&mut self, initial_value: MettaValue) -> u64 {
-        self.make_owned();
-
+        // No make_owned() - states are shared, not copy-on-write
         let id = {
             let mut next_id = self.shared.next_state_id.write().unwrap();
             let id = *next_id;
@@ -1654,9 +1658,13 @@ impl Environment {
     /// Change the value of a state cell
     /// Used by change-state! operation
     /// Returns true if successful, false if state doesn't exist
+    ///
+    /// NOTE: States are truly mutable - changes are visible to all environments
+    /// sharing the same Arc<EnvironmentShared>. We intentionally do NOT call
+    /// make_owned() here because state mutations should be globally visible,
+    /// matching MeTTa HE semantics where change-state! is immediately observable.
     pub fn change_state(&mut self, state_id: u64, new_value: MettaValue) -> bool {
-        self.make_owned();
-
+        // No make_owned() - states are shared, not copy-on-write
         let mut states = self.shared.states.write().unwrap();
         if let std::collections::hash_map::Entry::Occupied(mut e) = states.entry(state_id) {
             e.insert(new_value);

@@ -108,6 +108,9 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResul
 
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
+///
+/// IMPORTANT: This function propagates environment changes (including state mutations)
+/// through each iteration to ensure side effects like change-state! are visible.
 pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("chain", items, 3, env, "(chain expr $var body)");
 
@@ -115,10 +118,10 @@ pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult
     let var = &items[2];
     let body = &items[3];
 
-    let (expr_results, expr_env) = eval(expr.clone(), env);
+    let (expr_results, mut current_env) = eval(expr.clone(), env);
     for result in &expr_results {
         if matches!(result, MettaValue::Error(_, _)) {
-            return (vec![result.clone()], expr_env);
+            return (vec![result.clone()], current_env);
         }
     }
 
@@ -126,12 +129,14 @@ pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult
     for value in expr_results {
         if let Some(bindings) = pattern_match(var, &value) {
             let instantiated_body = apply_bindings(body, &bindings).into_owned();
-            let (body_results, _) = eval(instantiated_body, expr_env.clone());
+            // Propagate environment through iterations to preserve state changes
+            let (body_results, body_env) = eval(instantiated_body, current_env);
+            current_env = body_env;
             all_results.extend(body_results);
         }
     }
 
-    (all_results, expr_env)
+    (all_results, current_env)
 }
 
 #[cfg(test)]

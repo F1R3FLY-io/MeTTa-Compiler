@@ -805,12 +805,15 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                     Continuation::ProcessRuleMatches {
                         mut remaining_matches,
                         mut results,
-                        env,
+                        env: _,
                         depth,
                         parent_cont,
                     } => {
                         // Add results from this rule evaluation
                         results.extend(result.0);
+                        // IMPORTANT: Propagate environment changes (including state mutations)
+                        // from rule evaluation to ensure side effects like change-state! are visible
+                        let env = result.1;
 
                         if remaining_matches.is_empty() {
                             // All rules evaluated
@@ -938,6 +941,9 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                     } => {
                         // First, add any results from rule evaluation
                         results.extend(result.0);
+                        // IMPORTANT: Propagate environment changes (including state mutations)
+                        // from rule evaluation to ensure side effects like change-state! are visible
+                        env = result.1;
 
                         // If we have pending rule matches, process the next one
                         if !pending_rule_matches.is_empty() {
@@ -2267,14 +2273,25 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         (MettaValue::Unit, MettaValue::Unit) => true,
         (MettaValue::Unit, MettaValue::Nil) => true,
 
-        // Nil as pattern matches ANYTHING (HE-compatible discard pattern)
-        // In compilation, () becomes MettaValue::Nil, so Nil must be a wildcard
-        // Used in let* to evaluate expressions for side effects: (let () side-effect body)
-        (MettaValue::Nil, _) => true,
+        // Nil pattern matches only empty values (Nil, Unit, empty S-expr, or Empty atom)
+        // For discard pattern, use wildcard _ instead
+        (MettaValue::Nil, MettaValue::SExpr(v_items)) if v_items.is_empty() => true,
+        (MettaValue::Nil, MettaValue::Atom(v)) if v == "Empty" => true,
 
-        // Empty S-expression () matches anything (HE-compatible discard pattern)
-        // Used in let* to evaluate expressions for side effects: (() (println! "debug"))
-        (MettaValue::SExpr(p_items), _) if p_items.is_empty() => true,
+        // Empty S-expression () matches only empty values (empty S-expr, Nil, Unit, or Empty atom)
+        // For discard pattern, use wildcard _ instead
+        (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items))
+            if p_items.is_empty() && v_items.is_empty() =>
+        {
+            true
+        }
+        (MettaValue::SExpr(p_items), MettaValue::Nil) if p_items.is_empty() => true,
+        (MettaValue::SExpr(p_items), MettaValue::Unit) if p_items.is_empty() => true,
+        (MettaValue::SExpr(p_items), MettaValue::Atom(v))
+            if p_items.is_empty() && v == "Empty" =>
+        {
+            true
+        }
 
         // S-expressions must have same length and all elements must match
         (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items)) => {
@@ -2851,44 +2868,58 @@ mod tests {
     }
 
     #[test]
-    fn test_pattern_match_empty_sexpr_discard() {
-        // Empty S-expression () should match ANY value (HE-compatible discard pattern)
+    fn test_pattern_match_empty_sexpr_matches_empty_only() {
+        // Empty S-expression () should ONLY match empty values (Nil, empty S-expr, Unit, Empty atom)
+        // Use _ for wildcard pattern to match anything
         let pattern = MettaValue::SExpr(vec![]);
 
-        // Should match Long
+        // Should NOT match Long
         let value = MettaValue::Long(42);
         let bindings = pattern_match(&pattern, &value);
-        assert!(bindings.is_some());
-        assert!(bindings.unwrap().is_empty()); // No bindings captured
+        assert!(bindings.is_none());
 
-        // Should match String
+        // Should NOT match String
         let value = MettaValue::String("hello".to_string());
         let bindings = pattern_match(&pattern, &value);
-        assert!(bindings.is_some());
+        assert!(bindings.is_none());
 
-        // Should match S-expression
+        // Should NOT match non-empty S-expression
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(2),
         ]);
         let bindings = pattern_match(&pattern, &value);
-        assert!(bindings.is_some());
+        assert!(bindings.is_none());
 
-        // Should match Nil
+        // SHOULD match Nil
         let value = MettaValue::Nil;
         let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
+        assert!(bindings.unwrap().is_empty());
 
-        // Should match another empty S-expression
+        // SHOULD match another empty S-expression
         let value = MettaValue::SExpr(vec![]);
         let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
+        assert!(bindings.unwrap().is_empty());
 
-        // Should match Bool
-        let value = MettaValue::Bool(true);
+        // SHOULD match Unit
+        let value = MettaValue::Unit;
         let bindings = pattern_match(&pattern, &value);
         assert!(bindings.is_some());
+        assert!(bindings.unwrap().is_empty());
+
+        // SHOULD match Empty atom
+        let value = MettaValue::Atom("Empty".to_string());
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_some());
+        assert!(bindings.unwrap().is_empty());
+
+        // Should NOT match Bool
+        let value = MettaValue::Bool(true);
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_none());
     }
 
     #[test]

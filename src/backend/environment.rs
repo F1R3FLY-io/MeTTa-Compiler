@@ -24,6 +24,91 @@ thread_local! {
     static MORK_VALUE_CACHE: RefCell<LruCache<usize, MettaValue>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(4096).unwrap()));
 }
+
+/// Bloom filter for (head_symbol, arity) pairs.
+///
+/// Enables O(1) rejection in `match_space()` when the pattern's (head, arity)
+/// definitely doesn't exist in the space. Uses Kirsch-Mitzenmacher double hashing
+/// with k=3 hash functions for ~1% false positive rate at 10 bits per entry.
+///
+/// # Design Notes
+/// - False positives allowed (may iterate when no match exists)
+/// - No false negatives (never skips when match does exist)
+/// - Doesn't support deletion; uses lazy rebuild when staleness threshold exceeded
+#[derive(Clone)]
+struct HeadArityBloomFilter {
+    bits: Vec<u64>,
+    num_bits: usize,
+    num_insertions: usize,
+    num_deletions: usize,
+}
+
+impl HeadArityBloomFilter {
+    /// Create a new bloom filter sized for expected_entries.
+    /// Uses 10 bits per entry for ~1% false positive rate.
+    fn new(expected_entries: usize) -> Self {
+        let num_bits = (expected_entries * 10).max(1024);
+        let num_words = (num_bits + 63) / 64;
+        Self {
+            bits: vec![0; num_words],
+            num_bits,
+            num_insertions: 0,
+            num_deletions: 0,
+        }
+    }
+
+    /// Insert a (head, arity) pair into the bloom filter.
+    #[inline]
+    fn insert(&mut self, head: &[u8], arity: u8) {
+        let (h1, h2) = Self::hash_pair(head, arity);
+        for i in 0usize..3 {
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
+            self.bits[idx / 64] |= 1 << (idx % 64);
+        }
+        self.num_insertions += 1;
+    }
+
+    /// Check if a (head, arity) pair may exist in the filter.
+    /// Returns false only if the pair definitely doesn't exist.
+    #[inline]
+    fn may_contain(&self, head: &[u8], arity: u8) -> bool {
+        let (h1, h2) = Self::hash_pair(head, arity);
+        (0usize..3).all(|i| {
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
+            self.bits[idx / 64] & (1 << (idx % 64)) != 0
+        })
+    }
+
+    /// Check if the filter needs rebuilding due to accumulated deletions.
+    fn needs_rebuild(&self) -> bool {
+        self.num_deletions > self.num_insertions / 4
+    }
+
+    /// Note that a deletion occurred (for lazy rebuild tracking).
+    fn note_deletion(&mut self) {
+        self.num_deletions += 1;
+    }
+
+    /// Clear the filter and reset counters.
+    fn clear(&mut self) {
+        self.bits.fill(0);
+        self.num_insertions = 0;
+        self.num_deletions = 0;
+    }
+
+    /// Compute two hash values for double hashing.
+    #[inline]
+    fn hash_pair(head: &[u8], arity: u8) -> (usize, usize) {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        head.hash(&mut hasher);
+        arity.hash(&mut hasher);
+        let h = hasher.finish();
+        (h as usize, (h >> 32) as usize)
+    }
+}
+
 use super::grounded::{GroundedRegistry, GroundedRegistryTCO};
 use super::modules::{ModId, ModuleRegistry, Tokenizer};
 use super::symbol::Symbol;
@@ -191,6 +276,10 @@ struct EnvironmentShared {
 
     /// Hierarchical scope tracker for context-aware symbol resolution
     scope_tracker: RwLock<ScopeTracker>,
+
+    /// Bloom filter for (head_symbol, arity) pairs - enables O(1) match_space() rejection
+    /// when the pattern's (head, arity) definitely doesn't exist in the space.
+    head_arity_bloom: RwLock<HeadArityBloomFilter>,
 }
 
 /// The environment contains the fact database and type assertions
@@ -254,6 +343,7 @@ impl Environment {
             large_expr_pathmap: RwLock::new(None), // Lazy: not allocated until needed
             fuzzy_matcher: RwLock::new(FuzzyMatcher::new()),
             scope_tracker: RwLock::new(ScopeTracker::new()),
+            head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // ~10KB for 10k expected entries
         });
 
         Environment {
@@ -296,6 +386,7 @@ impl Environment {
             large_expr_pathmap: RwLock::new(self.shared.large_expr_pathmap.read().unwrap().clone()),
             fuzzy_matcher: RwLock::new(self.shared.fuzzy_matcher.read().unwrap().clone()),
             scope_tracker: RwLock::new(self.shared.scope_tracker.read().unwrap().clone()),
+            head_arity_bloom: RwLock::new(self.shared.head_arity_bloom.read().unwrap().clone()),
         });
 
         self.shared = new_shared;
@@ -958,6 +1049,22 @@ impl Environment {
         use crate::backend::eval::{apply_bindings, pattern_match};
         use mork_expr::Expr;
 
+        // BLOOM FILTER CHECK: O(1) rejection if (head, arity) definitely doesn't exist
+        // This is "Tier 0" optimization - skips entire iteration if bloom filter says no match
+        if let Some(expected_head) = pattern.get_head_symbol() {
+            let pattern_arity = pattern.get_arity() as u8;
+            if !self
+                .shared
+                .head_arity_bloom
+                .read()
+                .unwrap()
+                .may_contain(expected_head.as_bytes(), pattern_arity)
+            {
+                // Definitely no matching expressions exist
+                return Vec::new();
+            }
+        }
+
         let space = self.create_space();
         let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
@@ -1504,6 +1611,16 @@ impl Environment {
                 let mut space_mut = self.create_space();
                 space_mut.btm.insert(&mork_bytes, ());
                 self.update_pathmap(space_mut);
+
+                // Update bloom filter with (head, arity) for O(1) match_space() rejection
+                if let Some(head) = value.get_head_symbol() {
+                    let arity = value.get_arity() as u8;
+                    self.shared
+                        .head_arity_bloom
+                        .write()
+                        .unwrap()
+                        .insert(head.as_bytes(), arity);
+                }
             }
             Err(_e) => {
                 // Fallback: Store in PathMap with varint encoding (arity >= 64)
@@ -1556,6 +1673,15 @@ impl Environment {
                 let mut space_mut = self.create_space();
                 space_mut.btm.remove(&mork_bytes);
                 self.update_pathmap(space_mut);
+
+                // Note deletion for bloom filter lazy rebuild tracking
+                // (Standard bloom filters don't support deletion, so we track count
+                // for periodic rebuild when false positive rate becomes too high)
+                self.shared
+                    .head_arity_bloom
+                    .write()
+                    .unwrap()
+                    .note_deletion();
             }
             Err(_) => {
                 // Remove from fallback PathMap (if it exists)

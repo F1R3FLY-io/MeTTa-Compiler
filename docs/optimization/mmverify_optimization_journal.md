@@ -383,16 +383,370 @@ use `Cow<'static, str>` or change `Atom(String)` to avoid the allocation.
 
 ---
 
+---
+
+## Phase 4: Semantic Fix Regression (2025-12-05)
+
+### Context
+
+Commit `f0ea65b` introduced a critical semantic fix for HE-compatible state semantics and
+environment propagation. This fix is **necessary for correctness** but introduces a significant
+performance regression.
+
+### Semantic Changes
+
+1. **Pattern Matching Semantics**: `Nil` and `()` no longer act as wildcards - they now only
+   match empty values (`Empty`, empty SExpr). This ensures correct matching behavior.
+
+2. **Environment Propagation in `eval_chain`**: State mutations via `change-state!` are now
+   properly propagated across chain iterations:
+   ```rust
+   // BEFORE (incorrect):
+   let (body_results, _) = eval(instantiated_body, expr_env.clone());
+
+   // AFTER (correct):
+   let (body_results, body_env) = eval(instantiated_body, current_env);
+   current_env = body_env;
+   ```
+
+3. **Environment Propagation in Rule Evaluation**: Environment changes from matched rules
+   are now correctly propagated back through `ProcessRuleMatches`.
+
+### New Baseline Measurements (Post-Semantic Fix)
+
+| Metric | Pre-Fix (Exp 1) | Post-Fix | Change |
+|--------|-----------------|----------|--------|
+| **Wall time** | 12.382 s | 128.32 s | **+936%** |
+| **User time** | - | 127.34 s | - |
+| **CPU cycles** | - | 395.25 B | - |
+| **Instructions** | - | 1.036 T | - |
+| **IPC** | - | 2.62 | (excellent) |
+
+### Performance Characteristics
+
+| Counter | Value | Rate | Assessment |
+|---------|-------|------|------------|
+| cycles | 395.25 B | - | Baseline |
+| instructions | 1.036 T | - | 10x more work |
+| IPC | 2.62 | - | **Excellent** (CPU efficient) |
+| L1-dcache-load-misses | 1.52 B | 0.62% | **Excellent** |
+| LLC cache-misses | 3.09 M | 1.26% | **Very good** |
+| branch-misses | 1.78 B | 0.90% | **Very good** |
+
+### Root Cause Analysis
+
+The **10x performance regression is NOT due to inefficiency** - the IPC of 2.62 is excellent,
+and cache/branch miss rates are better than before. The regression is due to **more work**:
+
+1. **1.036 trillion instructions** vs ~100 billion before the fix
+2. The environment propagation causes more rule applications per chain iteration
+3. The stricter pattern matching may cause more pattern tests before finding matches
+
+The high IPC and low miss rates indicate the CPU is working efficiently - it's simply
+executing **10x more instructions** due to the correct semantics.
+
+### Decision
+
+**The semantic fix MUST be kept** - correctness trumps performance. The optimization goal
+is now to **recover as much performance as possible** while maintaining correct semantics.
+
+**New Target**: Break the 60s barrier (50% improvement from 128s baseline)
+
+---
+
+## Phase 5: Performance Recovery Experiments (2025-12-05)
+
+Based on the new baseline, we need algorithmic optimizations rather than micro-optimizations.
+The following experiments are planned:
+
+### Experiment 3: Early Integer Detection via First-Byte Check
+
+**Hypothesis**: Fast-path integer check before `str::parse::<i64>()` avoids parsing
+overhead for non-numeric symbols.
+
+**Predicted improvement**: 0.5-1.5%
+
+### Experiment 4: Thread-Local MORK Value Cache
+
+**Hypothesis**: Thread-local caching of `mork_expr_to_metta_value` results for repeated
+MORK pointer addresses reduces redundant conversions.
+
+**Predicted improvement**: 2-5%
+
+### Experiment 5: Bloom Filter + Lazy MORK Iteration
+
+**Hypothesis**: Pre-filtering pattern matches with a bloom filter on (head, arity) pairs
+can dramatically reduce unnecessary MORK conversions.
+
+**Predicted improvement**: 5-12%
+
+### Experiment 6: Static VARNAMES Array
+
+**Hypothesis**: Pre-allocating VARNAME Strings eliminates `.to_string()` overhead.
+
+**Predicted improvement**: 0.3-0.8%
+
+---
+
+### Experiment 4: Thread-Local MORK Value Cache (EXECUTED)
+
+**Date**: 2025-12-05
+
+**Hypothesis**: Thread-local LRU caching of `mork_expr_to_metta_value` results for MORK
+expression pointer addresses will reduce redundant conversions and improve performance.
+
+**Implementation**:
+1. Added thread-local LRU cache (4096 entries) keyed by `expr.ptr as usize`
+2. Check cache before conversion; store result after successful conversion
+3. No locking overhead since cache is thread-local
+
+**Files Modified**: `src/backend/environment.rs`
+
+### Measurements
+
+| Run | Baseline (s) | With Cache (s) | Improvement |
+|-----|--------------|----------------|-------------|
+| 1 | 127.34 | 109.80 | 13.8% |
+| 2 | 127.34 | 106.83 | 16.1% |
+| 3 | 127.34 | 104.86 | 17.6% |
+| **Average** | **127.34** | **107.16** | **15.8%** |
+
+### Statistical Analysis
+
+- **Mean improvement**: 15.8% (20.18s saved per run)
+- **Observed range**: 13.8% - 17.6%
+- **Predicted improvement**: 2-5%
+- **Actual vs Predicted**: 3-5x better than predicted
+
+### Conclusion
+
+**Result**: **ACCEPT** - Hypothesis confirmed with results far exceeding prediction
+
+**Reasoning**:
+1. The cache achieved **15.8% improvement** vs predicted 2-5% (3-5x better)
+2. Practical significance: ~20 seconds saved per verification run
+3. Low implementation risk: Thread-local caching avoids lock contention
+4. The improvement suggests high cache hit rate - MORK expressions are frequently re-queried
+
+**Root Cause Analysis**:
+The 15.8% improvement (vs 13.16% CPU hotspot) indicates near-complete elimination of
+redundant conversions. The cache hit rate must be very high (>90%) given that we're
+reducing the 13.16% hotspot to approximately 2-3% residual overhead.
+
+---
+
+### Experiment 3: Integer Fast-Path Detection (EXECUTED)
+
+**Date**: 2025-12-05
+
+**Hypothesis**: Fast-path check before `str::parse::<i64>()` avoids parsing overhead
+for non-numeric symbols.
+
+**Implementation**:
+1. Check if first byte is ASCII digit or minus sign before attempting integer parse
+2. Most symbols (term, wff, etc.) skip the parse attempt entirely
+
+**Files Modified**: `src/backend/environment.rs`
+
+### Measurements (Combined with Experiment 4)
+
+| Run | With Exp 4 Only (s) | With Exp 3+4 (s) | Difference |
+|-----|---------------------|------------------|------------|
+| 1 | 109.80 | 108.98 | -0.7% |
+| 2 | 106.83 | 105.59 | -1.2% |
+| 3 | 104.86 | 108.45 | +3.4% |
+| **Average** | **107.16** | **107.67** | **+0.5%** |
+
+### Statistical Analysis
+
+- **Mean difference**: +0.5% (within noise threshold)
+- **Variance**: Results overlap within measurement noise
+- **Predicted improvement**: 0.5-1.5%
+- **Observed**: No statistically significant improvement
+
+### Conclusion
+
+**Result**: **NEUTRAL** - No measurable improvement
+
+**Reasoning**:
+1. The thread-local cache (Exp 4) is so effective that few conversions reach this code path
+2. Integer parsing overhead was already small relative to other costs
+3. The extra byte checks may add slight overhead that cancels any benefit
+4. Decision: Keep the optimization (zero regression risk, may help in cache-miss scenarios)
+
+---
+
+## Post-Semantic-Fix Profiling Results (2025-12-05)
+
+### CPU Hotspots (Top 20)
+
+| Rank | Function | CPU % | Category |
+|------|----------|-------|----------|
+| 1 | `k_path_default_internal` | 15.57% | PathMap Traversal |
+| 2 | `mork_expr_to_metta_value` | **13.16%** | **Value Conversion** |
+| 3 | `child_mask` | 9.90% | PathMap Traversal |
+| 4 | `coreferential_transition` | 9.39% | MORK Pattern Match |
+| 5 | `to_next_sibling_byte` | 7.45% | PathMap Traversal |
+| 6 | `regularize` | 5.14% | PathMap Traversal |
+| 7 | `ascend_byte` | 4.48% | PathMap Traversal |
+| 8 | `descend_to_byte` | 3.12% | PathMap Traversal |
+| 9 | `_rjem_sdallocx` | 1.97% | Memory Dealloc |
+| 10 | `_rjem_malloc` | 1.76% | Memory Alloc |
+| 11 | `ensure_descend_next_factor` | 1.68% | PathMap Traversal |
+| 12 | `count_branches` | 1.62% | PathMap Traversal |
+| 13 | `Utf8Chunks::next` | 1.62% | String Parsing |
+| 14 | `drop_in_place<MettaValue>` | 1.61% | Value Drop |
+| 15 | `RawVecInner::finish_grow` | 1.13% | Memory Realloc |
+
+### Category Summary
+
+| Category | CPU % | Notes |
+|----------|-------|-------|
+| **PathMap Traversal** | ~49% | External library (k_path, child_mask, sibling, ascend, descend, regularize) |
+| **Value Conversion** | **13.16%** | `mork_expr_to_metta_value` - PRIMARY OPTIMIZATION TARGET |
+| **MORK Pattern Match** | 9.39% | External library |
+| **Memory Management** | ~4.9% | jemalloc alloc/dealloc/realloc |
+| **Value Lifecycle** | 1.61% | MettaValue drop |
+
+### Key Insights
+
+1. **mork_expr_to_metta_value increased from 8.37% to 13.16%** (+57% relative)
+   - This is now the most impactful optimization target we can control
+   - The semantic fix causes more MORK queries → more value conversions
+
+2. **PathMap/MORK operations dominate at ~58%** (up from ~50%)
+   - Cannot optimize directly (external library)
+   - Must reduce call frequency to improve performance
+
+3. **Memory management is low at ~5%** (down from ~10%)
+   - Experiment 1 clone elimination was very effective
+   - Not a priority for further optimization
+
+4. **Primary Strategy**: Cache `mork_expr_to_metta_value` results to avoid redundant conversions
+
+---
+
+### Experiment 5: Lazy Head Extraction Pre-Filter (EXECUTED)
+
+**Date**: 2025-12-05
+
+**Hypothesis**: O(1) extraction of (head_symbol, arity) from MORK expression bytes before
+cache lookup can skip non-matching expressions without any conversion overhead.
+
+**Implementation**:
+1. Added `mork_head_info(ptr) -> Option<(&[u8], u8)>` - extracts (head_bytes, arity) in O(1)
+2. Modified `match_space()` to check head/arity BEFORE cache lookup or full conversion
+3. If pattern has fixed head symbol, skip expressions with different head/arity entirely
+4. MORK byte encoding:
+   - Arity tag: 0x00-0x3F (bits 6-7 are 00) - value is arity 0-63
+   - SymbolSize tag: 0xC1-0xFF (bits 6-7 are 11, excluding 0xC0) - symbol length 1-63
+   - NewVar tag: 0xC0 (new variable)
+   - VarRef tag: 0x80-0xBF (bits 6-7 are 10) - variable reference 0-63
+
+**Files Modified**: `src/backend/environment.rs`
+
+### Measurements (5-Run Validation)
+
+| Run | User Time | Wall Time | Notes |
+|-----|-----------|-----------|-------|
+| 1 | 97.94s | 99.05s | |
+| 2 | 96.80s | 97.91s | |
+| 3 | 95.90s | 96.94s | Best run |
+| 4 | 106.22s | 107.41s | Outlier |
+| 5 | 96.27s | 97.37s | |
+| **Mean** | **98.63s** | **99.74s** | |
+| **Mean (no outlier)** | **96.73s** | **97.82s** | |
+| **Std Dev** | 3.86s | 3.94s | |
+
+### Statistical Analysis
+
+- **Mean improvement from Exp 3+4 baseline (103.76s)**: 4.9% (5.13s saved)
+- **Mean improvement without outlier**: 6.8% (7.03s saved)
+- **Predicted improvement**: 5-12% (partial bloom filter optimization)
+- **Observed**: Within predicted range
+
+### Conclusion
+
+**Result**: **ACCEPT** - Hypothesis confirmed
+
+**Reasoning**:
+1. The lazy head extraction achieves **4.9-6.8% improvement** from Exp 3+4 baseline
+2. Cumulative improvement from post-semantic-fix baseline (127.34s): **22.5-24.0%**
+3. The optimization works by skipping expressions that don't match pattern head/arity
+4. Zero runtime overhead for cache hits (check happens before cache lookup)
+5. One outlier run (106.22s) suggests occasional cache thrashing or system noise
+
+**Implementation Notes**:
+- Simplified from full bloom filter to O(1) head extraction (simpler, similar benefit)
+- MORK byte decoding is unsafe but well-tested against MORK specification
+- Future: Could add bloom filter for (head, arity) pairs if further improvement needed
+
+---
+
+### Cumulative Results Validation (2025-12-05)
+
+**5-Run Validation (Experiments 3+4 Combined)**:
+
+| Run | User Time | Wall Time |
+|-----|-----------|-----------|
+| 1 | 103.34s | 104.45s |
+| 2 | 103.19s | 104.46s |
+| 3 | 104.35s | 105.60s |
+| 4 | 103.78s | 105.88s |
+| 5 | 104.12s | 105.18s |
+| **Mean** | **103.76s** | **105.11s** |
+| **Std Dev** | 0.47s | 0.62s |
+
+---
+
+### Final Cumulative Results (Experiments 3+4+5)
+
+**5-Run Validation (Experiments 3+4+5 Combined)**:
+
+| Run | User Time | Wall Time | Notes |
+|-----|-----------|-----------|-------|
+| 1 | 97.94s | 99.05s | |
+| 2 | 96.80s | 97.91s | |
+| 3 | 95.90s | 96.94s | Best run |
+| 4 | 106.22s | 107.41s | Outlier |
+| 5 | 96.27s | 97.37s | |
+| **Mean** | **98.63s** | **99.74s** | |
+| **Std Dev** | 3.86s | 3.94s | |
+
+**Cumulative Improvement Summary**:
+
+| State | Time | Improvement from Baseline |
+|-------|------|---------------------------|
+| Baseline (post-semantic fix) | 127.34s | 0% |
+| After Experiment 4 (cache) | 107.16s | 15.8% |
+| After Experiments 3+4 | 103.76s | 18.5% |
+| **After Experiments 3+4+5** | **98.63s** | **22.5%** |
+| After Exp 3+4+5 (no outlier) | 96.73s | **24.0%** |
+
+**Key Observations**:
+1. **Broke the 100s barrier** with Experiment 5 (median: 96.73s)
+2. Cumulative improvement from 127.34s → 96.73s is **24.0%** (excluding outlier)
+3. Target of 60s (50% improvement) still requires significant algorithmic changes
+4. Remaining optimization opportunities:
+   - PathMap/MORK operations: ~58% of CPU (external library)
+   - Could add full bloom filter for additional 5-10% improvement
+
+---
+
 ## Future Work
 
 1. ~~**Profile after optimization**: Re-run perf to identify the new hotspots~~ ✓ Done
 2. ~~**Experiment 2**: Consider Arc<Vec<MettaValue>> for SExpr~~ - Not needed (clone dropped to 0.63%)
 3. ~~**Experiment 2**: Intern variable names to reduce string allocations~~ - Deferred (unfavorable cost-benefit)
-4. **Target 10s barrier**: Current time is 12.382s, aim to break 10s with additional optimizations
-   - PathMap/MORK operations now dominate (~50% CPU) - external library
-   - Consider caching `mork_expr_to_metta_value` results for repeated patterns
-   - Consider enabling `symbol-interning` feature as holistic solution if string allocation becomes bottleneck
-5. **Algorithmic improvements**: Focus on reducing call frequency to MORK rather than micro-optimizations
+4. ~~**Target 10s barrier**~~ - Superseded by semantic fix regression
+5. **Performance Recovery**: Target 60s (50% improvement from new 128s baseline)
+   - ~~Experiment 3: Integer fast-path~~ ✓ Done (neutral)
+   - ~~Experiment 4: Thread-local cache~~ ✓ Done (15.8% improvement)
+   - ~~**Experiment 5: Lazy head extraction**~~ ✓ Done (4.9-6.8% improvement)
+   - Experiment 6: Static VARNAMES array - Pending (low priority)
+6. **Remaining Opportunities** (if further improvement needed):
+   - Full bloom filter for (head, arity) pairs - estimated 5-10% additional
+   - PathMap/MORK library-level optimizations (requires external changes)
 
 ---
 

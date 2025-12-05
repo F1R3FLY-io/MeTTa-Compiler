@@ -2,6 +2,7 @@ use lru::LruCache;
 use mork::space::Space;
 use mork_interning::SharedMappingHandle;
 use pathmap::{zipper::*, PathMap};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -9,6 +10,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use super::fuzzy_match::FuzzyMatcher;
+
+/// Thread-local cache for mork_expr_to_metta_value conversions.
+///
+/// MORK expressions are identified by their raw pointer address. Since MORK uses
+/// immutable trie-based storage, the same pointer always refers to the same logical
+/// expression during a single evaluation. This allows us to cache conversion results
+/// and avoid redundant traversals.
+///
+/// Cache size is 4096 entries per thread, balancing memory usage against hit rate.
+/// LRU eviction ensures the most recently used conversions are retained.
+thread_local! {
+    static MORK_VALUE_CACHE: RefCell<LruCache<usize, MettaValue>> =
+        RefCell::new(LruCache::new(NonZeroUsize::new(4096).unwrap()));
+}
 use super::grounded::{GroundedRegistry, GroundedRegistryTCO};
 use super::modules::{ModId, ModuleRegistry, Tokenizer};
 use super::symbol::Symbol;
@@ -378,6 +393,58 @@ impl Environment {
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
+    /// Extract (head_symbol_bytes, arity) from MORK expression bytes in O(1).
+    ///
+    /// This is used for lazy pre-filtering in `match_space()`: if the pattern has a fixed
+    /// head symbol, we can skip MORK expressions with different heads without full conversion.
+    ///
+    /// MORK byte encoding:
+    /// - Arity tag: 0x00-0x3F (bits 6-7 are 00) - value is arity 0-63
+    /// - SymbolSize tag: 0xC1-0xFF (bits 6-7 are 11, excluding 0xC0) - symbol length 1-63
+    /// - NewVar tag: 0xC0 (new variable)
+    /// - VarRef tag: 0x80-0xBF (bits 6-7 are 10) - variable reference 0-63
+    ///
+    /// Returns Some((head_bytes, arity)) if the expression is an S-expr with a symbol head.
+    /// Returns None for atoms, variable heads, or nested S-expr heads.
+    ///
+    /// # Safety
+    /// The `ptr` must point to a valid MORK expression in PathMap memory.
+    #[inline]
+    unsafe fn mork_head_info(ptr: *const u8) -> Option<(&'static [u8], u8)> {
+        // Read first byte - check if it's an arity tag (S-expression)
+        let first = *ptr;
+        if (first & 0b1100_0000) != 0b0000_0000 {
+            // Not an S-expression (it's a symbol, variable, or other atom)
+            return None;
+        }
+        let arity = first; // Arity tag value 0-63
+
+        // Empty S-expr or head is not accessible
+        if arity == 0 {
+            return None;
+        }
+
+        // Read second byte - check if head is a symbol (SymbolSize tag)
+        let head_byte = *ptr.add(1);
+        // SymbolSize tag: 0xC1-0xFF (bits 6-7 are 11, but not 0xC0 which is NewVar)
+        if head_byte == 0xC0 || (head_byte & 0b1100_0000) != 0b1100_0000 {
+            // Head is NewVar (0xC0), VarRef (0x80-0xBF), or nested S-expr (0x00-0x3F)
+            return None;
+        }
+
+        // Head is a symbol - extract the symbol bytes
+        let symbol_len = (head_byte & 0b0011_1111) as usize;
+        if symbol_len == 0 {
+            return None;
+        }
+
+        // Symbol content starts at offset 2 and has length `symbol_len`
+        let symbol_bytes = std::slice::from_raw_parts(ptr.add(2), symbol_len);
+        // Note: arity tag value is the TOTAL elements including head
+        // But MettaValue::get_arity() returns elements EXCLUDING head, so we subtract 1
+        Some((symbol_bytes, arity.saturating_sub(1)))
+    }
+
     /// Convert a MORK Expr directly to MettaValue without text serialization
     /// This avoids the "reserved byte" panic that occurs in serialize2()
     ///
@@ -385,6 +452,10 @@ impl Environment {
     /// We use maybe_byte_item() instead, which returns Result<Tag, u8> and handles reserved bytes gracefully.
     ///
     /// CRITICAL FIX for "reserved 114" and similar bugs during evaluation/iteration.
+    ///
+    /// OPTIMIZATION: Uses thread-local LRU cache keyed by MORK expression pointer address.
+    /// Since MORK uses immutable trie storage, identical pointers always represent
+    /// identical expressions during evaluation, making caching safe and effective.
     #[allow(unused_variables)]
     pub(crate) fn mork_expr_to_metta_value(
         expr: &mork_expr::Expr,
@@ -392,6 +463,15 @@ impl Environment {
     ) -> Result<MettaValue, String> {
         use mork_expr::{maybe_byte_item, Tag};
         use std::slice::from_raw_parts;
+
+        // CACHE CHECK: Use pointer address as cache key for O(1) lookups
+        let cache_key = expr.ptr as usize;
+        let cached_result = MORK_VALUE_CACHE.with(|cache| {
+            cache.borrow_mut().get(&cache_key).cloned()
+        });
+        if let Some(cached_value) = cached_result {
+            return Ok(cached_value);
+        }
 
         // Stack-based traversal to avoid recursion limits
         #[derive(Debug)]
@@ -500,8 +580,19 @@ impl Environment {
                     };
 
                     // Parse the symbol to check if it's a number or string literal
-                    if let Ok(n) = symbol_str.parse::<i64>() {
-                        MettaValue::Long(n)
+                    // OPTIMIZATION: Fast-path check - only try parsing as integer if first byte
+                    // could plausibly start a number (digit or minus sign followed by digit)
+                    let first_byte = symbol_str.as_bytes().first().copied().unwrap_or(0);
+                    let could_be_number = first_byte.is_ascii_digit()
+                        || (first_byte == b'-' && symbol_str.len() > 1
+                            && symbol_str.as_bytes().get(1).map_or(false, |b| b.is_ascii_digit()));
+
+                    if could_be_number {
+                        if let Ok(n) = symbol_str.parse::<i64>() {
+                            MettaValue::Long(n)
+                        } else {
+                            MettaValue::Atom(symbol_str)
+                        }
                     } else if symbol_str == "true" {
                         MettaValue::Bool(true)
                     } else if symbol_str == "false" {
@@ -537,8 +628,12 @@ impl Environment {
             'popping: loop {
                 let v = current_value.take().expect("value must be Some at start of popping loop");
 
-                // Check if stack is empty - if so, return the value
+                // Check if stack is empty - if so, cache and return the value
                 if stack.is_empty() {
+                    // CACHE STORE: Store successful conversion for future lookups
+                    MORK_VALUE_CACHE.with(|cache| {
+                        cache.borrow_mut().put(cache_key, v.clone());
+                    });
                     return Ok(v);
                 }
 
@@ -867,11 +962,33 @@ impl Environment {
         let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
 
+        // OPTIMIZATION: Extract pattern's head symbol and arity for lazy pre-filtering
+        // If the pattern has a fixed head (not a variable), we can skip MORK expressions
+        // with different heads WITHOUT doing cache lookup or full conversion.
+        let pattern_head_bytes: Option<&[u8]> = pattern.get_head_symbol().map(|s| s.as_bytes());
+        let pattern_arity = pattern.get_arity() as u8;
+
         // 1. Iterate through MORK PathMap (primary storage)
         while rz.to_next_val() {
+            let ptr = rz.path().as_ptr();
+
+            // LAZY HEAD EXTRACTION: O(1) pre-filter before cache lookup
+            // If pattern has a fixed head, check MORK bytes directly
+            if let Some(expected_head) = pattern_head_bytes {
+                // Safety: ptr is from PathMap read_zipper, guaranteed valid
+                if let Some((mork_head, mork_arity)) = unsafe { Self::mork_head_info(ptr) } {
+                    // Quick rejection: skip if head symbol or arity doesn't match
+                    if mork_head != expected_head || mork_arity != pattern_arity {
+                        continue; // Skip this expression entirely - no cache lookup needed!
+                    }
+                }
+                // If mork_head_info returns None, the expression has variable/nested head
+                // Fall through to full conversion (might still match if pattern head is a literal)
+            }
+
             // Get the s-expression at this position
             let expr = Expr {
-                ptr: rz.path().as_ptr().cast_mut(),
+                ptr: ptr.cast_mut(),
             };
 
             // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion

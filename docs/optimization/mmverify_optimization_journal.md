@@ -908,6 +908,57 @@ The bloom filter provides O(1) early exit only when the queried (head, arity) pa
 
 ---
 
+## Experiment 11: Pattern Match Result Cache (REJECTED)
+
+### Date: 2025-12-05
+
+### Hypothesis
+Caching complete pattern match results for `(pattern, template)` pairs would avoid redundant MORK iteration + pattern matching for repeated queries. Expected improvement: 5-10%.
+
+### Implementation
+Added LRU cache to `EnvironmentShared`:
+- `match_result_cache: LruCache<(u64, u64), Vec<MettaValue>>` keyed by (pattern_hash, template_hash)
+- `match_cache_version: AtomicU64` for invalidation on mutations
+- Cache invalidation on: `add_rule`, `add_rules_bulk`, `add_facts_bulk`, `add_to_space`, `remove_from_space`
+
+### Benchmark Results (5 runs)
+
+| Run | Time (s) |
+|-----|----------|
+| 1 | 90.82 |
+| 2 | 91.79 |
+| 3 | 89.07 |
+| 4 | 92.41 |
+| 5 | 88.85 |
+
+**Statistical Analysis**:
+- Mean: 90.59s
+- Baseline: 91.13s (from Experiment 12)
+- **Improvement: 0.59%** (within noise)
+- Range: 88.85s - 92.41s (3.56s)
+
+### Root Cause Analysis
+The cache provides **no significant benefit** for the mmverify workload due to:
+
+1. **Named Spaces Use Different Storage**: The mmverify workload primarily uses named spaces (`&kb`, `&stack`) which are stored in `named_spaces` HashMap with `Vec<MettaValue>`, NOT in the main `btm` PathMap. The cache only covers `match_space()` on the main Environment PathMap.
+
+2. **Frequent Mutations**: The `&kb` space is mutated frequently during verification (add-atom, remove-atom), invalidating the cache after nearly every query. Cache hit rate would be very low.
+
+3. **Cache Overhead**: Hashing patterns/templates + lock acquisition + clone overhead may not be justified when cache hit rate is near zero.
+
+### Decision: **REJECT**
+- 0.59% improvement is below acceptance threshold (≥3%)
+- Within measurement noise (not statistically significant)
+- Cache adds complexity without proven benefit for this workload
+- Changes reverted to avoid unnecessary code complexity
+
+### Lessons Learned
+- Pattern match caching would need to be implemented at the SpaceHandle level, not Environment level, to benefit named space operations
+- Workloads with frequent space mutations (add/remove atoms) will not benefit from caching
+- The cache may still benefit read-heavy workloads that query the main Environment space repeatedly
+
+---
+
 ## Future Work
 
 1. ~~**Profile after optimization**: Re-run perf to identify the new hotspots~~ ✓ Done

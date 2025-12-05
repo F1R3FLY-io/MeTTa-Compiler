@@ -848,6 +848,66 @@ The bloom filter provides O(1) early exit only when the queried (head, arity) pa
 
 ---
 
+### Experiment 12: First-Match Early Exit for Boolean Checks (EXECUTED)
+
+**Date**: 2025-12-05
+
+**Hypothesis**: Many `unify` operations use the pattern `(unify &space pattern True False)` which only needs to know if ANY match exists, not iterate all matches. Adding early-exit functions can skip unnecessary MORK iterations.
+
+**Implementation**:
+1. Added `match_space_first()` - returns after first match
+2. Added `match_space_exists()` - returns boolean, exits on first match
+3. Detect boolean check pattern in `eval_unify`: `(True, False)` bodies
+4. Use `match_space_exists()` for module-backed spaces with boolean pattern
+5. Use `match_space()` for module spaces (uses bloom filter + head filtering)
+
+**Key Code Changes**:
+- `src/backend/environment.rs`: Added `match_space_first()` and `match_space_exists()` functions
+- `src/backend/eval/bindings.rs`: Optimized `eval_unify()` for boolean patterns
+
+**Validation Benchmark** (5-run CLI test with `time`):
+
+| Run | Time (s) |
+|-----|----------|
+| 1 | 92.22 |
+| 2 | 92.18 |
+| 3 | 90.69 |
+| 4 | 90.42 |
+| 5 | 90.12 |
+| **Average** | **91.13** |
+| **Baseline (Exp 8)** | **94.20** |
+
+**Statistical Analysis**:
+- Mean: 91.13s
+- Baseline: 94.20s (from Experiment 8)
+- **Improvement: 3.26%** (within expected 3-5% range)
+- Std Dev: 0.98s
+- **p-value**: < 0.05 (significant)
+
+**Root Cause Confirmed**:
+- mmverify-utils.metta has 20+ `(unify &kb pattern True False)` patterns
+- Each previously iterated ALL atoms in the knowledge base
+- Now exits immediately after first match found
+
+**Decision**: **ACCEPT**
+- 3.26% improvement meets acceptance threshold (≥2%)
+- No semantic change (boolean checks still return correct True/False)
+- Benefits any workload with existence-check patterns
+- Low complexity addition (~110 lines)
+
+**Updated Cumulative Summary**:
+
+| State | Time | Improvement from Baseline |
+|-------|------|---------------------------|
+| Baseline (post-semantic fix) | 127.34s | 0% |
+| After Experiment 4 (cache) | 107.16s | 15.8% |
+| After Experiments 3+4 | 103.76s | 18.5% |
+| After Experiments 3+4+5 | 96.73s | 24.0% |
+| After Experiments 3+4+5+5b | 94.30s | 25.9% |
+| **After Exp 12 (First-Match)** | **91.13s** | **28.4%** |
+
+---
+
 ## Future Work
 
 1. ~~**Profile after optimization**: Re-run perf to identify the new hotspots~~ ✓ Done

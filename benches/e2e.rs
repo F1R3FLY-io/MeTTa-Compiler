@@ -17,7 +17,7 @@ fn main() {
 
 const FIB_SRC: &str = include_str!("metta_samples/fib.metta");
 const KNOWLEDGE_GRAPH_SRC: &str = include_str!("metta_samples/knowledge_graph.metta");
-const CONSTRAINT_SEARCH_SRC: &str = include_str!("metta_samples/contstraint_search_simple.metta");
+const CONSTRAINT_SEARCH_SRC: &str = include_str!("metta_samples/constraint_search_simple.metta");
 const MULTI_SPACE_REASONING_SRC: &str = include_str!("metta_samples/multi_space_reasoning.metta");
 const PATTERN_MATCHING_STRESS_SRC: &str =
     include_str!("metta_samples/pattern_matching_stress.metta");
@@ -58,7 +58,7 @@ macro_rules! metta_bench_pair {
 
 metta_bench_pair!(fib, FIB_SRC);
 metta_bench_pair!(knowledge_graph, KNOWLEDGE_GRAPH_SRC);
-metta_bench_pair!(contstraint_search, CONSTRAINT_SEARCH_SRC);
+metta_bench_pair!(constraint_search, CONSTRAINT_SEARCH_SRC);
 metta_bench_pair!(multi_space_reasoning, MULTI_SPACE_REASONING_SRC);
 metta_bench_pair!(pattern_matching_stress, PATTERN_MATCHING_STRESS_SRC);
 metta_bench_pair!(concurrent_space_operations, CONCURRENT_SPACE_OPERATIONS_SRC);

@@ -959,21 +959,188 @@ The cache provides **no significant benefit** for the mmverify workload due to:
 
 ---
 
+## Experiment 14 Verification: MORK Skip Conversion (NOT APPLICABLE)
+
+### Date: 2025-12-05
+
+### Investigation
+
+Verified the status of Experiment 14 (Skip Conversion for Non-Matching Heads) to determine if the optimization is working correctly.
+
+### Finding: **Optimization Not Applicable to mmverify**
+
+The `mork_head_info()` optimization exists and is correctly implemented (`environment.rs:509-542`), but **does not benefit the mmverify workload** because:
+
+1. **mmverify uses owned spaces**: `&kb` and `&stack` are created via `(new-space)` which stores atoms in `Vec<MettaValue>` inside `named_spaces` HashMap
+
+2. **Owned spaces bypass MORK**: When `match_with_space_handle()` handles an owned space (not module-backed or "self"), it goes through the **owned space path** (`space.rs:198-253`) which:
+   - Calls `handle.collapse()` returning `Vec<MettaValue>` directly
+   - Iterates MettaValue objects, NOT MORK bytes
+   - The `mork_head_info()` optimization is never invoked
+
+3. **MORK optimizations only apply to**:
+   - `match & self` syntax (Environment's main PathMap)
+   - Module-backed spaces (also use Environment's PathMap)
+
+### Code Path Trace
+
+```
+match &kb pattern template
+  → eval_match() [space.rs:53]
+  → match_with_space_handle() [space.rs:173]
+  → Owned space path (not module/self) [space.rs:198]
+  → handle.collapse() → Vec<MettaValue> [space.rs:200]
+  → Direct MettaValue iteration [space.rs:207]
+  → pattern_match() on MettaValue [space.rs:211]
+```
+
+### Implication
+
+This explains why Experiments 11 and 14 had minimal impact - they optimized the wrong code path. For mmverify optimization, we need to add head-based pre-filtering to the **owned space matching path** in `space.rs:207-217`.
+
+### Status: **VERIFIED - Not Applicable to mmverify**
+- The optimization exists and works for MORK-based matching
+- mmverify uses owned spaces that bypass MORK entirely
+- New experiment needed for owned space optimization
+
+---
+
+## Experiment 15: Owned Space Head Pre-filtering (REJECTED)
+
+### Date: 2025-12-05
+
+### Hypothesis
+
+Adding head-based pre-filtering to the owned space matching path (`space.rs:207-217`) will skip full pattern matching for atoms with non-matching heads. This mirrors the `mork_head_info` optimization but for MettaValue objects.
+
+**Expected improvement**: 2-5% (conservative estimate given mmverify's pattern diversity)
+
+### Implementation
+
+Added early rejection in `match_with_space_handle()`:
+- Extract pattern head symbol and arity once before loop
+- For each atom, check `get_head_symbol()` and `get_arity()`
+- Skip atoms with mismatching head/arity before calling `pattern_match()`
+
+### Benchmark Results (5 runs)
+
+| Run | Time (s) |
+|-----|----------|
+| 1 | 94.21 |
+| 2 | 98.20 |
+| 3 | 97.38 |
+| 4 | 98.24 |
+| 5 | 96.12 |
+
+**Statistical Analysis**:
+- Mean: 96.83s
+- Baseline: 91.13s (from Experiment 12)
+- **Regression: 6.3%** (NOT an improvement!)
+
+### Root Cause Analysis
+
+The pre-filtering **adds overhead** without sufficient benefit because:
+
+1. **High Head Homogeneity**: The mmverify knowledge base has clustered head symbols. Most atoms being matched have the same head as the pattern, so rejections are rare.
+
+2. **Overhead Exceeds Savings**: Each iteration now performs:
+   - `pattern.get_head_symbol()` - once (O(1), outside loop)
+   - `atom.get_head_symbol()` - per atom (O(1) but still overhead)
+   - String comparison - per atom (O(n) where n is head length)
+   - `atom.get_arity()` - per atom (O(1))
+
+   When rejection rate is low, this overhead exceeds the cost of the `pattern_match()` calls it's trying to avoid.
+
+3. **Different from MORK Path**: The MORK-based `mork_head_info()` works well because it operates on raw bytes without creating Rust objects. The MettaValue path has higher per-access overhead.
+
+### Decision: **REJECT**
+
+- 6.3% regression is unacceptable
+- Changes reverted to maintain baseline performance
+- The optimization approach is sound but doesn't match mmverify's workload characteristics
+
+### Lessons Learned
+
+1. **Profile before optimizing**: Should have measured head distribution in mmverify's knowledge base before implementing
+2. **Cost-benefit matters**: Even O(1) operations add up when they run on every atom with low rejection rate
+3. **Workload-specific**: Optimizations must match the actual data characteristics, not just theoretical patterns
+
+---
+
+## Phase 3: Optimization Summary (Paused)
+
+### Date: 2025-12-05
+
+### Final Performance State
+
+| Metric | Value |
+|--------|-------|
+| **Current Performance** | 91.13s |
+| **Original Baseline** | 127.34s (post-semantic fix) |
+| **Total Improvement** | 28.4% |
+| **Target** | 60s (not achieved) |
+
+### Accepted Experiments
+
+| Experiment | Improvement | Cumulative |
+|------------|-------------|------------|
+| Exp 4: Thread-local MORK cache | 15.8% | 15.8% |
+| Exp 3+4: Combined | 18.5% | 18.5% |
+| Exp 5: Lazy head extraction | 6.4% | 24.0% |
+| Exp 5b: Bloom filter | 2.5% | 25.9% |
+| Exp 12: First-match early exit | 3.2% | 28.4% |
+
+### Rejected Experiments
+
+| Experiment | Result | Reason |
+|------------|--------|--------|
+| Exp 11: Pattern match cache | +0.6% | Within noise, cache invalidated frequently |
+| Exp 14: MORK skip conversion | N/A | Not applicable to owned spaces |
+| Exp 15: Owned space head pre-filter | -6.3% | Regression due to high head homogeneity |
+
+### Key Findings
+
+1. **58% of CPU in external libraries**: PathMap/MORK dominates, limiting Rust-side optimizations
+2. **Named spaces bypass MORK optimizations**: mmverify uses `Vec<MettaValue>` storage, not MORK
+3. **Head homogeneity limits filtering**: Knowledge base has clustered patterns
+4. **Caching difficult with frequent mutations**: add-atom/remove-atom invalidate caches
+
+### Remaining Opportunities
+
+1. **PathMap/MORK library-level optimizations** - Requires external changes
+2. **HE-compatible type reduction** - Could enable branch pruning (planned separately)
+3. **Algorithmic improvements in mmverify** - MeTTa-level optimizations
+4. **JIT compilation** - High effort, uncertain ROI given external library dominance
+
+### Status: **PAUSED**
+
+Further optimization deferred. Focus shifting to HE type system parity which may enable new optimization strategies for type-annotated programs.
+
+---
+
 ## Future Work
 
-1. ~~**Profile after optimization**: Re-run perf to identify the new hotspots~~ ✓ Done
-2. ~~**Experiment 2**: Consider Arc<Vec<MettaValue>> for SExpr~~ - Not needed (clone dropped to 0.63%)
-3. ~~**Experiment 2**: Intern variable names to reduce string allocations~~ - Deferred (unfavorable cost-benefit)
-4. ~~**Target 10s barrier**~~ - Superseded by semantic fix regression
-5. **Performance Recovery**: Target 60s (50% improvement from new 128s baseline)
-   - ~~Experiment 3: Integer fast-path~~ ✓ Done (neutral)
-   - ~~Experiment 4: Thread-local cache~~ ✓ Done (15.8% improvement)
-   - ~~**Experiment 5: Lazy head extraction**~~ ✓ Done (4.9-6.8% improvement)
-   - ~~**Experiment 5b: Full bloom filter**~~ ✓ Done (2.5% improvement, less than predicted)
-   - Experiment 6: Static VARNAMES array - Pending (low priority)
-6. **Remaining Opportunities** (if further improvement needed):
-   - ~~Full bloom filter for (head, arity) pairs~~ ✓ Done (2.5% vs predicted 5-10%)
-   - PathMap/MORK library-level optimizations (requires external changes)
+### Completed
+- ~~Profile after optimization~~ ✓ Done
+- ~~Experiment 2: Arc<Vec<MettaValue>>~~ - Not needed
+- ~~Experiment 3: Integer fast-path~~ ✓ Done (neutral)
+- ~~Experiment 4: Thread-local cache~~ ✓ Done (15.8%)
+- ~~Experiment 5: Lazy head extraction~~ ✓ Done (6.4%)
+- ~~Experiment 5b: Bloom filter~~ ✓ Done (2.5%)
+- ~~Experiment 12: First-match early exit~~ ✓ Done (3.2%)
+
+### Rejected
+- ~~Experiment 11: Pattern match cache~~ ✗ Rejected (within noise)
+- ~~Experiment 14: MORK skip conversion~~ - Not applicable to mmverify
+- ~~Experiment 15: Owned space head pre-filter~~ ✗ Rejected (regression)
+
+### Deferred
+- Experiment 6: Static VARNAMES array (low priority)
+- PathMap/MORK library optimizations (external)
+- JIT compilation (high effort)
+
+### Next Phase
+- **HE Type System Parity** - Enable type reduction for type-annotated programs
 
 ---
 

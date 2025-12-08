@@ -2,7 +2,7 @@ use crate::backend::environment::Environment;
 use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::models::{EvalResult, MettaValue, Rule};
 use std::sync::{Arc, OnceLock};
-use tracing::{debug, warn};
+use tracing::{debug, trace};
 
 /// Valid space names for "Did you mean?" suggestions
 const VALID_SPACE_NAMES: &[&str] = &["self"];
@@ -27,8 +27,7 @@ fn suggest_space_name(name: &str) -> Option<String> {
 
 /// Rule definition: (= lhs rhs) - add to MORK Space and rule cache
 pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    debug!(items = ?items, "Eval add");
-
+    trace!(target: "mettatron::eval::eval_add", ?items);
     require_args_with_usage!("=", items, 2, env, "(= pattern body)");
 
     let lhs = items[1].clone();
@@ -48,18 +47,15 @@ pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 /// Optimized to use Environment::match_space which performs pattern matching
 /// directly on MORK expressions without unnecessary intermediate allocations
 pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    debug!(items = ?items, "Eval match");
-
     let args = &items[1..];
+    debug!(target: "mettatron::eval::eval_match", ?args, ?items);
 
     if args.len() < 4 {
         let got = args.len();
-
-        warn!(
-            got = got,
-            expected = 4,
-            args = ?args,
-            "match called with incorrect number of arguments"
+        debug!(
+            target: "mettatron::eval::eval_match",
+            got = args.len(), expected = 4, args = ?args,
+            "Match called with incorrect number of arguments"
         );
 
         let err = MettaValue::Error(

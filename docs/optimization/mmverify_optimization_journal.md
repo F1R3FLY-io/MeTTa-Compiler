@@ -1118,6 +1118,113 @@ Further optimization deferred. Focus shifting to HE type system parity which may
 
 ---
 
+## Experiment 13: Named Space Indexing (REJECTED)
+
+### Date: 2025-12-08
+
+### Branch: `perf/exp13-named-space-indexing`
+
+### Hypothesis
+
+Adding hash map indexing to owned spaces (`SpaceHandle`) by `(head_symbol, arity)` pairs would enable O(k) lookup instead of O(n) iteration, where k = atoms with matching head/arity. Combined with a bloom filter for O(1) rejection of definitely-missing patterns.
+
+**Expected improvement**: 2-5× for mmverify-specific space operations
+
+### Implementation
+
+1. **Extracted `HeadArityBloomFilter` to shared module** (`src/backend/bloom_filter.rs`)
+   - Previously duplicated in environment.rs
+   - Now reusable for both Environment (MORK) and SpaceHandle (owned spaces)
+
+2. **Created `IndexedSpaceData` struct** (`src/backend/models/space_handle.rs`)
+   ```rust
+   pub struct IndexedSpaceData {
+       atoms: Vec<MettaValue>,                          // Primary storage
+       head_arity_index: HashMap<HeadArityKey, Vec<usize>>,  // O(1) lookup by head/arity
+       unindexed: Vec<usize>,                           // Variables, wildcards (always check)
+       bloom_filter: HeadArityBloomFilter,              // O(1) rejection
+       deleted: Vec<usize>,                             // Tombstones for CoW efficiency
+   }
+   ```
+
+3. **Updated `SpaceHandle`** to use `IndexedSpaceData` instead of `Vec<MettaValue>`
+   - Added `get_candidates(pattern)` method for indexed lookup
+   - Maintains bloom filter on add/remove operations
+
+4. **Modified `match_with_space_handle`** (`src/backend/eval/space.rs`)
+   - Changed from `handle.collapse()` to `handle.get_candidates(pattern)`
+   - Only iterates potential matches instead of all atoms
+
+### Benchmark Results (4 runs)
+
+| Run | Time (s) |
+|-----|----------|
+| 1 | 106.83 |
+| 2 | 107.89 |
+| 3 | 105.53 |
+| 4 | 104.25 |
+| **Mean** | **105.89** |
+
+**Statistical Analysis**:
+- Mean: 105.89s
+- Baseline: ~103-105s (from Experiment 12)
+- **Change**: +0.8% to +2.7% (no improvement, slight regression)
+
+### Root Cause Analysis
+
+The indexing provides **no benefit** for mmverify due to **the same factors that caused Experiment 15 to fail**:
+
+1. **High Head Homogeneity**: mmverify's spaces (`&kb`, `&stack`) contain atoms with clustered head symbols. The pattern `(match &stack ((Num $sp) $s) $s)` queries head "Num", and most atoms in `&stack` also have head "Num" or similar patterns.
+
+2. **Variable-Heavy Patterns**: mmverify uses patterns like `($who is a $what)` where the head is a variable, forcing fallback to full iteration anyway:
+   ```rust
+   // HeadArityKey::from_value returns None for variable heads
+   if s.starts_with('$') || s == "_" {
+       return None;  // Can't be indexed
+   }
+   ```
+
+3. **Index Overhead**: When head homogeneity is high:
+   - HashMap lookup finds most atoms anyway
+   - Bloom filter rarely rejects (most heads exist)
+   - Index maintenance on add/remove adds overhead
+   - Net result: overhead exceeds savings
+
+4. **Small Space Sizes**: The mmverify stack never grows very large. For small N, O(n) linear scan is often faster than O(1) hash lookup due to better cache locality and lower constant factors.
+
+### Code Changes (Reverted)
+
+Files modified:
+- `src/backend/bloom_filter.rs` (new, extracted)
+- `src/backend/mod.rs` (export bloom_filter)
+- `src/backend/environment.rs` (import shared bloom_filter)
+- `src/backend/models/space_handle.rs` (IndexedSpaceData)
+- `src/backend/eval/space.rs` (use get_candidates)
+
+### Decision: **REJECT**
+
+- No improvement (within noise to slight regression)
+- Adds code complexity without proven benefit
+- Same root cause as Experiment 15: head homogeneity in mmverify
+- Changes should be reverted
+
+### Lessons Learned
+
+1. **Experiment 15 findings confirmed**: The owned space path has different characteristics than MORK path
+2. **Profiling revealed truth**: mmverify's patterns don't benefit from indexing
+3. **Head homogeneity critical**: Indexing only helps when head distribution is diverse
+4. **May help other workloads**: Workloads with diverse head symbols could benefit
+
+### Recommendations
+
+For future optimization of owned space operations:
+1. **Consider workload-specific approaches**: mmverify needs different optimizations
+2. **Profile head distribution first**: Check if indexing would help before implementing
+3. **Focus on algorithmic changes**: MeTTa-level optimizations may be more effective
+4. **Keep bloom filter for MORK path**: The Environment-level bloom filter (Exp 5b) does help
+
+---
+
 ## Future Work
 
 ### Completed

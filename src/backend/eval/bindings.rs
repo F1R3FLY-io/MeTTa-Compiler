@@ -1,6 +1,7 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
+use tracing::{debug, trace};
 
 use super::{apply_bindings, eval, pattern_match};
 
@@ -71,6 +72,7 @@ fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaValue) -> Stri
 ///   - (let ($a $b) (tuple 1 2) body) - destructuring pattern
 pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
+    trace!(target: "mettatron::eval::eval_let", ?args, ?items);
 
     if args.len() < 3 {
         let got = args.len();
@@ -113,6 +115,7 @@ pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                 ),
                 Arc::new(MettaValue::SExpr(args.to_vec())),
             );
+            debug!(target: "mettatron::eval::eval_let", ?err, "Pattern match failed");
             all_results.push(err);
         }
     }

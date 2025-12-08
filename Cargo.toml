@@ -99,6 +99,9 @@ smallvec = "1.11"
 # liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
 liblevenshtein = { version = "^0.7", features = ["pathmap-backend"] }
 
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
 # Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
 # PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup
 

@@ -24,6 +24,10 @@ pub enum MettaValue {
     Error(String, Arc<MettaValue>),
     /// A type (first-class types as atoms, Arc for O(1) clone)
     Type(Arc<MettaValue>),
+    /// A conjunction of goals (MORK-style logical AND)
+    /// Represents (,), (, expr), or (, expr1 expr2 ...)
+    /// Goals are evaluated left-to-right with variable binding threading
+    Conjunction(Vec<MettaValue>),
 }
 
 impl MettaValue {
@@ -118,6 +122,17 @@ impl MettaValue {
             // Types must be structurally equivalent
             (MettaValue::Type(a), MettaValue::Type(b)) => a.structurally_equivalent(b),
 
+            // Conjunctions must have same structure
+            (MettaValue::Conjunction(a_goals), MettaValue::Conjunction(b_goals)) => {
+                if a_goals.len() != b_goals.len() {
+                    return false;
+                }
+                a_goals
+                    .iter()
+                    .zip(b_goals.iter())
+                    .all(|(a, b)| a.structurally_equivalent(b))
+            }
+
             _ => false,
         }
     }
@@ -195,6 +210,14 @@ impl MettaValue {
                 format!("(error \"{}\" {})", msg, details.to_mork_string())
             }
             MettaValue::Type(t) => t.to_mork_string(),
+            MettaValue::Conjunction(goals) => {
+                let inner = goals
+                    .iter()
+                    .map(|v| v.to_mork_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("(, {})", inner)
+            }
         }
     }
 
@@ -222,6 +245,14 @@ impl MettaValue {
             }
             MettaValue::Type(t) => {
                 format!(r#"{{"type":"metatype","value":{}}}"#, t.to_json_string())
+            }
+            MettaValue::Conjunction(goals) => {
+                let goals_json: Vec<String> =
+                    goals.iter().map(|value| value.to_json_string()).collect();
+                format!(
+                    r#"{{"type":"conjunction","goals":[{}]}}"#,
+                    goals_json.join(",")
+                )
             }
         }
     }
@@ -280,6 +311,10 @@ impl std::hash::Hash for MettaValue {
                 8u8.hash(state);
                 t.hash(state);
             }
+            MettaValue::Conjunction(goals) => {
+                10u8.hash(state);
+                goals.hash(state);
+            }
         }
     }
 }
@@ -307,10 +342,22 @@ impl TryFrom<&MettaExpr> for MettaValue {
                 if items.is_empty() {
                     Ok(MettaValue::Nil)
                 } else {
-                    // Use iterator and collect for idiomatic Rust
-                    let values: Result<Vec<_>, _> =
-                        items.iter().map(MettaValue::try_from).collect();
-                    Ok(MettaValue::SExpr(values?))
+                    // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
+                    let is_conjunction = items
+                        .first()
+                        .is_some_and(|first| matches!(first, MettaExpr::Atom(s, _) if s == ","));
+
+                    if is_conjunction {
+                        // Convert to Conjunction variant (skip the comma operator)
+                        let goals: Result<Vec<_>, _> =
+                            items[1..].iter().map(MettaValue::try_from).collect();
+                        Ok(MettaValue::Conjunction(goals?))
+                    } else {
+                        // Regular S-expression
+                        let values: Result<Vec<_>, _> =
+                            items.iter().map(MettaValue::try_from).collect();
+                        Ok(MettaValue::SExpr(values?))
+                    }
                 }
             }
             MettaExpr::Quoted(expr, _span) => {

@@ -181,6 +181,18 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
             // Can't infer type
             MettaValue::Atom("Undefined".to_string())
         }
+
+        // Conjunctions have Conjunction type
+        // The type is the type of the last goal (final result)
+        MettaValue::Conjunction(goals) => {
+            if goals.is_empty() {
+                // Empty conjunction has Nil type
+                MettaValue::Atom("Nil".to_string())
+            } else {
+                // Type is the type of the last goal
+                infer_type(goals.last().unwrap(), env)
+            }
+        }
     }
 }
 

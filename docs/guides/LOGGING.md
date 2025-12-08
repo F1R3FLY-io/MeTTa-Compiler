@@ -10,8 +10,6 @@ This document provides a comprehensive guide to the logging strategy implemented
 4. [Filtering Strategies](#filtering-strategies)
 5. [Common Use Cases](#common-use-cases)
 6. [Examples](#examples)
-7. [Performance Considerations](#performance-considerations)
-8. [Best Practices](#best-practices)
 
 ## Overview
 

@@ -154,6 +154,10 @@ fn format_result(value: &MettaValue) -> String {
             let formatted: Vec<String> = items.iter().map(format_result).collect();
             format!("({})", formatted.join(" "))
         }
+        MettaValue::Conjunction(goals) => {
+            let formatted: Vec<String> = goals.iter().map(format_result).collect();
+            format!("(, {})", formatted.join(" "))
+        }
     }
 }
 

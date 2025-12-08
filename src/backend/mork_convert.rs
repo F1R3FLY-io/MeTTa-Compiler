@@ -55,13 +55,24 @@ pub fn metta_to_mork_bytes(
     space: &Space,
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
+    trace!(
+        target: "mettatron::conversion::metta_to_mork",
+        ?value, "Converting MettaValue to MORK bytes"
+    );
+
     let mut buffer = vec![0u8; 4096];
     let expr = Expr {
         ptr: buffer.as_mut_ptr(),
     };
     let mut ez = ExprZipper::new(expr);
 
-    write_metta_value(value, space, ctx, &mut ez)?;
+    write_metta_value(value, space, ctx, &mut ez).map_err(|e| {
+        debug!(
+            target: "mettatron::conversion::metta_to_mork",
+            error = %e, "Conversion to MORK bytes failed"
+        );
+        e
+    })?;
 
     Ok(buffer[..ez.loc].to_vec())
 }
@@ -223,11 +234,8 @@ pub fn mork_bindings_to_metta(
             Err(e) => {
                 debug!(
                     target: "mettatron::eval::mork_bindings_conversion",
-                    var_name = %var_name,
-                    error = %e,
-                    "Failed to convert individual binding"
+                    var_name = %var_name, error = %e, "Failed to convert individual binding"
                 );
-
                 conversion_errors.push(format!(
                     "Failed to convert binding for ${}: {}",
                     var_name, e
@@ -238,10 +246,12 @@ pub fn mork_bindings_to_metta(
 
     // If there were any conversion errors, return an error with all failures listed
     if !conversion_errors.is_empty() {
-        return Err(format!(
-            "MORK binding conversion failed:\n  - {}",
-            conversion_errors.join("\n  - ")
-        ));
+        let errors = conversion_errors.join("\n  - ");
+        warn!(
+            target: "mettatron::eval::mork_bindings_conversion",
+            errors, "MORK binding conversion partially failed"
+        );
+        return Err(format!("MORK binding conversion failed:\n  - {}", errors));
     }
 
     Ok(bindings)

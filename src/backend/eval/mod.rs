@@ -20,7 +20,7 @@ mod types;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, trace, warn};
 
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
@@ -172,7 +172,7 @@ fn suggest_special_form(op: &str) -> Option<String> {
 /// This is the public entry point that uses iterative evaluation with an explicit work stack
 /// to prevent stack overflow for large expressions.
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
-    debug!(metta_val = ?value, "Evaluate MeTTa value");
+    debug!(metta_val = ?value);
     eval_trampoline(value, env)
 }
 
@@ -180,10 +180,7 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
 /// This prevents stack overflow by using heap-allocated work items instead of
 /// recursive function calls.
 fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
-    debug!(
-        target: "mettatron::backend::eval::eval_trampoline",
-        metta_val = ?value, "Eval trampoline"
-    );
+    debug!(target: "mettatron::backend::eval::eval_trampoline", metta_val = ?value);
 
     // Initialize work stack with the initial evaluation
     let mut work_stack: Vec<WorkItem> = vec![WorkItem::Eval {
@@ -423,10 +420,7 @@ enum ProcessedSExpr {
 /// Perform a single step of evaluation.
 /// Returns either a final result or indicates more work is needed.
 fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
-    trace!(
-        target: "mettatron::backend::eval::step",
-        ?value, depth, "Eval step",
-    );
+    trace!(target: "mettatron::backend::eval::step", ?value, depth);
 
     // Check depth limit
     if depth > MAX_EVAL_DEPTH {
@@ -473,11 +467,7 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
 
 /// Evaluate an S-expression step - handles special forms and delegates to iterative collection
 fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
-    trace!(
-        target: "mettatron::backend::eval::eval_sexpr_step",
-        ?items, depth, "Eval sexpr step",
-    );
-
+    trace!(target: "mettatron::backend::eval::eval_sexpr_step",?items, depth);
     if items.is_empty() {
         return EvalStep::Done((vec![MettaValue::Nil], env));
     }
@@ -527,10 +517,7 @@ fn process_collected_sexpr(
     original_env: Environment,
     depth: usize,
 ) -> ProcessedSExpr {
-    trace!(
-        target: "mettatron::backend::eval::process_collected_sexpr",
-        ?collected, depth, "Process collected sexpr",
-    );
+    trace!(target: "mettatron::backend::eval::process_collected_sexpr", ?collected, depth);
 
     // Check for errors in sub-expression results
     for (results, new_env) in &collected {
@@ -552,17 +539,14 @@ fn process_collected_sexpr(
 
     // Generate Cartesian product of all sub-expression results
     let combinations = match cartesian_product(&eval_results) {
-        Ok(c) => {
-            if c.len() > 1000 {
-                warn!(
-                    combinations = c.len(),
-                    sub_expressions = eval_results.len(),
-                    "High combinatorial complexity detected"
-                );
-            }
-            c
+        Ok(c) => c,
+        Err(err) => {
+            warn!(
+                target: "mettatron::eval::process_collected_sexpr",
+                ?err, "Cartesian product processing error detected"
+            );
+            return ProcessedSExpr::Done((vec![err], unified_env));
         }
-        Err(err) => return ProcessedSExpr::Done((vec![err], unified_env)),
     };
 
     // Collect results and rule matches that need evaluation
@@ -617,7 +601,7 @@ fn handle_no_rule_match(
         if head.len() >= 3 {
             // Check for misspelled special form
             if let Some(suggestion) = suggest_special_form(head) {
-                warn!(
+                trace!(
                     target: "mettatron::eval::handle_no_rule_match",
                     head, suggestion, "Unknown special form"
                 );
@@ -628,7 +612,7 @@ fn handle_no_rule_match(
             }
             // Check for misspelled rule head
             if let Some(suggestion) = unified_env.did_you_mean(head, 1) {
-                warn!(
+                trace!(
                     target: "mettatron::eval::handle_no_rule_match",
                     head, suggestion, "No rule matches"
                 );
@@ -688,11 +672,6 @@ where
     let a = match &args[0] {
         MettaValue::Long(n) => *n,
         other => {
-            warn!(
-                target: "mettatron::eval::eval_checked_arithmetic",
-                type_name = friendly_type_name(other), op_name,
-                "Could not perform arithmetic operation"
-            );
             return Some(MettaValue::Error(
                 format!(
                     "Cannot perform '{}': expected Number (integer), got {}",
@@ -707,11 +686,6 @@ where
     let b = match &args[1] {
         MettaValue::Long(n) => *n,
         other => {
-            warn!(
-                target: "mettatron::eval::eval_checked_arithmetic",
-                type_name = friendly_type_name(other), op_name,
-                "Could not perform arithmetic operation"
-            );
             return Some(MettaValue::Error(
                 format!(
                     "Cannot perform '{}': expected Number (integer), got {}",
@@ -725,19 +699,13 @@ where
 
     match op(a, b) {
         Some(result) => Some(MettaValue::Long(result)),
-        None => {
-            warn!(
-                target: "mettatron::eval::eval_checked_arithmetic",
-                a, op_name, b, "Arithmetic overflow: exceeds integer bounds"
-            );
-            Some(MettaValue::Error(
-                format!(
-                    "Arithmetic overflow: {} {} {} exceeds integer bounds",
-                    a, op_name, b
-                ),
-                Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-            ))
-        }
+        None => Some(MettaValue::Error(
+            format!(
+                "Arithmetic overflow: {} {} {} exceeds integer bounds",
+                a, op_name, b
+            ),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        )),
     }
 }
 
@@ -912,6 +880,7 @@ fn eval_logical_not(args: &[MettaValue]) -> Option<MettaValue> {
 /// This is made public to support optimized match operations in Environment
 /// and for benchmarking the core pattern matching algorithm.
 pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
+    trace!(target: "mettatron::eval::pattern_match", ?pattern, ?value);
     let mut bindings = Bindings::new();
     if pattern_match_impl(pattern, value, &mut bindings) {
         Some(bindings)
@@ -989,6 +958,7 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
 /// This function has a built-in limit (MAX_CARTESIAN_RESULTS) to prevent combinatorial explosion.
 /// Returns Err with an error message if the limit is exceeded.
 fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>, MettaValue> {
+    trace!(target: "mettatron::eval::cartesian_product", ?results);
     if results.is_empty() {
         return Ok(vec![vec![]]);
     }
@@ -998,6 +968,10 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>
     // This is the common case for arithmetic and most builtin operations
     if results.iter().all(|r| r.len() == 1) {
         let single_combo: Vec<MettaValue> = results.iter().map(|r| r[0].clone()).collect();
+        trace!(
+            target: "mettatron::eval::cartesian_product",
+            ?single_combo, "Concatenate all rules to deterministic evaluation"
+        );
         return Ok(vec![single_combo]);
     }
 
@@ -1058,6 +1032,7 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>
 ///
 /// This is made public to support optimized match operations in Environment
 pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaValue {
+    trace!(target: "mettatron::eval::apply_bindings", ?value, ?bindings);
     match value {
         // Apply bindings to variables (atoms starting with $, &, or ')
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
@@ -1088,6 +1063,7 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
 /// Extract the head symbol from a pattern for indexing
 /// Returns None if the pattern doesn't have a clear head symbol
 fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
+    trace!(target: "mettatron::eval::get_head_symbol", ?pattern);
     match pattern {
         // For s-expressions like (double $x), extract "double"
         // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
@@ -1168,6 +1144,8 @@ fn try_match_all_rules_query_multi(
     expr: &MettaValue,
     env: &Environment,
 ) -> Vec<(MettaValue, Bindings)> {
+    trace!(target: "mettatron::eval::try_match_all_rules_query_multi", ?expr);
+
     // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
     // This will find all rules where the LHS matches our expression
 
@@ -1233,6 +1211,8 @@ fn try_match_all_rules_iterative(
     expr: &MettaValue,
     env: &Environment,
 ) -> Vec<(MettaValue, Bindings)> {
+    trace!(target: "mettatron::eval::try_match_all_rules_iterative", ?expr);
+
     // Extract head symbol and arity for indexed lookup
     let matching_rules = if let Some(head) = get_head_symbol(expr) {
         let arity = expr.get_arity();

@@ -542,7 +542,7 @@ fn process_collected_sexpr(
         Ok(c) => c,
         Err(err) => {
             warn!(
-                target: "mettatron::eval::process_collected_sexpr",
+                target: "mettatron::backend::eval::process_collected_sexpr",
                 ?err, "Cartesian product processing error detected"
             );
             return ProcessedSExpr::Done((vec![err], unified_env));
@@ -602,7 +602,7 @@ fn handle_no_rule_match(
             // Check for misspelled special form
             if let Some(suggestion) = suggest_special_form(head) {
                 trace!(
-                    target: "mettatron::eval::handle_no_rule_match",
+                    target: "mettatron::backend::eval::handle_no_rule_match",
                     head, suggestion, "Unknown special form"
                 );
                 return MettaValue::Error(
@@ -613,7 +613,7 @@ fn handle_no_rule_match(
             // Check for misspelled rule head
             if let Some(suggestion) = unified_env.did_you_mean(head, 1) {
                 trace!(
-                    target: "mettatron::eval::handle_no_rule_match",
+                    target: "mettatron::backend::eval::handle_no_rule_match",
                     head, suggestion, "No rule matches"
                 );
                 return MettaValue::Error(
@@ -880,7 +880,7 @@ fn eval_logical_not(args: &[MettaValue]) -> Option<MettaValue> {
 /// This is made public to support optimized match operations in Environment
 /// and for benchmarking the core pattern matching algorithm.
 pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
-    trace!(target: "mettatron::eval::pattern_match", ?pattern, ?value);
+    trace!(target: "mettatron::backend::eval::pattern_match", ?pattern, ?value);
     let mut bindings = Bindings::new();
     if pattern_match_impl(pattern, value, &mut bindings) {
         Some(bindings)
@@ -958,7 +958,7 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
 /// This function has a built-in limit (MAX_CARTESIAN_RESULTS) to prevent combinatorial explosion.
 /// Returns Err with an error message if the limit is exceeded.
 fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>, MettaValue> {
-    trace!(target: "mettatron::eval::cartesian_product", ?results);
+    trace!(target: "mettatron::backend::eval::cartesian_product", ?results);
     if results.is_empty() {
         return Ok(vec![vec![]]);
     }
@@ -969,7 +969,7 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>
     if results.iter().all(|r| r.len() == 1) {
         let single_combo: Vec<MettaValue> = results.iter().map(|r| r[0].clone()).collect();
         trace!(
-            target: "mettatron::eval::cartesian_product",
+            target: "mettatron::backend::eval::cartesian_product",
             ?single_combo, "Concatenate all rules to deterministic evaluation"
         );
         return Ok(vec![single_combo]);
@@ -1032,7 +1032,7 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>
 ///
 /// This is made public to support optimized match operations in Environment
 pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaValue {
-    trace!(target: "mettatron::eval::apply_bindings", ?value, ?bindings);
+    trace!(target: "mettatron::backend::eval::apply_bindings", ?value, ?bindings);
     match value {
         // Apply bindings to variables (atoms starting with $, &, or ')
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
@@ -1063,7 +1063,7 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
 /// Extract the head symbol from a pattern for indexing
 /// Returns None if the pattern doesn't have a clear head symbol
 fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
-    trace!(target: "mettatron::eval::get_head_symbol", ?pattern);
+    trace!(target: "mettatron::backend::eval::get_head_symbol", ?pattern);
     match pattern {
         // For s-expressions like (double $x), extract "double"
         // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
@@ -1144,7 +1144,7 @@ fn try_match_all_rules_query_multi(
     expr: &MettaValue,
     env: &Environment,
 ) -> Vec<(MettaValue, Bindings)> {
-    trace!(target: "mettatron::eval::try_match_all_rules_query_multi", ?expr);
+    trace!(target: "mettatron::backend::eval::try_match_all_rules_query_multi", ?expr);
 
     // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
     // This will find all rules where the LHS matches our expression
@@ -1211,7 +1211,7 @@ fn try_match_all_rules_iterative(
     expr: &MettaValue,
     env: &Environment,
 ) -> Vec<(MettaValue, Bindings)> {
-    trace!(target: "mettatron::eval::try_match_all_rules_iterative", ?expr);
+    trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?expr);
 
     // Extract head symbol and arity for indexed lookup
     let matching_rules = if let Some(head) = get_head_symbol(expr) {

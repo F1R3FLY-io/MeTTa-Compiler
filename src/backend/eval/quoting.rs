@@ -1,8 +1,10 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
+use tracing::trace;
 
 /// Quote: return argument unevaluated
 pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_quote", ?items);
     require_args_with_usage!("quote", items, 1, env, "(quote expr)");
     (vec![items[1].clone()], env)
 }

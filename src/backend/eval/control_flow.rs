@@ -1,6 +1,7 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
+use tracing::{debug, trace};
 
 use super::{apply_bindings, eval, pattern_match};
 
@@ -8,8 +9,13 @@ use super::{apply_bindings, eval, pattern_match};
 /// Only evaluates the chosen branch (lazy evaluation)
 pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
+    trace!(target: "mettatron::eval::eval_if", ?items, ?args);
 
     if args.len() < 3 {
+        debug!(
+            target: "mettatron::eval::if_control",
+            got = args.len(), "Invalid argument count for if expression"
+        );
         let got = args.len();
         let err = MettaValue::Error(
             format!(
@@ -58,6 +64,7 @@ pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
 pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_case", ?items);
     require_args_with_usage!(
         "case",
         items,
@@ -98,6 +105,7 @@ pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 /// Difference between `switch` and `case` is a way how they interpret `Empty` result.
 /// case interprets first argument inside itself and then manually checks whether result is empty.
 pub(super) fn eval_switch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::evaeval_switchl_case", ?items);
     require_args_with_usage!(
         "switch",
         items,
@@ -111,6 +119,7 @@ pub(super) fn eval_switch(items: Vec<MettaValue>, env: Environment) -> EvalResul
 }
 
 pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_switch_minimal_handler", ?items);
     require_args_with_usage!(
         "switch-minimal",
         items,
@@ -126,6 +135,7 @@ pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environme
 /// This function is being called inside switch function to test one of the cases and it
 /// calls switch once again if current condition is not met
 pub(super) fn eval_switch_internal_handler(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_switch_internal_handler", ?items);
     require_args_with_usage!(
         "switch-internal",
         items,
@@ -141,8 +151,13 @@ pub(super) fn eval_switch_internal_handler(items: Vec<MettaValue>, env: Environm
 /// Helper function to implement switch-minimal logic
 /// Handles the main switch logic by deconstructing cases and calling switch-internal
 fn eval_switch_minimal(atom: MettaValue, cases: MettaValue, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_switch_minimal", ?atom, ?cases);
     if let MettaValue::SExpr(cases_items) = cases {
         if cases_items.is_empty() {
+            trace!(
+                target: "mettatron::eval::switch_minimal",
+                "No cases provided, returning NotReducible"
+            );
             return (vec![MettaValue::Atom("NotReducible".to_string())], env);
         }
 
@@ -164,12 +179,14 @@ fn eval_switch_minimal(atom: MettaValue, cases: MettaValue, env: Environment) ->
         ),
         Arc::new(cases),
     );
+    debug!(target: "mettatron::eval::switch_minimal", ?err, "Invalid cases argument type");
     (vec![err], env)
 }
 
 /// Helper function to implement switch-internal logic
 /// Tests one case and recursively tries remaining cases if no match
 fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_switch_internal", ?atom, ?cases_data);
     if let MettaValue::SExpr(cases_items) = cases_data {
         if cases_items.len() != 2 {
             let err = MettaValue::Error(

@@ -1,38 +1,15 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
+use tracing::trace;
 
 use super::eval;
-
-/// Suggest variable format when user provides a plain atom instead of `$var`
-/// Returns a suggestion string if the atom looks like it should be a variable
-fn suggest_variable_format(atom: &str) -> Option<String> {
-    // If it's already a variable, no suggestion needed
-    if atom.starts_with('$') || atom.starts_with('&') || atom.starts_with('\'') {
-        return None;
-    }
-
-    // Don't suggest for obvious non-variables (operators, keywords, etc.)
-    if atom.contains('(') || atom.contains(')') || atom.is_empty() {
-        return None;
-    }
-
-    // Short, lowercase identifiers are likely intended as variables
-    let first_char = atom.chars().next()?;
-    if first_char.is_lowercase() && atom.len() <= 10 {
-        Some(format!(
-            "Did you mean: ${}? (variables must start with $)",
-            atom
-        ))
-    } else {
-        None
-    }
-}
 
 /// Map atom: (map-atom $list $var $template)
 /// Maps a function over a list of atoms
 /// Example: (map-atom (1 2 3 4) $v (+ $v 1)) -> (2 3 4 5)
 pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_map_atom", ?items);
     require_args_with_usage!("map-atom", items, 3, env, "(map-atom list $var expr)");
 
     let list = &items[1];
@@ -111,6 +88,7 @@ pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// Filters a list keeping only elements that satisfy the predicate
 /// Example: (filter-atom (1 2 3 4) $v (> $v 2)) -> (3 4)
 pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_filter_atom", ?items);
     require_args_with_usage!(
         "filter-atom",
         items,
@@ -203,6 +181,7 @@ pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 /// Folds (reduces) a list from left to right using an operation and initial value
 /// Example: (foldl-atom (1 2 3) 0 $acc $x (+ $acc $x)) -> 6
 pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_foldl_atom", ?items);
     if items.len() != 6 {
         let err = MettaValue::Error(
             "foldl-atom requires exactly 5 arguments: list, init, acc-var, item-var, operation"
@@ -304,6 +283,31 @@ pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
     }
 
     (vec![accumulator], final_env)
+}
+
+/// Suggest variable format when user provides a plain atom instead of `$var`
+/// Returns a suggestion string if the atom looks like it should be a variable
+fn suggest_variable_format(atom: &str) -> Option<String> {
+    // If it's already a variable, no suggestion needed
+    if atom.starts_with('$') || atom.starts_with('&') || atom.starts_with('\'') {
+        return None;
+    }
+
+    // Don't suggest for obvious non-variables (operators, keywords, etc.)
+    if atom.contains('(') || atom.contains(')') || atom.is_empty() {
+        return None;
+    }
+
+    // Short, lowercase identifiers are likely intended as variables
+    let first_char = atom.chars().next()?;
+    if first_char.is_lowercase() && atom.len() <= 10 {
+        Some(format!(
+            "Did you mean: ${}? (variables must start with $)",
+            atom
+        ))
+    } else {
+        None
+    }
 }
 
 /// Substitute a variable in an expression with a value

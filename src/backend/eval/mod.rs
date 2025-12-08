@@ -621,10 +621,6 @@ fn handle_no_rule_match(
                     target: "mettatron::backend::eval::handle_no_rule_match",
                     head, suggestion, "Unknown special form"
                 );
-                return MettaValue::Error(
-                    format!("Unknown special form '{}'. {}", head, suggestion),
-                    Arc::new(sexpr.clone()),
-                );
             }
             // Check for misspelled rule head
             if let Some(suggestion) = unified_env.did_you_mean(head, 1) {

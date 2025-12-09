@@ -108,6 +108,10 @@ ropey = "1.6"
 # LRU cache for pattern caching optimization
 lru = "0.12"
 
+# GxHash - Fast hash function for content-based caching
+# Uses same source as MORK for compatibility
+gxhash = { version = "3.4.1", git = "https://github.com/luketpeterson/gxhash/" }
+
 # SmallVec - Stack-allocated vector for optimizing pattern matching bindings
 smallvec = "1.11"
 

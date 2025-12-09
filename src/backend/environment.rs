@@ -13,16 +13,24 @@ use super::fuzzy_match::FuzzyMatcher;
 
 /// Thread-local cache for mork_expr_to_metta_value conversions.
 ///
-/// MORK expressions are identified by their raw pointer address. Since MORK uses
-/// immutable trie-based storage, the same pointer always refers to the same logical
-/// expression during a single evaluation. This allows us to cache conversion results
-/// and avoid redundant traversals.
+/// Uses content-based 128-bit hashes as keys instead of pointer addresses.
+/// This is necessary because PathMap's read_zipper.path() reuses internal buffers,
+/// so the same pointer can point to different expressions during iteration.
 ///
 /// Cache size is 4096 entries per thread, balancing memory usage against hit rate.
 /// LRU eviction ensures the most recently used conversions are retained.
 thread_local! {
-    static MORK_VALUE_CACHE: RefCell<LruCache<usize, MettaValue>> =
+    static MORK_VALUE_CACHE: RefCell<LruCache<u128, MettaValue>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(4096).unwrap()));
+}
+
+/// Compute content-based hash for MORK expression.
+/// Uses gxhash128 on the raw expression bytes for a 128-bit hash key.
+#[inline]
+fn content_hash_expr(expr: &mork_expr::Expr) -> u128 {
+    let span_ptr = expr.span();
+    let bytes: &[u8] = unsafe { &*span_ptr };
+    gxhash::gxhash128(bytes, 0)
 }
 
 /// Bloom filter for (head_symbol, arity) pairs.
@@ -550,9 +558,9 @@ impl Environment {
     ///
     /// CRITICAL FIX for "reserved 114" and similar bugs during evaluation/iteration.
     ///
-    /// OPTIMIZATION: Uses thread-local LRU cache keyed by MORK expression pointer address.
-    /// Since MORK uses immutable trie storage, identical pointers always represent
-    /// identical expressions during evaluation, making caching safe and effective.
+    /// OPTIMIZATION: Uses thread-local LRU cache keyed by content-based 128-bit hash.
+    /// This handles PathMap's buffer reuse issue where the same pointer points to
+    /// different expressions during iteration.
     #[allow(unused_variables)]
     pub(crate) fn mork_expr_to_metta_value(
         expr: &mork_expr::Expr,
@@ -561,10 +569,14 @@ impl Environment {
         use mork_expr::{maybe_byte_item, Tag};
         use std::slice::from_raw_parts;
 
-        // CACHE DISABLED: Pointer-based caching doesn't work with PathMap's buffer reuse.
-        // PathMap's read_zipper.path() returns a reference to an internal buffer that
-        // changes content in-place while the pointer stays constant during iteration.
-        // A proper fix would require content-based hashing, but for now we disable it.
+        // CACHE CHECK: Use content-based hash as cache key
+        let content_hash = content_hash_expr(expr);
+        let cached_result = MORK_VALUE_CACHE.with(|cache| {
+            cache.borrow_mut().get(&content_hash).cloned()
+        });
+        if let Some(cached_value) = cached_result {
+            return Ok(cached_value);
+        }
 
         // Stack-based traversal to avoid recursion limits
         #[derive(Debug)]
@@ -721,8 +733,12 @@ impl Environment {
             'popping: loop {
                 let v = current_value.take().expect("value must be Some at start of popping loop");
 
-                // Check if stack is empty - if so, return the value
+                // Check if stack is empty - if so, cache and return the value
                 if stack.is_empty() {
+                    // CACHE STORE: Store successful conversion with content hash key
+                    MORK_VALUE_CACHE.with(|cache| {
+                        cache.borrow_mut().put(content_hash, v.clone());
+                    });
                     return Ok(v);
                 }
 

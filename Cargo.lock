@@ -1929,6 +1929,7 @@ dependencies = [
  "criterion",
  "dirs",
  "divan",
+ "gxhash 3.5.0 (git+https://github.com/luketpeterson/gxhash/)",
  "itertools 0.14.0",
  "lasso",
  "liblevenshtein",

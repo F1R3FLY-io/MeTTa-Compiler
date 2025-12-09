@@ -99,11 +99,13 @@
 pub mod opcodes;
 pub mod chunk;
 pub mod vm;
+pub mod compiler;
 
 // Re-export main types
 pub use opcodes::Opcode;
 pub use chunk::{BytecodeChunk, ChunkBuilder, CompiledPattern, JumpLabel, JumpLabelShort, JumpTable};
 pub use vm::{BytecodeVM, VmConfig, VmError, VmResult, CallFrame, BindingFrame, ChoicePoint, Alternative};
+pub use compiler::{Compiler, CompileContext, CompileError, CompileResult, compile, compile_arc};
 
 /// Feature flag for enabling bytecode VM
 ///

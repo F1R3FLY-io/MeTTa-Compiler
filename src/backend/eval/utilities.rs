@@ -62,6 +62,7 @@ fn get_metatype(value: &MettaValue) -> &'static str {
         MettaValue::Space(_) => "Grounded",
         MettaValue::State(_) => "Grounded",
         MettaValue::Error(_, _) => "Expression",
+        MettaValue::Memo(_) => "Grounded",
     }
 }
 

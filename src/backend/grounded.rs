@@ -83,6 +83,7 @@ fn friendly_type_name(value: &MettaValue) -> &'static str {
         MettaValue::Conjunction(_) => "Conjunction",
         MettaValue::Space(_) => "Space",
         MettaValue::State(_) => "State",
+        MettaValue::Memo(_) => "Memo",
     }
 }
 

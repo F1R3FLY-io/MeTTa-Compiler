@@ -144,6 +144,22 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
+        MettaValue::Memo(handle) => {
+            // Represent memos as tagged tuples: ("memo", id, name)
+            let ps = vec![
+                create_string_par("memo".to_string()),
+                create_int_par(handle.id as i64),
+                create_string_par(handle.name.clone()),
+            ];
+
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
     }
 }
 

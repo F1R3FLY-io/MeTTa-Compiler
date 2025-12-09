@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use super::MemoHandle;
 use super::SpaceHandle;
 
 /// Represents a MeTTa value as an s-expression
@@ -37,6 +38,9 @@ pub enum MettaValue {
     /// Unit value for side-effecting operations that return nothing meaningful
     /// Displayed as () in output
     Unit,
+    /// A memoization table for caching evaluation results
+    /// Used for memo operations: new-memo, memo, memo-first, clear-memo!, memo-stats
+    Memo(MemoHandle),
 }
 
 /// Arc-wrapped MettaValue for O(1) cloning in evaluation hot paths.
@@ -256,6 +260,7 @@ impl MettaValue {
             MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
             MettaValue::State(id) => format!("(State {})", id),
             MettaValue::Unit => "()".to_string(),
+            MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
         }
     }
 
@@ -303,6 +308,13 @@ impl MettaValue {
                 format!(r#"{{"type":"state","id":{}}}"#, id)
             }
             MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
+            MettaValue::Memo(handle) => {
+                format!(
+                    r#"{{"type":"memo","id":{},"name":"{}"}}"#,
+                    handle.id,
+                    escape_json(&handle.name)
+                )
+            }
         }
     }
 }
@@ -374,6 +386,10 @@ impl std::hash::Hash for MettaValue {
             }
             MettaValue::Unit => {
                 12u8.hash(state);
+            }
+            MettaValue::Memo(handle) => {
+                14u8.hash(state);
+                handle.hash(state);
             }
         }
     }

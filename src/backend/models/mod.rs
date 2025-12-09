@@ -1,9 +1,11 @@
 pub mod bindings;
+pub mod memo_handle;
 pub mod metta_state;
 pub mod metta_value;
 pub mod space_handle;
 
 pub use bindings::SmartBindings as Bindings;
+pub use memo_handle::MemoHandle;
 pub use metta_state::MettaState;
 pub use metta_value::{ArcValue, MettaValue};
 pub use space_handle::SpaceHandle;

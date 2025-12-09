@@ -106,6 +106,7 @@ fn atom_to_string(value: &MettaValue) -> String {
         MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
         MettaValue::State(id) => format!("(State {})", id),
         MettaValue::Unit => "()".to_string(),
+        MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
     }
 }
 

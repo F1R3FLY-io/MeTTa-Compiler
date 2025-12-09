@@ -198,6 +198,9 @@ pub fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
 
         // Unit has Unit type
         MettaValue::Unit => MettaValue::Atom("Unit".to_string()),
+
+        // Memo tables have Memo type
+        MettaValue::Memo(_) => MettaValue::Atom("Memo".to_string()),
     }
 }
 

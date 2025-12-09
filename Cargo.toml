@@ -66,6 +66,10 @@ harness = false
 name = "mmverify_benchmark"
 harness = false
 
+[[bench]]
+name = "memoization_benchmark"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }

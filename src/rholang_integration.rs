@@ -234,6 +234,13 @@ fn metta_value_to_json_string(value: &MettaValue) -> String {
             format!(r#"{{"type":"state","id":{}}}"#, id)
         }
         MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
+        MettaValue::Memo(handle) => {
+            format!(
+                r#"{{"type":"memo","id":{},"name":"{}"}}"#,
+                handle.id,
+                escape_json(&handle.name)
+            )
+        }
     }
 }
 

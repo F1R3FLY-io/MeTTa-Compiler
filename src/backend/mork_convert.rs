@@ -220,6 +220,14 @@ fn write_metta_value(
             ez.write_arity(0);
             ez.loc += 1;
         }
+
+        // Memo tables are runtime-only and cannot be stored in MORK
+        MettaValue::Memo(handle) => {
+            return Err(format!(
+                "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
+                handle.name, handle.id
+            ));
+        }
     }
 
     Ok(())

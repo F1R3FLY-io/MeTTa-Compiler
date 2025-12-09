@@ -462,7 +462,8 @@ impl Environment {
             | MettaValue::String(_)
             | MettaValue::Nil
             | MettaValue::State(_)
-            | MettaValue::Unit => {}
+            | MettaValue::Unit
+            | MettaValue::Memo(_) => {}
         }
     }
 

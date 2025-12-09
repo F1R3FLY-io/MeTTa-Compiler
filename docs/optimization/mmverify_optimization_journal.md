@@ -1225,6 +1225,132 @@ For future optimization of owned space operations:
 
 ---
 
+## Experiment 14b: MeTTa-Level Memoization (REJECTED)
+
+### Date: 2025-12-08
+
+### Branch: `perf/exp14-metta-memoization`
+
+### Hypothesis
+
+Adding explicit memoization primitives to MeTTa (`new-memo`, `memo`, `memo-first`, `clear-memo!`, `memo-stats`) would allow user-controlled caching of expensive lookups in mmverify. Memoizing `lookup_d` (disjoint variable checks) and `is_var` (variable existence checks) would reduce redundant knowledge base queries.
+
+**Expected improvement**: 2-10% depending on cache hit rate
+
+### Implementation
+
+1. **Created `MemoHandle` struct** (`src/backend/models/memo_handle.rs`)
+   ```rust
+   pub struct MemoHandle {
+       pub id: u64,
+       pub name: String,
+       inner: Arc<RwLock<MemoInner>>,
+   }
+
+   struct MemoInner {
+       cache: HashMap<u64, Vec<MettaValue>>,  // hash(expr) -> results
+       hits: u64,
+       misses: u64,
+   }
+   ```
+
+2. **Added `Memo(MemoHandle)` variant to `MettaValue`**
+
+3. **Implemented memo special forms** (`src/backend/eval/space.rs`)
+   - `(new-memo "name")` - Create a memo table
+   - `(memo &table expr)` - Memoized evaluation (all results)
+   - `(memo-first &table expr)` - Memoized evaluation (first result only)
+   - `(clear-memo! &table)` - Invalidate cache
+   - `(memo-stats &table)` - Get hit/miss statistics
+
+4. **Modified mmverify-utils.metta** to use memoization:
+   ```metta
+   ;; Memoization Tables
+   !(bind! &dv-cache (new-memo "dv-lookup"))
+   !(bind! &var-cache (new-memo "var-lookup"))
+
+   ;; Memoized variable check
+   (= (is_var $tok)
+      (memo-first &var-cache (unify &kb (Var $tok $_ (Type "$v")) True False)))
+
+   ;; Memoized disjoint variable lookup
+   (= (lookup_d $x $y)
+      (let ($x' $y') (orient_pair $x $y)
+        (memo-first &dv-cache
+          (unify &kb (DVar ($x' $y') $_ (Type "$d")) True False))))
+   ```
+
+### Benchmark Results (2 runs)
+
+| Run | Time (s) | Notes |
+|-----|----------|-------|
+| 1 | 99.76 | With memoization |
+| 2 | 100.76 | With memoization |
+| **Mean** | **100.26** | |
+| **Baseline** | **91.13** | From Experiment 12 |
+
+**Statistical Analysis**:
+- Mean with memoization: 100.26s
+- Baseline: 91.13s
+- **Regression: 10.0%** (NOT an improvement!)
+
+### Root Cause Analysis
+
+Explicit memoization **hurts performance** for mmverify due to:
+
+1. **Hash Computation Overhead**: Every `memo` or `memo-first` call must:
+   - Recursively hash the MettaValue expression
+   - For complex S-expressions, this is O(n) where n = expression size
+   - Hash computation happens on every call, including cache hits
+
+2. **Lock Contention**: `Arc<RwLock<MemoInner>>` requires:
+   - Read lock acquisition for cache lookup
+   - Write lock acquisition for cache miss (blocks all readers)
+   - Even fast reads have synchronization overhead
+
+3. **Low Cache Benefit for mmverify**:
+   - `lookup_d` queries are mostly unique (different variable pairs)
+   - `is_var` queries are also diverse (different tokens each time)
+   - Cache hit rate is low, so overhead not amortized
+
+4. **Result Cloning**: Cache hits still require cloning `Vec<MettaValue>` results
+
+### Decision: **REJECT**
+
+- 10% regression is unacceptable
+- Memoization infrastructure is kept in codebase for other use cases
+- mmverify-utils.metta reverted to pre-memoization state
+- Feature may benefit workloads with higher cache hit rates
+
+### Changes After Decision
+
+1. **Reverted mmverify-utils.metta** - `git checkout examples/mmverify/mmverify-utils.metta`
+2. **Memoization feature retained** - Available for other use cases
+3. **mmverify remains comparable to MeTTa HE** - Per user request
+
+### Lessons Learned
+
+1. **Memoization is not free**: Hash computation + locking overhead must be amortized by cache hits
+2. **Profile cache hit rates before implementing**: Estimate hit/miss ratio first
+3. **Hash computation for complex expressions is expensive**: Consider simpler key strategies
+4. **User-controlled caching requires understanding workload**: Not a drop-in optimization
+5. **Consider the nature of queries**: Memoization helps repeated identical queries, not diverse queries
+
+### When Memoization Would Help
+
+The memoization feature would be effective for:
+- Recursive functions with overlapping subproblems (dynamic programming)
+- Repeated evaluation of identical expressions
+- Pure functions with expensive computation
+- Workloads with high query locality
+
+It would NOT help for:
+- Workloads with mostly unique queries (like mmverify)
+- Patterns where query keys are complex expressions
+- Cases where result cloning overhead is high
+
+---
+
 ## Future Work
 
 ### Completed
@@ -1238,7 +1364,9 @@ For future optimization of owned space operations:
 
 ### Rejected
 - ~~Experiment 11: Pattern match cache~~ ✗ Rejected (within noise)
+- ~~Experiment 13: Named Space Indexing~~ ✗ Rejected (no improvement)
 - ~~Experiment 14: MORK skip conversion~~ - Not applicable to mmverify
+- ~~Experiment 14b: MeTTa-Level Memoization~~ ✗ Rejected (10% regression)
 - ~~Experiment 15: Owned space head pre-filter~~ ✗ Rejected (regression)
 
 ### Deferred

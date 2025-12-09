@@ -28,6 +28,7 @@ mod tags {
     pub const CONJUNCTION: u8 = 0x0C;
     pub const SPACE: u8 = 0x0D;
     pub const STATE: u8 = 0x0E;
+    pub const MEMO: u8 = 0x0F;
 }
 
 /// Encode MettaValue to binary key with varint arity (no 63 limit)
@@ -104,6 +105,12 @@ fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
             // For state cells, encode the id
             buf.push(tags::STATE);
             encode_varint(buf, *id);
+        }
+        MettaValue::Memo(handle) => {
+            // For memo tables, encode the id and name
+            buf.push(tags::MEMO);
+            encode_varint(buf, handle.id);
+            encode_string(buf, &handle.name);
         }
     }
 }

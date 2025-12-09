@@ -326,6 +326,11 @@ const SPECIAL_FORMS: &[&str] = &[
     "new-state",
     "get-state",
     "change-state!",
+    "new-memo",
+    "memo",
+    "memo-first",
+    "clear-memo!",
+    "memo-stats",
     "bind!",
     "println!",
     "trace!",
@@ -354,6 +359,7 @@ fn friendly_type_name(value: &MettaValue) -> &'static str {
         MettaValue::Space(_) => "Space",
         MettaValue::State(_) => "State",
         MettaValue::Unit => "Unit",
+        MettaValue::Memo(_) => "Memo",
     }
 }
 
@@ -386,6 +392,7 @@ pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
         MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
         MettaValue::State(id) => format!("(State {})", id),
         MettaValue::Unit => "()".to_string(),
+        MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
     }
 }
 
@@ -1316,7 +1323,8 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         | MettaValue::Type(_)
         | MettaValue::Space(_)
         | MettaValue::State(_)
-        | MettaValue::Unit => EvalStep::Done((vec![value], env)),
+        | MettaValue::Unit
+        | MettaValue::Memo(_) => EvalStep::Done((vec![value], env)),
 
         // S-expressions need special handling
         MettaValue::SExpr(items) => eval_sexpr_step(items, env, depth),
@@ -1535,6 +1543,12 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "new-state" => return EvalStep::Done(space::eval_new_state(items, env)),
             "get-state" => return EvalStep::Done(space::eval_get_state(items, env)),
             "change-state!" => return EvalStep::Done(space::eval_change_state(items, env)),
+            // Memoization Operations
+            "new-memo" => return EvalStep::Done(space::eval_new_memo(items, env)),
+            "memo" => return EvalStep::Done(space::eval_memo(items, env)),
+            "memo-first" => return EvalStep::Done(space::eval_memo_first(items, env)),
+            "clear-memo!" => return EvalStep::Done(space::eval_clear_memo(items, env)),
+            "memo-stats" => return EvalStep::Done(space::eval_memo_stats(items, env)),
             // Token Binding (HE-compatible tokenizer-based bind!)
             "bind!" => return EvalStep::Done(modules::eval_bind(items, env)),
             // I/O Operations
@@ -2463,7 +2477,8 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         | MettaValue::Nil
         | MettaValue::Space(_)
         | MettaValue::State(_)
-        | MettaValue::Unit => {
+        | MettaValue::Unit
+        | MettaValue::Memo(_) => {
             0 // Literals are most specific (including standalone "&")
         }
         MettaValue::SExpr(items) => {

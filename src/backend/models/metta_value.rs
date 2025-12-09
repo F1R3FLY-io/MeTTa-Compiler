@@ -1,3 +1,5 @@
+use crate::ir::MettaExpr;
+
 use std::sync::Arc;
 
 /// Represents a MeTTa value as an s-expression
@@ -256,7 +258,7 @@ impl MettaValue {
     }
 }
 
-fn escape_json(s: &str) -> String {
+pub fn escape_json(s: &str) -> String {
     s.replace('\\', r"\\")
         .replace('"', r#"\""#)
         .replace('\n', r"\n")
@@ -312,6 +314,56 @@ impl std::hash::Hash for MettaValue {
             MettaValue::Conjunction(goals) => {
                 10u8.hash(state);
                 goals.hash(state);
+            }
+        }
+    }
+}
+
+impl TryFrom<&MettaExpr> for MettaValue {
+    type Error = String;
+
+    fn try_from(sexpr: &MettaExpr) -> Result<Self, String> {
+        match sexpr {
+            MettaExpr::Atom(s, _span) => {
+                // Parse literals (MeTTa uses capitalized True/False per hyperon-experimental)
+                match s.as_str() {
+                    "True" => Ok(MettaValue::Bool(true)),
+                    "False" => Ok(MettaValue::Bool(false)),
+                    _ => {
+                        // Keep the original symbol as-is (including operators like +, -, *, etc.)
+                        Ok(MettaValue::Atom(s.clone()))
+                    }
+                }
+            }
+            MettaExpr::String(s, _span) => Ok(MettaValue::String(s.clone())),
+            MettaExpr::Integer(n, _span) => Ok(MettaValue::Long(*n)),
+            MettaExpr::Float(f, _span) => Ok(MettaValue::Float(*f)),
+            MettaExpr::List(items, _span) => {
+                if items.is_empty() {
+                    Ok(MettaValue::Nil)
+                } else {
+                    // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
+                    let is_conjunction = items
+                        .first()
+                        .is_some_and(|first| matches!(first, MettaExpr::Atom(s, _) if s == ","));
+
+                    if is_conjunction {
+                        // Convert to Conjunction variant (skip the comma operator)
+                        let goals: Result<Vec<_>, _> =
+                            items[1..].iter().map(MettaValue::try_from).collect();
+                        Ok(MettaValue::Conjunction(goals?))
+                    } else {
+                        // Regular S-expression
+                        let values: Result<Vec<_>, _> =
+                            items.iter().map(MettaValue::try_from).collect();
+                        Ok(MettaValue::SExpr(values?))
+                    }
+                }
+            }
+            MettaExpr::Quoted(expr, _span) => {
+                // For quoted expressions, wrap in a quote operator
+                let inner = MettaValue::try_from(expr.as_ref())?;
+                Ok(MettaValue::quote(inner))
             }
         }
     }

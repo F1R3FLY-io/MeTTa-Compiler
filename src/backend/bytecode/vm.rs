@@ -7,7 +7,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use smallvec::SmallVec;
 
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, SpaceHandle};
 use super::opcodes::Opcode;
 use super::chunk::BytecodeChunk;
 
@@ -377,6 +377,13 @@ impl BytecodeVM {
             Opcode::Yield => return self.op_yield(),
             Opcode::BeginNondet => self.op_begin_nondet(),
             Opcode::EndNondet => self.op_end_nondet()?,
+
+            // Space operations
+            Opcode::SpaceAdd => self.op_space_add()?,
+            Opcode::SpaceRemove => self.op_space_remove()?,
+            Opcode::SpaceGetAtoms => self.op_space_get_atoms()?,
+            Opcode::SpaceMatch => self.op_space_match()?,
+            Opcode::LoadSpace => self.op_load_space()?,
 
             // Debug
             Opcode::Breakpoint => self.op_breakpoint()?,
@@ -1304,16 +1311,41 @@ impl BytecodeVM {
         self.choice_points.clear();
     }
 
+    /// Collect all nondeterministic results from current evaluation.
+    /// The chunk_index parameter is reserved for future use (sub-chunk execution).
+    /// Currently, this collects all results accumulated via Yield and returns them as SExpr.
+    ///
+    /// Stack: [] -> [SExpr of collected results]
     fn op_collect(&mut self) -> VmResult<()> {
         let _chunk_index = self.read_u16()?;
-        // TODO: Implement collect
-        Err(VmError::Runtime("Collect not yet implemented".into()))
+
+        // Collect all results accumulated so far via Yield
+        // Filter out Nil values (matches collapse semantics)
+        let collected: Vec<MettaValue> = std::mem::take(&mut self.results)
+            .into_iter()
+            .filter(|v| !matches!(v, MettaValue::Nil))
+            .collect();
+
+        // Push the collected results as a single S-expression
+        self.push(MettaValue::SExpr(collected));
+        Ok(())
     }
 
+    /// Collect up to N nondeterministic results.
+    /// Stack: [] -> [SExpr of collected results (up to N)]
     fn op_collect_n(&mut self) -> VmResult<()> {
-        let _n = self.read_u8()?;
-        // TODO: Implement collect_n
-        Err(VmError::Runtime("CollectN not yet implemented".into()))
+        let n = self.read_u8()? as usize;
+
+        // Take up to N results
+        let collected: Vec<MettaValue> = std::mem::take(&mut self.results)
+            .into_iter()
+            .filter(|v| !matches!(v, MettaValue::Nil))
+            .take(n)
+            .collect();
+
+        // Push the collected results as a single S-expression
+        self.push(MettaValue::SExpr(collected));
+        Ok(())
     }
 
     fn op_yield(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
@@ -1331,6 +1363,128 @@ impl BytecodeVM {
     fn op_end_nondet(&mut self) -> VmResult<()> {
         // End nondeterministic section
         Ok(())
+    }
+
+    // === Space Operations ===
+
+    /// Add an atom to a space.
+    /// Stack: [space, atom] -> [Unit]
+    fn op_space_add(&mut self) -> VmResult<()> {
+        let atom = self.pop()?;
+        let space = self.pop()?;
+        match space {
+            MettaValue::Space(handle) => {
+                handle.add_atom(atom);
+                self.push(MettaValue::Unit);
+                Ok(())
+            }
+            other => Err(VmError::TypeError {
+                expected: "Space",
+                got: other.type_name(),
+            }),
+        }
+    }
+
+    /// Remove an atom from a space.
+    /// Stack: [space, atom] -> [Bool]
+    fn op_space_remove(&mut self) -> VmResult<()> {
+        let atom = self.pop()?;
+        let space = self.pop()?;
+        match space {
+            MettaValue::Space(handle) => {
+                let removed = handle.remove_atom(&atom);
+                self.push(MettaValue::Bool(removed));
+                Ok(())
+            }
+            other => Err(VmError::TypeError {
+                expected: "Space",
+                got: other.type_name(),
+            }),
+        }
+    }
+
+    /// Get all atoms from a space (collapse).
+    /// Stack: [space] -> [SExpr with atoms]
+    fn op_space_get_atoms(&mut self) -> VmResult<()> {
+        let space = self.pop()?;
+        match space {
+            MettaValue::Space(handle) => {
+                let atoms = handle.collapse();
+                // Return as an S-expression list
+                self.push(MettaValue::SExpr(atoms));
+                Ok(())
+            }
+            other => Err(VmError::TypeError {
+                expected: "Space",
+                got: other.type_name(),
+            }),
+        }
+    }
+
+    /// Match pattern against atoms in a space.
+    /// Stack: [space, pattern, template] -> [results...]
+    ///
+    /// Note: This is a simplified implementation that doesn't support
+    /// full nondeterministic matching with template evaluation yet.
+    /// For now, it returns matched atoms without template instantiation.
+    fn op_space_match(&mut self) -> VmResult<()> {
+        // TODO: Full implementation requires recursive evaluation
+        // For now, use simplified matching that returns atoms without templates
+        let _template = self.pop()?;
+        let pattern = self.pop()?;
+        let space = self.pop()?;
+
+        match space {
+            MettaValue::Space(handle) => {
+                let atoms = handle.collapse();
+                let mut results = Vec::new();
+
+                // Simple pattern matching against atoms
+                for atom in &atoms {
+                    if pattern_matches(&pattern, atom) {
+                        results.push(atom.clone());
+                    }
+                }
+
+                // Return results as S-expression
+                self.push(MettaValue::SExpr(results));
+                Ok(())
+            }
+            other => Err(VmError::TypeError {
+                expected: "Space",
+                got: other.type_name(),
+            }),
+        }
+    }
+
+    /// Load a space by name from the constant pool.
+    /// This operation reads a constant index for the space name.
+    ///
+    /// Note: Currently limited - full implementation needs Environment access.
+    fn op_load_space(&mut self) -> VmResult<()> {
+        let const_idx = self.read_u16()?;
+        let name = self.chunk.get_constant(const_idx)
+            .ok_or(VmError::InvalidConstant(const_idx))?
+            .clone();
+
+        match name {
+            MettaValue::Atom(space_name) => {
+                // Create a placeholder space with the given name
+                // In full integration, this would lookup from Environment
+                let handle = SpaceHandle::new(
+                    std::hash::Hasher::finish(&std::hash::BuildHasher::build_hasher(
+                        &std::collections::hash_map::RandomState::new(),
+                    )),
+                    space_name,
+                );
+                self.push(MettaValue::Space(handle));
+                Ok(())
+            }
+            other => Err(VmError::TypeError {
+                expected: "Atom (space name)",
+                got: other.type_name(),
+            }),
+        }
     }
 
     // === Debug Operations ===
@@ -2626,5 +2780,229 @@ mod tests {
             &MettaValue::sexpr(vec![MettaValue::Long(1)]),
             &MettaValue::sexpr(vec![MettaValue::Long(1), MettaValue::Long(2)])
         ).is_none());
+    }
+
+    // === Space Operation Tests ===
+
+    #[test]
+    fn test_vm_space_add_get_atoms() {
+        // Create a space manually and test add/get operations
+        let space = SpaceHandle::new(1, "test_space".to_string());
+
+        // Add some atoms to the space
+        space.add_atom(MettaValue::Long(1));
+        space.add_atom(MettaValue::Long(2));
+        space.add_atom(MettaValue::sym("foo"));
+
+        // Create bytecode that pushes the space and gets its atoms
+        let mut builder = ChunkBuilder::new("test");
+        let space_const = builder.add_constant(MettaValue::Space(space.clone()));
+        builder.emit_u16(Opcode::PushConstant, space_const);
+        builder.emit(Opcode::SpaceGetAtoms);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = BytecodeVM::new(chunk);
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(atoms) => {
+                assert_eq!(atoms.len(), 3);
+                assert!(atoms.contains(&MettaValue::Long(1)));
+                assert!(atoms.contains(&MettaValue::Long(2)));
+                assert!(atoms.contains(&MettaValue::sym("foo")));
+            }
+            _ => panic!("Expected S-expression of atoms"),
+        }
+    }
+
+    #[test]
+    fn test_vm_space_add_opcode() {
+        // Test SpaceAdd opcode
+        let space = SpaceHandle::new(2, "add_test".to_string());
+
+        let mut builder = ChunkBuilder::new("test");
+        let space_const = builder.add_constant(MettaValue::Space(space.clone()));
+        // Push space, push atom, add
+        builder.emit_u16(Opcode::PushConstant, space_const);
+        builder.emit_byte(Opcode::PushLongSmall, 42);
+        builder.emit(Opcode::SpaceAdd);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = BytecodeVM::new(chunk);
+        let results = vm.run().expect("VM should succeed");
+
+        // SpaceAdd returns Unit
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+
+        // Verify the atom was added
+        let atoms = space.collapse();
+        assert_eq!(atoms.len(), 1);
+        assert_eq!(atoms[0], MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_vm_space_remove_opcode() {
+        // Test SpaceRemove opcode
+        let space = SpaceHandle::new(3, "remove_test".to_string());
+        space.add_atom(MettaValue::Long(1));
+        space.add_atom(MettaValue::Long(2));
+
+        let mut builder = ChunkBuilder::new("test");
+        let space_const = builder.add_constant(MettaValue::Space(space.clone()));
+        // Push space, push atom to remove, remove
+        builder.emit_u16(Opcode::PushConstant, space_const);
+        builder.emit_byte(Opcode::PushLongSmall, 1);
+        builder.emit(Opcode::SpaceRemove);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = BytecodeVM::new(chunk);
+        let results = vm.run().expect("VM should succeed");
+
+        // SpaceRemove returns Bool(true) if atom was found
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // Verify the atom was removed
+        let atoms = space.collapse();
+        assert_eq!(atoms.len(), 1);
+        assert_eq!(atoms[0], MettaValue::Long(2));
+    }
+
+    #[test]
+    fn test_vm_space_match_opcode() {
+        // Test SpaceMatch opcode with simple pattern matching
+        let space = SpaceHandle::new(4, "match_test".to_string());
+        space.add_atom(MettaValue::sexpr(vec![
+            MettaValue::sym("fact"),
+            MettaValue::Long(1),
+        ]));
+        space.add_atom(MettaValue::sexpr(vec![
+            MettaValue::sym("fact"),
+            MettaValue::Long(2),
+        ]));
+        space.add_atom(MettaValue::sexpr(vec![
+            MettaValue::sym("other"),
+            MettaValue::Long(3),
+        ]));
+
+        let mut builder = ChunkBuilder::new("test");
+        let space_const = builder.add_constant(MettaValue::Space(space.clone()));
+        // Pattern: (fact $x)
+        let pattern = builder.add_constant(MettaValue::sexpr(vec![
+            MettaValue::sym("fact"),
+            MettaValue::var("x"),
+        ]));
+        // Template (not used in simplified version)
+        let template = builder.add_constant(MettaValue::var("x"));
+
+        // Push space, pattern, template, match
+        builder.emit_u16(Opcode::PushConstant, space_const);
+        builder.emit_u16(Opcode::PushConstant, pattern);
+        builder.emit_u16(Opcode::PushConstant, template);
+        builder.emit(Opcode::SpaceMatch);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = BytecodeVM::new(chunk);
+        let results = vm.run().expect("VM should succeed");
+
+        // Should return matching atoms
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(matches) => {
+                // Should have 2 matches: (fact 1) and (fact 2)
+                assert_eq!(matches.len(), 2);
+            }
+            _ => panic!("Expected S-expression of matches"),
+        }
+    }
+
+    // === Collect/Collapse Operation Tests ===
+
+    #[test]
+    fn test_vm_collect_empty() {
+        // Test Collect with no yielded results
+        let mut builder = ChunkBuilder::new("test");
+        // Collect with no prior Yield operations
+        builder.emit_u16(Opcode::Collect, 0); // chunk_index = 0 (unused)
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = BytecodeVM::new(chunk);
+        let results = vm.run().expect("VM should succeed");
+
+        // Should return empty list
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert!(items.is_empty());
+            }
+            _ => panic!("Expected S-expression"),
+        }
+    }
+
+    #[test]
+    fn test_vm_collect_n() {
+        // Test CollectN (collect up to N results)
+        let mut builder = ChunkBuilder::new("test");
+        // CollectN with n=2
+        builder.emit_byte(Opcode::CollectN, 2);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = BytecodeVM::new(chunk);
+
+        // Manually add some results to simulate prior Yield operations
+        vm.results.push(MettaValue::Long(1));
+        vm.results.push(MettaValue::Long(2));
+        vm.results.push(MettaValue::Long(3)); // This shouldn't be collected
+
+        let results = vm.run().expect("VM should succeed");
+
+        // Should return list with only 2 elements
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], MettaValue::Long(1));
+                assert_eq!(items[1], MettaValue::Long(2));
+            }
+            _ => panic!("Expected S-expression"),
+        }
+    }
+
+    #[test]
+    fn test_vm_collect_filters_nil() {
+        // Test that Collect filters out Nil values
+        let mut builder = ChunkBuilder::new("test");
+        builder.emit_u16(Opcode::Collect, 0);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = BytecodeVM::new(chunk);
+
+        // Add results including Nil
+        vm.results.push(MettaValue::Long(1));
+        vm.results.push(MettaValue::Nil);
+        vm.results.push(MettaValue::Long(2));
+        vm.results.push(MettaValue::Nil);
+
+        let results = vm.run().expect("VM should succeed");
+
+        // Should return list without Nil values
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], MettaValue::Long(1));
+                assert_eq!(items[1], MettaValue::Long(2));
+            }
+            _ => panic!("Expected S-expression"),
+        }
     }
 }

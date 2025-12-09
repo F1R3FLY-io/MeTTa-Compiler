@@ -119,6 +119,154 @@ pub const BYTECODE_ENABLED: bool = true;
 #[cfg(not(feature = "bytecode"))]
 pub const BYTECODE_ENABLED: bool = false;
 
+use crate::backend::models::MettaValue;
+
+/// Error type for bytecode evaluation
+#[derive(Debug)]
+pub enum BytecodeEvalError {
+    /// Compilation failed
+    CompileError(CompileError),
+    /// VM execution failed
+    VmError(VmError),
+}
+
+impl From<CompileError> for BytecodeEvalError {
+    fn from(e: CompileError) -> Self {
+        BytecodeEvalError::CompileError(e)
+    }
+}
+
+impl From<VmError> for BytecodeEvalError {
+    fn from(e: VmError) -> Self {
+        BytecodeEvalError::VmError(e)
+    }
+}
+
+impl std::fmt::Display for BytecodeEvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CompileError(e) => write!(f, "Compilation error: {}", e),
+            Self::VmError(e) => write!(f, "VM error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for BytecodeEvalError {}
+
+/// Check if an expression can be compiled to bytecode
+///
+/// Returns true for expressions that the bytecode compiler supports.
+/// Currently supports:
+/// - Literals (numbers, bools, strings, symbols)
+/// - Arithmetic operations (+, -, *, /, %)
+/// - Comparison operations (<, <=, >, >=, ==)
+/// - Boolean operations (and, or, not)
+/// - S-expressions
+/// - Superpose (nondeterminism)
+/// - Quote
+pub fn can_compile(expr: &MettaValue) -> bool {
+    match expr {
+        // Always compilable literals
+        MettaValue::Nil | MettaValue::Unit | MettaValue::Bool(_) |
+        MettaValue::Long(_) | MettaValue::Float(_) | MettaValue::String(_) => true,
+
+        // Atoms (symbols and variables) - variables start with $
+        MettaValue::Atom(_) => true,
+
+        // S-expressions - check if supported operation
+        MettaValue::SExpr(items) if items.is_empty() => true,
+        MettaValue::SExpr(items) => {
+            // Check head for supported operations
+            if let MettaValue::Atom(head) = &items[0] {
+                match head.as_str() {
+                    // Arithmetic
+                    "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => true,
+                    // Comparison
+                    "<" | "<=" | ">" | ">=" | "==" | "!=" => true,
+                    // Boolean
+                    "and" | "or" | "not" | "xor" => true,
+                    // Control flow
+                    "if" | "quote" => true,
+                    // Nondeterminism
+                    "superpose" | "collapse" => true,
+                    // List operations
+                    "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" => true,
+                    // For now, reject complex special forms that need environment
+                    "let" | "let*" | "match" | "unify" | "=" | "!" => false,
+                    // Unknown - try to compile (may fail)
+                    _ => false,
+                }
+            } else {
+                // Non-atom head - S-expression application, may be complex
+                false
+            }
+        }
+
+        // Errors can be compiled (they just push the error value)
+        MettaValue::Error(_, _) => true,
+
+        // Types that need environment or special runtime support
+        MettaValue::Space(_) | MettaValue::State(_) | MettaValue::Type(_) |
+        MettaValue::Conjunction(_) | MettaValue::Memo(_) => false,
+    }
+}
+
+/// Evaluate an expression using the bytecode VM
+///
+/// Compiles the expression to bytecode and executes it.
+/// Returns the results or an error if compilation/execution fails.
+///
+/// # Example
+/// ```ignore
+/// let expr = MettaValue::SExpr(vec![
+///     MettaValue::Atom("+".to_string()),
+///     MettaValue::Long(1),
+///     MettaValue::Long(2),
+/// ]);
+/// let results = eval_bytecode(&expr)?;
+/// assert_eq!(results[0], MettaValue::Long(3));
+/// ```
+pub fn eval_bytecode(expr: &MettaValue) -> Result<Vec<MettaValue>, BytecodeEvalError> {
+    // Compile expression to bytecode
+    let chunk = compile_arc("eval", expr)?;
+
+    // Create and run VM
+    let mut vm = BytecodeVM::new(chunk);
+    let results = vm.run()?;
+
+    Ok(results)
+}
+
+/// Evaluate an expression using the bytecode VM with configuration
+pub fn eval_bytecode_with_config(
+    expr: &MettaValue,
+    config: VmConfig,
+) -> Result<Vec<MettaValue>, BytecodeEvalError> {
+    let chunk = compile_arc("eval", expr)?;
+    let mut vm = BytecodeVM::with_config(chunk, config);
+    let results = vm.run()?;
+    Ok(results)
+}
+
+/// Try to evaluate via bytecode, falling back to provided fallback function
+///
+/// This is the recommended integration point for the main eval loop.
+/// If bytecode is enabled and the expression is compilable, it tries bytecode.
+/// On success, returns bytecode results. On failure, calls the fallback.
+pub fn try_bytecode_eval<F>(expr: &MettaValue, fallback: F) -> Vec<MettaValue>
+where
+    F: FnOnce() -> Vec<MettaValue>,
+{
+    if BYTECODE_ENABLED && can_compile(expr) {
+        match eval_bytecode(expr) {
+            Ok(results) => results,
+            Err(_) => fallback(),
+        }
+    } else {
+        fallback()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +426,219 @@ mod tests {
         assert!(disasm.contains("dup"));
         assert!(disasm.contains("add"));
         assert!(disasm.contains("return"));
+    }
+
+    // Integration function tests
+
+    #[test]
+    fn test_can_compile_literals() {
+        // Compilable literals
+        assert!(can_compile(&MettaValue::Nil));
+        assert!(can_compile(&MettaValue::Unit));
+        assert!(can_compile(&MettaValue::Bool(true)));
+        assert!(can_compile(&MettaValue::Long(42)));
+        assert!(can_compile(&MettaValue::Float(3.14)));
+        assert!(can_compile(&MettaValue::String("hello".to_string())));
+        assert!(can_compile(&MettaValue::Atom("foo".to_string())));
+        assert!(can_compile(&MettaValue::Atom("$x".to_string()))); // Variable
+    }
+
+    #[test]
+    fn test_can_compile_arithmetic() {
+        // Arithmetic operations
+        let add = MettaValue::SExpr(vec![
+            MettaValue::sym("+"),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        assert!(can_compile(&add));
+
+        let mul = MettaValue::SExpr(vec![
+            MettaValue::sym("*"),
+            MettaValue::Long(3),
+            MettaValue::Long(4),
+        ]);
+        assert!(can_compile(&mul));
+    }
+
+    #[test]
+    fn test_can_compile_comparisons() {
+        let lt = MettaValue::SExpr(vec![
+            MettaValue::sym("<"),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        assert!(can_compile(&lt));
+
+        let eq = MettaValue::SExpr(vec![
+            MettaValue::sym("=="),
+            MettaValue::Long(1),
+            MettaValue::Long(1),
+        ]);
+        assert!(can_compile(&eq));
+    }
+
+    #[test]
+    fn test_can_compile_control_flow() {
+        let if_expr = MettaValue::SExpr(vec![
+            MettaValue::sym("if"),
+            MettaValue::Bool(true),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        assert!(can_compile(&if_expr));
+
+        let quote_expr = MettaValue::SExpr(vec![
+            MettaValue::sym("quote"),
+            MettaValue::Long(42),
+        ]);
+        assert!(can_compile(&quote_expr));
+    }
+
+    #[test]
+    fn test_can_compile_nondeterminism() {
+        let superpose = MettaValue::SExpr(vec![
+            MettaValue::sym("superpose"),
+            MettaValue::SExpr(vec![
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+        ]);
+        assert!(can_compile(&superpose));
+
+        let collapse = MettaValue::SExpr(vec![
+            MettaValue::sym("collapse"),
+            MettaValue::Long(42),
+        ]);
+        assert!(can_compile(&collapse));
+    }
+
+    #[test]
+    fn test_can_compile_not_compilable() {
+        use crate::backend::models::SpaceHandle;
+
+        // Special forms that need environment
+        let let_expr = MettaValue::SExpr(vec![
+            MettaValue::sym("let"),
+            MettaValue::sym("$x"),
+            MettaValue::Long(1),
+            MettaValue::sym("$x"),
+        ]);
+        assert!(!can_compile(&let_expr));
+
+        // Rule definition
+        let rule = MettaValue::SExpr(vec![
+            MettaValue::sym("="),
+            MettaValue::sym("foo"),
+            MettaValue::Long(42),
+        ]);
+        assert!(!can_compile(&rule));
+
+        // Space values
+        let space = MettaValue::Space(SpaceHandle::new(1, "test".to_string()));
+        assert!(!can_compile(&space));
+
+        // State values
+        let state = MettaValue::State(123);
+        assert!(!can_compile(&state));
+    }
+
+    #[test]
+    fn test_eval_bytecode_simple() {
+        // Test simple arithmetic: (+ 1 2) = 3
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::sym("+"),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+
+        let results = eval_bytecode(&expr).expect("eval should succeed");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+    }
+
+    #[test]
+    fn test_eval_bytecode_nested() {
+        // Test nested: (+ (* 2 3) 4) = 10
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::sym("+"),
+            MettaValue::SExpr(vec![
+                MettaValue::sym("*"),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::Long(4),
+        ]);
+
+        let results = eval_bytecode(&expr).expect("eval should succeed");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(10));
+    }
+
+    #[test]
+    fn test_eval_bytecode_boolean() {
+        // Test: (and True False) = False
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::sym("and"),
+            MettaValue::Bool(true),
+            MettaValue::Bool(false),
+        ]);
+
+        let results = eval_bytecode(&expr).expect("eval should succeed");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+    }
+
+    #[test]
+    fn test_eval_bytecode_comparison() {
+        // Test: (< 5 10) = True
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::sym("<"),
+            MettaValue::Long(5),
+            MettaValue::Long(10),
+        ]);
+
+        let results = eval_bytecode(&expr).expect("eval should succeed");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+    }
+
+    #[test]
+    fn test_try_bytecode_eval_success() {
+        // When bytecode is enabled and expression is compilable, use bytecode
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::sym("+"),
+            MettaValue::Long(10),
+            MettaValue::Long(20),
+        ]);
+
+        let results = try_bytecode_eval(&expr, || {
+            vec![MettaValue::Long(999)] // Fallback should not be called
+        });
+
+        // If bytecode is enabled, result should be 30
+        // If bytecode is disabled, fallback returns 999
+        #[cfg(feature = "bytecode")]
+        assert_eq!(results[0], MettaValue::Long(30));
+        #[cfg(not(feature = "bytecode"))]
+        assert_eq!(results[0], MettaValue::Long(999));
+    }
+
+    #[test]
+    fn test_try_bytecode_eval_fallback() {
+        // Non-compilable expression should use fallback
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::sym("let"),
+            MettaValue::sym("$x"),
+            MettaValue::Long(1),
+            MettaValue::sym("$x"),
+        ]);
+
+        let results = try_bytecode_eval(&expr, || {
+            vec![MettaValue::Long(42)] // Fallback should be called
+        });
+
+        assert_eq!(results[0], MettaValue::Long(42));
     }
 }

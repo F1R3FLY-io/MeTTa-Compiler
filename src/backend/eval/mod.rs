@@ -433,7 +433,28 @@ fn suggest_special_form_with_context(
 /// Returns (results, new_environment)
 /// This is the public entry point that uses iterative evaluation with an explicit work stack
 /// to prevent stack overflow for large expressions.
+///
+/// When the `bytecode` feature is enabled, supported expressions are compiled to bytecode
+/// and executed by the bytecode VM for improved performance. Complex expressions that
+/// require environment access (rules, spaces, etc.) fall back to the tree-walking evaluator.
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
+    // Try bytecode evaluation when the feature is enabled
+    #[cfg(feature = "bytecode")]
+    {
+        use crate::backend::bytecode::{can_compile, eval_bytecode, BYTECODE_ENABLED};
+
+        // Only try bytecode for expressions that don't need environment
+        // and when bytecode is enabled at runtime
+        if BYTECODE_ENABLED && can_compile(&value) {
+            if let Ok(results) = eval_bytecode(&value) {
+                // Bytecode evaluation succeeded - return results with unchanged env
+                return (results, env);
+            }
+            // Bytecode failed (e.g., unsupported operation encountered)
+            // Fall through to tree-walking evaluator
+        }
+    }
+
     eval_trampoline(value, env)
 }
 

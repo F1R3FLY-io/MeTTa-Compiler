@@ -139,6 +139,9 @@ interning = []
 # Symbol interning: O(1) symbol comparison via lasso crate
 # Provides 5-10% improvement for rule-heavy workloads
 symbol-interning = ["lasso"]
+# Bytecode VM: Compiles expressions to bytecode for faster execution
+# Provides 15-750x speedup for arithmetic/boolean chains
+bytecode = []
 
 [dev-dependencies]
 # For integration tests

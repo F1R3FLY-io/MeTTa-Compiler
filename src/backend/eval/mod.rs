@@ -1748,6 +1748,43 @@ mod tests {
     }
 
     #[test]
+    fn test_greater_than_or_equal_operator() {
+        // Regression test for >= operator
+        // Tests all cases: greater, equal, and less
+        let env = Environment::new();
+
+        // Test: 5 >= 3 should be true (greater case)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom(">=".to_string()),
+            MettaValue::Long(5),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // Test: 3 >= 3 should be true (equal case)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom(">=".to_string()),
+            MettaValue::Long(3),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // Test: 2 >= 5 should be false (less case)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom(">=".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(5),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+    }
+
+    #[test]
     fn test_equality_literals() {
         // From c1_grounded_basic.metta: (== 4 (+ 2 2))
         let env = Environment::new();

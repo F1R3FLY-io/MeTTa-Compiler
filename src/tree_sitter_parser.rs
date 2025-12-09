@@ -532,10 +532,7 @@ mod tests {
 
         // & prefix creates space reference token (like $var for variables)
         let result = strip_spans_vec(&parser.parse("&y").unwrap());
-        assert_eq!(
-            result,
-            vec![SExpr::Atom("&y".to_string(), None)]
-        );
+        assert_eq!(result, vec![SExpr::Atom("&y".to_string(), None)]);
 
         // Wildcard
         let result = strip_spans_vec(&parser.parse("_").unwrap());

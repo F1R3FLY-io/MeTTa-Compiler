@@ -75,7 +75,7 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
     // Parse space reference (e.g., &self)
     match space_ref {
         MettaValue::Atom(s) if s.starts_with('&') => {
-            let space_name = &s[1..];  // Extract "self" from "&self"
+            let space_name = &s[1..]; // Extract "self" from "&self"
 
             if space_name == "self" {
                 // Use optimized match_space method that works directly with MORK
@@ -153,7 +153,10 @@ pub(super) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
                 (vec![], new_env)
             } else {
                 let err = MettaValue::Error(
-                    format!("add-atom only supports '&self' as space reference, got: {:?}", space_ref),
+                    format!(
+                        "add-atom only supports '&self' as space reference, got: {:?}",
+                        space_ref
+                    ),
                     Arc::new(MettaValue::SExpr(args.to_vec())),
                 );
                 (vec![err], env)
@@ -208,13 +211,16 @@ pub(super) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 
                 // Remove atom from environment's MORK space
                 // Note: remove_from_space returns bool indicating if atom was found
-                let _removed = new_env.remove_from_space(atom);
+                new_env.remove_from_space(atom);
 
                 // Return empty list (idempotent - success even if not found)
                 (vec![], new_env)
             } else {
                 let err = MettaValue::Error(
-                    format!("remove-atom only supports '&self' as space reference, got: {:?}", space_ref),
+                    format!(
+                        "remove-atom only supports '&self' as space reference, got: {:?}",
+                        space_ref
+                    ),
                     Arc::new(MettaValue::SExpr(args.to_vec())),
                 );
                 (vec![err], env)
@@ -636,7 +642,9 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(msg.contains("match requires space reference (e.g., &self) as first argument"));
+                assert!(
+                    msg.contains("match requires space reference (e.g., &self) as first argument")
+                );
             }
             _ => panic!("Expected error for wrong space reference"),
         }

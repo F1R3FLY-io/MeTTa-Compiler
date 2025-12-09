@@ -1184,7 +1184,7 @@ mod tests {
         ]);
 
         let (results, _) = eval(match_query, env);
-        assert!(results.len() >= 2); // Should return both alice and bob
+        assert!(results.len() >= 2, "Expected >= 2 results, got {:?}", results); // Should return both alice and bob
         assert!(results.contains(&MettaValue::Atom("alice".to_string())));
         assert!(results.contains(&MettaValue::Atom("bob".to_string())));
     }

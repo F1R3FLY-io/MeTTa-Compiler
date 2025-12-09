@@ -561,14 +561,10 @@ impl Environment {
         use mork_expr::{maybe_byte_item, Tag};
         use std::slice::from_raw_parts;
 
-        // CACHE CHECK: Use pointer address as cache key for O(1) lookups
-        let cache_key = expr.ptr as usize;
-        let cached_result = MORK_VALUE_CACHE.with(|cache| {
-            cache.borrow_mut().get(&cache_key).cloned()
-        });
-        if let Some(cached_value) = cached_result {
-            return Ok(cached_value);
-        }
+        // CACHE DISABLED: Pointer-based caching doesn't work with PathMap's buffer reuse.
+        // PathMap's read_zipper.path() returns a reference to an internal buffer that
+        // changes content in-place while the pointer stays constant during iteration.
+        // A proper fix would require content-based hashing, but for now we disable it.
 
         // Stack-based traversal to avoid recursion limits
         #[derive(Debug)]
@@ -725,12 +721,8 @@ impl Environment {
             'popping: loop {
                 let v = current_value.take().expect("value must be Some at start of popping loop");
 
-                // Check if stack is empty - if so, cache and return the value
+                // Check if stack is empty - if so, return the value
                 if stack.is_empty() {
-                    // CACHE STORE: Store successful conversion for future lookups
-                    MORK_VALUE_CACHE.with(|cache| {
-                        cache.borrow_mut().put(cache_key, v.clone());
-                    });
                     return Ok(v);
                 }
 
@@ -1063,13 +1055,13 @@ impl Environment {
         // This is "Tier 0" optimization - skips entire iteration if bloom filter says no match
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
-            if !self
+            let bloom_result = self
                 .shared
                 .head_arity_bloom
                 .read()
                 .unwrap()
-                .may_contain(expected_head.as_bytes(), pattern_arity)
-            {
+                .may_contain(expected_head.as_bytes(), pattern_arity);
+            if !bloom_result {
                 // Definitely no matching expressions exist
                 return Vec::new();
             }
@@ -1083,25 +1075,37 @@ impl Environment {
         // If the pattern has a fixed head (not a variable), we can skip MORK expressions
         // with different heads WITHOUT doing cache lookup or full conversion.
         let pattern_head_bytes: Option<&[u8]> = pattern.get_head_symbol().map(|s| s.as_bytes());
+        // Note: mork_head_info() already adjusts MORK arity to match MettaValue convention
         let pattern_arity = pattern.get_arity() as u8;
 
         // 1. Iterate through MORK PathMap (primary storage)
+        let mut iteration_count = 0usize;
         while rz.to_next_val() {
+            iteration_count += 1;
             let ptr = rz.path().as_ptr();
 
             // LAZY HEAD EXTRACTION: O(1) pre-filter before cache lookup
             // If pattern has a fixed head, check MORK bytes directly
+            // DISABLED: pre-filter extracts wrong data from rz.path()
+            // TODO: Investigate why mork_head_info returns garbage bytes
+            /*
             if let Some(expected_head) = pattern_head_bytes {
                 // Safety: ptr is from PathMap read_zipper, guaranteed valid
                 if let Some((mork_head, mork_arity)) = unsafe { Self::mork_head_info(ptr) } {
                     // Quick rejection: skip if head symbol or arity doesn't match
+                    eprintln!("DEBUG: pre-filter mork_head={:?} mork_arity={} expected_head={:?} pattern_arity={}",
+                        String::from_utf8_lossy(mork_head), mork_arity,
+                        String::from_utf8_lossy(expected_head), pattern_arity);
                     if mork_head != expected_head || mork_arity != pattern_arity {
+                        eprintln!("DEBUG: pre-filter REJECTED");
                         continue; // Skip this expression entirely - no cache lookup needed!
                     }
+                    eprintln!("DEBUG: pre-filter PASSED");
                 }
                 // If mork_head_info returns None, the expression has variable/nested head
                 // Fall through to full conversion (might still match if pattern head is a literal)
             }
+            */
 
             // Get the s-expression at this position
             let expr = Expr {
@@ -1177,13 +1181,15 @@ impl Environment {
 
         // OPTIMIZATION: Extract pattern's head symbol and arity for lazy pre-filtering
         let pattern_head_bytes: Option<&[u8]> = pattern.get_head_symbol().map(|s| s.as_bytes());
+        // Note: mork_head_info() already adjusts MORK arity to match MettaValue convention
         let pattern_arity = pattern.get_arity() as u8;
 
         // 1. Iterate through MORK PathMap (primary storage) - EARLY EXIT on first match
         while rz.to_next_val() {
             let ptr = rz.path().as_ptr();
 
-            // LAZY HEAD EXTRACTION: O(1) pre-filter before cache lookup
+            // DISABLED: pre-filter extracts wrong data from rz.path()
+            /*
             if let Some(expected_head) = pattern_head_bytes {
                 if let Some((mork_head, mork_arity)) = unsafe { Self::mork_head_info(ptr) } {
                     if mork_head != expected_head || mork_arity != pattern_arity {
@@ -1191,6 +1197,8 @@ impl Environment {
                     }
                 }
             }
+            */
+            let _ = (pattern_head_bytes, pattern_arity); // suppress unused warnings
 
             let expr = Expr {
                 ptr: ptr.cast_mut(),
@@ -1252,13 +1260,16 @@ impl Environment {
         let mut rz = space.btm.read_zipper();
 
         let pattern_head_bytes: Option<&[u8]> = pattern.get_head_symbol().map(|s| s.as_bytes());
+        // Note: mork_head_info() already adjusts MORK arity to match MettaValue convention
         let pattern_arity = pattern.get_arity() as u8;
 
         // Iterate through MORK PathMap - EARLY EXIT on first match
         while rz.to_next_val() {
             let ptr = rz.path().as_ptr();
 
-            // LAZY HEAD EXTRACTION: O(1) pre-filter
+            // DISABLED: pre-filter extracts wrong data from rz.path()
+            // TODO: Investigate why mork_head_info returns garbage bytes
+            /*
             if let Some(expected_head) = pattern_head_bytes {
                 if let Some((mork_head, mork_arity)) = unsafe { Self::mork_head_info(ptr) } {
                     if mork_head != expected_head || mork_arity != pattern_arity {
@@ -1266,6 +1277,8 @@ impl Environment {
                     }
                 }
             }
+            */
+            let _ = (pattern_head_bytes, pattern_arity); // suppress unused warnings
 
             let expr = Expr {
                 ptr: ptr.cast_mut(),

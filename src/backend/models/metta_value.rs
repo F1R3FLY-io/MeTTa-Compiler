@@ -75,20 +75,18 @@ impl MettaValue {
 
     /// Create an S-expression from a vector of values
     ///
-    /// Returns Nil if the vector is empty.
+    /// HE-compatible: Empty S-expression () is distinct from Nil.
     ///
     /// # Example
     /// ```ignore
     /// let sexpr = MettaValue::sexpr(vec![MettaValue::sym("+"), MettaValue::Long(1), MettaValue::Long(2)]);
     /// // Produces: SExpr([Atom("+"), Long(1), Long(2)])
+    /// let empty = MettaValue::sexpr(vec![]);
+    /// // Produces: SExpr([]) - distinct from Nil
     /// ```
     #[inline]
     pub fn sexpr(items: Vec<MettaValue>) -> Self {
-        if items.is_empty() {
-            MettaValue::Nil
-        } else {
-            MettaValue::SExpr(items)
-        }
+        MettaValue::SExpr(items)
     }
 
     /// Get the type name of this value as a string slice

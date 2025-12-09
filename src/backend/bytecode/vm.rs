@@ -1926,7 +1926,8 @@ mod tests {
         let mut vm = BytecodeVM::new(chunk);
         let results = vm.run().expect("VM should succeed");
 
-        assert_eq!(results[0], MettaValue::Nil);
+        // HE-compatible: PushEmpty pushes an empty S-expression (), distinct from Nil
+        assert_eq!(results[0], MettaValue::SExpr(vec![]));
     }
 
     #[test]

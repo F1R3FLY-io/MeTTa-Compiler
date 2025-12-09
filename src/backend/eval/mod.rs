@@ -520,10 +520,10 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                     // Need to evaluate S-expression sub-items
                     EvalStep::EvalSExpr { items, env, depth } => {
                         if items.is_empty() {
-                            // Empty s-expression evaluates to Nil
+                            // HE-compatible: empty SExpr () evaluates to itself, not Nil
                             work_stack.push(WorkItem::Resume {
                                 cont_id,
-                                result: (vec![MettaValue::Nil], env),
+                                result: (vec![MettaValue::SExpr(vec![])], env),
                             });
                         } else {
                             // Convert to VecDeque ONCE (O(n)) and pop front (O(1))

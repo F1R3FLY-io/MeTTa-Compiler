@@ -28,6 +28,10 @@
           "named": true
         },
         {
+          "type": "space_reference",
+          "named": true
+        },
+        {
           "type": "special_type_symbol",
           "named": true
         },
@@ -164,7 +168,6 @@
   {
     "type": "source_file",
     "named": true,
-    "root": true,
     "fields": {},
     "children": {
       "multiple": true,
@@ -223,8 +226,7 @@
   },
   {
     "type": "line_comment",
-    "named": true,
-    "extra": true
+    "named": true
   },
   {
     "type": "logic_operator",
@@ -244,6 +246,10 @@
   },
   {
     "type": "rule_definition_operator",
+    "named": true
+  },
+  {
+    "type": "space_reference",
     "named": true
   },
   {

@@ -108,7 +108,7 @@ Pattern matching with match
 
 (leaf1 leaf2)
 (leaf0 leaf1)
-!(match & self ($x leaf2) $x)
+!(match &self ($x leaf2) $x)
 
 ---
 
@@ -139,11 +139,7 @@ Pattern matching with match
               (identifier)))
           (expression
             (atom_expression
-              (operator
-                (punctuation_operator))))
-          (expression
-            (atom_expression
-              (identifier)))
+              (space_reference)))
           (expression
             (list
               (expression

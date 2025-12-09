@@ -256,8 +256,11 @@ impl TreeSitterMettaParser {
         let span = self.node_span(node);
 
         match node.kind() {
-            // Variables: $var, &var, 'var
+            // Variables: $var
             "variable" => Ok(vec![SExpr::Atom(text, Some(span))]),
+
+            // Space references: &name (e.g., &self, &kb, &workspace)
+            "space_reference" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
             // Wildcard: _
             "wildcard" => Ok(vec![SExpr::Atom(text, Some(span))]),
@@ -527,14 +530,11 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("$x").unwrap());
         assert_eq!(result, vec![SExpr::Atom("$x".to_string(), None)]);
 
-        // & is now an operator (space reference), not a variable prefix
+        // & prefix creates space reference token (like $var for variables)
         let result = strip_spans_vec(&parser.parse("&y").unwrap());
         assert_eq!(
             result,
-            vec![
-                SExpr::Atom("&".to_string(), None),
-                SExpr::Atom("y".to_string(), None)
-            ]
+            vec![SExpr::Atom("&y".to_string(), None)]
         );
 
         // Wildcard

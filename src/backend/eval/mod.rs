@@ -498,6 +498,8 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "return" => return EvalStep::Done(evaluation::eval_return(items, env)),
             "chain" => return EvalStep::Done(evaluation::eval_chain(items, env)),
             "match" => return EvalStep::Done(space::eval_match(items, env)),
+            "add-atom" => return EvalStep::Done(space::eval_add_atom(items, env)),
+            "remove-atom" => return EvalStep::Done(space::eval_remove_atom(items, env)),
             "case" => return EvalStep::Done(control_flow::eval_case(items, env)),
             "switch" => return EvalStep::Done(control_flow::eval_switch(items, env)),
             "switch-minimal" => {
@@ -2256,11 +2258,10 @@ mod tests {
         ]);
         assert!(!env.has_sexpr_fact(&inner_expr)); // NOT stored separately
 
-        // Use pattern matching to extract the nested part: (match & self (Outer $x) $x)
+        // Use pattern matching to extract the nested part: (match &self (Outer $x) $x)
         let match_query = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("self".to_string()),
+            MettaValue::Atom("&self".to_string()),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("Outer".to_string()),
                 MettaValue::Atom("$x".to_string()), // Variable to capture nested part

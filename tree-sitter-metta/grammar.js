@@ -42,6 +42,7 @@ module.exports = grammar({
     // Order matters: more specific patterns first
     atom_expression: $ => choice(
       $.variable,
+      $.space_reference,
       $.wildcard,
       $.boolean_literal,  // Must come before identifier
       $.special_type_symbol,  // Must come before operator (contains %)
@@ -53,29 +54,41 @@ module.exports = grammar({
     ),
 
     // Variables: $var (for pattern variables)
-    // Note: & is an operator (space reference), not a variable prefix
-    // Note: 'var is handled by quote_prefix in prefixed_expression
+    // Supports unicode: letters, numbers, symbols, marks, and most punctuation
+    // Excludes: ()[]{}; which have special meaning in MeTTa
     variable: $ => token(
-      seq('$', /[a-zA-Z0-9_'\-+*/&]*/)
+      seq('$', /[^\s()\[\]{};]*/u)
+    ),
+
+    // Space references: &name (for referencing spaces)
+    // Examples: &self, &kb, &workspace
+    // Supports unicode just like variables
+    space_reference: $ => token(
+      seq('&', /[^\s()\[\]{};]*/u)
     ),
 
     // Wildcard pattern
     wildcard: $ => '_',
 
     // Boolean literals (higher precedence than identifier)
-    boolean_literal: $ => token(prec(3, choice('True', 'False'))),
+    boolean_literal: $ => token(prec(11, choice('True', 'False'))),
 
     // Special type symbols: %Undefined%, %Irreducible%, etc.
     // Used in official MeTTa stdlib for special type markers
-    special_type_symbol: $ => token(prec(3, /%[A-Za-z][A-Za-z0-9_-]*%/)),
+    special_type_symbol: $ => token(prec(11, /%[A-Za-z][A-Za-z0-9_-]*%/)),
 
     // Regular identifiers (no special prefix)
-    identifier: $ => token(prec(2, choice(
-      // Standard identifiers: letters, digits, allowed special chars
-      /[a-zA-Z][a-zA-Z0-9_'\-+*/]*/,
-      // Can start with some operators if followed by alphanumeric
-      /[+\-*/][a-zA-Z0-9_'\-+*/]+/,
-    ))),
+    // Supports unicode - any non-whitespace, non-special character
+    // Must NOT start with special tokens or operators (handled separately)
+    // Excludes: ()[]{}; whitespace, and all operator/special chars
+    // High precedence (10) ensures identifiers like println! are captured as single
+    // tokens before the ! can be claimed by exclaim_prefix for prefixed_expression
+    identifier: $ => token(prec(10,
+      // Identifiers starting with letters or most unicode (not operators/special)
+      // Excluded from start: $ ! ? ' " & digits + - * / _ : = > < | , @ .
+      // Continuation allows ! so println!, import!, bind-space! work as single tokens
+      /[^\s()\[\]{};$!?'"&\d+\-*/_:=><|,@.][^\s()\[\]{};]*/u,
+    )),
 
     // Operators (decomposed by type)
     operator: $ => choice(
@@ -97,9 +110,10 @@ module.exports = grammar({
       '<<-',
     ))),
 
-    // Comparison operators: ==, >, < (single char has lower precedence)
-    comparison_operator: $ => token(prec(1, choice(
+    // Comparison operators: ==, >=, >, < (multi-char needs higher precedence than =)
+    comparison_operator: $ => token(prec(2, choice(
       '==',
+      '>=',
       '>',
       '<',
     ))),

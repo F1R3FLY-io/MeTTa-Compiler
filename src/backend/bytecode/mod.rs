@@ -157,48 +157,75 @@ impl std::error::Error for BytecodeEvalError {}
 ///
 /// Returns true for expressions that the bytecode compiler supports.
 /// Currently supports:
-/// - Literals (numbers, bools, strings, symbols)
-/// - Arithmetic operations (+, -, *, /, %)
-/// - Comparison operations (<, <=, >, >=, ==)
-/// - Boolean operations (and, or, not)
-/// - S-expressions
-/// - Superpose (nondeterminism)
-/// - Quote
+/// - Literals (numbers, bools, strings)
+/// - Variables (atoms starting with $)
+/// - Arithmetic operations (+, -, *, /, %) with compilable operands
+/// - Comparison operations (<, <=, >, >=, ==) with compilable operands
+/// - Boolean operations (and, or, not) with compilable operands
+/// - Quote (returns argument unevaluated)
+/// - Superpose/collapse (nondeterminism) with compilable alternatives
+///
+/// **Important**: This function is recursive - it checks that ALL subexpressions
+/// can also be compiled. This prevents the bytecode VM from returning wrong results
+/// when a subexpression needs rule resolution.
 pub fn can_compile(expr: &MettaValue) -> bool {
     match expr {
         // Always compilable literals
         MettaValue::Nil | MettaValue::Unit | MettaValue::Bool(_) |
         MettaValue::Long(_) | MettaValue::Float(_) | MettaValue::String(_) => true,
 
-        // Atoms (symbols and variables) - variables start with $
-        MettaValue::Atom(_) => true,
+        // Atoms: only variables and known constants are safe
+        // - Variables (start with $) are OK - they'll be substituted
+        // - Other atoms might need rule resolution, so reject them
+        MettaValue::Atom(name) => {
+            // Variables are OK
+            if name.starts_with('$') {
+                return true;
+            }
+            // Known constants are OK
+            match name.as_str() {
+                "True" | "False" | "Nil" | "Unit" | "_" => true,
+                // Other atoms could be function calls - reject
+                _ => false,
+            }
+        }
 
-        // S-expressions - check if supported operation
+        // S-expressions - check head AND all operands recursively
         MettaValue::SExpr(items) if items.is_empty() => true,
         MettaValue::SExpr(items) => {
             // Check head for supported operations
             if let MettaValue::Atom(head) = &items[0] {
-                match head.as_str() {
+                let head_ok = match head.as_str() {
                     // Arithmetic
                     "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => true,
                     // Comparison
                     "<" | "<=" | ">" | ">=" | "==" | "!=" => true,
                     // Boolean
                     "and" | "or" | "not" | "xor" => true,
-                    // Control flow
-                    "if" | "quote" => true,
+                    // Control flow - if needs compilable condition and branches
+                    "if" => true,
+                    // Quote - argument is NOT evaluated, so always OK
+                    "quote" => return true, // Early return - don't check args
                     // Nondeterminism
                     "superpose" | "collapse" => true,
                     // List operations
                     "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" => true,
-                    // For now, reject complex special forms that need environment
-                    "let" | "let*" | "match" | "unify" | "=" | "!" => false,
-                    // Unknown - try to compile (may fail)
+                    // Reject everything else (let, match, unify, etc.)
                     _ => false,
+                };
+
+                if !head_ok {
+                    return false;
                 }
+
+                // IMPORTANT: Recursively check all operands
+                // This ensures we don't compile (+ 1 (foo $x)) where (foo $x)
+                // would need rule resolution
+                items.iter().skip(1).all(can_compile)
             } else {
-                // Non-atom head - S-expression application, may be complex
-                false
+                // Non-atom head - this is a data list like (1 2 3), not a function call
+                // All elements must be compilable
+                items.iter().all(can_compile)
             }
         }
 
@@ -439,8 +466,20 @@ mod tests {
         assert!(can_compile(&MettaValue::Long(42)));
         assert!(can_compile(&MettaValue::Float(3.14)));
         assert!(can_compile(&MettaValue::String("hello".to_string())));
-        assert!(can_compile(&MettaValue::Atom("foo".to_string())));
-        assert!(can_compile(&MettaValue::Atom("$x".to_string()))); // Variable
+
+        // Variables are compilable
+        assert!(can_compile(&MettaValue::Atom("$x".to_string())));
+
+        // Known constants are compilable
+        assert!(can_compile(&MettaValue::Atom("True".to_string())));
+        assert!(can_compile(&MettaValue::Atom("False".to_string())));
+        assert!(can_compile(&MettaValue::Atom("Nil".to_string())));
+        assert!(can_compile(&MettaValue::Atom("Unit".to_string())));
+        assert!(can_compile(&MettaValue::Atom("_".to_string()))); // Wildcard
+
+        // Plain atoms are NOT compilable (they could be function calls)
+        assert!(!can_compile(&MettaValue::Atom("foo".to_string())));
+        assert!(!can_compile(&MettaValue::Atom("bar".to_string())));
     }
 
     #[test]

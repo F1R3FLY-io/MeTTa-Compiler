@@ -12,11 +12,11 @@
 ; Sequential execution
 ((+ 1 2) (- 5 3) (* 4 2))
 
-; Pattern matching
-(match $space $x $x)
+; Pattern matching with &self
+!(match &self (= (add $a $b) $body) (found $a $b $body))
 
 ; Knowledge base entry
-(! (= $fact 42) .)
+(= $fact 42)
 
-; Query
-(? $fact .)
+; Query the space
+!(match &self (= $fact $val) $val)

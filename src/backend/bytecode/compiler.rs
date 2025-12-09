@@ -1008,6 +1008,10 @@ impl Compiler {
             self.builder.emit_raw(&idx.to_be_bytes());
         }
 
+        // Emit Yield to collect each alternative as a result
+        // After Fork pushes an alternative, Yield saves it and backtracks for more
+        self.builder.emit(Opcode::Yield);
+
         Ok(())
     }
 

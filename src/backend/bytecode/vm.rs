@@ -1221,30 +1221,33 @@ impl BytecodeVM {
             return self.op_fail().map(|_| ());
         }
 
-        // Pop alternatives from stack
-        let len = self.value_stack.len();
-        if count > len {
-            return Err(VmError::StackUnderflow);
+        // Read constant indices from bytecode (compiler emits u16 indices after Fork)
+        let mut alternatives = Vec::with_capacity(count);
+        for _ in 0..count {
+            let const_idx = self.read_u16()?;
+            let value = self.chunk.get_constant(const_idx)
+                .ok_or(VmError::InvalidConstant(const_idx))?
+                .clone();
+            alternatives.push(Alternative::Value(value));
         }
 
-        let alternatives: Vec<Alternative> = self.value_stack
-            .drain((len - count)..)
-            .map(Alternative::Value)
-            .collect();
+        // Create choice point with remaining alternatives
+        // Save IP pointing past all constant indices (where execution should resume)
+        let resume_ip = self.ip;
 
-        // Create choice point
-        let cp = ChoicePoint {
-            value_stack_height: self.value_stack.len(),
-            call_stack_height: self.call_stack.len(),
-            bindings_stack_height: self.bindings_stack.len(),
-            ip: self.ip,
-            chunk: Arc::clone(&self.chunk),
-            alternatives: alternatives[1..].to_vec(),
-        };
+        if alternatives.len() > 1 {
+            let cp = ChoicePoint {
+                value_stack_height: self.value_stack.len(),
+                call_stack_height: self.call_stack.len(),
+                bindings_stack_height: self.bindings_stack.len(),
+                ip: resume_ip,
+                chunk: Arc::clone(&self.chunk),
+                alternatives: alternatives[1..].to_vec(),
+            };
+            self.choice_points.push(cp);
+        }
 
-        self.choice_points.push(cp);
-
-        // Push first alternative
+        // Push first alternative and continue execution
         if let Alternative::Value(v) = &alternatives[0] {
             self.push(v.clone());
         }
@@ -2348,11 +2351,19 @@ mod tests {
     #[test]
     fn test_vm_fork_yield() {
         let mut builder = ChunkBuilder::new("test");
-        // Push 3 alternatives
-        builder.emit_byte(Opcode::PushLongSmall, 1);
-        builder.emit_byte(Opcode::PushLongSmall, 2);
-        builder.emit_byte(Opcode::PushLongSmall, 3);
+
+        // Add alternatives as constants
+        let idx1 = builder.add_constant(MettaValue::Long(1));
+        let idx2 = builder.add_constant(MettaValue::Long(2));
+        let idx3 = builder.add_constant(MettaValue::Long(3));
+
+        // Fork: reads count, then count constant indices from bytecode
         builder.emit_u16(Opcode::Fork, 3);
+        builder.emit_raw(&idx1.to_be_bytes());
+        builder.emit_raw(&idx2.to_be_bytes());
+        builder.emit_raw(&idx3.to_be_bytes());
+
+        // Yield collects each result and backtracks
         builder.emit(Opcode::Yield);
 
         let chunk = builder.build_arc();
@@ -2369,11 +2380,18 @@ mod tests {
     #[test]
     fn test_vm_cut() {
         let mut builder = ChunkBuilder::new("test");
-        // Push 3 alternatives
-        builder.emit_byte(Opcode::PushLongSmall, 1);
-        builder.emit_byte(Opcode::PushLongSmall, 2);
-        builder.emit_byte(Opcode::PushLongSmall, 3);
+
+        // Add alternatives as constants
+        let idx1 = builder.add_constant(MettaValue::Long(1));
+        let idx2 = builder.add_constant(MettaValue::Long(2));
+        let idx3 = builder.add_constant(MettaValue::Long(3));
+
+        // Fork: reads count, then count constant indices from bytecode
         builder.emit_u16(Opcode::Fork, 3);
+        builder.emit_raw(&idx1.to_be_bytes());
+        builder.emit_raw(&idx2.to_be_bytes());
+        builder.emit_raw(&idx3.to_be_bytes());
+
         builder.emit(Opcode::Cut); // Remove all choice points
         builder.emit(Opcode::Return);
 

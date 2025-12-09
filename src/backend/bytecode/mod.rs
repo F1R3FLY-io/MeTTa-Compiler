@@ -100,12 +100,14 @@ pub mod opcodes;
 pub mod chunk;
 pub mod vm;
 pub mod compiler;
+pub mod mork_bridge;
 
 // Re-export main types
 pub use opcodes::Opcode;
 pub use chunk::{BytecodeChunk, ChunkBuilder, CompiledPattern, JumpLabel, JumpLabelShort, JumpTable};
 pub use vm::{BytecodeVM, VmConfig, VmError, VmResult, CallFrame, BindingFrame, ChoicePoint, Alternative};
 pub use compiler::{Compiler, CompileContext, CompileError, CompileResult, compile, compile_arc};
+pub use mork_bridge::{MorkBridge, CompiledRule, BridgeStats};
 
 /// Feature flag for enabling bytecode VM
 ///

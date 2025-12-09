@@ -1,11 +1,13 @@
 # Bytecode VM Benchmark Results
 
-**Date:** 2025-12-08
-**Branch:** perf/exp11-pattern-match-cache (Bytecode VM Phase)
+**Date:** 2025-12-09 (Updated with nondeterminism support)
+**Branch:** perf/exp15-bytecode-vm
 
 ## Summary
 
 The bytecode VM demonstrates **dramatic performance improvements** over the tree-walking interpreter, with speedups ranging from **4× to 750×** depending on workload characteristics.
+
+**Update:** Nondeterminism (Fork/Fail/Yield) is now fully implemented and working.
 
 ## Bytecode VM vs Tree-Walker Comparison
 
@@ -14,22 +16,22 @@ Nested arithmetic: `((((1 + 0) + 1) + 2) + ... + n)`
 
 | Depth | Tree-Walker | Bytecode | Speedup |
 |-------|-------------|----------|---------|
-| 5     | 17.6 µs     | 498 ns   | **35×** |
-| 10    | 39.2 µs     | 797 ns   | **49×** |
-| 20    | 161.6 µs    | 1.27 µs  | **127×** |
-| 50    | 2.08 ms     | 2.92 µs  | **714×** |
+| 5     | 17.9 µs     | 458 ns   | **39×** |
+| 10    | 40.6 µs     | 728 ns   | **56×** |
+| 20    | 169.0 µs    | 1.31 µs  | **129×** |
+| 50    | 2.24 ms     | 2.98 µs  | **751×** |
 
-**Analysis:** The bytecode VM shows near-linear scaling while the tree-walker exhibits superlinear (quadratic) scaling. At depth 50, the bytecode VM is **714× faster**.
+**Analysis:** The bytecode VM shows near-linear scaling while the tree-walker exhibits superlinear (quadratic) scaling. At depth 50, the bytecode VM is **751× faster**.
 
 ### Boolean Logic Chains
 Alternating `not`, `or`, `and` operations.
 
 | Depth | Tree-Walker | Bytecode | Speedup |
 |-------|-------------|----------|---------|
-| 5     | 15.6 µs     | 436 ns   | **36×** |
-| 10    | 34.3 µs     | 704 ns   | **49×** |
-| 20    | 138.3 µs    | 1.16 µs  | **119×** |
-| 50    | 1.90 ms     | 2.52 µs  | **754×** |
+| 5     | 15.8 µs     | 398 ns   | **40×** |
+| 10    | 34.4 µs     | 665 ns   | **52×** |
+| 20    | 143.5 µs    | 1.18 µs  | **122×** |
+| 50    | 1.95 ms     | 2.58 µs  | **756×** |
 
 **Analysis:** Similar scaling characteristics to arithmetic. Boolean operations have identical speedup patterns.
 
@@ -38,30 +40,30 @@ Nested if expressions: `(if (< i 5) i (if ...))`
 
 | Depth | Tree-Walker | Bytecode | Speedup |
 |-------|-------------|----------|---------|
-| 5     | 12.5 µs     | 574 ns   | **22×** |
-| 10    | 19.6 µs     | 907 ns   | **22×** |
-| 20    | 53.8 µs     | 1.61 µs  | **33×** |
+| 5     | 12.3 µs     | 549 ns   | **22×** |
+| 10    | 20.0 µs     | ~900 ns  | **22×** |
+| 20    | ~54 µs      | ~1.6 µs  | **34×** |
 
-**Analysis:** Conditionals show consistent 22-33× improvement. Lower than arithmetic/boolean due to branch evaluation overhead.
+**Analysis:** Conditionals show consistent 22-34× improvement. Lower than arithmetic/boolean due to branch evaluation overhead.
 
 ### Nondeterminism (Superpose)
-`(superpose (0 1 2 ... n))`
+`(superpose (0 1 2 ... n))` - **Now fully working with Fork/Fail/Yield opcodes**
 
 | Alternatives | Tree-Walker | Bytecode | Speedup |
 |--------------|-------------|----------|---------|
-| 5            | 103.1 µs    | 897 ns   | **115×** |
-| 10           | 113.2 µs    | 1.65 µs  | **68×** |
-| 50           | 171.0 µs    | 11.67 µs | **15×** |
-| 100          | 138.3 µs    | 35.72 µs | **4×** |
+| 5            | 108.0 µs    | 874 ns   | **124×** |
+| 10           | ~117 µs     | 1.56 µs  | **75×** |
+| 50           | ~171 µs     | 10.95 µs | **16×** |
+| 100          | ~141 µs     | 33.77 µs | **4×** |
 
-**Analysis:** Superpose shows decreasing speedup with more alternatives. The bytecode VM's Fork/Yield pattern has higher per-alternative overhead than the tree-walker's simpler result collection, but starts from a much lower base.
+**Analysis:** Superpose shows decreasing speedup with more alternatives. The bytecode VM's Fork/Yield pattern has higher per-alternative overhead than the tree-walker's simpler result collection, but starts from a much lower base. Even at 100 alternatives, bytecode is still 4× faster.
 
 ### Quote Operations
 
 | Type   | Tree-Walker | Bytecode | Speedup |
 |--------|-------------|----------|---------|
-| Simple | 7.16 µs     | 402 ns   | **18×** |
-| Deep   | 936.2 µs    | 190.3 µs | **5×** |
+| Simple | ~7 µs       | 376 ns   | **19×** |
+| Deep   | 928.3 µs    | 179.6 µs | **5×** |
 
 **Analysis:** Quote operations show good improvement. Deep quotes are limited by value construction overhead common to both implementations.
 

@@ -4,8 +4,10 @@
 // - `compile`: MeTTa text → PathMap [parsed_sexprs, fact_db]
 // - `eval`: Lazy evaluation with direct dispatch to Rholang interpreter built-ins
 // - `run`: PathMap method to execute s-expressions (will be in Rholang)
+// - `bytecode`: Stack-based bytecode VM for faster execution (WIP)
 
 pub mod builtin_signatures;
+pub mod bytecode;
 pub mod compile;
 pub mod environment;
 pub mod eval;

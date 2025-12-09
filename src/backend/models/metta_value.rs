@@ -49,6 +49,77 @@ pub enum MettaValue {
 pub type ArcValue = Arc<MettaValue>;
 
 impl MettaValue {
+    /// Create a symbol atom from a string slice
+    ///
+    /// # Example
+    /// ```ignore
+    /// let sym = MettaValue::sym("foo");
+    /// // Produces: Atom("foo")
+    /// ```
+    #[inline]
+    pub fn sym(s: &str) -> Self {
+        MettaValue::Atom(s.to_string())
+    }
+
+    /// Create a variable atom (prefixed with $)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let var = MettaValue::var("x");
+    /// // Produces: Atom("$x")
+    /// ```
+    #[inline]
+    pub fn var(name: &str) -> Self {
+        MettaValue::Atom(format!("${}", name))
+    }
+
+    /// Create an S-expression from a vector of values
+    ///
+    /// Returns Nil if the vector is empty.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let sexpr = MettaValue::sexpr(vec![MettaValue::sym("+"), MettaValue::Long(1), MettaValue::Long(2)]);
+    /// // Produces: SExpr([Atom("+"), Long(1), Long(2)])
+    /// ```
+    #[inline]
+    pub fn sexpr(items: Vec<MettaValue>) -> Self {
+        if items.is_empty() {
+            MettaValue::Nil
+        } else {
+            MettaValue::SExpr(items)
+        }
+    }
+
+    /// Get the type name of this value as a string slice
+    ///
+    /// Returns the MeTTa type name for this value variant.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            MettaValue::Atom(s) if s.starts_with('$') => "Variable",
+            MettaValue::Atom(_) => "Symbol",
+            MettaValue::Bool(_) => "Bool",
+            MettaValue::Long(_) => "Number",
+            MettaValue::Float(_) => "Number",
+            MettaValue::String(_) => "String",
+            MettaValue::SExpr(_) => "Expression",
+            MettaValue::Nil => "Nil",
+            MettaValue::Error(_, _) => "Error",
+            MettaValue::Type(_) => "Type",
+            MettaValue::Conjunction(_) => "Conjunction",
+            MettaValue::Space(_) => "Space",
+            MettaValue::State(_) => "State",
+            MettaValue::Unit => "Unit",
+            MettaValue::Memo(_) => "Memo",
+        }
+    }
+
+    /// Check if this value is a variable (Atom starting with $)
+    #[inline]
+    pub fn is_variable(&self) -> bool {
+        matches!(self, MettaValue::Atom(s) if s.starts_with('$'))
+    }
+
     /// Create a quoted expression: (quote inner)
     ///
     /// Returns a quote special form that prevents evaluation of the inner expression.

@@ -498,6 +498,8 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "return" => return EvalStep::Done(evaluation::eval_return(items, env)),
             "chain" => return EvalStep::Done(evaluation::eval_chain(items, env)),
             "match" => return EvalStep::Done(space::eval_match(items, env)),
+            "add-atom" => return EvalStep::Done(space::eval_add_atom(items, env)),
+            "remove-atom" => return EvalStep::Done(space::eval_remove_atom(items, env)),
             "case" => return EvalStep::Done(control_flow::eval_case(items, env)),
             "switch" => return EvalStep::Done(control_flow::eval_switch(items, env)),
             "switch-minimal" => {
@@ -1746,6 +1748,43 @@ mod tests {
     }
 
     #[test]
+    fn test_greater_than_or_equal_operator() {
+        // Regression test for >= operator
+        // Tests all cases: greater, equal, and less
+        let env = Environment::new();
+
+        // Test: 5 >= 3 should be true (greater case)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom(">=".to_string()),
+            MettaValue::Long(5),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // Test: 3 >= 3 should be true (equal case)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom(">=".to_string()),
+            MettaValue::Long(3),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // Test: 2 >= 5 should be false (less case)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom(">=".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(5),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+    }
+
+    #[test]
     fn test_equality_literals() {
         // From c1_grounded_basic.metta: (== 4 (+ 2 2))
         let env = Environment::new();
@@ -2256,11 +2295,10 @@ mod tests {
         ]);
         assert!(!env.has_sexpr_fact(&inner_expr)); // NOT stored separately
 
-        // Use pattern matching to extract the nested part: (match & self (Outer $x) $x)
+        // Use pattern matching to extract the nested part: (match &self (Outer $x) $x)
         let match_query = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("self".to_string()),
+            MettaValue::Atom("&self".to_string()),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("Outer".to_string()),
                 MettaValue::Atom("$x".to_string()), // Variable to capture nested part

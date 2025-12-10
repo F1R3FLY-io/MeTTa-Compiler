@@ -7,20 +7,26 @@
 (= (double $x) (* $x 2))
 (= (quadruple $x) (double (double $x)))
 
-; Add atom to space
-(add-atom $space (= $x 10))
+; Add concrete facts to space - using &self, the only defined space
+!(add-atom &self (person alice 30))
+!(add-atom &self (person bob 25))
+!(add-atom &self (city "Boston"))
+!(add-atom &self (city "Paris"))
 
-; Remove atom from space
-(rem-atom $space $x)
+; Query the space to see what we added
+!(match &self (person $name $age) (found $name $age))
 
-; Transform operation
-(transform $space (+ 1 2))
+; Remove one person
+!(remove-atom &self (person alice 30))
 
-; Bind operation
-(bind! $result (+ 1 2))
+; Verify alice is gone but bob remains
+!(match &self (person $name $age) (found $name $age))
 
-; Note: For nondeterministic evaluation, use official MeTTa's superpose function
-; Example: (superpose ((+ 1 2) (* 3 4) (/ 8 2)))
+; Define transform as shorthand for match - pattern matching wrapper
+(= (transform $pattern $result) (match &self $pattern $result))
+
+; Use transform to find all cities
+!(transform (city $name) (city-found $name))
 
 ; Builtin operations
 (+ 10 20)

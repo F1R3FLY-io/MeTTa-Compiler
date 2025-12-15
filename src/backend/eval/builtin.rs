@@ -35,6 +35,12 @@ pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaVal
         "ceil-math" => Some(eval_ceil(args)),
         "floor-math" => Some(eval_floor(args)),
         "round-math" => Some(eval_round(args)),
+        "sin-math" => Some(eval_sin(args)),
+        "asin-math" => Some(eval_asin(args)),
+        "cos-math" => Some(eval_cos(args)),
+        "acos-math" => Some(eval_acos(args)),
+        "tan-math" => Some(eval_tan(args)),
+        "atan-math" => Some(eval_atan(args)),
         _ => None,
     }
 }
@@ -380,6 +386,108 @@ fn eval_round(args: &[MettaValue]) -> MettaValue {
     };
 
     MettaValue::Long(value.round() as i64)
+}
+
+/// Evaluate sine (unary)
+/// Returns the sine of the input angle in radians
+fn eval_sin(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("sin-math", args, 1, "(sin-math angle)");
+
+    let angle = match extract_float(&args[0], "sin-math") {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    MettaValue::Float(angle.sin())
+}
+
+/// Evaluate arcsine (unary)
+/// Returns the arcsine of the input value in radians
+/// Input must be in the range [-1, 1]
+fn eval_asin(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("asin-math", args, 1, "(asin-math number)");
+
+    let value = match extract_float(&args[0], "asin-math") {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    // asin is only defined for values in [-1, 1]
+    if value < -1.0 || value > 1.0 {
+        return MettaValue::Error(
+            format!(
+                "Arcsine input must be in range [-1, 1]: asin-math({})",
+                value
+            ),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    MettaValue::Float(value.asin())
+}
+
+/// Evaluate cosine (unary)
+/// Returns the cosine of the input angle in radians
+fn eval_cos(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("cos-math", args, 1, "(cos-math angle)");
+
+    let angle = match extract_float(&args[0], "cos-math") {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    MettaValue::Float(angle.cos())
+}
+
+/// Evaluate arccosine (unary)
+/// Returns the arccosine of the input value in radians
+/// Input must be in the range [-1, 1]
+fn eval_acos(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("acos-math", args, 1, "(acos-math number)");
+
+    let value = match extract_float(&args[0], "acos-math") {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    // acos is only defined for values in [-1, 1]
+    if value < -1.0 || value > 1.0 {
+        return MettaValue::Error(
+            format!(
+                "Arccosine input must be in range [-1, 1]: acos-math({})",
+                value
+            ),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    MettaValue::Float(value.acos())
+}
+
+/// Evaluate tangent (unary)
+/// Returns the tangent of the input angle in radians
+fn eval_tan(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("tan-math", args, 1, "(tan-math angle)");
+
+    let angle = match extract_float(&args[0], "tan-math") {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    MettaValue::Float(angle.tan())
+}
+
+/// Evaluate arctangent (unary)
+/// Returns the arctangent of the input value in radians
+fn eval_atan(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("atan-math", args, 1, "(atan-math number)");
+
+    let value = match extract_float(&args[0], "atan-math") {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    MettaValue::Float(value.atan())
 }
 
 /// Extract a Long (integer) value from MettaValue, returning a formatted error if not a Long
@@ -2012,6 +2120,412 @@ mod tests {
         // Test: round-math with bool argument should produce TypeError
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("round-math".to_string()),
+            MettaValue::Bool(false),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sin_basic() {
+        let env = Environment::new();
+
+        // Test: sin(0) = 0
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sin-math".to_string()),
+            MettaValue::Float(0.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 0.0).abs() < 1e-10, "sin(0) should be 0, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: sin(π/2) ≈ 1
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sin-math".to_string()),
+            MettaValue::Float(std::f64::consts::PI / 2.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 1.0).abs() < 1e-10, "sin(π/2) should be 1, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: sin with integer (should convert to float)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sin-math".to_string()),
+            MettaValue::Long(0),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 0.0).abs() < 1e-10, "sin(0) should be 0, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_asin_basic() {
+        let env = Environment::new();
+
+        // Test: asin(0) = 0
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("asin-math".to_string()),
+            MettaValue::Float(0.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 0.0).abs() < 1e-10, "asin(0) should be 0, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: asin(1) = π/2
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("asin-math".to_string()),
+            MettaValue::Float(1.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                let expected = std::f64::consts::PI / 2.0;
+                assert!(
+                    (f - expected).abs() < 1e-10,
+                    "asin(1) should be π/2, got {}",
+                    f
+                );
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: asin(-1) = -π/2
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("asin-math".to_string()),
+            MettaValue::Float(-1.0),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                let expected = -std::f64::consts::PI / 2.0;
+                assert!(
+                    (f - expected).abs() < 1e-10,
+                    "asin(-1) should be -π/2, got {}",
+                    f
+                );
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_asin_out_of_range() {
+        let env = Environment::new();
+
+        // Test: asin(2) should produce error (out of range)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("asin-math".to_string()),
+            MettaValue::Float(2.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("range [-1, 1]"),
+                    "Expected range error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: asin(-2) should produce error (out of range)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("asin-math".to_string()),
+            MettaValue::Float(-2.0),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("range [-1, 1]"),
+                    "Expected range error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cos_basic() {
+        let env = Environment::new();
+
+        // Test: cos(0) = 1
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("cos-math".to_string()),
+            MettaValue::Float(0.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 1.0).abs() < 1e-10, "cos(0) should be 1, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: cos(π/2) ≈ 0
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("cos-math".to_string()),
+            MettaValue::Float(std::f64::consts::PI / 2.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => assert!(f.abs() < 1e-10, "cos(π/2) should be 0, got {}", f),
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: cos(π) = -1
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("cos-math".to_string()),
+            MettaValue::Float(std::f64::consts::PI),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - (-1.0)).abs() < 1e-10, "cos(π) should be -1, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_acos_basic() {
+        let env = Environment::new();
+
+        // Test: acos(1) = 0
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("acos-math".to_string()),
+            MettaValue::Float(1.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 0.0).abs() < 1e-10, "acos(1) should be 0, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: acos(0) = π/2
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("acos-math".to_string()),
+            MettaValue::Float(0.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                let expected = std::f64::consts::PI / 2.0;
+                assert!(
+                    (f - expected).abs() < 1e-10,
+                    "acos(0) should be π/2, got {}",
+                    f
+                );
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: acos(-1) = π
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("acos-math".to_string()),
+            MettaValue::Float(-1.0),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                let expected = std::f64::consts::PI;
+                assert!(
+                    (f - expected).abs() < 1e-10,
+                    "acos(-1) should be π, got {}",
+                    f
+                );
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_acos_out_of_range() {
+        let env = Environment::new();
+
+        // Test: acos(2) should produce error (out of range)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("acos-math".to_string()),
+            MettaValue::Float(2.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("range [-1, 1]"),
+                    "Expected range error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: acos(-2) should produce error (out of range)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("acos-math".to_string()),
+            MettaValue::Float(-2.0),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("range [-1, 1]"),
+                    "Expected range error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_tan_basic() {
+        let env = Environment::new();
+
+        // Test: tan(0) = 0
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("tan-math".to_string()),
+            MettaValue::Float(0.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 0.0).abs() < 1e-10, "tan(0) should be 0, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: tan(π/4) ≈ 1
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("tan-math".to_string()),
+            MettaValue::Float(std::f64::consts::PI / 4.0),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 1.0).abs() < 1e-10, "tan(π/4) should be 1, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_atan_basic() {
+        let env = Environment::new();
+
+        // Test: atan(0) = 0
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("atan-math".to_string()),
+            MettaValue::Float(0.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 0.0).abs() < 1e-10, "atan(0) should be 0, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: atan(1) = π/4
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("atan-math".to_string()),
+            MettaValue::Float(1.0),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                let expected = std::f64::consts::PI / 4.0;
+                assert!(
+                    (f - expected).abs() < 1e-10,
+                    "atan(1) should be π/4, got {}",
+                    f
+                );
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_trigonometric_type_error() {
+        let env = Environment::new();
+
+        // Test: sin-math with string argument should produce TypeError
+        // (All trig functions use the same extract_float helper, so one test is sufficient)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sin-math".to_string()),
+            MettaValue::String("0".to_string()),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: asin-math with bool argument should produce TypeError
+        // (Tests inverse trig function and different error type)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("asin-math".to_string()),
             MettaValue::Bool(false),
         ]);
         let (results, _) = eval(value, env);

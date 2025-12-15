@@ -29,6 +29,7 @@ pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaVal
         "%" => Some(eval_modulo(args)),
         "pow-math" => Some(eval_power(args)),
         "sqrt-math" => Some(eval_sqrt(args)),
+        "abs-math" => Some(eval_abs(args)),
         _ => None,
     }
 }
@@ -247,6 +248,29 @@ fn eval_sqrt(args: &[MettaValue]) -> MettaValue {
     // For non-perfect squares, this gives the floor
     let result = (value as f64).sqrt() as i64;
     MettaValue::Long(result)
+}
+
+/// Evaluate absolute value (unary)
+/// Returns the absolute value of the input number
+fn eval_abs(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("abs-math", args, 1, "(abs-math number)");
+
+    let value = match extract_long(&args[0], "abs-math") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    // Handle i64::MIN edge case: abs(i64::MIN) would overflow
+    // i64::MIN = -9223372036854775808, abs would be 9223372036854775808
+    // which exceeds i64::MAX (9223372036854775807)
+    if value == i64::MIN {
+        return MettaValue::Error(
+            format!("Arithmetic overflow: abs({}) exceeds integer bounds", value),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    MettaValue::Long(value.abs())
 }
 
 /// Extract a Long (integer) value from MettaValue, returning a formatted error if not a Long
@@ -1234,5 +1258,138 @@ mod tests {
         assert_eq!(results.len(), 1);
         // sqrt(9223372036854775807) ≈ 3037000499 (floor)
         assert_eq!(results[0], MettaValue::Long(3037000499));
+    }
+
+    #[test]
+    fn test_abs_basic() {
+        let env = Environment::new();
+
+        // Test: abs(5) = 5 (positive number)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs-math".to_string()),
+            MettaValue::Long(5),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(5));
+
+        // Test: abs(-5) = 5 (negative number)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs-math".to_string()),
+            MettaValue::Long(-5),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(5));
+
+        // Test: abs(0) = 0
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs-math".to_string()),
+            MettaValue::Long(0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(0));
+
+        // Test: abs(-100) = 100
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs-math".to_string()),
+            MettaValue::Long(-100),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(100));
+    }
+
+    #[test]
+    fn test_abs_large_numbers() {
+        let env = Environment::new();
+
+        // Test: abs(i64::MAX) = i64::MAX
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs-math".to_string()),
+            MettaValue::Long(i64::MAX),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(i64::MAX));
+
+        // Test: abs(-i64::MAX) = i64::MAX
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs-math".to_string()),
+            MettaValue::Long(-i64::MAX),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(i64::MAX));
+    }
+
+    #[test]
+    fn test_abs_overflow_edge_case() {
+        let env = Environment::new();
+
+        // Test: abs(i64::MIN) should produce overflow error
+        // i64::MIN = -9223372036854775808
+        // abs(i64::MIN) would be 9223372036854775808, which exceeds i64::MAX
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs-math".to_string()),
+            MettaValue::Long(i64::MIN),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("Arithmetic overflow"),
+                    "Expected overflow error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_abs_type_error() {
+        let env = Environment::new();
+
+        // Test: abs-math with string argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs-math".to_string()),
+            MettaValue::String("-5".to_string()),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected type info in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: abs-math with bool argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("abs-math".to_string()),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
     }
 }

@@ -188,8 +188,6 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
 /// This prevents stack overflow by using heap-allocated work items instead of
 /// recursive function calls.
 fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
-    debug!(target: "mettatron::backend::eval::eval_trampoline", metta_val = ?value);
-
     // Initialize work stack with the initial evaluation
     let mut work_stack: Vec<WorkItem> = vec![WorkItem::Eval {
         value,
@@ -213,10 +211,11 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                 depth,
                 cont_id,
             } => {
-                trace!(?value, depth, cont_id, "Processing work item");
+                trace!(target: "mettatron::backend::eval::eval_trampoline", ?value, depth, cont_id, "eval work item");
 
                 // Perform one step of evaluation
                 let step_result = eval_step(value, env.clone(), depth);
+                trace!(target: "mettatron::backend::eval::eval_trampoline", ?step_result);
 
                 match step_result {
                     // Direct result - resume continuation
@@ -263,11 +262,13 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
             WorkItem::Resume { cont_id, result } => {
                 // Take ownership of continuation for processing
                 let cont = std::mem::replace(&mut continuations[cont_id], Continuation::Done);
+                trace!(target: "mettatron::backend::eval::eval_trampoline", ?cont, result_values = ?result.0, "resume work item");
 
                 match cont {
                     Continuation::Done => {
                         // Final result
                         final_result = Some(result);
+                        trace!(target: "mettatron::backend::eval::eval_trampoline", ?final_result);
                     }
 
                     Continuation::CollectSExpr {
@@ -283,6 +284,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if remaining.is_empty() {
                             // All items evaluated, process collected results
                             let processed = process_collected_sexpr(collected, original_env, depth);
+                            trace!(target: "mettatron::backend::eval::eval_trampoline", processed_sexpr=?processed);
 
                             match processed {
                                 ProcessedSExpr::Done(result) => {
@@ -401,6 +403,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 }
 
 /// Result of a single evaluation step
+#[derive(Debug)]
 enum EvalStep {
     /// Evaluation complete, return this result
     Done(EvalResult),
@@ -413,6 +416,7 @@ enum EvalStep {
 }
 
 /// Result of processing collected S-expression results
+#[derive(Debug)]
 enum ProcessedSExpr {
     /// Processing complete, return this result
     Done(EvalResult),
@@ -428,7 +432,7 @@ enum ProcessedSExpr {
 /// Perform a single step of evaluation.
 /// Returns either a final result or indicates more work is needed.
 fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
-    trace!(target: "mettatron::backend::eval::step", ?value, depth);
+    trace!(target: "mettatron::backend::eval::eval_step", ?value, depth);
 
     // Check depth limit
     if depth > MAX_EVAL_DEPTH {
@@ -1145,8 +1149,7 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
 /// Extract the head symbol from a pattern for indexing
 /// Returns None if the pattern doesn't have a clear head symbol
 fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
-    trace!(target: "mettatron::backend::eval::get_head_symbol", ?pattern);
-    match pattern {
+    let hs = match pattern {
         // For s-expressions like (double $x), extract "double"
         // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
         MettaValue::SExpr(items) if !items.is_empty() => match &items[0] {
@@ -1171,7 +1174,10 @@ fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
             Some(head.as_str())
         }
         _ => None,
-    }
+    };
+
+    trace!(target: "mettatron::backend::eval::get_head_symbol", ?hs);
+    hs
 }
 
 /// Compute the specificity of a pattern (lower is more specific)
@@ -1311,6 +1317,7 @@ fn try_match_all_rules_iterative(
     // Sort rules by specificity (more specific first)
     let mut sorted_rules = matching_rules;
     sorted_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
+    trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?sorted_rules);
 
     // Collect ALL matching rules, tracking LHS specificity
     let mut matches: Vec<(MettaValue, Bindings, usize, Rule)> = Vec::new();
@@ -1337,6 +1344,8 @@ fn try_match_all_rules_iterative(
                 final_matches.push((rhs.clone(), bindings.clone()));
             }
         }
+
+        trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?final_matches);
         final_matches
     } else {
         Vec::new()

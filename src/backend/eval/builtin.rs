@@ -10,7 +10,6 @@ pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaVal
         "-" => Some(eval_checked_arithmetic(args, |a, b| a.checked_sub(b), "-")),
         "*" => Some(eval_checked_arithmetic(args, |a, b| a.checked_mul(b), "*")),
         "/" => Some(eval_division(args)),
-        "%" => Some(eval_modulo(args)),
         "<" => Some(eval_comparison(args, |a, b| a < b)),
         "<=" => Some(eval_comparison(args, |a, b| a <= b)),
         ">" => Some(eval_comparison(args, |a, b| a > b)),
@@ -30,43 +29,16 @@ fn eval_checked_arithmetic<F>(args: &[MettaValue], op: F, op_name: &str) -> Mett
 where
     F: Fn(i64, i64) -> Option<i64>,
 {
-    if args.len() != 2 {
-        return MettaValue::Error(
-            format!(
-                "Arithmetic operation '{}' requires exactly 2 arguments, got {}",
-                op_name,
-                args.len()
-            ),
-            Arc::new(MettaValue::Nil),
-        );
-    }
+    require_builtin_args!(format!("Arithmetic operation '{}'", op_name), args, 2);
 
-    let a = match &args[0] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return MettaValue::Error(
-                format!(
-                    "Cannot perform '{}': expected Number (integer), got {}",
-                    op_name,
-                    other.friendly_type_name()
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            );
-        }
+    let a = match extract_long(&args[0], &format!("Cannot perform '{}'", op_name)) {
+        Ok(n) => n,
+        Err(e) => return e,
     };
 
-    let b = match &args[1] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return MettaValue::Error(
-                format!(
-                    "Cannot perform '{}': expected Number (integer), got {}",
-                    op_name,
-                    other.friendly_type_name()
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            );
-        }
+    let b = match extract_long(&args[1], &format!("Cannot perform '{}'", op_name)) {
+        Ok(n) => n,
+        Err(e) => return e,
     };
 
     match op(a, b) {
@@ -83,37 +55,16 @@ where
 
 /// Evaluate division with division-by-zero and overflow checking
 fn eval_division(args: &[MettaValue]) -> MettaValue {
-    if args.len() != 2 {
-        return MettaValue::Error(
-            format!("Division requires exactly 2 arguments, got {}", args.len()),
-            Arc::new(MettaValue::Nil),
-        );
-    }
+    require_builtin_args!("Division", args, 2);
 
-    let a = match &args[0] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return MettaValue::Error(
-                format!(
-                    "Cannot divide: expected Number (integer), got {}",
-                    other.friendly_type_name()
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            );
-        }
+    let a = match extract_long(&args[0], "Cannot divide") {
+        Ok(n) => n,
+        Err(e) => return e,
     };
 
-    let b = match &args[1] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return MettaValue::Error(
-                format!(
-                    "Cannot divide: expected Number (integer), got {}",
-                    other.friendly_type_name()
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            );
-        }
+    let b = match extract_long(&args[1], "Cannot divide") {
+        Ok(n) => n,
+        Err(e) => return e,
     };
 
     if b == 0 {
@@ -133,49 +84,21 @@ fn eval_division(args: &[MettaValue]) -> MettaValue {
     }
 }
 
-fn eval_modulo(_args: &[MettaValue]) -> MettaValue {
-    todo!()
-}
-
 /// Evaluate a comparison operation with strict type checking
 fn eval_comparison<F>(args: &[MettaValue], op: F) -> MettaValue
 where
     F: Fn(i64, i64) -> bool,
 {
-    if args.len() != 2 {
-        return MettaValue::Error(
-            format!(
-                "Comparison operation requires exactly 2 arguments, got {}",
-                args.len()
-            ),
-            Arc::new(MettaValue::Nil),
-        );
-    }
+    require_builtin_args!("Comparison operation", args, 2);
 
-    let a = match &args[0] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return MettaValue::Error(
-                format!(
-                    "Cannot compare: expected Number (integer), got {}",
-                    other.friendly_type_name()
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            );
-        }
+    let a = match extract_long(&args[0], "Cannot compare") {
+        Ok(n) => n,
+        Err(e) => return e,
     };
 
-    let b = match &args[1] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return MettaValue::Error(
-                format!(
-                    "Cannot compare: expected Number (integer), got {}",
-                    other.friendly_type_name()
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            );
-        }
+    let b = match extract_long(&args[1], "Cannot compare") {
+        Ok(n) => n,
+        Err(e) => return e,
     };
 
     MettaValue::Bool(op(a, b))
@@ -186,44 +109,21 @@ fn eval_logical_binary<F>(args: &[MettaValue], op: F, op_name: &str) -> MettaVal
 where
     F: Fn(bool, bool) -> bool,
 {
-    if args.len() != 2 {
-        return MettaValue::Error(
-            format!(
-                "'{}' requires exactly 2 arguments, got {}. Usage: ({} bool1 bool2)",
-                op_name,
-                args.len(),
-                op_name
-            ),
-            Arc::new(MettaValue::Atom("ArityError".to_string())),
-        );
-    }
+    require_builtin_args!(
+        format!("'{}'", op_name),
+        args,
+        2,
+        format!("({} bool1 bool2)", op_name)
+    );
 
-    let a = match &args[0] {
-        MettaValue::Bool(b) => *b,
-        other => {
-            return MettaValue::Error(
-                format!(
-                    "'{}': expected Bool, got {}",
-                    op_name,
-                    other.friendly_type_name()
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            );
-        }
+    let a = match extract_bool(&args[0], &format!("'{}'", op_name)) {
+        Ok(b) => b,
+        Err(e) => return e,
     };
 
-    let b = match &args[1] {
-        MettaValue::Bool(b) => *b,
-        other => {
-            return MettaValue::Error(
-                format!(
-                    "'{}': expected Bool, got {}",
-                    op_name,
-                    other.friendly_type_name()
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            );
-        }
+    let b = match extract_bool(&args[1], &format!("'{}'", op_name)) {
+        Ok(b) => b,
+        Err(e) => return e,
     };
 
     MettaValue::Bool(op(a, b))
@@ -231,22 +131,41 @@ where
 
 /// Evaluate logical not (unary)
 fn eval_logical_not(args: &[MettaValue]) -> MettaValue {
-    if args.len() != 1 {
-        return MettaValue::Error(
-            format!(
-                "'not' requires exactly 1 argument, got {}. Usage: (not bool)",
-                args.len()
-            ),
-            Arc::new(MettaValue::Atom("ArityError".to_string())),
-        );
-    }
+    require_builtin_args!("'not'", args, 1, "(not bool)");
 
-    match &args[0] {
-        MettaValue::Bool(b) => MettaValue::Bool(!b),
-        other => MettaValue::Error(
-            format!("'not': expected Bool, got {}", other.friendly_type_name()),
+    match extract_bool(&args[0], "'not'") {
+        Ok(b) => MettaValue::Bool(!b),
+        Err(e) => e,
+    }
+}
+
+/// Extract a Long (integer) value from MettaValue, returning a formatted error if not a Long
+fn extract_long(value: &MettaValue, context: &str) -> Result<i64, MettaValue> {
+    match value {
+        MettaValue::Long(n) => Ok(*n),
+        other => Err(MettaValue::Error(
+            format!(
+                "{}: expected Number (integer), got {}",
+                context,
+                other.friendly_type_name()
+            ),
             Arc::new(MettaValue::Atom("TypeError".to_string())),
-        ),
+        )),
+    }
+}
+
+/// Extract a Bool value from MettaValue, returning a formatted error if not a Bool
+fn extract_bool(value: &MettaValue, context: &str) -> Result<bool, MettaValue> {
+    match value {
+        MettaValue::Bool(b) => Ok(*b),
+        other => Err(MettaValue::Error(
+            format!(
+                "{}: expected Bool, got {}",
+                context,
+                other.friendly_type_name()
+            ),
+            Arc::new(MettaValue::Atom("TypeError".to_string())),
+        )),
     }
 }
 

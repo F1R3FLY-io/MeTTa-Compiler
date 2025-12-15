@@ -571,30 +571,49 @@ mod tests {
     use crate::backend::environment::Environment;
     use crate::backend::eval::eval;
 
-    #[test]
-    fn test_eval_builtin_add() {
-        let env = Environment::new();
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(3));
+    // Helper macro to evaluate and assert result
+    macro_rules! assert_eval {
+        ($expr:expr, $expected:expr) => {{
+            let env = Environment::new();
+            let (results, _) = eval($expr, env);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0], $expected);
+        }};
+    }
+
+    // Helper to check for error with specific type
+    macro_rules! assert_error {
+        ($expr:expr, $error_type:expr) => {{
+            let env = Environment::new();
+            let (results, _) = eval($expr, env);
+            assert_eq!(results.len(), 1);
+            match &results[0] {
+                MettaValue::Error(_, details) => {
+                    assert_eq!(**details, MettaValue::Atom($error_type.to_string()));
+                }
+                other => panic!("Expected Error({}), got {:?}", $error_type, other),
+            }
+        }};
     }
 
     #[test]
-    fn test_eval_builtin_comparison() {
-        let env = Environment::new();
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("<".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(true));
+    fn test_basic_operations() {
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::Long(3)
+        );
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("<".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::Bool(true)
+        );
     }
 
     #[test]
@@ -901,191 +920,60 @@ mod tests {
     }
 
     #[test]
-    fn test_modulo_basic() {
-        let env = Environment::new();
+    fn test_modulo() {
+        // Basic cases
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("%".to_string()),
+                MettaValue::Long(10),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::Long(1)
+        );
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("%".to_string()),
+                MettaValue::Long(7),
+                MettaValue::Long(7),
+            ]),
+            MettaValue::Long(0)
+        );
 
-        // Test: 10 % 3 = 1
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Long(10),
-            MettaValue::Long(3),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(1));
+        // Negative numbers
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("%".to_string()),
+                MettaValue::Long(-10),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::Long(-1)
+        );
 
-        // Test: 15 % 4 = 3
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Long(15),
-            MettaValue::Long(4),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(3));
-
-        // Test: 7 % 7 = 0 (exact division)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Long(7),
-            MettaValue::Long(7),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(0));
-    }
-
-    #[test]
-    fn test_modulo_negative_numbers() {
-        let env = Environment::new();
-
-        // Test: -10 % 3 = -1 (Rust's remainder behavior)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Long(-10),
-            MettaValue::Long(3),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(-1));
-
-        // Test: 10 % -3 = 1 (Rust's remainder behavior)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Long(10),
-            MettaValue::Long(-3),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(1));
-
-        // Test: -10 % -3 = -1
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Long(-10),
-            MettaValue::Long(-3),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(-1));
-    }
-
-    #[test]
-    fn test_modulo_division_by_zero() {
-        let env = Environment::new();
-
-        // Test: 10 % 0 should produce division by zero error
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Long(10),
-            MettaValue::Long(0),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(
-                    msg.contains("Division by zero"),
-                    "Expected division by zero error: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-
-        // Test: -5 % 0 should also produce division by zero error
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Long(-5),
-            MettaValue::Long(0),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(
-                    msg.contains("Division by zero"),
-                    "Expected division by zero error: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_modulo_type_error() {
-        let env = Environment::new();
-
-        // Test: % with string argument should produce TypeError
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Long(10),
-            MettaValue::String("3".to_string()),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-                assert!(
-                    msg.contains("expected Number (integer)"),
-                    "Expected type info in: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-
-        // Test: % with bool argument should produce TypeError
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Bool(true),
-            MettaValue::Long(3),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_modulo_overflow_edge_case() {
-        let env = Environment::new();
-
-        // Test: i64::MIN % -1 should produce overflow error
-        // This is an edge case where checked_rem returns None
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("%".to_string()),
-            MettaValue::Long(i64::MIN),
-            MettaValue::Long(-1),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(
-                    msg.contains("Arithmetic overflow"),
-                    "Expected overflow error: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
+        // Errors: division by zero, overflow, type errors
+        assert_error!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("%".to_string()),
+                MettaValue::Long(10),
+                MettaValue::Long(0),
+            ]),
+            "ArithmeticError"
+        );
+        assert_error!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("%".to_string()),
+                MettaValue::Long(i64::MIN),
+                MettaValue::Long(-1),
+            ]),
+            "ArithmeticError"
+        );
+        assert_error!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("%".to_string()),
+                MettaValue::Long(10),
+                MettaValue::String("3".to_string()),
+            ]),
+            "TypeError"
+        );
     }
 
     #[test]
@@ -1308,347 +1196,80 @@ mod tests {
     }
 
     #[test]
-    fn test_sqrt_basic() {
-        let env = Environment::new();
+    fn test_sqrt() {
+        // Perfect squares and edge cases
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("sqrt-math".to_string()),
+                MettaValue::Long(16),
+            ]),
+            MettaValue::Long(4)
+        );
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("sqrt-math".to_string()),
+                MettaValue::Long(10),
+            ]),
+            MettaValue::Long(3)
+        );
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("sqrt-math".to_string()),
+                MettaValue::Long(i64::MAX),
+            ]),
+            MettaValue::Long(3037000499)
+        );
 
-        // Test: sqrt(4) = 2 (perfect square)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(4),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(2));
-
-        // Test: sqrt(9) = 3 (perfect square)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(9),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(3));
-
-        // Test: sqrt(16) = 4 (perfect square)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(16),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(4));
-
-        // Test: sqrt(0) = 0
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(0),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(0));
-
-        // Test: sqrt(1) = 1
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(1),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(1));
+        // Errors: negative input, type errors
+        assert_error!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("sqrt-math".to_string()),
+                MettaValue::Long(-1),
+            ]),
+            "ArithmeticError"
+        );
+        assert_error!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("sqrt-math".to_string()),
+                MettaValue::String("4".to_string()),
+            ]),
+            "TypeError"
+        );
     }
 
     #[test]
-    fn test_sqrt_non_perfect_squares() {
-        let env = Environment::new();
+    fn test_abs() {
+        // Basic cases
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("abs-math".to_string()),
+                MettaValue::Long(-5),
+            ]),
+            MettaValue::Long(5)
+        );
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("abs-math".to_string()),
+                MettaValue::Long(i64::MAX),
+            ]),
+            MettaValue::Long(i64::MAX)
+        );
 
-        // Test: sqrt(5) = 2 (floor of square root)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(5),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(2));
-
-        // Test: sqrt(10) = 3 (floor of square root)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(10),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(3));
-
-        // Test: sqrt(15) = 3 (floor of square root)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(15),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(3));
-
-        // Test: sqrt(24) = 4 (floor of square root)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(24),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(4));
-    }
-
-    #[test]
-    fn test_sqrt_negative_number() {
-        let env = Environment::new();
-
-        // Test: sqrt(-1) should produce error
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(-1),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(
-                    msg.contains("negative number"),
-                    "Expected negative number error: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-
-        // Test: sqrt(-100) should also produce error
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(-100),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(
-                    msg.contains("negative number"),
-                    "Expected negative number error: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_sqrt_type_error() {
-        let env = Environment::new();
-
-        // Test: sqrt-math with string argument should produce TypeError
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::String("4".to_string()),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-                assert!(
-                    msg.contains("expected Number (integer)"),
-                    "Expected type info in: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-
-        // Test: sqrt-math with bool argument should produce TypeError
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Bool(true),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_sqrt_large_numbers() {
-        let env = Environment::new();
-
-        // Test: sqrt(10000) = 100 (perfect square)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(10000),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(100));
-
-        // Test: sqrt(1000000) = 1000 (perfect square)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(1000000),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(1000));
-
-        // Test: sqrt(i64::MAX) should work (floor of square root)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("sqrt-math".to_string()),
-            MettaValue::Long(i64::MAX),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        // sqrt(9223372036854775807) ≈ 3037000499 (floor)
-        assert_eq!(results[0], MettaValue::Long(3037000499));
-    }
-
-    #[test]
-    fn test_abs_basic() {
-        let env = Environment::new();
-
-        // Test: abs(5) = 5 (positive number)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("abs-math".to_string()),
-            MettaValue::Long(5),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(5));
-
-        // Test: abs(-5) = 5 (negative number)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("abs-math".to_string()),
-            MettaValue::Long(-5),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(5));
-
-        // Test: abs(0) = 0
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("abs-math".to_string()),
-            MettaValue::Long(0),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(0));
-
-        // Test: abs(-100) = 100
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("abs-math".to_string()),
-            MettaValue::Long(-100),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(100));
-    }
-
-    #[test]
-    fn test_abs_large_numbers() {
-        let env = Environment::new();
-
-        // Test: abs(i64::MAX) = i64::MAX
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("abs-math".to_string()),
-            MettaValue::Long(i64::MAX),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(i64::MAX));
-
-        // Test: abs(-i64::MAX) = i64::MAX
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("abs-math".to_string()),
-            MettaValue::Long(-i64::MAX),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(i64::MAX));
-    }
-
-    #[test]
-    fn test_abs_overflow_edge_case() {
-        let env = Environment::new();
-
-        // Test: abs(i64::MIN) should produce overflow error
-        // i64::MIN = -9223372036854775808
-        // abs(i64::MIN) would be 9223372036854775808, which exceeds i64::MAX
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("abs-math".to_string()),
-            MettaValue::Long(i64::MIN),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(
-                    msg.contains("Arithmetic overflow"),
-                    "Expected overflow error: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_abs_type_error() {
-        let env = Environment::new();
-
-        // Test: abs-math with string argument should produce TypeError
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("abs-math".to_string()),
-            MettaValue::String("-5".to_string()),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-                assert!(
-                    msg.contains("expected Number (integer)"),
-                    "Expected type info in: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-
-        // Test: abs-math with bool argument should produce TypeError
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("abs-math".to_string()),
-            MettaValue::Bool(true),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
+        // Errors: overflow (i64::MIN), type errors
+        assert_error!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("abs-math".to_string()),
+                MettaValue::Long(i64::MIN),
+            ]),
+            "ArithmeticError"
+        );
+        assert_error!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("abs-math".to_string()),
+                MettaValue::String("-5".to_string()),
+            ]),
+            "TypeError"
+        );
     }
 
     #[test]
@@ -1908,254 +1529,45 @@ mod tests {
     }
 
     #[test]
-    fn test_trunc_basic() {
-        let env = Environment::new();
+    fn test_rounding_functions() {
+        // Test all four rounding functions with key cases
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("trunc-math".to_string()),
+                MettaValue::Float(-3.7),
+            ]),
+            MettaValue::Long(-3)
+        );
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("ceil-math".to_string()),
+                MettaValue::Float(3.2),
+            ]),
+            MettaValue::Long(4)
+        );
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("floor-math".to_string()),
+                MettaValue::Float(-3.7),
+            ]),
+            MettaValue::Long(-4)
+        );
+        assert_eval!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("round-math".to_string()),
+                MettaValue::Float(3.6),
+            ]),
+            MettaValue::Long(4)
+        );
 
-        // Test: trunc(3.7) = 3
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("trunc-math".to_string()),
-            MettaValue::Float(3.7),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(3));
-
-        // Test: trunc(-3.7) = -3 (truncates toward zero)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("trunc-math".to_string()),
-            MettaValue::Float(-3.7),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(-3));
-
-        // Test: trunc(5.0) = 5
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("trunc-math".to_string()),
-            MettaValue::Float(5.0),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(5));
-
-        // Test: trunc with integer (should convert to float first)
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("trunc-math".to_string()),
-            MettaValue::Long(7),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(7));
-    }
-
-    #[test]
-    fn test_ceil_basic() {
-        let env = Environment::new();
-
-        // Test: ceil(3.2) = 4
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("ceil-math".to_string()),
-            MettaValue::Float(3.2),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(4));
-
-        // Test: ceil(-3.2) = -3
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("ceil-math".to_string()),
-            MettaValue::Float(-3.2),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(-3));
-
-        // Test: ceil(5.0) = 5
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("ceil-math".to_string()),
-            MettaValue::Float(5.0),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(5));
-
-        // Test: ceil with integer
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("ceil-math".to_string()),
-            MettaValue::Long(7),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(7));
-    }
-
-    #[test]
-    fn test_floor_basic() {
-        let env = Environment::new();
-
-        // Test: floor(3.7) = 3
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("floor-math".to_string()),
-            MettaValue::Float(3.7),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(3));
-
-        // Test: floor(-3.7) = -4
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("floor-math".to_string()),
-            MettaValue::Float(-3.7),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(-4));
-
-        // Test: floor(5.0) = 5
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("floor-math".to_string()),
-            MettaValue::Float(5.0),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(5));
-
-        // Test: floor with integer
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("floor-math".to_string()),
-            MettaValue::Long(7),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(7));
-    }
-
-    #[test]
-    fn test_round_basic() {
-        let env = Environment::new();
-
-        // Test: round(3.4) = 3
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("round-math".to_string()),
-            MettaValue::Float(3.4),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(3));
-
-        // Test: round(3.6) = 4
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("round-math".to_string()),
-            MettaValue::Float(3.6),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(4));
-
-        // Test: round(-3.4) = -3
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("round-math".to_string()),
-            MettaValue::Float(-3.4),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(-3));
-
-        // Test: round(-3.6) = -4
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("round-math".to_string()),
-            MettaValue::Float(-3.6),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(-4));
-
-        // Test: round(5.0) = 5
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("round-math".to_string()),
-            MettaValue::Float(5.0),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(5));
-
-        // Test: round with integer
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("round-math".to_string()),
-            MettaValue::Long(7),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(7));
-    }
-
-    #[test]
-    fn test_rounding_type_error() {
-        let env = Environment::new();
-
-        // Test: trunc-math with string argument should produce TypeError
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("trunc-math".to_string()),
-            MettaValue::String("3.7".to_string()),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-
-        // Test: ceil-math with bool argument should produce TypeError
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("ceil-math".to_string()),
-            MettaValue::Bool(true),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-
-        // Test: floor-math with string argument should produce TypeError
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("floor-math".to_string()),
-            MettaValue::String("3.7".to_string()),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-
-        // Test: round-math with bool argument should produce TypeError
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("round-math".to_string()),
-            MettaValue::Bool(false),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
+        // Type errors (one representative case)
+        assert_error!(
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("trunc-math".to_string()),
+                MettaValue::String("3.7".to_string()),
+            ]),
+            "TypeError"
+        );
     }
 
     #[test]
@@ -2717,5 +2129,303 @@ mod tests {
             }
             other => panic!("Expected Error, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_mixed_arithmetic_and_power() {
+        let env = Environment::new();
+
+        // Test: sqrt(pow(2, 4)) = sqrt(16) = 4
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("pow-math".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(4),
+            ]),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(4));
+
+        // Test: pow(2, sqrt(16)) = pow(2, 4) = 16
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("pow-math".to_string()),
+            MettaValue::Long(2),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("sqrt-math".to_string()),
+                MettaValue::Long(16),
+            ]),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(16));
+
+        // Test: abs(-5) + 3 = 5 + 3 = 8
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("abs-math".to_string()),
+                MettaValue::Long(-5),
+            ]),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(8));
+    }
+
+    #[test]
+    fn test_mixed_logarithm_and_power() {
+        let env = Environment::new();
+
+        // Test: log(2, pow(2, 3)) = log(2, 8) = 3
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(2),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("pow-math".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+
+        // Test: pow(10, log(10, 100)) = pow(10, 2) = 100
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("pow-math".to_string()),
+            MettaValue::Long(10),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("log-math".to_string()),
+                MettaValue::Long(10),
+                MettaValue::Long(100),
+            ]),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(100));
+    }
+
+    #[test]
+    fn test_mixed_rounding_and_arithmetic() {
+        let env = Environment::new();
+
+        // Test: floor(sqrt(10)) = floor(3.16...) = 3
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("floor-math".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("sqrt-math".to_string()),
+                MettaValue::Long(10),
+            ]),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+
+        // Test: ceil(3.5) = 4
+        // Using Float directly since sqrt-math only accepts Long
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("ceil-math".to_string()),
+            MettaValue::Float(3.5),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(4));
+
+        // Test: round(sqrt(5)) = round(2.23...) = 2
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("round-math".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("sqrt-math".to_string()),
+                MettaValue::Long(5),
+            ]),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(2));
+    }
+
+    #[test]
+    fn test_mixed_trigonometric_operations() {
+        let env = Environment::new();
+
+        // Test: sin(acos(0)) = sin(π/2) = 1
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sin-math".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("acos-math".to_string()),
+                MettaValue::Float(0.0),
+            ]),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!(
+                    (f - 1.0).abs() < 1e-10,
+                    "sin(acos(0)) should be 1, got {}",
+                    f
+                )
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: cos(asin(1)) = cos(π/2) ≈ 0
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("cos-math".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("asin-math".to_string()),
+                MettaValue::Float(1.0),
+            ]),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!(f.abs() < 1e-10, "cos(asin(1)) should be 0, got {}", f)
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+
+        // Test: tan(atan(1)) = tan(π/4) = 1
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("tan-math".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("atan-math".to_string()),
+                MettaValue::Float(1.0),
+            ]),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!(
+                    (f - 1.0).abs() < 1e-10,
+                    "tan(atan(1)) should be 1, got {}",
+                    f
+                )
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_mixed_complex_expressions() {
+        let env = Environment::new();
+
+        // Test: abs(-5) * 2 + 3 = 5 * 2 + 3 = 13
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("abs-math".to_string()),
+                    MettaValue::Long(-5),
+                ]),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(13));
+
+        // Test: floor(log(2, pow(2, 3))) = floor(log(2, 8)) = floor(3.0) = 3
+        // Using base 2 for exact integer result (log(2, 8) = 3.0 exactly)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("floor-math".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("log-math".to_string()),
+                MettaValue::Long(2),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("pow-math".to_string()),
+                    MettaValue::Long(2),
+                    MettaValue::Long(3),
+                ]),
+            ]),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+
+        // Test: sqrt(pow(3, 2)) % 5 = sqrt(9) % 5 = 3 % 5 = 3
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("sqrt-math".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("pow-math".to_string()),
+                    MettaValue::Long(3),
+                    MettaValue::Long(2),
+                ]),
+            ]),
+            MettaValue::Long(5),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+    }
+
+    #[test]
+    fn test_mixed_with_comparisons() {
+        let env = Environment::new();
+
+        // Test: < (sqrt 16) 5 = < 4 5 = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("<".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("sqrt-math".to_string()),
+                MettaValue::Long(16),
+            ]),
+            MettaValue::Long(5),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // Test: == (pow 2 3) 8 = == 8 8 = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("==".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("pow-math".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::Long(8),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+    }
+
+    #[test]
+    fn test_mixed_with_logical_operators() {
+        let env = Environment::new();
+
+        // Test: and (< (abs -5) 10) (> (sqrt 9) 2) = and (< 5 10) (> 3 2) = and True True = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("and".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("<".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("abs-math".to_string()),
+                    MettaValue::Long(-5),
+                ]),
+                MettaValue::Long(10),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom(">".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("sqrt-math".to_string()),
+                    MettaValue::Long(9),
+                ]),
+                MettaValue::Long(2),
+            ]),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
     }
 }

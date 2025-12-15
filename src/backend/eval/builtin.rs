@@ -30,6 +30,7 @@ pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaVal
         "pow-math" => Some(eval_power(args)),
         "sqrt-math" => Some(eval_sqrt(args)),
         "abs-math" => Some(eval_abs(args)),
+        "log-math" => Some(eval_log(args)),
         _ => None,
     }
 }
@@ -271,6 +272,58 @@ fn eval_abs(args: &[MettaValue]) -> MettaValue {
     }
 
     MettaValue::Long(value.abs())
+}
+
+/// Evaluate logarithm (binary)
+/// Returns the integer logarithm (floor) of input number (second argument) with base (first argument)
+/// Base must be > 0 and != 1, input number must be > 0
+fn eval_log(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("log-math", args, 2, "(log-math base number)");
+
+    let base = match extract_long(&args[0], "log-math") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let value = match extract_long(&args[1], "log-math") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    // Base must be positive and not equal to 1
+    if base <= 0 {
+        return MettaValue::Error(
+            format!(
+                "Logarithm base must be positive: log-math({}, {})",
+                base, value
+            ),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    if base == 1 {
+        return MettaValue::Error(
+            format!("Logarithm base cannot be 1: log-math({}, {})", base, value),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    // Input number must be positive
+    if value <= 0 {
+        return MettaValue::Error(
+            format!(
+                "Logarithm input must be positive: log-math({}, {})",
+                base, value
+            ),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    // Calculate integer logarithm (floor)
+    // log_base(value) = ln(value) / ln(base)
+    // For integer result, we compute the floor
+    let result = (value as f64).ln() / (base as f64).ln();
+    MettaValue::Long(result.floor() as i64)
 }
 
 /// Extract a Long (integer) value from MettaValue, returning a formatted error if not a Long
@@ -1380,6 +1433,262 @@ mod tests {
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("abs-math".to_string()),
             MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_log_basic() {
+        let env = Environment::new();
+
+        // Test: log_2(8) = 3 (2^3 = 8)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(8),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+
+        // Test: log_10(100) = 2 (10^2 = 100)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(10),
+            MettaValue::Long(100),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(2));
+
+        // Test: log_3(9) = 2 (3^2 = 9)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(3),
+            MettaValue::Long(9),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(2));
+
+        // Test: log_5(125) = 3 (5^3 = 125)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(5),
+            MettaValue::Long(125),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+    }
+
+    #[test]
+    fn test_log_non_integer_results() {
+        let env = Environment::new();
+
+        // Test: log_2(10) = 3 (floor of log_2(10) ≈ 3.32)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(10),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+
+        // Test: log_10(50) = 1 (floor of log_10(50) ≈ 1.70)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(10),
+            MettaValue::Long(50),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(1));
+
+        // Test: log_2(7) = 2 (floor of log_2(7) ≈ 2.81)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(7),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(2));
+    }
+
+    #[test]
+    fn test_log_invalid_base() {
+        let env = Environment::new();
+
+        // Test: log_0(10) should produce error (base <= 0)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(0),
+            MettaValue::Long(10),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("base must be positive"),
+                    "Expected base error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: log_-1(10) should produce error (base <= 0)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(-1),
+            MettaValue::Long(10),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("base must be positive"),
+                    "Expected base error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: log_1(10) should produce error (base == 1)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(10),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("base cannot be 1"),
+                    "Expected base == 1 error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_log_invalid_input() {
+        let env = Environment::new();
+
+        // Test: log_2(0) should produce error (input <= 0)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("input must be positive"),
+                    "Expected input error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: log_2(-5) should produce error (input <= 0)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(-5),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("input must be positive"),
+                    "Expected input error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_log_type_error() {
+        let env = Environment::new();
+
+        // Test: log-math with string base should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::String("2".to_string()),
+            MettaValue::Long(8),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected type info in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: log-math with string input should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Long(2),
+            MettaValue::String("8".to_string()),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: log-math with bool argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("log-math".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Long(8),
         ]);
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);

@@ -11,6 +11,7 @@ pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaVal
         "*" => Some(eval_checked_arithmetic(args, |a, b| a.checked_mul(b), "*")),
         "/" => Some(eval_division(args)),
         "%" => Some(eval_modulo(args)),
+        "^" => Some(eval_power(args)),
         "<" => Some(eval_comparison(args, |a, b| a < b)),
         "<=" => Some(eval_comparison(args, |a, b| a <= b)),
         ">" => Some(eval_comparison(args, |a, b| a > b)),
@@ -112,6 +113,46 @@ fn eval_modulo(args: &[MettaValue]) -> MettaValue {
         Some(result) => MettaValue::Long(result),
         None => MettaValue::Error(
             format!("Arithmetic overflow: {} % {} exceeds integer bounds", a, b),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        ),
+    }
+}
+
+/// Evaluate power (exponentiation) with overflow checking
+/// Takes base (first argument) and power (second argument) and returns result of base ^ power
+/// Negative exponents are not supported for integer exponentiation
+fn eval_power(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("Power", args, 2);
+
+    let base = match extract_long(&args[0], "Cannot perform power") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let exp = match extract_long(&args[1], "Cannot perform power") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    // Negative exponents result in fractions, which are not integers
+    if exp < 0 {
+        return MettaValue::Error(
+            format!(
+                "Negative exponent not supported for integer exponentiation: {} ^ {}",
+                base, exp
+            ),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    // Use checked_pow for overflow protection
+    match base.checked_pow(exp as u32) {
+        Some(result) => MettaValue::Long(result),
+        None => MettaValue::Error(
+            format!(
+                "Arithmetic overflow: {} ^ {} exceeds integer bounds",
+                base, exp
+            ),
             Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
         ),
     }
@@ -712,6 +753,225 @@ mod tests {
             MettaValue::Atom("%".to_string()),
             MettaValue::Long(i64::MIN),
             MettaValue::Long(-1),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("Arithmetic overflow"),
+                    "Expected overflow error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_power_basic() {
+        let env = Environment::new();
+
+        // Test: 2^3 = 8
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(8));
+
+        // Test: 5^2 = 25
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(5),
+            MettaValue::Long(2),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(25));
+
+        // Test: 3^4 = 81
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(3),
+            MettaValue::Long(4),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(81));
+
+        // Test: base^0 = 1 (any base to the power of 0 is 1)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(42),
+            MettaValue::Long(0),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(1));
+    }
+
+    #[test]
+    fn test_power_negative_base() {
+        let env = Environment::new();
+
+        // Test: (-2)^3 = -8
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(-2),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(-8));
+
+        // Test: (-2)^2 = 4 (even exponent makes negative base positive)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(-2),
+            MettaValue::Long(2),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(4));
+
+        // Test: (-5)^4 = 625
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(-5),
+            MettaValue::Long(4),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(625));
+    }
+
+    #[test]
+    fn test_power_negative_exponent() {
+        let env = Environment::new();
+
+        // Test: 2^-3 should produce error (negative exponents not supported for integers)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(-3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("Negative exponent"),
+                    "Expected negative exponent error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: 10^-1 should also produce error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(10),
+            MettaValue::Long(-1),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("Negative exponent"),
+                    "Expected negative exponent error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_power_type_error() {
+        let env = Environment::new();
+
+        // Test: ^ with string argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(2),
+            MettaValue::String("3".to_string()),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected type info in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: ^ with bool argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_power_overflow_edge_case() {
+        let env = Environment::new();
+
+        // Test: 2^63 should produce overflow error (exceeds i64::MAX)
+        // 2^63 = 9223372036854775808, which exceeds i64::MAX (9223372036854775807)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(63),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("Arithmetic overflow"),
+                    "Expected overflow error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: 10^19 should also produce overflow error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("^".to_string()),
+            MettaValue::Long(10),
+            MettaValue::Long(19),
         ]);
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);

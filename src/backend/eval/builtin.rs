@@ -6,22 +6,29 @@ use std::sync::Arc;
 /// Uses operator symbols (+, -, *, etc.) instead of normalized names
 pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaValue> {
     match op {
+        // Basic arithmetic
         "+" => Some(eval_checked_arithmetic(args, |a, b| a.checked_add(b), "+")),
         "-" => Some(eval_checked_arithmetic(args, |a, b| a.checked_sub(b), "-")),
         "*" => Some(eval_checked_arithmetic(args, |a, b| a.checked_mul(b), "*")),
         "/" => Some(eval_division(args)),
-        "%" => Some(eval_modulo(args)),
-        "^" => Some(eval_power(args)),
+
+        // Comparison operators
         "<" => Some(eval_comparison(args, |a, b| a < b)),
         "<=" => Some(eval_comparison(args, |a, b| a <= b)),
         ">" => Some(eval_comparison(args, |a, b| a > b)),
         ">=" => Some(eval_comparison(args, |a, b| a >= b)),
         "==" => Some(eval_comparison(args, |a, b| a == b)),
         "!=" => Some(eval_comparison(args, |a, b| a != b)),
+
         // Logical operators
         "and" => Some(eval_logical_binary(args, |a, b| a && b, "and")),
         "or" => Some(eval_logical_binary(args, |a, b| a || b, "or")),
         "not" => Some(eval_logical_not(args)),
+
+        // Math functions
+        "%" => Some(eval_modulo(args)),
+        "pow-math" => Some(eval_power(args)),
+        "sqrt-math" => Some(eval_sqrt(args)),
         _ => None,
     }
 }
@@ -50,69 +57,6 @@ where
                 "Arithmetic overflow: {} {} {} exceeds integer bounds",
                 a, op_name, b
             ),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-        ),
-    }
-}
-
-/// Evaluate division with division-by-zero and overflow checking
-fn eval_division(args: &[MettaValue]) -> MettaValue {
-    require_builtin_args!("Division", args, 2);
-
-    let a = match extract_long(&args[0], "Cannot divide") {
-        Ok(n) => n,
-        Err(e) => return e,
-    };
-
-    let b = match extract_long(&args[1], "Cannot divide") {
-        Ok(n) => n,
-        Err(e) => return e,
-    };
-
-    if b == 0 {
-        return MettaValue::Error(
-            "Division by zero".to_string(),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-        );
-    }
-
-    // Use checked_div for overflow protection (e.g., i64::MIN / -1)
-    match a.checked_div(b) {
-        Some(result) => MettaValue::Long(result),
-        None => MettaValue::Error(
-            format!("Arithmetic overflow: {} / {} exceeds integer bounds", a, b),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-        ),
-    }
-}
-
-/// Evaluate modulo with division-by-zero and overflow checking
-/// Returns the remainder of dividing the first argument (dividend) by the second argument (divisor)
-fn eval_modulo(args: &[MettaValue]) -> MettaValue {
-    require_builtin_args!("Modulo", args, 2);
-
-    let a = match extract_long(&args[0], "Cannot perform modulo") {
-        Ok(n) => n,
-        Err(e) => return e,
-    };
-
-    let b = match extract_long(&args[1], "Cannot perform modulo") {
-        Ok(n) => n,
-        Err(e) => return e,
-    };
-
-    if b == 0 {
-        return MettaValue::Error(
-            "Division by zero".to_string(),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-        );
-    }
-
-    // Use checked_rem for overflow protection (e.g., i64::MIN % -1)
-    match a.checked_rem(b) {
-        Some(result) => MettaValue::Long(result),
-        None => MettaValue::Error(
-            format!("Arithmetic overflow: {} % {} exceeds integer bounds", a, b),
             Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
         ),
     }
@@ -211,6 +155,98 @@ fn eval_logical_not(args: &[MettaValue]) -> MettaValue {
         Ok(b) => MettaValue::Bool(!b),
         Err(e) => e,
     }
+}
+
+/// Evaluate division with division-by-zero and overflow checking
+fn eval_division(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("Division", args, 2);
+
+    let a = match extract_long(&args[0], "Cannot divide") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let b = match extract_long(&args[1], "Cannot divide") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    if b == 0 {
+        return MettaValue::Error(
+            "Division by zero".to_string(),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    // Use checked_div for overflow protection (e.g., i64::MIN / -1)
+    match a.checked_div(b) {
+        Some(result) => MettaValue::Long(result),
+        None => MettaValue::Error(
+            format!("Arithmetic overflow: {} / {} exceeds integer bounds", a, b),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        ),
+    }
+}
+
+/// Evaluate modulo with division-by-zero and overflow checking
+/// Returns the remainder of dividing the first argument (dividend) by the second argument (divisor)
+fn eval_modulo(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("Modulo", args, 2);
+
+    let a = match extract_long(&args[0], "Cannot perform modulo") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let b = match extract_long(&args[1], "Cannot perform modulo") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    if b == 0 {
+        return MettaValue::Error(
+            "Division by zero".to_string(),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    // Use checked_rem for overflow protection (e.g., i64::MIN % -1)
+    match a.checked_rem(b) {
+        Some(result) => MettaValue::Long(result),
+        None => MettaValue::Error(
+            format!("Arithmetic overflow: {} % {} exceeds integer bounds", a, b),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        ),
+    }
+}
+
+/// Evaluate square root (unary)
+/// Returns the integer square root (floor) of the input number
+/// Input must be >= 0
+fn eval_sqrt(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("sqrt", args, 1, "(sqrt number)");
+
+    let value = match extract_long(&args[0], "sqrt") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    // Negative numbers are not allowed
+    if value < 0 {
+        return MettaValue::Error(
+            format!(
+                "Square root of negative number not supported: sqrt({})",
+                value
+            ),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    // Calculate integer square root (floor)
+    // For perfect squares, this gives the exact result
+    // For non-perfect squares, this gives the floor
+    let result = (value as f64).sqrt() as i64;
+    MettaValue::Long(result)
 }
 
 /// Extract a Long (integer) value from MettaValue, returning a formatted error if not a Long
@@ -776,7 +812,7 @@ mod tests {
 
         // Test: 2^3 = 8
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(2),
             MettaValue::Long(3),
         ]);
@@ -786,7 +822,7 @@ mod tests {
 
         // Test: 5^2 = 25
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(5),
             MettaValue::Long(2),
         ]);
@@ -796,7 +832,7 @@ mod tests {
 
         // Test: 3^4 = 81
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(3),
             MettaValue::Long(4),
         ]);
@@ -806,7 +842,7 @@ mod tests {
 
         // Test: base^0 = 1 (any base to the power of 0 is 1)
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(42),
             MettaValue::Long(0),
         ]);
@@ -821,7 +857,7 @@ mod tests {
 
         // Test: (-2)^3 = -8
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(-2),
             MettaValue::Long(3),
         ]);
@@ -831,7 +867,7 @@ mod tests {
 
         // Test: (-2)^2 = 4 (even exponent makes negative base positive)
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(-2),
             MettaValue::Long(2),
         ]);
@@ -841,7 +877,7 @@ mod tests {
 
         // Test: (-5)^4 = 625
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(-5),
             MettaValue::Long(4),
         ]);
@@ -856,7 +892,7 @@ mod tests {
 
         // Test: 2^-3 should produce error (negative exponents not supported for integers)
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(2),
             MettaValue::Long(-3),
         ]);
@@ -877,7 +913,7 @@ mod tests {
 
         // Test: 10^-1 should also produce error
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(10),
             MettaValue::Long(-1),
         ]);
@@ -901,9 +937,9 @@ mod tests {
     fn test_power_type_error() {
         let env = Environment::new();
 
-        // Test: ^ with string argument should produce TypeError
+        // Test: pow-math with string argument should produce TypeError
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(2),
             MettaValue::String("3".to_string()),
         ]);
@@ -923,9 +959,9 @@ mod tests {
             other => panic!("Expected Error, got {:?}", other),
         }
 
-        // Test: ^ with bool argument should produce TypeError
+        // Test: pow-math with bool argument should produce TypeError
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Bool(true),
             MettaValue::Long(3),
         ]);
@@ -948,7 +984,7 @@ mod tests {
         // Test: 2^63 should produce overflow error (exceeds i64::MAX)
         // 2^63 = 9223372036854775808, which exceeds i64::MAX (9223372036854775807)
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(2),
             MettaValue::Long(63),
         ]);
@@ -969,7 +1005,7 @@ mod tests {
 
         // Test: 10^19 should also produce overflow error
         let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("^".to_string()),
+            MettaValue::Atom("pow-math".to_string()),
             MettaValue::Long(10),
             MettaValue::Long(19),
         ]);
@@ -987,5 +1023,216 @@ mod tests {
             }
             other => panic!("Expected Error, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_sqrt_basic() {
+        let env = Environment::new();
+
+        // Test: sqrt(4) = 2 (perfect square)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(4),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(2));
+
+        // Test: sqrt(9) = 3 (perfect square)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(9),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+
+        // Test: sqrt(16) = 4 (perfect square)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(16),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(4));
+
+        // Test: sqrt(0) = 0
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(0));
+
+        // Test: sqrt(1) = 1
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(1),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(1));
+    }
+
+    #[test]
+    fn test_sqrt_non_perfect_squares() {
+        let env = Environment::new();
+
+        // Test: sqrt(5) = 2 (floor of square root)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(5),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(2));
+
+        // Test: sqrt(10) = 3 (floor of square root)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(10),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+
+        // Test: sqrt(15) = 3 (floor of square root)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(15),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+
+        // Test: sqrt(24) = 4 (floor of square root)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(24),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(4));
+    }
+
+    #[test]
+    fn test_sqrt_negative_number() {
+        let env = Environment::new();
+
+        // Test: sqrt(-1) should produce error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(-1),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("negative number"),
+                    "Expected negative number error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: sqrt(-100) should also produce error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(-100),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("negative number"),
+                    "Expected negative number error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sqrt_type_error() {
+        let env = Environment::new();
+
+        // Test: sqrt-math with string argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::String("4".to_string()),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected type info in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: sqrt-math with bool argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sqrt_large_numbers() {
+        let env = Environment::new();
+
+        // Test: sqrt(10000) = 100 (perfect square)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(10000),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(100));
+
+        // Test: sqrt(1000000) = 1000 (perfect square)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(1000000),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(1000));
+
+        // Test: sqrt(i64::MAX) should work (floor of square root)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("sqrt-math".to_string()),
+            MettaValue::Long(i64::MAX),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        // sqrt(9223372036854775807) ≈ 3037000499 (floor)
+        assert_eq!(results[0], MettaValue::Long(3037000499));
     }
 }

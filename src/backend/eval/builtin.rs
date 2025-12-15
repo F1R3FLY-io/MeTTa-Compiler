@@ -10,6 +10,7 @@ pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaVal
         "-" => Some(eval_checked_arithmetic(args, |a, b| a.checked_sub(b), "-")),
         "*" => Some(eval_checked_arithmetic(args, |a, b| a.checked_mul(b), "*")),
         "/" => Some(eval_division(args)),
+        "%" => Some(eval_modulo(args)),
         "<" => Some(eval_comparison(args, |a, b| a < b)),
         "<=" => Some(eval_comparison(args, |a, b| a <= b)),
         ">" => Some(eval_comparison(args, |a, b| a > b)),
@@ -79,6 +80,38 @@ fn eval_division(args: &[MettaValue]) -> MettaValue {
         Some(result) => MettaValue::Long(result),
         None => MettaValue::Error(
             format!("Arithmetic overflow: {} / {} exceeds integer bounds", a, b),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        ),
+    }
+}
+
+/// Evaluate modulo with division-by-zero and overflow checking
+/// Returns the remainder of dividing the first argument (dividend) by the second argument (divisor)
+fn eval_modulo(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("Modulo", args, 2);
+
+    let a = match extract_long(&args[0], "Cannot perform modulo") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let b = match extract_long(&args[1], "Cannot perform modulo") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    if b == 0 {
+        return MettaValue::Error(
+            "Division by zero".to_string(),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    // Use checked_rem for overflow protection (e.g., i64::MIN % -1)
+    match a.checked_rem(b) {
+        Some(result) => MettaValue::Long(result),
+        None => MettaValue::Error(
+            format!("Arithmetic overflow: {} % {} exceeds integer bounds", a, b),
             Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
         ),
     }
@@ -172,7 +205,6 @@ fn extract_bool(value: &MettaValue, context: &str) -> Result<bool, MettaValue> {
 // TODO -> tests with edge cases: NaN, infinity, negative numbers
 // TODO -> tests with integer vs float arguments
 // TODO -> error handling tests
-
 // TODO -> test more combined operations
 #[cfg(test)]
 mod tests {
@@ -504,6 +536,194 @@ mod tests {
         match &results[0] {
             MettaValue::Error(msg, _) => {
                 assert!(msg.contains("2 arguments"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_modulo_basic() {
+        let env = Environment::new();
+
+        // Test: 10 % 3 = 1
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Long(10),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(1));
+
+        // Test: 15 % 4 = 3
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Long(15),
+            MettaValue::Long(4),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+
+        // Test: 7 % 7 = 0 (exact division)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Long(7),
+            MettaValue::Long(7),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(0));
+    }
+
+    #[test]
+    fn test_modulo_negative_numbers() {
+        let env = Environment::new();
+
+        // Test: -10 % 3 = -1 (Rust's remainder behavior)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Long(-10),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(-1));
+
+        // Test: 10 % -3 = 1 (Rust's remainder behavior)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Long(10),
+            MettaValue::Long(-3),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(1));
+
+        // Test: -10 % -3 = -1
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Long(-10),
+            MettaValue::Long(-3),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(-1));
+    }
+
+    #[test]
+    fn test_modulo_division_by_zero() {
+        let env = Environment::new();
+
+        // Test: 10 % 0 should produce division by zero error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Long(10),
+            MettaValue::Long(0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("Division by zero"),
+                    "Expected division by zero error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: -5 % 0 should also produce division by zero error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Long(-5),
+            MettaValue::Long(0),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("Division by zero"),
+                    "Expected division by zero error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_modulo_type_error() {
+        let env = Environment::new();
+
+        // Test: % with string argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Long(10),
+            MettaValue::String("3".to_string()),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert!(
+                    msg.contains("expected Number (integer)"),
+                    "Expected type info in: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: % with bool argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Long(3),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_modulo_overflow_edge_case() {
+        let env = Environment::new();
+
+        // Test: i64::MIN % -1 should produce overflow error
+        // This is an edge case where checked_rem returns None
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("%".to_string()),
+            MettaValue::Long(i64::MIN),
+            MettaValue::Long(-1),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(
+                    msg.contains("Arithmetic overflow"),
+                    "Expected overflow error: {}",
+                    msg
+                );
+                assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
             }
             other => panic!("Expected Error, got {:?}", other),
         }

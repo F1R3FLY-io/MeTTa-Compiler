@@ -984,6 +984,10 @@ fn try_match_all_rules_query_multi(
         Ok(bytes) => bytes,
         Err(_) => return Vec::new(), // Fallback to iterative if conversion fails
     };
+    trace!(
+        target: "mettatron::backend::eval::try_match_all_rules_query_multi",
+        expr_bytes_len = ?expr_bytes.len(), "Convert expression to MORK format"
+    );
 
     let space = env.create_space();
     let ctx = ConversionContext::new();
@@ -1029,6 +1033,10 @@ fn try_match_all_rules_query_multi(
         }
         true // Continue searching for ALL matches
     });
+    trace!(
+        target: "mettatron::backend::eval::try_match_all_rules_query_multi",
+        matches_ctr = ?matches.len(), "Collected matches"
+    );
 
     matches
     // space will be dropped automatically here

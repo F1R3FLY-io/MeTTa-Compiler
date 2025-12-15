@@ -2277,7 +2277,7 @@ dependencies = [
 [[package]]
 name = "pathmap"
 version = "0.2.2"
-source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#832d1c997b61e0e8cc2c1c624f4a28bd5bed39ae"
+source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#42d22e54d8421aa1f2ba2e4f0e2556b0382fa0aa"
 dependencies = [
  "arrayvec",
  "dyn-clone",
@@ -2307,7 +2307,7 @@ dependencies = [
 [[package]]
 name = "pathmap-derive"
 version = "0.2.1"
-source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#832d1c997b61e0e8cc2c1c624f4a28bd5bed39ae"
+source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#42d22e54d8421aa1f2ba2e4f0e2556b0382fa0aa"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -56,7 +56,7 @@ pub fn metta_to_mork_bytes(
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
     trace!(
-        target: "mettatron::conversion::metta_to_mork",
+        target: "mettatron::conversion::metta_to_mork_bytes",
         ?value, "Converting MettaValue to MORK bytes"
     );
 
@@ -68,7 +68,7 @@ pub fn metta_to_mork_bytes(
 
     write_metta_value(value, space, ctx, &mut ez).map_err(|e| {
         debug!(
-            target: "mettatron::conversion::metta_to_mork",
+            target: "mettatron::conversion::metta_to_mork_bytes",
             error = %e, "Conversion to MORK bytes failed"
         );
         e
@@ -212,7 +212,7 @@ pub fn mork_bindings_to_metta(
     ctx: &ConversionContext,
     space: &Space,
 ) -> Result<Bindings, String> {
-    trace!(target: "mettatron::eval::mork_bindings_to_metta", ?mork_bindings);
+    trace!(target: "mettatron::conversion::mork_bindings_to_metta", ?mork_bindings);
 
     use super::environment::Environment;
 
@@ -223,7 +223,7 @@ pub fn mork_bindings_to_metta(
         // Get the variable name from context
         if (old_var as usize) >= ctx.var_names.len() {
             warn!(
-                target: "mettatron::eval::mork_bindings_conversion",
+                target: "mettatron::conversion::mork_bindings_to_metta",
                 old_var, max_vars = ctx.var_names.len(),
                 "Variable index exceeds known variables - internal inconsistency detected"
             );
@@ -248,7 +248,7 @@ pub fn mork_bindings_to_metta(
             }
             Err(e) => {
                 debug!(
-                    target: "mettatron::eval::mork_bindings_conversion",
+                    target: "mettatron::conversion::mork_bindings_to_metta",
                     var_name = %var_name, error = %e, "Failed to convert individual binding"
                 );
                 conversion_errors.push(format!(
@@ -263,7 +263,7 @@ pub fn mork_bindings_to_metta(
     if !conversion_errors.is_empty() {
         let errors = conversion_errors.join("\n  - ");
         warn!(
-            target: "mettatron::eval::mork_bindings_conversion",
+            target: "mettatron::conversion::mork_bindings_to_metta",
             errors, "MORK binding conversion partially failed"
         );
         return Err(format!("MORK binding conversion failed:\n  - {}", errors));

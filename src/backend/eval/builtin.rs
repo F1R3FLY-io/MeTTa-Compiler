@@ -41,6 +41,8 @@ pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaVal
         "acos-math" => Some(eval_acos(args)),
         "tan-math" => Some(eval_tan(args)),
         "atan-math" => Some(eval_atan(args)),
+        "isnan-math" => Some(eval_isnan(args)),
+        "isinf-math" => Some(eval_isinf(args)),
         _ => None,
     }
 }
@@ -490,6 +492,32 @@ fn eval_atan(args: &[MettaValue]) -> MettaValue {
     MettaValue::Float(value.atan())
 }
 
+/// Evaluate isnan (unary)
+/// Returns True if the input value is NaN, False otherwise
+fn eval_isnan(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("isnan-math", args, 1, "(isnan-math number)");
+
+    let value = match extract_float(&args[0], "isnan-math") {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    MettaValue::Bool(value.is_nan())
+}
+
+/// Evaluate isinf (unary)
+/// Returns True if the input value is positive or negative infinity, False otherwise
+fn eval_isinf(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("isinf-math", args, 1, "(isinf-math number)");
+
+    let value = match extract_float(&args[0], "isinf-math") {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    MettaValue::Bool(value.is_infinite())
+}
+
 /// Extract a Long (integer) value from MettaValue, returning a formatted error if not a Long
 fn extract_long(value: &MettaValue, context: &str) -> Result<i64, MettaValue> {
     match value {
@@ -537,10 +565,6 @@ fn extract_float(value: &MettaValue, context: &str) -> Result<f64, MettaValue> {
     }
 }
 
-// TODO -> tests with edge cases: NaN, infinity, negative numbers
-// TODO -> tests with integer vs float arguments
-// TODO -> error handling tests
-// TODO -> test more combined operations
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2527,6 +2551,161 @@ mod tests {
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("asin-math".to_string()),
             MettaValue::Bool(false),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_isnan_basic() {
+        let env = Environment::new();
+
+        // Test: isnan(NaN) = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isnan-math".to_string()),
+            MettaValue::Float(f64::NAN),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // Test: isnan(0.0) = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isnan-math".to_string()),
+            MettaValue::Float(0.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // Test: isnan(1.0) = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isnan-math".to_string()),
+            MettaValue::Float(1.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // Test: isnan(infinity) = False (infinity is not NaN)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isnan-math".to_string()),
+            MettaValue::Float(f64::INFINITY),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // Test: isnan(-infinity) = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isnan-math".to_string()),
+            MettaValue::Float(f64::NEG_INFINITY),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // Test: isnan with integer (should convert to float, not NaN)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isnan-math".to_string()),
+            MettaValue::Long(5),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+    }
+
+    #[test]
+    fn test_isinf_basic() {
+        let env = Environment::new();
+
+        // Test: isinf(infinity) = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isinf-math".to_string()),
+            MettaValue::Float(f64::INFINITY),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // Test: isinf(-infinity) = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isinf-math".to_string()),
+            MettaValue::Float(f64::NEG_INFINITY),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // Test: isinf(0.0) = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isinf-math".to_string()),
+            MettaValue::Float(0.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // Test: isinf(1.0) = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isinf-math".to_string()),
+            MettaValue::Float(1.0),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // Test: isinf(NaN) = False (NaN is not infinity)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isinf-math".to_string()),
+            MettaValue::Float(f64::NAN),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // Test: isinf with integer (should convert to float, not infinity)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isinf-math".to_string()),
+            MettaValue::Long(5),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+    }
+
+    #[test]
+    fn test_isnan_isinf_type_error() {
+        let env = Environment::new();
+
+        // Test: isnan-math with string argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isnan-math".to_string()),
+            MettaValue::String("NaN".to_string()),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+
+        match &results[0] {
+            MettaValue::Error(msg, details) => {
+                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
+                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+
+        // Test: isinf-math with bool argument should produce TypeError
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("isinf-math".to_string()),
+            MettaValue::Bool(true),
         ]);
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);

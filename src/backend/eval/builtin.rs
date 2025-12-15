@@ -6,183 +6,188 @@ use std::sync::Arc;
 /// Uses operator symbols (+, -, *, etc.) instead of normalized names
 pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaValue> {
     match op {
-        "+" => eval_checked_arithmetic(args, |a, b| a.checked_add(b), "+"),
-        "-" => eval_checked_arithmetic(args, |a, b| a.checked_sub(b), "-"),
-        "*" => eval_checked_arithmetic(args, |a, b| a.checked_mul(b), "*"),
-        "/" => eval_division(args),
-        "<" => eval_comparison(args, |a, b| a < b),
-        "<=" => eval_comparison(args, |a, b| a <= b),
-        ">" => eval_comparison(args, |a, b| a > b),
-        ">=" => eval_comparison(args, |a, b| a >= b),
-        "==" => eval_comparison(args, |a, b| a == b),
-        "!=" => eval_comparison(args, |a, b| a != b),
+        "+" => Some(eval_checked_arithmetic(args, |a, b| a.checked_add(b), "+")),
+        "-" => Some(eval_checked_arithmetic(args, |a, b| a.checked_sub(b), "-")),
+        "*" => Some(eval_checked_arithmetic(args, |a, b| a.checked_mul(b), "*")),
+        "/" => Some(eval_division(args)),
+        "%" => Some(eval_modulo(args)),
+        "<" => Some(eval_comparison(args, |a, b| a < b)),
+        "<=" => Some(eval_comparison(args, |a, b| a <= b)),
+        ">" => Some(eval_comparison(args, |a, b| a > b)),
+        ">=" => Some(eval_comparison(args, |a, b| a >= b)),
+        "==" => Some(eval_comparison(args, |a, b| a == b)),
+        "!=" => Some(eval_comparison(args, |a, b| a != b)),
         // Logical operators
-        "and" => eval_logical_binary(args, |a, b| a && b, "and"),
-        "or" => eval_logical_binary(args, |a, b| a || b, "or"),
-        "not" => eval_logical_not(args),
+        "and" => Some(eval_logical_binary(args, |a, b| a && b, "and")),
+        "or" => Some(eval_logical_binary(args, |a, b| a || b, "or")),
+        "not" => Some(eval_logical_not(args)),
         _ => None,
     }
 }
 
 /// Evaluate a binary arithmetic operation with overflow checking
-fn eval_checked_arithmetic<F>(args: &[MettaValue], op: F, op_name: &str) -> Option<MettaValue>
+fn eval_checked_arithmetic<F>(args: &[MettaValue], op: F, op_name: &str) -> MettaValue
 where
     F: Fn(i64, i64) -> Option<i64>,
 {
     if args.len() != 2 {
-        return Some(MettaValue::Error(
+        return MettaValue::Error(
             format!(
                 "Arithmetic operation '{}' requires exactly 2 arguments, got {}",
                 op_name,
                 args.len()
             ),
             Arc::new(MettaValue::Nil),
-        ));
+        );
     }
 
     let a = match &args[0] {
         MettaValue::Long(n) => *n,
         other => {
-            return Some(MettaValue::Error(
+            return MettaValue::Error(
                 format!(
                     "Cannot perform '{}': expected Number (integer), got {}",
                     op_name,
                     other.friendly_type_name()
                 ),
                 Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
+            );
         }
     };
 
     let b = match &args[1] {
         MettaValue::Long(n) => *n,
         other => {
-            return Some(MettaValue::Error(
+            return MettaValue::Error(
                 format!(
                     "Cannot perform '{}': expected Number (integer), got {}",
                     op_name,
                     other.friendly_type_name()
                 ),
                 Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
+            );
         }
     };
 
     match op(a, b) {
-        Some(result) => Some(MettaValue::Long(result)),
-        None => Some(MettaValue::Error(
+        Some(result) => MettaValue::Long(result),
+        None => MettaValue::Error(
             format!(
                 "Arithmetic overflow: {} {} {} exceeds integer bounds",
                 a, op_name, b
             ),
             Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-        )),
+        ),
     }
 }
 
 /// Evaluate division with division-by-zero and overflow checking
-fn eval_division(args: &[MettaValue]) -> Option<MettaValue> {
+fn eval_division(args: &[MettaValue]) -> MettaValue {
     if args.len() != 2 {
-        return Some(MettaValue::Error(
+        return MettaValue::Error(
             format!("Division requires exactly 2 arguments, got {}", args.len()),
             Arc::new(MettaValue::Nil),
-        ));
+        );
     }
 
     let a = match &args[0] {
         MettaValue::Long(n) => *n,
         other => {
-            return Some(MettaValue::Error(
+            return MettaValue::Error(
                 format!(
                     "Cannot divide: expected Number (integer), got {}",
                     other.friendly_type_name()
                 ),
                 Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
+            );
         }
     };
 
     let b = match &args[1] {
         MettaValue::Long(n) => *n,
         other => {
-            return Some(MettaValue::Error(
+            return MettaValue::Error(
                 format!(
                     "Cannot divide: expected Number (integer), got {}",
                     other.friendly_type_name()
                 ),
                 Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
+            );
         }
     };
 
     if b == 0 {
-        return Some(MettaValue::Error(
+        return MettaValue::Error(
             "Division by zero".to_string(),
             Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-        ));
+        );
     }
 
     // Use checked_div for overflow protection (e.g., i64::MIN / -1)
     match a.checked_div(b) {
-        Some(result) => Some(MettaValue::Long(result)),
-        None => Some(MettaValue::Error(
+        Some(result) => MettaValue::Long(result),
+        None => MettaValue::Error(
             format!("Arithmetic overflow: {} / {} exceeds integer bounds", a, b),
             Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-        )),
+        ),
     }
 }
 
+fn eval_modulo(_args: &[MettaValue]) -> MettaValue {
+    todo!()
+}
+
 /// Evaluate a comparison operation with strict type checking
-fn eval_comparison<F>(args: &[MettaValue], op: F) -> Option<MettaValue>
+fn eval_comparison<F>(args: &[MettaValue], op: F) -> MettaValue
 where
     F: Fn(i64, i64) -> bool,
 {
     if args.len() != 2 {
-        return Some(MettaValue::Error(
+        return MettaValue::Error(
             format!(
                 "Comparison operation requires exactly 2 arguments, got {}",
                 args.len()
             ),
             Arc::new(MettaValue::Nil),
-        ));
+        );
     }
 
     let a = match &args[0] {
         MettaValue::Long(n) => *n,
         other => {
-            return Some(MettaValue::Error(
+            return MettaValue::Error(
                 format!(
                     "Cannot compare: expected Number (integer), got {}",
                     other.friendly_type_name()
                 ),
                 Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
+            );
         }
     };
 
     let b = match &args[1] {
         MettaValue::Long(n) => *n,
         other => {
-            return Some(MettaValue::Error(
+            return MettaValue::Error(
                 format!(
                     "Cannot compare: expected Number (integer), got {}",
                     other.friendly_type_name()
                 ),
                 Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
+            );
         }
     };
 
-    Some(MettaValue::Bool(op(a, b)))
+    MettaValue::Bool(op(a, b))
 }
 
 /// Evaluate a binary logical operation (and, or)
-fn eval_logical_binary<F>(args: &[MettaValue], op: F, op_name: &str) -> Option<MettaValue>
+fn eval_logical_binary<F>(args: &[MettaValue], op: F, op_name: &str) -> MettaValue
 where
     F: Fn(bool, bool) -> bool,
 {
     if args.len() != 2 {
-        return Some(MettaValue::Error(
+        return MettaValue::Error(
             format!(
                 "'{}' requires exactly 2 arguments, got {}. Usage: ({} bool1 bool2)",
                 op_name,
@@ -190,64 +195,66 @@ where
                 op_name
             ),
             Arc::new(MettaValue::Atom("ArityError".to_string())),
-        ));
+        );
     }
 
     let a = match &args[0] {
         MettaValue::Bool(b) => *b,
         other => {
-            return Some(MettaValue::Error(
+            return MettaValue::Error(
                 format!(
                     "'{}': expected Bool, got {}",
                     op_name,
                     other.friendly_type_name()
                 ),
                 Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
+            );
         }
     };
 
     let b = match &args[1] {
         MettaValue::Bool(b) => *b,
         other => {
-            return Some(MettaValue::Error(
+            return MettaValue::Error(
                 format!(
                     "'{}': expected Bool, got {}",
                     op_name,
                     other.friendly_type_name()
                 ),
                 Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
+            );
         }
     };
 
-    Some(MettaValue::Bool(op(a, b)))
+    MettaValue::Bool(op(a, b))
 }
 
 /// Evaluate logical not (unary)
-fn eval_logical_not(args: &[MettaValue]) -> Option<MettaValue> {
+fn eval_logical_not(args: &[MettaValue]) -> MettaValue {
     if args.len() != 1 {
-        return Some(MettaValue::Error(
+        return MettaValue::Error(
             format!(
                 "'not' requires exactly 1 argument, got {}. Usage: (not bool)",
                 args.len()
             ),
             Arc::new(MettaValue::Atom("ArityError".to_string())),
-        ));
+        );
     }
 
     match &args[0] {
-        MettaValue::Bool(b) => Some(MettaValue::Bool(!b)),
-        other => Some(MettaValue::Error(
+        MettaValue::Bool(b) => MettaValue::Bool(!b),
+        other => MettaValue::Error(
             format!("'not': expected Bool, got {}", other.friendly_type_name()),
             Arc::new(MettaValue::Atom("TypeError".to_string())),
-        )),
+        ),
     }
 }
 
 // TODO -> tests with edge cases: NaN, infinity, negative numbers
 // TODO -> tests with integer vs float arguments
 // TODO -> error handling tests
+
+// TODO -> test more combined operations
 #[cfg(test)]
 mod tests {
     use super::*;

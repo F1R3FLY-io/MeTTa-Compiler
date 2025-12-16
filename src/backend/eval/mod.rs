@@ -13,6 +13,7 @@ mod bindings;
 mod control_flow;
 mod errors;
 mod evaluation;
+mod expression;
 pub mod fixed_point;
 mod list_ops;
 mod mork_forms;
@@ -513,6 +514,10 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "map-atom" => return EvalStep::Done(list_ops::eval_map_atom(items, env)),
             "filter-atom" => return EvalStep::Done(list_ops::eval_filter_atom(items, env)),
             "foldl-atom" => return EvalStep::Done(list_ops::eval_foldl_atom(items, env)),
+
+            // S-expression manipulation
+            "cons-atom" => return EvalStep::Done(expression::eval_cons_atom(items, env)),
+
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),

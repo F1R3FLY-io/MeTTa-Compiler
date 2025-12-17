@@ -520,6 +520,8 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "decons-atom" => return EvalStep::Done(expression::eval_decons_atom(items, env)),
             "size-atom" => return EvalStep::Done(expression::eval_size_atom(items, env)),
             "index-atom" => return EvalStep::Done(expression::eval_index_atom(items, env)),
+            "car-atom" => return EvalStep::Done(expression::eval_car_atom(items, env)),
+            "cdr-atom" => return EvalStep::Done(expression::eval_cdr_atom(items, env)),
 
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),

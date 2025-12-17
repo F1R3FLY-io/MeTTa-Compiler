@@ -171,6 +171,82 @@ pub(super) fn eval_index_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
     }
 }
 
+/// Car atom: (car-atom expr)
+/// Extracts the first atom of an expression
+/// Example: (car-atom (a b c)) -> a
+pub(super) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_car_atom", ?items);
+    require_args_with_usage!("car-atom", items, 1, env, "(car-atom expr)");
+
+    let expr = &items[1];
+
+    match expr {
+        MettaValue::SExpr(expr_items) => (vec![expr_items[0].clone()], env),
+        MettaValue::Nil => {
+            let err = MettaValue::Error(
+                format!(
+                    "car-atom expects a non-empty expression as an argument, found: {}",
+                    super::friendly_value_repr(&MettaValue::SExpr(items.clone()))
+                ),
+                Arc::new(MettaValue::SExpr(items.clone())),
+            );
+            (vec![err], env)
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "expected: (car-atom (: <expr> Expression)), found: {}",
+                    super::friendly_value_repr(&MettaValue::SExpr(items.clone()))
+                ),
+                Arc::new(MettaValue::SExpr(items.clone())),
+            );
+            (vec![err], env)
+        }
+    }
+}
+
+/// Cdr atom: (cdr-atom expr)
+/// Extracts the tail of an expression (all except first atom)
+/// Example: (cdr-atom (a b c)) -> (b c)
+pub(super) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_cdr_atom", ?items);
+    require_args_with_usage!("cdr-atom", items, 1, env, "(cdr-atom expr)");
+
+    let expr = &items[1];
+
+    match expr {
+        MettaValue::SExpr(expr_items) => {
+            let tail = if expr_items.len() == 1 {
+                // Single element: return empty expression (Nil)
+                MettaValue::Nil
+            } else {
+                MettaValue::SExpr(expr_items[1..].to_vec())
+            };
+            (vec![tail], env)
+        }
+        MettaValue::Nil => {
+            let err = MettaValue::Error(
+                format!(
+                    "cdr-atom expects a non-empty expression as an argument, found: {}",
+                    super::friendly_value_repr(&MettaValue::SExpr(items.clone()))
+                ),
+                Arc::new(MettaValue::SExpr(items.clone())),
+            );
+            (vec![err], env)
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "expected: (cdr-atom (: <expr> Expression)), found: {}",
+                    super::friendly_value_repr(&MettaValue::SExpr(items.clone()))
+                ),
+                Arc::new(MettaValue::SExpr(items.clone())),
+            );
+            (vec![err], env)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,6 +665,200 @@ mod tests {
             MettaValue::Error(msg, _) => {
                 assert!(msg.contains("index-atom"));
                 assert!(msg.contains("requires exactly 2 argument"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_car_atom_basic() {
+        let env = Environment::new();
+
+        // Test: (car-atom (a b c)) should produce a
+        let source = "(car-atom (a b c))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0],
+            MettaValue::Atom("a".to_string()),
+            "car-atom should return the first element of the expression"
+        );
+    }
+
+    #[test]
+    fn test_car_atom_with_single_element() {
+        let env = Environment::new();
+
+        // Test: (car-atom (a)) should produce a
+        let source = "(car-atom (a))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0],
+            MettaValue::Atom("a".to_string()),
+            "car-atom with single element should return that element"
+        );
+    }
+
+    #[test]
+    fn test_car_atom_with_nested_expressions() {
+        let env = Environment::new();
+
+        // Test: (car-atom ((a b) c d)) should produce (a b)
+        let source = "(car-atom ((a b) c d))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        let expected = MettaValue::SExpr(vec![
+            MettaValue::Atom("a".to_string()),
+            MettaValue::Atom("b".to_string()),
+        ]);
+        assert_eq!(
+            results[0], expected,
+            "car-atom should return nested expressions as-is"
+        );
+    }
+
+    #[test]
+    fn test_car_atom_error_with_empty_expression() {
+        let env = Environment::new();
+
+        // Test: (car-atom ()) should produce an error
+        let source = "(car-atom ())";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("non-empty expression"),
+                    "Error should mention non-empty expression"
+                );
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_car_atom_error_wrong_argument_count() {
+        let env = Environment::new();
+
+        // Test: (car-atom) should produce an error (missing expr)
+        let source = "(car-atom)";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("car-atom"));
+                assert!(msg.contains("requires exactly 1 argument"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cdr_atom_basic() {
+        let env = Environment::new();
+
+        // Test: (cdr-atom (a b c)) should produce (b c)
+        let source = "(cdr-atom (a b c))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        let expected = MettaValue::SExpr(vec![
+            MettaValue::Atom("b".to_string()),
+            MettaValue::Atom("c".to_string()),
+        ]);
+        assert_eq!(
+            results[0], expected,
+            "cdr-atom should return the tail of the expression"
+        );
+    }
+
+    #[test]
+    fn test_cdr_atom_with_single_element() {
+        let env = Environment::new();
+
+        // Test: (cdr-atom (a)) should produce () (Nil)
+        let source = "(cdr-atom (a))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0],
+            MettaValue::Nil,
+            "cdr-atom with single element should return empty expression (Nil)"
+        );
+    }
+
+    #[test]
+    fn test_cdr_atom_with_nested_expressions() {
+        let env = Environment::new();
+
+        // Test: (cdr-atom (a (b c) d)) should produce ((b c) d)
+        let source = "(cdr-atom (a (b c) d))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        let expected = MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("b".to_string()),
+                MettaValue::Atom("c".to_string()),
+            ]),
+            MettaValue::Atom("d".to_string()),
+        ]);
+        assert_eq!(
+            results[0], expected,
+            "cdr-atom should preserve nested structure in tail"
+        );
+    }
+
+    #[test]
+    fn test_cdr_atom_error_with_empty_expression() {
+        let env = Environment::new();
+
+        // Test: (cdr-atom ()) should produce an error
+        let source = "(cdr-atom ())";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("non-empty expression"),
+                    "Error should mention non-empty expression"
+                );
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cdr_atom_error_wrong_argument_count() {
+        let env = Environment::new();
+
+        // Test: (cdr-atom) should produce an error (missing expr)
+        let source = "(cdr-atom)";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("cdr-atom"));
+                assert!(msg.contains("requires exactly 1 argument"));
             }
             other => panic!("Expected Error, got {:?}", other),
         }

@@ -247,6 +247,134 @@ pub(super) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     }
 }
 
+/// Min atom: (min-atom expr)
+/// Returns the atom with minimum value in the expression
+/// Only numbers (Long or Float) are allowed
+/// Example: (min-atom (5 2 8 1)) -> 1
+pub(super) fn eval_min_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_min_atom", ?items);
+    require_args_with_usage!("min-atom", items, 1, env, "(min-atom expr)");
+
+    let expr = &items[1];
+
+    match expr {
+        MettaValue::SExpr(expr_items) => {
+            let numbers_with_values: Result<Vec<(f64, &MettaValue)>, MettaValue> = expr_items
+                .iter()
+                .map(|item| {
+                    match item {
+                        MettaValue::Long(n) => Ok((*n as f64, item)),
+                        MettaValue::Float(f) => Ok((*f, item)),
+                        _ => Err(MettaValue::Error(
+                            format!(
+                                "min-atom expects expression containing only numbers, found non-numeric value: {}",
+                                super::friendly_value_repr(item)
+                            ),
+                            Arc::new(MettaValue::SExpr(items.clone())),
+                        )),
+                    }
+                })
+                .collect();
+
+            let numbers_with_values = match numbers_with_values {
+                Ok(v) => v,
+                Err(e) => return (vec![e], env),
+            };
+
+            let (_, min_value) = numbers_with_values
+                .iter()
+                .min_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap();
+
+            (vec![(*min_value).clone()], env)
+        }
+        MettaValue::Nil => {
+            let err = MettaValue::Error(
+                format!(
+                    "min-atom expects a non-empty expression containing numbers, found: {}",
+                    super::friendly_value_repr(&MettaValue::SExpr(items.clone()))
+                ),
+                Arc::new(MettaValue::SExpr(items.clone())),
+            );
+            (vec![err], env)
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "expected: (min-atom (: <expr> Expression)), found: {}",
+                    super::friendly_value_repr(&MettaValue::SExpr(items.clone()))
+                ),
+                Arc::new(MettaValue::SExpr(items.clone())),
+            );
+            (vec![err], env)
+        }
+    }
+}
+
+/// Max atom: (max-atom expr)
+/// Returns the atom with maximum value in the expression
+/// Only numbers (Long or Float) are allowed
+/// Example: (max-atom (5 2 8 1)) -> 8
+pub(super) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_max_atom", ?items);
+    require_args_with_usage!("max-atom", items, 1, env, "(max-atom expr)");
+
+    let expr = &items[1];
+
+    match expr {
+        MettaValue::SExpr(expr_items) => {
+            let numbers_with_values: Result<Vec<(f64, &MettaValue)>, MettaValue> = expr_items
+                .iter()
+                .map(|item| {
+                    match item {
+                        MettaValue::Long(n) => Ok((*n as f64, item)),
+                        MettaValue::Float(f) => Ok((*f, item)),
+                        _ => Err(MettaValue::Error(
+                            format!(
+                                "max-atom expects expression containing only numbers, found non-numeric value: {}",
+                                super::friendly_value_repr(item)
+                            ),
+                            Arc::new(MettaValue::SExpr(items.clone())),
+                        )),
+                    }
+                })
+                .collect();
+
+            let numbers_with_values = match numbers_with_values {
+                Ok(v) => v,
+                Err(e) => return (vec![e], env),
+            };
+
+            let (_, max_value) = numbers_with_values
+                .iter()
+                .max_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap();
+
+            (vec![(*max_value).clone()], env)
+        }
+        MettaValue::Nil => {
+            let err = MettaValue::Error(
+                format!(
+                    "max-atom expects a non-empty expression containing numbers, found: {}",
+                    super::friendly_value_repr(&MettaValue::SExpr(items.clone()))
+                ),
+                Arc::new(MettaValue::SExpr(items.clone())),
+            );
+            (vec![err], env)
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "expected: (max-atom (: <expr> Expression)), found: {}",
+                    super::friendly_value_repr(&MettaValue::SExpr(items.clone()))
+                ),
+                Arc::new(MettaValue::SExpr(items.clone())),
+            );
+            (vec![err], env)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,6 +987,205 @@ mod tests {
             MettaValue::Error(msg, _) => {
                 assert!(msg.contains("cdr-atom"));
                 assert!(msg.contains("requires exactly 1 argument"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_min_atom_basic() {
+        let env = Environment::new();
+
+        // Test: (min-atom (5 2 8 1)) should produce 1
+        let source = "(min-atom (5 2 8 1))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0],
+            MettaValue::Long(1),
+            "min-atom should return the minimum value"
+        );
+    }
+
+    #[test]
+    fn test_min_atom_with_single_element() {
+        let env = Environment::new();
+
+        // Test: (min-atom (42)) should produce 42
+        let source = "(min-atom (42))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0],
+            MettaValue::Long(42),
+            "min-atom with single element should return that element"
+        );
+    }
+
+    #[test]
+    fn test_min_atom_with_floats() {
+        let env = Environment::new();
+
+        // Test: (min-atom (5.5 2.1 8.9 1.0)) should produce 1.0
+        // Note: We need to create Float values manually since parser might not support floats
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Float(5.5),
+            MettaValue::Float(2.1),
+            MettaValue::Float(8.9),
+            MettaValue::Float(1.0),
+        ]);
+        let items = vec![MettaValue::Atom("min-atom".to_string()), expr];
+        let (results, _) = eval_min_atom(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 1.0).abs() < 0.001, "min-atom should return 1.0");
+            }
+            other => panic!("Expected Float(1.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_min_atom_error_with_empty_expression() {
+        let env = Environment::new();
+
+        // Test: (min-atom ()) should produce an error
+        let source = "(min-atom ())";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("non-empty expression"),
+                    "Error should mention non-empty expression"
+                );
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_min_atom_error_with_non_numeric_value() {
+        let env = Environment::new();
+
+        // Test: (min-atom (5 2 hello 8)) should produce an error
+        let source = "(min-atom (5 2 hello 8))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("non-numeric"),
+                    "Error should mention non-numeric value"
+                );
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_max_atom_basic() {
+        let env = Environment::new();
+
+        // Test: (max-atom (5 2 8 1)) should produce 8
+        let source = "(max-atom (5 2 8 1))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0],
+            MettaValue::Long(8),
+            "max-atom should return the maximum value"
+        );
+    }
+
+    #[test]
+    fn test_max_atom_with_single_element() {
+        let env = Environment::new();
+
+        // Test: (max-atom (42)) should produce 42
+        let source = "(max-atom (42))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0],
+            MettaValue::Long(42),
+            "max-atom with single element should return that element"
+        );
+    }
+
+    #[test]
+    fn test_max_atom_with_floats() {
+        let env = Environment::new();
+
+        // Test: (max-atom (5.5 2.1 8.9 1.0)) should produce 8.9
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Float(5.5),
+            MettaValue::Float(2.1),
+            MettaValue::Float(8.9),
+            MettaValue::Float(1.0),
+        ]);
+        let items = vec![MettaValue::Atom("max-atom".to_string()), expr];
+        let (results, _) = eval_max_atom(items, env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Float(f) => {
+                assert!((f - 8.9).abs() < 0.001, "max-atom should return 8.9");
+            }
+            other => panic!("Expected Float(8.9), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_max_atom_error_with_empty_expression() {
+        let env = Environment::new();
+
+        // Test: (max-atom ()) should produce an error
+        let source = "(max-atom ())";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("non-empty expression"),
+                    "Error should mention non-empty expression"
+                );
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_max_atom_error_with_non_numeric_value() {
+        let env = Environment::new();
+
+        // Test: (max-atom (5 2 hello 8)) should produce an error
+        let source = "(max-atom (5 2 hello 8))";
+        let state = compile(source).unwrap();
+        let (results, _) = eval(state.source[0].clone(), env);
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("non-numeric"),
+                    "Error should mention non-numeric value"
+                );
             }
             other => panic!("Expected Error, got {:?}", other),
         }

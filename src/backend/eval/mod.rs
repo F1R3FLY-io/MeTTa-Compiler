@@ -522,6 +522,8 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "index-atom" => return EvalStep::Done(expression::eval_index_atom(items, env)),
             "car-atom" => return EvalStep::Done(expression::eval_car_atom(items, env)),
             "cdr-atom" => return EvalStep::Done(expression::eval_cdr_atom(items, env)),
+            "min-atom" => return EvalStep::Done(expression::eval_min_atom(items, env)),
+            "max-atom" => return EvalStep::Done(expression::eval_max_atom(items, env)),
 
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),

@@ -517,6 +517,7 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
 
             // S-expression manipulation
             "cons-atom" => return EvalStep::Done(expression::eval_cons_atom(items, env)),
+            "decons-atom" => return EvalStep::Done(expression::eval_decons_atom(items, env)),
 
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),

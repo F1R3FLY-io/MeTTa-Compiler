@@ -4,9 +4,6 @@ use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
 use tracing::trace;
 
-// TODO -> provide docs/BUILTIN_FUNCTIONS_IMPLEMENTATION.md
-// TODO -> update examples/ directory
-
 /// Cons atom: (cons-atom head tail)
 /// Constructs an expression using two arguments
 /// Example: (cons-atom a (b c)) -> (a b c)

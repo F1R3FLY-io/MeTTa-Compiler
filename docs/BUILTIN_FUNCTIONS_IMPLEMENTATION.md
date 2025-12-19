@@ -140,21 +140,21 @@ This document provides a comprehensive reference of the implementation status of
   - Location: `src/backend/eval.rs:503`
   - Reference: [stdlib.metta:1299-1304](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1299-L1304)
 
-- [ ] **`%`** - Modulo
+- [x] **`%`** - Modulo
   - Reference: [stdlib.metta:1306-1311](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L1306-L1311)
 
 ## Math Functions
 
-- [ ] **`pow-math`** - Power function (base ^ power)
+- [x] **`pow-math`** - Power function (base ^ power)
   - Reference: [stdlib.metta:136-141](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L136-L141)
 
-- [ ] **`sqrt-math`** - Square root
+- [x] **`sqrt-math`** - Square root
   - Reference: [stdlib.metta:143-147](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L143-L147)
 
-- [ ] **`abs-math`** - Absolute value
+- [x] **`abs-math`** - Absolute value
   - Reference: [stdlib.metta:149-153](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L149-L153)
 
-- [ ] **`log-math`** - Logarithm
+- [x] **`log-math`** - Logarithm
   - Reference: [stdlib.metta:155-160](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L155-L160)
 
 - [ ] **`min-atom`** - Minimum value in expression
@@ -164,42 +164,42 @@ This document provides a comprehensive reference of the implementation status of
   - Reference: [stdlib.metta:117-121](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L117-L121), [atom.rs:459](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L459)
 
 ### Rounding Functions
-- [ ] **`trunc-math`** - Integer part of value
+- [x] **`trunc-math`** - Integer part of value
   - Reference: [stdlib.metta:162-166](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L162-L166)
 
-- [ ] **`ceil-math`** - Smallest integer >= value
+- [x] **`ceil-math`** - Smallest integer >= value
   - Reference: [stdlib.metta:168-172](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L168-L172)
 
-- [ ] **`floor-math`** - Smallest integer <= value
+- [x] **`floor-math`** - Smallest integer <= value
   - Reference: [stdlib.metta:174-178](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L174-L178)
 
-- [ ] **`round-math`** - Nearest integer to value
+- [x] **`round-math`** - Nearest integer to value
   - Reference: [stdlib.metta:180-184](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L180-L184)
 
 ### Trigonometric Functions
-- [ ] **`sin-math`** - Sine function
+- [x] **`sin-math`** - Sine function
   - Reference: [stdlib.metta:186-190](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L186-L190)
 
-- [ ] **`asin-math`** - Arcsine function
+- [x] **`asin-math`** - Arcsine function
   - Reference: [stdlib.metta:192-196](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L192-L196)
 
-- [ ] **`cos-math`** - Cosine function
+- [x] **`cos-math`** - Cosine function
   - Reference: [stdlib.metta:198-202](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L198-L202)
 
-- [ ] **`acos-math`** - Arccosine function
+- [x] **`acos-math`** - Arccosine function
   - Reference: [stdlib.metta:204-208](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L204-L208)
 
-- [ ] **`tan-math`** - Tangent function
+- [x] **`tan-math`** - Tangent function
   - Reference: [stdlib.metta:210-214](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L210-L214)
 
-- [ ] **`atan-math`** - Arctangent function
+- [x] **`atan-math`** - Arctangent function
   - Reference: [stdlib.metta:216-220](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L216-L220)
 
 ### Special Value Checks
-- [ ] **`isnan-math`** - Returns True if value is NaN
+- [x] **`isnan-math`** - Returns True if value is NaN
   - Reference: [stdlib.metta:222-226](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L222-L226)
 
-- [ ] **`isinf-math`** - Returns True if value is ±infinity
+- [x] **`isinf-math`** - Returns True if value is ±infinity
   - Reference: [stdlib.metta:228-232](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L228-L232)
 
 ## Comparison Operations

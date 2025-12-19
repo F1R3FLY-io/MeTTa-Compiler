@@ -415,7 +415,7 @@ fn eval_asin(args: &[MettaValue]) -> MettaValue {
     };
 
     // asin is only defined for values in [-1, 1]
-    if value < -1.0 || value > 1.0 {
+    if !(-1.0..=1.0).contains(&value) {
         return MettaValue::Error(
             format!(
                 "Arcsine input must be in range [-1, 1]: asin-math({})",
@@ -453,7 +453,7 @@ fn eval_acos(args: &[MettaValue]) -> MettaValue {
     };
 
     // acos is only defined for values in [-1, 1]
-    if value < -1.0 || value > 1.0 {
+    if !(-1.0..=1.0).contains(&value) {
         return MettaValue::Error(
             format!(
                 "Arccosine input must be in range [-1, 1]: acos-math({})",

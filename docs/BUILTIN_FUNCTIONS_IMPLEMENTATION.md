@@ -104,23 +104,47 @@ This document provides a comprehensive reference of the implementation status of
 
 ## Expression Manipulation
 
-- [ ] **`cons-atom`** - Constructs expression from head and tail
+- [x] **`cons-atom`** - Constructs expression from head and tail
+  - Location: `src/backend/eval/expression.rs:13`
   - Reference: [stdlib.metta:90-96](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L90-L96)
+  - Example: `(cons-atom a (b c))` → `(a b c)`
 
-- [ ] **`decons-atom`** - Deconstructs expression into head and tail
+- [x] **`decons-atom`** - Deconstructs expression into head and tail
+  - Location: `src/backend/eval/expression.rs:49`
   - Reference: [stdlib.metta:98-103](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L98-L103)
+  - Example: `(decons-atom (a b c))` → `(a (b c))`
 
-- [ ] **`car-atom`** - Extracts first atom of expression
+- [x] **`car-atom`** - Extracts first atom of expression
+  - Location: `src/backend/eval/expression.rs:177`
   - Reference: [stdlib.metta:576-585](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L576-L585)
+  - Example: `(car-atom (a b c))` → `a`
 
-- [ ] **`cdr-atom`** - Extracts tail of expression
+- [x] **`cdr-atom`** - Extracts tail of expression
+  - Location: `src/backend/eval/expression.rs:224`
   - Reference: [stdlib.metta:587-596](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L587-L596)
+  - Example: `(cdr-atom (a b c))` → `(b c)`
 
-- [ ] **`size-atom`** - Returns size of expression
+- [x] **`size-atom`** - Returns size of expression
+  - Location: `src/backend/eval/expression.rs:89`
   - Reference: [stdlib.metta:123-127](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L123-L127), [atom.rs:461](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L461)
+  - Example: `(size-atom (a b c))` → `3`
 
-- [ ] **`index-atom`** - Returns atom at given index in expression
+- [x] **`index-atom`** - Returns atom at given index in expression
+  - Location: `src/backend/eval/expression.rs:120`
   - Reference: [stdlib.metta:129-134](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L129-L134), [atom.rs:463](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L463)
+  - Example: `(index-atom (a b c) 1)` → `b`
+
+- [x] **`min-atom`** - Minimum value in expression
+  - Location: `src/backend/eval/expression.rs:254`
+  - Reference: [stdlib.metta:111-115](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L111-L115), [atom.rs:457](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L457)
+  - Example: `(min-atom (5 2 8 1))` → `1`
+  - Note: Supports both Long (integer) and Float (floating-point) numbers
+
+- [x] **`max-atom`** - Maximum value in expression
+  - Location: `src/backend/eval/expression.rs:331`
+  - Reference: [stdlib.metta:117-121](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L117-L121), [atom.rs:459](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L459)
+  - Example: `(max-atom (5 2 8 1))` → `8`
+  - Note: Supports both Long (integer) and Float (floating-point) numbers
 
 ## Arithmetic Operations
 
@@ -156,12 +180,6 @@ This document provides a comprehensive reference of the implementation status of
 
 - [x] **`log-math`** - Logarithm
   - Reference: [stdlib.metta:155-160](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L155-L160)
-
-- [ ] **`min-atom`** - Minimum value in expression
-  - Reference: [stdlib.metta:111-115](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L111-L115), [atom.rs:457](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L457)
-
-- [ ] **`max-atom`** - Maximum value in expression
-  - Reference: [stdlib.metta:117-121](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/stdlib.metta#L117-L121), [atom.rs:459](https://github.com/trueagi-io/hyperon-experimental/blob/main/lib/src/metta/runner/stdlib/atom.rs#L459)
 
 ### Rounding Functions
 - [x] **`trunc-math`** - Integer part of value
@@ -513,8 +531,8 @@ This document provides a comprehensive reference of the implementation status of
 ## Summary Statistics
 
 - **Total Functions:** 147
-- **Implemented:** 26 (17.7%)
-- **Not Implemented:** 121 (82.3%)
+- **Implemented:** 34 (23.1%)
+- **Not Implemented:** 113 (76.9%)
 
 ## Implementation Notes
 

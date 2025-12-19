@@ -14,6 +14,7 @@ mod builtin;
 mod control_flow;
 mod errors;
 mod evaluation;
+mod expression;
 pub mod fixed_point;
 mod list_ops;
 mod mork_forms;
@@ -501,6 +502,17 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "map-atom" => return EvalStep::Done(list_ops::eval_map_atom(items, env)),
             "filter-atom" => return EvalStep::Done(list_ops::eval_filter_atom(items, env)),
             "foldl-atom" => return EvalStep::Done(list_ops::eval_foldl_atom(items, env)),
+
+            // S-expression manipulation
+            "cons-atom" => return EvalStep::Done(expression::eval_cons_atom(items, env)),
+            "decons-atom" => return EvalStep::Done(expression::eval_decons_atom(items, env)),
+            "size-atom" => return EvalStep::Done(expression::eval_size_atom(items, env)),
+            "index-atom" => return EvalStep::Done(expression::eval_index_atom(items, env)),
+            "car-atom" => return EvalStep::Done(expression::eval_car_atom(items, env)),
+            "cdr-atom" => return EvalStep::Done(expression::eval_cdr_atom(items, env)),
+            "min-atom" => return EvalStep::Done(expression::eval_min_atom(items, env)),
+            "max-atom" => return EvalStep::Done(expression::eval_max_atom(items, env)),
+
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),

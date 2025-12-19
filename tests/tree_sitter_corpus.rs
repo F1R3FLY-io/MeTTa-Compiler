@@ -36,17 +36,9 @@ fn test_tree_sitter_corpus() {
         eprintln!("Tree-Sitter test errors:\n{}", stderr);
     }
 
-    // Assert that the command succeeded
+    // Assert that the command succeeded (exit code is sufficient - tree-sitter returns non-zero on any test failure)
     assert!(
         output.status.success(),
         "Tree-Sitter corpus tests failed. See output above for details."
-    );
-
-    // Verify the success message is in the output
-    let output_str = stdout.to_string();
-    assert!(
-        output_str.contains("success percentage: 100.00%"),
-        "Not all Tree-Sitter corpus tests passed. Got:\n{}",
-        output_str
     );
 }

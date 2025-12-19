@@ -60,6 +60,23 @@ impl MettaValue {
         )
     }
 
+    /// Convert MettaValue to a friendly type name for error messages
+    /// This provides user-friendly type names instead of debug format like "Long(5)"
+    pub fn friendly_type_name(&self) -> &'static str {
+        match self {
+            MettaValue::Long(_) => "Number (integer)",
+            MettaValue::Float(_) => "Number (float)",
+            MettaValue::Bool(_) => "Bool",
+            MettaValue::String(_) => "String",
+            MettaValue::Atom(_) => "Atom",
+            MettaValue::Nil => "Nil",
+            MettaValue::SExpr(_) => "S-expression",
+            MettaValue::Error(_, _) => "Error",
+            MettaValue::Type(_) => "Type",
+            MettaValue::Conjunction(_) => "Conjunction",
+        }
+    }
+
     /// Check if this is an evaluation expression (starts with "!")
     /// Evaluation expressions like `!(+ 1 2)` should produce output
     pub fn is_eval_expr(&self) -> bool {

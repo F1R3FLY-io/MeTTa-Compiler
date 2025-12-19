@@ -10,6 +10,7 @@
 mod macros;
 
 mod bindings;
+mod builtin;
 mod control_flow;
 mod errors;
 mod evaluation;
@@ -118,23 +119,6 @@ const SPECIAL_FORMS: &[&str] = &[
     "foldl-atom",
 ];
 
-/// Convert MettaValue to a friendly type name for error messages
-/// This provides user-friendly type names instead of debug format like "Long(5)"
-fn friendly_type_name(value: &MettaValue) -> &'static str {
-    match value {
-        MettaValue::Long(_) => "Number (integer)",
-        MettaValue::Float(_) => "Number (float)",
-        MettaValue::Bool(_) => "Bool",
-        MettaValue::String(_) => "String",
-        MettaValue::Atom(_) => "Atom",
-        MettaValue::Nil => "Nil",
-        MettaValue::SExpr(_) => "S-expression",
-        MettaValue::Error(_, _) => "Error",
-        MettaValue::Type(_) => "Type",
-        MettaValue::Conjunction(_) => "Conjunction",
-    }
-}
-
 /// Convert MettaValue to a user-friendly representation for error messages
 /// Unlike debug format, this shows values in MeTTa syntax
 pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
@@ -189,8 +173,6 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
 /// This prevents stack overflow by using heap-allocated work items instead of
 /// recursive function calls.
 fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
-    debug!(target: "mettatron::backend::eval::eval_trampoline", metta_val = ?value);
-
     // Initialize work stack with the initial evaluation
     let mut work_stack: Vec<WorkItem> = vec![WorkItem::Eval {
         value,
@@ -214,10 +196,11 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                 depth,
                 cont_id,
             } => {
-                trace!(?value, depth, cont_id, "Processing work item");
+                trace!(target: "mettatron::backend::eval::eval_trampoline", ?value, depth, cont_id, "eval work item");
 
                 // Perform one step of evaluation
                 let step_result = eval_step(value, env.clone(), depth);
+                trace!(target: "mettatron::backend::eval::eval_trampoline", ?step_result);
 
                 match step_result {
                     // Direct result - resume continuation
@@ -264,11 +247,13 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
             WorkItem::Resume { cont_id, result } => {
                 // Take ownership of continuation for processing
                 let cont = std::mem::replace(&mut continuations[cont_id], Continuation::Done);
+                trace!(target: "mettatron::backend::eval::eval_trampoline", ?cont, result_values = ?result.0, "resume work item");
 
                 match cont {
                     Continuation::Done => {
                         // Final result
                         final_result = Some(result);
+                        trace!(target: "mettatron::backend::eval::eval_trampoline", ?final_result);
                     }
 
                     Continuation::CollectSExpr {
@@ -284,6 +269,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if remaining.is_empty() {
                             // All items evaluated, process collected results
                             let processed = process_collected_sexpr(collected, original_env, depth);
+                            trace!(target: "mettatron::backend::eval::eval_trampoline", processed_sexpr=?processed);
 
                             match processed {
                                 ProcessedSExpr::Done(result) => {
@@ -402,6 +388,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 }
 
 /// Result of a single evaluation step
+#[derive(Debug)]
 enum EvalStep {
     /// Evaluation complete, return this result
     Done(EvalResult),
@@ -414,6 +401,7 @@ enum EvalStep {
 }
 
 /// Result of processing collected S-expression results
+#[derive(Debug)]
 enum ProcessedSExpr {
     /// Processing complete, return this result
     Done(EvalResult),
@@ -429,7 +417,7 @@ enum ProcessedSExpr {
 /// Perform a single step of evaluation.
 /// Returns either a final result or indicates more work is needed.
 fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
-    trace!(target: "mettatron::backend::eval::step", ?value, depth);
+    trace!(target: "mettatron::backend::eval::eval_step", ?value, depth);
 
     // Check depth limit
     if depth > MAX_EVAL_DEPTH {
@@ -584,7 +572,7 @@ fn process_collected_sexpr(
     for evaled_items in combinations {
         // Check if this is a grounded operation
         if let Some(MettaValue::Atom(op)) = evaled_items.first() {
-            if let Some(result) = try_eval_builtin(op, &evaled_items[1..]) {
+            if let Some(result) = builtin::try_eval_builtin(op, &evaled_items[1..]) {
                 all_final_results.push(result);
                 continue;
             }
@@ -702,250 +690,6 @@ fn eval_conjunction(goals: Vec<MettaValue>, env: Environment, _depth: usize) -> 
     }
 
     (results, current_env)
-}
-
-/// Try to evaluate a built-in operation
-/// Dispatches directly to built-in functions without going through Rholang interpreter
-/// Uses operator symbols (+, -, *, etc.) instead of normalized names
-fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaValue> {
-    match op {
-        "+" => eval_checked_arithmetic(args, |a, b| a.checked_add(b), "+"),
-        "-" => eval_checked_arithmetic(args, |a, b| a.checked_sub(b), "-"),
-        "*" => eval_checked_arithmetic(args, |a, b| a.checked_mul(b), "*"),
-        "/" => eval_division(args),
-        "<" => eval_comparison(args, |a, b| a < b),
-        "<=" => eval_comparison(args, |a, b| a <= b),
-        ">" => eval_comparison(args, |a, b| a > b),
-        ">=" => eval_comparison(args, |a, b| a >= b),
-        "==" => eval_comparison(args, |a, b| a == b),
-        "!=" => eval_comparison(args, |a, b| a != b),
-        // Logical operators
-        "and" => eval_logical_binary(args, |a, b| a && b, "and"),
-        "or" => eval_logical_binary(args, |a, b| a || b, "or"),
-        "not" => eval_logical_not(args),
-        _ => None,
-    }
-}
-
-/// Evaluate a binary arithmetic operation with overflow checking
-fn eval_checked_arithmetic<F>(args: &[MettaValue], op: F, op_name: &str) -> Option<MettaValue>
-where
-    F: Fn(i64, i64) -> Option<i64>,
-{
-    if args.len() != 2 {
-        return Some(MettaValue::Error(
-            format!(
-                "Arithmetic operation '{}' requires exactly 2 arguments, got {}",
-                op_name,
-                args.len()
-            ),
-            Arc::new(MettaValue::Nil),
-        ));
-    }
-
-    let a = match &args[0] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return Some(MettaValue::Error(
-                format!(
-                    "Cannot perform '{}': expected Number (integer), got {}",
-                    op_name,
-                    friendly_type_name(other)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
-        }
-    };
-
-    let b = match &args[1] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return Some(MettaValue::Error(
-                format!(
-                    "Cannot perform '{}': expected Number (integer), got {}",
-                    op_name,
-                    friendly_type_name(other)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
-        }
-    };
-
-    match op(a, b) {
-        Some(result) => Some(MettaValue::Long(result)),
-        None => Some(MettaValue::Error(
-            format!(
-                "Arithmetic overflow: {} {} {} exceeds integer bounds",
-                a, op_name, b
-            ),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-        )),
-    }
-}
-
-/// Evaluate division with division-by-zero and overflow checking
-fn eval_division(args: &[MettaValue]) -> Option<MettaValue> {
-    if args.len() != 2 {
-        return Some(MettaValue::Error(
-            format!("Division requires exactly 2 arguments, got {}", args.len()),
-            Arc::new(MettaValue::Nil),
-        ));
-    }
-
-    let a = match &args[0] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return Some(MettaValue::Error(
-                format!(
-                    "Cannot divide: expected Number (integer), got {}",
-                    friendly_type_name(other)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
-        }
-    };
-
-    let b = match &args[1] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return Some(MettaValue::Error(
-                format!(
-                    "Cannot divide: expected Number (integer), got {}",
-                    friendly_type_name(other)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
-        }
-    };
-
-    if b == 0 {
-        return Some(MettaValue::Error(
-            "Division by zero".to_string(),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-        ));
-    }
-
-    // Use checked_div for overflow protection (e.g., i64::MIN / -1)
-    match a.checked_div(b) {
-        Some(result) => Some(MettaValue::Long(result)),
-        None => Some(MettaValue::Error(
-            format!("Arithmetic overflow: {} / {} exceeds integer bounds", a, b),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
-        )),
-    }
-}
-
-/// Evaluate a comparison operation with strict type checking
-fn eval_comparison<F>(args: &[MettaValue], op: F) -> Option<MettaValue>
-where
-    F: Fn(i64, i64) -> bool,
-{
-    if args.len() != 2 {
-        return Some(MettaValue::Error(
-            format!(
-                "Comparison operation requires exactly 2 arguments, got {}",
-                args.len()
-            ),
-            Arc::new(MettaValue::Nil),
-        ));
-    }
-
-    let a = match &args[0] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return Some(MettaValue::Error(
-                format!(
-                    "Cannot compare: expected Number (integer), got {}",
-                    friendly_type_name(other)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
-        }
-    };
-
-    let b = match &args[1] {
-        MettaValue::Long(n) => *n,
-        other => {
-            return Some(MettaValue::Error(
-                format!(
-                    "Cannot compare: expected Number (integer), got {}",
-                    friendly_type_name(other)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
-        }
-    };
-
-    Some(MettaValue::Bool(op(a, b)))
-}
-
-/// Evaluate a binary logical operation (and, or)
-fn eval_logical_binary<F>(args: &[MettaValue], op: F, op_name: &str) -> Option<MettaValue>
-where
-    F: Fn(bool, bool) -> bool,
-{
-    if args.len() != 2 {
-        return Some(MettaValue::Error(
-            format!(
-                "'{}' requires exactly 2 arguments, got {}. Usage: ({} bool1 bool2)",
-                op_name,
-                args.len(),
-                op_name
-            ),
-            Arc::new(MettaValue::Atom("ArityError".to_string())),
-        ));
-    }
-
-    let a = match &args[0] {
-        MettaValue::Bool(b) => *b,
-        other => {
-            return Some(MettaValue::Error(
-                format!(
-                    "'{}': expected Bool, got {}",
-                    op_name,
-                    friendly_type_name(other)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
-        }
-    };
-
-    let b = match &args[1] {
-        MettaValue::Bool(b) => *b,
-        other => {
-            return Some(MettaValue::Error(
-                format!(
-                    "'{}': expected Bool, got {}",
-                    op_name,
-                    friendly_type_name(other)
-                ),
-                Arc::new(MettaValue::Atom("TypeError".to_string())),
-            ));
-        }
-    };
-
-    Some(MettaValue::Bool(op(a, b)))
-}
-
-/// Evaluate logical not (unary)
-fn eval_logical_not(args: &[MettaValue]) -> Option<MettaValue> {
-    if args.len() != 1 {
-        return Some(MettaValue::Error(
-            format!(
-                "'not' requires exactly 1 argument, got {}. Usage: (not bool)",
-                args.len()
-            ),
-            Arc::new(MettaValue::Atom("ArityError".to_string())),
-        ));
-    }
-
-    match &args[0] {
-        MettaValue::Bool(b) => Some(MettaValue::Bool(!b)),
-        other => Some(MettaValue::Error(
-            format!("'not': expected Bool, got {}", friendly_type_name(other)),
-            Arc::new(MettaValue::Atom("TypeError".to_string())),
-        )),
-    }
 }
 
 /// Pattern match a pattern against a value
@@ -1157,8 +901,7 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
 /// Extract the head symbol from a pattern for indexing
 /// Returns None if the pattern doesn't have a clear head symbol
 fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
-    trace!(target: "mettatron::backend::eval::get_head_symbol", ?pattern);
-    match pattern {
+    let hs = match pattern {
         // For s-expressions like (double $x), extract "double"
         // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
         MettaValue::SExpr(items) if !items.is_empty() => match &items[0] {
@@ -1183,7 +926,10 @@ fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
             Some(head.as_str())
         }
         _ => None,
-    }
+    };
+
+    trace!(target: "mettatron::backend::eval::get_head_symbol", ?hs);
+    hs
 }
 
 /// Compute the specificity of a pattern (lower is more specific)
@@ -1331,6 +1077,7 @@ fn try_match_all_rules_iterative(
     // Sort rules by specificity (more specific first)
     let mut sorted_rules = matching_rules;
     sorted_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
+    trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?sorted_rules);
 
     // Collect ALL matching rules, tracking LHS specificity
     let mut matches: Vec<(MettaValue, Bindings, usize, Rule)> = Vec::new();
@@ -1357,6 +1104,8 @@ fn try_match_all_rules_iterative(
                 final_matches.push((rhs.clone(), bindings.clone()));
             }
         }
+
+        trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?final_matches);
         final_matches
     } else {
         Vec::new()
@@ -1375,203 +1124,6 @@ mod tests {
         let (results, _) = eval(value.clone(), env);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], value);
-    }
-
-    #[test]
-    fn test_eval_builtin_add() {
-        let env = Environment::new();
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(3));
-    }
-
-    #[test]
-    fn test_eval_builtin_comparison() {
-        let env = Environment::new();
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("<".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(true));
-    }
-
-    #[test]
-    fn test_eval_logical_and() {
-        let env = Environment::new();
-
-        // True and True = True
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("and".to_string()),
-            MettaValue::Bool(true),
-            MettaValue::Bool(true),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(true));
-
-        // True and False = False
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("and".to_string()),
-            MettaValue::Bool(true),
-            MettaValue::Bool(false),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(false));
-
-        // False and True = False
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("and".to_string()),
-            MettaValue::Bool(false),
-            MettaValue::Bool(true),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(false));
-
-        // False and False = False
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("and".to_string()),
-            MettaValue::Bool(false),
-            MettaValue::Bool(false),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(false));
-    }
-
-    #[test]
-    fn test_eval_logical_or() {
-        let env = Environment::new();
-
-        // True or True = True
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("or".to_string()),
-            MettaValue::Bool(true),
-            MettaValue::Bool(true),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(true));
-
-        // True or False = True
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("or".to_string()),
-            MettaValue::Bool(true),
-            MettaValue::Bool(false),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(true));
-
-        // False or True = True
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("or".to_string()),
-            MettaValue::Bool(false),
-            MettaValue::Bool(true),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(true));
-
-        // False or False = False
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("or".to_string()),
-            MettaValue::Bool(false),
-            MettaValue::Bool(false),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(false));
-    }
-
-    #[test]
-    fn test_eval_logical_not() {
-        let env = Environment::new();
-
-        // not True = False
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("not".to_string()),
-            MettaValue::Bool(true),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(false));
-
-        // not False = True
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("not".to_string()),
-            MettaValue::Bool(false),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Bool(true));
-    }
-
-    #[test]
-    fn test_eval_logical_type_error() {
-        let env = Environment::new();
-
-        // and with non-boolean should error
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("and".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Bool(true),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Error(_, _)));
-
-        // or with non-boolean should error
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("or".to_string()),
-            MettaValue::Bool(true),
-            MettaValue::String("hello".to_string()),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Error(_, _)));
-
-        // not with non-boolean should error
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("not".to_string()),
-            MettaValue::Long(42),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Error(_, _)));
-    }
-
-    #[test]
-    fn test_eval_logical_arity_error() {
-        let env = Environment::new();
-
-        // and with wrong arity
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("and".to_string()),
-            MettaValue::Bool(true),
-        ]);
-        let (results, _) = eval(value, env.clone());
-        assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Error(_, _)));
-
-        // not with wrong arity
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("not".to_string()),
-            MettaValue::Bool(true),
-            MettaValue::Bool(false),
-        ]);
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Error(_, _)));
     }
 
     #[test]
@@ -2341,140 +1893,6 @@ mod tests {
 
         // Rule definition should also be in the fact database
         assert!(new_env.has_sexpr_fact(&rule_def));
-    }
-
-    // === Type Error Tests ===
-
-    #[test]
-    fn test_arithmetic_type_error_string() {
-        let env = Environment::new();
-
-        // Test: !(+ 1 "a") should produce TypeError with friendly message
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::String("a".to_string()),
-        ]);
-
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                // Error message should contain the friendly type name
-                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-                assert!(
-                    msg.contains("expected Number (integer)"),
-                    "Expected 'expected Number (integer)' in: {}",
-                    msg
-                );
-                // Error details should be TypeError
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_arithmetic_type_error_first_arg() {
-        let env = Environment::new();
-
-        // Test: !(+ "a" 1) - first argument wrong type
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::String("a".to_string()),
-            MettaValue::Long(1),
-        ]);
-
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-                assert!(
-                    msg.contains("expected Number (integer)"),
-                    "Expected type info in: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_arithmetic_type_error_bool() {
-        let env = Environment::new();
-
-        // Test: !(* true false) - booleans not valid for arithmetic
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("*".to_string()),
-            MettaValue::Bool(true),
-            MettaValue::Bool(false),
-        ]);
-
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
-                assert!(
-                    msg.contains("expected Number (integer)"),
-                    "Expected type info in: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_comparison_type_error() {
-        let env = Environment::new();
-
-        // Test: !(< "a" "b") - strings not valid for comparison
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("<".to_string()),
-            MettaValue::String("a".to_string()),
-            MettaValue::String("b".to_string()),
-        ]);
-
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
-                assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-                assert!(
-                    msg.contains("Cannot compare"),
-                    "Expected 'Cannot compare' in: {}",
-                    msg
-                );
-                assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_arithmetic_wrong_arity() {
-        let env = Environment::new();
-
-        // Test: !(+ 1) - wrong number of arguments
-        let value = MettaValue::SExpr(vec![MettaValue::Atom("+".to_string()), MettaValue::Long(1)]);
-
-        let (results, _) = eval(value, env);
-        assert_eq!(results.len(), 1);
-
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(msg.contains("2 arguments"));
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
     }
 
     // ========================================================================

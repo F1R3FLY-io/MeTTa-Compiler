@@ -3,6 +3,7 @@ use crate::backend::models::{EvalResult, MettaValue};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tracing::{debug, trace};
 
 use super::{apply_bindings, eval, pattern_match, EvalStep};
 
@@ -372,6 +373,7 @@ fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaValue) -> Stri
 /// through each iteration to ensure side effects like change-state! are visible.
 pub(super) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
+    trace!(target: "mettatron::eval::eval_let", ?args, ?items);
 
     if args.len() < 3 {
         let got = args.len();

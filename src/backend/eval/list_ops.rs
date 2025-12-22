@@ -1,6 +1,7 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
+use tracing::trace;
 
 use super::eval;
 
@@ -22,14 +23,14 @@ pub(super) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
             }
             MettaValue::SExpr(_) => {
                 let err = MettaValue::Error(
-                    "car-atom: cannot get head of empty expression".to_string(),
+                    "car-atom expects a non-empty expression as argument".to_string(),
                     Arc::new(expr.clone()),
                 );
                 all_results.push(err);
             }
             MettaValue::Nil => {
                 let err = MettaValue::Error(
-                    "car-atom: cannot get head of empty expression".to_string(),
+                    "car-atom expects a non-empty expression as argument".to_string(),
                     Arc::new(expr.clone()),
                 );
                 all_results.push(err);
@@ -73,14 +74,14 @@ pub(super) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
             }
             MettaValue::SExpr(_) => {
                 let err = MettaValue::Error(
-                    "cdr-atom: cannot get tail of empty expression".to_string(),
+                    "cdr-atom expects a non-empty expression as argument".to_string(),
                     Arc::new(expr.clone()),
                 );
                 all_results.push(err);
             }
             MettaValue::Nil => {
                 let err = MettaValue::Error(
-                    "cdr-atom: cannot get tail of empty expression".to_string(),
+                    "cdr-atom expects a non-empty expression as argument".to_string(),
                     Arc::new(expr.clone()),
                 );
                 all_results.push(err);
@@ -127,7 +128,7 @@ pub(super) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
                 _ => {
                     let err = MettaValue::Error(
                         format!(
-                            "cons-atom: tail must be an expression, got {}. Usage: (cons-atom head tail)",
+                            "cons-atom expected Expression as tail, got {}. Usage: (cons-atom head tail)",
                             super::friendly_value_repr(tail)
                         ),
                         Arc::new(tail.clone()),
@@ -239,7 +240,7 @@ pub(super) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
                         _ => {
                             error_result = Some(MettaValue::Error(
                                 format!(
-                                    "max-atom: all elements must be numbers, got {}",
+                                    "max-atom: found non-numeric value {}",
                                     super::friendly_value_repr(elem)
                                 ),
                                 Arc::new(elem.clone()),
@@ -257,7 +258,7 @@ pub(super) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
             }
             MettaValue::SExpr(_) | MettaValue::Nil => {
                 let err = MettaValue::Error(
-                    "max-atom: cannot find maximum of empty expression".to_string(),
+                    "max-atom expects a non-empty expression of numbers".to_string(),
                     Arc::new(expr.clone()),
                 );
                 all_results.push(err);
@@ -307,6 +308,7 @@ fn suggest_variable_format(atom: &str) -> Option<String> {
 /// Maps a function over a list of atoms
 /// Example: (map-atom (1 2 3 4) $v (+ $v 1)) -> (2 3 4 5)
 pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_map_atom", ?items);
     require_args_with_usage!("map-atom", items, 3, env, "(map-atom list $var expr)");
 
     let list = &items[1];
@@ -385,6 +387,7 @@ pub(super) fn eval_map_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// Filters a list keeping only elements that satisfy the predicate
 /// Example: (filter-atom (1 2 3 4) $v (> $v 2)) -> (3 4)
 pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_filter_atom", ?items);
     require_args_with_usage!(
         "filter-atom",
         items,
@@ -477,6 +480,7 @@ pub(super) fn eval_filter_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 /// Folds (reduces) a list from left to right using an operation and initial value
 /// Example: (foldl-atom (1 2 3) 0 $acc $x (+ $acc $x)) -> 6
 pub(super) fn eval_foldl_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_foldl_atom", ?items);
     if items.len() != 6 {
         let err = MettaValue::Error(
             "foldl-atom requires exactly 5 arguments: list, init, acc-var, item-var, operation"

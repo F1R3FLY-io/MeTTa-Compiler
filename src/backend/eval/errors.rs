@@ -1,11 +1,13 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
+use tracing::trace;
 
 use super::eval;
 
 /// Error construction: (error msg details)
 pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_error", ?items);
     if items.len() < 2 {
         return (vec![], env);
     }
@@ -52,6 +54,7 @@ pub(super) fn eval_error_he(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
 /// Is-error: check if value is an error (for error recovery)
 pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_if_error", ?items);
     require_args_with_usage!("is-error", items, 1, env, "(is-error expr)");
 
     let (results, new_env) = eval(items[1].clone(), env);
@@ -68,6 +71,7 @@ pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// This prevents error propagation (reduction prevention)
 pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
+    trace!(target: "mettatron::eval::eval_catch", ?items, ?args);
 
     if args.len() < 2 {
         let err = MettaValue::Error(

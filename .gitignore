@@ -8,3 +8,6 @@ perf*.data
 flamegraph*.svg
 *.so
 *.sw?
+
+examples/sandbox.rs
+dev-notes.md

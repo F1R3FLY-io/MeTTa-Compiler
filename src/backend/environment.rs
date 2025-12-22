@@ -8,6 +8,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use tracing::{trace, warn};
 
 use super::fuzzy_match::FuzzyMatcher;
 
@@ -367,6 +368,7 @@ impl Environment {
         if self.owns_data {
             return;
         }
+        trace!(target: "mettatron::environment::make_owned", "Deep copying CoW data");
 
         // Deep copy the entire shared state structure
         // Clone the data first to avoid borrowing issues
@@ -589,6 +591,11 @@ impl Environment {
                 Err(reserved_byte) => {
                     // Reserved byte encountered - this is the bug we're fixing!
                     // Instead of panicking, return an error that calling code can handle
+                    warn!(
+                        target: "mettatron::environment::mork_expr_to_metta_value",
+                        reserved_byte, offset,
+                        "Reserved byte encountered during MORK conversion"
+                    );
                     return Err(format!(
                         "Reserved byte {} at offset {}",
                         reserved_byte, offset
@@ -659,6 +666,11 @@ impl Environment {
                                     String::from_utf8_lossy(actual_bytes).to_string()
                                 } else {
                                     // Symbol ID not in table - fall back to treating as raw bytes
+                                    trace!(
+                                        target: "mettatron::environment::mork_expr_to_metta_value",
+                                        symbol_id = ?symbol_id,
+                                        "Symbol ID not found in symbol table, using raw bytes"
+                                    );
                                     String::from_utf8_lossy(symbol_bytes).to_string()
                                 }
                             } else {
@@ -755,6 +767,9 @@ impl Environment {
     /// Helper function to serialize a MORK Expr to a readable string
     /// DEPRECATED: This uses serialize2() which panics on reserved bytes.
     /// Use mork_expr_to_metta_value() instead for production code.
+    #[deprecated(
+        note = "This uses serialize2() which panics on reserved bytes. Use mork_expr_to_metta_value() instead."
+    )]
     #[allow(dead_code)]
     #[allow(unused_variables)]
     fn serialize_mork_expr_old(expr: &mork_expr::Expr, space: &Space) -> String {
@@ -786,6 +801,7 @@ impl Environment {
     /// Type assertions are stored as (: name type) in MORK Space
     /// Invalidates the type index cache
     pub fn add_type(&mut self, name: String, typ: MettaValue) {
+        trace!(target: "mettatron::environment::add_type", name, ?typ);
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // Create type assertion: (: name typ)
@@ -847,6 +863,7 @@ impl Environment {
     /// Falls back to O(n) linear search if index lookup fails
     #[allow(clippy::collapsible_match)]
     pub fn get_type(&self, name: &str) -> Option<MettaValue> {
+        trace!(target: "mettatron::environment::get_type", name);
         use mork_expr::Expr;
 
         // Ensure type index is built and up-to-date
@@ -858,6 +875,7 @@ impl Environment {
             Some(index) => index,
             None => {
                 // Index failed to build, fall back to linear search
+                trace!(target: "mettatron::environment::get_type", name, "Falling back to linear search");
                 drop(type_index_opt); // Release lock before fallback
                 return self.get_type_linear(name);
             }
@@ -908,6 +926,7 @@ impl Environment {
 
         // Slow path: O(n) linear search (fallback if exact match fails)
         // This handles edge cases where MORK encoding might differ
+        trace!(target: "mettatron::environment::get_type", name, "Fast path failed, using linear search");
         self.get_type_linear(name)
     }
 
@@ -1042,6 +1061,7 @@ impl Environment {
     /// This is needed after deserializing an Environment from PathMap Par,
     /// since the serialization only preserves the MORK Space, not the index.
     pub fn rebuild_rule_index(&mut self) {
+        trace!(target: "mettatron::environment::rebuild_rule_index", "Rebuilding rule index");
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // Clear existing indices
@@ -1091,6 +1111,7 @@ impl Environment {
     /// # Returns
     /// Vector of instantiated templates (MettaValue) for all matches
     pub fn match_space(&self, pattern: &MettaValue, template: &MettaValue) -> Vec<MettaValue> {
+        trace!(target: "mettatron::environment::match_space", ?pattern, ?template);
         use crate::backend::eval::{apply_bindings, pattern_match};
         use mork_expr::Expr;
 
@@ -1322,6 +1343,7 @@ impl Environment {
     /// Multiply-defined rules are tracked via multiplicities
     /// Rules are also indexed by (head_symbol, arity) for fast lookup
     pub fn add_rule(&mut self, rule: Rule) {
+        trace!(target: "mettatron::environment::add_rule", ?rule);
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // Create a rule s-expression: (= lhs rhs)
@@ -1377,6 +1399,7 @@ impl Environment {
     /// Expected speedup: 20-100× for batches of 100+ rules
     /// Complexity: O(k) where k = batch size (vs O(n × lock) for individual adds)
     pub fn add_rules_bulk(&mut self, rules: Vec<Rule>) -> Result<(), String> {
+        trace!(target: "mettatron::environment::add_rules_bulk", rule_count = rules.len());
         if rules.is_empty() {
             return Ok(());
         }
@@ -1531,6 +1554,7 @@ impl Environment {
     /// For atoms (always ground), this provides O(1)-like performance
     /// Expected speedup: 1,000-10,000× for large fact databases
     pub fn has_fact(&self, atom: &str) -> bool {
+        trace!(target: "mettatron::environment::has_fact", atom);
         let atom_value = MettaValue::Atom(atom.to_string());
 
         // Atoms are always ground (no variables), so use fast path
@@ -1558,6 +1582,7 @@ impl Environment {
     /// For example, searching for `(= (test-rule $x) (processed $x))` with query_multi treats
     /// $x as a pattern variable, which doesn't match the stored rule where $x was normalized to $a.
     pub fn has_sexpr_fact(&self, sexpr: &MettaValue) -> bool {
+        trace!(target: "mettatron::environment::has_sexpr_fact", ?sexpr);
         // Fast path: O(p) exact match for ground (variable-free) expressions
         // This provides 1,000-10,000× speedup for large fact databases
         if !Self::contains_variables(sexpr) {
@@ -1569,11 +1594,13 @@ impl Environment {
             }
             // Fast path failed - fall back to linear search
             // This handles cases where MORK encoding differs (e.g., after Par round-trip)
+            trace!(target: "mettatron::environment::has_sexpr_fact", "Fast path failed, using linear search");
             return self.has_sexpr_fact_linear(sexpr);
         }
 
         // Slow path: O(n) linear search for patterns with variables
         // This is necessary because variables need structural equivalence checking
+        trace!(target: "mettatron::environment::has_sexpr_fact", "Using linear search (contains variables)");
         self.has_sexpr_fact_linear(sexpr)
     }
 
@@ -1667,6 +1694,7 @@ impl Environment {
             {
                 let mut cache = self.shared.pattern_cache.write().unwrap();
                 if let Some(bytes) = cache.get(value) {
+                    trace!(target: "mettatron::environment::metta_to_mork_bytes_cached", "Cache hit");
                     return Ok(bytes.clone());
                 }
             }
@@ -1792,6 +1820,7 @@ impl Environment {
     /// Nested sub-expressions are NOT recursively extracted and stored separately.
     /// To query nested parts, use pattern matching with variables, e.g., (Outer $x)
     pub fn add_to_space(&mut self, value: &MettaValue) {
+        trace!(target: "mettatron::environment::add_to_space", ?value);
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
         use crate::backend::varint_encoding::metta_to_varint_key;
 
@@ -1855,6 +1884,7 @@ impl Environment {
     /// - Acquires write lock on PathMap
     /// - Marks environment as modified (CoW)
     pub fn remove_from_space(&mut self, value: &MettaValue) {
+        trace!(target: "mettatron::environment::remove_from_space", ?value);
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
         use crate::backend::varint_encoding::metta_to_varint_key;
 
@@ -1915,10 +1945,12 @@ impl Environment {
     /// - Acquires multiple write locks (one per fact removed)
     /// - Consider using bulk removal for large result sets
     pub fn remove_matching(&mut self, pattern: &MettaValue) -> Vec<MettaValue> {
+        trace!(target: "mettatron::environment::remove_matching", ?pattern);
         // Query for all matches using match_space with identity template
         let matches = self.match_space(pattern, pattern);
 
         // Remove each match
+        trace!(target: "mettatron::environment::remove_matching", match_count = matches.len());
         for m in &matches {
             self.remove_from_space(m);
         }
@@ -1979,6 +2011,8 @@ impl Environment {
     /// Expected speedup: ~3× for batches of 100+ facts (Strategy 2)
     /// Complexity: O(m) where m = size of fact batch (vs O(n × lock) for individual inserts)
     pub fn add_facts_bulk(&mut self, facts: &[MettaValue]) -> Result<(), String> {
+        trace!(target: "mettatron::environment::add_facts_bulk", ?facts);
+
         if facts.is_empty() {
             return Ok(());
         }
@@ -2006,6 +2040,10 @@ impl Environment {
                     .map_err(|e| format!("MORK conversion failed for {:?}: {}", fact, e))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        trace!(
+            target: "mettatron::environment::add_facts_bulk",
+            facts_ctr = mork_facts.len(), "Pre-convert all facts to MORK bytes"
+        );
 
         // STRATEGY 1: Simple iterator-based PathMap construction
         // Build temporary PathMap outside the lock using individual inserts
@@ -2364,6 +2402,8 @@ impl Environment {
     /// Returns Vec<Rule> for O(1) lookup instead of O(n) iteration
     /// Also includes wildcard rules that must be checked against all queries
     pub fn get_matching_rules(&self, head: &str, arity: usize) -> Vec<Rule> {
+        trace!(target: "mettatron::environment::get_matching_rules", head, arity);
+
         // Use Symbol for O(1) comparison when symbol-interning is enabled
         let key = (Symbol::new(head), arity);
 
@@ -2400,6 +2440,10 @@ impl Environment {
         // Also include wildcard rules (must always be checked)
         matching_rules.extend(wildcards.iter().cloned());
 
+        trace!(
+            target: "mettatron::environment::get_matching_rules",
+            match_ctr = matching_rules.len(), "Rules matching"
+        );
         matching_rules
     }
 
@@ -2566,6 +2610,8 @@ impl Environment {
     /// PathMap and shared_mapping are shared via Arc, so facts (including type assertions) are automatically merged
     /// Multiplicities and rule indices are also merged via shared Arc
     pub fn union(&self, _other: &Environment) -> Environment {
+        trace!(target: "mettatron::environment::union", "Unioning environments");
+
         // All shared state is now consolidated into single Arc<EnvironmentShared>
         // Clone is O(1) - just one atomic increment instead of 17
         Environment {

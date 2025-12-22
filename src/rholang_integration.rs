@@ -15,6 +15,8 @@ use crate::backend::models::{MettaState, MettaValue};
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 use std::sync::OnceLock;
 
+use tracing::{debug, error, info, instrument, trace, warn};
+
 /// MeTTa built-in keywords for syntax-level "did you mean" suggestions
 const METTA_KEYWORDS: &[&str] = &[
     // Special forms
@@ -306,11 +308,19 @@ pub fn metta_state_to_json(state: &MettaState) -> String {
 /// - Fresh output (only results from THIS invocation's `!` evaluations)
 ///
 /// **Threading**: Synchronous, single-threaded evaluation
+#[instrument(level = "info", skip(accumulated_state, compiled_state))]
 pub fn run_state(
     accumulated_state: MettaState,
     compiled_state: MettaState,
 ) -> Result<MettaState, String> {
     use crate::backend::eval::eval;
+
+    info!("Run state");
+    debug!(
+        accumulated_state = ?accumulated_state,
+        compiled_state = ?compiled_state,
+        "Run state"
+    );
 
     // Start with accumulated environment
     let mut env = accumulated_state.environment;
@@ -331,6 +341,11 @@ pub fn run_state(
         }
     }
 
+    info!(
+        outputs = ?outputs,
+        "Run state completed with outputs"
+    );
+
     // Return new accumulated state
     Ok(MettaState::new_accumulated(env, outputs))
 }
@@ -350,6 +365,7 @@ pub fn run_state(
 /// **Threading Model:** Uses Tokio's async/await (same as Rholang)
 ///
 /// **Thread Safety:** Environment now uses `Arc<Mutex<T>>` for thread-safe sharing
+#[instrument(level = "info", skip(accumulated_state, compiled_state))]
 #[cfg(feature = "async")]
 pub async fn run_state_async(
     accumulated_state: MettaState,
@@ -359,6 +375,13 @@ pub async fn run_state_async(
 
     // Start with accumulated environment, but if it's empty and compiled has data, use compiled's environment
     use pathmap::zipper::ZipperIteration;
+
+    info!("Run state async");
+    debug!(
+        accumulated_state = ?accumulated_state,
+        compiled_state = ?compiled_state,
+        "Run state async"
+    );
 
     let acc_count = {
         let space = accumulated_state.environment.create_space();
@@ -437,6 +460,11 @@ pub async fn run_state_async(
         }
     }
 
+    info!(
+        outputs = ?outputs,
+        "Run state async completed with outputs"
+    );
+
     Ok(MettaState::new_accumulated(env, outputs))
 }
 
@@ -450,6 +478,11 @@ async fn evaluate_batch_parallel(
     use crate::backend::eval::eval;
     use tokio::task;
 
+    debug!(
+        batch = ?batch,
+        "Evaluate batch parallel"
+    );
+
     // Spawn parallel evaluation tasks
     let tasks: Vec<_> = batch
         .into_iter()
@@ -462,20 +495,29 @@ async fn evaluate_batch_parallel(
         })
         .collect();
 
+    trace!(?tasks, "Tasks to handle");
+
     // Collect results
     let mut results = Vec::new();
     for task_handle in tasks {
         match task_handle.await {
             Ok(result) => results.push(result),
             Err(e) => {
-                // Task panicked - this shouldn't happen with our eval
-                eprintln!("Parallel evaluation task panicked: {:?}", e);
+                error!(
+                    text = %e,
+                    "Parallel evaluation task panicked"
+                );
             }
         }
     }
 
     // Sort results by original index to preserve order
     results.sort_by_key(|(idx, _, _)| *idx);
+
+    debug!(
+        results = ?results,
+        "Batch evaluated with results"
+    );
 
     results
 }
@@ -490,7 +532,7 @@ mod tests {
     fn test_metta_state_to_json() {
         let src = "(+ 1 2)";
         let state = compile(src).unwrap();
-        let json = metta_state_to_json(&state);
+        let json = state.to_json_string();
 
         // Should return full MettaState with source, environment, output
         assert!(json.contains(r#""source""#));
@@ -502,35 +544,35 @@ mod tests {
     #[test]
     fn test_metta_value_atom() {
         let value = MettaValue::Atom("test".to_string());
-        let json = metta_value_to_json_string(&value);
+        let json = value.to_json_string();
         assert_eq!(json, r#"{"type":"atom","value":"test"}"#);
     }
 
     #[test]
     fn test_metta_value_number() {
         let value = MettaValue::Long(42);
-        let json = metta_value_to_json_string(&value);
+        let json = value.to_json_string();
         assert_eq!(json, r#"{"type":"number","value":42}"#);
     }
 
     #[test]
     fn test_metta_value_bool() {
         let value = MettaValue::Bool(true);
-        let json = metta_value_to_json_string(&value);
+        let json = value.to_json_string();
         assert_eq!(json, r#"{"type":"bool","value":true}"#);
     }
 
     #[test]
     fn test_metta_value_string() {
         let value = MettaValue::String("hello".to_string());
-        let json = metta_value_to_json_string(&value);
+        let json = value.to_json_string();
         assert_eq!(json, r#"{"type":"string","value":"hello"}"#);
     }
 
     #[test]
     fn test_metta_value_nil() {
         let value = MettaValue::Nil;
-        let json = metta_value_to_json_string(&value);
+        let json = value.to_json_string();
         assert_eq!(json, r#"{"type":"nil"}"#);
     }
 
@@ -541,13 +583,15 @@ mod tests {
             MettaValue::Long(1),
             MettaValue::Long(2),
         ]);
-        let json = metta_value_to_json_string(&value);
+        let json = value.to_json_string();
         assert!(json.contains(r#""type":"sexpr""#));
         assert!(json.contains(r#""items""#));
     }
 
     #[test]
     fn test_escape_json() {
+        use crate::backend::metta_value::escape_json;
+
         let escaped = escape_json("hello\n\"world\"\\test");
         assert_eq!(escaped, r#"hello\n\"world\"\\test"#);
     }
@@ -631,8 +675,8 @@ mod tests {
     }
 
     // Async Parallel Evaluation Tests
-    #[cfg(feature = "async")]
     #[tokio::test]
+    #[cfg(feature = "async")]
     async fn test_run_state_async_simple() {
         let accumulated = MettaState::new_empty();
         let compiled = compile("!(+ 1 2)").unwrap();
@@ -644,8 +688,8 @@ mod tests {
         assert_eq!(result.output[0], MettaValue::Long(3));
     }
 
-    #[cfg(feature = "async")]
     #[tokio::test]
+    #[cfg(feature = "async")]
     async fn test_run_state_async_parallel() {
         let accumulated = MettaState::new_empty();
         let compiled = compile(
@@ -666,8 +710,8 @@ mod tests {
         assert_eq!(result.output[2], MettaValue::Long(6));
     }
 
-    #[cfg(feature = "async")]
     #[tokio::test]
+    #[cfg(feature = "async")]
     async fn test_run_state_async_with_rules() {
         let accumulated = MettaState::new_empty();
         let compiled = compile(
@@ -705,8 +749,8 @@ mod tests {
         assert_eq!(accumulated.output.len(), 2);
     }
 
-    #[cfg(feature = "async")]
     #[tokio::test]
+    #[cfg(feature = "async")]
     async fn test_run_state_async_multiple_rules_sequential() {
         let accumulated = MettaState::new_empty();
         let compiled = compile(
@@ -1146,8 +1190,8 @@ mod tests {
     }
 
     // Async tests for space operations
-    #[cfg(feature = "async")]
     #[tokio::test]
+    #[cfg(feature = "async")]
     async fn test_run_state_async_add_facts_then_query() {
         let accumulated = MettaState::new_empty();
         let compiled = compile(
@@ -1167,8 +1211,8 @@ mod tests {
         assert!(!result.output.is_empty());
     }
 
-    #[cfg(feature = "async")]
     #[tokio::test]
+    #[cfg(feature = "async")]
     async fn test_ground_facts_not_in_output_async() {
         // Regression test: verify ground facts are NOT added to output (async version)
         let mut accumulated = MettaState::new_empty();
@@ -1186,8 +1230,8 @@ mod tests {
         assert_eq!(accumulated.output.len(), 2);
     }
 
-    #[cfg(feature = "async")]
     #[tokio::test]
+    #[cfg(feature = "async")]
     async fn test_run_state_async_parallel_queries() {
         let accumulated = MettaState::new_empty();
         let compiled = compile(

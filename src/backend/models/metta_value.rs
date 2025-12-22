@@ -1,3 +1,5 @@
+use crate::ir::MettaExpr;
+
 use std::sync::Arc;
 
 use super::MemoHandle;
@@ -152,6 +154,28 @@ impl MettaValue {
                 | MettaValue::String(_)
                 | MettaValue::Nil
         )
+    }
+
+    /// Convert MettaValue to a friendly type name for error messages
+    /// This provides user-friendly type names instead of debug format like "Long(5)"
+    pub fn friendly_type_name(&self) -> &'static str {
+        match self {
+            MettaValue::Long(_) => "Number (integer)",
+            MettaValue::Float(_) => "Number (float)",
+            MettaValue::Bool(_) => "Bool",
+            MettaValue::String(_) => "String",
+            MettaValue::Atom(_) => "Atom",
+            MettaValue::Nil => "Nil",
+            MettaValue::SExpr(_) => "S-expression",
+            MettaValue::Error(_, _) => "Error",
+            MettaValue::Type(_) => "Type",
+            MettaValue::Conjunction(_) => "Conjunction",
+            MettaValue::Space(_) => "Space",
+            MettaValue::State(_) => "State",
+            MettaValue::Unit => "Unit",
+            MettaValue::Memo(_) => "Memo",
+            MettaValue::Empty => "Empty",
+        }
     }
 
     /// Check if this is an evaluation expression (starts with "!")
@@ -400,7 +424,7 @@ impl MettaValue {
     }
 }
 
-fn escape_json(s: &str) -> String {
+pub fn escape_json(s: &str) -> String {
     s.replace('\\', r"\\")
         .replace('"', r#"\""#)
         .replace('\n', r"\n")

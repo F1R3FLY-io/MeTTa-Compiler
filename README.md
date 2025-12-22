@@ -696,6 +696,79 @@ configure_eval(EvalConfig {
 
 See **`docs/THREADING_MODEL.md`** and **`docs/CONFIGURATION.md`** for detailed information.
 
+## Logging and Debugging
+
+MeTTaTron uses structured logging via the `tracing` crate to provide visibility into evaluation processes, error handling, and system behavior. Logging is hierarchical and can be filtered by module and log level.
+
+### Quick Start
+
+Enable logging by setting the `RUST_LOG` environment variable:
+
+```bash
+# Basic debugging - show all evaluation operations
+env RUST_LOG=mettatron::eval=debug cargo run --example backend_usage
+
+# Production monitoring - warnings and errors only
+env RUST_LOG=warn cargo run --example backend_usage
+
+# Full trace for deep debugging
+env RUST_LOG=mettatron::eval=trace cargo run --example backend_usage
+```
+
+### Common Examples
+
+**Debug control flow (if-statements, conditionals):**
+```bash
+env RUST_LOG=mettatron::eval::control_flow=debug cargo run --example backend_usage
+```
+
+**Debug error handling (catch, error recovery):**
+```bash
+env RUST_LOG=mettatron::eval::error_handling=debug cargo run --example backend_usage
+```
+
+**Debug list operations (map, filter, fold):**
+```bash
+env RUST_LOG=mettatron::eval::list_ops=debug cargo run --example backend_usage
+```
+
+**Debug integration (Rholang/PathMap):**
+```bash
+env RUST_LOG=mettatron::integration=trace cargo run --example backend_usage
+```
+
+### Multilevel Filtering
+
+You can combine multiple targets with different log levels for precise debugging:
+
+```bash
+# Control flow + error handling at debug level, integration at trace level
+env RUST_LOG='mettatron::eval::control_flow=debug,mettatron::eval::error_handling=debug,mettatron::integration=trace' cargo run --example backend_usage
+
+# Backend warnings + evaluation debug + list operations trace
+env RUST_LOG='mettatron::backend=warn,mettatron::eval=debug,mettatron::eval::list_ops=trace' cargo run --example backend_usage
+```
+
+### Log Levels
+
+- **`trace`** - Function entry/exit, detailed execution flow (high-frequency)
+- **`debug`** - Decision points, validation, user errors
+- **`info`** - High-level operations and system events
+- **`warn`** - Handled system issues, recoverable problems
+- **`error`** - Unhandled failures, critical errors
+
+### Target Hierarchy
+
+- `mettatron::backend::eval` - Main evaluation engine
+- `mettatron::eval::control_flow` - Conditional logic (if, case, switch)
+- `mettatron::eval::error_handling` - Error operations (catch, error, is-error)
+- `mettatron::eval::list_ops` - List operations (map, filter, fold)
+- `mettatron::eval::types` - Type checking and assertions
+- `mettatron::integration::rholang` - Rholang Par integration
+- `mettatron::integration::pathmap` - PathMap conversions
+
+See **`docs/guides/LOGGING.md`** for complete logging documentation, filtering strategies, and advanced examples.
+
 ## Documentation
 
 ### Getting Started
@@ -705,6 +778,7 @@ See **`docs/THREADING_MODEL.md`** and **`docs/CONFIGURATION.md`** for detailed i
 ### User Guides
 - **`docs/guides/REPL_USAGE.md`** - Interactive REPL usage guide
 - **`docs/guides/REDUCTION_PREVENTION.md`** - Comprehensive reduction prevention guide
+- **`docs/guides/LOGGING.md`** - Logging strategy and debugging guide
 - **`docs/CONFIGURATION.md`** - Configuration guide
 - **`docs/THREADING_MODEL.md`** - Threading and parallelization documentation
 

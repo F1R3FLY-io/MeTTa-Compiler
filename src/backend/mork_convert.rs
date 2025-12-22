@@ -9,6 +9,7 @@ use mork::space::Space;
 use mork_expr::{Expr, ExprEnv, ExprZipper};
 use mork_frontend::bytestring_parser::Parser;
 use std::collections::HashMap;
+use tracing::{debug, trace, warn};
 
 /// Context for tracking variables during MettaValue → Expr conversion
 #[derive(Default)]
@@ -54,6 +55,11 @@ pub fn metta_to_mork_bytes(
     space: &Space,
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
+    trace!(
+        target: "mettatron::conversion::metta_to_mork_bytes",
+        ?value, "Converting MettaValue to MORK bytes"
+    );
+
     // 256KB buffer for complex expressions (mmverify can have large nested structures)
     const BUFFER_SIZE: usize = 262144;
     let mut buffer = vec![0u8; BUFFER_SIZE];
@@ -62,7 +68,13 @@ pub fn metta_to_mork_bytes(
     };
     let mut ez = ExprZipper::new(expr);
 
-    write_metta_value(value, space, ctx, &mut ez)?;
+    write_metta_value(value, space, ctx, &mut ez).map_err(|e| {
+        debug!(
+            target: "mettatron::conversion::metta_to_mork_bytes",
+            error = %e, "Conversion to MORK bytes failed"
+        );
+        e
+    })?;
 
     // Safety check: ensure we didn't overflow the buffer
     if ez.loc > BUFFER_SIZE {
@@ -252,7 +264,7 @@ fn write_symbol(bytes: &[u8], space: &Space, ez: &mut ExprZipper) -> Result<(), 
     Ok(())
 }
 
-/// Convert MORK bindings to our Bindings format
+/// Convert MORK bindings to Mettatron Bindings format
 ///
 /// MORK uses BTreeMap<(u8, u8), ExprEnv> where the key is (old_var, new_var).
 /// We need to convert this to SmallVec<[(String, MettaValue); 8]> using the original variable names.
@@ -265,6 +277,8 @@ pub fn mork_bindings_to_metta(
     ctx: &ConversionContext,
     space: &Space,
 ) -> Result<Bindings, String> {
+    trace!(target: "mettatron::conversion::mork_bindings_to_metta", ?mork_bindings);
+
     use super::environment::Environment;
 
     let mut bindings = Bindings::new();
@@ -273,6 +287,12 @@ pub fn mork_bindings_to_metta(
     for (&(old_var, _new_var), expr_env) in mork_bindings {
         // Get the variable name from context
         if (old_var as usize) >= ctx.var_names.len() {
+            warn!(
+                target: "mettatron::conversion::mork_bindings_to_metta",
+                old_var, max_vars = ctx.var_names.len(),
+                "Variable index exceeds known variables - internal inconsistency detected"
+            );
+
             // Variable index out of bounds - this indicates an internal inconsistency
             conversion_errors.push(format!(
                 "Variable index {} exceeds known variables (max: {})",
@@ -292,6 +312,10 @@ pub fn mork_bindings_to_metta(
                 bindings.insert(format!("${}", var_name), value);
             }
             Err(e) => {
+                debug!(
+                    target: "mettatron::conversion::mork_bindings_to_metta",
+                    var_name = %var_name, error = %e, "Failed to convert individual binding"
+                );
                 conversion_errors.push(format!(
                     "Failed to convert binding for ${}: {}",
                     var_name, e
@@ -302,10 +326,12 @@ pub fn mork_bindings_to_metta(
 
     // If there were any conversion errors, return an error with all failures listed
     if !conversion_errors.is_empty() {
-        return Err(format!(
-            "MORK binding conversion failed:\n  - {}",
-            conversion_errors.join("\n  - ")
-        ));
+        let errors = conversion_errors.join("\n  - ");
+        warn!(
+            target: "mettatron::conversion::mork_bindings_to_metta",
+            errors, "MORK binding conversion partially failed"
+        );
+        return Err(format!("MORK binding conversion failed:\n  - {}", errors));
     }
 
     Ok(bindings)

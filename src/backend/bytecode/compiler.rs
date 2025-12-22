@@ -1088,8 +1088,8 @@ impl Compiler {
                     "+" => Some(MettaValue::Long(x.wrapping_add(*y))),
                     "-" => Some(MettaValue::Long(x.wrapping_sub(*y))),
                     "*" => Some(MettaValue::Long(x.wrapping_mul(*y))),
-                    "/" if *y != 0 => Some(MettaValue::Long(x / y)),
-                    "%" | "mod" if *y != 0 => Some(MettaValue::Long(x % y)),
+                    "/" if *y != 0 => x.checked_div(*y).map(MettaValue::Long),
+                    "%" | "mod" if *y != 0 => x.checked_rem(*y).map(MettaValue::Long),
                     "pow" if *y >= 0 => x.checked_pow(*y as u32).map(MettaValue::Long),
                     _ => None,
                 }

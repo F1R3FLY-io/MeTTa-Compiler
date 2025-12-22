@@ -7,14 +7,24 @@
 //
 // Operator symbols like +, -, * are preserved as-is (not normalized to add, sub, mul)
 
+use std::sync::Arc;
+
 use crate::backend::models::{MettaState, MettaValue};
 use crate::ir::MettaExpr;
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind, TreeSitterMettaParser};
-use std::sync::Arc;
+
+use tracing::{debug, error, info, instrument, warn};
 
 /// Compile MeTTa source code into a MettaState ready for evaluation
 /// Returns a compiled state with pending expressions and empty environment
+#[instrument(level = "info", skip(src))]
 pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
+    info!(
+        line_count = src.lines().count(),
+        char_count = src.chars().count(),
+        "Compiling MeTTa source"
+    );
+
     // Parse the source into s-expressions using Tree-Sitter
     let mut parser = TreeSitterMettaParser::new().map_err(|e| SyntaxError {
         kind: SyntaxErrorKind::ParserInit(e),
@@ -23,16 +33,31 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         text: String::new(),
         file_path: None,
     })?;
-    let sexprs = parser.parse(src)?;
 
-    // Convert s-expressions to MettaValue representation using idiomatic TryFrom
+    let sexprs = parser.parse(src).map_err(|e| {
+        error!(
+            kind = ?e.kind,
+            text = %e,
+            "Syntax error from parsing MeTTa source code"
+        );
+        debug!(src, %e);
+        e
+    })?;
+
     let metta_values: Result<Vec<_>, _> = sexprs.iter().map(MettaValue::try_from).collect();
-    let metta_values = metta_values.map_err(|e| SyntaxError {
-        kind: SyntaxErrorKind::Generic,
-        line: 1,
-        column: 1,
-        text: e,
-        file_path: None,
+    let metta_values = metta_values.map_err(|e| {
+        error!(
+            text = %e,
+            "Error during converting MeTTa expressions to MeTTa values"
+        );
+        debug!(src, %e);
+        SyntaxError {
+            kind: SyntaxErrorKind::Generic,
+            line: 1,
+            column: 1,
+            text: e,
+            file_path: None,
+        }
     })?;
 
     Ok(MettaState::new_compiled(metta_values))

@@ -42,8 +42,11 @@ pub enum ExecError {
     /// This is NOT an error, just signals "I can't handle this"
     NoReduce,
 
-    /// Runtime error during execution
+    /// Runtime error during execution (type mismatches, etc.)
     Runtime(String),
+
+    /// Arithmetic error (division by zero, overflow, etc.)
+    Arithmetic(String),
 
     /// Incorrect argument type or arity
     IncorrectArgument(String),
@@ -54,6 +57,7 @@ impl fmt::Display for ExecError {
         match self {
             ExecError::NoReduce => write!(f, "NoReduce"),
             ExecError::Runtime(msg) => write!(f, "Runtime error: {}", msg),
+            ExecError::Arithmetic(msg) => write!(f, "Arithmetic error: {}", msg),
             ExecError::IncorrectArgument(msg) => write!(f, "Incorrect argument: {}", msg),
         }
     }
@@ -475,25 +479,25 @@ impl GroundedOperation for DivOp {
                 match (a, b) {
                     (MettaValue::Long(x), MettaValue::Long(y)) => {
                         if *y == 0 {
-                            return Err(ExecError::Runtime("Division by zero".to_string()));
+                            return Err(ExecError::Arithmetic("Division by zero".to_string()));
                         }
                         results.push((MettaValue::Long(x / y), None));
                     }
                     (MettaValue::Float(x), MettaValue::Float(y)) => {
                         if *y == 0.0 {
-                            return Err(ExecError::Runtime("Division by zero".to_string()));
+                            return Err(ExecError::Arithmetic("Division by zero".to_string()));
                         }
                         results.push((MettaValue::Float(x / y), None));
                     }
                     (MettaValue::Long(x), MettaValue::Float(y)) => {
                         if *y == 0.0 {
-                            return Err(ExecError::Runtime("Division by zero".to_string()));
+                            return Err(ExecError::Arithmetic("Division by zero".to_string()));
                         }
                         results.push((MettaValue::Float(*x as f64 / y), None));
                     }
                     (MettaValue::Float(x), MettaValue::Long(y)) => {
                         if *y == 0 {
-                            return Err(ExecError::Runtime("Division by zero".to_string()));
+                            return Err(ExecError::Arithmetic("Division by zero".to_string()));
                         }
                         results.push((MettaValue::Float(x / *y as f64), None));
                     }
@@ -540,9 +544,14 @@ impl GroundedOperation for ModOp {
                 match (a, b) {
                     (MettaValue::Long(x), MettaValue::Long(y)) => {
                         if *y == 0 {
-                            return Err(ExecError::Runtime("Modulo by zero".to_string()));
+                            return Err(ExecError::Arithmetic("Modulo by zero".to_string()));
                         }
-                        results.push((MettaValue::Long(x % y), None));
+                        match x.checked_rem(*y) {
+                            Some(r) => results.push((MettaValue::Long(r), None)),
+                            None => {
+                                return Err(ExecError::Arithmetic("Modulo overflow".to_string()))
+                            }
+                        }
                     }
                     _ => {
                         return Err(ExecError::Runtime(format!(
@@ -1495,7 +1504,7 @@ impl GroundedOperationTCO for DivOpTCO {
                         match (a, b) {
                             (MettaValue::Long(x), MettaValue::Long(y)) => {
                                 if *y == 0 {
-                                    return GroundedWork::Error(ExecError::Runtime(
+                                    return GroundedWork::Error(ExecError::Arithmetic(
                                         "Division by zero".to_string(),
                                     ));
                                 }
@@ -1503,7 +1512,7 @@ impl GroundedOperationTCO for DivOpTCO {
                             }
                             (MettaValue::Float(x), MettaValue::Float(y)) => {
                                 if *y == 0.0 {
-                                    return GroundedWork::Error(ExecError::Runtime(
+                                    return GroundedWork::Error(ExecError::Arithmetic(
                                         "Division by zero".to_string(),
                                     ));
                                 }
@@ -1511,7 +1520,7 @@ impl GroundedOperationTCO for DivOpTCO {
                             }
                             (MettaValue::Long(x), MettaValue::Float(y)) => {
                                 if *y == 0.0 {
-                                    return GroundedWork::Error(ExecError::Runtime(
+                                    return GroundedWork::Error(ExecError::Arithmetic(
                                         "Division by zero".to_string(),
                                     ));
                                 }
@@ -1519,7 +1528,7 @@ impl GroundedOperationTCO for DivOpTCO {
                             }
                             (MettaValue::Float(x), MettaValue::Long(y)) => {
                                 if *y == 0 {
-                                    return GroundedWork::Error(ExecError::Runtime(
+                                    return GroundedWork::Error(ExecError::Arithmetic(
                                         "Division by zero".to_string(),
                                     ));
                                 }
@@ -1595,11 +1604,18 @@ impl GroundedOperationTCO for ModOpTCO {
                         match (a, b) {
                             (MettaValue::Long(x), MettaValue::Long(y)) => {
                                 if *y == 0 {
-                                    return GroundedWork::Error(ExecError::Runtime(
+                                    return GroundedWork::Error(ExecError::Arithmetic(
                                         "Modulo by zero".to_string(),
                                     ));
                                 }
-                                results.push((MettaValue::Long(x % y), None));
+                                match x.checked_rem(*y) {
+                                    Some(r) => results.push((MettaValue::Long(r), None)),
+                                    None => {
+                                        return GroundedWork::Error(ExecError::Arithmetic(
+                                            "Modulo overflow".to_string(),
+                                        ))
+                                    }
+                                }
                             }
                             _ => {
                                 return GroundedWork::Error(ExecError::Runtime(format!(
@@ -2158,7 +2174,7 @@ mod tests {
         let args = vec![MettaValue::Long(10), MettaValue::Long(0)];
         let result = div.execute_raw(&args, &env, &mock_eval);
 
-        assert!(matches!(result, Err(ExecError::Runtime(_))));
+        assert!(matches!(result, Err(ExecError::Arithmetic(_))));
     }
 
     #[test]

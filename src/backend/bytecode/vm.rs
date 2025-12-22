@@ -36,6 +36,8 @@ pub enum VmError {
     TypeError { expected: &'static str, got: &'static str },
     /// Division by zero
     DivisionByZero,
+    /// Arithmetic overflow (e.g., i64::MIN % -1)
+    ArithmeticOverflow,
     /// Instruction pointer out of bounds
     IpOutOfBounds,
     /// Call stack overflow
@@ -60,6 +62,7 @@ impl std::fmt::Display for VmError {
                 write!(f, "Type error: expected {}, got {}", expected, got)
             }
             Self::DivisionByZero => write!(f, "Division by zero"),
+            Self::ArithmeticOverflow => write!(f, "Arithmetic overflow"),
             Self::IpOutOfBounds => write!(f, "Instruction pointer out of bounds"),
             Self::CallStackOverflow => write!(f, "Call stack overflow"),
             Self::ValueStackOverflow => write!(f, "Value stack overflow"),
@@ -1422,7 +1425,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(_), MettaValue::Long(0)) => return Err(VmError::DivisionByZero),
-            (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Long(x / y),
+            (MettaValue::Long(x), MettaValue::Long(y)) => {
+                match x.checked_div(*y) {
+                    Some(r) => MettaValue::Long(r),
+                    None => return Err(VmError::ArithmeticOverflow),
+                }
+            }
             _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
         };
         self.push(result);
@@ -1434,7 +1442,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(_), MettaValue::Long(0)) => return Err(VmError::DivisionByZero),
-            (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Long(x % y),
+            (MettaValue::Long(x), MettaValue::Long(y)) => {
+                match x.checked_rem(*y) {
+                    Some(r) => MettaValue::Long(r),
+                    None => return Err(VmError::ArithmeticOverflow),
+                }
+            }
             _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
         };
         self.push(result);

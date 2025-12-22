@@ -7,6 +7,7 @@ use crate::backend::models::{MettaState, MettaValue};
 use models::rhoapi::{expr::ExprInstance, EList, EPathMap, ETuple, Expr, Par};
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use std::sync::Arc;
+use tracing::{debug, trace};
 
 /// Helper function to create a Par with a string value
 fn create_string_par(s: String) -> Par {
@@ -30,7 +31,9 @@ const METTA_LARGE_EXPRS_MAGIC: &[u8] = b"MTTL"; // MeTTa Large Expressions (arit
 
 /// Convert a MettaValue to a Rholang Par object
 pub fn metta_value_to_par(value: &MettaValue) -> Par {
-    match value {
+    trace!(target: "mettatron::rholang_integration::metta_value_to_par", ?value, "MeTTa value");
+
+    let par = match value {
         MettaValue::Atom(s) => {
             // Atoms are plain strings (no quotes)
             create_string_par(s.clone())
@@ -172,11 +175,15 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-    }
+    };
+
+    trace!(target: "mettatron::rholang_integration::metta_value_to_par", ?par, "Par");
+    par
 }
 
 /// Convert a vector of MettaValues to a Rholang List Par
 pub fn metta_values_to_list_par(values: &[MettaValue]) -> Par {
+    trace!(target: "mettatron::rholang_integration::metta_values_to_list_par", ?values);
     let item_pars: Vec<Par> = values.iter().map(metta_value_to_par).collect();
 
     Par::default().with_exprs(vec![Expr {
@@ -204,6 +211,7 @@ pub fn environment_to_par(env: &Environment) -> Par {
     // Instead, we collect RAW path bytes directly from the trie using read_zipper.
     // This preserves bytes exactly without interpretation.
 
+    trace!(target: "mettatron::rholang_integration::environment_to_par", ?env);
     let space = env.create_space();
 
     // Collect all raw path bytes from the PathMap trie
@@ -243,6 +251,7 @@ pub fn environment_to_par(env: &Environment) -> Par {
             bytes
         }
     };
+    trace!(target: "mettatron::rholang_integration::environment_to_par", symbol_table_len = symbol_table_bytes.len());
 
     // Write symbol table length and bytes
     let sym_len = symbol_table_bytes.len() as u64;
@@ -264,6 +273,7 @@ pub fn environment_to_par(env: &Environment) -> Par {
         all_paths_data.extend_from_slice(path_bytes);
         path_count += 1;
     }
+    trace!(target: "mettatron::rholang_integration::environment_to_par", path_count, space_data_len = all_paths_data.len());
 
     // Write the actual count at the beginning
     all_paths_data[count_offset..count_offset + 8].copy_from_slice(&path_count.to_be_bytes());
@@ -345,6 +355,10 @@ pub fn environment_to_par(env: &Environment) -> Par {
         // Write value (8 bytes)
         multiplicities_bytes.extend_from_slice(&(*count as u64).to_be_bytes());
     }
+    trace!(
+        target: "mettatron::rholang_integration::environment_to_par",
+        multiplicities_count = multiplicities_map.len(), mult_data_len = multiplicities_bytes.len()
+    );
 
     let multiplicities_emap = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GByteArray(multiplicities_bytes)),
@@ -399,6 +413,7 @@ pub fn environment_to_par(env: &Environment) -> Par {
 /// - ("environment", <env data>)
 /// - ("output", <list of output>)
 pub fn metta_state_to_pathmap_par(state: &MettaState) -> Par {
+    trace!(target: "mettatron::rholang_integration::metta_state_to_pathmap_par", ?state);
     let mut field_tuples = Vec::new();
 
     // Field 0: ("source", <list of exprs>)
@@ -476,6 +491,7 @@ pub fn metta_error_to_par(error_msg: &str) -> Par {
 
 /// Convert a Rholang Par back to MettaValue
 pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
+    trace!(target: "mettatron::rholang_integration::par_to_metta_value", ?par, "Par value");
     // Handle empty Par (Nil)
     if par.exprs.is_empty() && par.unforgeables.is_empty() && par.sends.is_empty() {
         return Ok(MettaValue::Nil);
@@ -483,7 +499,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
 
     // Get the first expression
     if let Some(expr) = par.exprs.first() {
-        match &expr.expr_instance {
+        let val = match &expr.expr_instance {
             Some(ExprInstance::GString(s)) => {
                 // Check if it's a quoted string (starts and ends with ")
                 if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
@@ -564,7 +580,10 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
                 }
             }
             _ => Err("Unsupported Par expression type for MettaValue conversion".to_string()),
-        }
+        };
+
+        trace!(target: "mettatron::rholang_integration::par_to_metta_value", ?val, "MeTTa value");
+        val
     } else {
         Err("Par has no expressions to convert".to_string())
     }
@@ -578,11 +597,16 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
 /// Note: Type assertions are stored within the space, not separately
 pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
     use std::collections::HashMap;
+    trace!(target: "mettatron::rholang_integration::par_to_environment", par_exprs_count = par.exprs.len());
 
     // The par should be an ETuple with 2 or 3 named field tuples (3 if large_exprs present)
     if let Some(expr) = par.exprs.first() {
         if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
             if tuple.ps.len() < 2 || tuple.ps.len() > 3 {
+                debug!(
+                    target: "mettatron::rholang_integration::par_to_environment",
+                    expected = "2-3", got = tuple.ps.len(), "invalid environment tuple size"
+                );
                 return Err(format!(
                     "Expected 2 or 3 elements in environment tuple, got {}",
                     tuple.ps.len()
@@ -612,6 +636,7 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
             } else {
                 Vec::new()
             };
+            trace!(target: "mettatron::rholang_integration::par_to_environment", space_bytes_len = space_dump_bytes.len());
 
             // Extract multiplicities (element 1) - now stored as GByteArray
             let multiplicities_par = extract_tuple_value(&tuple.ps[1])?;
@@ -726,6 +751,11 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
 
                         // Restore symbol table if present
                         if sym_len > 0 && offset + sym_len <= space_dump_bytes.len() {
+                            trace!(
+                                target: "mettatron::rholang_integration::par_to_environment",
+                                sym_len, offset, "Restore symbol table"
+                            );
+
                             use std::fs;
                             use std::io::Write;
                             use std::time::{SystemTime, UNIX_EPOCH};
@@ -875,20 +905,34 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
 
             Ok(env)
         } else {
+            debug!(
+                target: "mettatron::rholang_integration::par_to_environment",
+                "expected ETuple for environment"
+            );
             Err("Expected ETuple for environment".to_string())
         }
     } else {
+        debug!(
+            target: "mettatron::rholang_integration::par_to_environment",
+            "environment Par has no expressions"
+        );
         Err("Environment Par has no expressions".to_string())
     }
 }
 
 /// Convert a Rholang Par containing an EPathMap back to MettaState
 pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
+    trace!(target: "mettatron::rholang_integration::pathmap_par_to_metta_state", par_exprs_count = par.exprs.len());
+
     // Get the EPathMap from the Par
     if let Some(expr) = par.exprs.first() {
         if let Some(ExprInstance::EPathmapBody(pathmap)) = &expr.expr_instance {
             // The PathMap should contain a single ETuple with three named field tuples
             if pathmap.ps.len() != 1 {
+                debug!(
+                    target: "mettatron::rholang_integration::pathmap_par_to_metta_state",
+                    expected = 1, got = pathmap.ps.len(), "invalid PathMap size"
+                );
                 return Err(format!(
                     "Expected 1 element (ETuple) in PathMap, got {}",
                     pathmap.ps.len()
@@ -901,6 +945,10 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                 if let Some(ExprInstance::ETupleBody(state_tuple)) = &expr.expr_instance {
                     // The tuple should have 3 named field tuples
                     if state_tuple.ps.len() != 3 {
+                        debug!(
+                            target: "mettatron::rholang_integration::pathmap_par_to_metta_state",
+                            expected = 3, got = state_tuple.ps.len(), "invalid state tuple size"
+                        );
                         return Err(format!(
                             "Expected 3 named fields in state tuple, got {}",
                             state_tuple.ps.len()
@@ -957,15 +1005,19 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                         output,
                     })
                 } else {
+                    debug!(target: "mettatron::rholang_integration::pathmap_par_to_metta_state", "expected ETupleBody in PathMap");
                     Err("Expected ETupleBody in PathMap".to_string())
                 }
             } else {
+                debug!(target: "mettatron::rholang_integration::pathmap_par_to_metta_state", "PathMap element has no expressions");
                 Err("PathMap element has no expressions".to_string())
             }
         } else {
+            debug!(target: "mettatron::rholang_integration::pathmap_par_to_metta_state", "Par does not contain EPathMap");
             Err("Par does not contain EPathMap".to_string())
         }
     } else {
+        debug!(target: "mettatron::rholang_integration::pathmap_par_to_metta_state", "Par has no expressions");
         Err("Par has no expressions".to_string())
     }
 }

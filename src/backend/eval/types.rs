@@ -2,6 +2,7 @@ use crate::backend::builtin_signatures::{get_return_type, get_signature, TypeExp
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
+use tracing::trace;
 
 /// Built-in type names with correct capitalization for "Did you mean?" suggestions
 const TYPE_NAME_MAPPINGS: &[(&str, &str)] = &[
@@ -27,6 +28,7 @@ const TYPE_NAME_MAPPINGS: &[(&str, &str)] = &[
 
 /// Suggest correct type name capitalization if the given name is a common variant
 pub(crate) fn suggest_type_name(name: &str) -> Option<String> {
+    trace!(target: "mettatron::eval::suggest_type_name", name);
     let lower = name.to_lowercase();
 
     for (incorrect, correct) in TYPE_NAME_MAPPINGS {
@@ -44,6 +46,7 @@ pub(crate) fn suggest_type_name(name: &str) -> Option<String> {
 /// Type assertion: (: expr type)
 /// Adds a type assertion to the environment
 pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_type_assertion", ?items);
     require_args_with_usage!(":", items, 2, env, "(: expr type)");
 
     let expr = &items[1];
@@ -75,6 +78,7 @@ pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> E
 /// get-type: return the type of an expression
 /// (get-type expr) -> Type
 pub(super) fn eval_get_type(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_get_type", ?items);
     require_args_with_usage!("get-type", items, 1, env, "(get-type expr)");
 
     let expr = &items[1];
@@ -85,6 +89,7 @@ pub(super) fn eval_get_type(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// check-type: check if expression has expected type
 /// (check-type expr expected-type) -> Bool
 pub(super) fn eval_check_type(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_check_type", ?items);
     require_args_with_usage!("check-type", items, 2, env, "(check-type expr type)");
 
     let expr = &items[1];

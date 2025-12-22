@@ -2,7 +2,7 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
 
-use super::{apply_bindings, eval, pattern_match};
+use super::{apply_bindings, eval, pattern_match, EvalStep};
 
 /// Evaluate if control flow: (if condition then-branch else-branch)
 /// Only evaluates the chosen branch (lazy evaluation)
@@ -55,6 +55,74 @@ pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     }
 }
 
+/// Evaluate if control flow with trampoline integration (TCO-enabled)
+/// Returns EvalStep::EvalIfBranch to defer branch evaluation to the trampoline,
+/// enabling if branches to participate in tail call optimization.
+///
+/// This is the TCO-enabled version of eval_if(). The condition is still evaluated
+/// synchronously, but the branch evaluation is deferred to the trampoline.
+pub(super) fn eval_if_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+    let args = &items[1..];
+
+    // Validate arity - same as eval_if
+    if args.len() < 3 {
+        let got = args.len();
+        let err = MettaValue::Error(
+            format!(
+                "if requires exactly 3 arguments, got {}. Usage: (if condition then-branch else-branch)",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let condition = &args[0];
+    let then_branch = args[1].clone();
+    let else_branch = args[2].clone();
+
+    // Evaluate the condition (synchronously - starts fresh trampoline)
+    let (cond_results, env_after_cond) = eval(condition.clone(), env);
+
+    // Check for error in condition
+    if let Some(first) = cond_results.first() {
+        if matches!(first, MettaValue::Error(_, _)) {
+            return EvalStep::Done((vec![first.clone()], env_after_cond));
+        }
+
+        // Check if condition is true
+        let is_true = match first {
+            MettaValue::Bool(true) => true,
+            MettaValue::Bool(false) => false,
+            // Non-boolean values: treat as true if not Nil
+            MettaValue::Nil => false,
+            _ => true,
+        };
+
+        // Return EvalStep for branch evaluation - THIS IS TAIL CALL (TCO)
+        if is_true {
+            EvalStep::EvalIfBranch {
+                branch: then_branch,
+                env: env_after_cond,
+                depth,
+            }
+        } else {
+            EvalStep::EvalIfBranch {
+                branch: else_branch,
+                env: env_after_cond,
+                depth,
+            }
+        }
+    } else {
+        // No result from condition - treat as false
+        EvalStep::EvalIfBranch {
+            branch: else_branch,
+            env: env_after_cond,
+            depth,
+        }
+    }
+}
+
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
 pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalResult {
@@ -70,9 +138,27 @@ pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     let cases = items[2].clone();
 
     let (atom_results, atom_env) = eval(atom, env);
+
+    // Filter out Empty sentinels - they represent "no result to report"
+    // Empty sentinels should cause the (Empty ...) pattern to match only when ALL results are Empty
+    let filtered_results: Vec<_> = atom_results
+        .into_iter()
+        .filter(|v| !matches!(v, MettaValue::Empty))
+        .collect();
+
+    // Handle case when evaluation returns no results (empty) - treat as Empty
+    if filtered_results.is_empty() {
+        let switch_result = eval_switch_minimal(
+            MettaValue::Atom("Empty".to_string()),
+            cases,
+            atom_env.clone(),
+        );
+        return (switch_result.0, atom_env);
+    }
+
     let mut final_results = Vec::new();
 
-    for atom_result in atom_results {
+    for atom_result in filtered_results {
         let is_empty = match &atom_result {
             MettaValue::Nil => true,
             MettaValue::SExpr(items) if items.is_empty() => true,
@@ -203,7 +289,7 @@ Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
             let template = case_items[1].clone();
 
             if let Some(bindings) = pattern_match(&pattern, &atom) {
-                let instantiated_template = apply_bindings(&template, &bindings);
+                let instantiated_template = apply_bindings(&template, &bindings).into_owned();
                 return eval(instantiated_template, env);
             } else {
                 return eval_switch_minimal(atom, remaining_cases, env);
@@ -514,10 +600,10 @@ mod tests {
         let mut env = Environment::new();
 
         // First define a rule that returns empty: (= (empty-result) ())
-        let empty_rule = Rule {
-            lhs: MettaValue::SExpr(vec![MettaValue::Atom("empty-result".to_string())]),
-            rhs: MettaValue::SExpr(vec![]),
-        };
+        let empty_rule = Rule::new(
+        MettaValue::SExpr(vec![MettaValue::Atom("empty-result".to_string())]),
+        MettaValue::SExpr(vec![]),
+    );
         env.add_rule(empty_rule);
 
         // (case (empty-result) ((Empty "was empty") (42 "was forty-two")))
@@ -733,12 +819,12 @@ mod tests {
         let mut env = Environment::new();
 
         // Define a rule that can return Empty: (= (maybe-empty $x) (if (== $x 0) () $x))
-        let maybe_empty_rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let maybe_empty_rule = Rule::new(
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("maybe-empty".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("==".to_string()),
@@ -748,7 +834,7 @@ mod tests {
                 MettaValue::SExpr(vec![]), // Empty s-expression
                 MettaValue::Atom("$x".to_string()),
             ]),
-        };
+    );
         env.add_rule(maybe_empty_rule);
 
         // Test switch: does NOT evaluate first argument

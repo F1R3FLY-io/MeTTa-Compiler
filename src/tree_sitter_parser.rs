@@ -13,6 +13,15 @@ pub struct SyntaxError {
     pub line: usize,
     pub column: usize,
     pub text: String,
+    pub file_path: Option<String>,
+}
+
+impl SyntaxError {
+    /// Set the file path for this error, consuming and returning self for chaining
+    pub fn with_file_path(mut self, path: impl Into<String>) -> Self {
+        self.file_path = Some(path.into());
+        self
+    }
 }
 
 /// Categorized syntax error kinds for pattern matching
@@ -38,11 +47,11 @@ pub enum SyntaxErrorKind {
 
 impl std::fmt::Display for SyntaxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Syntax error at line {}, column {}: ",
-            self.line, self.column
-        )?;
+        // Format: [file:]line:column: Syntax error: message
+        if let Some(ref path) = self.file_path {
+            write!(f, "{}:", path)?;
+        }
+        write!(f, "{}:{}: Syntax error: ", self.line, self.column)?;
         match &self.kind {
             SyntaxErrorKind::UnexpectedToken => write!(f, "unexpected '{}'", self.text),
             SyntaxErrorKind::UnclosedDelimiter(c) => write!(f, "unclosed '{}'", c),
@@ -121,6 +130,7 @@ impl TreeSitterMettaParser {
             line: 1,
             column: 1,
             text: "Failed to parse source".into(),
+            file_path: None,
         })?;
 
         let root = tree.root_node();
@@ -136,7 +146,17 @@ impl TreeSitterMettaParser {
                 line: 1,
                 column: 1,
                 text: e,
+                file_path: None,
             })
+    }
+
+    /// Check if a node should be processed (named and not extra)
+    ///
+    /// This filters out extras like comments and whitespace while preserving
+    /// them in the Tree-Sitter CST for future LSP server access.
+    #[inline]
+    fn should_process_node(&self, node: Node) -> bool {
+        node.is_named() && !node.is_extra()
     }
 
     /// Convert source_file node (contains multiple expressions)
@@ -145,11 +165,7 @@ impl TreeSitterMettaParser {
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
-            // Skip comments
-            if child.kind() == "line_comment" {
-                continue;
-            }
-            if child.is_named() {
+            if self.should_process_node(child) {
                 expressions.extend(self.convert_expression(child, source)?);
             }
         }
@@ -164,7 +180,7 @@ impl TreeSitterMettaParser {
                 // Unwrap the expression wrapper
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
-                    if child.is_named() {
+                    if self.should_process_node(child) {
                         return self.convert_expression(child, source);
                     }
                 }
@@ -183,7 +199,7 @@ impl TreeSitterMettaParser {
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
-            if child.is_named() {
+            if self.should_process_node(child) {
                 items.extend(self.convert_expression(child, source)?);
             }
         }
@@ -215,7 +231,7 @@ impl TreeSitterMettaParser {
                     prefix = Some("'");
                     prefix_span = Some(self.node_span(child));
                 }
-                _ if child.is_named() => {
+                _ if self.should_process_node(child) => {
                     argument = Some(self.convert_expression(child, source)?);
                 }
                 _ => {}
@@ -237,7 +253,7 @@ impl TreeSitterMettaParser {
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
-            if child.is_named() {
+            if self.should_process_node(child) {
                 return self.convert_atom(child, source);
             }
         }
@@ -265,6 +281,9 @@ impl TreeSitterMettaParser {
 
             // Special type symbols: %Undefined%, %Irreducible%, etc.
             "special_type_symbol" => Ok(vec![SExpr::Atom(text, Some(span))]),
+
+            // Space references: &self, &kb, etc. (HE-compatible single token)
+            "space_reference" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
             // All operator types (already decomposed by grammar)
             "operator"
@@ -324,6 +343,7 @@ impl TreeSitterMettaParser {
                 line: start.row + 1,
                 column: start.column + 1,
                 text: error_text,
+                file_path: None,
             }
         } else {
             SyntaxError {
@@ -331,6 +351,7 @@ impl TreeSitterMettaParser {
                 line: 1,
                 column: 1,
                 text: String::new(),
+                file_path: None,
             }
         }
     }
@@ -522,15 +543,9 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("$x").unwrap());
         assert_eq!(result, vec![SExpr::Atom("$x".to_string(), None)]);
 
-        // & is now an operator (space reference), not a variable prefix
+        // &name is a space reference - parsed as single token (HE-compatible)
         let result = strip_spans_vec(&parser.parse("&y").unwrap());
-        assert_eq!(
-            result,
-            vec![
-                SExpr::Atom("&".to_string(), None),
-                SExpr::Atom("y".to_string(), None)
-            ]
-        );
+        assert_eq!(result, vec![SExpr::Atom("&y".to_string(), None)]);
 
         // Wildcard
         let result = strip_spans_vec(&parser.parse("_").unwrap());
@@ -718,12 +733,22 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("-2.5").unwrap());
         assert_eq!(result, vec![SExpr::Float(-2.5, None)]);
 
-        // Scientific notation
+        // Scientific notation with decimal
         let result = strip_spans_vec(&parser.parse("1.0e10").unwrap());
         assert_eq!(result, vec![SExpr::Float(1.0e10, None)]);
 
         let result = strip_spans_vec(&parser.parse("-1.5e-3").unwrap());
         assert_eq!(result, vec![SExpr::Float(-1.5e-3, None)]);
+
+        // Scientific notation without decimal (MeTTa HE compatible)
+        let result = strip_spans_vec(&parser.parse("1e10").unwrap());
+        assert_eq!(result, vec![SExpr::Float(1e10, None)]);
+
+        let result = strip_spans_vec(&parser.parse("-2E+5").unwrap());
+        assert_eq!(result, vec![SExpr::Float(-2e5, None)]);
+
+        let result = strip_spans_vec(&parser.parse("5e-3").unwrap());
+        assert_eq!(result, vec![SExpr::Float(5e-3, None)]);
 
         // In expressions
         let result = strip_spans_vec(&parser.parse("(+ 3.15 2.71)").unwrap());
@@ -857,7 +882,194 @@ mod tests {
         assert_eq!(result, vec![SExpr::String("Hello 🌍!".to_string(), None)]);
     }
 
-    // Tests for structured SyntaxError types
+    // ========================================================================
+    // Comment Parsing Tests (from feature branch)
+    // ========================================================================
+
+    #[test]
+    fn test_parse_inline_comments() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Comment within list
+        let result = strip_spans_vec(&parser.parse("(+ 1 ; comment here\n 2)").unwrap());
+
+        assert_eq!(
+            result,
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_inline_comments() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Multiple comments in one list
+        let result = strip_spans_vec(
+            &parser
+                .parse("(+ ; first comment\n 1 ; second comment\n 2)")
+                .unwrap(),
+        );
+
+        assert_eq!(
+            result,
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn test_parse_comment_in_nested_list() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Comment in nested structure
+        let result = strip_spans_vec(&parser.parse("(+ (* 2 ; inner comment\n 3) 4)").unwrap());
+
+        assert_eq!(
+            result,
+            vec![SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::List(
+                        vec![
+                            SExpr::Atom("*".to_string(), None),
+                            SExpr::Integer(2, None),
+                            SExpr::Integer(3, None),
+                        ],
+                        None
+                    ),
+                    SExpr::Integer(4, None),
+                ],
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn test_parse_comment_between_list_items() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Comments between major list items (rule definition)
+        let result = strip_spans_vec(
+            &parser
+                .parse(
+                    r#"
+            (=
+                ; Pattern
+                (double $x)
+                ; Body
+                (* $x 2))
+            "#,
+                )
+                .unwrap(),
+        );
+
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            SExpr::List(items, _) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], SExpr::Atom("=".to_string(), None));
+                // Pattern: (double $x)
+                match &items[1] {
+                    SExpr::List(pattern_items, _) => {
+                        assert_eq!(pattern_items.len(), 2);
+                        assert_eq!(pattern_items[0], SExpr::Atom("double".to_string(), None));
+                        assert_eq!(pattern_items[1], SExpr::Atom("$x".to_string(), None));
+                    }
+                    _ => panic!("Expected pattern list"),
+                }
+                // Body: (* $x 2)
+                match &items[2] {
+                    SExpr::List(body_items, _) => {
+                        assert_eq!(body_items.len(), 3);
+                        assert_eq!(body_items[0], SExpr::Atom("*".to_string(), None));
+                        assert_eq!(body_items[1], SExpr::Atom("$x".to_string(), None));
+                        assert_eq!(body_items[2], SExpr::Integer(2, None));
+                    }
+                    _ => panic!("Expected body list"),
+                }
+            }
+            _ => panic!("Expected rule definition list"),
+        }
+    }
+
+    #[test]
+    fn test_parse_comment_after_top_level_expression() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // Comment after a complete expression
+        let result = strip_spans_vec(&parser.parse("(+ 1 2) ; result is 3\n(* 3 4)").unwrap());
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            result[0],
+            SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )
+        );
+        assert_eq!(
+            result[1],
+            SExpr::List(
+                vec![
+                    SExpr::Atom("*".to_string(), None),
+                    SExpr::Integer(3, None),
+                    SExpr::Integer(4, None),
+                ],
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_comment_at_file_start() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // No leading whitespace - comment starts at byte 0
+        let result = strip_spans_vec(&parser.parse("; comment\n(+ 1 2)").unwrap());
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_only_comments() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // File with only comments - should produce empty result
+        let result = parser.parse("; This is just a comment\n; Another comment").unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    // ========================================================================
+    // Structured SyntaxError Tests (from main)
+    // ========================================================================
 
     #[test]
     fn test_syntax_error_unclosed_paren() {
@@ -957,10 +1169,11 @@ mod tests {
             line: 1,
             column: 7,
             text: String::new(),
+            file_path: None,
         };
         let msg = error.to_string();
-        assert!(msg.contains("line 1"));
-        assert!(msg.contains("column 7"));
+        // New format: 1:7: Syntax error: unclosed '('
+        assert!(msg.contains("1:7:"));
         assert!(msg.contains("unclosed '('"));
     }
 
@@ -974,6 +1187,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: "foo".to_string(),
+                    file_path: None,
                 },
                 "unexpected 'foo'",
             ),
@@ -983,6 +1197,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: String::new(),
+                    file_path: None,
                 },
                 "unclosed '('",
             ),
@@ -992,6 +1207,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: String::new(),
+                    file_path: None,
                 },
                 "unexpected closing ')'",
             ),
@@ -1001,6 +1217,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: String::new(),
+                    file_path: None,
                 },
                 "unclosed string",
             ),
@@ -1010,6 +1227,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: String::new(),
+                    file_path: None,
                 },
                 "invalid escape sequence 'z'",
             ),
@@ -1019,6 +1237,7 @@ mod tests {
                     line: 0,
                     column: 0,
                     text: String::new(),
+                    file_path: None,
                 },
                 "parser initialization failed",
             ),
@@ -1028,6 +1247,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: String::new(),
+                    file_path: None,
                 },
                 "invalid syntax",
             ),

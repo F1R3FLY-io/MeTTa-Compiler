@@ -168,14 +168,14 @@ mod tests {
     #[test]
     fn test_to_json_with_environment() {
         let mut env = Environment::new();
-        env.add_rule(Rule {
-            lhs: MettaValue::Atom("x".to_string()),
-            rhs: MettaValue::Long(1),
-        });
-        env.add_rule(Rule {
-            lhs: MettaValue::Atom("y".to_string()),
-            rhs: MettaValue::Long(2),
-        });
+        env.add_rule(Rule::new(
+        MettaValue::Atom("x".to_string()),
+        MettaValue::Long(1),
+    ));
+        env.add_rule(Rule::new(
+        MettaValue::Atom("y".to_string()),
+        MettaValue::Long(2),
+    ));
 
         let state = MettaState::new_accumulated(env, Vec::new());
         let json = state.to_json_string();
@@ -187,17 +187,17 @@ mod tests {
     #[test]
     fn test_to_json_complete() {
         let mut env = Environment::new();
-        env.add_rule(Rule {
-            lhs: MettaValue::SExpr(vec![
+        env.add_rule(Rule::new(
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("mul".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
-        });
+    ));
 
         let state = MettaState {
             source: vec![MettaValue::Atom("test".to_string())],

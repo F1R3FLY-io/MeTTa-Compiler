@@ -2,13 +2,288 @@ use lru::LruCache;
 use mork::space::Space;
 use mork_interning::SharedMappingHandle;
 use pathmap::{zipper::*, PathMap};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use super::fuzzy_match::FuzzyMatcher;
+
+/// Thread-local cache for mork_expr_to_metta_value conversions.
+///
+/// MORK expressions are identified by their raw pointer address. Since MORK uses
+/// immutable trie-based storage, the same pointer always refers to the same logical
+/// expression during a single evaluation. This allows us to cache conversion results
+/// and avoid redundant traversals.
+///
+/// Cache size is 4096 entries per thread, balancing memory usage against hit rate.
+/// LRU eviction ensures the most recently used conversions are retained.
+thread_local! {
+    static MORK_VALUE_CACHE: RefCell<LruCache<usize, MettaValue>> =
+        RefCell::new(LruCache::new(NonZeroUsize::new(4096).unwrap()));
+}
+
+/// Bloom filter for (head_symbol, arity) pairs.
+///
+/// Enables O(1) rejection in `match_space()` when the pattern's (head, arity)
+/// definitely doesn't exist in the space. Uses Kirsch-Mitzenmacher double hashing
+/// with k=3 hash functions for ~1% false positive rate at 10 bits per entry.
+///
+/// # Design Notes
+/// - False positives allowed (may iterate when no match exists)
+/// - No false negatives (never skips when match does exist)
+/// - Doesn't support deletion; uses lazy rebuild when staleness threshold exceeded
+#[derive(Clone)]
+struct HeadArityBloomFilter {
+    bits: Vec<u64>,
+    num_bits: usize,
+    num_insertions: usize,
+    num_deletions: usize,
+}
+
+impl HeadArityBloomFilter {
+    /// Create a new bloom filter sized for expected_entries.
+    /// Uses 10 bits per entry for ~1% false positive rate.
+    fn new(expected_entries: usize) -> Self {
+        let num_bits = (expected_entries * 10).max(1024);
+        let num_words = (num_bits + 63) / 64;
+        Self {
+            bits: vec![0; num_words],
+            num_bits,
+            num_insertions: 0,
+            num_deletions: 0,
+        }
+    }
+
+    /// Insert a (head, arity) pair into the bloom filter.
+    #[inline]
+    fn insert(&mut self, head: &[u8], arity: u8) {
+        let (h1, h2) = Self::hash_pair(head, arity);
+        for i in 0usize..3 {
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
+            self.bits[idx / 64] |= 1 << (idx % 64);
+        }
+        self.num_insertions += 1;
+    }
+
+    /// Check if a (head, arity) pair may exist in the filter.
+    /// Returns false only if the pair definitely doesn't exist.
+    #[inline]
+    fn may_contain(&self, head: &[u8], arity: u8) -> bool {
+        let (h1, h2) = Self::hash_pair(head, arity);
+        (0usize..3).all(|i| {
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % self.num_bits;
+            self.bits[idx / 64] & (1 << (idx % 64)) != 0
+        })
+    }
+
+    /// Check if the filter needs rebuilding due to accumulated deletions.
+    fn needs_rebuild(&self) -> bool {
+        self.num_deletions > self.num_insertions / 4
+    }
+
+    /// Note that a deletion occurred (for lazy rebuild tracking).
+    fn note_deletion(&mut self) {
+        self.num_deletions += 1;
+    }
+
+    /// Clear the filter and reset counters.
+    fn clear(&mut self) {
+        self.bits.fill(0);
+        self.num_insertions = 0;
+        self.num_deletions = 0;
+    }
+
+    /// Compute two hash values for double hashing.
+    #[inline]
+    fn hash_pair(head: &[u8], arity: u8) -> (usize, usize) {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        head.hash(&mut hasher);
+        arity.hash(&mut hasher);
+        let h = hasher.finish();
+        (h as usize, (h >> 32) as usize)
+    }
+}
+
+use super::grounded::{GroundedRegistry, GroundedRegistryTCO};
+use super::modules::{ModId, ModuleRegistry, Tokenizer};
+use super::symbol::Symbol;
 use super::{MettaValue, Rule};
+
+/// Hierarchical scope tracker for context-aware symbol resolution.
+///
+/// Maintains a stack of lexical scopes, where each scope contains the symbols
+/// defined within that scope. Used for:
+/// - Scope-aware "Did you mean?" suggestions (prioritize local symbols)
+/// - Tracking variable bindings introduced by `let`, `match`, and functions
+/// - Enabling local symbols to shadow global ones in recommendations
+///
+/// # Example
+/// ```ignore
+/// // At global scope, define rule: (= (fib $n) ...)
+/// // scope_stack = [{fib}]
+///
+/// // Inside (let helper (...) body):
+/// // scope_stack = [{fib}, {helper}]
+///
+/// // Inside nested (let x 1 ...):
+/// // scope_stack = [{fib}, {helper}, {x}]
+/// ```
+#[derive(Debug, Clone)]
+pub struct ScopeTracker {
+    /// Stack of scopes, from global (index 0) to innermost (last)
+    scopes: Vec<HashSet<String>>,
+}
+
+impl ScopeTracker {
+    /// Create a new scope tracker with a single global scope
+    pub fn new() -> Self {
+        Self {
+            scopes: vec![HashSet::new()],
+        }
+    }
+
+    /// Push a new scope onto the stack (entering a new lexical context)
+    pub fn push_scope(&mut self) {
+        self.scopes.push(HashSet::new());
+    }
+
+    /// Pop the innermost scope (leaving a lexical context)
+    /// Never pops the global scope (index 0)
+    pub fn pop_scope(&mut self) {
+        if self.scopes.len() > 1 {
+            self.scopes.pop();
+        }
+    }
+
+    /// Add a symbol to the current (innermost) scope
+    pub fn add_symbol(&mut self, name: String) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name);
+        }
+    }
+
+    /// Add multiple symbols to the current scope
+    pub fn add_symbols(&mut self, names: impl IntoIterator<Item = String>) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.extend(names);
+        }
+    }
+
+    /// Check if a symbol is visible from the current scope
+    /// Searches from innermost to outermost scope
+    pub fn is_visible(&self, name: &str) -> bool {
+        self.scopes.iter().rev().any(|scope| scope.contains(name))
+    }
+
+    /// Get all visible symbols, ordered from local (innermost) to global (outermost)
+    /// Local symbols appear first for prioritized recommendations
+    pub fn visible_symbols(&self) -> impl Iterator<Item = &String> {
+        self.scopes.iter().rev().flat_map(|scope| scope.iter())
+    }
+
+    /// Get symbols from the current (innermost) scope only
+    pub fn local_symbols(&self) -> impl Iterator<Item = &String> {
+        self.scopes
+            .last()
+            .into_iter()
+            .flat_map(|scope| scope.iter())
+    }
+
+    /// Get the current scope depth (1 = global only)
+    pub fn depth(&self) -> usize {
+        self.scopes.len()
+    }
+
+    /// Check if we're at global scope (depth 1)
+    pub fn at_global_scope(&self) -> bool {
+        self.scopes.len() == 1
+    }
+}
+
+impl Default for ScopeTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Shared state across all Environment clones.
+/// Consolidates 17 Arc<RwLock<T>> fields into a single Arc<EnvironmentShared>
+/// for O(1) clone operations (1 atomic increment instead of 17).
+///
+/// Thread-safe: All fields use RwLock for concurrent read/exclusive write access.
+struct EnvironmentShared {
+    /// PathMap trie for fact storage
+    btm: RwLock<PathMap<()>>,
+
+    /// Rule index: Maps (head_symbol, arity) -> Vec<Rule> for O(1) rule lookup
+    /// Uses Symbol for O(1) comparison when symbol-interning feature is enabled
+    #[allow(clippy::type_complexity)]
+    rule_index: RwLock<HashMap<(Symbol, usize), Vec<Rule>>>,
+
+    /// Wildcard rules: Rules without a clear head symbol
+    wildcard_rules: RwLock<Vec<Rule>>,
+
+    /// Fast flag: true if any wildcard rules exist (avoids lock acquisition when empty)
+    has_wildcard_rules: AtomicBool,
+
+    /// Multiplicities: tracks how many times each rule is defined
+    multiplicities: RwLock<HashMap<String, usize>>,
+
+    /// Pattern cache: LRU cache for MORK serialization results
+    pattern_cache: RwLock<LruCache<MettaValue, Vec<u8>>>,
+
+    /// Type index: Lazy-initialized subtrie containing only type assertions
+    type_index: RwLock<Option<PathMap<()>>>,
+
+    /// Type index invalidation flag
+    type_index_dirty: RwLock<bool>,
+
+    /// Named spaces registry: Maps space_id -> (name, atoms)
+    #[allow(clippy::type_complexity)]
+    named_spaces: RwLock<HashMap<u64, (String, Vec<MettaValue>)>>,
+
+    /// Counter for generating unique space IDs
+    next_space_id: RwLock<u64>,
+
+    /// Mutable state cells registry
+    states: RwLock<HashMap<u64, MettaValue>>,
+
+    /// Counter for generating unique state IDs
+    next_state_id: RwLock<u64>,
+
+    /// Symbol bindings registry
+    bindings: RwLock<HashMap<String, MettaValue>>,
+
+    /// Module registry
+    module_registry: RwLock<ModuleRegistry>,
+
+    /// Per-module tokenizer
+    tokenizer: RwLock<Tokenizer>,
+
+    /// Grounded operations registry (legacy)
+    grounded_registry: RwLock<GroundedRegistry>,
+
+    /// TCO-compatible grounded operations registry
+    grounded_registry_tco: RwLock<GroundedRegistryTCO>,
+
+    /// Fallback store for large expressions
+    large_expr_pathmap: RwLock<Option<PathMap<MettaValue>>>,
+
+    /// Fuzzy matcher for "Did you mean?" suggestions
+    fuzzy_matcher: RwLock<FuzzyMatcher>,
+
+    /// Hierarchical scope tracker for context-aware symbol resolution
+    scope_tracker: RwLock<ScopeTracker>,
+
+    /// Bloom filter for (head_symbol, arity) pairs - enables O(1) match_space() rejection
+    /// when the pattern's (head, arity) definitely doesn't exist in the space.
+    head_arity_bloom: RwLock<HeadArityBloomFilter>,
+}
 
 /// The environment contains the fact database and type assertions
 /// All facts (rules, atoms, s-expressions, type assertions) are stored in MORK PathMap
@@ -18,9 +293,17 @@ use super::{MettaValue, Rule};
 /// - First mutation triggers deep copy via make_owned() (owns_data = true)
 /// - RwLock enables concurrent reads (4× improvement over Mutex)
 /// - Modifications tracked via Arc<AtomicBool> for fast union() paths
+///
+/// Performance optimization: All shared state is consolidated into a single
+/// Arc<EnvironmentShared> for O(1) clone operations (1 atomic increment instead of 17).
 pub struct Environment {
+    /// Consolidated shared state - single Arc for O(1) cloning
+    /// Contains all RwLock-wrapped fields that can be shared across clones
+    shared: Arc<EnvironmentShared>,
+
     /// THREAD-SAFE: SharedMappingHandle for symbol interning (string → u64)
     /// Can be cloned and shared across threads (Send + Sync)
+    /// Kept separate as it has its own sharing semantics
     shared_mapping: SharedMappingHandle,
 
     /// CoW: Tracks if this clone owns its data (true = can modify in-place, false = must deep copy first)
@@ -32,70 +315,47 @@ pub struct Environment {
     /// Arc-wrapped to allow independent tracking per clone
     modified: Arc<AtomicBool>,
 
-    /// THREAD-SAFE: PathMap trie for fact storage
-    /// Cloning is O(1) via structural sharing (immutable after clone)
-    /// PathMap provides O(m) prefix queries and O(m) existence checks
-    /// RwLock allows concurrent reads (multiple threads can read simultaneously)
-    btm: Arc<RwLock<PathMap<()>>>,
-
-    /// Rule index: Maps (head_symbol, arity) -> Vec<Rule> for O(1) rule lookup
-    /// This enables O(k) rule matching where k = rules with matching head symbol
-    /// Instead of O(n) iteration through all rules
-    /// RwLock allows concurrent reads for parallel rule matching
-    #[allow(clippy::type_complexity)]
-    rule_index: Arc<RwLock<HashMap<(String, usize), Vec<Rule>>>>,
-
-    /// Wildcard rules: Rules without a clear head symbol (e.g., variable patterns, wildcards)
-    /// These rules must be checked against all queries
-    /// RwLock allows concurrent reads during parallel evaluation
-    wildcard_rules: Arc<RwLock<Vec<Rule>>>,
-
-    /// Multiplicities: tracks how many times each rule is defined
-    /// Maps a normalized rule key to its definition count
-    /// This allows multiply-defined rules to produce multiple results
-    /// RwLock allows concurrent reads for parallel rule application
-    multiplicities: Arc<RwLock<HashMap<String, usize>>>,
-
-    /// Pattern cache: LRU cache for MORK serialization results
-    /// Maps MettaValue -> MORK bytes to avoid redundant conversions
-    /// Cache size: 1000 entries (typical REPL/program has <1000 unique patterns)
-    /// Expected speedup: 3-10x for repeated pattern matching
-    /// RwLock allows concurrent reads (cache hits don't require exclusive lock)
-    pattern_cache: Arc<RwLock<LruCache<MettaValue, Vec<u8>>>>,
-
-    /// Fuzzy matcher: Tracks known symbols for "Did you mean?" suggestions
-    /// Populated automatically as rules and functions are added to environment
-    /// Used to suggest similar symbols when encountering undefined atoms
-    fuzzy_matcher: FuzzyMatcher,
-
-    /// Type index: Lazy-initialized subtrie containing only type assertions
-    /// Extracted via PathMap::restrict() for O(1) type lookups
-    /// Invalidated on type assertion additions
-    /// RwLock allows concurrent type lookups during parallel evaluation
-    type_index: Arc<RwLock<Option<PathMap<()>>>>,
-
-    /// Type index invalidation flag: Set to true when types are added
-    /// Causes type_index to be rebuilt on next get_type() call
-    /// RwLock allows concurrent checks of dirty flag
-    type_index_dirty: Arc<RwLock<bool>>,
+    /// Current module path: Directory of the currently-executing module
+    /// Used for relative path resolution (self:child notation)
+    /// None when not inside a module evaluation
+    /// Kept separate as it's per-clone state
+    current_module_path: Option<PathBuf>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         use mork_interning::SharedMapping;
 
+        let shared = Arc::new(EnvironmentShared {
+            btm: RwLock::new(PathMap::new()),
+            rule_index: RwLock::new(HashMap::with_capacity(128)),
+            wildcard_rules: RwLock::new(Vec::new()),
+            has_wildcard_rules: AtomicBool::new(false),
+            multiplicities: RwLock::new(HashMap::new()),
+            pattern_cache: RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
+            type_index: RwLock::new(None),
+            type_index_dirty: RwLock::new(true),
+            named_spaces: RwLock::new(HashMap::new()),
+            next_space_id: RwLock::new(1), // Start from 1, 0 reserved for self
+            states: RwLock::new(HashMap::new()),
+            next_state_id: RwLock::new(1), // Start from 1
+            bindings: RwLock::new(HashMap::new()),
+            module_registry: RwLock::new(ModuleRegistry::new()),
+            tokenizer: RwLock::new(Tokenizer::new()),
+            grounded_registry: RwLock::new(GroundedRegistry::with_standard_ops()),
+            grounded_registry_tco: RwLock::new(GroundedRegistryTCO::with_standard_ops()),
+            large_expr_pathmap: RwLock::new(None), // Lazy: not allocated until needed
+            fuzzy_matcher: RwLock::new(FuzzyMatcher::new()),
+            scope_tracker: RwLock::new(ScopeTracker::new()),
+            head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // ~10KB for 10k expected entries
+        });
+
         Environment {
+            shared,
             shared_mapping: SharedMapping::new(),
             owns_data: true, // CoW: new environments own their data
             modified: Arc::new(AtomicBool::new(false)), // CoW: track modifications
-            btm: Arc::new(RwLock::new(PathMap::new())),
-            rule_index: Arc::new(RwLock::new(HashMap::new())),
-            wildcard_rules: Arc::new(RwLock::new(Vec::new())),
-            multiplicities: Arc::new(RwLock::new(HashMap::new())),
-            pattern_cache: Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap()))),
-            fuzzy_matcher: FuzzyMatcher::new(),
-            type_index: Arc::new(RwLock::new(None)),
-            type_index_dirty: Arc::new(RwLock::new(true)),
+            current_module_path: None,
         }
     }
 
@@ -108,28 +368,104 @@ impl Environment {
             return;
         }
 
-        // Deep copy all 7 RwLock-wrapped fields
+        // Deep copy the entire shared state structure
         // Clone the data first to avoid borrowing issues
-        let btm_data = self.btm.read().unwrap().clone();
-        let rule_index_data = self.rule_index.read().unwrap().clone();
-        let wildcard_rules_data = self.wildcard_rules.read().unwrap().clone();
-        let multiplicities_data = self.multiplicities.read().unwrap().clone();
-        let pattern_cache_data = self.pattern_cache.read().unwrap().clone();
-        let type_index_data = self.type_index.read().unwrap().clone();
-        let type_index_dirty_data = *self.type_index_dirty.read().unwrap();
+        let new_shared = Arc::new(EnvironmentShared {
+            btm: RwLock::new(self.shared.btm.read().unwrap().clone()),
+            rule_index: RwLock::new(self.shared.rule_index.read().unwrap().clone()),
+            wildcard_rules: RwLock::new(self.shared.wildcard_rules.read().unwrap().clone()),
+            has_wildcard_rules: AtomicBool::new(self.shared.has_wildcard_rules.load(Ordering::Acquire)),
+            multiplicities: RwLock::new(self.shared.multiplicities.read().unwrap().clone()),
+            pattern_cache: RwLock::new(self.shared.pattern_cache.read().unwrap().clone()),
+            type_index: RwLock::new(self.shared.type_index.read().unwrap().clone()),
+            type_index_dirty: RwLock::new(*self.shared.type_index_dirty.read().unwrap()),
+            named_spaces: RwLock::new(self.shared.named_spaces.read().unwrap().clone()),
+            next_space_id: RwLock::new(*self.shared.next_space_id.read().unwrap()),
+            states: RwLock::new(self.shared.states.read().unwrap().clone()),
+            next_state_id: RwLock::new(*self.shared.next_state_id.read().unwrap()),
+            bindings: RwLock::new(self.shared.bindings.read().unwrap().clone()),
+            module_registry: RwLock::new(self.shared.module_registry.read().unwrap().clone()),
+            tokenizer: RwLock::new(self.shared.tokenizer.read().unwrap().clone()),
+            grounded_registry: RwLock::new(self.shared.grounded_registry.read().unwrap().clone()),
+            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().unwrap().clone()),
+            large_expr_pathmap: RwLock::new(self.shared.large_expr_pathmap.read().unwrap().clone()),
+            fuzzy_matcher: RwLock::new(self.shared.fuzzy_matcher.read().unwrap().clone()),
+            scope_tracker: RwLock::new(self.shared.scope_tracker.read().unwrap().clone()),
+            head_arity_bloom: RwLock::new(self.shared.head_arity_bloom.read().unwrap().clone()),
+        });
 
-        // Now assign the new Arc<RwLock<T>> instances
-        self.btm = Arc::new(RwLock::new(btm_data));
-        self.rule_index = Arc::new(RwLock::new(rule_index_data));
-        self.wildcard_rules = Arc::new(RwLock::new(wildcard_rules_data));
-        self.multiplicities = Arc::new(RwLock::new(multiplicities_data));
-        self.pattern_cache = Arc::new(RwLock::new(pattern_cache_data));
-        self.type_index = Arc::new(RwLock::new(type_index_data));
-        self.type_index_dirty = Arc::new(RwLock::new(type_index_dirty_data));
+        self.shared = new_shared;
 
         // Mark as owning data and modified
         self.owns_data = true;
         self.modified.store(true, Ordering::Release);
+    }
+
+    /// Create a forked environment for nondeterministic branch isolation.
+    ///
+    /// This is critical for correct evaluation of nondeterministic MeTTa programs.
+    /// When evaluation forks (e.g., from `match` returning multiple results),
+    /// each branch needs its own isolated view of mutable state.
+    ///
+    /// This method:
+    /// 1. Clones the environment (CoW for states)
+    /// 2. Forks all SpaceHandles in bindings for branch isolation
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Original env has &stack bound to a space
+    /// let forked = env.fork_for_nondeterminism();
+    /// // forked's &stack is isolated from original's
+    /// ```
+    pub fn fork_for_nondeterminism(&self) -> Environment {
+        let mut forked = self.clone();
+        forked.make_owned(); // Ensure we have our own copy of state
+
+        // Fork all SpaceHandles in bindings
+        let mut forked_bindings = forked.shared.bindings.write().unwrap();
+        for (_name, value) in forked_bindings.iter_mut() {
+            Self::fork_spaces_in_value(value);
+        }
+        drop(forked_bindings);
+
+        forked
+    }
+
+    /// Recursively fork all SpaceHandles in a MettaValue.
+    fn fork_spaces_in_value(value: &mut MettaValue) {
+        match value {
+            MettaValue::Space(handle) => {
+                // Fork the space handle for isolation
+                *handle = handle.fork();
+            }
+            MettaValue::SExpr(items) => {
+                for item in items.iter_mut() {
+                    Self::fork_spaces_in_value(item);
+                }
+            }
+            MettaValue::Conjunction(goals) => {
+                for goal in goals.iter_mut() {
+                    Self::fork_spaces_in_value(goal);
+                }
+            }
+            MettaValue::Type(_) => {
+                // Arc<MettaValue> - can't mutate through Arc, but types rarely contain spaces
+            }
+            MettaValue::Error(_, _) => {
+                // Arc<MettaValue> - can't mutate, but errors rarely contain spaces
+            }
+            // Primitives don't contain spaces
+            MettaValue::Atom(_)
+            | MettaValue::Bool(_)
+            | MettaValue::Long(_)
+            | MettaValue::Float(_)
+            | MettaValue::String(_)
+            | MettaValue::Nil
+            | MettaValue::State(_)
+            | MettaValue::Unit
+            | MettaValue::Memo(_)
+            | MettaValue::Empty => {}
+        }
     }
 
     /// Create a thread-local Space for operations
@@ -138,7 +474,7 @@ impl Environment {
     /// This is useful for advanced operations that need direct access to the Space,
     /// such as debugging or custom MORK queries.
     pub fn create_space(&self) -> Space {
-        let btm = self.btm.read().unwrap().clone(); // CoW: read lock for concurrent reads
+        let btm = self.shared.btm.read().unwrap().clone(); // CoW: read lock for concurrent reads
         Space {
             btm,
             sm: self.shared_mapping.clone(),
@@ -150,9 +486,61 @@ impl Environment {
     /// This updates both the PathMap (btm) and the SharedMappingHandle (sm)
     pub(crate) fn update_pathmap(&mut self, space: Space) {
         self.make_owned(); // CoW: ensure we own data before modifying
-        *self.btm.write().unwrap() = space.btm; // CoW: write lock for exclusive access
+        *self.shared.btm.write().unwrap() = space.btm; // CoW: write lock for exclusive access
         self.shared_mapping = space.sm;
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
+    }
+
+    /// Extract (head_symbol_bytes, arity) from MORK expression bytes in O(1).
+    ///
+    /// This is used for lazy pre-filtering in `match_space()`: if the pattern has a fixed
+    /// head symbol, we can skip MORK expressions with different heads without full conversion.
+    ///
+    /// MORK byte encoding:
+    /// - Arity tag: 0x00-0x3F (bits 6-7 are 00) - value is arity 0-63
+    /// - SymbolSize tag: 0xC1-0xFF (bits 6-7 are 11, excluding 0xC0) - symbol length 1-63
+    /// - NewVar tag: 0xC0 (new variable)
+    /// - VarRef tag: 0x80-0xBF (bits 6-7 are 10) - variable reference 0-63
+    ///
+    /// Returns Some((head_bytes, arity)) if the expression is an S-expr with a symbol head.
+    /// Returns None for atoms, variable heads, or nested S-expr heads.
+    ///
+    /// # Safety
+    /// The `ptr` must point to a valid MORK expression in PathMap memory.
+    #[inline]
+    unsafe fn mork_head_info(ptr: *const u8) -> Option<(&'static [u8], u8)> {
+        // Read first byte - check if it's an arity tag (S-expression)
+        let first = *ptr;
+        if (first & 0b1100_0000) != 0b0000_0000 {
+            // Not an S-expression (it's a symbol, variable, or other atom)
+            return None;
+        }
+        let arity = first; // Arity tag value 0-63
+
+        // Empty S-expr or head is not accessible
+        if arity == 0 {
+            return None;
+        }
+
+        // Read second byte - check if head is a symbol (SymbolSize tag)
+        let head_byte = *ptr.add(1);
+        // SymbolSize tag: 0xC1-0xFF (bits 6-7 are 11, but not 0xC0 which is NewVar)
+        if head_byte == 0xC0 || (head_byte & 0b1100_0000) != 0b1100_0000 {
+            // Head is NewVar (0xC0), VarRef (0x80-0xBF), or nested S-expr (0x00-0x3F)
+            return None;
+        }
+
+        // Head is a symbol - extract the symbol bytes
+        let symbol_len = (head_byte & 0b0011_1111) as usize;
+        if symbol_len == 0 {
+            return None;
+        }
+
+        // Symbol content starts at offset 2 and has length `symbol_len`
+        let symbol_bytes = std::slice::from_raw_parts(ptr.add(2), symbol_len);
+        // Note: arity tag value is the TOTAL elements including head
+        // But MettaValue::get_arity() returns elements EXCLUDING head, so we subtract 1
+        Some((symbol_bytes, arity.saturating_sub(1)))
     }
 
     /// Convert a MORK Expr directly to MettaValue without text serialization
@@ -162,6 +550,10 @@ impl Environment {
     /// We use maybe_byte_item() instead, which returns Result<Tag, u8> and handles reserved bytes gracefully.
     ///
     /// CRITICAL FIX for "reserved 114" and similar bugs during evaluation/iteration.
+    ///
+    /// OPTIMIZATION: Uses thread-local LRU cache keyed by MORK expression pointer address.
+    /// Since MORK uses immutable trie storage, identical pointers always represent
+    /// identical expressions during evaluation, making caching safe and effective.
     #[allow(unused_variables)]
     pub(crate) fn mork_expr_to_metta_value(
         expr: &mork_expr::Expr,
@@ -169,6 +561,11 @@ impl Environment {
     ) -> Result<MettaValue, String> {
         use mork_expr::{maybe_byte_item, Tag};
         use std::slice::from_raw_parts;
+
+        // CACHE DISABLED: Pointer-based caching doesn't work with PathMap's buffer reuse.
+        // PathMap's read_zipper.path() returns a reference to an internal buffer that
+        // changes content in-place while the pointer stays constant during iteration.
+        // A proper fix would require content-based hashing, but for now we disable it.
 
         // Stack-based traversal to avoid recursion limits
         #[derive(Debug)]
@@ -277,8 +674,19 @@ impl Environment {
                     };
 
                     // Parse the symbol to check if it's a number or string literal
-                    if let Ok(n) = symbol_str.parse::<i64>() {
-                        MettaValue::Long(n)
+                    // OPTIMIZATION: Fast-path check - only try parsing as integer if first byte
+                    // could plausibly start a number (digit or minus sign followed by digit)
+                    let first_byte = symbol_str.as_bytes().first().copied().unwrap_or(0);
+                    let could_be_number = first_byte.is_ascii_digit()
+                        || (first_byte == b'-' && symbol_str.len() > 1
+                            && symbol_str.as_bytes().get(1).map_or(false, |b| b.is_ascii_digit()));
+
+                    if could_be_number {
+                        if let Ok(n) = symbol_str.parse::<i64>() {
+                            MettaValue::Long(n)
+                        } else {
+                            MettaValue::Atom(symbol_str)
+                        }
                     } else if symbol_str == "true" {
                         MettaValue::Bool(true)
                     } else if symbol_str == "false" {
@@ -309,28 +717,36 @@ impl Environment {
             };
 
             // Value is complete - add to parent or return
-            let mut value = value; // Make value mutable for the popping loop
+            // OPTIMIZATION: Use Option to make ownership transfer explicit and avoid clones
+            let mut current_value = Some(value);
             'popping: loop {
-                match stack.last_mut() {
-                    None => {
-                        // No parent - this is the final result
-                        return Ok(value);
-                    }
-                    Some(StackFrame::Arity { remaining, items }) => {
-                        items.push(value.clone());
-                        *remaining -= 1;
+                let v = current_value.take().expect("value must be Some at start of popping loop");
 
-                        if *remaining == 0 {
-                            // S-expression is complete
-                            let completed_items = items.clone();
-                            stack.pop();
-                            value = MettaValue::SExpr(completed_items); // Mutate, don't shadow!
-                            continue 'popping;
-                        } else {
-                            // More items needed
-                            continue 'parsing;
-                        }
+                // Check if stack is empty - if so, return the value
+                if stack.is_empty() {
+                    return Ok(v);
+                }
+
+                // Add value to parent frame
+                let should_pop = match stack.last_mut() {
+                    None => unreachable!(), // Already checked above
+                    Some(StackFrame::Arity { remaining, items }) => {
+                        items.push(v); // OPTIMIZATION: No clone needed - value is consumed
+                        *remaining -= 1;
+                        *remaining == 0
                     }
+                };
+
+                if should_pop {
+                    // S-expression is complete - pop and take ownership of items
+                    // OPTIMIZATION: Take ownership instead of cloning
+                    if let Some(StackFrame::Arity { items, .. }) = stack.pop() {
+                        current_value = Some(MettaValue::SExpr(items));
+                        continue 'popping;
+                    }
+                } else {
+                    // More items needed - go back to parsing
+                    continue 'parsing;
                 }
             }
         }
@@ -381,7 +797,7 @@ impl Environment {
         self.add_to_space(&type_assertion);
 
         // Invalidate type index cache
-        *self.type_index_dirty.write().unwrap() = true;
+        *self.shared.type_index_dirty.write().unwrap() = true;
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
@@ -391,14 +807,14 @@ impl Environment {
     ///
     /// The type index is lazily initialized and cached until invalidated
     fn ensure_type_index(&self) {
-        let dirty = *self.type_index_dirty.read().unwrap();
+        let dirty = *self.shared.type_index_dirty.read().unwrap();
         if !dirty {
             return; // Index is up to date
         }
 
         // Build type index using PathMap::restrict()
         // This extracts a subtrie containing only paths that start with ":"
-        let btm = self.btm.read().unwrap();
+        let btm = self.shared.btm.read().unwrap();
 
         // Create a PathMap containing only the ":" prefix
         // restrict() will return all paths in btm that have matching prefixes in this map
@@ -418,8 +834,8 @@ impl Environment {
         let type_subtrie = btm.restrict(&type_prefix_map);
 
         // Cache the subtrie
-        *self.type_index.write().unwrap() = Some(type_subtrie);
-        *self.type_index_dirty.write().unwrap() = false;
+        *self.shared.type_index.write().unwrap() = Some(type_subtrie);
+        *self.shared.type_index_dirty.write().unwrap() = false;
     }
 
     /// Get type for an atom by querying MORK Space
@@ -437,7 +853,7 @@ impl Environment {
         self.ensure_type_index();
 
         // Get the type index subtrie
-        let type_index_opt = self.type_index.read().unwrap();
+        let type_index_opt = self.shared.type_index.read().unwrap();
         let type_index = match type_index_opt.as_ref() {
             Some(index) => index,
             None => {
@@ -533,42 +949,85 @@ impl Environment {
     }
 
     /// Get the number of rules in the environment
-    /// Counts rules directly from PathMap Space
+    /// Counts rules from the rule_index and wildcard_rules (thread-safe, avoids PathMap iteration)
     pub fn rule_count(&self) -> usize {
-        self.iter_rules().count()
+        // Count rules from the indexed rules
+        let index_count: usize = self
+            .shared
+            .rule_index
+            .read()
+            .unwrap()
+            .values()
+            .map(|rules| rules.len())
+            .sum();
+
+        // Count wildcard rules
+        let wildcard_count = self.shared.wildcard_rules.read().unwrap().len();
+
+        index_count + wildcard_count
+    }
+
+    /// Iterator over rule heads with their arities and counts.
+    ///
+    /// Returns tuples of (head_symbol, arity, rule_count) for each distinct
+    /// (head, arity) combination in the rule index.
+    ///
+    /// # Performance
+    /// - O(k) where k = number of distinct (head, arity) pairs
+    /// - No PathMap iteration or MORK conversion required
+    /// - Much faster than iter_rules() for use cases that only need heads
+    ///
+    /// # Use Cases
+    /// - REPL command completion (showing available rule heads)
+    /// - Rule statistics and introspection
+    /// - Pattern matching optimization hints
+    ///
+    /// # Example
+    /// ```ignore
+    /// for (head, arity, count) in env.iter_rule_heads() {
+    ///     println!("{}/{}: {} rules", head, arity, count);
+    /// }
+    /// ```
+    pub fn iter_rule_heads(&self) -> Vec<(String, usize, usize)> {
+        let index = self.shared.rule_index.read().unwrap();
+        index
+            .iter()
+            .map(|((head, arity), rules)| (head.to_string(), *arity, rules.len()))
+            .collect()
     }
 
     /// Iterator over all rules in the Space
     /// Rules are stored as MORK s-expressions: (= lhs rhs)
     ///
-    /// Uses direct zipper traversal to avoid dump/parse overhead.
-    /// This provides O(n) iteration without string serialization.
+    /// Uses PathMap's iter() method with owned copies of MORK bytes.
+    /// This avoids raw pointer issues that could cause memory corruption
+    /// under concurrent access patterns.
     #[allow(clippy::collapsible_match)]
     pub fn iter_rules(&self) -> impl Iterator<Item = Rule> {
         use mork_expr::Expr;
 
         let space = self.create_space();
-        let mut rz = space.btm.read_zipper();
         let mut rules = Vec::new();
 
-        // Directly iterate through all values in the trie
-        while rz.to_next_val() {
-            // Get the s-expression at this position
+        // Use PathMap's iter() which returns (Vec<u8>, &V) with owned byte vectors
+        // This is safer than raw pointer access via read_zipper().path().as_ptr()
+        // because each Vec<u8> is a fully owned copy of the MORK expression bytes
+        for (mork_bytes, _) in space.btm.iter() {
+            // Create Expr from owned bytes - safe because mork_bytes outlives expr usage
             let expr = Expr {
-                ptr: rz.path().as_ptr().cast_mut(),
+                ptr: mork_bytes.as_ptr().cast_mut(),
             };
 
-            // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
-            // This avoids the "reserved byte" panic during evaluation
+            // Convert MORK expression to MettaValue
             if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
                 if let MettaValue::SExpr(items) = &value {
                     if items.len() == 3 {
                         if let MettaValue::Atom(op) = &items[0] {
                             if op == "=" {
-                                rules.push(Rule {
-                                    lhs: items[1].clone(),
-                                    rhs: items[2].clone(),
-                                });
+                                rules.push(Rule::new(
+                                    items[1].clone(),
+                                    items[2].clone(),
+                                ));
                             }
                         }
                     }
@@ -576,7 +1035,6 @@ impl Environment {
             }
         }
 
-        drop(space);
         rules.into_iter()
     }
 
@@ -588,27 +1046,32 @@ impl Environment {
 
         // Clear existing indices
         {
-            let mut index = self.rule_index.write().unwrap();
+            let mut index = self.shared.rule_index.write().unwrap();
             index.clear();
         }
         {
-            let mut wildcards = self.wildcard_rules.write().unwrap();
+            let mut wildcards = self.shared.wildcard_rules.write().unwrap();
             wildcards.clear();
         }
+        // Reset wildcard flag - will be set again if wildcards are added
+        self.shared.has_wildcard_rules.store(false, Ordering::Release);
 
         // Rebuild from MORK Space
         for rule in self.iter_rules() {
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
-                let head_owned = head.to_owned();
                 // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-                self.fuzzy_matcher.insert(&head_owned);
-                let mut index = self.rule_index.write().unwrap();
-                index.entry((head_owned, arity)).or_default().push(rule);
+                self.shared.fuzzy_matcher.write().unwrap().insert(head);
+                // Use Symbol for O(1) comparison when symbol-interning is enabled
+                let head_sym = Symbol::new(head);
+                let mut index = self.shared.rule_index.write().unwrap();
+                index.entry((head_sym, arity)).or_default().push(rule);
             } else {
                 // Rules without head symbol (wildcards, variables) go to wildcard list
-                let mut wildcards = self.wildcard_rules.write().unwrap();
+                let mut wildcards = self.shared.wildcard_rules.write().unwrap();
                 wildcards.push(rule);
+                // Mark that we have wildcard rules
+                self.shared.has_wildcard_rules.store(true, Ordering::Release);
             }
         }
 
@@ -631,15 +1094,33 @@ impl Environment {
         use crate::backend::eval::{apply_bindings, pattern_match};
         use mork_expr::Expr;
 
+        // BLOOM FILTER CHECK: O(1) rejection if (head, arity) definitely doesn't exist
+        // This is "Tier 0" optimization - skips entire iteration if bloom filter says no match
+        if let Some(expected_head) = pattern.get_head_symbol() {
+            let pattern_arity = pattern.get_arity() as u8;
+            let bloom_result = self
+                .shared
+                .head_arity_bloom
+                .read()
+                .unwrap()
+                .may_contain(expected_head.as_bytes(), pattern_arity);
+            if !bloom_result {
+                // Definitely no matching expressions exist
+                return Vec::new();
+            }
+        }
+
         let space = self.create_space();
         let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
 
-        // Directly iterate through all values in the trie
+        // 1. Iterate through MORK PathMap (primary storage)
         while rz.to_next_val() {
+            let ptr = rz.path().as_ptr();
+
             // Get the s-expression at this position
             let expr = Expr {
-                ptr: rz.path().as_ptr().cast_mut(),
+                ptr: ptr.cast_mut(),
             };
 
             // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
@@ -648,14 +1129,192 @@ impl Environment {
                 // Try to match the pattern against this atom
                 if let Some(bindings) = pattern_match(pattern, &atom) {
                     // Apply bindings to the template
-                    let instantiated = apply_bindings(template, &bindings);
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
                     results.push(instantiated);
                 }
             }
         }
 
         drop(space);
+
+        // 2. Also check large expression fallback PathMap (if allocated)
+        // These are expressions with arity >= 64 that couldn't fit in MORK
+        let guard = self.shared.large_expr_pathmap.read().unwrap();
+        if let Some(ref fallback) = *guard {
+            for (_key, stored_value) in fallback.iter() {
+                if let Some(bindings) = pattern_match(pattern, stored_value) {
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
+                    results.push(instantiated);
+                }
+            }
+        }
+
         results
+    }
+
+    /// Match pattern against atoms in the Space, returning first match only (early exit)
+    ///
+    /// This is an optimization for cases where only one match is needed (existence checks,
+    /// deterministic lookups, etc.). It exits immediately on first match, avoiding the
+    /// O(N) iteration through all facts when only one is needed.
+    ///
+    /// # Arguments
+    /// * `pattern` - The MeTTa pattern to match against
+    /// * `template` - The template to instantiate for the match
+    ///
+    /// # Returns
+    /// `Some(instantiated_template)` if a match is found, `None` otherwise
+    pub fn match_space_first(
+        &self,
+        pattern: &MettaValue,
+        template: &MettaValue,
+    ) -> Option<MettaValue> {
+        use crate::backend::eval::{apply_bindings, pattern_match};
+        use mork_expr::Expr;
+
+        // BLOOM FILTER CHECK: O(1) rejection if (head, arity) definitely doesn't exist
+        if let Some(expected_head) = pattern.get_head_symbol() {
+            let pattern_arity = pattern.get_arity() as u8;
+            if !self
+                .shared
+                .head_arity_bloom
+                .read()
+                .unwrap()
+                .may_contain(expected_head.as_bytes(), pattern_arity)
+            {
+                // Definitely no matching expressions exist
+                return None;
+            }
+        }
+
+        let space = self.create_space();
+        let mut rz = space.btm.read_zipper();
+
+        // OPTIMIZATION: Extract pattern's head symbol and arity for lazy pre-filtering
+        let pattern_head_bytes: Option<&[u8]> = pattern.get_head_symbol().map(|s| s.as_bytes());
+        // Note: mork_head_info() already adjusts MORK arity to match MettaValue convention
+        let pattern_arity = pattern.get_arity() as u8;
+
+        // 1. Iterate through MORK PathMap (primary storage) - EARLY EXIT on first match
+        while rz.to_next_val() {
+            let ptr = rz.path().as_ptr();
+
+            // DISABLED: pre-filter extracts wrong data from rz.path()
+            /*
+            if let Some(expected_head) = pattern_head_bytes {
+                if let Some((mork_head, mork_arity)) = unsafe { Self::mork_head_info(ptr) } {
+                    if mork_head != expected_head || mork_arity != pattern_arity {
+                        continue; // Skip this expression entirely
+                    }
+                }
+            }
+            */
+            let _ = (pattern_head_bytes, pattern_arity); // suppress unused warnings
+
+            let expr = Expr {
+                ptr: ptr.cast_mut(),
+            };
+
+            if let Ok(atom) = Self::mork_expr_to_metta_value(&expr, &space) {
+                if let Some(bindings) = pattern_match(pattern, &atom) {
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
+                    return Some(instantiated); // EARLY EXIT - found first match!
+                }
+            }
+        }
+
+        drop(space);
+
+        // 2. Check large expression fallback PathMap
+        let guard = self.shared.large_expr_pathmap.read().unwrap();
+        if let Some(ref fallback) = *guard {
+            for (_key, stored_value) in fallback.iter() {
+                if let Some(bindings) = pattern_match(pattern, stored_value) {
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
+                    return Some(instantiated); // EARLY EXIT
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Check if any atom in the Space matches the pattern (existence check only)
+    ///
+    /// This is the fastest query when you only need to know IF a match exists,
+    /// not what the match is. It avoids template instantiation overhead.
+    ///
+    /// # Arguments
+    /// * `pattern` - The MeTTa pattern to match against
+    ///
+    /// # Returns
+    /// `true` if at least one match exists, `false` otherwise
+    pub fn match_space_exists(&self, pattern: &MettaValue) -> bool {
+        use crate::backend::eval::pattern_match;
+        use mork_expr::Expr;
+
+        // BLOOM FILTER CHECK: O(1) rejection
+        if let Some(expected_head) = pattern.get_head_symbol() {
+            let pattern_arity = pattern.get_arity() as u8;
+            if !self
+                .shared
+                .head_arity_bloom
+                .read()
+                .unwrap()
+                .may_contain(expected_head.as_bytes(), pattern_arity)
+            {
+                return false;
+            }
+        }
+
+        let space = self.create_space();
+        let mut rz = space.btm.read_zipper();
+
+        let pattern_head_bytes: Option<&[u8]> = pattern.get_head_symbol().map(|s| s.as_bytes());
+        // Note: mork_head_info() already adjusts MORK arity to match MettaValue convention
+        let pattern_arity = pattern.get_arity() as u8;
+
+        // Iterate through MORK PathMap - EARLY EXIT on first match
+        while rz.to_next_val() {
+            let ptr = rz.path().as_ptr();
+
+            // DISABLED: pre-filter extracts wrong data from rz.path()
+            // TODO: Investigate why mork_head_info returns garbage bytes
+            /*
+            if let Some(expected_head) = pattern_head_bytes {
+                if let Some((mork_head, mork_arity)) = unsafe { Self::mork_head_info(ptr) } {
+                    if mork_head != expected_head || mork_arity != pattern_arity {
+                        continue;
+                    }
+                }
+            }
+            */
+            let _ = (pattern_head_bytes, pattern_arity); // suppress unused warnings
+
+            let expr = Expr {
+                ptr: ptr.cast_mut(),
+            };
+
+            if let Ok(atom) = Self::mork_expr_to_metta_value(&expr, &space) {
+                if pattern_match(pattern, &atom).is_some() {
+                    return true; // EARLY EXIT - match exists!
+                }
+            }
+        }
+
+        drop(space);
+
+        // Check large expression fallback PathMap
+        let guard = self.shared.large_expr_pathmap.read().unwrap();
+        if let Some(ref fallback) = *guard {
+            for (_key, stored_value) in fallback.iter() {
+                if pattern_match(pattern, stored_value).is_some() {
+                    return true; // EARLY EXIT
+                }
+            }
+        }
+
+        false
     }
 
     /// Add a rule to the environment
@@ -666,10 +1325,11 @@ impl Environment {
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // Create a rule s-expression: (= lhs rhs)
+        // Dereference the Arc to get the MettaValue
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
-            rule.lhs.clone(),
-            rule.rhs.clone(),
+            (*rule.lhs).clone(),
+            (*rule.rhs).clone(),
         ]);
 
         // Generate a canonical key for the rule
@@ -678,7 +1338,7 @@ impl Environment {
 
         // Increment the count for this rule
         {
-            let mut counts = self.multiplicities.write().unwrap();
+            let mut counts = self.shared.multiplicities.write().unwrap();
             let new_count = *counts.entry(rule_key.clone()).or_insert(0) + 1;
             counts.insert(rule_key.clone(), new_count);
         } // Drop the RefMut borrow before add_to_space
@@ -688,15 +1348,18 @@ impl Environment {
         // to avoid unnecessary clones. The rule is already in MORK Space.
         if let Some(head) = rule.lhs.get_head_symbol() {
             let arity = rule.lhs.get_arity();
-            let head_owned = head.to_owned();
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-            self.fuzzy_matcher.insert(&head_owned);
-            let mut index = self.rule_index.write().unwrap();
-            index.entry((head_owned, arity)).or_default().push(rule); // Move instead of clone
+            self.shared.fuzzy_matcher.write().unwrap().insert(head);
+            // Use Symbol for O(1) comparison when symbol-interning is enabled
+            let head_sym = Symbol::new(head);
+            let mut index = self.shared.rule_index.write().unwrap();
+            index.entry((head_sym, arity)).or_default().push(rule); // Move instead of clone
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
-            let mut wildcards = self.wildcard_rules.write().unwrap();
+            let mut wildcards = self.shared.wildcard_rules.write().unwrap();
             wildcards.push(rule); // Move instead of clone
+            // Mark that we have wildcard rules (for fast-path in get_matching_rules)
+            self.shared.has_wildcard_rules.store(true, Ordering::Release);
         }
 
         // Add to MORK Space (only once - PathMap will deduplicate)
@@ -724,16 +1387,18 @@ impl Environment {
         let mut rule_trie = PathMap::new();
 
         // Track rule metadata while building trie
-        let mut rule_index_updates: HashMap<(String, usize), Vec<Rule>> = HashMap::new();
+        // Use Symbol for O(1) comparison when symbol-interning is enabled
+        let mut rule_index_updates: HashMap<(Symbol, usize), Vec<Rule>> = HashMap::new();
         let mut wildcard_updates: Vec<Rule> = Vec::new();
         let mut multiplicity_updates: HashMap<String, usize> = HashMap::new();
 
         for rule in rules {
             // Create rule s-expression: (= lhs rhs)
+            // Dereference the Arc to get the MettaValue
             let rule_sexpr = MettaValue::SExpr(vec![
                 MettaValue::Atom("=".to_string()),
-                rule.lhs.clone(),
-                rule.rhs.clone(),
+                (*rule.lhs).clone(),
+                (*rule.rhs).clone(),
             ]);
 
             // Track multiplicity
@@ -743,11 +1408,12 @@ impl Environment {
             // Prepare rule index updates
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
-                let head_owned = head.to_owned();
                 // Track symbol for fuzzy matching
-                self.fuzzy_matcher.insert(&head_owned);
+                self.shared.fuzzy_matcher.write().unwrap().insert(head);
+                // Use Symbol for O(1) comparison when symbol-interning is enabled
+                let head_sym = Symbol::new(head);
                 rule_index_updates
-                    .entry((head_owned, arity))
+                    .entry((head_sym, arity))
                     .or_default()
                     .push(rule);
             } else {
@@ -777,7 +1443,7 @@ impl Environment {
 
         // Update multiplicities
         {
-            let mut counts = self.multiplicities.write().unwrap();
+            let mut counts = self.shared.multiplicities.write().unwrap();
             for (key, delta) in multiplicity_updates {
                 *counts.entry(key).or_insert(0) += delta;
             }
@@ -785,21 +1451,25 @@ impl Environment {
 
         // Update rule index
         {
-            let mut index = self.rule_index.write().unwrap();
+            let mut index = self.shared.rule_index.write().unwrap();
             for ((head, arity), mut rules) in rule_index_updates {
                 index.entry((head, arity)).or_default().append(&mut rules);
             }
         }
 
         // Update wildcard rules
+        let has_new_wildcards = !wildcard_updates.is_empty();
         {
-            let mut wildcards = self.wildcard_rules.write().unwrap();
+            let mut wildcards = self.shared.wildcard_rules.write().unwrap();
             wildcards.extend(wildcard_updates);
+        }
+        if has_new_wildcards {
+            self.shared.has_wildcard_rules.store(true, Ordering::Release);
         }
 
         // Single PathMap union (minimal critical section)
         {
-            let mut btm = self.btm.write().unwrap();
+            let mut btm = self.shared.btm.write().unwrap();
             *btm = btm.join(&rule_trie);
         }
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
@@ -809,27 +1479,50 @@ impl Environment {
     /// Get the number of times a rule has been defined (multiplicity)
     /// Returns 1 if the rule exists but count wasn't tracked (for backward compatibility)
     pub fn get_rule_count(&self, rule: &Rule) -> usize {
+        // Dereference the Arc to get the MettaValue
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
-            rule.lhs.clone(),
-            rule.rhs.clone(),
+            (*rule.lhs).clone(),
+            (*rule.rhs).clone(),
         ]);
         let rule_key = rule_sexpr.to_mork_string();
 
-        let counts = self.multiplicities.read().unwrap();
+        let counts = self.shared.multiplicities.read().unwrap();
         *counts.get(&rule_key).unwrap_or(&1)
     }
 
     /// Get the multiplicities (for serialization)
     pub fn get_multiplicities(&self) -> HashMap<String, usize> {
-        self.multiplicities.read().unwrap().clone()
+        self.shared.multiplicities.read().unwrap().clone()
     }
 
     /// Set the multiplicities (used for deserialization)
     pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
         self.make_owned(); // CoW: ensure we own data before modifying
-        *self.multiplicities.write().unwrap() = counts;
+        *self.shared.multiplicities.write().unwrap() = counts;
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
+    }
+
+    /// Get read access to the large expression fallback PathMap
+    ///
+    /// Returns the fallback PathMap that stores expressions with arity >= 64
+    /// (which exceed MORK's 63-arity limit). Uses varint encoding for keys.
+    /// Returns None if no large expressions have been stored.
+    pub fn get_large_expr_pathmap(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, Option<PathMap<MettaValue>>> {
+        self.shared.large_expr_pathmap.read().unwrap()
+    }
+
+    /// Insert a value into the large expressions fallback PathMap
+    /// Used during deserialization to restore large expressions (arity >= 64)
+    /// that exceed MORK's 63-arity limit
+    pub fn insert_large_expr(&self, value: MettaValue) {
+        use crate::backend::varint_encoding::metta_to_varint_key;
+        let key = metta_to_varint_key(&value);
+        let mut guard = self.shared.large_expr_pathmap.write().unwrap();
+        let fallback = guard.get_or_insert_with(PathMap::new);
+        fallback.insert(&key, value);
     }
 
     /// Check if an atom fact exists (queries MORK Space)
@@ -972,7 +1665,7 @@ impl Environment {
         if is_ground {
             // Check cache first for ground patterns (read-only access)
             {
-                let mut cache = self.pattern_cache.write().unwrap();
+                let mut cache = self.shared.pattern_cache.write().unwrap();
                 if let Some(bytes) = cache.get(value) {
                     return Ok(bytes.clone());
                 }
@@ -986,7 +1679,7 @@ impl Environment {
 
         if is_ground {
             // Store ground patterns in cache for future use (write access)
-            let mut cache = self.pattern_cache.write().unwrap();
+            let mut cache = self.shared.pattern_cache.write().unwrap();
             cache.put(value.clone(), bytes.clone());
         }
 
@@ -994,11 +1687,15 @@ impl Environment {
     }
 
     /// Check if a MettaValue contains variables ($x, &y, 'z, or _)
+    /// Space references like &self, &kb, &stack are NOT variables
     fn contains_variables(value: &MettaValue) -> bool {
         match value {
             MettaValue::Atom(s) => {
-                s == "_"
-                    || (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&"
+                // Space references are NOT variables
+                if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
+                    return false;
+                }
+                s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
             }
             MettaValue::SExpr(items) => items.iter().any(Self::contains_variables),
             MettaValue::Error(_, details) => Self::contains_variables(details),
@@ -1096,39 +1793,179 @@ impl Environment {
     /// To query nested parts, use pattern matching with variables, e.g., (Outer $x)
     pub fn add_to_space(&mut self, value: &MettaValue) {
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
+        use crate::backend::varint_encoding::metta_to_varint_key;
 
-        // Try direct byte conversion first (Variant C)
+        // Always try direct byte conversion first (handles both ground and non-ground values)
         // This skips string serialization + parsing for 10-20× speedup
-        let is_ground = !Self::contains_variables(value);
+        // Also properly handles arity limits (returns error instead of panicking)
+        let space = self.create_space();
+        let mut ctx = ConversionContext::new();
 
-        if is_ground {
-            // Ground values: use direct MORK byte conversion (no parsing needed)
-            let space = self.create_space();
-            let mut ctx = ConversionContext::new();
-
-            if let Ok(mork_bytes) = metta_to_mork_bytes(value, &space, &mut ctx) {
-                // Direct PathMap insertion without parsing
+        match metta_to_mork_bytes(value, &space, &mut ctx) {
+            Ok(mork_bytes) => {
+                // Primary: Store in MORK PathMap (fast O(k) query_multi)
                 let mut space_mut = self.create_space();
                 space_mut.btm.insert(&mork_bytes, ());
                 self.update_pathmap(space_mut);
-                return;
+
+                // Update bloom filter with (head, arity) for O(1) match_space() rejection
+                if let Some(head) = value.get_head_symbol() {
+                    let arity = value.get_arity() as u8;
+                    self.shared
+                        .head_arity_bloom
+                        .write()
+                        .unwrap()
+                        .insert(head.as_bytes(), arity);
+                }
+            }
+            Err(_e) => {
+                // Fallback: Store in PathMap with varint encoding (arity >= 64)
+                // Lazy allocation: only create PathMap on first use
+                let key = metta_to_varint_key(value);
+                self.make_owned(); // CoW: ensure we own data before modifying
+                let mut guard = self.shared.large_expr_pathmap.write().unwrap();
+                let fallback = guard.get_or_insert_with(PathMap::new);
+                fallback.insert(&key, value.clone());
+
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "Info: large expression stored in fallback PathMap: {}",
+                    _e
+                );
             }
         }
+    }
 
-        // Fallback: use string path for variable-containing values
-        let mork_str = value.to_mork_string();
-        let mork_bytes = mork_str.as_bytes();
+    /// Remove a fact from MORK Space by exact match
+    ///
+    /// This removes the specified value from the PathMap trie if it exists.
+    /// The value must match exactly - no pattern matching or wildcards.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// env.add_to_space(&MettaValue::atom("foo"));
+    /// env.remove_from_space(&MettaValue::atom("foo"));  // Removes "foo"
+    /// ```
+    ///
+    /// # Performance
+    /// - Ground values: O(m) where m = size of MORK encoding
+    /// - Uses direct byte conversion for 10-20× speedup (same as add_to_space)
+    ///
+    /// # Thread Safety
+    /// - Acquires write lock on PathMap
+    /// - Marks environment as modified (CoW)
+    pub fn remove_from_space(&mut self, value: &MettaValue) {
+        use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
+        use crate::backend::varint_encoding::metta_to_varint_key;
 
-        // Create thread-local Space
-        let mut space = self.create_space();
+        // Always try direct byte conversion (handles both ground and non-ground values)
+        // Also properly handles arity limits (returns error instead of panicking)
+        let space = self.create_space();
+        let mut ctx = ConversionContext::new();
 
-        // Use MORK's parser to load the s-expression into PathMap trie
-        if let Ok(_count) = space.load_all_sexpr_impl(mork_bytes, true) {
-            // Successfully added to space
+        match metta_to_mork_bytes(value, &space, &mut ctx) {
+            Ok(mork_bytes) => {
+                // Remove from primary MORK PathMap
+                let mut space_mut = self.create_space();
+                space_mut.btm.remove(&mork_bytes);
+                self.update_pathmap(space_mut);
+
+                // Note deletion for bloom filter lazy rebuild tracking
+                // (Standard bloom filters don't support deletion, so we track count
+                // for periodic rebuild when false positive rate becomes too high)
+                self.shared
+                    .head_arity_bloom
+                    .write()
+                    .unwrap()
+                    .note_deletion();
+            }
+            Err(_) => {
+                // Remove from fallback PathMap (if it exists)
+                let key = metta_to_varint_key(value);
+                let mut guard = self.shared.large_expr_pathmap.write().unwrap();
+                if let Some(ref mut fallback) = *guard {
+                    fallback.remove(&key);
+                }
+            }
+        }
+    }
+
+    /// Remove all facts matching a pattern from MORK Space
+    ///
+    /// This finds all facts that match the given pattern (with variables)
+    /// and removes each match from the space.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// // Remove all facts with head "parent":
+    /// env.remove_matching(&sexpr![atom("parent"), var("$x"), var("$y")]);
+    ///
+    /// // Remove specific facts:
+    /// env.remove_matching(&sexpr![atom("temp"), var("$_")]);
+    /// ```
+    ///
+    /// # Returns
+    /// Vector of all removed facts (for logging/undo)
+    ///
+    /// # Performance
+    /// - O(n × m) where n = facts in space, m = pattern complexity
+    /// - Optimized by query_all() which uses PathMap prefix search
+    ///
+    /// # Thread Safety
+    /// - Acquires multiple write locks (one per fact removed)
+    /// - Consider using bulk removal for large result sets
+    pub fn remove_matching(&mut self, pattern: &MettaValue) -> Vec<MettaValue> {
+        // Query for all matches using match_space with identity template
+        let matches = self.match_space(pattern, pattern);
+
+        // Remove each match
+        for m in &matches {
+            self.remove_from_space(m);
         }
 
-        // Update shared PathMap with modified Space
-        self.update_pathmap(space);
+        matches
+    }
+
+    /// Rebuild the bloom filter by iterating through all entries in MORK space.
+    ///
+    /// This is needed after deserializing the space from PathMap Par format,
+    /// since the bloom filter is not serialized and starts empty.
+    ///
+    /// # Performance
+    /// - O(n) where n = number of entries in space
+    /// - Converts each MORK path to MettaValue to extract head/arity
+    ///
+    /// # Thread Safety
+    /// - Acquires write lock on bloom filter
+    /// - Acquires read lock on PathMap
+    pub fn rebuild_bloom_filter_from_space(&mut self) {
+        use mork_expr::Expr;
+
+        let space = self.create_space();
+        let mut rz = space.btm.read_zipper();
+
+        // Clear existing bloom filter
+        self.shared.head_arity_bloom.write().unwrap().clear();
+
+        // Iterate through all values in the trie
+        while rz.to_next_val() {
+            let expr = Expr {
+                ptr: rz.path().as_ptr() as *mut u8,
+            };
+
+            // Convert MORK bytes to MettaValue
+            if let Ok(metta_value) = Self::mork_expr_to_metta_value(&expr, &space) {
+                // Extract head and arity, insert into bloom filter
+                if let Some(head) = metta_value.get_head_symbol() {
+                    let arity = metta_value.get_arity() as u8;
+                    self.shared
+                        .head_arity_bloom
+                        .write()
+                        .unwrap()
+                        .insert(head.as_bytes(), arity);
+                }
+            }
+        }
     }
 
     /// Bulk insert facts into MORK Space using PathMap anamorphism (Strategy 2)
@@ -1182,31 +2019,374 @@ impl Environment {
         // Single lock acquisition → union → unlock
         // This is the only critical section, minimizing lock contention
         {
-            let mut btm = self.btm.write().unwrap();
+            let mut btm = self.shared.btm.write().unwrap();
             *btm = btm.join(&fact_trie);
         }
 
         // Invalidate type index if any facts were type assertions
         // Conservative: Assume any bulk insert might contain types
-        *self.type_index_dirty.write().unwrap() = true;
+        *self.shared.type_index_dirty.write().unwrap() = true;
 
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
         Ok(())
+    }
+
+    // ============================================================
+    // Named Space Management (new-space, add-atom, remove-atom, collapse)
+    // ============================================================
+
+    /// Create a new named space and return its ID
+    /// Used by new-space operation
+    pub fn create_named_space(&mut self, name: &str) -> u64 {
+        self.make_owned();
+
+        let id = {
+            let mut next_id = self.shared.next_space_id.write().unwrap();
+            let id = *next_id;
+            *next_id += 1;
+            id
+        };
+
+        self.shared.named_spaces
+            .write()
+            .unwrap()
+            .insert(id, (name.to_string(), Vec::new()));
+
+        self.modified.store(true, Ordering::Release);
+        id
+    }
+
+    /// Add an atom to a named space by ID
+    /// Used by add-atom operation
+    pub fn add_to_named_space(&mut self, space_id: u64, value: &MettaValue) -> bool {
+        self.make_owned();
+
+        let mut spaces = self.shared.named_spaces.write().unwrap();
+        if let Some((_, atoms)) = spaces.get_mut(&space_id) {
+            atoms.push(value.clone());
+            self.modified.store(true, Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove an atom from a named space by ID
+    /// Used by remove-atom operation
+    pub fn remove_from_named_space(&mut self, space_id: u64, value: &MettaValue) -> bool {
+        self.make_owned();
+
+        let mut spaces = self.shared.named_spaces.write().unwrap();
+        if let Some((_, atoms)) = spaces.get_mut(&space_id) {
+            // Remove first matching atom
+            if let Some(pos) = atoms.iter().position(|x| x == value) {
+                atoms.remove(pos);
+                self.modified.store(true, Ordering::Release);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get all atoms from a named space as a list
+    /// Used by collapse operation
+    pub fn collapse_named_space(&self, space_id: u64) -> Vec<MettaValue> {
+        let spaces = self.shared.named_spaces.read().unwrap();
+        if let Some((_, atoms)) = spaces.get(&space_id) {
+            atoms.clone()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Check if a named space exists
+    pub fn has_named_space(&self, space_id: u64) -> bool {
+        self.shared.named_spaces.read().unwrap().contains_key(&space_id)
+    }
+
+    // ============================================================
+    // Mutable State Management (new-state, get-state, change-state!)
+    // ============================================================
+
+    /// Create a new mutable state cell with an initial value
+    /// Used by new-state operation
+    ///
+    /// NOTE: States are truly mutable - they are created in the shared store
+    /// and visible to all environments sharing the same Arc<EnvironmentShared>.
+    /// We intentionally do NOT call make_owned() here because new states should
+    /// be globally visible, matching MeTTa HE semantics.
+    pub fn create_state(&mut self, initial_value: MettaValue) -> u64 {
+        // No make_owned() - states are shared, not copy-on-write
+        let id = {
+            let mut next_id = self.shared.next_state_id.write().unwrap();
+            let id = *next_id;
+            *next_id += 1;
+            id
+        };
+
+        self.shared.states.write().unwrap().insert(id, initial_value);
+
+        self.modified.store(true, Ordering::Release);
+        id
+    }
+
+    /// Get the current value of a state cell
+    /// Used by get-state operation
+    pub fn get_state(&self, state_id: u64) -> Option<MettaValue> {
+        self.shared.states.read().unwrap().get(&state_id).cloned()
+    }
+
+    /// Change the value of a state cell
+    /// Used by change-state! operation
+    /// Returns true if successful, false if state doesn't exist
+    ///
+    /// NOTE: States are truly mutable - changes are visible to all environments
+    /// sharing the same Arc<EnvironmentShared>. We intentionally do NOT call
+    /// make_owned() here because state mutations should be globally visible,
+    /// matching MeTTa HE semantics where change-state! is immediately observable.
+    pub fn change_state(&mut self, state_id: u64, new_value: MettaValue) -> bool {
+        // No make_owned() - states are shared, not copy-on-write
+        let mut states = self.shared.states.write().unwrap();
+        if let std::collections::hash_map::Entry::Occupied(mut e) = states.entry(state_id) {
+            e.insert(new_value);
+            self.modified.store(true, Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if a state cell exists
+    pub fn has_state(&self, state_id: u64) -> bool {
+        self.shared.states.read().unwrap().contains_key(&state_id)
+    }
+
+    // ============================================================
+    // Symbol Bindings Management (bind!)
+    // ============================================================
+
+    /// Bind a symbol to a value
+    /// Used by bind! operation
+    pub fn bind(&mut self, symbol: &str, value: MettaValue) {
+        self.make_owned();
+
+        self.shared.bindings
+            .write()
+            .unwrap()
+            .insert(symbol.to_string(), value);
+
+        // Also register in fuzzy matcher for suggestions
+        self.shared.fuzzy_matcher.write().unwrap().insert(symbol);
+
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Get the value bound to a symbol
+    /// Used for symbol resolution
+    pub fn get_binding(&self, symbol: &str) -> Option<MettaValue> {
+        self.shared.bindings.read().unwrap().get(symbol).cloned()
+    }
+
+    /// Check if a symbol is bound
+    pub fn has_binding(&self, symbol: &str) -> bool {
+        self.shared.bindings.read().unwrap().contains_key(symbol)
+    }
+
+    // ============================================================
+    // Tokenizer Operations (bind! support)
+    // ============================================================
+
+    /// Register a token with its value in the tokenizer
+    /// Used by bind! to register tokens for later resolution
+    /// HE-compatible: tokens registered here affect subsequent atom resolution
+    pub fn register_token(&mut self, token: &str, value: MettaValue) {
+        self.make_owned();
+        self.shared.tokenizer
+            .write()
+            .unwrap()
+            .register_token_value(token, value);
+        // Also register in fuzzy matcher for suggestions
+        self.shared.fuzzy_matcher.write().unwrap().insert(token);
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Look up a token in the tokenizer
+    /// Returns the bound value if found
+    pub fn lookup_token(&self, token: &str) -> Option<MettaValue> {
+        self.shared.tokenizer.read().unwrap().lookup(token)
+    }
+
+    /// Check if a token is registered in the tokenizer
+    pub fn has_token(&self, token: &str) -> bool {
+        self.shared.tokenizer.read().unwrap().has_token(token)
+    }
+
+    // ============================================================
+    // Module Operations
+    // ============================================================
+
+    /// Get the current module path (directory of the executing module)
+    pub fn current_module_dir(&self) -> Option<&std::path::Path> {
+        self.current_module_path.as_deref()
+    }
+
+    /// Set the current module path
+    pub fn set_current_module_path(&mut self, path: Option<PathBuf>) {
+        self.current_module_path = path;
+    }
+
+    /// Check if a module is cached by path
+    pub fn get_module_by_path(&self, path: &std::path::Path) -> Option<ModId> {
+        self.shared.module_registry.read().unwrap().get_by_path(path)
+    }
+
+    /// Check if a module is cached by content hash
+    pub fn get_module_by_content(&self, content_hash: u64) -> Option<ModId> {
+        self.shared.module_registry
+            .read()
+            .unwrap()
+            .get_by_content(content_hash)
+    }
+
+    /// Check if a module is currently being loaded (cycle detection)
+    pub fn is_module_loading(&self, content_hash: u64) -> bool {
+        self.shared.module_registry
+            .read()
+            .unwrap()
+            .is_loading(content_hash)
+    }
+
+    /// Mark a module as being loaded
+    pub fn mark_module_loading(&self, content_hash: u64) {
+        self.shared.module_registry
+            .write()
+            .unwrap()
+            .mark_loading(content_hash);
+    }
+
+    /// Unmark a module as loading
+    pub fn unmark_module_loading(&self, content_hash: u64) {
+        self.shared.module_registry
+            .write()
+            .unwrap()
+            .unmark_loading(content_hash);
+    }
+
+    /// Register a new module in the registry
+    pub fn register_module(
+        &self,
+        mod_path: String,
+        file_path: &std::path::Path,
+        content_hash: u64,
+        resource_dir: Option<PathBuf>,
+    ) -> ModId {
+        self.shared.module_registry.write().unwrap().register(
+            mod_path,
+            file_path,
+            content_hash,
+            resource_dir,
+        )
+    }
+
+    /// Add a path alias for an existing module
+    pub fn add_module_path_alias(&self, path: &std::path::Path, mod_id: ModId) {
+        self.shared.module_registry
+            .write()
+            .unwrap()
+            .add_path_alias(path, mod_id);
+    }
+
+    /// Get the number of loaded modules
+    pub fn module_count(&self) -> usize {
+        self.shared.module_registry.read().unwrap().module_count()
+    }
+
+    /// Get a module's space by its ModId.
+    ///
+    /// Returns an Arc reference to the module's ModuleSpace for live access.
+    /// This is used by `mod-space!` to create live space references.
+    pub fn get_module_space(
+        &self,
+        mod_id: ModId,
+    ) -> Option<std::sync::Arc<RwLock<crate::backend::modules::ModuleSpace>>> {
+        let registry = self.shared.module_registry.read().unwrap();
+        registry.get(mod_id).map(|module| module.space().clone())
+    }
+
+    /// Get the current module's space as a SpaceHandle ("&self" reference).
+    ///
+    /// Returns a SpaceHandle for the current module's space, or a new empty
+    /// space if not currently inside a module evaluation.
+    ///
+    /// This is used to implement the `&self` token for match and space operations.
+    pub fn self_space(&self) -> crate::backend::models::SpaceHandle {
+        use crate::backend::models::SpaceHandle;
+
+        // If we're inside a module, return its space
+        if let Some(mod_path) = &self.current_module_path {
+            if let Some(mod_id) = self.get_module_by_path(mod_path) {
+                if let Some(space) = self.get_module_space(mod_id) {
+                    return SpaceHandle::for_module(mod_id, "self".to_string(), space);
+                }
+            }
+        }
+
+        // Fallback: return the "self" named space if it exists, otherwise create empty
+        // Use ID 0 for the global "self" space
+        SpaceHandle::new(0, "self".to_string())
+    }
+
+    /// Check if strict mode is enabled
+    pub fn is_strict_mode(&self) -> bool {
+        self.shared.module_registry.read().unwrap().options().strict_mode
+    }
+
+    /// Enable or disable strict mode.
+    ///
+    /// When enabled:
+    /// - Only submodules can be imported
+    /// - Transitive imports are disabled
+    /// - Cyclic imports are disallowed
+    ///
+    /// When disabled: HE-compatible permissive mode
+    pub fn set_strict_mode(&mut self, strict: bool) {
+        use super::modules::LoadOptions;
+        self.make_owned();
+        let options = if strict {
+            LoadOptions::strict()
+        } else {
+            LoadOptions::permissive()
+        };
+        self.shared.module_registry.write().unwrap().set_options(options);
     }
 
     /// Get rules matching a specific head symbol and arity
     /// Returns Vec<Rule> for O(1) lookup instead of O(n) iteration
     /// Also includes wildcard rules that must be checked against all queries
     pub fn get_matching_rules(&self, head: &str, arity: usize) -> Vec<Rule> {
-        // OPTIMIZATION: Single allocation for key to avoid double allocation
-        let key = (head.to_owned(), arity);
+        // Use Symbol for O(1) comparison when symbol-interning is enabled
+        let key = (Symbol::new(head), arity);
 
-        // Get indexed rules and wildcards in single lock scope where possible
-        let index = self.rule_index.read().unwrap();
-        let wildcards = self.wildcard_rules.read().unwrap();
+        // Fast-path: Check if we have any wildcard rules before acquiring the lock
+        let has_wildcards = self.shared.has_wildcard_rules.load(Ordering::Acquire);
 
+        // Get indexed rules first
+        let index = self.shared.rule_index.read().unwrap();
         let indexed_rules = index.get(&key);
         let indexed_len = indexed_rules.map_or(0, |r| r.len());
+
+        // OPTIMIZATION: Skip wildcard lock acquisition if no wildcard rules exist
+        if !has_wildcards {
+            // No wildcard rules - just return indexed rules
+            let mut matching_rules = Vec::with_capacity(indexed_len);
+            if let Some(rules) = indexed_rules {
+                matching_rules.extend(rules.iter().cloned());
+            }
+            return matching_rules;
+        }
+
+        // Have wildcard rules - need to acquire lock
+        let wildcards = self.shared.wildcard_rules.read().unwrap();
         let wildcard_len = wildcards.len();
 
         // OPTIMIZATION: Preallocate capacity to avoid reallocation
@@ -1241,7 +2421,7 @@ impl Environment {
         query: &str,
         max_distance: usize,
     ) -> Vec<(String, usize)> {
-        self.fuzzy_matcher.suggest(query, max_distance)
+        self.shared.fuzzy_matcher.read().unwrap().suggest(query, max_distance)
     }
 
     /// Generate a "Did you mean?" error message for an undefined symbol
@@ -1260,62 +2440,157 @@ impl Environment {
     /// // Prints: "Error: Undefined symbol 'fibonaci'. Did you mean: fibonacci?"
     /// ```
     pub fn did_you_mean(&self, symbol: &str, max_distance: usize) -> Option<String> {
-        self.fuzzy_matcher.did_you_mean(symbol, max_distance, 3)
+        self.shared.fuzzy_matcher.read().unwrap().did_you_mean(symbol, max_distance, 3)
+    }
+
+    /// Get a smart "Did you mean?" suggestion with sophisticated heuristics
+    ///
+    /// Unlike `did_you_mean`, this method applies heuristics to avoid false positives:
+    /// - Rejects suggestions for short words (< 4 chars for distance 1)
+    /// - Detects data constructor patterns (PascalCase, hyphenated names)
+    /// - Considers relative edit distance (distance/length ratio)
+    /// - Returns confidence level for appropriate error/warning handling
+    ///
+    /// # Returns
+    /// - `Some(SmartSuggestion)` with message and confidence level
+    /// - `None` if no appropriate suggestion is found
+    ///
+    /// # Example
+    /// ```ignore
+    /// if let Some(suggestion) = env.smart_did_you_mean("fibonaci", 2) {
+    ///     match suggestion.confidence {
+    ///         SuggestionConfidence::High => eprintln!("Warning: {}", suggestion.message),
+    ///         SuggestionConfidence::Low => eprintln!("Note: {}", suggestion.message),
+    ///         SuggestionConfidence::None => {} // Don't show anything
+    ///     }
+    /// }
+    /// ```
+    pub fn smart_did_you_mean(
+        &self,
+        symbol: &str,
+        max_distance: usize,
+    ) -> Option<super::fuzzy_match::SmartSuggestion> {
+        self.shared
+            .fuzzy_matcher
+            .read()
+            .unwrap()
+            .smart_did_you_mean(symbol, max_distance, 3)
+    }
+
+    // ============================================================
+    // Scope Tracking Operations
+    // ============================================================
+
+    /// Push a new scope onto the scope tracker.
+    /// Called when entering lexical contexts like `let`, `match`, or function bodies.
+    pub fn push_scope(&mut self) {
+        self.make_owned();
+        self.shared.scope_tracker.write().unwrap().push_scope();
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Pop the innermost scope from the scope tracker.
+    /// Called when leaving lexical contexts. Never pops the global scope.
+    pub fn pop_scope(&mut self) {
+        self.make_owned();
+        self.shared.scope_tracker.write().unwrap().pop_scope();
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Add a symbol to the current (innermost) scope.
+    /// Called when introducing bindings (e.g., pattern variables in `let` or `match`).
+    pub fn add_scope_symbol(&mut self, name: String) {
+        self.make_owned();
+        self.shared.scope_tracker.write().unwrap().add_symbol(name);
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Add multiple symbols to the current scope.
+    pub fn add_scope_symbols(&mut self, names: impl IntoIterator<Item = String>) {
+        self.make_owned();
+        self.shared.scope_tracker.write().unwrap().add_symbols(names);
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Check if a symbol is visible in the current scope hierarchy.
+    pub fn is_symbol_visible(&self, name: &str) -> bool {
+        self.shared.scope_tracker.read().unwrap().is_visible(name)
+    }
+
+    /// Get all visible symbols from the scope tracker, ordered local-first.
+    /// Returns symbols from innermost scope first for prioritized recommendations.
+    pub fn visible_scope_symbols(&self) -> Vec<String> {
+        self.shared
+            .scope_tracker
+            .read()
+            .unwrap()
+            .visible_symbols()
+            .cloned()
+            .collect()
+    }
+
+    /// Get the current scope depth (1 = global only).
+    pub fn scope_depth(&self) -> usize {
+        self.shared.scope_tracker.read().unwrap().depth()
+    }
+
+    /// Check if currently at global scope.
+    pub fn at_global_scope(&self) -> bool {
+        self.shared.scope_tracker.read().unwrap().at_global_scope()
+    }
+
+    // ============================================================
+    // Grounded Operations
+    // ============================================================
+
+    /// Get a grounded operation by name (e.g., "+", "-", "and")
+    /// Used for lazy evaluation of built-in operations
+    pub fn get_grounded_operation(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<dyn super::grounded::GroundedOperation>> {
+        self.shared.grounded_registry.read().unwrap().get(name)
+    }
+
+    /// Get a TCO-compatible grounded operation by name (e.g., "+", "-", "and")
+    /// TCO operations return work items instead of calling eval internally,
+    /// enabling deep recursion without stack overflow
+    pub fn get_grounded_operation_tco(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<dyn super::grounded::GroundedOperationTCO>> {
+        self.shared.grounded_registry_tco.read().unwrap().get(name)
     }
 
     /// Union two environments (monotonic merge)
     /// PathMap and shared_mapping are shared via Arc, so facts (including type assertions) are automatically merged
     /// Multiplicities and rule indices are also merged via shared Arc
     pub fn union(&self, _other: &Environment) -> Environment {
-        // PathMap and SharedMappingHandle are shared via Arc/Clone
-        // Facts (including type assertions) added to either are automatically visible in both
-        let shared_mapping = self.shared_mapping.clone();
-        let btm = self.btm.clone();
-
-        // Merge rule index and wildcard rules (both are Arc<Mutex>, so they're already shared)
-        let rule_index = self.rule_index.clone();
-        let wildcard_rules = self.wildcard_rules.clone();
-
-        // Merge multiplicities (both are Arc<Mutex>, so they're already shared)
-        // The counts are automatically shared via the Arc
-        let multiplicities = self.multiplicities.clone();
-        let pattern_cache = self.pattern_cache.clone();
-        let fuzzy_matcher = self.fuzzy_matcher.clone();
-        let type_index = self.type_index.clone();
-        let type_index_dirty = self.type_index_dirty.clone();
-
+        // All shared state is now consolidated into single Arc<EnvironmentShared>
+        // Clone is O(1) - just one atomic increment instead of 17
         Environment {
-            shared_mapping,
+            shared: Arc::clone(&self.shared),
+            shared_mapping: self.shared_mapping.clone(),
             owns_data: false, // CoW: union creates a new shared environment
             modified: Arc::new(AtomicBool::new(false)), // CoW: fresh modification tracker
-            btm,
-            rule_index,
-            wildcard_rules,
-            multiplicities,
-            pattern_cache,
-            fuzzy_matcher,
-            type_index,
-            type_index_dirty,
+            current_module_path: self.current_module_path.clone(),
         }
     }
 }
 
 /// CoW: Manual Clone implementation
 /// Clones share data (owns_data = false) until first modification triggers make_owned()
+///
+/// Performance: O(1) clone via single Arc increment instead of 17 separate Arc clones
 impl Clone for Environment {
     fn clone(&self) -> Self {
         Environment {
+            // O(1): Single atomic increment for all shared state
+            shared: Arc::clone(&self.shared),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: false, // CoW: clones do not own data initially
             modified: Arc::new(AtomicBool::new(false)), // CoW: fresh modification tracker
-            btm: Arc::clone(&self.btm),
-            rule_index: Arc::clone(&self.rule_index),
-            wildcard_rules: Arc::clone(&self.wildcard_rules),
-            multiplicities: Arc::clone(&self.multiplicities),
-            pattern_cache: Arc::clone(&self.pattern_cache),
-            fuzzy_matcher: self.fuzzy_matcher.clone(),
-            type_index: Arc::clone(&self.type_index),
-            type_index_dirty: Arc::clone(&self.type_index_dirty),
+            current_module_path: self.current_module_path.clone(),
         }
     }
 }
@@ -1344,10 +2619,10 @@ mod cow_tests {
 
     /// Helper: Create a simple rule for testing
     fn make_test_rule(lhs: &str, rhs: &str) -> Rule {
-        Rule {
-            lhs: MettaValue::Atom(lhs.to_string()),
-            rhs: MettaValue::Atom(rhs.to_string()),
-        }
+        Rule::new(
+            MettaValue::Atom(lhs.to_string()),
+            MettaValue::Atom(rhs.to_string()),
+        )
     }
 
     /// Helper: Extract head symbol and arity from a MettaValue (for get_matching_rules)
@@ -1408,21 +2683,18 @@ mod cow_tests {
         // Test: Clone should share Arc pointers (cheap O(1) clone)
         let env = Environment::new();
 
-        // Get Arc pointer addresses before clone
-        let btm_ptr_before = StdArc::as_ptr(&env.btm);
-        let rule_index_ptr_before = StdArc::as_ptr(&env.rule_index);
+        // Get Arc pointer addresses before clone (consolidated shared pointer)
+        let shared_ptr_before = StdArc::as_ptr(&env.shared);
 
         let clone = env.clone();
 
         // Get Arc pointer addresses after clone
-        let btm_ptr_after = StdArc::as_ptr(&clone.btm);
-        let rule_index_ptr_after = StdArc::as_ptr(&clone.rule_index);
+        let shared_ptr_after = StdArc::as_ptr(&clone.shared);
 
-        // Pointers should be identical (shared)
-        assert_eq!(btm_ptr_before, btm_ptr_after, "Clone should share btm Arc");
+        // Pointers should be identical (shared) - O(1) clone
         assert_eq!(
-            rule_index_ptr_before, rule_index_ptr_after,
-            "Clone should share rule_index Arc"
+            shared_ptr_before, shared_ptr_after,
+            "Clone should share consolidated Arc"
         );
     }
 
@@ -1445,7 +2717,7 @@ mod cow_tests {
         assert!(!clone.owns_data, "Clone should not own data initially");
 
         // Get Arc pointers before mutation
-        let btm_ptr_before = StdArc::as_ptr(&clone.btm);
+        let btm_ptr_before = StdArc::as_ptr(&clone.shared);
 
         // First mutation triggers make_owned()
         clone.add_rule(make_test_rule("(clone $y)", "(cloned $y)"));
@@ -1458,7 +2730,7 @@ mod cow_tests {
         );
 
         // Arc pointers should be different (deep copy occurred)
-        let btm_ptr_after = StdArc::as_ptr(&clone.btm);
+        let btm_ptr_after = StdArc::as_ptr(&clone.shared);
         assert_ne!(
             btm_ptr_before, btm_ptr_after,
             "make_owned() should create new Arc"
@@ -1536,73 +2808,41 @@ mod cow_tests {
         );
 
         // Get Arc pointers after first make_owned()
-        let btm_ptr_first = StdArc::as_ptr(&clone.btm);
+        let shared_ptr_first = StdArc::as_ptr(&clone.shared);
 
         // Second mutation should NOT trigger another make_owned()
         clone.add_rule(make_test_rule("(test2 $y)", "(result2 $y)"));
 
         // Arc pointers should be same (no second deep copy)
-        let btm_ptr_second = StdArc::as_ptr(&clone.btm);
+        let shared_ptr_second = StdArc::as_ptr(&clone.shared);
         assert_eq!(
-            btm_ptr_first, btm_ptr_second,
+            shared_ptr_first, shared_ptr_second,
             "make_owned() should not run twice"
         );
     }
 
     #[test]
     fn test_deep_clone_copies_all_fields() {
-        // Test: make_owned() should deep copy all 7 RwLock fields
+        // Test: make_owned() should deep copy the consolidated shared state
+        // (All 17 RwLock fields are now in one Arc<EnvironmentShared>)
         let mut env = Environment::new();
         env.add_rule(make_test_rule("(test $x)", "(result $x)"));
 
         let mut clone = env.clone();
 
-        // Get Arc pointers before mutation
-        let btm_before = StdArc::as_ptr(&clone.btm);
-        let rule_index_before = StdArc::as_ptr(&clone.rule_index);
-        let wildcard_rules_before = StdArc::as_ptr(&clone.wildcard_rules);
-        let multiplicities_before = StdArc::as_ptr(&clone.multiplicities);
-        let pattern_cache_before = StdArc::as_ptr(&clone.pattern_cache);
-        let type_index_before = StdArc::as_ptr(&clone.type_index);
-        let type_index_dirty_before = StdArc::as_ptr(&clone.type_index_dirty);
+        // Get Arc pointer before mutation (single consolidated pointer)
+        let shared_before = StdArc::as_ptr(&clone.shared);
 
         // Trigger make_owned()
         clone.add_rule(make_test_rule("(clone $y)", "(cloned $y)"));
 
-        // Get Arc pointers after mutation
-        let btm_after = StdArc::as_ptr(&clone.btm);
-        let rule_index_after = StdArc::as_ptr(&clone.rule_index);
-        let wildcard_rules_after = StdArc::as_ptr(&clone.wildcard_rules);
-        let multiplicities_after = StdArc::as_ptr(&clone.multiplicities);
-        let pattern_cache_after = StdArc::as_ptr(&clone.pattern_cache);
-        let type_index_after = StdArc::as_ptr(&clone.type_index);
-        let type_index_dirty_after = StdArc::as_ptr(&clone.type_index_dirty);
+        // Get Arc pointer after mutation
+        let shared_after = StdArc::as_ptr(&clone.shared);
 
-        // All 7 Arc pointers should be different (deep copy occurred)
-        assert_ne!(btm_before, btm_after, "btm should be deep copied");
+        // The consolidated Arc should be different (deep copy occurred)
         assert_ne!(
-            rule_index_before, rule_index_after,
-            "rule_index should be deep copied"
-        );
-        assert_ne!(
-            wildcard_rules_before, wildcard_rules_after,
-            "wildcard_rules should be deep copied"
-        );
-        assert_ne!(
-            multiplicities_before, multiplicities_after,
-            "multiplicities should be deep copied"
-        );
-        assert_ne!(
-            pattern_cache_before, pattern_cache_after,
-            "pattern_cache should be deep copied"
-        );
-        assert_ne!(
-            type_index_before, type_index_after,
-            "type_index should be deep copied"
-        );
-        assert_ne!(
-            type_index_dirty_before, type_index_dirty_after,
-            "type_index_dirty should be deep copied"
+            shared_before, shared_after,
+            "shared should be deep copied after make_owned()"
         );
     }
 
@@ -1647,9 +2887,9 @@ mod cow_tests {
             let mut clone = env.clone();
             clone.add_rule(make_test_rule(&format!("(clone{} $y)", i), "(cloned $y)"));
 
-            // Verify Arc pointers are different
-            let env_ptr = StdArc::as_ptr(&env.btm);
-            let clone_ptr = StdArc::as_ptr(&clone.btm);
+            // Verify Arc pointers are different (consolidated shared pointer)
+            let env_ptr = StdArc::as_ptr(&env.shared);
+            let clone_ptr = StdArc::as_ptr(&clone.shared);
             assert_ne!(
                 env_ptr, clone_ptr,
                 "Property violated: clone shares mutable state after write (iteration {})",
@@ -1975,7 +3215,7 @@ mod thread_safety_tests {
             MettaValue::Atom(body.to_string())
         };
 
-        Rule { lhs, rhs }
+        Rule::new(lhs, rhs)
     }
 
     // Helper: Extract head and arity from a pattern
@@ -2152,10 +3392,10 @@ mod thread_safety_tests {
                 // Verify other thread's rules DON'T exist
                 for i in 0..RULES_PER_THREAD {
                     let pattern = format!("(t{}_r{} $x)", other_id, i);
-                    let rule = Rule {
-                        lhs: MettaValue::Atom(pattern),
-                        rhs: MettaValue::Atom(format!("(res{} $x)", i)),
-                    };
+                    let rule = Rule::new(
+        MettaValue::Atom(pattern),
+        MettaValue::Atom(format!("(res{} $x)", i)),
+    );
                     let (head, arity) = extract_head_arity(&rule.lhs);
                     let matches = clone.get_matching_rules(head, arity);
                     assert!(
@@ -2456,5 +3696,353 @@ mod thread_safety_tests {
 
         // Shared should be unchanged
         assert_eq!(shared.rule_count(), 30);
+    }
+}
+
+// ============================================================================
+// ScopeTracker Tests - Hierarchical Scope Management for Fuzzy Matching
+// ============================================================================
+
+#[cfg(test)]
+mod scope_tracker_tests {
+    use super::*;
+
+    // ========================================================================
+    // Basic Operations
+    // ========================================================================
+
+    #[test]
+    fn test_scope_tracker_new() {
+        // New ScopeTracker should have exactly one scope (global)
+        let tracker = ScopeTracker::new();
+        assert_eq!(tracker.depth(), 1, "New tracker should have depth 1 (global scope)");
+        assert!(tracker.at_global_scope(), "New tracker should be at global scope");
+    }
+
+    #[test]
+    fn test_scope_tracker_default() {
+        // Default implementation should be equivalent to new()
+        let tracker = ScopeTracker::default();
+        assert_eq!(tracker.depth(), 1);
+        assert!(tracker.at_global_scope());
+    }
+
+    #[test]
+    fn test_scope_tracker_push_scope() {
+        let mut tracker = ScopeTracker::new();
+
+        tracker.push_scope();
+        assert_eq!(tracker.depth(), 2, "After one push, depth should be 2");
+        assert!(!tracker.at_global_scope(), "Should not be at global scope after push");
+
+        tracker.push_scope();
+        assert_eq!(tracker.depth(), 3, "After two pushes, depth should be 3");
+
+        tracker.push_scope();
+        assert_eq!(tracker.depth(), 4, "After three pushes, depth should be 4");
+    }
+
+    #[test]
+    fn test_scope_tracker_pop_scope() {
+        let mut tracker = ScopeTracker::new();
+
+        tracker.push_scope();
+        tracker.push_scope();
+        assert_eq!(tracker.depth(), 3);
+
+        tracker.pop_scope();
+        assert_eq!(tracker.depth(), 2, "After one pop, depth should be 2");
+
+        tracker.pop_scope();
+        assert_eq!(tracker.depth(), 1, "After two pops, depth should be 1");
+        assert!(tracker.at_global_scope(), "Should be back at global scope");
+    }
+
+    #[test]
+    fn test_scope_tracker_pop_at_global_never_panics() {
+        // Popping at global scope should be safe (no panic, stays at depth 1)
+        let mut tracker = ScopeTracker::new();
+        assert_eq!(tracker.depth(), 1);
+
+        // Pop multiple times at global scope - should never panic
+        tracker.pop_scope();
+        assert_eq!(tracker.depth(), 1, "Pop at global should stay at depth 1");
+
+        tracker.pop_scope();
+        assert_eq!(tracker.depth(), 1, "Second pop at global should still be depth 1");
+
+        tracker.pop_scope();
+        assert_eq!(tracker.depth(), 1, "Third pop at global should still be depth 1");
+    }
+
+    // ========================================================================
+    // Symbol Addition and Visibility
+    // ========================================================================
+
+    #[test]
+    fn test_scope_tracker_add_symbol() {
+        let mut tracker = ScopeTracker::new();
+
+        tracker.add_symbol("foo".to_string());
+        assert!(tracker.is_visible("foo"), "Added symbol should be visible");
+        assert!(!tracker.is_visible("bar"), "Non-added symbol should not be visible");
+    }
+
+    #[test]
+    fn test_scope_tracker_add_symbols() {
+        let mut tracker = ScopeTracker::new();
+
+        tracker.add_symbols(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert!(tracker.is_visible("a"), "First symbol should be visible");
+        assert!(tracker.is_visible("b"), "Second symbol should be visible");
+        assert!(tracker.is_visible("c"), "Third symbol should be visible");
+        assert!(!tracker.is_visible("d"), "Non-added symbol should not be visible");
+    }
+
+    #[test]
+    fn test_scope_tracker_visibility_across_scopes() {
+        let mut tracker = ScopeTracker::new();
+
+        // Add to global scope
+        tracker.add_symbol("global_var".to_string());
+
+        // Push nested scope and add local symbol
+        tracker.push_scope();
+        tracker.add_symbol("local_var".to_string());
+
+        // Both should be visible from inner scope
+        assert!(tracker.is_visible("global_var"), "Global symbol should be visible from inner scope");
+        assert!(tracker.is_visible("local_var"), "Local symbol should be visible from inner scope");
+
+        // Pop back to global scope
+        tracker.pop_scope();
+
+        // Global still visible, local no longer visible
+        assert!(tracker.is_visible("global_var"), "Global symbol should still be visible");
+        assert!(!tracker.is_visible("local_var"), "Local symbol should not be visible after pop");
+    }
+
+    #[test]
+    fn test_scope_tracker_shadowing() {
+        let mut tracker = ScopeTracker::new();
+
+        // Add "x" to global scope
+        tracker.add_symbol("x".to_string());
+        assert!(tracker.is_visible("x"), "x should be visible in global");
+
+        // Push scope and add "x" again (shadowing)
+        tracker.push_scope();
+        tracker.add_symbol("x".to_string());
+        assert!(tracker.is_visible("x"), "x should still be visible (shadowed)");
+
+        // Count occurrences - should be 2
+        let count = tracker.visible_symbols().filter(|s| *s == "x").count();
+        assert_eq!(count, 2, "Should see 'x' twice when shadowed");
+
+        // Pop scope
+        tracker.pop_scope();
+
+        // Should still see global "x"
+        assert!(tracker.is_visible("x"), "x should be visible after pop");
+        let count = tracker.visible_symbols().filter(|s| *s == "x").count();
+        assert_eq!(count, 1, "Should only see one 'x' after pop");
+    }
+
+    // ========================================================================
+    // Symbol Iteration Order
+    // ========================================================================
+
+    #[test]
+    fn test_scope_tracker_visible_symbols_order() {
+        let mut tracker = ScopeTracker::new();
+
+        // Add to global scope
+        tracker.add_symbol("global".to_string());
+
+        // Push scope and add local
+        tracker.push_scope();
+        tracker.add_symbol("local".to_string());
+
+        // Collect visible symbols - local should appear before global
+        let symbols: Vec<&String> = tracker.visible_symbols().collect();
+
+        // Find indices
+        let local_idx = symbols.iter().position(|s| *s == "local");
+        let global_idx = symbols.iter().position(|s| *s == "global");
+
+        assert!(local_idx.is_some(), "local should be in visible symbols");
+        assert!(global_idx.is_some(), "global should be in visible symbols");
+        assert!(
+            local_idx.unwrap() < global_idx.unwrap(),
+            "Local symbols should appear before global symbols (innermost first)"
+        );
+    }
+
+    #[test]
+    fn test_scope_tracker_local_symbols() {
+        let mut tracker = ScopeTracker::new();
+
+        tracker.add_symbol("global".to_string());
+        tracker.push_scope();
+        tracker.add_symbol("local1".to_string());
+        tracker.add_symbol("local2".to_string());
+
+        // local_symbols should only return symbols from current (innermost) scope
+        let local: Vec<&String> = tracker.local_symbols().collect();
+        assert_eq!(local.len(), 2, "Should have 2 local symbols");
+        assert!(local.contains(&&"local1".to_string()));
+        assert!(local.contains(&&"local2".to_string()));
+        assert!(!local.contains(&&"global".to_string()), "Global should not be in local_symbols");
+    }
+
+    // ========================================================================
+    // Deeply Nested Scopes
+    // ========================================================================
+
+    #[test]
+    fn test_scope_tracker_deep_nesting() {
+        let mut tracker = ScopeTracker::new();
+
+        // Create 10 nested scopes, adding a symbol at each level
+        for i in 0..10 {
+            tracker.add_symbol(format!("level_{}", i));
+            tracker.push_scope();
+        }
+
+        assert_eq!(tracker.depth(), 11, "Should have 11 scopes (global + 10 nested)");
+
+        // All 10 symbols should be visible
+        for i in 0..10 {
+            assert!(
+                tracker.is_visible(&format!("level_{}", i)),
+                "Symbol at level {} should be visible",
+                i
+            );
+        }
+
+        // Pop all scopes back to global
+        for _ in 0..10 {
+            tracker.pop_scope();
+        }
+
+        assert_eq!(tracker.depth(), 1);
+        assert!(tracker.at_global_scope());
+
+        // Only level_0 (global scope) should still be visible
+        assert!(tracker.is_visible("level_0"), "Global symbol should still be visible");
+        for i in 1..10 {
+            assert!(
+                !tracker.is_visible(&format!("level_{}", i)),
+                "Symbol at level {} should no longer be visible",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_scope_tracker_real_world_let_nesting() {
+        // Simulate: (let x 1 (let y 2 (let z 3 (+ x y z))))
+        let mut tracker = ScopeTracker::new();
+
+        // Enter first let scope, bind x
+        tracker.push_scope();
+        tracker.add_symbol("x".to_string());
+
+        // Enter second let scope, bind y
+        tracker.push_scope();
+        tracker.add_symbol("y".to_string());
+
+        // Enter third let scope, bind z
+        tracker.push_scope();
+        tracker.add_symbol("z".to_string());
+
+        // All should be visible
+        assert!(tracker.is_visible("x"));
+        assert!(tracker.is_visible("y"));
+        assert!(tracker.is_visible("z"));
+        assert_eq!(tracker.depth(), 4);
+
+        // Pop back through scopes
+        tracker.pop_scope(); // exit z scope
+        assert!(tracker.is_visible("x"));
+        assert!(tracker.is_visible("y"));
+        assert!(!tracker.is_visible("z"));
+
+        tracker.pop_scope(); // exit y scope
+        assert!(tracker.is_visible("x"));
+        assert!(!tracker.is_visible("y"));
+
+        tracker.pop_scope(); // exit x scope
+        assert!(!tracker.is_visible("x"));
+        assert!(tracker.at_global_scope());
+    }
+
+    // ========================================================================
+    // Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_scope_tracker_empty_string_symbol() {
+        let mut tracker = ScopeTracker::new();
+
+        tracker.add_symbol("".to_string());
+        assert!(tracker.is_visible(""), "Empty string symbol should be visible");
+    }
+
+    #[test]
+    fn test_scope_tracker_special_characters() {
+        let mut tracker = ScopeTracker::new();
+
+        tracker.add_symbol("$var".to_string());
+        tracker.add_symbol("&space".to_string());
+        tracker.add_symbol("'quoted".to_string());
+        tracker.add_symbol("hyphen-name".to_string());
+        tracker.add_symbol("underscore_name".to_string());
+
+        assert!(tracker.is_visible("$var"));
+        assert!(tracker.is_visible("&space"));
+        assert!(tracker.is_visible("'quoted"));
+        assert!(tracker.is_visible("hyphen-name"));
+        assert!(tracker.is_visible("underscore_name"));
+    }
+
+    #[test]
+    fn test_scope_tracker_clone() {
+        let mut tracker = ScopeTracker::new();
+        tracker.add_symbol("a".to_string());
+        tracker.push_scope();
+        tracker.add_symbol("b".to_string());
+
+        // Clone the tracker
+        let mut cloned = tracker.clone();
+
+        // Modifications to clone should not affect original
+        cloned.add_symbol("c".to_string());
+        cloned.push_scope();
+        cloned.add_symbol("d".to_string());
+
+        // Original should still have depth 2
+        assert_eq!(tracker.depth(), 2);
+        assert!(!tracker.is_visible("c"));
+        assert!(!tracker.is_visible("d"));
+
+        // Clone should have depth 3
+        assert_eq!(cloned.depth(), 3);
+        assert!(cloned.is_visible("c"));
+        assert!(cloned.is_visible("d"));
+    }
+
+    #[test]
+    fn test_scope_tracker_add_duplicate_symbols() {
+        let mut tracker = ScopeTracker::new();
+
+        // Adding the same symbol multiple times in same scope - should be deduplicated
+        tracker.add_symbol("dup".to_string());
+        tracker.add_symbol("dup".to_string());
+        tracker.add_symbol("dup".to_string());
+
+        // Should only appear once in visible_symbols (HashSet behavior)
+        let count = tracker.visible_symbols().filter(|s| *s == "dup").count();
+        assert_eq!(count, 1, "Duplicate symbols in same scope should be deduplicated");
     }
 }

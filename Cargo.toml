@@ -54,6 +54,45 @@ harness = false
 name = "branch_comparison"
 harness = false
 
+[[bench]]
+name = "mork_evaluation"
+harness = false
+
+[[bench]]
+name = "simd_micro"
+harness = false
+
+[[bench]]
+name = "mmverify_benchmark"
+harness = false
+
+[[bench]]
+name = "memoization_benchmark"
+harness = false
+
+[[bench]]
+name = "bytecode_comparison"
+harness = false
+
+[[bench]]
+name = "jit_comparison"
+harness = false
+required-features = ["jit"]
+
+[[bench]]
+name = "jit_tier1_benchmarks"
+harness = false
+required-features = ["jit"]
+
+[[bench]]
+name = "jit_optimization_benchmarks"
+harness = false
+required-features = ["jit"]
+
+[[bench]]
+name = "iter_rules_bench"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }
@@ -91,17 +130,50 @@ lru = "0.12"
 # SmallVec - Stack-allocated vector for optimizing pattern matching bindings
 smallvec = "1.11"
 
+# lasso - Fast, thread-safe string interning for symbol tables (optional)
+# Provides O(1) symbol comparison instead of O(n) string comparison
+lasso = { version = "0.7", features = ["multi-threaded"], optional = true }
+
+# Itertools - Lazy iterator combinators for cartesian products and nondeterminism
+itertools = "0.14"
+
 # liblevenshtein - Fuzzy string matching for "Did you mean?" suggestions
 # liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
-liblevenshtein = { version = "^0.7", features = ["pathmap-backend"] }
+liblevenshtein = { version = "^0.7", features = ["pathmap-backend", "simd"] }
+
+# TOML - Package manifest parsing (metta.toml)
+toml = "0.8"
+# Serde - Serialization for package manifest
+serde = { version = "1.0", features = ["derive"] }
+# Semver - Version constraint parsing and validation
+semver = "1.0"
 
 # Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
 # PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup
 
+# Cranelift JIT - Native code generation for hot bytecode paths
+# Provides 2-5x additional speedup over bytecode VM for arithmetic chains
+cranelift = { version = "0.126", optional = true }
+cranelift-frontend = { version = "0.126", optional = true }
+cranelift-jit = { version = "0.126", optional = true }
+cranelift-module = { version = "0.126", optional = true }
+cranelift-native = { version = "0.126", optional = true }
+
 [features]
-default = ["interning", "async"]
+default = ["interning", "async", "jit"]
 async = ["tokio"]
 interning = []
+# Symbol interning: O(1) symbol comparison via lasso crate
+# Provides 5-10% improvement for rule-heavy workloads
+symbol-interning = ["lasso"]
+# Bytecode VM: Compiles expressions to bytecode for faster execution
+# Provides 15-750x speedup for arithmetic/boolean chains
+bytecode = []
+# JIT compilation: Cranelift native code generation for hot bytecode paths (ENABLED BY DEFAULT)
+# Provides 38-226x speedup for arithmetic/control-flow heavy code
+# Tiered: cold→bytecode(10 calls)→JIT Stage1(100 calls)→JIT Stage2(500 calls)
+# Disable with: cargo build --no-default-features --features interning,async
+jit = ["bytecode", "cranelift", "cranelift-frontend", "cranelift-jit", "cranelift-module", "cranelift-native"]
 
 [dev-dependencies]
 # For integration tests
@@ -123,6 +195,10 @@ paste = "1.0.15"
 
 [[bench]]
 name = "metta"
+harness = false
+
+[[bench]]
+name = "eval_profiling"
 harness = false
 
 [profile.release]

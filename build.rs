@@ -14,10 +14,20 @@ fn main() {
 /// Regenerate Tree-Sitter parser from grammar.js if needed
 fn regenerate_tree_sitter_parser() {
     let grammar_path = "tree-sitter-metta/grammar.js";
+    let parser_path = "tree-sitter-metta/src/parser.c";
     let parser_dir = "tree-sitter-metta";
 
     // Tell cargo to rerun this build script if the grammar changes
     println!("cargo:rerun-if-changed={}", grammar_path);
+
+    // Check if parser needs regeneration (grammar is newer than parser)
+    let needs_regeneration =
+        !Path::new(parser_path).exists() || is_grammar_newer_than_parser(grammar_path, parser_path);
+
+    if !needs_regeneration {
+        eprintln!("Tree-Sitter parser is up-to-date");
+        return;
+    }
 
     // Check if tree-sitter CLI is available
     let tree_sitter_check = Command::new("tree-sitter").arg("--version").output();
@@ -41,7 +51,7 @@ fn regenerate_tree_sitter_parser() {
         }
         _ => {
             // tree-sitter CLI not available
-            if !Path::new(&format!("{}/src/parser.c", parser_dir)).exists() {
+            if !Path::new(parser_path).exists() {
                 panic!(
                     "tree-sitter CLI not found and parser.c doesn't exist.\n\
                      Install tree-sitter CLI: npm install -g tree-sitter-cli\n\
@@ -146,6 +156,26 @@ fn ensure_rholang_cli_updated() {
     }
 }
 
+/// Check if grammar file is newer than parser file
+fn is_grammar_newer_than_parser(grammar_path: &str, parser_path: &str) -> bool {
+    let grammar = Path::new(grammar_path);
+    let parser = Path::new(parser_path);
+
+    if !grammar.exists() || !parser.exists() {
+        return false;
+    }
+
+    match (fs::metadata(grammar), fs::metadata(parser)) {
+        (Ok(grammar_meta), Ok(parser_meta)) => {
+            match (grammar_meta.modified(), parser_meta.modified()) {
+                (Ok(grammar_time), Ok(parser_time)) => grammar_time > parser_time,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Check if a single file is newer than the given timestamp
 fn is_file_newer(file_path: &str, than: SystemTime) -> bool {
     let path = Path::new(file_path);
@@ -195,11 +225,11 @@ fn check_path_recursive(path: &Path, than: SystemTime) -> bool {
             for entry in entries.flatten() {
                 let entry_path = entry.path();
 
-                // Skip target directories to avoid false positives
+                // Skip target and .git directories to avoid false positives
                 if entry_path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .map(|n| n == "target")
+                    .map(|n| n == "target" || n == ".git")
                     .unwrap_or(false)
                 {
                     continue;

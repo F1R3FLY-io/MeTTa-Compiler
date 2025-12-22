@@ -216,6 +216,32 @@ fn metta_value_to_json_string(value: &MettaValue) -> String {
                 metta_value_to_json_string(t)
             )
         }
+        MettaValue::Conjunction(goals) => {
+            let goals_json: Vec<String> = goals.iter().map(metta_value_to_json_string).collect();
+            format!(
+                r#"{{"type":"conjunction","goals":[{}]}}"#,
+                goals_json.join(",")
+            )
+        }
+        MettaValue::Space(handle) => {
+            format!(
+                r#"{{"type":"space","id":{},"name":"{}"}}"#,
+                handle.id,
+                escape_json(&handle.name)
+            )
+        }
+        MettaValue::State(id) => {
+            format!(r#"{{"type":"state","id":{}}}"#, id)
+        }
+        MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
+        MettaValue::Memo(handle) => {
+            format!(
+                r#"{{"type":"memo","id":{},"name":"{}"}}"#,
+                handle.id,
+                escape_json(&handle.name)
+            )
+        }
+        MettaValue::Empty => r#"{"type":"empty"}"#.to_string(),
     }
 }
 
@@ -365,6 +391,7 @@ pub async fn run_state_async(
 
     // Batch expressions into parallelizable groups
     let mut current_batch: Vec<(usize, MettaValue, bool)> = Vec::new();
+
     let exprs: Vec<_> = compiled_state.source.into_iter().enumerate().collect();
 
     for (idx, expr) in exprs {
@@ -1231,6 +1258,7 @@ mod tests {
             line: 1,
             column: 7,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1246,6 +1274,7 @@ mod tests {
             line: 1,
             column: 8,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1261,6 +1290,7 @@ mod tests {
             line: 1,
             column: 10,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1276,6 +1306,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1291,6 +1322,7 @@ mod tests {
             line: 1,
             column: 1,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         // Generic errors now have a helpful hint
@@ -1311,6 +1343,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1326,6 +1359,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1342,6 +1376,7 @@ mod tests {
             line: 1,
             column: 1,
             text: "quota".to_string(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(
@@ -1362,6 +1397,7 @@ mod tests {
             line: 1,
             column: 1,
             text: "iff".to_string(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(
@@ -1382,6 +1418,7 @@ mod tests {
             line: 1,
             column: 1,
             text: "xyzzy".to_string(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         // Should not contain "Did you mean" when no similar keyword
@@ -1402,6 +1439,7 @@ mod tests {
             line: 1,
             column: 1,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(
@@ -1420,6 +1458,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
@@ -1444,6 +1483,7 @@ mod tests {
             line: 0,
             column: 0,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);

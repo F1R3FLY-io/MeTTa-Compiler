@@ -19,15 +19,16 @@ fn print_usage() {
     eprintln!("    mettatron [OPTIONS] <INPUT>");
     eprintln!();
     eprintln!("OPTIONS:");
-    eprintln!("    -h, --help           Print this help message");
-    eprintln!("    -v, --version        Print version information");
-    eprintln!("    -o, --output <FILE>  Write output to FILE (default: stdout)");
-    eprintln!("    --sexpr              Print S-expressions instead of evaluating");
-    eprintln!("    --repl               Start interactive REPL");
-    eprintln!("    --eval               Evaluate and print results (default)");
+    eprintln!("    -h, --help              Print this help message");
+    eprintln!("    -v, --version           Print version information");
+    eprintln!("    -o, --output <FILE>     Write output to FILE (default: stdout)");
+    eprintln!("    --sexpr                 Print S-expressions instead of evaluating");
+    eprintln!("    --repl                  Start interactive REPL");
+    eprintln!("    --eval                  Evaluate and print results (default)");
+    eprintln!("    --strict-mode           Disable transitive imports (explicit deps only)");
     eprintln!();
     eprintln!("ARGUMENTS:");
-    eprintln!("    <INPUT>              Input MeTTa file (use '-' for stdin)");
+    eprintln!("    <INPUT>                 Input MeTTa file (use '-' for stdin)");
     eprintln!();
     eprintln!("EXAMPLES:");
     eprintln!("    mettatron input.metta");
@@ -45,6 +46,7 @@ struct Options {
     output: Option<String>,
     show_sexpr: bool,
     repl_mode: bool,
+    strict_mode: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -54,6 +56,7 @@ fn parse_args() -> Result<Options, String> {
     let mut output = None;
     let mut show_sexpr = false;
     let mut repl_mode = false;
+    let mut strict_mode = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -82,6 +85,9 @@ fn parse_args() -> Result<Options, String> {
             "--eval" => {
                 // Default mode, no-op
             }
+            "--strict-mode" => {
+                strict_mode = true;
+            }
             arg if arg.starts_with('-') && arg != "-" => {
                 return Err(format!("Unknown option: {}", arg));
             }
@@ -100,6 +106,7 @@ fn parse_args() -> Result<Options, String> {
         output,
         show_sexpr,
         repl_mode,
+        strict_mode,
     })
 }
 
@@ -154,6 +161,15 @@ fn format_result(value: &MettaValue) -> String {
             let formatted: Vec<String> = items.iter().map(format_result).collect();
             format!("({})", formatted.join(" "))
         }
+        MettaValue::Conjunction(goals) => {
+            let formatted: Vec<String> = goals.iter().map(format_result).collect();
+            format!("(, {})", formatted.join(" "))
+        }
+        MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+        MettaValue::State(id) => format!("(State {})", id),
+        MettaValue::Unit => "()".to_string(),
+        MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+        MettaValue::Empty => "Empty".to_string(),
     }
 }
 
@@ -178,9 +194,31 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         return Ok(output);
     }
 
-    // Compile to MettaValue
-    let state = compile(input).map_err(|e| e.to_string())?;
+    // Compile to MettaValue (include file path in error messages)
+    let file_path = options.input.as_ref().filter(|p| *p != "-").map(|s| s.as_str());
+    let state = compile_with_path(input, file_path).map_err(|e| e.to_string())?;
     let mut env = state.environment;
+
+    // Set the current module path for relative includes
+    if let Some(ref input_path) = options.input {
+        if input_path != "-" {
+            let path = Path::new(input_path);
+            // Canonicalize to get absolute path, then get parent directory
+            if let Ok(canonical) = path.canonicalize() {
+                if let Some(parent) = canonical.parent() {
+                    env.set_current_module_path(Some(parent.to_path_buf()));
+                }
+            } else if let Some(parent) = path.parent() {
+                // Fallback if file doesn't exist yet (shouldn't happen, but be safe)
+                env.set_current_module_path(Some(parent.to_path_buf()));
+            }
+        }
+    }
+
+    // Configure strict mode if requested
+    if options.strict_mode {
+        env.set_strict_mode(true);
+    }
 
     // Evaluate each expression
     let mut output = String::new();
@@ -191,9 +229,16 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         let (results, new_env) = eval(sexpr, env);
         env = new_env;
 
+        // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
+        let filtered_results: Vec<MettaValue> = results
+            .into_iter()
+            .filter(|v| !matches!(v, MettaValue::Empty))
+            .collect();
+
         // Print results with list notation (only for S-expressions)
-        if should_output && !results.is_empty() {
-            output.push_str(&format!("{}\n", format_results(&results)));
+        // HE-compatible: print [] for empty result sets
+        if should_output {
+            output.push_str(&format!("{}\n", format_results(&filtered_results)));
         }
     }
 
@@ -229,7 +274,7 @@ fn highlight_output(text: &str, highlighter: Option<&QueryHighlighter>) -> Strin
     }
 }
 
-fn run_repl() {
+fn run_repl(options: &Options) {
     println!("MeTTaTron REPL v{}", VERSION);
     println!("Enter MeTTa expressions. Type 'exit' or 'quit' to exit.");
     println!("Multi-line input: Press ENTER on incomplete expressions to continue.\n");
@@ -243,6 +288,11 @@ fn run_repl() {
     let output_highlighter = QueryHighlighter::new().ok();
 
     let mut env = Environment::new();
+
+    // Configure strict mode if requested
+    if options.strict_mode {
+        env.set_strict_mode(true);
+    }
     let mut line_num = 1;
 
     loop {
@@ -281,9 +331,16 @@ fn run_repl() {
                             let (results, updated_env) = eval(sexpr.clone(), env.clone());
                             env = updated_env;
 
+                            // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
+                            let filtered_results: Vec<MettaValue> = results
+                                .into_iter()
+                                .filter(|v| !matches!(v, MettaValue::Empty))
+                                .collect();
+
                             // Print results with syntax highlighting (only for S-expressions)
-                            if should_output && !results.is_empty() {
-                                let output = format_results(&results);
+                            // HE-compatible: print [] for empty result sets
+                            if should_output {
+                                let output = format_results(&filtered_results);
                                 let highlighted =
                                     highlight_output(&output, output_highlighter.as_ref());
                                 println!("{}", highlighted);
@@ -331,7 +388,7 @@ fn main() {
 
     // REPL mode
     if options.repl_mode {
-        run_repl();
+        run_repl(&options);
         return;
     }
 

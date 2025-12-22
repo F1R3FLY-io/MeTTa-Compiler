@@ -45,6 +45,7 @@ module.exports = grammar({
       $.wildcard,
       $.boolean_literal,  // Must come before identifier
       $.special_type_symbol,  // Must come before operator (contains %)
+      $.space_reference,  // Must come before identifier (starts with &)
       $.operator,
       $.string_literal,
       $.float_literal,
@@ -53,29 +54,36 @@ module.exports = grammar({
     ),
 
     // Variables: $var (for pattern variables)
-    // Note: & is an operator (space reference), not a variable prefix
-    // Note: 'var is handled by quote_prefix in prefixed_expression
+    // Uses blacklist approach: $ followed by any non-delimiter chars
+    // Delimiters: whitespace, (), ;, ", #
+    // Note: # is reserved for internal use per official MeTTa spec
     variable: $ => token(
-      seq('$', /[a-zA-Z0-9_'\-+*/&]*/)
+      seq('$', /[^\s()";#]*/)
     ),
 
     // Wildcard pattern
     wildcard: $ => '_',
 
-    // Boolean literals (higher precedence than identifier)
-    boolean_literal: $ => token(prec(3, choice('True', 'False'))),
+    // Space references: &name (HE-compatible single-token approach)
+    // Used for referencing spaces like &self, &kb, etc.
+    // High precedence to match before identifier
+    // Uses same delimiter rules as variable: whitespace, (), ;, ", #
+    space_reference: $ => token(prec(5, seq('&', /[^\s()";#]+/))),
+
+    // Boolean literals (high precedence to match before identifier)
+    boolean_literal: $ => token(prec(5, choice('True', 'False'))),
 
     // Special type symbols: %Undefined%, %Irreducible%, etc.
     // Used in official MeTTa stdlib for special type markers
-    special_type_symbol: $ => token(prec(3, /%[A-Za-z][A-Za-z0-9_-]*%/)),
+    // High precedence to match before identifier
+    special_type_symbol: $ => token(prec(5, /%[A-Za-z][A-Za-z0-9_-]*%/)),
 
     // Regular identifiers (no special prefix)
-    identifier: $ => token(prec(2, choice(
-      // Standard identifiers: letters, digits, allowed special chars
-      /[a-zA-Z][a-zA-Z0-9_'\-+*/]*/,
-      // Can start with some operators if followed by alphanumeric
-      /[+\-*/][a-zA-Z0-9_'\-+*/]+/,
-    ))),
+    // Uses blacklist approach: any sequence of non-delimiter characters
+    // Delimiters: whitespace, (), ;, ", $
+    // Also excludes: !, ?, ' (prefix operators), & (space reference), _ (wildcard), [], {} (reserved)
+    // Lower precedence (1) so specific tokens match first
+    identifier: $ => token(prec(1, /[^\s()\[\]{}"$;!?'_&][^\s()\[\]{}"$;]*/)),
 
     // Operators (decomposed by type)
     operator: $ => choice(
@@ -89,51 +97,56 @@ module.exports = grammar({
       $.logic_operator,
     ),
 
-    // Arrow operators: ->, <-, <=, <<- (higher precedence than single-char operators)
-    arrow_operator: $ => token(prec(2, choice(
+    // Arrow operators: ->, <-, <<- (higher precedence than comparison operators)
+    // Note: <= moved to comparison_operator for consistent handling
+    // prec(4) to ensure <- and <<- match before < is matched as comparison
+    arrow_operator: $ => token(prec(4, choice(
       '->',
       '<-',
-      '<=',
       '<<-',
     ))),
 
-    // Comparison operators: ==, >, < (single char has lower precedence)
-    comparison_operator: $ => token(prec(1, choice(
+    // Comparison operators: ==, !=, <=, >=, >, <
+    // Use prec(3) to ensure multi-char operators match before single-char ones
+    comparison_operator: $ => token(prec(3, choice(
       '==',
+      '!=',
+      '<=',
+      '>=',
       '>',
       '<',
     ))),
 
     // Assignment operator: =
-    assignment_operator: $ => '=',
+    assignment_operator: $ => token(prec(2, '=')),
 
     // Type annotation operator: :
-    type_annotation_operator: $ => ':',
+    type_annotation_operator: $ => token(prec(2, ':')),
 
     // Rule definition operator: :=
-    rule_definition_operator: $ => ':=',
+    rule_definition_operator: $ => token(prec(3, ':=')),
 
-    // Punctuation operators: ;, |, ,, @, &, ., ...
+    // Punctuation operators: |, ,, @, ., ...
     // Note: : is now separate as type_annotation_operator
     // Note: % removed - now used only in special_type_symbol
-    punctuation_operator: $ => token(choice(
-      ';',
+    // Note: & removed - now used only in space_reference token
+    // Note: ; removed - semicolon is comment-only in MeTTa (see line_comment)
+    punctuation_operator: $ => token(prec(2, choice(
       '|',
       ',',
       '@',
-      '&',
       '...',
       '.',
-    )),
+    ))),
 
     // Arithmetic operators (as standalone symbols): +, -, *, /
-    arithmetic_operator: $ => token(prec(1, /[+\-*/]/)),
+    arithmetic_operator: $ => token(prec(2, /[+\-*/]/)),
 
     // Logic operators: !?, ?!
-    logic_operator: $ => token(choice(
+    logic_operator: $ => token(prec(2, choice(
       '!?',
       '?!',
-    )),
+    ))),
 
     // String literals with escape sequences
     // Supports: \n, \t, \r, \\, \", \x##, \u{...}
@@ -156,13 +169,25 @@ module.exports = grammar({
     )),
 
     // Float literals (with optional minus) - highest precedence to match before integer
-    // Supports: 3.14, -2.5, 1.0e10, -1.5e-3, 2.0E+5
-    float_literal: $ => token(prec(4, seq(
-      optional('-'),
-      /\d+/,
-      '.',
-      /\d+/,
-      optional(seq(/[eE]/, optional(/[+-]/), /\d+/))
+    // Supports: 3.14, -2.5, 1.0e10, -1.5e-3, 2.0E+5, 1e10, -2E+5
+    // MeTTa HE regex: [\-\+]?\d+(\.\d+)?[eE][\-\+]?\d+ (decimal optional with exponent)
+    float_literal: $ => token(prec(4, choice(
+      // Standard float: 1.5, 1.5e10, -2.5E-3
+      seq(
+        optional('-'),
+        /\d+/,
+        '.',
+        /\d+/,
+        optional(seq(/[eE]/, optional(/[+-]/), /\d+/))
+      ),
+      // Scientific notation without decimal: 1e10, -2E+5
+      seq(
+        optional('-'),
+        /\d+/,
+        /[eE]/,
+        optional(/[+-]/),
+        /\d+/
+      )
     ))),
 
     // Integer literals (with optional minus) - high precedence to match before identifier

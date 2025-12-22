@@ -21,6 +21,7 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         line: 0,
         column: 0,
         text: String::new(),
+        file_path: None,
     })?;
     let sexprs = parser.parse(src)?;
 
@@ -31,9 +32,19 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         line: 1,
         column: 1,
         text: e,
+        file_path: None,
     })?;
 
     Ok(MettaState::new_compiled(metta_values))
+}
+
+/// Compile MeTTa source code with a file path for error reporting
+/// The file path will be included in any syntax error messages
+pub fn compile_with_path(src: &str, file_path: Option<&str>) -> Result<MettaState, SyntaxError> {
+    compile(src).map_err(|e| match file_path {
+        Some(path) => e.with_file_path(path),
+        None => e,
+    })
 }
 
 /// Implement idiomatic Rust conversion from MettaExpr to MettaValue
@@ -58,12 +69,26 @@ impl TryFrom<&MettaExpr> for MettaValue {
             MettaExpr::Float(f, _span) => Ok(MettaValue::Float(*f)),
             MettaExpr::List(items, _span) => {
                 if items.is_empty() {
-                    Ok(MettaValue::Nil)
+                    // HE-compatible: () is an empty S-expression, not Nil
+                    // This allows collapse to produce (()) and () to evaluate to ()
+                    Ok(MettaValue::SExpr(vec![]))
                 } else {
-                    // Use iterator and collect for idiomatic Rust
-                    let values: Result<Vec<_>, _> =
-                        items.iter().map(MettaValue::try_from).collect();
-                    Ok(MettaValue::SExpr(values?))
+                    // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
+                    let is_conjunction = items
+                        .first()
+                        .is_some_and(|first| matches!(first, MettaExpr::Atom(s, _) if s == ","));
+
+                    if is_conjunction {
+                        // Convert to Conjunction variant (skip the comma operator)
+                        let goals: Result<Vec<_>, _> =
+                            items[1..].iter().map(MettaValue::try_from).collect();
+                        Ok(MettaValue::Conjunction(goals?))
+                    } else {
+                        // Regular S-expression
+                        let values: Result<Vec<_>, _> =
+                            items.iter().map(MettaValue::try_from).collect();
+                        Ok(MettaValue::SExpr(values?))
+                    }
                 }
             }
             MettaExpr::Quoted(expr, _span) => {
@@ -212,7 +237,8 @@ mod tests {
             assert_eq!(items[4], MettaValue::Bool(true));
             assert_eq!(items[5], MettaValue::Bool(false));
             assert_eq!(items[6], MettaValue::String("text".to_string()));
-            assert_eq!(items[7], MettaValue::Nil);
+            // () compiles to empty SExpr for HE compatibility
+            assert_eq!(items[7], MettaValue::SExpr(vec![]));
         } else {
             panic!("Expected SExpr with mixed literals");
         }

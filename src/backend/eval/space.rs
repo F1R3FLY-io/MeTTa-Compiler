@@ -1,7 +1,9 @@
 use crate::backend::environment::Environment;
 use crate::backend::fuzzy_match::FuzzyMatcher;
-use crate::backend::models::{EvalResult, MettaValue, Rule};
+use crate::backend::models::{EvalResult, MemoHandle, MettaValue, Rule, SpaceHandle};
 use std::sync::{Arc, OnceLock};
+
+use super::eval;
 
 /// Valid space names for "Did you mean?" suggestions
 const VALID_SPACE_NAMES: &[&str] = &["self"];
@@ -33,80 +35,1047 @@ pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let mut new_env = env.clone();
 
     // Add rule using add_rule (stores in both rule_cache and MORK Space)
-    new_env.add_rule(Rule { lhs, rhs });
+    new_env.add_rule(Rule::new(lhs, rhs));
 
     // Return empty list (rule definitions don't produce output)
     (vec![], new_env)
 }
 
-/// Evaluate match: (match <space-ref> <space-name> <pattern> <template>)
+/// Evaluate match: (match <space> <pattern> <template>)
 /// Searches the space for all atoms matching the pattern and returns instantiated templates
+///
+/// Supports two syntaxes:
+/// - New: (match space pattern template) - where space is a Space value (e.g., from mod-space! or &self)
+/// - Legacy: (match & self pattern template) - backward compatible syntax
 ///
 /// Optimized to use Environment::match_space which performs pattern matching
 /// directly on MORK expressions without unnecessary intermediate allocations
 pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
-    if args.len() < 4 {
+    // Debug: Show what eval_match receives
+    let debug = std::env::var("METTA_DEBUG_MATCH").is_ok();
+    if debug {
+        eprintln!("[DEBUG eval_match] items={:?}", items);
+        eprintln!("[DEBUG eval_match] args.len()={}", args.len());
+    }
+
+    // Support both: (match space pattern template) and (match & self pattern template)
+    if args.len() == 3 {
+        // New-style syntax: (match space pattern template)
+        let space_arg = &args[0];
+        let pattern = &args[1];
+        let template = &args[2];
+
+        if debug {
+            eprintln!("[DEBUG eval_match] space_arg={:?}", space_arg);
+            eprintln!("[DEBUG eval_match] pattern={:?}", pattern);
+            eprintln!("[DEBUG eval_match] template={:?}", template);
+        }
+
+        // Evaluate the space argument
+        let (space_results, env1) = eval(space_arg.clone(), env);
+        if space_results.is_empty() {
+            let err = MettaValue::Error(
+                "match: space evaluated to empty".to_string(),
+                Arc::new(space_arg.clone()),
+            );
+            return (vec![err], env1);
+        }
+
+        match &space_results[0] {
+            MettaValue::Space(handle) => {
+                let results = match_with_space_handle(handle, pattern, template, &env1);
+                (results, env1)
+            }
+            other => {
+                let err = MettaValue::Error(
+                    format!(
+                        "match: first argument must be a space, got {}. Usage: (match space pattern template)",
+                        super::friendly_value_repr(other)
+                    ),
+                    Arc::new(other.clone()),
+                );
+                (vec![err], env1)
+            }
+        }
+    } else if args.len() == 4 {
+        // Legacy syntax: (match & self pattern template)
+        let space_ref = &args[0];
+        let space_name = &args[1];
+        let pattern = &args[2];
+        let template = &args[3];
+
+        // Check that first arg is & (space reference operator)
+        match space_ref {
+            MettaValue::Atom(s) if s == "&" => {
+                // Check space name (for now, only support "self")
+                match space_name {
+                    MettaValue::Atom(name) if name == "self" => {
+                        // Use optimized match_space method that works directly with MORK
+                        let results = env.match_space(pattern, template);
+                        (results, env)
+                    }
+                    _ => {
+                        // Try to suggest a valid space name
+                        let name_str = match space_name {
+                            MettaValue::Atom(s) => s.as_str(),
+                            _ => "",
+                        };
+
+                        let suggestion = suggest_space_name(name_str);
+                        let msg = match suggestion {
+                            Some(s) => format!(
+                                "match only supports 'self' as space name, got: {:?}. {}",
+                                space_name, s
+                            ),
+                            None => format!(
+                                "match only supports 'self' as space name, got: {:?}",
+                                space_name
+                            ),
+                        };
+
+                        let err = MettaValue::Error(msg, Arc::new(MettaValue::SExpr(args.to_vec())));
+                        (vec![err], env)
+                    }
+                }
+            }
+            _ => {
+                let err = MettaValue::Error(
+                    format!(
+                        "match requires & as first argument (legacy syntax), got: {}",
+                        super::friendly_value_repr(space_ref)
+                    ),
+                    Arc::new(MettaValue::SExpr(args.to_vec())),
+                );
+                (vec![err], env)
+            }
+        }
+    } else {
         let got = args.len();
         let err = MettaValue::Error(
             format!(
-                "match requires exactly 4 arguments, got {}. Usage: (match & space pattern template)",
+                "match requires 3 or 4 arguments, got {}. Usage: (match space pattern template) or (match & self pattern template)",
                 got
             ),
             Arc::new(MettaValue::SExpr(args.to_vec())),
         );
-        return (vec![err], env);
+        (vec![err], env)
+    }
+}
+
+/// Pattern match against a SpaceHandle and return evaluated instantiated templates.
+/// HE-compatible: After pattern matching, the template is evaluated with bindings applied.
+///
+/// IMPORTANT: Each match result is evaluated in a forked environment to provide
+/// nondeterministic branch isolation. This prevents one branch's mutations from
+/// affecting other branches.
+fn match_with_space_handle(
+    handle: &SpaceHandle,
+    pattern: &MettaValue,
+    template: &MettaValue,
+    env: &Environment,
+) -> Vec<MettaValue> {
+    use super::{apply_bindings, eval, pattern_match};
+
+    // Debug logging
+    let debug = std::env::var("METTA_DEBUG_MATCH").is_ok();
+    if debug {
+        eprintln!("[DEBUG match] handle.name={}, is_module_space={}", handle.name, handle.is_module_space());
+        eprintln!("[DEBUG match] pattern={:?}", pattern);
+        eprintln!("[DEBUG match] template={:?}", template);
     }
 
-    let space_ref = &args[0];
-    let space_name = &args[1];
-    let pattern = &args[2];
-    let template = &args[3];
+    // For module-backed spaces or the global "self" space, use Environment's MORK-based matching
+    // For other owned spaces (from new-space), match against the atoms in the space
+    if handle.is_module_space() || handle.name == "self" {
+        // Module space or global "self" space - use Environment's match_space for MORK integration
+        // The Environment has the rules from (= ...) definitions
+        if debug {
+            eprintln!("[DEBUG match] Using env.match_space (module/self path)");
+        }
+        env.match_space(pattern, template)
+    } else {
+        // Owned space (from new-space) - match against atoms stored in SpaceHandle
+        let atoms = handle.collapse();
+        if debug {
+            eprintln!("[DEBUG match] Using owned space path, {} atoms", atoms.len());
+        }
 
-    // Check that first arg is & (space reference operator)
-    match space_ref {
-        MettaValue::Atom(s) if s == "&" => {
-            // Check space name (for now, only support "self")
-            match space_name {
-                MettaValue::Atom(name) if name == "self" => {
-                    // Use optimized match_space method that works directly with MORK
-                    let results = env.match_space(pattern, template);
-                    (results, env)
+        // Collect all matching atoms first (don't evaluate yet)
+        let mut matching_bindings: Vec<_> = Vec::new();
+        for atom in &atoms {
+            if debug {
+                eprintln!("[DEBUG match] Trying to match atom={:?}", atom);
+            }
+            if let Some(bindings) = pattern_match(pattern, atom) {
+                if debug {
+                    eprintln!("[DEBUG match] MATCH! bindings={:?}", bindings);
                 }
-                _ => {
-                    // Try to suggest a valid space name
-                    let name_str = match space_name {
-                        MettaValue::Atom(s) => s.as_str(),
-                        _ => "",
-                    };
+                matching_bindings.push(bindings);
+            }
+        }
 
-                    let suggestion = suggest_space_name(name_str);
-                    let msg = match suggestion {
-                        Some(s) => format!(
-                            "match only supports 'self' as space name, got: {:?}. {}",
-                            space_name, s
-                        ),
-                        None => format!(
-                            "match only supports 'self' as space name, got: {:?}",
-                            space_name
-                        ),
-                    };
+        // If only one match, no need for forking (optimization)
+        if matching_bindings.len() == 1 {
+            let bindings = &matching_bindings[0];
+            let instantiated = apply_bindings(template, bindings).into_owned();
+            if debug {
+                eprintln!("[DEBUG match] Single match, instantiated={:?}", instantiated);
+            }
+            let (eval_results, _) = eval(instantiated, env.clone());
+            if debug {
+                eprintln!("[DEBUG match] eval_results={:?}", eval_results);
+            }
+            return eval_results;
+        }
 
-                    let err = MettaValue::Error(msg, Arc::new(MettaValue::SExpr(args.to_vec())));
-                    (vec![err], env)
-                }
+        // Multiple matches - fork environment for each to isolate mutations
+        let mut results = Vec::new();
+        for bindings in &matching_bindings {
+            let instantiated = apply_bindings(template, bindings).into_owned();
+            if debug {
+                eprintln!("[DEBUG match] Multi-match, instantiated={:?}", instantiated);
+            }
+
+            // Fork environment for this branch to isolate space mutations
+            let forked_env = env.fork_for_nondeterminism();
+
+            // HE-compatible: Evaluate the instantiated template in forked environment
+            let (eval_results, _) = eval(instantiated, forked_env);
+            if debug {
+                eprintln!("[DEBUG match] eval_results={:?}", eval_results);
+            }
+            results.extend(eval_results);
+        }
+
+        results
+    }
+}
+
+/// new-space: Create a new named space
+/// Returns a Space reference that can be used with add-atom, remove-atom, collapse
+/// Usage: (new-space) or (new-space "name")
+pub(super) fn eval_new_space(items: Vec<MettaValue>, mut env: Environment) -> EvalResult {
+    let args = &items[1..];
+
+    // Get optional name, default to "space-N"
+    let name = if !args.is_empty() {
+        match &args[0] {
+            MettaValue::String(s) => s.clone(),
+            MettaValue::Atom(s) => s.clone(),
+            other => {
+                let err = MettaValue::Error(
+                    format!(
+                        "new-space: optional name must be a string, got {}. Usage: (new-space) or (new-space \"name\")",
+                        super::friendly_value_repr(other)
+                    ),
+                    Arc::new(other.clone()),
+                );
+                return (vec![err], env);
+            }
+        }
+    } else {
+        "unnamed".to_string()
+    };
+
+    let space_id = env.create_named_space(&name);
+    let handle = SpaceHandle::new(space_id, name);
+    (vec![MettaValue::Space(handle)], env)
+}
+
+/// add-atom: Add an atom to a space
+/// Usage: (add-atom space-ref atom)
+pub(super) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("add-atom", items, 2, env, "(add-atom space atom)");
+
+    let space_ref = &items[1];
+    let atom = &items[2];
+
+    // Evaluate both arguments
+    let (space_results, env1) = eval(space_ref.clone(), env);
+    if space_results.is_empty() {
+        let err = MettaValue::Error(
+            "add-atom: space evaluated to empty".to_string(),
+            Arc::new(space_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    let (atom_results, mut env2) = eval(atom.clone(), env1);
+    if atom_results.is_empty() {
+        let err = MettaValue::Error(
+            "add-atom: atom evaluated to empty".to_string(),
+            Arc::new(atom.clone()),
+        );
+        return (vec![err], env2);
+    }
+
+    // Get the space ID
+    let space_value = &space_results[0];
+    let atom_value = &atom_results[0];
+
+    match space_value {
+        MettaValue::Space(handle) => {
+            // Use SpaceHandle's add_atom method directly (it has its own backing store)
+            handle.add_atom(atom_value.clone());
+            (vec![MettaValue::Unit], env2)
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "add-atom: first argument must be a space reference, got {}. Usage: (add-atom space atom)",
+                    super::friendly_value_repr(space_value)
+                ),
+                Arc::new(space_value.clone()),
+            );
+            (vec![err], env2)
+        }
+    }
+}
+
+/// remove-atom: Remove an atom from a space
+/// Usage: (remove-atom space-ref atom)
+pub(super) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("remove-atom", items, 2, env, "(remove-atom space atom)");
+
+    let space_ref = &items[1];
+    let atom = &items[2];
+
+    // Evaluate both arguments
+    let (space_results, env1) = eval(space_ref.clone(), env);
+    if space_results.is_empty() {
+        let err = MettaValue::Error(
+            "remove-atom: space evaluated to empty".to_string(),
+            Arc::new(space_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    let (atom_results, mut env2) = eval(atom.clone(), env1);
+    if atom_results.is_empty() {
+        let err = MettaValue::Error(
+            "remove-atom: atom evaluated to empty".to_string(),
+            Arc::new(atom.clone()),
+        );
+        return (vec![err], env2);
+    }
+
+    // Get the space ID
+    let space_value = &space_results[0];
+    let atom_value = &atom_results[0];
+
+    match space_value {
+        MettaValue::Space(handle) => {
+            // Use SpaceHandle's remove_atom method directly (it has its own backing store)
+            handle.remove_atom(atom_value);
+            (vec![MettaValue::Unit], env2)
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "remove-atom: first argument must be a space reference, got {}. Usage: (remove-atom space atom)",
+                    super::friendly_value_repr(space_value)
+                ),
+                Arc::new(space_value.clone()),
+            );
+            (vec![err], env2)
+        }
+    }
+}
+
+/// collapse: Gather all nondeterministic results into a list
+/// Usage: (collapse expr)
+///
+/// HE-compatible behavior:
+/// - If expr evaluates to multiple results (superposition), gathers them into a list
+/// - If expr is a space, returns all atoms in the space as a list
+/// - If expr is empty, returns Nil
+///
+/// Example:
+/// ```metta
+/// !(collapse (get-atoms &self))  ; Wraps atoms in a list
+/// !(collapse &myspace)           ; Gets atoms from space as list
+/// ```
+pub(super) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("collapse", items, 1, env, "(collapse expr)");
+
+    let expr = &items[1];
+
+    // Evaluate the expression - this may return multiple results (superposition)
+    let (results, env1) = eval(expr.clone(), env);
+
+    if results.is_empty() {
+        // Empty superposition returns Unit () (HE-compatible)
+        return (vec![MettaValue::Unit], env1);
+    }
+
+    // Filter out Empty sentinels and Nil values from results
+    // Empty represents "no result to report", Nil represents "no result" in nondeterministic evaluation
+    let filtered: Vec<MettaValue> = results
+        .into_iter()
+        .filter(|v| !matches!(v, MettaValue::Empty | MettaValue::Nil))
+        .collect();
+
+    if filtered.is_empty() {
+        // All results were Empty/Nil → return Unit () (HE-compatible)
+        return (vec![MettaValue::Unit], env1);
+    }
+
+    // Check if the single result is a space (direct space collapse)
+    if filtered.len() == 1 {
+        if let MettaValue::Space(handle) = &filtered[0] {
+            // Use SpaceHandle's collapse method directly
+            let atoms = handle.collapse();
+            if atoms.is_empty() {
+                return (vec![MettaValue::Unit], env1);
+            } else {
+                return (vec![MettaValue::SExpr(atoms)], env1);
+            }
+        }
+    }
+
+    // For any other expression, gather all results into a list
+    (vec![MettaValue::SExpr(filtered)], env1)
+}
+
+/// collapse-bind: Gather all nondeterministic results into a list WITHOUT filtering
+/// Usage: (collapse-bind expr)
+///
+/// Unlike `collapse` which filters out Empty/Nil values, `collapse-bind` preserves
+/// ALL results including Empty. This is important for introspection and checking
+/// whether an expression produced Empty as a result.
+///
+/// HE-compatible behavior:
+/// - Returns ALL alternatives from nondeterministic evaluation
+/// - Does NOT filter Empty/Nil values
+///
+/// Example:
+/// ```metta
+/// !(collapse-bind (superpose (1 2 3)))  ; Returns [(1 2 3)]
+/// !(collapse-bind Empty)                 ; Returns [Empty] not []
+/// ```
+pub(super) fn eval_collapse_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("collapse-bind", items, 1, env, "(collapse-bind expr)");
+
+    let expr = &items[1];
+
+    // Evaluate the expression - this may return multiple results (superposition)
+    let (results, env1) = eval(expr.clone(), env);
+
+    // Unlike collapse, do NOT filter Empty/Nil values
+    // Return ALL results as a single list, preserving everything
+    (vec![MettaValue::SExpr(results)], env1)
+}
+
+/// superpose: Convert a list to nondeterministic results (superposition)
+/// Usage: (superpose list)
+///
+/// HE-compatible behavior:
+/// - Takes a list and returns each element as a separate result (nondeterministic)
+/// - This is the inverse of `collapse` - it explicitly introduces nondeterminism
+/// - Essential for HE-compatible deterministic-first evaluation model
+///
+/// Example:
+/// ```metta
+/// !(superpose (1 2 3))  ; Returns 1, 2, 3 as separate results
+/// !(superpose ())       ; Returns empty (no results)
+/// ```
+pub(super) fn eval_superpose(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("superpose", items, 1, env, "(superpose list)");
+
+    let expr = &items[1];
+
+    // DON'T evaluate the argument - treat it as a data list (HE-compatible)
+    // This is different from most operations that evaluate their arguments
+    match expr {
+        MettaValue::SExpr(elements) => {
+            if elements.is_empty() {
+                // Empty superpose returns empty (no results) - nondeterministic failure
+                (vec![], env)
+            } else {
+                // Return each element as a separate result (nondeterministic)
+                (elements.clone(), env)
+            }
+        }
+        MettaValue::Nil => {
+            // Nil superposes to empty (no results)
+            (vec![], env)
+        }
+        other => {
+            // Single value superposes to itself
+            (vec![other.clone()], env)
+        }
+    }
+}
+
+// =============================================================================
+// Phase G: Advanced Nondeterminism Operations
+// =============================================================================
+
+/// amb: Ambiguous choice (inline nondeterministic choice)
+/// Usage: (amb alt1 alt2 ... altN)
+///
+/// Returns each alternative as a separate result, similar to `superpose` but
+/// evaluates each alternative before returning.
+///
+/// Example:
+/// ```metta
+/// !(amb 1 2 3)  ; Returns 1, 2, 3 as separate results (after evaluation)
+/// !(amb)        ; Returns empty (no results) - nondeterministic failure
+/// ```
+pub(super) fn eval_amb(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    let args = &items[1..];
+
+    if args.is_empty() {
+        // Empty amb returns empty (nondeterministic failure)
+        return (vec![], env);
+    }
+
+    // Evaluate each alternative and collect all results
+    let mut all_results = Vec::new();
+    let mut current_env = env;
+
+    for alt in args {
+        let (results, new_env) = eval(alt.clone(), current_env);
+        all_results.extend(results);
+        current_env = new_env;
+    }
+
+    (all_results, current_env)
+}
+
+/// guard: Guarded choice - continue if condition is true, fail otherwise
+/// Usage: (guard condition)
+///
+/// If condition evaluates to True, returns Unit and execution continues.
+/// If condition evaluates to False, returns empty (nondeterministic failure).
+///
+/// Example:
+/// ```metta
+/// !(if (guard True) "passed" "failed")   ; Returns "passed"
+/// !(if (guard False) "passed" "failed")  ; Returns "failed"
+/// ```
+pub(super) fn eval_guard(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("guard", items, 1, env, "(guard condition)");
+
+    let condition = &items[1];
+
+    // Evaluate the condition
+    let (cond_results, env_after) = eval(condition.clone(), env);
+
+    // Check the condition result
+    match cond_results.first() {
+        Some(MettaValue::Bool(true)) => {
+            // Guard passes - return Unit and continue
+            (vec![MettaValue::Unit], env_after)
+        }
+        Some(MettaValue::Bool(false)) => {
+            // Guard fails - return empty (nondeterministic failure)
+            (vec![], env_after)
+        }
+        Some(MettaValue::Error(msg, details)) => {
+            // Error propagates
+            (vec![MettaValue::Error(msg.clone(), details.clone())], env_after)
+        }
+        Some(other) => {
+            // Type error - guard requires a boolean
+            let err = MettaValue::Error(
+                format!(
+                    "guard: condition must evaluate to Bool, got {}",
+                    super::friendly_type_name(other)
+                ),
+                Arc::new(other.clone()),
+            );
+            (vec![err], env_after)
+        }
+        None => {
+            // Empty evaluation result - treat as guard failure
+            (vec![], env_after)
+        }
+    }
+}
+
+/// commit: Remove choice points (soft cut)
+/// Usage: (commit) or (commit N)
+///
+/// In the tree-walker, this is mostly a no-op since choice points are not
+/// tracked the same way as in the bytecode VM. It returns Unit.
+///
+/// Example:
+/// ```metta
+/// !(commit)    ; Remove all choice points
+/// !(commit 1)  ; Remove 1 choice point
+/// ```
+pub(super) fn eval_commit(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    // In tree-walker evaluation, commit is a no-op since we don't maintain
+    // explicit choice points. The nondeterminism is handled through result lists.
+    // Just return Unit to indicate success.
+    let _ = items; // Suppress unused warning
+    (vec![MettaValue::Unit], env)
+}
+
+/// backtrack: Force immediate backtracking (nondeterministic failure)
+/// Usage: (backtrack)
+///
+/// Returns empty (no results), causing nondeterministic failure.
+/// This is equivalent to `(amb)` with no alternatives.
+///
+/// Example:
+/// ```metta
+/// !(backtrack)  ; Returns empty (no results)
+/// ```
+pub(super) fn eval_backtrack(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    let _ = items; // Suppress unused warning
+    // Return empty to signal nondeterministic failure
+    (vec![], env)
+}
+
+/// get-atoms: Get all atoms from a space as a superposition
+/// Usage: (get-atoms space)
+///
+/// Unlike `collapse` which returns atoms wrapped in a list, `get-atoms` returns
+/// atoms as a superposition (multiple values). This is HE-compatible behavior.
+///
+/// Example:
+/// ```metta
+/// !(get-atoms &self)  ; Returns each atom as a separate result
+/// ```
+pub(super) fn eval_get_atoms(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("get-atoms", items, 1, env, "(get-atoms space)");
+
+    let space_ref = &items[1];
+
+    // Evaluate the space reference
+    let (space_results, env1) = eval(space_ref.clone(), env);
+    if space_results.is_empty() {
+        let err = MettaValue::Error(
+            "get-atoms: space evaluated to empty".to_string(),
+            Arc::new(space_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    let space_value = &space_results[0];
+
+    match space_value {
+        MettaValue::Space(handle) => {
+            // Return atoms as superposition (multiple results), not wrapped in list
+            let atoms = handle.collapse();
+            if atoms.is_empty() {
+                // Empty space returns empty results
+                (vec![], env1)
+            } else {
+                // Return all atoms as separate results (superposition semantics)
+                (atoms, env1)
             }
         }
         _ => {
             let err = MettaValue::Error(
                 format!(
-                    "match requires & as first argument, got: {}",
-                    super::friendly_value_repr(space_ref)
+                    "get-atoms: argument must be a space, got {}. Usage: (get-atoms space)",
+                    super::friendly_value_repr(space_value)
                 ),
-                Arc::new(MettaValue::SExpr(args.to_vec())),
+                Arc::new(space_value.clone()),
             );
-            (vec![err], env)
+            (vec![err], env1)
+        }
+    }
+}
+
+// ============================================================
+// State Operations (new-state, get-state, change-state!)
+// ============================================================
+
+/// new-state: Create a new mutable state cell with an initial value
+/// Usage: (new-state initial-value)
+pub(super) fn eval_new_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("new-state", items, 1, env, "(new-state initial-value)");
+
+    let initial_value = &items[1];
+
+    // Evaluate the initial value
+    let (value_results, mut env1) = eval(initial_value.clone(), env);
+    if value_results.is_empty() {
+        let err = MettaValue::Error(
+            "new-state: initial value evaluated to empty".to_string(),
+            Arc::new(initial_value.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    let value = value_results[0].clone();
+    let state_id = env1.create_state(value);
+    (vec![MettaValue::State(state_id)], env1)
+}
+
+/// get-state: Get the current value from a state cell
+/// Usage: (get-state state-ref)
+pub(super) fn eval_get_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("get-state", items, 1, env, "(get-state state)");
+
+    let state_ref = &items[1];
+
+    // Evaluate the state reference
+    let (state_results, env1) = eval(state_ref.clone(), env);
+    if state_results.is_empty() {
+        let err = MettaValue::Error(
+            "get-state: state evaluated to empty".to_string(),
+            Arc::new(state_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    let state_value = &state_results[0];
+
+    match state_value {
+        MettaValue::State(state_id) => {
+            if let Some(value) = env1.get_state(*state_id) {
+                (vec![value], env1)
+            } else {
+                let err = MettaValue::Error(
+                    format!("get-state: state {} not found", state_id),
+                    Arc::new(state_value.clone()),
+                );
+                (vec![err], env1)
+            }
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "get-state: argument must be a state reference, got {}. Usage: (get-state state)",
+                    super::friendly_value_repr(state_value)
+                ),
+                Arc::new(state_value.clone()),
+            );
+            (vec![err], env1)
+        }
+    }
+}
+
+/// change-state!: Change the value in a state cell
+/// Usage: (change-state! state-ref new-value)
+/// Returns the state reference for chaining
+pub(super) fn eval_change_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!(
+        "change-state!",
+        items,
+        2,
+        env,
+        "(change-state! state new-value)"
+    );
+
+    let state_ref = &items[1];
+    let new_value = &items[2];
+
+    // Evaluate the state reference
+    let (state_results, env1) = eval(state_ref.clone(), env);
+    if state_results.is_empty() {
+        let err = MettaValue::Error(
+            "change-state!: state evaluated to empty".to_string(),
+            Arc::new(state_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    // Evaluate the new value
+    let (value_results, mut env2) = eval(new_value.clone(), env1);
+    if value_results.is_empty() {
+        let err = MettaValue::Error(
+            "change-state!: new value evaluated to empty".to_string(),
+            Arc::new(new_value.clone()),
+        );
+        return (vec![err], env2);
+    }
+
+    let state_value = &state_results[0];
+    let value = value_results[0].clone();
+
+    match state_value {
+        MettaValue::State(state_id) => {
+            if env2.change_state(*state_id, value) {
+                // Return the state reference for chaining
+                (vec![state_value.clone()], env2)
+            } else {
+                let err = MettaValue::Error(
+                    format!("change-state!: state {} not found", state_id),
+                    Arc::new(state_value.clone()),
+                );
+                (vec![err], env2)
+            }
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "change-state!: first argument must be a state reference, got {}. Usage: (change-state! state new-value)",
+                    super::friendly_value_repr(state_value)
+                ),
+                Arc::new(state_value.clone()),
+            );
+            (vec![err], env2)
+        }
+    }
+}
+
+// ============================================================================
+// Memoization Operations
+// ============================================================================
+
+/// new-memo: Create a new memoization table
+/// Usage: (new-memo "name")
+/// Optional: (new-memo "name" max-size) for LRU eviction
+/// Returns a Memo handle that can be used with memo/memo-first
+pub(super) fn eval_new_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    // Allow 1 or 2 arguments: name [max-size]
+    if items.len() < 2 || items.len() > 3 {
+        let err = MettaValue::Error(
+            "new-memo: requires 1 or 2 arguments. Usage: (new-memo \"name\") or (new-memo \"name\" max-size)".to_string(),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return (vec![err], env);
+    }
+
+    let name_arg = &items[1];
+
+    // Evaluate the name argument
+    let (name_results, env1) = eval(name_arg.clone(), env);
+    if name_results.is_empty() {
+        let err = MettaValue::Error(
+            "new-memo: name evaluated to empty".to_string(),
+            Arc::new(name_arg.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    // Extract string name
+    let name = match &name_results[0] {
+        MettaValue::String(s) => s.clone(),
+        MettaValue::Atom(s) => s.clone(),
+        other => {
+            let err = MettaValue::Error(
+                format!(
+                    "new-memo: name must be a string or atom, got {}",
+                    super::friendly_value_repr(other)
+                ),
+                Arc::new(other.clone()),
+            );
+            return (vec![err], env1);
+        }
+    };
+
+    // Check for optional max-size argument
+    if items.len() == 3 {
+        let size_arg = &items[2];
+        let (size_results, env2) = eval(size_arg.clone(), env1);
+        if size_results.is_empty() {
+            let err = MettaValue::Error(
+                "new-memo: max-size evaluated to empty".to_string(),
+                Arc::new(size_arg.clone()),
+            );
+            return (vec![err], env2);
+        }
+
+        match &size_results[0] {
+            MettaValue::Long(n) if *n > 0 => {
+                let memo = MemoHandle::with_max_size(name, *n as usize);
+                (vec![MettaValue::Memo(memo)], env2)
+            }
+            other => {
+                let err = MettaValue::Error(
+                    format!(
+                        "new-memo: max-size must be a positive integer, got {}",
+                        super::friendly_value_repr(other)
+                    ),
+                    Arc::new(other.clone()),
+                );
+                (vec![err], env2)
+            }
+        }
+    } else {
+        // No max-size - unlimited cache
+        let memo = MemoHandle::new(name);
+        (vec![MettaValue::Memo(memo)], env1)
+    }
+}
+
+/// memo: Memoized evaluation - caches all results
+/// Usage: (memo memo-table expr)
+/// Returns cached results if available, otherwise evaluates expr and caches results
+pub(super) fn eval_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("memo", items, 2, env, "(memo memo-table expr)");
+
+    let memo_ref = &items[1];
+    let expr = &items[2];
+
+    // Evaluate the memo reference
+    let (memo_results, env1) = eval(memo_ref.clone(), env);
+    if memo_results.is_empty() {
+        let err = MettaValue::Error(
+            "memo: memo-table evaluated to empty".to_string(),
+            Arc::new(memo_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    match &memo_results[0] {
+        MettaValue::Memo(handle) => {
+            // Check cache first
+            if let Some(cached) = handle.lookup(expr) {
+                return (cached, env1);
+            }
+
+            // Not cached - evaluate and store
+            let (results, env2) = eval(expr.clone(), env1);
+
+            // Store in cache (only if non-empty)
+            if !results.is_empty() {
+                handle.store(expr, results.clone(), false);
+            }
+
+            (results, env2)
+        }
+        other => {
+            let err = MettaValue::Error(
+                format!(
+                    "memo: first argument must be a memo table, got {}. Usage: (memo memo-table expr)",
+                    super::friendly_value_repr(other)
+                ),
+                Arc::new(other.clone()),
+            );
+            (vec![err], env1)
+        }
+    }
+}
+
+/// memo-first: Memoized evaluation - caches only first result
+/// Usage: (memo-first memo-table expr)
+/// Returns cached first result if available, otherwise evaluates expr and caches first result
+/// Useful for deterministic/backtracking scenarios where only one result is needed
+pub(super) fn eval_memo_first(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("memo-first", items, 2, env, "(memo-first memo-table expr)");
+
+    let memo_ref = &items[1];
+    let expr = &items[2];
+
+    // Evaluate the memo reference
+    let (memo_results, env1) = eval(memo_ref.clone(), env);
+    if memo_results.is_empty() {
+        let err = MettaValue::Error(
+            "memo-first: memo-table evaluated to empty".to_string(),
+            Arc::new(memo_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    match &memo_results[0] {
+        MettaValue::Memo(handle) => {
+            // Check cache first
+            if let Some(cached) = handle.lookup(expr) {
+                return (cached, env1);
+            }
+
+            // Not cached - evaluate and store only first result
+            let (results, env2) = eval(expr.clone(), env1);
+
+            // Store only first result in cache
+            if !results.is_empty() {
+                handle.store(expr, vec![results[0].clone()], true);
+            }
+
+            (results, env2)
+        }
+        other => {
+            let err = MettaValue::Error(
+                format!(
+                    "memo-first: first argument must be a memo table, got {}. Usage: (memo-first memo-table expr)",
+                    super::friendly_value_repr(other)
+                ),
+                Arc::new(other.clone()),
+            );
+            (vec![err], env1)
+        }
+    }
+}
+
+/// clear-memo!: Clear all cached entries from a memo table
+/// Usage: (clear-memo! memo-table)
+/// Returns the memo table for chaining
+pub(super) fn eval_clear_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("clear-memo!", items, 1, env, "(clear-memo! memo-table)");
+
+    let memo_ref = &items[1];
+
+    // Evaluate the memo reference
+    let (memo_results, env1) = eval(memo_ref.clone(), env);
+    if memo_results.is_empty() {
+        let err = MettaValue::Error(
+            "clear-memo!: memo-table evaluated to empty".to_string(),
+            Arc::new(memo_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    match &memo_results[0] {
+        MettaValue::Memo(handle) => {
+            handle.clear();
+            (vec![MettaValue::Memo(handle.clone())], env1)
+        }
+        other => {
+            let err = MettaValue::Error(
+                format!(
+                    "clear-memo!: argument must be a memo table, got {}. Usage: (clear-memo! memo-table)",
+                    super::friendly_value_repr(other)
+                ),
+                Arc::new(other.clone()),
+            );
+            (vec![err], env1)
+        }
+    }
+}
+
+/// memo-stats: Get statistics about a memo table
+/// Usage: (memo-stats memo-table)
+/// Returns (hits misses size max-size hit-rate)
+pub(super) fn eval_memo_stats(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("memo-stats", items, 1, env, "(memo-stats memo-table)");
+
+    let memo_ref = &items[1];
+
+    // Evaluate the memo reference
+    let (memo_results, env1) = eval(memo_ref.clone(), env);
+    if memo_results.is_empty() {
+        let err = MettaValue::Error(
+            "memo-stats: memo-table evaluated to empty".to_string(),
+            Arc::new(memo_ref.clone()),
+        );
+        return (vec![err], env1);
+    }
+
+    match &memo_results[0] {
+        MettaValue::Memo(handle) => {
+            let (hits, misses, size, max_size) = handle.stats();
+            let hit_rate = handle.hit_rate();
+
+            // Return as S-expression: (stats hits misses size max-size hit-rate%)
+            let stats = MettaValue::SExpr(vec![
+                MettaValue::Atom("stats".to_string()),
+                MettaValue::Long(hits as i64),
+                MettaValue::Long(misses as i64),
+                MettaValue::Long(size as i64),
+                MettaValue::Long(max_size as i64),
+                MettaValue::Float(hit_rate),
+            ]);
+            (vec![stats], env1)
+        }
+        other => {
+            let err = MettaValue::Error(
+                format!(
+                    "memo-stats: argument must be a memo table, got {}. Usage: (memo-stats memo-table)",
+                    super::friendly_value_repr(other)
+                ),
+                Arc::new(other.clone()),
+            );
+            (vec![err], env1)
         }
     }
 }
@@ -379,7 +1348,7 @@ mod tests {
         ]);
 
         let (results, _) = eval(match_query, env);
-        assert!(results.len() >= 2); // Should return both alice and bob
+        assert!(results.len() >= 2, "Expected >= 2 results, got {:?}", results); // Should return both alice and bob
         assert!(results.contains(&MettaValue::Atom("alice".to_string())));
         assert!(results.contains(&MettaValue::Atom("bob".to_string())));
     }
@@ -486,6 +1455,8 @@ mod tests {
         let env = Environment::new();
 
         // Test match with insufficient arguments
+        // Note: `& self` is preprocessed into `&self`, so (match & self) becomes (match &self)
+        // which has only 1 argument after "match"
         let match_insufficient = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
             MettaValue::Atom("&".to_string()),
@@ -497,11 +1468,12 @@ mod tests {
             MettaValue::Error(msg, _) => {
                 assert!(msg.contains("match"), "Expected 'match' in: {}", msg);
                 assert!(
-                    msg.contains("4 arguments"),
-                    "Expected '4 arguments' in: {}",
+                    msg.contains("3 or 4 arguments"),
+                    "Expected '3 or 4 arguments' in: {}",
                     msg
                 );
-                assert!(msg.contains("got 2"), "Expected 'got 2' in: {}", msg);
+                // After preprocessing `& self` -> `&self`, we have 1 arg
+                assert!(msg.contains("got 1"), "Expected 'got 1' in: {}", msg);
                 assert!(msg.contains("Usage:"), "Expected 'Usage:' in: {}", msg);
             }
             _ => panic!("Expected error for insufficient arguments"),
@@ -524,11 +1496,12 @@ mod tests {
             _ => panic!("Expected error for wrong space reference"),
         }
 
-        // Test match with unsupported space name
+        // Test match with unsupported space name (new-style syntax)
+        // Note: With the new space_ref token, `& other` is preprocessed to `&other`
+        // which triggers 3-arg new-style syntax, producing a "must be a space" error
         let match_wrong_space = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("other".to_string()), // Only "self" supported
+            MettaValue::Atom("&other".to_string()), // Unrecognized space reference
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
         ]);
@@ -536,7 +1509,11 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(msg.contains("only supports 'self'"));
+                assert!(
+                    msg.contains("must be a space"),
+                    "Expected 'must be a space' in: {}",
+                    msg
+                );
             }
             _ => panic!("Expected error for unsupported space name"),
         }
@@ -781,11 +1758,11 @@ mod tests {
     fn test_space_name_case_sensitivity_suggestion() {
         let env = Environment::new();
 
-        // Test "Self" (capital S) -> should suggest "self"
+        // Test "&Self" (capital S) -> should error (unrecognized space reference)
+        // Note: With the new space_ref token, &Self is a single atom, triggering new-style syntax
         let match_expr = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("Self".to_string()), // Wrong case
+            MettaValue::Atom("&Self".to_string()), // Wrong case - combined as single token
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
         ]);
@@ -794,18 +1771,14 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
+                // New-style syntax produces different error (no suggestion)
                 assert!(
-                    msg.contains("Did you mean: self"),
-                    "Expected 'Did you mean: self' in: {}",
-                    msg
-                );
-                assert!(
-                    msg.contains("case-sensitive"),
-                    "Expected 'case-sensitive' in: {}",
+                    msg.contains("must be a space"),
+                    "Expected 'must be a space' in: {}",
                     msg
                 );
             }
-            _ => panic!("Expected error with suggestion"),
+            _ => panic!("Expected error for unrecognized space reference"),
         }
     }
 
@@ -813,11 +1786,11 @@ mod tests {
     fn test_space_name_typo_suggestion() {
         let env = Environment::new();
 
-        // Test "slef" (typo) -> should suggest "self"
+        // Test "&slef" (typo) -> should error (unrecognized space reference)
+        // Note: With the new space_ref token, &slef is a single atom, triggering new-style syntax
         let match_expr = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("slef".to_string()), // Typo
+            MettaValue::Atom("&slef".to_string()), // Typo - combined as single token
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
         ]);
@@ -826,13 +1799,14 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
+                // New-style syntax produces different error (no suggestion)
                 assert!(
-                    msg.contains("Did you mean: self"),
-                    "Expected 'Did you mean: self' in: {}",
+                    msg.contains("must be a space"),
+                    "Expected 'must be a space' in: {}",
                     msg
                 );
             }
-            _ => panic!("Expected error with suggestion"),
+            _ => panic!("Expected error for typo space reference"),
         }
     }
 
@@ -862,5 +1836,190 @@ mod tests {
             }
             _ => panic!("Expected error without suggestion"),
         }
+    }
+
+    // =========================================================================
+    // Phase G: Advanced Nondeterminism Tests
+    // =========================================================================
+
+    #[test]
+    fn test_amb_with_multiple_alternatives() {
+        let env = Environment::new();
+
+        // (amb 1 2 3) should return 1, 2, 3 as separate results
+        let amb_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("amb".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+            MettaValue::Long(3),
+        ]);
+
+        let (results, _) = eval(amb_expr, env);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], MettaValue::Long(1));
+        assert_eq!(results[1], MettaValue::Long(2));
+        assert_eq!(results[2], MettaValue::Long(3));
+    }
+
+    #[test]
+    fn test_amb_empty_fails() {
+        let env = Environment::new();
+
+        // (amb) with no alternatives should return empty (nondeterministic failure)
+        let amb_expr = MettaValue::SExpr(vec![MettaValue::Atom("amb".to_string())]);
+
+        let (results, _) = eval(amb_expr, env);
+        assert!(results.is_empty(), "Empty amb should return no results");
+    }
+
+    #[test]
+    fn test_amb_single_alternative() {
+        let env = Environment::new();
+
+        // (amb 42) with single alternative
+        let amb_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("amb".to_string()),
+            MettaValue::Long(42),
+        ]);
+
+        let (results, _) = eval(amb_expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_guard_passes_on_true() {
+        let env = Environment::new();
+
+        // (guard True) should return Unit
+        let guard_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("guard".to_string()),
+            MettaValue::Bool(true),
+        ]);
+
+        let (results, _) = eval(guard_expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+    }
+
+    #[test]
+    fn test_guard_fails_on_false() {
+        let env = Environment::new();
+
+        // (guard False) should return empty (nondeterministic failure)
+        let guard_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("guard".to_string()),
+            MettaValue::Bool(false),
+        ]);
+
+        let (results, _) = eval(guard_expr, env);
+        assert!(results.is_empty(), "Guard with false should return no results");
+    }
+
+    #[test]
+    fn test_guard_type_error() {
+        let env = Environment::new();
+
+        // (guard 42) should return a type error
+        let guard_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("guard".to_string()),
+            MettaValue::Long(42),
+        ]);
+
+        let (results, _) = eval(guard_expr, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Bool"),
+                    "Error should mention Bool type: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected type error for non-boolean guard condition"),
+        }
+    }
+
+    #[test]
+    fn test_commit_returns_unit() {
+        let env = Environment::new();
+
+        // (commit) should return Unit
+        let commit_expr = MettaValue::SExpr(vec![MettaValue::Atom("commit".to_string())]);
+
+        let (results, _) = eval(commit_expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+    }
+
+    #[test]
+    fn test_backtrack_returns_empty() {
+        let env = Environment::new();
+
+        // (backtrack) should return empty (nondeterministic failure)
+        let backtrack_expr = MettaValue::SExpr(vec![MettaValue::Atom("backtrack".to_string())]);
+
+        let (results, _) = eval(backtrack_expr, env);
+        assert!(
+            results.is_empty(),
+            "Backtrack should return no results"
+        );
+    }
+
+    #[test]
+    fn test_amb_with_evaluated_expressions() {
+        let env = Environment::new();
+
+        // (amb (+ 1 1) (+ 2 2)) should evaluate each alternative
+        let amb_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("amb".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(1),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(amb_expr, env);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0], MettaValue::Long(2)); // 1+1
+        assert_eq!(results[1], MettaValue::Long(4)); // 2+2
+    }
+
+    #[test]
+    fn test_guard_with_evaluated_condition() {
+        let env = Environment::new();
+
+        // (guard (== 2 2)) should pass
+        let guard_true_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("guard".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("==".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(guard_true_expr, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+
+        // (guard (== 2 3)) should fail
+        let guard_false_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("guard".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("==".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+        ]);
+
+        let (results, _) = eval(guard_false_expr, env);
+        assert!(results.is_empty());
     }
 }

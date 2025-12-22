@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::eval;
 
-/// Error construction
+/// Error construction: (error msg details)
 pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     if items.len() < 2 {
         return (vec![], env);
@@ -19,6 +19,32 @@ pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult
         items[2].clone()
     } else {
         MettaValue::Nil
+    };
+
+    (vec![MettaValue::Error(msg, Arc::new(details))], env)
+}
+
+/// HE-compatible error construction: (Error details msg)
+/// Adapts HE's argument order to MeTTaTron's internal format
+pub(super) fn eval_error_he(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    if items.len() < 2 {
+        return (vec![], env);
+    }
+
+    // HE format: (Error details msg)
+    // If only one argument, treat it as details with no message
+    let (details, msg) = if items.len() == 2 {
+        // (Error details) - no message
+        (items[1].clone(), String::new())
+    } else {
+        // (Error details msg)
+        let details = items[1].clone();
+        let msg = match &items[2] {
+            MettaValue::String(s) => s.clone(),
+            MettaValue::Atom(s) => s.clone(),
+            other => format!("{:?}", other),
+        };
+        (details, msg)
     };
 
     (vec![MettaValue::Error(msg, Arc::new(details))], env)
@@ -558,10 +584,10 @@ mod tests {
 
         // Create a rule that returns empty: (= (returns-empty) ())
         use crate::backend::models::Rule;
-        let empty_rule = Rule {
-            lhs: MettaValue::SExpr(vec![MettaValue::Atom("returns-empty".to_string())]),
-            rhs: MettaValue::SExpr(vec![]),
-        };
+        let empty_rule = Rule::new(
+        MettaValue::SExpr(vec![MettaValue::Atom("returns-empty".to_string())]),
+        MettaValue::SExpr(vec![]),
+    );
         env.add_rule(empty_rule);
 
         // Test is-error with expression that returns empty

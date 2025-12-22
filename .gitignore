@@ -3,4 +3,8 @@ target/
 perf.data
 perf.data.*
 *.perf.data
+perf*.data
+*.data
 flamegraph*.svg
+*.so
+*.sw?

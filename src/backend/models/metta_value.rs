@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+use super::MemoHandle;
+use super::SpaceHandle;
+
 /// Represents a MeTTa value as an s-expression
 /// S-expressions are nested lists with textual operator names
 #[derive(Debug, Clone, PartialEq)]
@@ -22,9 +25,106 @@ pub enum MettaValue {
     Error(String, Arc<MettaValue>),
     /// A type (first-class types as atoms, Arc for O(1) clone)
     Type(Arc<MettaValue>),
+    /// A conjunction of goals (MORK-style logical AND)
+    /// Represents (,), (, expr), or (, expr1 expr2 ...)
+    /// Goals are evaluated left-to-right with variable binding threading
+    Conjunction(Vec<MettaValue>),
+    /// A first-class space value with queryable data
+    /// Used for space operations: new-space, add-atom, remove-atom, collapse, match
+    Space(SpaceHandle),
+    /// A reference to a mutable state cell (id)
+    /// Used for state operations: new-state, get-state, change-state!
+    State(u64),
+    /// Unit value for side-effecting operations that return nothing meaningful
+    /// Displayed as () in output
+    Unit,
+    /// A memoization table for caching evaluation results
+    /// Used for memo operations: new-memo, memo, memo-first, clear-memo!, memo-stats
+    Memo(MemoHandle),
+    /// Empty sentinel - represents "no result to report" that gets filtered at result collection.
+    /// This is distinct from:
+    /// - Empty result set (vec![]) - no alternatives exist, evaluation branch is dead
+    /// - Unit (()) - a valid result representing "success with no value"
+    /// Empty is returned by (empty) and filtered out at final result collection (HE-compatible).
+    Empty,
 }
 
+/// Arc-wrapped MettaValue for O(1) cloning in evaluation hot paths.
+/// Use this type when passing MettaValue through continuations, rule matches,
+/// or other locations where cloning is frequent but modification is rare.
+pub type ArcValue = Arc<MettaValue>;
+
 impl MettaValue {
+    /// Create a symbol atom from a string slice
+    ///
+    /// # Example
+    /// ```ignore
+    /// let sym = MettaValue::sym("foo");
+    /// // Produces: Atom("foo")
+    /// ```
+    #[inline]
+    pub fn sym(s: &str) -> Self {
+        MettaValue::Atom(s.to_string())
+    }
+
+    /// Create a variable atom (prefixed with $)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let var = MettaValue::var("x");
+    /// // Produces: Atom("$x")
+    /// ```
+    #[inline]
+    pub fn var(name: &str) -> Self {
+        MettaValue::Atom(format!("${}", name))
+    }
+
+    /// Create an S-expression from a vector of values
+    ///
+    /// HE-compatible: Empty S-expression () is distinct from Nil.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let sexpr = MettaValue::sexpr(vec![MettaValue::sym("+"), MettaValue::Long(1), MettaValue::Long(2)]);
+    /// // Produces: SExpr([Atom("+"), Long(1), Long(2)])
+    /// let empty = MettaValue::sexpr(vec![]);
+    /// // Produces: SExpr([]) - distinct from Nil
+    /// ```
+    #[inline]
+    pub fn sexpr(items: Vec<MettaValue>) -> Self {
+        MettaValue::SExpr(items)
+    }
+
+    /// Get the type name of this value as a string slice
+    ///
+    /// Returns the MeTTa type name for this value variant.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            MettaValue::Atom(s) if s.starts_with('$') => "Variable",
+            MettaValue::Atom(_) => "Symbol",
+            MettaValue::Bool(_) => "Bool",
+            MettaValue::Long(_) => "Number",
+            MettaValue::Float(_) => "Number",
+            MettaValue::String(_) => "String",
+            MettaValue::SExpr(_) => "Expression",
+            MettaValue::Nil => "Nil",
+            MettaValue::Error(_, _) => "Error",
+            MettaValue::Type(_) => "Type",
+            MettaValue::Conjunction(_) => "Conjunction",
+            MettaValue::Space(_) => "Space",
+            MettaValue::State(_) => "State",
+            MettaValue::Unit => "Unit",
+            MettaValue::Memo(_) => "Memo",
+            MettaValue::Empty => "Empty",
+        }
+    }
+
+    /// Check if this value is a variable (Atom starting with $)
+    #[inline]
+    pub fn is_variable(&self) -> bool {
+        matches!(self, MettaValue::Atom(s) if s.starts_with('$'))
+    }
+
     /// Create a quoted expression: (quote inner)
     ///
     /// Returns a quote special form that prevents evaluation of the inner expression.
@@ -72,15 +172,18 @@ impl MettaValue {
     /// Two expressions are structurally equivalent if they have the same structure,
     /// with variables in the same positions (regardless of variable names)
     pub fn structurally_equivalent(&self, other: &MettaValue) -> bool {
+        // Helper to check if an atom is a variable (not a space reference or operator)
+        fn is_variable(s: &str) -> bool {
+            if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
+                return false; // Space references are NOT variables
+            }
+            s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
+        }
+
         match (self, other) {
             // Variables match any other variable (names don't matter)
-            // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            (MettaValue::Atom(a), MettaValue::Atom(b))
-                if (a.starts_with('$') || a.starts_with('&') || a.starts_with('\''))
-                    && (b.starts_with('$') || b.starts_with('&') || b.starts_with('\''))
-                    && a != "&"
-                    && b != "&" =>
-            {
+            // EXCEPT: space references like "&self" must match exactly
+            (MettaValue::Atom(a), MettaValue::Atom(b)) if is_variable(a) && is_variable(b) => {
                 true
             }
 
@@ -116,6 +219,29 @@ impl MettaValue {
             // Types must be structurally equivalent
             (MettaValue::Type(a), MettaValue::Type(b)) => a.structurally_equivalent(b),
 
+            // Conjunctions must have same structure
+            (MettaValue::Conjunction(a_goals), MettaValue::Conjunction(b_goals)) => {
+                if a_goals.len() != b_goals.len() {
+                    return false;
+                }
+                a_goals
+                    .iter()
+                    .zip(b_goals.iter())
+                    .all(|(a, b)| a.structurally_equivalent(b))
+            }
+
+            // Spaces are equal if they have the same id
+            (MettaValue::Space(a), MettaValue::Space(b)) => a.id == b.id,
+
+            // States must have same id
+            (MettaValue::State(a_id), MettaValue::State(b_id)) => a_id == b_id,
+
+            // Unit matches unit
+            (MettaValue::Unit, MettaValue::Unit) => true,
+
+            // Empty matches empty
+            (MettaValue::Empty, MettaValue::Empty) => true,
+
             _ => false,
         }
     }
@@ -123,13 +249,18 @@ impl MettaValue {
     /// Extract the head symbol from a pattern for indexing
     /// Returns None if the pattern doesn't have a clear head symbol
     pub fn get_head_symbol(&self) -> Option<&str> {
+        // Helper to check if an atom is a space reference (not a variable)
+        fn is_space_ref(s: &str) -> bool {
+            s == "&" || s == "&self" || s == "&kb" || s == "&stack"
+        }
+
         match self {
             // For s-expressions like (double $x), extract "double"
-            // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
+            // Space references like "&self" are allowed as head symbols
             MettaValue::SExpr(items) if !items.is_empty() => match &items[0] {
                 MettaValue::Atom(head)
                     if !head.starts_with('$')
-                        && (!head.starts_with('&') || head == "&")
+                        && (!head.starts_with('&') || is_space_ref(head))
                         && !head.starts_with('\'')
                         && head != "_" =>
                 {
@@ -138,10 +269,10 @@ impl MettaValue {
                 _ => None,
             },
             // For bare atoms like foo, use the atom itself
-            // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
+            // Space references like "&self" are allowed as head symbols
             MettaValue::Atom(head)
                 if !head.starts_with('$')
-                    && (!head.starts_with('&') || head == "&")
+                    && (!head.starts_with('&') || is_space_ref(head))
                     && !head.starts_with('\'')
                     && head != "_" =>
             {
@@ -168,7 +299,11 @@ impl MettaValue {
             MettaValue::Atom(s) => {
                 // Variables need to start with $ in MORK format
                 // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-                if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" {
+                // EXCEPT: "&self" and other space references should be preserved as-is
+                if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
+                    // Space references and standalone & are NOT variables - preserve as-is
+                    s.clone()
+                } else if s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') {
                     format!("${}", &s[1..]) // Keep $ prefix, remove original prefix
                 } else if s == "_" {
                     "$".to_string() // Wildcard becomes $
@@ -193,6 +328,19 @@ impl MettaValue {
                 format!("(error \"{}\" {})", msg, details.to_mork_string())
             }
             MettaValue::Type(t) => t.to_mork_string(),
+            MettaValue::Conjunction(goals) => {
+                let inner = goals
+                    .iter()
+                    .map(|v| v.to_mork_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("(, {})", inner)
+            }
+            MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+            MettaValue::State(id) => format!("(State {})", id),
+            MettaValue::Unit => "()".to_string(),
+            MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+            MettaValue::Empty => "Empty".to_string(),
         }
     }
 
@@ -221,6 +369,33 @@ impl MettaValue {
             MettaValue::Type(t) => {
                 format!(r#"{{"type":"metatype","value":{}}}"#, t.to_json_string())
             }
+            MettaValue::Conjunction(goals) => {
+                let goals_json: Vec<String> =
+                    goals.iter().map(|value| value.to_json_string()).collect();
+                format!(
+                    r#"{{"type":"conjunction","goals":[{}]}}"#,
+                    goals_json.join(",")
+                )
+            }
+            MettaValue::Space(handle) => {
+                format!(
+                    r#"{{"type":"space","id":{},"name":"{}"}}"#,
+                    handle.id,
+                    escape_json(&handle.name)
+                )
+            }
+            MettaValue::State(id) => {
+                format!(r#"{{"type":"state","id":{}}}"#, id)
+            }
+            MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
+            MettaValue::Memo(handle) => {
+                format!(
+                    r#"{{"type":"memo","id":{},"name":"{}"}}"#,
+                    handle.id,
+                    escape_json(&handle.name)
+                )
+            }
+            MettaValue::Empty => r#"{"type":"empty"}"#.to_string(),
         }
     }
 }
@@ -277,6 +452,28 @@ impl std::hash::Hash for MettaValue {
             MettaValue::Type(t) => {
                 8u8.hash(state);
                 t.hash(state);
+            }
+            MettaValue::Conjunction(goals) => {
+                10u8.hash(state);
+                goals.hash(state);
+            }
+            MettaValue::Space(handle) => {
+                11u8.hash(state);
+                handle.hash(state);
+            }
+            MettaValue::State(id) => {
+                13u8.hash(state);
+                id.hash(state);
+            }
+            MettaValue::Unit => {
+                12u8.hash(state);
+            }
+            MettaValue::Memo(handle) => {
+                14u8.hash(state);
+                handle.hash(state);
+            }
+            MettaValue::Empty => {
+                15u8.hash(state);
             }
         }
     }
@@ -788,6 +985,18 @@ mod tests {
     fn test_to_mork_string_standalone_ampersand() {
         // Standalone "&" is NOT converted (it's a literal operator)
         assert_eq!(MettaValue::Atom("&".to_string()).to_mork_string(), "&");
+    }
+
+    #[test]
+    fn test_to_mork_string_space_references() {
+        // Space references like &self are NOT variables - they should be preserved
+        assert_eq!(MettaValue::Atom("&self".to_string()).to_mork_string(), "&self");
+        assert_eq!(MettaValue::Atom("&kb".to_string()).to_mork_string(), "&kb");
+        assert_eq!(MettaValue::Atom("&stack".to_string()).to_mork_string(), "&stack");
+
+        // But regular &-prefixed atoms ARE variables and get converted
+        assert_eq!(MettaValue::Atom("&x".to_string()).to_mork_string(), "$x");
+        assert_eq!(MettaValue::Atom("&foo".to_string()).to_mork_string(), "$foo");
     }
 
     #[test]

@@ -130,7 +130,11 @@ pub use native_registry::{NativeRegistry, NativeContext, NativeError, NativeResu
 pub use memo_cache::{MemoCache, CacheStats as MemoCacheStats};
 pub use external_registry::{ExternalRegistry, ExternalContext, ExternalError, ExternalResult, ExternalFn};
 pub use space_registry::SpaceRegistry;
-pub use optimizer::{PeepholeOptimizer, OptimizationStats, optimize_bytecode};
+pub use optimizer::{
+    PeepholeOptimizer, OptimizationStats, optimize_bytecode,
+    DeadCodeEliminator, DceStats, eliminate_dead_code, optimize_bytecode_full,
+    PeepholeAction,
+};
 
 // JIT re-exports (when jit feature is enabled)
 #[cfg(feature = "jit")]

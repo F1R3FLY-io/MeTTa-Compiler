@@ -18,6 +18,7 @@ mod list_ops;
 mod mork_forms;
 pub mod priority;
 mod quoting;
+mod set;
 mod space;
 mod types;
 
@@ -518,6 +519,12 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),
             "lookup" => return EvalStep::Done(mork_forms::eval_lookup(items, env)),
             "rulify" => return EvalStep::Done(mork_forms::eval_rulify(items, env)),
+
+            // Set operations
+            "unique-atom" => return EvalStep::Done(set::eval_unique_atom(items, env)),
+            "union-atom" => return EvalStep::Done(set::eval_union_atom(items, env)),
+            "intersection-atom" => return EvalStep::Done(set::eval_intersection_atom(items, env)),
+            "subtraction-atom" => return EvalStep::Done(set::eval_subtraction_atom(items, env)),
             _ => {}
         }
     }

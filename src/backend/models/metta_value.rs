@@ -178,6 +178,33 @@ impl MettaValue {
         }
     }
 
+    // TODO -> comment
+    pub fn to_path_map_string(&self) -> String {
+        match self {
+            MettaValue::Atom(s) => s.clone(),
+            MettaValue::Bool(b) => b.to_string(),
+            MettaValue::Long(n) => n.to_string(),
+            MettaValue::Float(f) => f.to_string(),
+            MettaValue::String(s) => format!("\"{}\"", s),
+            MettaValue::SExpr(items) => {
+                todo!()
+            }
+            MettaValue::Nil => "()".to_string(),
+            MettaValue::Error(msg, details) => {
+                format!("(error \"{}\" {})", msg, details.to_mork_string())
+            }
+            MettaValue::Type(t) => t.to_mork_string(),
+            MettaValue::Conjunction(goals) => {
+                let inner = goals
+                    .iter()
+                    .map(|v| v.to_path_map_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("(, {})", inner)
+            }
+        }
+    }
+
     /// Convert MettaValue to MORK s-expression string format
     /// This format can be parsed by MORK's parser
     pub fn to_mork_string(&self) -> String {

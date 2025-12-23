@@ -20,6 +20,7 @@ pub struct ValueHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub load_const_func_id: FuncId,
     pub push_empty_func_id: FuncId,
+    pub push_uri_func_id: FuncId,
 }
 
 /// Compile simple value creation opcodes (no runtime calls needed)
@@ -125,6 +126,22 @@ pub fn compile_runtime_value_op<'a, 'b>(
             let ctx_ptr = codegen.ctx_ptr();
             let idx_val = codegen.builder.ins().iconst(types::I64, idx);
             let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, idx_val]);
+            let result = codegen.builder.inst_results(call_inst)[0];
+            codegen.push(result)?;
+        }
+
+        Opcode::PushUri => {
+            // Load URI from constant pool via runtime call
+            let index = chunk.read_u16(offset + 1).unwrap_or(0);
+
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(ctx.push_uri_func_id, codegen.builder.func);
+
+            // Call jit_runtime_push_uri(ctx, index)
+            let ctx_ptr = codegen.ctx_ptr();
+            let index_val = codegen.builder.ins().iconst(types::I64, index as i64);
+            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, index_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }

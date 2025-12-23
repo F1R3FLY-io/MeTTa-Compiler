@@ -3865,56 +3865,17 @@ impl JitCompiler {
             }
 
             // =====================================================================
-            // Expression Manipulation Operations (PR #63)
+            // Expression Manipulation Operations (delegated to handlers module)
             // =====================================================================
 
-            Opcode::IndexAtom => {
-                // index-atom: [expr, index] -> [element]
-                let index = codegen.pop()?;
-                let expr = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.index_atom_func_id, codegen.builder.func);
-
-                let ctx_ptr = codegen.ctx_ptr();
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, expr, index, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::MinAtom => {
-                // min-atom: [expr] -> [min value]
-                let expr = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.min_atom_func_id, codegen.builder.func);
-
-                let ctx_ptr = codegen.ctx_ptr();
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, expr, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::MaxAtom => {
-                // max-atom: [expr] -> [max value]
-                let expr = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.max_atom_func_id, codegen.builder.func);
-
-                let ctx_ptr = codegen.ctx_ptr();
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, expr, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
+            Opcode::IndexAtom | Opcode::MinAtom | Opcode::MaxAtom => {
+                let mut ctx = handlers::ExprHandlerContext {
+                    module: &mut self.module,
+                    index_atom_func_id: self.index_atom_func_id,
+                    min_atom_func_id: self.min_atom_func_id,
+                    max_atom_func_id: self.max_atom_func_id,
+                };
+                return handlers::compile_expr_op(&mut ctx, codegen, op, offset);
             }
 
             // =====================================================================

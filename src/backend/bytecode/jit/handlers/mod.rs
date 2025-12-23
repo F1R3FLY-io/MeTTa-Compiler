@@ -19,6 +19,8 @@ mod type_predicates;
 mod math;
 #[cfg(feature = "jit")]
 mod sexpr;
+#[cfg(feature = "jit")]
+mod expr;
 
 #[cfg(feature = "jit")]
 pub use stack::compile_stack_op;
@@ -36,3 +38,5 @@ pub use type_predicates::compile_type_predicate_op;
 pub use math::{compile_extended_math_op, MathHandlerContext};
 #[cfg(feature = "jit")]
 pub use sexpr::{compile_sexpr_access_op, compile_sexpr_create_op, SExprHandlerContext};
+#[cfg(feature = "jit")]
+pub use expr::{compile_expr_op, ExprHandlerContext};

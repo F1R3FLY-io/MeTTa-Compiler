@@ -15,6 +15,10 @@ mod comparison;
 mod locals;
 #[cfg(feature = "jit")]
 mod type_predicates;
+#[cfg(feature = "jit")]
+mod math;
+#[cfg(feature = "jit")]
+mod sexpr;
 
 #[cfg(feature = "jit")]
 pub use stack::compile_stack_op;
@@ -28,3 +32,7 @@ pub use comparison::{compile_boolean_op, compile_comparison_op};
 pub use locals::compile_local_op;
 #[cfg(feature = "jit")]
 pub use type_predicates::compile_type_predicate_op;
+#[cfg(feature = "jit")]
+pub use math::{compile_extended_math_op, MathHandlerContext};
+#[cfg(feature = "jit")]
+pub use sexpr::{compile_sexpr_access_op, compile_sexpr_create_op, SExprHandlerContext};

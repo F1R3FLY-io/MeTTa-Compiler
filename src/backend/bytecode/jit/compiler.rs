@@ -3375,73 +3375,21 @@ impl JitCompiler {
             }
 
             // =====================================================================
-            // Stage 14: S-Expression Operations
+            // Stage 14: S-Expression Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::GetHead => {
-                // Get first element of S-expression via runtime call
-                let val = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.get_head_func_id, codegen.builder.func);
-
-                // Call jit_runtime_get_head(ctx, val, ip)
-                let ctx_ptr = codegen.ctx_ptr();
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::GetTail => {
-                // Get tail (all but first) of S-expression via runtime call
-                let val = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.get_tail_func_id, codegen.builder.func);
-
-                // Call jit_runtime_get_tail(ctx, val, ip)
-                let ctx_ptr = codegen.ctx_ptr();
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::GetArity => {
-                // Get arity (element count) of S-expression via runtime call
-                let val = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.get_arity_func_id, codegen.builder.func);
-
-                // Call jit_runtime_get_arity(ctx, val, ip)
-                let ctx_ptr = codegen.ctx_ptr();
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::GetElement => {
-                // Stage 14b: Get element by index from S-expression via runtime call
-                // Read the index from the bytecode (1-byte operand)
-                let index = chunk.read_byte(offset + 1).unwrap_or(0) as i64;
-                let val = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.get_element_func_id, codegen.builder.func);
-
-                // Call jit_runtime_get_element(ctx, val, index, ip)
-                let ctx_ptr = codegen.ctx_ptr();
-                let index_val = codegen.builder.ins().iconst(types::I64, index);
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, index_val, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
+            Opcode::GetHead | Opcode::GetTail | Opcode::GetArity | Opcode::GetElement => {
+                let mut ctx = handlers::SExprHandlerContext {
+                    module: &mut self.module,
+                    get_head_func_id: self.get_head_func_id,
+                    get_tail_func_id: self.get_tail_func_id,
+                    get_arity_func_id: self.get_arity_func_id,
+                    get_element_func_id: self.get_element_func_id,
+                    make_sexpr_func_id: self.make_sexpr_func_id,
+                    cons_atom_func_id: self.cons_atom_func_id,
+                    make_list_func_id: self.make_list_func_id,
+                    make_quote_func_id: self.make_quote_func_id,
+                };
+                return handlers::compile_sexpr_access_op(&mut ctx, codegen, chunk, op, offset);
             }
 
             // =====================================================================
@@ -3505,113 +3453,30 @@ impl JitCompiler {
             }
 
             // =====================================================================
-            // Phase 2a: Value Creation Operations
+            // Phase 2a: S-Expression Creation Operations (delegated to handlers module)
             // =====================================================================
 
-            Opcode::MakeSExpr => {
-                // Create S-expression from N stack values
-                // Stack: [v1, v2, ..., vN] -> [sexpr]
-                let arity = chunk.read_byte(offset + 1).unwrap_or(0) as usize;
-
-                // Pop all values in reverse order (they'll be stored bottom-up)
-                let mut values = Vec::with_capacity(arity);
-                for _ in 0..arity {
-                    values.push(codegen.pop()?);
-                }
-                values.reverse(); // Restore original order
-
-                // Create a stack slot to hold the array of values
-                let slot_size = (arity * 8) as u32; // 8 bytes per u64
-                let slot = codegen.builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    slot_size,
-                    0,
-                ));
-
-                // Store values to the stack slot
-                for (i, val) in values.iter().enumerate() {
-                    let slot_offset = (i * 8) as i32;
-                    codegen.builder.ins().stack_store(*val, slot, slot_offset);
-                }
-
-                // Get pointer to the stack slot
-                let values_ptr = codegen.builder.ins().stack_addr(types::I64, slot, 0);
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.make_sexpr_func_id, codegen.builder.func);
-
-                // Call jit_runtime_make_sexpr(ctx, values_ptr, count, ip)
-                let ctx_ptr = codegen.ctx_ptr();
-                let count_val = codegen.builder.ins().iconst(types::I64, arity as i64);
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, values_ptr, count_val, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::MakeSExprLarge => {
-                // Same as MakeSExpr but with u16 arity
-                // Stack: [v1, v2, ..., vN] -> [sexpr]
-                let arity = chunk.read_u16(offset + 1).unwrap_or(0) as usize;
-
-                // Pop all values in reverse order
-                let mut values = Vec::with_capacity(arity);
-                for _ in 0..arity {
-                    values.push(codegen.pop()?);
-                }
-                values.reverse();
-
-                // Create a stack slot to hold the array of values
-                let slot_size = (arity * 8) as u32;
-                let slot = codegen.builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    slot_size,
-                    0,
-                ));
-
-                // Store values to the stack slot
-                for (i, val) in values.iter().enumerate() {
-                    let slot_offset = (i * 8) as i32;
-                    codegen.builder.ins().stack_store(*val, slot, slot_offset);
-                }
-
-                // Get pointer to the stack slot
-                let values_ptr = codegen.builder.ins().stack_addr(types::I64, slot, 0);
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.make_sexpr_func_id, codegen.builder.func);
-
-                // Call jit_runtime_make_sexpr(ctx, values_ptr, count, ip)
-                let ctx_ptr = codegen.ctx_ptr();
-                let count_val = codegen.builder.ins().iconst(types::I64, arity as i64);
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, values_ptr, count_val, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::ConsAtom => {
-                // Prepend head to tail S-expression
-                // Stack: [head, tail] -> [sexpr]
-                let tail = codegen.pop()?;
-                let head = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.cons_atom_func_id, codegen.builder.func);
-
-                // Call jit_runtime_cons_atom(ctx, head, tail, ip)
-                let ctx_ptr = codegen.ctx_ptr();
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, head, tail, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
+            Opcode::MakeSExpr
+            | Opcode::MakeSExprLarge
+            | Opcode::ConsAtom
+            | Opcode::MakeList
+            | Opcode::MakeQuote => {
+                let mut ctx = handlers::SExprHandlerContext {
+                    module: &mut self.module,
+                    get_head_func_id: self.get_head_func_id,
+                    get_tail_func_id: self.get_tail_func_id,
+                    get_arity_func_id: self.get_arity_func_id,
+                    get_element_func_id: self.get_element_func_id,
+                    make_sexpr_func_id: self.make_sexpr_func_id,
+                    cons_atom_func_id: self.cons_atom_func_id,
+                    make_list_func_id: self.make_list_func_id,
+                    make_quote_func_id: self.make_quote_func_id,
+                };
+                return handlers::compile_sexpr_create_op(&mut ctx, codegen, chunk, op, offset);
             }
 
             // =====================================================================
-            // Phase 2b: Value Creation (PushUri, MakeList, MakeQuote)
+            // Phase 2b: Value Creation (PushUri)
             // =====================================================================
 
             Opcode::PushUri => {
@@ -3627,65 +3492,6 @@ impl JitCompiler {
                 let ctx_ptr = codegen.ctx_ptr();
                 let index_val = codegen.builder.ins().iconst(types::I64, index as i64);
                 let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, index_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::MakeList => {
-                // Create proper list from N stack values
-                // Stack: [v1, v2, ..., vN] -> [(Cons v1 (Cons v2 ... Nil))]
-                let arity = chunk.read_byte(offset + 1).unwrap_or(0) as usize;
-
-                // Pop all values in reverse order
-                let mut values = Vec::with_capacity(arity);
-                for _ in 0..arity {
-                    values.push(codegen.pop()?);
-                }
-                values.reverse(); // Restore original order
-
-                // Create a stack slot to hold the array of values
-                let slot_size = (arity * 8).max(8) as u32; // At least 8 bytes
-                let slot = codegen.builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    slot_size,
-                    0,
-                ));
-
-                // Store values to the stack slot
-                for (i, val) in values.iter().enumerate() {
-                    let slot_offset = (i * 8) as i32;
-                    codegen.builder.ins().stack_store(*val, slot, slot_offset);
-                }
-
-                // Get pointer to the stack slot
-                let values_ptr = codegen.builder.ins().stack_addr(types::I64, slot, 0);
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.make_list_func_id, codegen.builder.func);
-
-                // Call jit_runtime_make_list(ctx, values_ptr, count, ip)
-                let ctx_ptr = codegen.ctx_ptr();
-                let count_val = codegen.builder.ins().iconst(types::I64, arity as i64);
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, values_ptr, count_val, ip_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::MakeQuote => {
-                // Wrap value in quote expression
-                // Stack: [val] -> [(quote val)]
-                let val = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.make_quote_func_id, codegen.builder.func);
-
-                // Call jit_runtime_make_quote(ctx, val, ip)
-                let ctx_ptr = codegen.ctx_ptr();
-                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, ip_val]);
                 let result = codegen.builder.inst_results(call_inst)[0];
                 codegen.push(result)?;
             }
@@ -4021,190 +3827,41 @@ impl JitCompiler {
             }
 
             // =====================================================================
-            // Extended Math Operations (PR #62)
+            // Extended Math Operations (delegated to handlers module)
             // =====================================================================
 
-            Opcode::Sqrt => {
-                // sqrt-math: [value] -> [sqrt(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.sqrt_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::Log => {
-                // log-math: [base, value] -> [log_base(value)]
-                let value = codegen.pop()?;
-                let base = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.log_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[base, value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::Trunc => {
-                // trunc-math: [value] -> [trunc(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.trunc_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::Ceil => {
-                // ceil-math: [value] -> [ceil(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.ceil_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::FloorMath => {
-                // floor-math: [value] -> [floor(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.floor_math_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::Round => {
-                // round-math: [value] -> [round(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.round_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::Sin => {
-                // sin-math: [value] -> [sin(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.sin_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::Cos => {
-                // cos-math: [value] -> [cos(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.cos_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::Tan => {
-                // tan-math: [value] -> [tan(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.tan_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::Asin => {
-                // asin-math: [value] -> [asin(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.asin_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::Acos => {
-                // acos-math: [value] -> [acos(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.acos_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::Atan => {
-                // atan-math: [value] -> [atan(value)]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.atan_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::IsNan => {
-                // isnan-math: [value] -> [bool]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.isnan_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::IsInf => {
-                // isinf-math: [value] -> [bool]
-                let value = codegen.pop()?;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.isinf_func_id, codegen.builder.func);
-
-                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
+            Opcode::Sqrt
+            | Opcode::Log
+            | Opcode::Trunc
+            | Opcode::Ceil
+            | Opcode::FloorMath
+            | Opcode::Round
+            | Opcode::Sin
+            | Opcode::Cos
+            | Opcode::Tan
+            | Opcode::Asin
+            | Opcode::Acos
+            | Opcode::Atan
+            | Opcode::IsNan
+            | Opcode::IsInf => {
+                let mut ctx = handlers::MathHandlerContext {
+                    module: &mut self.module,
+                    sqrt_func_id: self.sqrt_func_id,
+                    log_func_id: self.log_func_id,
+                    trunc_func_id: self.trunc_func_id,
+                    ceil_func_id: self.ceil_func_id,
+                    floor_math_func_id: self.floor_math_func_id,
+                    round_func_id: self.round_func_id,
+                    sin_func_id: self.sin_func_id,
+                    cos_func_id: self.cos_func_id,
+                    tan_func_id: self.tan_func_id,
+                    asin_func_id: self.asin_func_id,
+                    acos_func_id: self.acos_func_id,
+                    atan_func_id: self.atan_func_id,
+                    isnan_func_id: self.isnan_func_id,
+                    isinf_func_id: self.isinf_func_id,
+                };
+                return handlers::compile_extended_math_op(&mut ctx, codegen, op);
             }
 
             // =====================================================================

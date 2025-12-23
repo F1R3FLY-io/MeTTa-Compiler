@@ -15,6 +15,7 @@ use super::types::{
     // Stage 2: Signal constants for native nondeterminism
     JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, JIT_SIGNAL_FAIL, JIT_SIGNAL_ERROR,
 };
+use tracing::{debug, trace, warn};
 use crate::backend::models::{MettaValue, Bindings};
 use crate::backend::bytecode::mork_bridge::{MorkBridge, CompiledRule};
 use crate::backend::bytecode::chunk::BytecodeChunk;
@@ -151,6 +152,444 @@ pub unsafe extern "C" fn jit_runtime_signum(val: u64) -> u64 {
     let n = extract_long_signed(val);
     let result = if n < 0 { -1 } else if n > 0 { 1 } else { 0 };
     box_long(result)
+}
+
+// =============================================================================
+// Extended Math Operations (PR #62)
+// =============================================================================
+
+/// Square root: sqrt(value) -> Float
+///
+/// # Safety
+/// The input must be a valid NaN-boxed Long or heap pointer to Float.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_sqrt(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Float(x.sqrt()),
+        MettaValue::Long(x) => MettaValue::Float((x as f64).sqrt()),
+        _ => MettaValue::Float(f64::NAN), // Type error - return NaN
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Logarithm: log_base(value) -> Float
+///
+/// # Safety
+/// The inputs must be valid NaN-boxed values.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_log(base: u64, val: u64) -> u64 {
+    let base_jv = JitValue::from_raw(base);
+    let val_jv = JitValue::from_raw(val);
+    let base_mv = base_jv.to_metta();
+    let val_mv = val_jv.to_metta();
+
+    let result = match (&base_mv, &val_mv) {
+        (MettaValue::Float(b), MettaValue::Float(v)) => MettaValue::Float(v.log(*b)),
+        (MettaValue::Long(b), MettaValue::Float(v)) => MettaValue::Float(v.log(*b as f64)),
+        (MettaValue::Float(b), MettaValue::Long(v)) => MettaValue::Float((*v as f64).log(*b)),
+        (MettaValue::Long(b), MettaValue::Long(v)) => MettaValue::Float((*v as f64).log(*b as f64)),
+        _ => MettaValue::Float(f64::NAN), // Type error - return NaN
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Truncate to integer: trunc(value) -> Long
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_trunc(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Long(x.trunc() as i64),
+        MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
+        _ => MettaValue::Long(0), // Type error
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Ceiling: ceil(value) -> Long
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_ceil(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Long(x.ceil() as i64),
+        MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
+        _ => MettaValue::Long(0), // Type error
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Floor: floor(value) -> Long
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_floor_math(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Long(x.floor() as i64),
+        MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
+        _ => MettaValue::Long(0), // Type error
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Round: round(value) -> Long
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_round(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Long(x.round() as i64),
+        MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
+        _ => MettaValue::Long(0), // Type error
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Sine: sin(value) -> Float
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_sin(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Float(x.sin()),
+        MettaValue::Long(x) => MettaValue::Float((x as f64).sin()),
+        _ => MettaValue::Float(f64::NAN), // Type error
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Cosine: cos(value) -> Float
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_cos(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Float(x.cos()),
+        MettaValue::Long(x) => MettaValue::Float((x as f64).cos()),
+        _ => MettaValue::Float(f64::NAN), // Type error
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Tangent: tan(value) -> Float
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_tan(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Float(x.tan()),
+        MettaValue::Long(x) => MettaValue::Float((x as f64).tan()),
+        _ => MettaValue::Float(f64::NAN), // Type error
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Arc sine: asin(value) -> Float
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_asin(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Float(x.asin()),
+        MettaValue::Long(x) => MettaValue::Float((x as f64).asin()),
+        _ => MettaValue::Float(f64::NAN), // Type error
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Arc cosine: acos(value) -> Float
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_acos(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Float(x.acos()),
+        MettaValue::Long(x) => MettaValue::Float((x as f64).acos()),
+        _ => MettaValue::Float(f64::NAN), // Type error
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Arc tangent: atan(value) -> Float
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_atan(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let result = match mv {
+        MettaValue::Float(x) => MettaValue::Float(x.atan()),
+        MettaValue::Long(x) => MettaValue::Float((x as f64).atan()),
+        _ => MettaValue::Float(f64::NAN), // Type error
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Check if value is NaN: isnan(value) -> Bool
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_isnan(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let is_nan = match mv {
+        MettaValue::Float(x) => x.is_nan(),
+        MettaValue::Long(_) => false, // Integers are never NaN
+        _ => false, // Non-numeric types are not NaN
+    };
+
+    JitValue::from_bool(is_nan).to_bits()
+}
+
+/// Check if value is infinite: isinf(value) -> Bool
+///
+/// # Safety
+/// The input must be a valid NaN-boxed value.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_isinf(val: u64) -> u64 {
+    let jv = JitValue::from_raw(val);
+    let mv = jv.to_metta();
+
+    let is_inf = match mv {
+        MettaValue::Float(x) => x.is_infinite(),
+        MettaValue::Long(_) => false, // Integers are never infinite
+        _ => false, // Non-numeric types are not infinite
+    };
+
+    JitValue::from_bool(is_inf).to_bits()
+}
+
+// =============================================================================
+// Expression Manipulation Operations (PR #63)
+// =============================================================================
+
+/// Get element at index: index-atom(expr, index) -> element
+///
+/// # Safety
+/// The context and inputs must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_index_atom(
+    ctx: *mut JitContext,
+    expr: u64,
+    index: u64,
+    ip: u64,
+) -> u64 {
+    let expr_jv = JitValue::from_raw(expr);
+    let index_jv = JitValue::from_raw(index);
+    let expr_mv = expr_jv.to_metta();
+    let index_mv = index_jv.to_metta();
+
+    let idx = match index_mv {
+        MettaValue::Long(i) => i,
+        _ => {
+            // Type error
+            if let Some(ctx_ref) = ctx.as_mut() {
+                ctx_ref.bailout = true;
+                ctx_ref.bailout_ip = ip as usize;
+                ctx_ref.bailout_reason = JitBailoutReason::TypeError;
+            }
+            return JitValue::nil().to_bits();
+        }
+    };
+
+    let result = match expr_mv {
+        MettaValue::SExpr(items) => {
+            if idx < 0 || idx as usize >= items.len() {
+                // Index out of bounds - return nil
+                MettaValue::Nil
+            } else {
+                items[idx as usize].clone()
+            }
+        }
+        _ => {
+            // Type error
+            if let Some(ctx_ref) = ctx.as_mut() {
+                ctx_ref.bailout = true;
+                ctx_ref.bailout_ip = ip as usize;
+                ctx_ref.bailout_reason = JitBailoutReason::TypeError;
+            }
+            return JitValue::nil().to_bits();
+        }
+    };
+
+    metta_to_jit(&result).to_bits()
+}
+
+/// Get minimum value: min-atom(expr) -> min
+///
+/// # Safety
+/// The context and inputs must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_min_atom(
+    ctx: *mut JitContext,
+    expr: u64,
+    ip: u64,
+) -> u64 {
+    let expr_jv = JitValue::from_raw(expr);
+    let expr_mv = expr_jv.to_metta();
+
+    match expr_mv {
+        MettaValue::SExpr(items) => {
+            if items.is_empty() {
+                return JitValue::nil().to_bits();
+            }
+
+            let mut min_val: Option<f64> = None;
+            let mut min_item: Option<&MettaValue> = None;
+
+            for item in &items {
+                let val = match item {
+                    MettaValue::Long(x) => Some(*x as f64),
+                    MettaValue::Float(x) => Some(*x),
+                    _ => None,
+                };
+
+                if let Some(v) = val {
+                    match min_val {
+                        None => {
+                            min_val = Some(v);
+                            min_item = Some(item);
+                        }
+                        Some(current_min) if v < current_min => {
+                            min_val = Some(v);
+                            min_item = Some(item);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            match min_item {
+                Some(item) => metta_to_jit(item).to_bits(),
+                None => JitValue::nil().to_bits(),
+            }
+        }
+        _ => {
+            // Type error
+            if let Some(ctx_ref) = ctx.as_mut() {
+                ctx_ref.bailout = true;
+                ctx_ref.bailout_ip = ip as usize;
+                ctx_ref.bailout_reason = JitBailoutReason::TypeError;
+            }
+            JitValue::nil().to_bits()
+        }
+    }
+}
+
+/// Get maximum value: max-atom(expr) -> max
+///
+/// # Safety
+/// The context and inputs must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_max_atom(
+    ctx: *mut JitContext,
+    expr: u64,
+    ip: u64,
+) -> u64 {
+    let expr_jv = JitValue::from_raw(expr);
+    let expr_mv = expr_jv.to_metta();
+
+    match expr_mv {
+        MettaValue::SExpr(items) => {
+            if items.is_empty() {
+                return JitValue::nil().to_bits();
+            }
+
+            let mut max_val: Option<f64> = None;
+            let mut max_item: Option<&MettaValue> = None;
+
+            for item in &items {
+                let val = match item {
+                    MettaValue::Long(x) => Some(*x as f64),
+                    MettaValue::Float(x) => Some(*x),
+                    _ => None,
+                };
+
+                if let Some(v) = val {
+                    match max_val {
+                        None => {
+                            max_val = Some(v);
+                            max_item = Some(item);
+                        }
+                        Some(current_max) if v > current_max => {
+                            max_val = Some(v);
+                            max_item = Some(item);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            match max_item {
+                Some(item) => metta_to_jit(item).to_bits(),
+                None => JitValue::nil().to_bits(),
+            }
+        }
+        _ => {
+            // Type error
+            if let Some(ctx_ref) = ctx.as_mut() {
+                ctx_ref.bailout = true;
+                ctx_ref.bailout_ip = ip as usize;
+                ctx_ref.bailout_reason = JitBailoutReason::TypeError;
+            }
+            JitValue::nil().to_bits()
+        }
+    }
 }
 
 // =============================================================================
@@ -595,17 +1034,17 @@ pub unsafe extern "C" fn jit_runtime_load_constant(ctx: *const JitContext, index
 #[no_mangle]
 pub extern "C" fn jit_runtime_debug_print(val: u64) {
     let jv = JitValue::from_raw(val);
-    eprintln!("[JIT DEBUG] {:?}", jv);
+    trace!(target: "mettatron::jit::runtime::debug", ?jv, "Debug print");
 }
 
 /// Print the current stack for debugging
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_debug_stack(ctx: *const JitContext) {
     if let Some(ctx) = ctx.as_ref() {
-        eprintln!("[JIT DEBUG] Stack (sp={}): ", ctx.sp);
+        trace!(target: "mettatron::jit::runtime::debug", sp = ctx.sp, "Stack dump");
         for i in 0..ctx.sp {
             let val = *ctx.value_stack.add(i);
-            eprintln!("  [{}] {:?}", i, val);
+            trace!(target: "mettatron::jit::runtime::debug", index = i, ?val, "  Stack slot");
         }
     }
 }
@@ -5770,7 +6209,7 @@ pub unsafe extern "C" fn jit_runtime_call_native(
     let mut args = Vec::with_capacity(arg_count as usize);
     for _i in 0..arg_count as usize {
         if ctx_ref.sp < 1 {
-            eprintln!("JIT runtime: Stack underflow in call_native at IP {}", ip);
+            warn!(target: "mettatron::jit::runtime::call", ip, "Stack underflow in call_native");
             return JitValue::nil().to_bits();
         }
         ctx_ref.sp -= 1;
@@ -5798,7 +6237,7 @@ pub unsafe extern "C" fn jit_runtime_call_native(
             }
         }
         Err(e) => {
-            eprintln!("JIT runtime: Native call error at IP {}: {}", ip, e);
+            warn!(target: "mettatron::jit::runtime::call", ip, error = %e, "Native call error");
             JitValue::nil().to_bits()
         }
     }
@@ -5872,7 +6311,7 @@ pub unsafe extern "C" fn jit_runtime_call_external(
 
     // Pop arguments from stack in reverse order
     if ctx_ref.sp < arg_count_usize {
-        eprintln!("JIT runtime: Stack underflow in call_external at IP {}", ip);
+        warn!(target: "mettatron::jit::runtime::call", ip, "Stack underflow in call_external");
         return JitValue::nil().to_bits();
     }
 
@@ -5909,7 +6348,7 @@ pub unsafe extern "C" fn jit_runtime_call_external(
         }
         Err(e) => {
             // External call failed - return error
-            eprintln!("JIT runtime: External call '{}' failed: {}", func_name, e);
+            warn!(target: "mettatron::jit::runtime::call", func_name, error = %e, "External call failed");
             let error = MettaValue::Error(
                 format!("external-call-failed: {}", e),
                 Arc::new(MettaValue::Atom(func_name.to_string())),
@@ -5975,7 +6414,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
     // Collect arguments from stack (in correct order)
     let arg_count_usize = arg_count as usize;
     if ctx_ref.sp < arg_count_usize {
-        eprintln!("JIT runtime: Stack underflow in call_cached at IP {}", ip);
+        warn!(target: "mettatron::jit::runtime::call", ip, "Stack underflow in call_cached");
         return JitValue::nil().to_bits();
     }
 
@@ -6225,7 +6664,7 @@ pub unsafe extern "C" fn jit_runtime_amb(
     let mut alts = Vec::with_capacity(alt_count as usize);
     for _ in 0..alt_count {
         if ctx_ref.sp < 1 {
-            eprintln!("JIT runtime: Stack underflow in amb at IP {}", ip);
+            warn!(target: "mettatron::jit::runtime::nondet", ip, "Stack underflow in amb");
             return JitValue::nil().to_bits();
         }
         ctx_ref.sp -= 1;
@@ -6513,8 +6952,8 @@ pub unsafe extern "C" fn jit_runtime_trace(
     let jit_val = JitValue::from_raw(value);
     let metta_val = jit_val.to_metta();
 
-    // Simple trace output to stderr
-    eprintln!("[JIT TRACE] ip={} msg_idx={} value={:?}", ip, msg_idx, metta_val);
+    // Trace output
+    trace!(target: "mettatron::jit::runtime::trace", ip, msg_idx, ?metta_val, "Trace");
 }
 
 /// Breakpoint for debugging
@@ -6533,7 +6972,7 @@ pub unsafe extern "C" fn jit_runtime_breakpoint(
     ip: u64,
 ) -> i64 {
     // Log breakpoint hit
-    eprintln!("[JIT BREAKPOINT] id={} ip={}", bp_id, ip);
+    debug!(target: "mettatron::jit::runtime::breakpoint", bp_id, ip, "Breakpoint hit");
 
     // In a full implementation, this would check a debugger flag
     // and potentially pause execution. For now, always continue.

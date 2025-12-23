@@ -523,7 +523,7 @@ impl Compiler {
                 self.builder.emit(Opcode::Mod);
                 Ok(Some(()))
             }
-            "pow" => {
+            "pow" | "pow-math" => {
                 self.check_arity("pow", args.len(), 2)?;
                 if let Some(folded) = self.try_fold_binary_arith("pow", &args[0], &args[1]) {
                     return self.compile(&folded).map(Some);
@@ -542,7 +542,7 @@ impl Compiler {
                 self.builder.emit(Opcode::Pow);
                 Ok(Some(()))
             }
-            "abs" => {
+            "abs" | "abs-math" => {
                 self.check_arity("abs", args.len(), 1)?;
                 if let Some(folded) = self.try_fold_unary_arith("abs", &args[0]) {
                     return self.compile(&folded).map(Some);
@@ -558,6 +558,18 @@ impl Compiler {
                 }
                 self.compile(&args[0])?;
                 self.builder.emit(Opcode::Neg);
+                Ok(Some(()))
+            }
+            "floor-div" => {
+                self.check_arity("floor-div", args.len(), 2)?;
+                if let Some(folded) =
+                    self.try_fold_binary_arith("floor-div", &args[0], &args[1])
+                {
+                    return self.compile(&folded).map(Some);
+                }
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::FloorDiv);
                 Ok(Some(()))
             }
 
@@ -965,6 +977,114 @@ impl Compiler {
                 Ok(Some(()))
             }
 
+            // Math operations (PR #62)
+            "sqrt-math" => {
+                self.check_arity("sqrt-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Sqrt);
+                Ok(Some(()))
+            }
+            "log-math" => {
+                self.check_arity("log-math", args.len(), 2)?;
+                self.compile(&args[0])?;  // base
+                self.compile(&args[1])?;  // value
+                self.builder.emit(Opcode::Log);
+                Ok(Some(()))
+            }
+            "trunc-math" => {
+                self.check_arity("trunc-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Trunc);
+                Ok(Some(()))
+            }
+            "ceil-math" => {
+                self.check_arity("ceil-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Ceil);
+                Ok(Some(()))
+            }
+            "floor-math" => {
+                self.check_arity("floor-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::FloorMath);
+                Ok(Some(()))
+            }
+            "round-math" => {
+                self.check_arity("round-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Round);
+                Ok(Some(()))
+            }
+            "sin-math" => {
+                self.check_arity("sin-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Sin);
+                Ok(Some(()))
+            }
+            "cos-math" => {
+                self.check_arity("cos-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Cos);
+                Ok(Some(()))
+            }
+            "tan-math" => {
+                self.check_arity("tan-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Tan);
+                Ok(Some(()))
+            }
+            "asin-math" => {
+                self.check_arity("asin-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Asin);
+                Ok(Some(()))
+            }
+            "acos-math" => {
+                self.check_arity("acos-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Acos);
+                Ok(Some(()))
+            }
+            "atan-math" => {
+                self.check_arity("atan-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::Atan);
+                Ok(Some(()))
+            }
+            "isnan-math" => {
+                self.check_arity("isnan-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::IsNan);
+                Ok(Some(()))
+            }
+            "isinf-math" => {
+                self.check_arity("isinf-math", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::IsInf);
+                Ok(Some(()))
+            }
+
+            // Expression manipulation operations (PR #63)
+            "index-atom" => {
+                self.check_arity("index-atom", args.len(), 2)?;
+                self.compile(&args[0])?;  // expression
+                self.compile(&args[1])?;  // index
+                self.builder.emit(Opcode::IndexAtom);
+                Ok(Some(()))
+            }
+            "min-atom" => {
+                self.check_arity("min-atom", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::MinAtom);
+                Ok(Some(()))
+            }
+            "max-atom" => {
+                self.check_arity("max-atom", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::MaxAtom);
+                Ok(Some(()))
+            }
+
             // Not a built-in
             _ => Ok(None),
         }
@@ -1018,13 +1138,13 @@ impl Compiler {
                     let args = &items[1..];
                     match op.as_str() {
                         // Binary arithmetic
-                        "+" | "-" | "*" | "/" | "%" | "mod" | "pow" if args.len() == 2 => {
+                        "+" | "-" | "*" | "/" | "%" | "mod" | "pow" | "pow-math" | "floor-div" if args.len() == 2 => {
                             let a = self.try_eval_constant(&args[0])?;
                             let b = self.try_eval_constant(&args[1])?;
                             self.try_fold_binary_arith_values(op, &a, &b)
                         }
                         // Unary arithmetic
-                        "abs" | "neg" if args.len() == 1 => {
+                        "abs" | "abs-math" | "neg" if args.len() == 1 => {
                             let a = self.try_eval_constant(&args[0])?;
                             self.try_fold_unary_arith(op, &a)
                         }
@@ -1090,7 +1210,8 @@ impl Compiler {
                     "*" => Some(MettaValue::Long(x.wrapping_mul(*y))),
                     "/" if *y != 0 => x.checked_div(*y).map(MettaValue::Long),
                     "%" | "mod" if *y != 0 => x.checked_rem(*y).map(MettaValue::Long),
-                    "pow" if *y >= 0 => x.checked_pow(*y as u32).map(MettaValue::Long),
+                    "pow" | "pow-math" if *y >= 0 => x.checked_pow(*y as u32).map(MettaValue::Long),
+                    "floor-div" if *y != 0 => Some(MettaValue::Long(x.div_euclid(*y))),
                     _ => None,
                 }
             }
@@ -1101,7 +1222,7 @@ impl Compiler {
                     "*" => Some(MettaValue::Float(x * y)),
                     "/" if *y != 0.0 => Some(MettaValue::Float(x / y)),
                     "%" | "mod" if *y != 0.0 => Some(MettaValue::Float(x % y)),
-                    "pow" => Some(MettaValue::Float(x.powf(*y))),
+                    "pow" | "pow-math" => Some(MettaValue::Float(x.powf(*y))),
                     _ => None,
                 }
             }
@@ -1113,7 +1234,7 @@ impl Compiler {
                     "*" => Some(MettaValue::Float(x * y)),
                     "/" if *y != 0.0 => Some(MettaValue::Float(x / y)),
                     "%" | "mod" if *y != 0.0 => Some(MettaValue::Float(x % y)),
-                    "pow" => Some(MettaValue::Float(x.powf(*y))),
+                    "pow" | "pow-math" => Some(MettaValue::Float(x.powf(*y))),
                     _ => None,
                 }
             }
@@ -1125,7 +1246,7 @@ impl Compiler {
                     "*" => Some(MettaValue::Float(x * y)),
                     "/" if y != 0.0 => Some(MettaValue::Float(x / y)),
                     "%" | "mod" if y != 0.0 => Some(MettaValue::Float(x % y)),
-                    "pow" => Some(MettaValue::Float(x.powf(y))),
+                    "pow" | "pow-math" => Some(MettaValue::Float(x.powf(y))),
                     _ => None,
                 }
             }
@@ -1138,14 +1259,14 @@ impl Compiler {
         match a {
             MettaValue::Long(x) => {
                 match op {
-                    "abs" => Some(MettaValue::Long(x.abs())),
+                    "abs" | "abs-math" => Some(MettaValue::Long(x.abs())),
                     "neg" => Some(MettaValue::Long(-x)),
                     _ => None,
                 }
             }
             MettaValue::Float(x) => {
                 match op {
-                    "abs" => Some(MettaValue::Float(x.abs())),
+                    "abs" | "abs-math" => Some(MettaValue::Float(x.abs())),
                     "neg" => Some(MettaValue::Float(-x)),
                     _ => None,
                 }

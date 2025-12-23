@@ -38,6 +38,7 @@
 //! ```
 
 use std::sync::Arc;
+use tracing::{debug, trace, warn};
 
 use crate::backend::bytecode::{
     BytecodeChunk, BytecodeVM, VmConfig, VmError, VmResult,
@@ -459,7 +460,7 @@ impl HybridExecutor {
         let tier = self.tiered_compiler.get_tier(chunk);
 
         if self.config.trace {
-            eprintln!("[Hybrid] Chunk {:?} at tier {:?}", chunk_id, tier);
+            trace!(target: "mettatron::jit::hybrid::execute", ?chunk_id, ?tier, "Executing chunk");
         }
 
         match tier {
@@ -507,7 +508,7 @@ impl HybridExecutor {
         // Check if chunk can be JIT compiled
         if !chunk.can_jit_compile() {
             if self.config.trace {
-                eprintln!("[Hybrid] Chunk cannot be JIT compiled");
+                debug!(target: "mettatron::jit::hybrid::compile", "Chunk cannot be JIT compiled");
             }
             return None;
         }
@@ -544,7 +545,7 @@ impl HybridExecutor {
                         self.jit_cache.insert(*chunk_id, entry);
 
                         if self.config.trace {
-                            eprintln!("[Hybrid] Compiled chunk {:?} to {:?}", chunk_id, tier);
+                            debug!(target: "mettatron::jit::hybrid::compile", ?chunk_id, ?tier, "Compiled chunk");
                         }
 
                         Some(code_ptr)
@@ -554,7 +555,7 @@ impl HybridExecutor {
                         chunk.jit_profile().set_failed();
 
                         if self.config.trace {
-                            eprintln!("[Hybrid] JIT compilation failed: {:?}", e);
+                            warn!(target: "mettatron::jit::hybrid::compile", error = ?e, "JIT compilation failed");
                         }
                         None
                     }
@@ -565,7 +566,7 @@ impl HybridExecutor {
                 chunk.jit_profile().set_failed();
 
                 if self.config.trace {
-                    eprintln!("[Hybrid] Failed to create JIT compiler: {:?}", e);
+                    warn!(target: "mettatron::jit::hybrid::compile", error = ?e, "Failed to create JIT compiler");
                 }
                 None
             }
@@ -699,7 +700,7 @@ impl HybridExecutor {
             unsafe { std::mem::transmute(native_ptr) };
 
         if self.config.trace {
-            eprintln!("[Hybrid] Executing JIT code at {:p}", native_ptr);
+            trace!(target: "mettatron::jit::hybrid::execute", native_ptr = ?native_ptr, "Executing JIT code");
         }
 
         let jit_result = native_fn(&mut ctx);
@@ -709,10 +710,7 @@ impl HybridExecutor {
             self.stats.jit_bailouts += 1;
 
             if self.config.trace {
-                eprintln!(
-                    "[Hybrid] JIT bailout at IP {}, reason: {:?}",
-                    ctx.bailout_ip, ctx.bailout_reason
-                );
+                debug!(target: "mettatron::jit::hybrid::execute", bailout_ip = ctx.bailout_ip, reason = ?ctx.bailout_reason, "JIT bailout");
             }
 
             // Transfer JIT stack to VM and resume
@@ -750,7 +748,7 @@ impl HybridExecutor {
         }
 
         if self.config.trace {
-            eprintln!("[Hybrid] JIT execution complete, {} results", results.len());
+            trace!(target: "mettatron::jit::hybrid::execute", results_count = results.len(), "JIT execution complete");
         }
 
         Ok(results)
@@ -917,10 +915,7 @@ impl HybridExecutor {
             }
 
             if self.config.trace {
-                eprintln!(
-                    "[Hybrid] Dispatcher iteration {}, choice_points: {}, results: {}",
-                    iteration, ctx.choice_point_count, ctx.results_count
-                );
+                trace!(target: "mettatron::jit::hybrid::backtrack", iteration, choice_points = ctx.choice_point_count, results = ctx.results_count, "Dispatcher iteration");
             }
 
             // Execute JIT code and capture return value
@@ -931,10 +926,7 @@ impl HybridExecutor {
                 self.stats.jit_bailouts += 1;
 
                 if self.config.trace {
-                    eprintln!(
-                        "[Hybrid] JIT bailout at IP {}, reason: {:?}",
-                        ctx.bailout_ip, ctx.bailout_reason
-                    );
+                    debug!(target: "mettatron::jit::hybrid::backtrack", bailout_ip = ctx.bailout_ip, reason = ?ctx.bailout_reason, "JIT bailout during backtracking");
                 }
 
                 // Transfer JIT stack to VM and resume
@@ -1028,10 +1020,7 @@ impl HybridExecutor {
         }
 
         if self.config.trace {
-            eprintln!(
-                "[Hybrid] Dispatcher complete after {} iterations, {} results",
-                iteration, all_results.len()
-            );
+            trace!(target: "mettatron::jit::hybrid::backtrack", iterations = iteration, results_count = all_results.len(), "Dispatcher complete");
         }
 
         // Cleanup heap allocations

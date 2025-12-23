@@ -24,6 +24,7 @@ use super::types::{JitError, JitResult, TAG_NIL, TAG_ERROR, TAG_ATOM, TAG_VAR, T
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 #[cfg(feature = "jit")]
 use std::collections::HashMap;
+use tracing::trace;
 
 /// JIT Compiler for bytecode chunks
 ///
@@ -461,6 +462,78 @@ pub struct JitCompiler {
     /// Phase 1.10: Imported function ID for jit_runtime_bloom_check
     #[cfg(feature = "jit")]
     bloom_check_func_id: FuncId,
+
+    // Phase 2.0: Extended Math Operations (PR #62)
+
+    /// Imported function ID for jit_runtime_sqrt
+    #[cfg(feature = "jit")]
+    sqrt_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_log
+    #[cfg(feature = "jit")]
+    log_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_trunc
+    #[cfg(feature = "jit")]
+    trunc_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_ceil
+    #[cfg(feature = "jit")]
+    ceil_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_floor_math
+    #[cfg(feature = "jit")]
+    floor_math_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_round
+    #[cfg(feature = "jit")]
+    round_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_sin
+    #[cfg(feature = "jit")]
+    sin_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_cos
+    #[cfg(feature = "jit")]
+    cos_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_tan
+    #[cfg(feature = "jit")]
+    tan_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_asin
+    #[cfg(feature = "jit")]
+    asin_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_acos
+    #[cfg(feature = "jit")]
+    acos_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_atan
+    #[cfg(feature = "jit")]
+    atan_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_isnan
+    #[cfg(feature = "jit")]
+    isnan_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_isinf
+    #[cfg(feature = "jit")]
+    isinf_func_id: FuncId,
+
+    // Phase 2.1: Expression Manipulation Operations (PR #63)
+
+    /// Imported function ID for jit_runtime_index_atom
+    #[cfg(feature = "jit")]
+    index_atom_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_min_atom
+    #[cfg(feature = "jit")]
+    min_atom_func_id: FuncId,
+
+    /// Imported function ID for jit_runtime_max_atom
+    #[cfg(feature = "jit")]
+    max_atom_func_id: FuncId,
 }
 
 /// Block info for JIT compilation - tracks jump targets and predecessor counts
@@ -1792,6 +1865,188 @@ impl JitCompiler {
                 JitError::CompilationError(format!("Failed to declare jit_runtime_bloom_check: {}", e))
             })?;
 
+        // Phase 2.0: Extended Math Operations (PR #62)
+
+        // jit_runtime_sqrt: fn(value: u64) -> u64
+        let mut sqrt_sig = module.make_signature();
+        sqrt_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        sqrt_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Float)
+        let sqrt_func_id = module
+            .declare_function("jit_runtime_sqrt", Linkage::Import, &sqrt_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_sqrt: {}", e))
+            })?;
+
+        // jit_runtime_log: fn(base: u64, value: u64) -> u64
+        let mut log_sig = module.make_signature();
+        log_sig.params.push(AbiParam::new(types::I64)); // base (NaN-boxed)
+        log_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        log_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Float)
+        let log_func_id = module
+            .declare_function("jit_runtime_log", Linkage::Import, &log_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_log: {}", e))
+            })?;
+
+        // jit_runtime_trunc: fn(value: u64) -> u64
+        let mut trunc_sig = module.make_signature();
+        trunc_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        trunc_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Long)
+        let trunc_func_id = module
+            .declare_function("jit_runtime_trunc", Linkage::Import, &trunc_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_trunc: {}", e))
+            })?;
+
+        // jit_runtime_ceil: fn(value: u64) -> u64
+        let mut ceil_sig = module.make_signature();
+        ceil_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        ceil_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Long)
+        let ceil_func_id = module
+            .declare_function("jit_runtime_ceil", Linkage::Import, &ceil_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_ceil: {}", e))
+            })?;
+
+        // jit_runtime_floor_math: fn(value: u64) -> u64
+        let mut floor_math_sig = module.make_signature();
+        floor_math_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        floor_math_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Long)
+        let floor_math_func_id = module
+            .declare_function("jit_runtime_floor_math", Linkage::Import, &floor_math_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_floor_math: {}", e))
+            })?;
+
+        // jit_runtime_round: fn(value: u64) -> u64
+        let mut round_sig = module.make_signature();
+        round_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        round_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Long)
+        let round_func_id = module
+            .declare_function("jit_runtime_round", Linkage::Import, &round_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_round: {}", e))
+            })?;
+
+        // jit_runtime_sin: fn(value: u64) -> u64
+        let mut sin_sig = module.make_signature();
+        sin_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        sin_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Float)
+        let sin_func_id = module
+            .declare_function("jit_runtime_sin", Linkage::Import, &sin_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_sin: {}", e))
+            })?;
+
+        // jit_runtime_cos: fn(value: u64) -> u64
+        let mut cos_sig = module.make_signature();
+        cos_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        cos_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Float)
+        let cos_func_id = module
+            .declare_function("jit_runtime_cos", Linkage::Import, &cos_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_cos: {}", e))
+            })?;
+
+        // jit_runtime_tan: fn(value: u64) -> u64
+        let mut tan_sig = module.make_signature();
+        tan_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        tan_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Float)
+        let tan_func_id = module
+            .declare_function("jit_runtime_tan", Linkage::Import, &tan_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_tan: {}", e))
+            })?;
+
+        // jit_runtime_asin: fn(value: u64) -> u64
+        let mut asin_sig = module.make_signature();
+        asin_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        asin_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Float)
+        let asin_func_id = module
+            .declare_function("jit_runtime_asin", Linkage::Import, &asin_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_asin: {}", e))
+            })?;
+
+        // jit_runtime_acos: fn(value: u64) -> u64
+        let mut acos_sig = module.make_signature();
+        acos_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        acos_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Float)
+        let acos_func_id = module
+            .declare_function("jit_runtime_acos", Linkage::Import, &acos_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_acos: {}", e))
+            })?;
+
+        // jit_runtime_atan: fn(value: u64) -> u64
+        let mut atan_sig = module.make_signature();
+        atan_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        atan_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Float)
+        let atan_func_id = module
+            .declare_function("jit_runtime_atan", Linkage::Import, &atan_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_atan: {}", e))
+            })?;
+
+        // jit_runtime_isnan: fn(value: u64) -> u64
+        let mut isnan_sig = module.make_signature();
+        isnan_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        isnan_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Bool)
+        let isnan_func_id = module
+            .declare_function("jit_runtime_isnan", Linkage::Import, &isnan_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_isnan: {}", e))
+            })?;
+
+        // jit_runtime_isinf: fn(value: u64) -> u64
+        let mut isinf_sig = module.make_signature();
+        isinf_sig.params.push(AbiParam::new(types::I64)); // value (NaN-boxed)
+        isinf_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed Bool)
+        let isinf_func_id = module
+            .declare_function("jit_runtime_isinf", Linkage::Import, &isinf_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_isinf: {}", e))
+            })?;
+
+        // Phase 2.1: Expression Manipulation Operations (PR #63)
+
+        // jit_runtime_index_atom: fn(ctx: *mut JitContext, expr: u64, index: u64, ip: u64) -> u64
+        let mut index_atom_sig = module.make_signature();
+        index_atom_sig.params.push(AbiParam::new(types::I64)); // ctx
+        index_atom_sig.params.push(AbiParam::new(types::I64)); // expr (NaN-boxed)
+        index_atom_sig.params.push(AbiParam::new(types::I64)); // index (NaN-boxed)
+        index_atom_sig.params.push(AbiParam::new(types::I64)); // ip
+        index_atom_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed)
+        let index_atom_func_id = module
+            .declare_function("jit_runtime_index_atom", Linkage::Import, &index_atom_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_index_atom: {}", e))
+            })?;
+
+        // jit_runtime_min_atom: fn(ctx: *mut JitContext, expr: u64, ip: u64) -> u64
+        let mut min_atom_sig = module.make_signature();
+        min_atom_sig.params.push(AbiParam::new(types::I64)); // ctx
+        min_atom_sig.params.push(AbiParam::new(types::I64)); // expr (NaN-boxed)
+        min_atom_sig.params.push(AbiParam::new(types::I64)); // ip
+        min_atom_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed)
+        let min_atom_func_id = module
+            .declare_function("jit_runtime_min_atom", Linkage::Import, &min_atom_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_min_atom: {}", e))
+            })?;
+
+        // jit_runtime_max_atom: fn(ctx: *mut JitContext, expr: u64, ip: u64) -> u64
+        let mut max_atom_sig = module.make_signature();
+        max_atom_sig.params.push(AbiParam::new(types::I64)); // ctx
+        max_atom_sig.params.push(AbiParam::new(types::I64)); // expr (NaN-boxed)
+        max_atom_sig.params.push(AbiParam::new(types::I64)); // ip
+        max_atom_sig.returns.push(AbiParam::new(types::I64)); // result (NaN-boxed)
+        let max_atom_func_id = module
+            .declare_function("jit_runtime_max_atom", Linkage::Import, &max_atom_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_max_atom: {}", e))
+            })?;
+
         Ok(JitCompiler {
             module,
             func_counter: 0,
@@ -1908,6 +2163,25 @@ impl JitCompiler {
             get_metatype_func_id,
             // Phase 1.10: MORK and Debug
             bloom_check_func_id,
+            // Phase 2.0: Extended Math Operations (PR #62)
+            sqrt_func_id,
+            log_func_id,
+            trunc_func_id,
+            ceil_func_id,
+            floor_math_func_id,
+            round_func_id,
+            sin_func_id,
+            cos_func_id,
+            tan_func_id,
+            asin_func_id,
+            acos_func_id,
+            atan_func_id,
+            isnan_func_id,
+            isinf_func_id,
+            // Phase 2.1: Expression Manipulation Operations (PR #63)
+            index_atom_func_id,
+            min_atom_func_id,
+            max_atom_func_id,
         })
     }
 
@@ -2393,6 +2667,78 @@ impl JitCompiler {
             "jit_runtime_bloom_check",
             super::runtime::jit_runtime_bloom_check as *const u8,
         );
+
+        // Phase 2.0: Extended Math Operations (PR #62)
+        builder.symbol(
+            "jit_runtime_sqrt",
+            super::runtime::jit_runtime_sqrt as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_log",
+            super::runtime::jit_runtime_log as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_trunc",
+            super::runtime::jit_runtime_trunc as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_ceil",
+            super::runtime::jit_runtime_ceil as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_floor_math",
+            super::runtime::jit_runtime_floor_math as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_round",
+            super::runtime::jit_runtime_round as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_sin",
+            super::runtime::jit_runtime_sin as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_cos",
+            super::runtime::jit_runtime_cos as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_tan",
+            super::runtime::jit_runtime_tan as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_asin",
+            super::runtime::jit_runtime_asin as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_acos",
+            super::runtime::jit_runtime_acos as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_atan",
+            super::runtime::jit_runtime_atan as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_isnan",
+            super::runtime::jit_runtime_isnan as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_isinf",
+            super::runtime::jit_runtime_isinf as *const u8,
+        );
+
+        // Phase 2.1: Expression Manipulation Operations (PR #63)
+        builder.symbol(
+            "jit_runtime_index_atom",
+            super::runtime::jit_runtime_index_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_min_atom",
+            super::runtime::jit_runtime_min_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_max_atom",
+            super::runtime::jit_runtime_max_atom as *const u8,
+        );
     }
 
     /// Check if a bytecode chunk can be JIT compiled (Stage 1-5 + Phase A-I)
@@ -2470,6 +2816,27 @@ impl JitCompiler {
                 | Opcode::Abs
                 | Opcode::FloorDiv
                 | Opcode::Pow => {} // Stage 2: Pow uses runtime call
+
+                // Extended math operations (PR #62) - all use runtime calls
+                Opcode::Sqrt
+                | Opcode::Log
+                | Opcode::Trunc
+                | Opcode::Ceil
+                | Opcode::FloorMath
+                | Opcode::Round
+                | Opcode::Sin
+                | Opcode::Cos
+                | Opcode::Tan
+                | Opcode::Asin
+                | Opcode::Acos
+                | Opcode::Atan
+                | Opcode::IsNan
+                | Opcode::IsInf => {}
+
+                // Expression manipulation (PR #63) - all use runtime calls
+                Opcode::IndexAtom
+                | Opcode::MinAtom
+                | Opcode::MaxAtom => {}
 
                 // Boolean
                 Opcode::And | Opcode::Or | Opcode::Not | Opcode::Xor => {}
@@ -2835,7 +3202,7 @@ impl JitCompiler {
 
         // Debug: print the generated IR
         #[cfg(test)]
-        eprintln!("Generated IR:\n{}", ctx.func.display());
+        trace!(target: "mettatron::jit::compiler::ir", ir = %ctx.func.display(), "Generated IR");
 
         // Define the function in the module
         self.module
@@ -3921,6 +4288,246 @@ impl JitCompiler {
 
                 // Call jit_runtime_pow(base, exp) - both are NaN-boxed
                 let call_inst = codegen.builder.ins().call(func_ref, &[base, exp]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            // =====================================================================
+            // Extended Math Operations (PR #62)
+            // =====================================================================
+
+            Opcode::Sqrt => {
+                // sqrt-math: [value] -> [sqrt(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.sqrt_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::Log => {
+                // log-math: [base, value] -> [log_base(value)]
+                let value = codegen.pop()?;
+                let base = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.log_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[base, value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::Trunc => {
+                // trunc-math: [value] -> [trunc(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.trunc_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::Ceil => {
+                // ceil-math: [value] -> [ceil(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.ceil_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::FloorMath => {
+                // floor-math: [value] -> [floor(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.floor_math_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::Round => {
+                // round-math: [value] -> [round(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.round_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::Sin => {
+                // sin-math: [value] -> [sin(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.sin_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::Cos => {
+                // cos-math: [value] -> [cos(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.cos_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::Tan => {
+                // tan-math: [value] -> [tan(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.tan_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::Asin => {
+                // asin-math: [value] -> [asin(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.asin_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::Acos => {
+                // acos-math: [value] -> [acos(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.acos_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::Atan => {
+                // atan-math: [value] -> [atan(value)]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.atan_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::IsNan => {
+                // isnan-math: [value] -> [bool]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.isnan_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::IsInf => {
+                // isinf-math: [value] -> [bool]
+                let value = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.isinf_func_id, codegen.builder.func);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[value]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            // =====================================================================
+            // Expression Manipulation Operations (PR #63)
+            // =====================================================================
+
+            Opcode::IndexAtom => {
+                // index-atom: [expr, index] -> [element]
+                let index = codegen.pop()?;
+                let expr = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.index_atom_func_id, codegen.builder.func);
+
+                let ctx_ptr = codegen.ctx_ptr();
+                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, expr, index, ip_val]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::MinAtom => {
+                // min-atom: [expr] -> [min value]
+                let expr = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.min_atom_func_id, codegen.builder.func);
+
+                let ctx_ptr = codegen.ctx_ptr();
+                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, expr, ip_val]);
+                let result = codegen.builder.inst_results(call_inst)[0];
+                codegen.push(result)?;
+            }
+
+            Opcode::MaxAtom => {
+                // max-atom: [expr] -> [max value]
+                let expr = codegen.pop()?;
+
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.max_atom_func_id, codegen.builder.func);
+
+                let ctx_ptr = codegen.ctx_ptr();
+                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+
+                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, expr, ip_val]);
                 let result = codegen.builder.inst_results(call_inst)[0];
                 codegen.push(result)?;
             }

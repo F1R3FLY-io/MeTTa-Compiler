@@ -252,6 +252,9 @@ Long Jump (2-byte offset, i16):
 | `0x80` | `map_atom` | 2 | `[list] → [mapped]` | Map over atoms |
 | `0x81` | `filter_atom` | 2 | `[list] → [filtered]` | Filter atoms |
 | `0x82` | `foldl_atom` | 2 | `[list, init] → [result]` | Fold left over atoms |
+| `0x83` | `index_atom` | 0 | `[expr, idx] → [elem]` | Index into S-expression |
+| `0x84` | `min_atom` | 0 | `[expr] → [min]` | Minimum element in expr |
+| `0x85` | `max_atom` | 0 | `[expr] → [max]` | Maximum element in expr |
 
 ### 3.7 Rule Dispatch (0x90-0x96)
 
@@ -289,7 +292,7 @@ Long Jump (2-byte offset, i16):
 | `0xB1` | `eval_lambda` | 0 | `[params, body] → [closure]` | Lambda expression |
 | `0xB2` | `eval_apply` | 0 | `[f, args] → [result]` | Apply function |
 
-### 3.9 Grounded Arithmetic (0xC0-0xC8)
+### 3.9 Grounded Arithmetic (0xC0-0xCE)
 
 | Hex | Mnemonic | Imm | Stack Effect | Description |
 |-----|----------|-----|--------------|-------------|
@@ -302,6 +305,12 @@ Long Jump (2-byte offset, i16):
 | `0xC6` | `abs` | 0 | `[a] → [|a|]` | Absolute value |
 | `0xC7` | `floor_div` | 0 | `[a, b] → [floor(a/b)]` | Floor division |
 | `0xC8` | `pow` | 0 | `[a, b] → [a^b]` | Exponentiation |
+| `0xC9` | `sqrt` | 0 | `[a] → [√a]` | Square root |
+| `0xCA` | `log` | 0 | `[base, a] → [log_base(a)]` | Logarithm with base |
+| `0xCB` | `trunc` | 0 | `[a] → [trunc(a)]` | Truncate toward zero |
+| `0xCC` | `ceil` | 0 | `[a] → [⌈a⌉]` | Ceiling (round up) |
+| `0xCD` | `floor_math` | 0 | `[a] → [⌊a⌋]` | Floor (round down) |
+| `0xCE` | `round` | 0 | `[a] → [round(a)]` | Round to nearest integer |
 
 ### 3.10 Grounded Comparison (0xD0-0xD6)
 
@@ -314,6 +323,24 @@ Long Jump (2-byte offset, i16):
 | `0xD4` | `eq` | 0 | `[a, b] → [a == b]` | Equal |
 | `0xD5` | `ne` | 0 | `[a, b] → [a ≠ b]` | Not equal |
 | `0xD6` | `struct_eq` | 0 | `[a, b] → [bool]` | Structural equality |
+
+### 3.10.1 Trigonometric Operations (0xCF, 0xD7-0xDB)
+
+| Hex | Mnemonic | Imm | Stack Effect | Description |
+|-----|----------|-----|--------------|-------------|
+| `0xCF` | `sin` | 0 | `[a] → [sin(a)]` | Sine (radians) |
+| `0xD7` | `cos` | 0 | `[a] → [cos(a)]` | Cosine (radians) |
+| `0xD8` | `tan` | 0 | `[a] → [tan(a)]` | Tangent (radians) |
+| `0xD9` | `asin` | 0 | `[a] → [asin(a)]` | Arcsine (returns radians) |
+| `0xDA` | `acos` | 0 | `[a] → [acos(a)]` | Arccosine (returns radians) |
+| `0xDB` | `atan` | 0 | `[a] → [atan(a)]` | Arctangent (returns radians) |
+
+### 3.10.2 Float Classification (0xDC-0xDD)
+
+| Hex | Mnemonic | Imm | Stack Effect | Description |
+|-----|----------|-----|--------------|-------------|
+| `0xDC` | `is_nan` | 0 | `[a] → [bool]` | True if value is NaN |
+| `0xDD` | `is_inf` | 0 | `[a] → [bool]` | True if value is infinity |
 
 ### 3.11 Grounded Boolean (0xE0-0xE3)
 
@@ -1433,7 +1460,7 @@ L1:
 
 This document specifies:
 
-1. **84 bytecode opcodes** organized into 15 categories, each with:
+1. **101 bytecode opcodes** organized into 17 sections, each with:
    - Hex value and mnemonic
    - Immediate operand format
    - Stack effect notation

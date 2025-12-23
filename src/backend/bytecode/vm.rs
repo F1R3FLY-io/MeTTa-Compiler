@@ -6,6 +6,7 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use smallvec::SmallVec;
+use tracing::{debug, trace, warn};
 
 use crate::backend::models::{Bindings, MettaValue, SpaceHandle};
 use crate::backend::Environment;
@@ -48,6 +49,8 @@ pub enum VmError {
     Halted,
     /// Runtime error with message
     Runtime(String),
+    /// Index out of bounds
+    IndexOutOfBounds { index: usize, len: usize },
 }
 
 impl std::fmt::Display for VmError {
@@ -68,6 +71,9 @@ impl std::fmt::Display for VmError {
             Self::ValueStackOverflow => write!(f, "Value stack overflow"),
             Self::Halted => write!(f, "Execution halted"),
             Self::Runtime(msg) => write!(f, "Runtime error: {}", msg),
+            Self::IndexOutOfBounds { index, len } => {
+                write!(f, "Index out of bounds: index {} but length is {}", index, len)
+            }
         }
     }
 }
@@ -563,7 +569,7 @@ impl BytecodeVM {
         // Trace if enabled
         if self.config.trace {
             let (disasm, _) = self.chunk.disassemble_instruction(self.ip);
-            eprintln!("[VM] {:04x}: {} | stack: {:?}", self.ip, disasm, self.value_stack);
+            trace!(target: "mettatron::vm::step", ip = self.ip, mnemonic = %disasm, stack_depth = self.value_stack.len());
         }
 
         // Advance IP past opcode
@@ -639,6 +645,20 @@ impl BytecodeVM {
             Opcode::Abs => self.op_abs()?,
             Opcode::FloorDiv => self.op_floor_div()?,
             Opcode::Pow => self.op_pow()?,
+            Opcode::Sqrt => self.op_sqrt()?,
+            Opcode::Log => self.op_log()?,
+            Opcode::Trunc => self.op_trunc()?,
+            Opcode::Ceil => self.op_ceil()?,
+            Opcode::FloorMath => self.op_floor_math()?,
+            Opcode::Round => self.op_round()?,
+            Opcode::Sin => self.op_sin()?,
+            Opcode::Cos => self.op_cos()?,
+            Opcode::Tan => self.op_tan()?,
+            Opcode::Asin => self.op_asin()?,
+            Opcode::Acos => self.op_acos()?,
+            Opcode::Atan => self.op_atan()?,
+            Opcode::IsNan => self.op_isnan()?,
+            Opcode::IsInf => self.op_isinf()?,
 
             // Comparison
             Opcode::Lt => self.op_lt()?,
@@ -683,6 +703,9 @@ impl BytecodeVM {
             Opcode::MapAtom => self.op_map_atom()?,
             Opcode::FilterAtom => self.op_filter_atom()?,
             Opcode::FoldlAtom => self.op_foldl_atom()?,
+            Opcode::IndexAtom => self.op_index_atom()?,
+            Opcode::MinAtom => self.op_min_atom()?,
+            Opcode::MaxAtom => self.op_max_atom()?,
 
             // Nondeterminism
             Opcode::Fork => self.op_fork()?,
@@ -765,12 +788,14 @@ impl BytecodeVM {
     }
 
     fn op_dup(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::stack", ip = self.ip, "dup");
         let value = self.peek()?.clone();
         self.push(value);
         Ok(())
     }
 
     fn op_swap(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::stack", ip = self.ip, "swap");
         let len = self.value_stack.len();
         if len < 2 {
             return Err(VmError::StackUnderflow);
@@ -780,6 +805,7 @@ impl BytecodeVM {
     }
 
     fn op_rot3(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::stack", ip = self.ip, "rot3");
         let len = self.value_stack.len();
         if len < 3 {
             return Err(VmError::StackUnderflow);
@@ -795,12 +821,14 @@ impl BytecodeVM {
     }
 
     fn op_over(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::stack", ip = self.ip, "over");
         let value = self.peek_n(1)?.clone();
         self.push(value);
         Ok(())
     }
 
     fn op_dup_n(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::stack", ip = self.ip, "dup_n");
         let n = self.read_u8()? as usize;
         let len = self.value_stack.len();
         if n > len {
@@ -814,6 +842,7 @@ impl BytecodeVM {
     }
 
     fn op_pop_n(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::stack", ip = self.ip, "pop_n");
         let n = self.read_u8()? as usize;
         let len = self.value_stack.len();
         if n > len {
@@ -1114,6 +1143,7 @@ impl BytecodeVM {
     /// - Dispatches to MORK for rule matching
     /// - Executes first matching rule body, or pushes expr if irreducible
     fn op_call(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::call", ip = self.ip, "call");
         let head_index = self.read_u16()?;
         let arity = self.read_u8()? as usize;
 
@@ -1192,6 +1222,7 @@ impl BytecodeVM {
     ///
     /// Opcode format: TailCall head_index:u16 arity:u8
     fn op_tail_call(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::call", ip = self.ip, "tail_call");
         let head_index = self.read_u16()?;
         let arity = self.read_u8()? as usize;
 
@@ -1300,18 +1331,21 @@ impl BytecodeVM {
     }
 
     fn op_call_n(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::call", ip = self.ip, "call_n");
         let _n = self.read_u8()?;
         // TODO: Implement call with N args
         Err(VmError::Runtime("CallN not yet implemented".into()))
     }
 
     fn op_tail_call_n(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::call", ip = self.ip, "tail_call_n");
         let _n = self.read_u8()?;
         // TODO: Implement tail call with N args
         Err(VmError::Runtime("TailCallN not yet implemented".into()))
     }
 
     fn op_return(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
+        trace!(target: "mettatron::vm::call", ip = self.ip, "return");
         let value = self.pop()?;
         if let Some(frame) = self.call_stack.pop() {
             // Return to caller - restore chunk/ip
@@ -1499,6 +1533,165 @@ impl BytecodeVM {
         Ok(())
     }
 
+    // === Extended Math Operations (PR #62) ===
+
+    fn op_sqrt(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Float(x.sqrt()),
+            MettaValue::Long(x) => MettaValue::Float((x as f64).sqrt()),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_log(&mut self) -> VmResult<()> {
+        let value = self.pop()?;
+        let base = self.pop()?;
+        let result = match (&base, &value) {
+            (MettaValue::Float(b), MettaValue::Float(v)) => MettaValue::Float(v.log(*b)),
+            (MettaValue::Long(b), MettaValue::Float(v)) => MettaValue::Float(v.log(*b as f64)),
+            (MettaValue::Float(b), MettaValue::Long(v)) => MettaValue::Float((*v as f64).log(*b)),
+            (MettaValue::Long(b), MettaValue::Long(v)) => MettaValue::Float((*v as f64).log(*b as f64)),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_trunc(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Long(x.trunc() as i64),
+            MettaValue::Long(x) => MettaValue::Long(x),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_ceil(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Long(x.ceil() as i64),
+            MettaValue::Long(x) => MettaValue::Long(x),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_floor_math(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Long(x.floor() as i64),
+            MettaValue::Long(x) => MettaValue::Long(x),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_round(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Long(x.round() as i64),
+            MettaValue::Long(x) => MettaValue::Long(x),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_sin(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Float(x.sin()),
+            MettaValue::Long(x) => MettaValue::Float((x as f64).sin()),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_cos(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Float(x.cos()),
+            MettaValue::Long(x) => MettaValue::Float((x as f64).cos()),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_tan(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Float(x.tan()),
+            MettaValue::Long(x) => MettaValue::Float((x as f64).tan()),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_asin(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Float(x.asin()),
+            MettaValue::Long(x) => MettaValue::Float((x as f64).asin()),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_acos(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Float(x.acos()),
+            MettaValue::Long(x) => MettaValue::Float((x as f64).acos()),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_atan(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Float(x.atan()),
+            MettaValue::Long(x) => MettaValue::Float((x as f64).atan()),
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_isnan(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Bool(x.is_nan()),
+            MettaValue::Long(_) => MettaValue::Bool(false), // integers are never NaN
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_isinf(&mut self) -> VmResult<()> {
+        let a = self.pop()?;
+        let result = match a {
+            MettaValue::Float(x) => MettaValue::Bool(x.is_infinite()),
+            MettaValue::Long(_) => MettaValue::Bool(false), // integers are never infinite
+            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
     // === Comparison Operations ===
 
     fn op_lt(&mut self) -> VmResult<()> {
@@ -1662,6 +1855,7 @@ impl BytecodeVM {
     // === Pattern Matching Operations ===
 
     fn op_match(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::match", ip = self.ip, "match");
         let value = self.pop()?;
         let pattern = self.pop()?;
         let matches = pattern_matches(&pattern, &value);
@@ -1670,6 +1864,7 @@ impl BytecodeVM {
     }
 
     fn op_match_bind(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::match", ip = self.ip, "match_bind");
         let value = self.pop()?;
         let pattern = self.pop()?;
         if let Some(bindings) = pattern_match_bind(&pattern, &value) {
@@ -1681,18 +1876,21 @@ impl BytecodeVM {
             }
             self.push(MettaValue::Bool(true));
         } else {
+            debug!(target: "mettatron::vm::match", ip = self.ip, "match_bind failed");
             self.push(MettaValue::Bool(false));
         }
         Ok(())
     }
 
     fn op_match_head(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::match", ip = self.ip, "match_head");
         let _expected_index = self.read_u8()?;
         // TODO: Implement head matching
         Err(VmError::Runtime("MatchHead not yet implemented".into()))
     }
 
     fn op_match_arity(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::match", ip = self.ip, "match_arity");
         let expected_arity = self.read_u8()? as usize;
         let value = self.pop()?;
         let matches = match &value {
@@ -1704,12 +1902,14 @@ impl BytecodeVM {
     }
 
     fn op_match_guard(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::match", ip = self.ip, "match_guard");
         let _guard_index = self.read_u16()?;
         // TODO: Implement guard evaluation
         Err(VmError::Runtime("MatchGuard not yet implemented".into()))
     }
 
     fn op_unify(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::match", ip = self.ip, "unify");
         let b = self.pop()?;
         let a = self.pop()?;
         let unifies = unify(&a, &b).is_some();
@@ -1718,6 +1918,7 @@ impl BytecodeVM {
     }
 
     fn op_unify_bind(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::match", ip = self.ip, "unify_bind");
         let b = self.pop()?;
         let a = self.pop()?;
         if let Some(bindings) = unify(&a, &b) {
@@ -1728,6 +1929,7 @@ impl BytecodeVM {
             }
             self.push(MettaValue::Bool(true));
         } else {
+            debug!(target: "mettatron::vm::match", ip = self.ip, "unify_bind failed");
             self.push(MettaValue::Bool(false));
         }
         Ok(())
@@ -1974,6 +2176,105 @@ impl BytecodeVM {
         Ok(())
     }
 
+    // === Expression Manipulation Operations (PR #63) ===
+
+    fn op_index_atom(&mut self) -> VmResult<()> {
+        let index = self.pop()?;
+        let expr = self.pop()?;
+
+        let idx = match index {
+            MettaValue::Long(i) => i,
+            _ => return Err(VmError::TypeError { expected: "Long (index)", got: "other" }),
+        };
+
+        let result = match expr {
+            MettaValue::SExpr(items) => {
+                if idx < 0 || idx as usize >= items.len() {
+                    return Err(VmError::IndexOutOfBounds {
+                        index: idx as usize,
+                        len: items.len(),
+                    });
+                }
+                items[idx as usize].clone()
+            }
+            _ => return Err(VmError::TypeError { expected: "S-expression", got: "other" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_min_atom(&mut self) -> VmResult<()> {
+        let expr = self.pop()?;
+        let items = match expr {
+            MettaValue::SExpr(items) => items,
+            _ => return Err(VmError::TypeError { expected: "S-expression", got: "other" }),
+        };
+
+        if items.is_empty() {
+            return Err(VmError::TypeError { expected: "non-empty S-expression", got: "empty expression" });
+        }
+
+        // Find minimum among numeric values
+        let mut min_val: Option<f64> = None;
+        let mut min_is_long = true;
+
+        for item in &items {
+            let val = match item {
+                MettaValue::Long(x) => *x as f64,
+                MettaValue::Float(x) => {
+                    min_is_long = false;
+                    *x
+                }
+                _ => continue, // Skip non-numeric values
+            };
+            min_val = Some(min_val.map_or(val, |m: f64| m.min(val)));
+        }
+
+        let result = match min_val {
+            Some(v) if min_is_long && v == (v as i64) as f64 => MettaValue::Long(v as i64),
+            Some(v) => MettaValue::Float(v),
+            None => return Err(VmError::TypeError { expected: "numeric values in expression", got: "no numeric values" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
+    fn op_max_atom(&mut self) -> VmResult<()> {
+        let expr = self.pop()?;
+        let items = match expr {
+            MettaValue::SExpr(items) => items,
+            _ => return Err(VmError::TypeError { expected: "S-expression", got: "other" }),
+        };
+
+        if items.is_empty() {
+            return Err(VmError::TypeError { expected: "non-empty S-expression", got: "empty expression" });
+        }
+
+        // Find maximum among numeric values
+        let mut max_val: Option<f64> = None;
+        let mut max_is_long = true;
+
+        for item in &items {
+            let val = match item {
+                MettaValue::Long(x) => *x as f64,
+                MettaValue::Float(x) => {
+                    max_is_long = false;
+                    *x
+                }
+                _ => continue, // Skip non-numeric values
+            };
+            max_val = Some(max_val.map_or(val, |m: f64| m.max(val)));
+        }
+
+        let result = match max_val {
+            Some(v) if max_is_long && v == (v as i64) as f64 => MettaValue::Long(v as i64),
+            Some(v) => MettaValue::Float(v),
+            None => return Err(VmError::TypeError { expected: "numeric values in expression", got: "no numeric values" }),
+        };
+        self.push(result);
+        Ok(())
+    }
+
     /// Execute a template chunk with a single bound value (for map/filter)
     fn execute_template_with_binding(&mut self, chunk: Arc<BytecodeChunk>, binding: MettaValue) -> VmResult<MettaValue> {
         // Save state
@@ -2091,6 +2392,7 @@ impl BytecodeVM {
     // === Nondeterminism Operations ===
 
     fn op_fork(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "fork");
         let count = self.read_u16()? as usize;
         if count == 0 {
             return self.op_fail().map(|_| ());
@@ -2131,6 +2433,7 @@ impl BytecodeVM {
     }
 
     fn op_fail(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, choice_points = self.choice_points.len(), "fail");
         // Backtrack to most recent choice point
         while let Some(mut cp) = self.choice_points.pop() {
             // Restore state
@@ -2181,6 +2484,7 @@ impl BytecodeVM {
     }
 
     fn op_cut(&mut self) {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, choice_points = self.choice_points.len(), "cut");
         // Remove all choice points
         self.choice_points.clear();
     }
@@ -2191,6 +2495,7 @@ impl BytecodeVM {
     ///
     /// Stack: [] -> [SExpr of collected results]
     fn op_collect(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, results = self.results.len(), "collect");
         let _chunk_index = self.read_u16()?;
 
         // Collect all results accumulated so far via Yield
@@ -2208,6 +2513,7 @@ impl BytecodeVM {
     /// Collect up to N nondeterministic results.
     /// Stack: [] -> [SExpr of collected results (up to N)]
     fn op_collect_n(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "collect_n");
         let n = self.read_u8()? as usize;
 
         // Take up to N results
@@ -2223,6 +2529,7 @@ impl BytecodeVM {
     }
 
     fn op_yield(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "yield");
         // Save current result and backtrack for more
         let value = self.pop()?;
         self.results.push(value);
@@ -2230,11 +2537,13 @@ impl BytecodeVM {
     }
 
     fn op_begin_nondet(&mut self) {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "begin_nondet");
         // Mark start of nondeterministic section
         // Could save state for potential rollback
     }
 
     fn op_end_nondet(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "end_nondet");
         // End nondeterministic section
         Ok(())
     }
@@ -2242,6 +2551,7 @@ impl BytecodeVM {
     /// Guard - backtrack if top of stack is false.
     /// Stack: [bool] -> []
     fn op_guard(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "guard");
         let cond = self.pop()?;
         match cond {
             MettaValue::Bool(true) => {
@@ -2263,6 +2573,7 @@ impl BytecodeVM {
     /// If count is 0, remove all choice points (like full cut).
     /// Stack: [] -> []
     fn op_commit(&mut self) {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "commit");
         let count = self.read_u8().unwrap_or(0);
         if count == 0 {
             // Remove all choice points (full cut)
@@ -2279,6 +2590,7 @@ impl BytecodeVM {
     /// Creates a choice point with alternatives 2..N and returns alternative 1.
     /// Stack: [alt1, alt2, ..., altN] -> [selected]
     fn op_amb(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "amb");
         let count = self.read_u8()? as usize;
 
         if count == 0 {
@@ -2328,6 +2640,7 @@ impl BytecodeVM {
     /// Call a native Rust function by ID.
     /// Stack: [arg1, arg2, ..., argN] -> [result]
     fn op_call_native(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::call", ip = self.ip, "call_native");
         let func_id = self.read_u16()?;
         let arity = self.read_u8()? as usize;
 
@@ -2361,6 +2674,7 @@ impl BytecodeVM {
     /// Call an external FFI function.
     /// Stack: [arg1, arg2, ..., argN] -> [result]
     fn op_call_external(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::call", ip = self.ip, "call_external");
         let symbol_idx = self.read_u16()?;
         let arity = self.read_u8()? as usize;
 
@@ -2414,6 +2728,7 @@ impl BytecodeVM {
     /// Note: Actual memoization cache will be added in a future iteration.
     /// For now, this behaves like a normal call dispatch.
     fn op_call_cached(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::call", ip = self.ip, "call_cached");
         let head_idx = self.read_u16()?;
         let arity = self.read_u8()? as usize;
 
@@ -2482,6 +2797,7 @@ impl BytecodeVM {
     /// The rule `(= pattern body)` is added to the environment for later
     /// pattern matching during rule dispatch.
     fn op_define_rule(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::rules", ip = self.ip, "define_rule");
         use crate::backend::models::Rule;
 
         let body = self.pop()?;
@@ -2550,6 +2866,7 @@ impl BytecodeVM {
     /// - Single match: applies bindings and evaluates the rule body
     /// - Multiple matches: creates a choice point for nondeterminism
     fn op_dispatch_rules(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::rules", ip = self.ip, "dispatch_rules");
         use crate::backend::eval::apply_bindings;
 
         // Pop the call expression from the stack
@@ -2864,13 +3181,13 @@ impl BytecodeVM {
 
     fn op_breakpoint(&mut self) -> VmResult<()> {
         // TODO: Implement breakpoint handling
-        eprintln!("[BREAKPOINT] ip={:04x}", self.ip);
+        debug!(target: "mettatron::vm::breakpoint", ip = self.ip);
         Ok(())
     }
 
     fn op_trace(&mut self) -> VmResult<()> {
         let value = self.peek()?;
-        eprintln!("[TRACE] {:?}", value);
+        trace!(target: "mettatron::vm::trace", ?value);
         Ok(())
     }
 

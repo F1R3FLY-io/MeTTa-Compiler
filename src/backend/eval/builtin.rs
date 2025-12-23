@@ -27,6 +27,7 @@ pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaVal
 
         // Math functions
         "%" => Some(eval_modulo(args)),
+        "floor-div" => Some(eval_floor_div(args)),
         "pow-math" => Some(eval_power(args)),
         "sqrt-math" => Some(eval_sqrt(args)),
         "abs-math" => Some(eval_abs(args)),
@@ -232,6 +233,34 @@ fn eval_modulo(args: &[MettaValue]) -> MettaValue {
             Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
         ),
     }
+}
+
+/// Evaluate floor division (integer division that rounds toward negative infinity)
+/// Returns the floor of dividing the first argument by the second argument
+/// Unlike truncation which rounds toward zero, floor division rounds toward negative infinity
+/// Examples: floor-div(7, 3) = 2, floor-div(-7, 3) = -3
+fn eval_floor_div(args: &[MettaValue]) -> MettaValue {
+    require_builtin_args!("floor-div", args, 2, "(floor-div dividend divisor)");
+
+    let a = match extract_long(&args[0], "floor-div") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let b = match extract_long(&args[1], "floor-div") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    if b == 0 {
+        return MettaValue::Error(
+            "Division by zero".to_string(),
+            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+        );
+    }
+
+    // Use div_euclid for floor division semantics (rounds toward negative infinity)
+    MettaValue::Long(a.div_euclid(b))
 }
 
 /// Evaluate square root (unary)

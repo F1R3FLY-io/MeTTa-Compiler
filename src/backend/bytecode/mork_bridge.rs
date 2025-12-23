@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use tracing::warn;
 
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, MettaValue};
@@ -164,7 +165,7 @@ impl MorkBridge {
                 }
                 Err(e) => {
                     // Log compilation error but continue with other rules
-                    eprintln!("Warning: Failed to compile rule body: {}", e);
+                    warn!(target: "mettatron::vm::mork", error = %e, "Failed to compile rule body");
                 }
             }
         }

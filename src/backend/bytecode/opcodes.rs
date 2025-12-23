@@ -200,6 +200,12 @@ pub enum Opcode {
     FilterAtom = 0x81,
     /// Fold left over atoms: [list, init] -> [result] (chunk index follows)
     FoldlAtom = 0x82,
+    /// Index into atom/expression: [expr, index] -> [element]
+    IndexAtom = 0x83,
+    /// Minimum numeric value in expression: [expr] -> [min]
+    MinAtom = 0x84,
+    /// Maximum numeric value in expression: [expr] -> [max]
+    MaxAtom = 0x85,
 
     // === Rule Dispatch (0x90-0x9F) ===
     /// Find matching rules via MORK
@@ -276,6 +282,20 @@ pub enum Opcode {
     FloorDiv = 0xC7,
     /// Power: [a, b] -> [a^b]
     Pow = 0xC8,
+    /// Square root: [a] -> [sqrt(a)]
+    Sqrt = 0xC9,
+    /// Logarithm: [base, a] -> [log_base(a)]
+    Log = 0xCA,
+    /// Truncate to integer: [a] -> [trunc(a)]
+    Trunc = 0xCB,
+    /// Ceiling: [a] -> [ceil(a)]
+    Ceil = 0xCC,
+    /// Floor: [a] -> [floor(a)]
+    FloorMath = 0xCD,
+    /// Round to nearest: [a] -> [round(a)]
+    Round = 0xCE,
+    /// Sine: [a] -> [sin(a)]
+    Sin = 0xCF,
 
     // === Grounded Comparison (0xD0-0xDF) ===
     /// Less than: [a, b] -> [a < b]
@@ -292,6 +312,20 @@ pub enum Opcode {
     Ne = 0xD5,
     /// Structural equality
     StructEq = 0xD6,
+    /// Cosine: [a] -> [cos(a)]
+    Cos = 0xD7,
+    /// Tangent: [a] -> [tan(a)]
+    Tan = 0xD8,
+    /// Arcsine: [a] -> [asin(a)]
+    Asin = 0xD9,
+    /// Arccosine: [a] -> [acos(a)]
+    Acos = 0xDA,
+    /// Arctangent: [a] -> [atan(a)]
+    Atan = 0xDB,
+    /// Check if NaN: [a] -> [bool]
+    IsNan = 0xDC,
+    /// Check if infinity: [a] -> [bool]
+    IsInf = 0xDD,
 
     // === Grounded Boolean (0xE0-0xE7) ===
     /// Logical and: [a, b] -> [a && b]
@@ -381,6 +415,10 @@ impl Opcode {
             | Self::GetArity | Self::DeconAtom | Self::Repr | Self::GetMetaType
             | Self::ApplySubst | Self::Add | Self::Sub | Self::Mul | Self::Div
             | Self::Mod | Self::Neg | Self::Abs | Self::FloorDiv | Self::Pow
+            | Self::Sqrt | Self::Log | Self::Trunc | Self::Ceil | Self::FloorMath | Self::Round
+            | Self::Sin | Self::Cos | Self::Tan | Self::Asin | Self::Acos | Self::Atan
+            | Self::IsNan | Self::IsInf
+            | Self::IndexAtom | Self::MinAtom | Self::MaxAtom
             | Self::Lt | Self::Le | Self::Gt | Self::Ge | Self::Eq | Self::Ne | Self::StructEq
             | Self::And | Self::Or | Self::Not | Self::Xor
             | Self::GetType | Self::CheckType | Self::IsType | Self::AssertType
@@ -514,6 +552,9 @@ impl Opcode {
             Self::MapAtom => "map_atom",
             Self::FilterAtom => "filter_atom",
             Self::FoldlAtom => "foldl_atom",
+            Self::IndexAtom => "index_atom",
+            Self::MinAtom => "min_atom",
+            Self::MaxAtom => "max_atom",
             Self::DispatchRules => "dispatch_rules",
             Self::TryRule => "try_rule",
             Self::NextRule => "next_rule",
@@ -549,6 +590,13 @@ impl Opcode {
             Self::Abs => "abs",
             Self::FloorDiv => "floor_div",
             Self::Pow => "pow",
+            Self::Sqrt => "sqrt",
+            Self::Log => "log",
+            Self::Trunc => "trunc",
+            Self::Ceil => "ceil",
+            Self::FloorMath => "floor_math",
+            Self::Round => "round",
+            Self::Sin => "sin",
             Self::Lt => "lt",
             Self::Le => "le",
             Self::Gt => "gt",
@@ -556,6 +604,13 @@ impl Opcode {
             Self::Eq => "eq",
             Self::Ne => "ne",
             Self::StructEq => "struct_eq",
+            Self::Cos => "cos",
+            Self::Tan => "tan",
+            Self::Asin => "asin",
+            Self::Acos => "acos",
+            Self::Atan => "atan",
+            Self::IsNan => "is_nan",
+            Self::IsInf => "is_inf",
             Self::And => "and",
             Self::Or => "or",
             Self::Not => "not",
@@ -724,6 +779,9 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x80] = Some(Opcode::MapAtom);
     table[0x81] = Some(Opcode::FilterAtom);
     table[0x82] = Some(Opcode::FoldlAtom);
+    table[0x83] = Some(Opcode::IndexAtom);
+    table[0x84] = Some(Opcode::MinAtom);
+    table[0x85] = Some(Opcode::MaxAtom);
 
     // Rule dispatch
     table[0x90] = Some(Opcode::DispatchRules);
@@ -765,6 +823,13 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0xC6] = Some(Opcode::Abs);
     table[0xC7] = Some(Opcode::FloorDiv);
     table[0xC8] = Some(Opcode::Pow);
+    table[0xC9] = Some(Opcode::Sqrt);
+    table[0xCA] = Some(Opcode::Log);
+    table[0xCB] = Some(Opcode::Trunc);
+    table[0xCC] = Some(Opcode::Ceil);
+    table[0xCD] = Some(Opcode::FloorMath);
+    table[0xCE] = Some(Opcode::Round);
+    table[0xCF] = Some(Opcode::Sin);
 
     // Grounded comparison
     table[0xD0] = Some(Opcode::Lt);
@@ -774,6 +839,13 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0xD4] = Some(Opcode::Eq);
     table[0xD5] = Some(Opcode::Ne);
     table[0xD6] = Some(Opcode::StructEq);
+    table[0xD7] = Some(Opcode::Cos);
+    table[0xD8] = Some(Opcode::Tan);
+    table[0xD9] = Some(Opcode::Asin);
+    table[0xDA] = Some(Opcode::Acos);
+    table[0xDB] = Some(Opcode::Atan);
+    table[0xDC] = Some(Opcode::IsNan);
+    table[0xDD] = Some(Opcode::IsInf);
 
     // Grounded boolean
     table[0xE0] = Some(Opcode::And);

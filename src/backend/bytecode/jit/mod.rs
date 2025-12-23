@@ -32,6 +32,7 @@ pub mod codegen;
 pub mod runtime;
 pub mod tiered;
 pub mod hybrid;
+pub mod handlers;
 
 // Re-export main types
 pub use types::{

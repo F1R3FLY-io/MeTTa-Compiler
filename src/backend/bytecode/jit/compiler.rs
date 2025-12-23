@@ -20,6 +20,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use super::codegen::CodegenContext;
+use super::handlers;
 use super::types::{JitError, JitResult, TAG_NIL, TAG_ERROR, TAG_ATOM, TAG_VAR, TAG_HEAP, TAG_BOOL};
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 #[cfg(feature = "jit")]
@@ -3345,175 +3346,32 @@ impl JitCompiler {
     ) -> JitResult<()> {
         match op {
             // =====================================================================
-            // Stack Operations
+            // Stack Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::Nop => {
-                // No operation
-            }
-
-            Opcode::Pop => {
-                // Handle scope cleanup: if stack is empty, the value being popped
-                // was a local stored via StoreLocal (in JIT's separate locals storage)
-                if codegen.stack_depth() > 0 {
-                    codegen.pop()?;
-                }
-                // If stack is empty, this is a no-op (the "local" isn't on our stack)
-            }
-
-            Opcode::Dup => {
-                let val = codegen.peek()?;
-                codegen.push(val)?;
-            }
-
-            Opcode::Swap => {
-                // Handle scope cleanup pattern: when StoreLocal stores values
-                // to separate local slots, subsequent Swap has nothing to swap with.
-                if codegen.stack_depth() >= 2 {
-                    let a = codegen.pop()?;
-                    let b = codegen.pop()?;
-                    codegen.push(a)?;
-                    codegen.push(b)?;
-                }
-                // If stack_depth < 2, this is a no-op (scope cleanup for JIT-stored locals)
-            }
-
-            Opcode::Rot3 => {
-                // [a, b, c] -> [c, a, b] (VM semantics)
-                let c = codegen.pop()?;
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-                codegen.push(c)?;
-                codegen.push(a)?;
-                codegen.push(b)?;
-            }
-
-            Opcode::Over => {
-                // (a b -- a b a)
-                let b = codegen.pop()?;
-                let a = codegen.peek()?;
-                codegen.push(b)?;
-                codegen.push(a)?;
-            }
-
-            Opcode::DupN => {
-                // Read operand from bytecode
-                let n = chunk.read_byte(offset + 1).unwrap_or(0) as usize;
-                let mut vals = Vec::with_capacity(n);
-                for _ in 0..n {
-                    vals.push(codegen.pop()?);
-                }
-                vals.reverse();
-                // Push original values
-                for &v in &vals {
-                    codegen.push(v)?;
-                }
-                // Push duplicates
-                for &v in &vals {
-                    codegen.push(v)?;
-                }
-            }
-
-            Opcode::PopN => {
-                let n = chunk.read_byte(offset + 1).unwrap_or(0);
-                for _ in 0..n {
-                    codegen.pop()?;
-                }
+            Opcode::Nop | Opcode::Pop | Opcode::Dup | Opcode::Swap |
+            Opcode::Rot3 | Opcode::Over | Opcode::DupN | Opcode::PopN => {
+                return handlers::compile_stack_op(codegen, chunk, op, offset);
             }
 
             // =====================================================================
-            // Value Creation
+            // Value Creation - Simple (delegated to handlers module)
             // =====================================================================
-            Opcode::PushNil => {
-                let nil = codegen.const_nil();
-                codegen.push(nil)?;
-            }
-
-            Opcode::PushTrue => {
-                let t = codegen.const_bool(true);
-                codegen.push(t)?;
-            }
-
-            Opcode::PushFalse => {
-                let f = codegen.const_bool(false);
-                codegen.push(f)?;
-            }
-
-            Opcode::PushUnit => {
-                let unit = codegen.const_unit();
-                codegen.push(unit)?;
-            }
-
-            Opcode::PushLongSmall => {
-                let n = chunk.read_byte(offset + 1).unwrap_or(0) as i8;
-                let val = codegen.const_long(n as i64);
-                codegen.push(val)?;
-            }
-
-            Opcode::PushLong => {
-                // Stage 2: Load large integer from constant pool via runtime call
-                let idx = chunk.read_u16(offset + 1).unwrap_or(0) as i64;
-
-                // Import the load_constant function into this function's context
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.load_const_func_id, codegen.builder.func);
-
-                // Call jit_runtime_load_constant(ctx, index)
-                let ctx_ptr = codegen.ctx_ptr();
-                let idx_val = codegen.builder.ins().iconst(types::I64, idx);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, idx_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
-            Opcode::PushConstant => {
-                // Stage 2: Load generic constant via runtime call
-                let idx = chunk.read_u16(offset + 1).unwrap_or(0) as i64;
-
-                // Import the load_constant function into this function's context
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.load_const_func_id, codegen.builder.func);
-
-                // Call jit_runtime_load_constant(ctx, index)
-                let ctx_ptr = codegen.ctx_ptr();
-                let idx_val = codegen.builder.ins().iconst(types::I64, idx);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, idx_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
+            Opcode::PushNil | Opcode::PushTrue | Opcode::PushFalse |
+            Opcode::PushUnit | Opcode::PushLongSmall => {
+                return handlers::compile_simple_value_op(codegen, chunk, op, offset);
             }
 
             // =====================================================================
-            // Stage 13: Value Creation Opcodes
+            // Value Creation - Runtime calls (delegated to handlers module)
             // =====================================================================
-            Opcode::PushEmpty => {
-                // Create empty S-expression via runtime call
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.push_empty_func_id, codegen.builder.func);
-
-                // Call jit_runtime_push_empty()
-                let call_inst = codegen.builder.ins().call(func_ref, &[]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
-            }
-
+            Opcode::PushLong | Opcode::PushConstant | Opcode::PushEmpty |
             Opcode::PushAtom | Opcode::PushString | Opcode::PushVariable => {
-                // Load atom/string/variable from constant pool via runtime call
-                // All three use the same load_constant function - the constant pool
-                // already contains the correctly typed MettaValue
-                let idx = chunk.read_u16(offset + 1).unwrap_or(0) as i64;
-
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.load_const_func_id, codegen.builder.func);
-
-                // Call jit_runtime_load_constant(ctx, index)
-                let ctx_ptr = codegen.ctx_ptr();
-                let idx_val = codegen.builder.ins().iconst(types::I64, idx);
-                let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, idx_val]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
+                let mut ctx = handlers::ValueHandlerContext {
+                    module: &mut self.module,
+                    load_const_func_id: self.load_const_func_id,
+                    push_empty_func_id: self.push_empty_func_id,
+                };
+                return handlers::compile_runtime_value_op(&mut ctx, codegen, chunk, op, offset);
             }
 
             // =====================================================================
@@ -4147,149 +4005,19 @@ impl JitCompiler {
             }
 
             // =====================================================================
-            // Arithmetic Operations
+            // Arithmetic Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::Add => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                // Type guards
-                codegen.guard_long(a, offset)?;
-                codegen.guard_long(b, offset)?;
-
-                // Extract payloads (lower 48 bits)
-                let a_val = codegen.extract_long(a);
-                let b_val = codegen.extract_long(b);
-
-                // Perform addition
-                let result = codegen.builder.ins().iadd(a_val, b_val);
-
-                // Box result as Long
-                let boxed = codegen.box_long(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Sub => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_long(a, offset)?;
-                codegen.guard_long(b, offset)?;
-
-                let a_val = codegen.extract_long(a);
-                let b_val = codegen.extract_long(b);
-                let result = codegen.builder.ins().isub(a_val, b_val);
-                let boxed = codegen.box_long(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Mul => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_long(a, offset)?;
-                codegen.guard_long(b, offset)?;
-
-                let a_val = codegen.extract_long(a);
-                let b_val = codegen.extract_long(b);
-                let result = codegen.builder.ins().imul(a_val, b_val);
-                let boxed = codegen.box_long(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Div => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_long(a, offset)?;
-                codegen.guard_long(b, offset)?;
-
-                let a_val = codegen.extract_long(a);
-                let b_val = codegen.extract_long(b);
-
-                // Guard against division by zero
-                codegen.guard_nonzero(b_val, offset)?;
-
-                let result = codegen.builder.ins().sdiv(a_val, b_val);
-                let boxed = codegen.box_long(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Mod => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_long(a, offset)?;
-                codegen.guard_long(b, offset)?;
-
-                let a_val = codegen.extract_long(a);
-                let b_val = codegen.extract_long(b);
-
-                codegen.guard_nonzero(b_val, offset)?;
-
-                let result = codegen.builder.ins().srem(a_val, b_val);
-                let boxed = codegen.box_long(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Neg => {
-                let a = codegen.pop()?;
-                codegen.guard_long(a, offset)?;
-
-                let a_val = codegen.extract_long(a);
-                let result = codegen.builder.ins().ineg(a_val);
-                let boxed = codegen.box_long(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Abs => {
-                let a = codegen.pop()?;
-                codegen.guard_long(a, offset)?;
-
-                let a_val = codegen.extract_long(a);
-
-                // abs(x) = x < 0 ? -x : x
-                let zero = codegen.builder.ins().iconst(types::I64, 0);
-                let is_neg = codegen.builder.ins().icmp(IntCC::SignedLessThan, a_val, zero);
-                let negated = codegen.builder.ins().ineg(a_val);
-                let result = codegen.builder.ins().select(is_neg, negated, a_val);
-
-                let boxed = codegen.box_long(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::FloorDiv => {
-                // For integers, floor division is the same as truncated division
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_long(a, offset)?;
-                codegen.guard_long(b, offset)?;
-
-                let a_val = codegen.extract_long(a);
-                let b_val = codegen.extract_long(b);
-
-                codegen.guard_nonzero(b_val, offset)?;
-
-                let result = codegen.builder.ins().sdiv(a_val, b_val);
-                let boxed = codegen.box_long(result);
-                codegen.push(boxed)?;
+            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div |
+            Opcode::Mod | Opcode::Neg | Opcode::Abs | Opcode::FloorDiv => {
+                return handlers::compile_simple_arithmetic_op(codegen, op, offset);
             }
 
             Opcode::Pow => {
-                // Stage 2: Pow via runtime call
-                let exp = codegen.pop()?;
-                let base = codegen.pop()?;
-
-                // Import the pow function into this function's context
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.pow_func_id, codegen.builder.func);
-
-                // Call jit_runtime_pow(base, exp) - both are NaN-boxed
-                let call_inst = codegen.builder.ins().call(func_ref, &[base, exp]);
-                let result = codegen.builder.inst_results(call_inst)[0];
-                codegen.push(result)?;
+                let mut ctx = handlers::ArithmeticHandlerContext {
+                    module: &mut self.module,
+                    pow_func_id: self.pow_func_id,
+                };
+                return handlers::compile_pow(&mut ctx, codegen);
             }
 
             // =====================================================================
@@ -4533,165 +4261,18 @@ impl JitCompiler {
             }
 
             // =====================================================================
-            // Boolean Operations
+            // Boolean Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::And => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_bool(a, offset)?;
-                codegen.guard_bool(b, offset)?;
-
-                let a_val = codegen.extract_bool(a);
-                let b_val = codegen.extract_bool(b);
-                let result = codegen.builder.ins().band(a_val, b_val);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Or => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_bool(a, offset)?;
-                codegen.guard_bool(b, offset)?;
-
-                let a_val = codegen.extract_bool(a);
-                let b_val = codegen.extract_bool(b);
-                let result = codegen.builder.ins().bor(a_val, b_val);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Not => {
-                let a = codegen.pop()?;
-                codegen.guard_bool(a, offset)?;
-
-                let a_val = codegen.extract_bool(a);
-                let one = codegen.builder.ins().iconst(types::I64, 1);
-                let result = codegen.builder.ins().bxor(a_val, one);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Xor => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_bool(a, offset)?;
-                codegen.guard_bool(b, offset)?;
-
-                let a_val = codegen.extract_bool(a);
-                let b_val = codegen.extract_bool(b);
-                let result = codegen.builder.ins().bxor(a_val, b_val);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
+            Opcode::And | Opcode::Or | Opcode::Not | Opcode::Xor => {
+                return handlers::compile_boolean_op(codegen, op, offset);
             }
 
             // =====================================================================
-            // Comparison Operations
+            // Comparison Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::Lt => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_long(a, offset)?;
-                codegen.guard_long(b, offset)?;
-
-                let a_val = codegen.extract_long(a);
-                let b_val = codegen.extract_long(b);
-                let cmp = codegen.builder.ins().icmp(IntCC::SignedLessThan, a_val, b_val);
-
-                // Convert i8 comparison result to i64
-                let result = codegen.builder.ins().uextend(types::I64, cmp);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Le => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_long(a, offset)?;
-                codegen.guard_long(b, offset)?;
-
-                let a_val = codegen.extract_long(a);
-                let b_val = codegen.extract_long(b);
-                let cmp = codegen
-                    .builder
-                    .ins()
-                    .icmp(IntCC::SignedLessThanOrEqual, a_val, b_val);
-                let result = codegen.builder.ins().uextend(types::I64, cmp);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Gt => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_long(a, offset)?;
-                codegen.guard_long(b, offset)?;
-
-                let a_val = codegen.extract_long(a);
-                let b_val = codegen.extract_long(b);
-                let cmp = codegen.builder.ins().icmp(IntCC::SignedGreaterThan, a_val, b_val);
-                let result = codegen.builder.ins().uextend(types::I64, cmp);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Ge => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                codegen.guard_long(a, offset)?;
-                codegen.guard_long(b, offset)?;
-
-                let a_val = codegen.extract_long(a);
-                let b_val = codegen.extract_long(b);
-                let cmp = codegen
-                    .builder
-                    .ins()
-                    .icmp(IntCC::SignedGreaterThanOrEqual, a_val, b_val);
-                let result = codegen.builder.ins().uextend(types::I64, cmp);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Eq => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                // For equality, we can compare the raw bits
-                // (same tag + same payload = equal)
-                let cmp = codegen.builder.ins().icmp(IntCC::Equal, a, b);
-                let result = codegen.builder.ins().uextend(types::I64, cmp);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::Ne => {
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                let cmp = codegen.builder.ins().icmp(IntCC::NotEqual, a, b);
-                let result = codegen.builder.ins().uextend(types::I64, cmp);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
-            }
-
-            Opcode::StructEq => {
-                // Structural equality: compare NaN-boxed values directly
-                // For primitive types (Long, Bool, Nil, Unit), bit comparison is correct
-                // For heap types, this compares references (deep comparison would need runtime)
-                let b = codegen.pop()?;
-                let a = codegen.pop()?;
-
-                let cmp = codegen.builder.ins().icmp(IntCC::Equal, a, b);
-                let result = codegen.builder.ins().uextend(types::I64, cmp);
-                let boxed = codegen.box_bool(result);
-                codegen.push(boxed)?;
+            Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge |
+            Opcode::Eq | Opcode::Ne | Opcode::StructEq => {
+                return handlers::compile_comparison_op(codegen, op, offset);
             }
 
             // =====================================================================

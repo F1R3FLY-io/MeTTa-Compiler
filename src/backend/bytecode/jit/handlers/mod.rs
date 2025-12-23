@@ -11,6 +11,10 @@ mod values;
 mod arithmetic;
 #[cfg(feature = "jit")]
 mod comparison;
+#[cfg(feature = "jit")]
+mod locals;
+#[cfg(feature = "jit")]
+mod type_predicates;
 
 #[cfg(feature = "jit")]
 pub use stack::compile_stack_op;
@@ -20,3 +24,7 @@ pub use values::{compile_simple_value_op, compile_runtime_value_op, ValueHandler
 pub use arithmetic::{compile_simple_arithmetic_op, compile_pow, ArithmeticHandlerContext};
 #[cfg(feature = "jit")]
 pub use comparison::{compile_boolean_op, compile_comparison_op};
+#[cfg(feature = "jit")]
+pub use locals::compile_local_op;
+#[cfg(feature = "jit")]
+pub use type_predicates::compile_type_predicate_op;

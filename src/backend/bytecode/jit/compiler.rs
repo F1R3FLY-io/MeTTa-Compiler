@@ -4676,65 +4676,18 @@ impl JitCompiler {
             }
 
             // =====================================================================
-            // Stage 4: Local Variables
+            // Stage 4: Local Variables (delegated to handlers module)
             // =====================================================================
-            Opcode::LoadLocal => {
-                let index = chunk.read_byte(offset + 1).unwrap_or(0) as usize;
-                codegen.load_local(index)?;
-            }
-
-            Opcode::StoreLocal => {
-                let index = chunk.read_byte(offset + 1).unwrap_or(0) as usize;
-                codegen.store_local(index)?;
-            }
-
-            Opcode::LoadLocalWide => {
-                let index = chunk.read_u16(offset + 1).unwrap_or(0) as usize;
-                codegen.load_local(index)?;
-            }
-
-            Opcode::StoreLocalWide => {
-                let index = chunk.read_u16(offset + 1).unwrap_or(0) as usize;
-                codegen.store_local(index)?;
+            Opcode::LoadLocal | Opcode::StoreLocal |
+            Opcode::LoadLocalWide | Opcode::StoreLocalWide => {
+                return handlers::compile_local_op(codegen, chunk, op, offset);
             }
 
             // =====================================================================
-            // Stage 6: Type Predicates
+            // Stage 6: Type Predicates (delegated to handlers module)
             // =====================================================================
-            Opcode::IsVariable => {
-                // Check if value is a variable (TAG_VAR)
-                let val = codegen.pop()?;
-                let tag = codegen.extract_tag(val);
-                let var_tag = codegen.builder.ins().iconst(types::I64, TAG_VAR as i64);
-                let is_var = codegen.builder.ins().icmp(IntCC::Equal, tag, var_tag);
-                // icmp returns i8, extend to i64 for boxing
-                let is_var_i64 = codegen.builder.ins().uextend(types::I64, is_var);
-                let result = codegen.box_bool(is_var_i64);
-                codegen.push(result)?;
-            }
-
-            Opcode::IsSExpr => {
-                // Check if value is an S-expression (TAG_HEAP)
-                let val = codegen.pop()?;
-                let tag = codegen.extract_tag(val);
-                let heap_tag = codegen.builder.ins().iconst(types::I64, TAG_HEAP as i64);
-                let is_sexpr = codegen.builder.ins().icmp(IntCC::Equal, tag, heap_tag);
-                // icmp returns i8, extend to i64 for boxing
-                let is_sexpr_i64 = codegen.builder.ins().uextend(types::I64, is_sexpr);
-                let result = codegen.box_bool(is_sexpr_i64);
-                codegen.push(result)?;
-            }
-
-            Opcode::IsSymbol => {
-                // Check if value is a symbol/atom (TAG_ATOM)
-                let val = codegen.pop()?;
-                let tag = codegen.extract_tag(val);
-                let atom_tag = codegen.builder.ins().iconst(types::I64, TAG_ATOM as i64);
-                let is_sym = codegen.builder.ins().icmp(IntCC::Equal, tag, atom_tag);
-                // icmp returns i8, extend to i64 for boxing
-                let is_sym_i64 = codegen.builder.ins().uextend(types::I64, is_sym);
-                let result = codegen.box_bool(is_sym_i64);
-                codegen.push(result)?;
+            Opcode::IsVariable | Opcode::IsSExpr | Opcode::IsSymbol => {
+                return handlers::compile_type_predicate_op(codegen, op);
             }
 
             // =====================================================================

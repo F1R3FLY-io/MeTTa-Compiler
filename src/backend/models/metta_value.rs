@@ -178,33 +178,6 @@ impl MettaValue {
         }
     }
 
-    // TODO -> comment
-    pub fn to_path_map_string(&self) -> String {
-        match self {
-            MettaValue::Atom(s) => s.clone(),
-            MettaValue::Bool(b) => b.to_string(),
-            MettaValue::Long(n) => n.to_string(),
-            MettaValue::Float(f) => f.to_string(),
-            MettaValue::String(s) => format!("\"{}\"", s),
-            MettaValue::SExpr(items) => {
-                todo!()
-            }
-            MettaValue::Nil => "()".to_string(),
-            MettaValue::Error(msg, details) => {
-                format!("(error \"{}\" {})", msg, details.to_mork_string())
-            }
-            MettaValue::Type(t) => t.to_mork_string(),
-            MettaValue::Conjunction(goals) => {
-                let inner = goals
-                    .iter()
-                    .map(|v| v.to_path_map_string())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!("(, {})", inner)
-            }
-        }
-    }
-
     /// Convert MettaValue to MORK s-expression string format
     /// This format can be parsed by MORK's parser
     pub fn to_mork_string(&self) -> String {
@@ -241,6 +214,38 @@ impl MettaValue {
                 let inner = goals
                     .iter()
                     .map(|v| v.to_mork_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("(, {})", inner)
+            }
+        }
+    }
+
+    /// Similar to [`Self::to_mork_string`] but keeps Atom as is
+    pub fn to_path_map_string(&self) -> String {
+        match self {
+            MettaValue::Atom(s) => s.clone(),
+            MettaValue::Bool(b) => b.to_string(),
+            MettaValue::Long(n) => n.to_string(),
+            MettaValue::Float(f) => f.to_string(),
+            MettaValue::String(s) => format!("\"{}\"", s),
+            MettaValue::SExpr(items) => {
+                let inner = items
+                    .iter()
+                    .map(|v| v.to_path_map_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("({})", inner)
+            }
+            MettaValue::Nil => "()".to_string(),
+            MettaValue::Error(msg, details) => {
+                format!("(error \"{}\" {})", msg, details.to_mork_string())
+            }
+            MettaValue::Type(t) => t.to_mork_string(),
+            MettaValue::Conjunction(goals) => {
+                let inner = goals
+                    .iter()
+                    .map(|v| v.to_path_map_string())
                     .collect::<Vec<_>>()
                     .join(" ");
                 format!("(, {})", inner)
@@ -421,9 +426,48 @@ impl From<String> for MettaValue {
     }
 }
 
-impl From<&str> for MettaValue {
-    fn from(s: &str) -> Self {
-        MettaValue::Atom(s.to_string())
+// impl From<&str> for MettaValue {
+//     fn from(s: &str) -> Self {
+//         MettaValue::Atom(s.to_string())
+//     }
+// }
+
+impl TryFrom<&str> for MettaValue {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, String> {
+        if s == "()" {
+            return Ok(MettaValue::Nil);
+        }
+
+        if s == "true" {
+            return Ok(MettaValue::Bool(true));
+        }
+        if s == "false" {
+            return Ok(MettaValue::Bool(false));
+        }
+
+        // if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        //     let unescaped = s[1..s.len() - 1]
+        //         .replace("\\\"", "\"")
+        //         .replace("\\\\", "\\");
+        //     return Ok(MettaValue::String(unescaped));
+        // }
+
+        // if let Ok(n) = s.parse::<i64>() {
+        //     return Ok(MettaValue::Long(n));
+        // }
+
+        // if let Ok(f) = s.parse::<f64>() {
+        //     return Ok(MettaValue::Float(f));
+        // }
+
+        if s.starts_with('(') {
+            // TODO
+        }
+
+        // Atom: everything else
+        Ok(MettaValue::Atom(s.to_string()))
     }
 }
 

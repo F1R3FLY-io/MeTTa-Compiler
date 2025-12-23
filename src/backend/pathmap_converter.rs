@@ -37,28 +37,6 @@ use pathmap::{zipper::*, PathMap};
     }
 */
 
-/*
-    TODO -> multiset count
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct MultisetCount(pub u32);
-
-    // Now you can implement Lattice for YOUR type
-    impl Lattice for MultisetCount {
-        fn pjoin(&self, other: &Self) -> AlgebraicResult<Self> {
-            AlgebraicResult::Element(MultisetCount(self.0 + other.0))
-        }
-        fn pmeet(&self, other: &Self) -> AlgebraicResult<Self> {
-            AlgebraicResult::Element(MultisetCount(self.0.min(other.0)))
-        }
-    }
-
-    // Usage:
-    let mut map = PathMap::<MultisetCount>::new();
-    map.insert(b"a", MultisetCount(1));
-    map.insert(b"b", MultisetCount(2));
-*/
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MultisetCount(pub u32);
 
@@ -72,7 +50,7 @@ impl MultisetCount {
     }
 }
 
-// TODO -> how does it work?
+// TODO -> how exactly Lattice works?
 impl Lattice for MultisetCount {
     fn pjoin(&self, other: &Self) -> AlgebraicResult<Self> {
         AlgebraicResult::Element(MultisetCount(self.0 + other.0))
@@ -84,6 +62,7 @@ impl Lattice for MultisetCount {
 }
 
 pub(crate) fn metta_expr_to_pathmap(value: &MettaValue) -> Result<PathMap<MultisetCount>, String> {
+    // TODO -> what about Conjunction?
     match value {
         MettaValue::SExpr(items) => {
             let mut path_map = PathMap::<MultisetCount>::new();
@@ -107,6 +86,25 @@ pub(crate) fn metta_expr_to_pathmap(value: &MettaValue) -> Result<PathMap<Multis
         MettaValue::Nil => Ok(PathMap::<MultisetCount>::new()),
         _ => Err(format!("Cannot convert {:?} to PathMap", value)),
     }
+}
+
+pub(crate) fn pathmap_to_metta_expr(pm: PathMap<MultisetCount>) -> Result<MettaValue, String> {
+    let mut rz = pm.read_zipper();
+
+    let mut res_items: Vec<MettaValue> = vec![];
+
+    while rz.to_next_val() {
+        // TODO -> fixme unwraps
+        let path = std::str::from_utf8(rz.path()).unwrap();
+        let metta_val: MettaValue = path.try_into().unwrap();
+        let count = rz.get_val().unwrap();
+
+        for _ in 0..count.count() {
+            res_items.push(metta_val.clone());
+        }
+    }
+
+    Ok(MettaValue::SExpr(res_items))
 }
 
 // TODO -> test nested S-expr

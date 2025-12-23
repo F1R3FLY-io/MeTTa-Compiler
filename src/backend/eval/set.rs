@@ -1,6 +1,6 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
-use crate::backend::pathmap_converter::metta_expr_to_pathmap;
+use crate::backend::pathmap_converter::{metta_expr_to_pathmap, pathmap_to_metta_expr};
 
 use pathmap::PathMap;
 use tracing::trace;
@@ -51,25 +51,21 @@ pub fn eval_unique_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 /// Example: (union-atom (a b b c) (b c c d)) -> (a b b c b c c d)
 pub fn eval_union_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_union-atom", ?items);
-    require_args_with_usage!("union-atom", items, 2, env, "(union-atom list_a list_b)");
+    require_args_with_usage!("union-atom", items, 2, env, "(union-atom left right)");
 
-    let list_a = &items[1];
-    let list_b = &items[2];
+    let left = &items[1];
+    let right = &items[2];
 
-    // TODO -> need to check if list_a and list_b are S-expressions or Nil
-    // TODO -> what about Conjunction?
+    // TODO -> fix unwraps
+    let left_pm = metta_expr_to_pathmap(left).unwrap();
+    let right_pm = metta_expr_to_pathmap(right).unwrap();
+    let union_pm = left_pm.join(&right_pm);
 
-    let pm1 = metta_expr_to_pathmap(list_a).unwrap();
-    let pm2 = metta_expr_to_pathmap(list_b).unwrap();
+    // dbg!(&union_pm);
 
-    let union_result = pm1.join(&pm2);
+    let res = pathmap_to_metta_expr(union_pm).unwrap();
 
-    // println!("pm1 before join: {:?}", pm1);
-    // println!("pm2 before join: {:?}", pm2);
-    // let union_result = pm1.join(&pm2);
-    // println!("union_result: {:?}", union_result);
-
-    dbg!(union_result);
+    dbg!(res);
 
     // for (key_bytes, value) in union_result.iter() {
     //     let key_string = String::from_utf8(key_bytes.to_vec())
@@ -96,6 +92,25 @@ pub fn eval_union_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 /// Returns the intersection of two tuples
 /// Example: (intersection-atom (a b c c) (b c c c d)) -> (b c c)
 pub fn eval_intersection_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_intersection-atom", ?items);
+    require_args_with_usage!(
+        "union-atom",
+        items,
+        2,
+        env,
+        "(intersection-atom left right)"
+    );
+
+    let left = &items[1];
+    let right = &items[2];
+
+    // TODO -> fix unwraps
+    let left_pm = metta_expr_to_pathmap(left).unwrap();
+    let right_pm = metta_expr_to_pathmap(right).unwrap();
+    let intersection_pm = left_pm.meet(&right_pm);
+
+    dbg!(intersection_pm);
+
     todo!()
 }
 

@@ -12,27 +12,20 @@
 pub mod init;
 mod analysis;
 
-#[cfg(feature = "jit")]
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
 use cranelift::codegen::ir::BlockArg;
-#[cfg(feature = "jit")]
 use cranelift_frontend::Switch;
-#[cfg(feature = "jit")]
 use cranelift_jit::{JITBuilder, JITModule};
-#[cfg(feature = "jit")]
 use cranelift_module::{FuncId, Linkage, Module};
 
 use super::codegen::CodegenContext;
 use super::handlers;
 use super::types::{JitError, JitResult, TAG_NIL, TAG_ERROR, TAG_ATOM, TAG_VAR, TAG_HEAP, TAG_BOOL};
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
-#[cfg(feature = "jit")]
 use std::collections::HashMap;
 use tracing::trace;
 
 // Import initialization traits for zero-cost static dispatch
-#[cfg(feature = "jit")]
 use init::{
     ArithmeticFuncIds, ArithmeticInit,
     BindingFuncIds, BindingsInit,
@@ -72,8 +65,7 @@ use init::{
 /// - `globals`: load_global, store_global, load_space (4 ops)
 /// - `debug`: trace, breakpoint, bloom_check, etc. (6 ops)
 pub struct JitCompiler {
-    #[cfg(feature = "jit")]
-    module: JITModule,
+        module: JITModule,
 
     /// Counter for generating unique function names
     func_counter: u64,
@@ -83,95 +75,72 @@ pub struct JitCompiler {
     // =========================================================================
 
     /// Arithmetic operations (pow, sqrt, log, trig, rounding)
-    #[cfg(feature = "jit")]
-    pub(crate) arithmetic: ArithmeticFuncIds,
+        pub(crate) arithmetic: ArithmeticFuncIds,
 
     /// Variable binding operations
-    #[cfg(feature = "jit")]
-    pub(crate) bindings: BindingFuncIds,
+        pub(crate) bindings: BindingFuncIds,
 
     /// Function call operations
-    #[cfg(feature = "jit")]
-    pub(crate) calls: CallFuncIds,
+        pub(crate) calls: CallFuncIds,
 
     /// Nondeterminism operations (fork, yield, collect, cut)
-    #[cfg(feature = "jit")]
-    pub(crate) nondet: NondetFuncIds,
+        pub(crate) nondet: NondetFuncIds,
 
     /// Pattern matching operations
-    #[cfg(feature = "jit")]
-    pub(crate) pattern_matching: PatternMatchingFuncIds,
+        pub(crate) pattern_matching: PatternMatchingFuncIds,
 
     /// Rule dispatch operations
-    #[cfg(feature = "jit")]
-    pub(crate) rules: RulesFuncIds,
+        pub(crate) rules: RulesFuncIds,
 
     /// Space operations (add, remove, match, state)
-    #[cfg(feature = "jit")]
-    pub(crate) space: SpaceFuncIds,
+        pub(crate) space: SpaceFuncIds,
 
     /// Special form operations (if, let, match, quote)
-    #[cfg(feature = "jit")]
-    pub(crate) special_forms: SpecialFormsFuncIds,
+        pub(crate) special_forms: SpecialFormsFuncIds,
 
     /// Type operations (get_type, check_type, assert_type)
-    #[cfg(feature = "jit")]
-    pub(crate) type_ops: TypeOpsFuncIds,
+        pub(crate) type_ops: TypeOpsFuncIds,
 
     /// S-expression operations (head, tail, cons, make)
-    #[cfg(feature = "jit")]
-    pub(crate) sexpr: SExprFuncIds,
+        pub(crate) sexpr: SExprFuncIds,
 
     /// Higher-order operations (map, filter, fold)
-    #[cfg(feature = "jit")]
-    pub(crate) higher_order: HigherOrderFuncIds,
+        pub(crate) higher_order: HigherOrderFuncIds,
 
     /// Global/space access operations
-    #[cfg(feature = "jit")]
-    pub(crate) globals: GlobalsFuncIds,
+        pub(crate) globals: GlobalsFuncIds,
 
     /// Debug and meta operations
-    #[cfg(feature = "jit")]
-    pub(crate) debug: DebugFuncIds,
+        pub(crate) debug: DebugFuncIds,
 
     // =========================================================================
     // Miscellaneous FuncIds - not yet grouped
     // =========================================================================
 
     /// Load constant from constant pool
-    #[cfg(feature = "jit")]
-    load_const_func_id: FuncId,
+        load_const_func_id: FuncId,
 
     /// Push URI from constant pool
-    #[cfg(feature = "jit")]
-    push_uri_func_id: FuncId,
+        push_uri_func_id: FuncId,
 
     /// Index into expression
-    #[cfg(feature = "jit")]
-    index_atom_func_id: FuncId,
+        index_atom_func_id: FuncId,
 
     /// Get minimum element
-    #[cfg(feature = "jit")]
-    min_atom_func_id: FuncId,
+        min_atom_func_id: FuncId,
 
     /// Get maximum element
-    #[cfg(feature = "jit")]
-    max_atom_func_id: FuncId,
+        max_atom_func_id: FuncId,
 
     // MORK Bridge operations (to be grouped later)
-    #[cfg(feature = "jit")]
-    mork_lookup_func_id: FuncId,
-    #[cfg(feature = "jit")]
-    mork_match_func_id: FuncId,
-    #[cfg(feature = "jit")]
-    mork_insert_func_id: FuncId,
-    #[cfg(feature = "jit")]
-    mork_delete_func_id: FuncId,
+        mork_lookup_func_id: FuncId,
+        mork_match_func_id: FuncId,
+        mork_insert_func_id: FuncId,
+        mork_delete_func_id: FuncId,
 }
 
 /// Block info for JIT compilation - tracks jump targets and predecessor counts
-#[cfg(feature = "jit")]
-struct BlockInfo {
+pub(super) struct BlockInfo {
     /// Bytecode offsets that are jump targets
     targets: Vec<usize>,
     /// Number of predecessors for each target (for PHI detection)
@@ -183,8 +152,7 @@ impl JitCompiler {
     ///
     /// This method uses trait-based initialization for grouped FuncIds,
     /// providing zero-cost abstraction through static dispatch.
-    #[cfg(feature = "jit")]
-    pub fn new() -> JitResult<Self> {
+        pub fn new() -> JitResult<Self> {
         use super::runtime;
 
         let mut flag_builder = settings::builder();
@@ -330,21 +298,11 @@ impl JitCompiler {
         })
     }
 
-
-    /// Create a new JIT compiler (stub when feature disabled)
-    #[cfg(not(feature = "jit"))]
-    pub fn new() -> JitResult<Self> {
-        Err(JitError::NotCompilable(
-            "JIT feature not enabled".to_string(),
-        ))
-    }
-
     /// Register runtime helper functions for use from JIT code
     ///
     /// Uses trait-based initialization for grouped symbols with zero-cost
     /// static dispatch. Miscellaneous symbols are registered directly.
-    #[cfg(feature = "jit")]
-    fn register_runtime_symbols(builder: &mut JITBuilder) {
+        fn register_runtime_symbols(builder: &mut JITBuilder) {
         use super::runtime;
 
         // Register grouped symbols using trait methods
@@ -407,8 +365,7 @@ impl JitCompiler {
     /// Pre-scan bytecode to find all jump targets and their predecessor counts
     ///
     /// Delegates to `analysis::find_block_info` for the actual implementation.
-    #[cfg(feature = "jit")]
-    #[inline]
+        #[inline]
     fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
         analysis::find_block_info(chunk)
     }
@@ -416,8 +373,7 @@ impl JitCompiler {
     /// Compile a bytecode chunk to native code
     ///
     /// Returns a function pointer that can be called with a JitContext
-    #[cfg(feature = "jit")]
-    pub fn compile(&mut self, chunk: &BytecodeChunk) -> JitResult<*const ()> {
+        pub fn compile(&mut self, chunk: &BytecodeChunk) -> JitResult<*const ()> {
         if !Self::can_compile_stage1(chunk) {
             return Err(JitError::NotCompilable(
                 "Chunk contains non-Stage-1 opcodes".to_string(),
@@ -464,17 +420,8 @@ impl JitCompiler {
         Ok(code_ptr as *const ())
     }
 
-    /// Compile a bytecode chunk (stub when feature disabled)
-    #[cfg(not(feature = "jit"))]
-    pub fn compile(&mut self, _chunk: &BytecodeChunk) -> JitResult<*const ()> {
-        Err(JitError::NotCompilable(
-            "JIT feature not enabled".to_string(),
-        ))
-    }
-
     /// Build the Cranelift IR for a bytecode chunk
-    #[cfg(feature = "jit")]
-    fn build_function(
+        fn build_function(
         &mut self,
         ctx: &mut codegen::Context,
         chunk: &BytecodeChunk,
@@ -579,8 +526,7 @@ impl JitCompiler {
     }
 
     /// Translate a single opcode to Cranelift IR
-    #[cfg(feature = "jit")]
-    fn translate_opcode<'a, 'b>(
+        fn translate_opcode<'a, 'b>(
         &mut self,
         codegen: &mut CodegenContext<'a, 'b>,
         chunk: &BytecodeChunk,
@@ -2146,14 +2092,8 @@ impl JitCompiler {
     }
 
     /// Get code size statistics
-    #[cfg(feature = "jit")]
     pub fn code_size(&self) -> usize {
         // Note: Cranelift doesn't expose this directly, would need tracking
-        0
-    }
-
-    #[cfg(not(feature = "jit"))]
-    pub fn code_size(&self) -> usize {
         0
     }
 }

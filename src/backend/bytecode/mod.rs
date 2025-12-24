@@ -107,16 +107,12 @@ pub mod memo_cache;
 pub mod external_registry;
 pub mod space_registry;
 pub mod optimizer;
+pub mod tiered_cache;
 
 /// Cranelift JIT compilation module
 ///
 /// Provides native code generation for hot bytecode paths.
-/// Enabled via the `jit` feature flag.
-#[cfg(feature = "jit")]
-pub mod jit;
-
-/// JIT stub module when feature is disabled
-#[cfg(not(feature = "jit"))]
+/// Always enabled - tiered compilation uses this for hot code paths.
 pub mod jit;
 
 // Re-export main types
@@ -136,8 +132,7 @@ pub use optimizer::{
     PeepholeAction,
 };
 
-// JIT re-exports (when jit feature is enabled)
-#[cfg(feature = "jit")]
+// JIT re-exports - always available with tiered compilation
 pub use jit::{
     // Hybrid executor
     HybridExecutor, HybridConfig, HybridStats,
@@ -154,26 +149,39 @@ pub use jit::{
     JIT_SIGNAL_HALT, JIT_SIGNAL_BAILOUT,
 };
 
-/// Feature flag for enabling bytecode VM
-///
-/// When enabled, the evaluator will attempt to compile and execute
-/// expressions via bytecode before falling back to tree-walking.
-#[cfg(feature = "bytecode")]
-pub const BYTECODE_ENABLED: bool = true;
+// Unified tiered compilation cache re-exports
+pub use tiered_cache::{
+    // Main cache
+    TieredCompilationCache, global_tiered_cache,
+    // State and tier types
+    ExprCompilationState, ExecutionTier, TierStatusKind, NativeCode,
+    // Statistics
+    TieredCacheStats,
+    // Thresholds
+    BYTECODE_THRESHOLD, JIT1_THRESHOLD, JIT2_THRESHOLD,
+};
 
-#[cfg(not(feature = "bytecode"))]
-pub const BYTECODE_ENABLED: bool = false;
+/// Bytecode VM is always enabled with tiered compilation
+///
+/// The evaluator will attempt to compile and execute expressions via
+/// bytecode before falling back to tree-walking. Background compilation
+/// via Rayon ensures no blocking on first execution.
+///
+/// # Note
+/// This constant is always `true` since tiered compilation is unconditionally
+/// enabled. It's kept for backward API compatibility but should not be used
+/// for conditional checks (which would be dead code).
+#[deprecated(since = "0.3.0", note = "Bytecode is always enabled; this constant will be removed in a future version")]
+pub const BYTECODE_ENABLED: bool = true;
 
 /// Global space registry for JIT runtime
 ///
 /// This registry is shared across all JIT executions and provides named space
 /// lookup for the `eval-new` and `load-space` operations.
-#[cfg(feature = "jit")]
 static GLOBAL_SPACE_REGISTRY: std::sync::LazyLock<SpaceRegistry> =
     std::sync::LazyLock::new(SpaceRegistry::new);
 
 /// Get a reference to the global space registry
-#[cfg(feature = "jit")]
 pub fn global_space_registry() -> &'static SpaceRegistry {
     &GLOBAL_SPACE_REGISTRY
 }
@@ -628,7 +636,7 @@ pub fn try_bytecode_eval_with_env<F>(
 where
     F: FnOnce(crate::backend::Environment) -> (Vec<MettaValue>, crate::backend::Environment),
 {
-    if BYTECODE_ENABLED && can_compile_with_env(expr) {
+    if can_compile_with_env(expr) {
         match eval_bytecode_with_env(expr, env.clone()) {
             Ok((results, new_env)) => (results, new_env),
             Err(_) => fallback(env),
@@ -641,13 +649,13 @@ where
 /// Try to evaluate via bytecode, falling back to provided fallback function
 ///
 /// This is the recommended integration point for the main eval loop.
-/// If bytecode is enabled and the expression is compilable, it tries bytecode.
+/// If the expression is compilable, it tries bytecode.
 /// On success, returns bytecode results. On failure, calls the fallback.
 pub fn try_bytecode_eval<F>(expr: &MettaValue, fallback: F) -> Vec<MettaValue>
 where
     F: FnOnce() -> Vec<MettaValue>,
 {
-    if BYTECODE_ENABLED && can_compile(expr) {
+    if can_compile(expr) {
         match eval_bytecode(expr) {
             Ok(results) => results,
             Err(_) => fallback(),
@@ -682,7 +690,6 @@ where
 /// let results = eval_bytecode_hybrid(&expr)?;
 /// assert_eq!(results[0], MettaValue::Long(3));
 /// ```
-#[cfg(feature = "jit")]
 pub fn eval_bytecode_hybrid(expr: &MettaValue) -> Result<Vec<MettaValue>, BytecodeEvalError> {
     let chunk = compile_arc("eval", expr)?;
     let mut executor = HybridExecutor::new();
@@ -709,7 +716,6 @@ pub fn eval_bytecode_hybrid(expr: &MettaValue) -> Result<Vec<MettaValue>, Byteco
 ///
 /// # Returns
 /// Results of evaluation or an error
-#[cfg(feature = "jit")]
 pub fn eval_bytecode_hybrid_shared(
     executor: &mut HybridExecutor,
     expr: &MettaValue,
@@ -727,7 +733,6 @@ pub fn eval_bytecode_hybrid_shared(
 ///
 /// # Returns
 /// Results of evaluation or an error
-#[cfg(feature = "jit")]
 pub fn eval_bytecode_hybrid_with_config(
     expr: &MettaValue,
     config: HybridConfig,
@@ -750,12 +755,11 @@ pub fn eval_bytecode_hybrid_with_config(
 ///
 /// Similar to `try_bytecode_eval` but uses the HybridExecutor for potential
 /// JIT speedups on hot code paths.
-#[cfg(feature = "jit")]
 pub fn try_hybrid_eval<F>(expr: &MettaValue, fallback: F) -> Vec<MettaValue>
 where
     F: FnOnce() -> Vec<MettaValue>,
 {
-    if BYTECODE_ENABLED && can_compile(expr) {
+    if can_compile(expr) {
         match eval_bytecode_hybrid(expr) {
             Ok(results) => results,
             Err(_) => fallback(),
@@ -1168,12 +1172,8 @@ mod tests {
             vec![MettaValue::Long(999)] // Fallback should not be called
         });
 
-        // If bytecode is enabled, result should be 30
-        // If bytecode is disabled, fallback returns 999
-        #[cfg(feature = "bytecode")]
+        // Bytecode is always enabled - result should be 30
         assert_eq!(results[0], MettaValue::Long(30));
-        #[cfg(not(feature = "bytecode"))]
-        assert_eq!(results[0], MettaValue::Long(999));
     }
 
     #[test]
@@ -1191,11 +1191,8 @@ mod tests {
             vec![MettaValue::Long(42)] // Fallback should NOT be called
         });
 
-        // With bytecode enabled, let bindings work correctly
-        #[cfg(feature = "bytecode")]
+        // Bytecode is always enabled - let bindings work correctly
         assert_eq!(results[0], MettaValue::Long(1));
-        #[cfg(not(feature = "bytecode"))]
-        assert_eq!(results[0], MettaValue::Long(42));
     }
 
     #[test]

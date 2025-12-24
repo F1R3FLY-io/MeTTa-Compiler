@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 
-#[cfg(feature = "jit")]
+
 use super::compiler::JitCompiler;
 use super::profile::{JitProfile, JitState, HOT_THRESHOLD, WARM_THRESHOLD};
 use crate::backend::bytecode::chunk::BytecodeChunk;
@@ -47,26 +47,14 @@ impl Tier {
     /// Get the tier for a given execution count
     #[inline]
     pub fn from_count(count: u32) -> Self {
-        #[cfg(feature = "jit")]
-        {
-            if count >= STAGE2_THRESHOLD {
-                Tier::JitStage2
-            } else if count >= HOT_THRESHOLD {
-                Tier::JitStage1
-            } else if count >= WARM_THRESHOLD {
-                Tier::Bytecode
-            } else {
-                Tier::Interpreter
-            }
-        }
-        #[cfg(not(feature = "jit"))]
-        {
-            // Without JIT, cap at Bytecode tier
-            if count >= WARM_THRESHOLD {
-                Tier::Bytecode
-            } else {
-                Tier::Interpreter
-            }
+        if count >= STAGE2_THRESHOLD {
+            Tier::JitStage2
+        } else if count >= HOT_THRESHOLD {
+            Tier::JitStage1
+        } else if count >= WARM_THRESHOLD {
+            Tier::Bytecode
+        } else {
+            Tier::Interpreter
         }
     }
 
@@ -381,7 +369,7 @@ pub struct TieredCompiler {
     profiles: RwLock<HashMap<ChunkId, Arc<JitProfile>>>,
 
     /// JIT compiler instance (when jit feature is enabled)
-    #[cfg(feature = "jit")]
+    
     jit_compiler: RwLock<Option<JitCompiler>>,
 
     /// Statistics about tiered compilation
@@ -394,7 +382,7 @@ impl TieredCompiler {
         TieredCompiler {
             cache: JitCache::new(),
             profiles: RwLock::new(HashMap::new()),
-            #[cfg(feature = "jit")]
+            
             jit_compiler: RwLock::new(None),
             stats: RwLock::new(TieredStats::new()),
         }
@@ -405,7 +393,7 @@ impl TieredCompiler {
         TieredCompiler {
             cache: JitCache::with_limits(max_entries, max_code_bytes),
             profiles: RwLock::new(HashMap::new()),
-            #[cfg(feature = "jit")]
+            
             jit_compiler: RwLock::new(None),
             stats: RwLock::new(TieredStats::new()),
         }
@@ -452,7 +440,7 @@ impl TieredCompiler {
     /// Record an execution and potentially trigger JIT compilation
     ///
     /// Returns the tier that should be used for this execution.
-    #[cfg(feature = "jit")]
+    
     pub fn record_execution(&self, chunk: &BytecodeChunk) -> Tier {
         let profile = self.get_or_create_profile(chunk);
         let triggered_hot = profile.record_execution();
@@ -471,28 +459,8 @@ impl TieredCompiler {
         tier
     }
 
-    /// Record an execution without JIT feature
-    #[cfg(not(feature = "jit"))]
-    pub fn record_execution(&self, chunk: &BytecodeChunk) -> Tier {
-        let profile = self.get_or_create_profile(chunk);
-        let _ = profile.record_execution();
-        let tier = self.get_tier(chunk);
-
-        // Record stats
-        if let Ok(mut stats) = self.stats.write() {
-            stats.record_execution(tier);
-        }
-
-        // Without JIT feature, cap at Bytecode tier
-        if tier.is_jit() {
-            Tier::Bytecode
-        } else {
-            tier
-        }
-    }
-
     /// Attempt to JIT compile a chunk
-    #[cfg(feature = "jit")]
+    
     fn maybe_compile(&self, chunk: &BytecodeChunk, profile: &Arc<JitProfile>, tier: Tier) {
         // Try to start compilation (only one thread will win)
         if !profile.try_start_compiling() {
@@ -621,20 +589,12 @@ mod tests {
         assert_eq!(Tier::from_count(5), Tier::Interpreter);
         assert_eq!(Tier::from_count(10), Tier::Bytecode);
         assert_eq!(Tier::from_count(50), Tier::Bytecode);
-        #[cfg(feature = "jit")]
+        
         {
             assert_eq!(Tier::from_count(100), Tier::JitStage1);
             assert_eq!(Tier::from_count(200), Tier::JitStage1);
             assert_eq!(Tier::from_count(500), Tier::JitStage2);
             assert_eq!(Tier::from_count(1000), Tier::JitStage2);
-        }
-        #[cfg(not(feature = "jit"))]
-        {
-            // Without JIT, all high counts stay at Bytecode
-            assert_eq!(Tier::from_count(100), Tier::Bytecode);
-            assert_eq!(Tier::from_count(200), Tier::Bytecode);
-            assert_eq!(Tier::from_count(500), Tier::Bytecode);
-            assert_eq!(Tier::from_count(1000), Tier::Bytecode);
         }
     }
 
@@ -786,12 +746,10 @@ mod tests {
         }
 
         // Should now be JitStage1 tier (or Bytecode if JIT not enabled)
-        #[cfg(feature = "jit")]
+        
         assert!(
             compiler.get_tier(&chunk) == Tier::JitStage1
                 || compiler.get_tier(&chunk) == Tier::Bytecode
         );
-        #[cfg(not(feature = "jit"))]
-        assert_eq!(compiler.get_tier(&chunk), Tier::Bytecode);
     }
 }

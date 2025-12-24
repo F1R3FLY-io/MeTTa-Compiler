@@ -3,7 +3,7 @@
 //! Boolean ops: And, Or, Not, Xor
 //! Comparison ops: Lt, Le, Gt, Ge, Eq, Ne, StructEq
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -11,7 +11,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::Opcode;
 
 /// Compile boolean operation opcodes
-#[cfg(feature = "jit")]
+
 pub fn compile_boolean_op<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     op: Opcode,
@@ -77,7 +77,7 @@ pub fn compile_boolean_op<'a, 'b>(
 }
 
 /// Compile comparison operation opcodes
-#[cfg(feature = "jit")]
+
 pub fn compile_comparison_op<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     op: Opcode,

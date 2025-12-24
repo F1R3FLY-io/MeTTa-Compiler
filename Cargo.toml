@@ -77,17 +77,14 @@ harness = false
 [[bench]]
 name = "jit_comparison"
 harness = false
-required-features = ["jit"]
 
 [[bench]]
 name = "jit_tier1_benchmarks"
 harness = false
-required-features = ["jit"]
 
 [[bench]]
 name = "jit_optimization_benchmarks"
 harness = false
-required-features = ["jit"]
 
 [[bench]]
 name = "iter_rules_bench"
@@ -156,27 +153,39 @@ tracing-subscriber = "0.3"
 
 # Cranelift JIT - Native code generation for hot bytecode paths
 # Provides 2-5x additional speedup over bytecode VM for arithmetic chains
-cranelift = { version = "0.126", optional = true }
-cranelift-frontend = { version = "0.126", optional = true }
-cranelift-jit = { version = "0.126", optional = true }
-cranelift-module = { version = "0.126", optional = true }
-cranelift-native = { version = "0.126", optional = true }
+# Always included - tiered compilation is always enabled
+cranelift = "0.126"
+cranelift-frontend = "0.126"
+cranelift-jit = "0.126"
+cranelift-module = "0.126"
+cranelift-native = "0.126"
+
+# DashMap - Lock-free concurrent hash map for tiered compilation cache
+dashmap = "6.1"
+
+# Rayon - Work-stealing thread pool for background compilation
+rayon = "1.10"
 
 [features]
-default = ["interning", "async", "jit"]
+default = ["interning", "async"]
 async = ["tokio"]
 interning = []
 # Symbol interning: O(1) symbol comparison via lasso crate
 # Provides 5-10% improvement for rule-heavy workloads
 symbol-interning = ["lasso"]
-# Bytecode VM: Compiles expressions to bytecode for faster execution
-# Provides 15-750x speedup for arithmetic/boolean chains
+
+# NOTE: Bytecode VM and JIT compilation are now ALWAYS ENABLED
+# The tiered compilation system provides automatic tier progression:
+#   Tier 0: Tree-walker (0-1 executions)
+#   Tier 1: Bytecode VM (2+ executions, compiled in background)
+#   Tier 2: JIT Stage 1 (100+ executions, native code)
+#   Tier 3: JIT Stage 2 (500+ executions, optimized native code)
+# All compilation happens in the background via Rayon, so the evaluator
+# is never blocked waiting for compilation.
+
+# Legacy feature flags for backwards compatibility (now no-ops)
 bytecode = []
-# JIT compilation: Cranelift native code generation for hot bytecode paths (ENABLED BY DEFAULT)
-# Provides 38-226x speedup for arithmetic/control-flow heavy code
-# Tiered: cold→bytecode(10 calls)→JIT Stage1(100 calls)→JIT Stage2(500 calls)
-# Disable with: cargo build --no-default-features --features interning,async
-jit = ["bytecode", "cranelift", "cranelift-frontend", "cranelift-jit", "cranelift-module", "cranelift-native"]
+jit = []
 
 [dev-dependencies]
 # For integration tests

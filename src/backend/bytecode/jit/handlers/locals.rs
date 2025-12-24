@@ -7,7 +7,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
 /// Compile local variable opcodes
-#[cfg(feature = "jit")]
+
 pub fn compile_local_op<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,

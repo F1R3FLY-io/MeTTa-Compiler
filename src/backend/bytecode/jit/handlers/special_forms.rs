@@ -5,11 +5,11 @@
 //!          EvalSuperpose, EvalMemo, EvalMemoFirst, EvalPragma, EvalFunction,
 //!          EvalLambda, EvalApply
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -17,7 +17,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for special forms handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct SpecialFormsHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub store_binding_func_id: FuncId,
@@ -43,7 +43,7 @@ pub struct SpecialFormsHandlerContext<'m> {
 /// Semantics: Only TAG_BOOL_FALSE and TAG_NIL are falsy.
 /// Everything else (including TAG_BOOL_TRUE, integers, heap values) is truthy.
 /// Stack: [condition, then_val, else_val] -> [result]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_if<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
 ) -> JitResult<()> {
@@ -83,7 +83,7 @@ pub fn compile_eval_if<'a, 'b>(
 ///
 /// Native implementation: call store_binding directly and return Unit inline.
 /// Stack: [value] -> [Unit], name_idx from operand
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_let<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -119,7 +119,7 @@ pub fn compile_eval_let<'a, 'b>(
 /// Let* bindings are handled sequentially by the bytecode compiler.
 /// This opcode is a marker/placeholder that just returns Unit.
 /// Stack: [] -> [Unit]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_let_star<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
 ) -> JitResult<()> {
@@ -132,7 +132,7 @@ pub fn compile_eval_let_star<'a, 'b>(
 ///
 /// Native implementation: call pattern_match directly instead of wrapper.
 /// Stack: [value, pattern] -> [bool]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_match<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -162,7 +162,7 @@ pub fn compile_eval_match<'a, 'b>(
 /// Stack: [value] -> [case_index], case_count from operand
 /// Case dispatch is complex (loops over patterns, installs bindings),
 /// so we keep it as a runtime call.
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_case<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -193,7 +193,7 @@ pub fn compile_eval_case<'a, 'b>(
 /// Native implementation: Just discard first, keep second.
 /// Chain (;) evaluates both but only returns the second result.
 /// Stack: [first, second] -> [second]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_chain<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
 ) -> JitResult<()> {
@@ -206,7 +206,7 @@ pub fn compile_eval_chain<'a, 'b>(
 /// Compile EvalQuote opcode
 ///
 /// Stack: [expr] -> [quoted]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_quote<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -232,7 +232,7 @@ pub fn compile_eval_quote<'a, 'b>(
 /// Compile EvalUnquote opcode
 ///
 /// Stack: [quoted] -> [result]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_unquote<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -258,7 +258,7 @@ pub fn compile_eval_unquote<'a, 'b>(
 /// Compile EvalEval opcode
 ///
 /// Stack: [expr] -> [result]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_eval<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -286,7 +286,7 @@ pub fn compile_eval_eval<'a, 'b>(
 /// Native implementation: call store_binding directly and return Unit inline.
 /// Same optimization as EvalLet - avoid the wrapper function.
 /// Stack: [value] -> [Unit], name_idx from operand
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_bind<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -320,7 +320,7 @@ pub fn compile_eval_bind<'a, 'b>(
 /// Compile EvalNew opcode
 ///
 /// Stack: [] -> [space]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_new<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -341,7 +341,7 @@ pub fn compile_eval_new<'a, 'b>(
 /// Compile EvalCollapse opcode
 ///
 /// Stack: [expr] -> [list]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_collapse<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -367,7 +367,7 @@ pub fn compile_eval_collapse<'a, 'b>(
 /// Compile EvalSuperpose opcode
 ///
 /// Stack: [list] -> [choice]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_superpose<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -393,7 +393,7 @@ pub fn compile_eval_superpose<'a, 'b>(
 /// Compile EvalMemo opcode
 ///
 /// Stack: [expr] -> [result]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_memo<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -419,7 +419,7 @@ pub fn compile_eval_memo<'a, 'b>(
 /// Compile EvalMemoFirst opcode
 ///
 /// Stack: [expr] -> [result]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_memo_first<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -445,7 +445,7 @@ pub fn compile_eval_memo_first<'a, 'b>(
 /// Compile EvalPragma opcode
 ///
 /// Stack: [directive] -> [Unit]
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_pragma<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -471,7 +471,7 @@ pub fn compile_eval_pragma<'a, 'b>(
 /// Compile EvalFunction opcode
 ///
 /// Stack: [] -> [Unit], name_idx and param_count from operands
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_function<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -501,7 +501,7 @@ pub fn compile_eval_function<'a, 'b>(
 /// Compile EvalLambda opcode
 ///
 /// Stack: [] -> [closure], param_count from operand
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_lambda<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -529,7 +529,7 @@ pub fn compile_eval_lambda<'a, 'b>(
 /// Compile EvalApply opcode
 ///
 /// Stack: [closure] -> [result], arg_count from operand
-#[cfg(feature = "jit")]
+
 pub fn compile_eval_apply<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

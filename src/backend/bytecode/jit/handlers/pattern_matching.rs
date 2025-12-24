@@ -2,11 +2,11 @@
 //!
 //! Handles: Match, MatchBind, MatchHead, MatchArity, MatchGuard, Unify, UnifyBind
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -14,7 +14,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for pattern matching handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct PatternMatchingHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub pattern_match_func_id: FuncId,
@@ -29,7 +29,7 @@ pub struct PatternMatchingHandlerContext<'m> {
 ///
 /// Pattern match without binding
 /// Stack: [pattern, value] -> [bool]
-#[cfg(feature = "jit")]
+
 pub fn compile_match<'a, 'b>(
     ctx: &mut PatternMatchingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -58,7 +58,7 @@ pub fn compile_match<'a, 'b>(
 ///
 /// Pattern match with variable binding
 /// Stack: [pattern, value] -> [bool]
-#[cfg(feature = "jit")]
+
 pub fn compile_match_bind<'a, 'b>(
     ctx: &mut PatternMatchingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -88,7 +88,7 @@ pub fn compile_match_bind<'a, 'b>(
 /// Match head symbol of S-expression
 /// Stack: [expr] -> [bool]
 /// Operand: 1-byte index into constant pool for expected head symbol
-#[cfg(feature = "jit")]
+
 pub fn compile_match_head<'a, 'b>(
     ctx: &mut PatternMatchingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -123,7 +123,7 @@ pub fn compile_match_head<'a, 'b>(
 /// Check if S-expression has expected arity
 /// Stack: [expr] -> [bool]
 /// Operand: 1-byte expected arity
-#[cfg(feature = "jit")]
+
 pub fn compile_match_arity<'a, 'b>(
     ctx: &mut PatternMatchingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -158,7 +158,7 @@ pub fn compile_match_arity<'a, 'b>(
 /// Match with guard condition
 /// Stack: [pattern, value, guard] -> [bool]
 /// Operand: 2-byte guard chunk index (currently unused in this implementation)
-#[cfg(feature = "jit")]
+
 pub fn compile_match_guard<'a, 'b>(
     ctx: &mut PatternMatchingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -205,7 +205,7 @@ pub fn compile_match_guard<'a, 'b>(
 ///
 /// Unify two values (bidirectional pattern matching)
 /// Stack: [a, b] -> [bool]
-#[cfg(feature = "jit")]
+
 pub fn compile_unify<'a, 'b>(
     ctx: &mut PatternMatchingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -234,7 +234,7 @@ pub fn compile_unify<'a, 'b>(
 ///
 /// Unify two values with variable binding
 /// Stack: [a, b] -> [bool]
-#[cfg(feature = "jit")]
+
 pub fn compile_unify_bind<'a, 'b>(
     ctx: &mut PatternMatchingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

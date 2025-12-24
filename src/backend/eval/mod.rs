@@ -83,69 +83,81 @@ use conjunction::eval_conjunction;
 /// This is the public entry point that uses iterative evaluation with an explicit work stack
 /// to prevent stack overflow for large expressions.
 ///
-/// When the `bytecode` feature is enabled, supported expressions are compiled to bytecode
-/// and executed by the bytecode VM for improved performance. Complex expressions that
-/// require environment access (rules, spaces, etc.) fall back to the tree-walking evaluator.
+/// Implements tiered execution with asynchronous background compilation:
+///
+/// ```text
+/// Tier 0: Tree-Walker Interpreter (cold code, 0-1 executions)
+/// Tier 1: Bytecode VM (warm code, 2+ executions)
+/// Tier 2: JIT Stage 1 (hot code, 100+ executions)
+/// Tier 3: JIT Stage 2 (very hot code, 500+ executions)
+/// ```
+///
+/// Each execution records a count and triggers background compilation at thresholds.
+/// The HybridExecutor handles tier dispatch, with graceful fallback to lower tiers.
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
     debug!(metta_val = ?value);
 
-    // Try JIT-enabled hybrid evaluation when the jit feature is enabled
-    #[cfg(feature = "jit")]
-    {
-        use crate::backend::bytecode::{
-            can_compile_cached, can_compile_with_env, eval_bytecode_hybrid,
-            eval_bytecode_with_env, BYTECODE_ENABLED,
-        };
+    use crate::backend::bytecode::{
+        can_compile_cached, can_compile_with_env, eval_bytecode_hybrid,
+        eval_bytecode_with_env, global_tiered_cache, ExecutionTier, TierStatusKind,
+    };
 
-        // Only try bytecode/JIT for expressions that don't need environment
-        // and when bytecode is enabled at runtime
-        if BYTECODE_ENABLED && can_compile_cached(&value) {
-            if let Ok(results) = eval_bytecode_hybrid(&value) {
-                // Hybrid (JIT/bytecode) evaluation succeeded - return results with unchanged env
-                return (results, env);
+    // Record execution in unified tiered cache for async background compilation
+    // This triggers bytecode compilation at 2 executions, JIT Stage 1 at 100, JIT Stage 2 at 500
+    // Background compilation via Rayon is non-blocking
+    let _state = global_tiered_cache().record_execution(&value);
+
+    // Check if this expression can be compiled to bytecode
+    // Only some expressions are compilable - others need tree-walker semantics
+    // (e.g., expressions requiring rule lookup need environment access)
+    if can_compile_cached(&value) {
+        // Check if bytecode is ready in the unified cache
+        // If so, execute it via HybridExecutor (which handles JIT tiering internally)
+        if _state.bytecode_status() == TierStatusKind::Ready {
+            if let Some(chunk) = _state.bytecode_chunk() {
+                if let Ok(results) = execute_bytecode_chunk(&chunk) {
+                    global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
+                    return (results, env);
+                }
+                // Bytecode execution failed, fall through to hybrid path
             }
-            // Hybrid evaluation failed (e.g., unsupported operation encountered)
-            // Fall through to environment-aware check or tree-walker
         }
 
-        // Try environment-aware bytecode for expressions that need rule dispatch
-        // This enables bytecode for workloads like mmverify that use rules
-        if BYTECODE_ENABLED && can_compile_with_env(&value) {
-            if let Ok((results, new_env)) = eval_bytecode_with_env(&value, env.clone()) {
-                return (results, new_env);
-            }
-            // Environment-aware bytecode failed - fall through to tree-walker
-        }
-    }
-
-    // Bytecode-only path (without JIT) when jit feature is not enabled
-    #[cfg(all(feature = "bytecode", not(feature = "jit")))]
-    {
-        use crate::backend::bytecode::{
-            can_compile_cached, can_compile_with_env, eval_bytecode, eval_bytecode_with_env,
-            BYTECODE_ENABLED,
-        };
-
-        // Only try bytecode for expressions that don't need environment
-        // and when bytecode is enabled at runtime
-        if BYTECODE_ENABLED && can_compile_cached(&value) {
-            if let Ok(results) = eval_bytecode(&value) {
-                // Bytecode evaluation succeeded - return results with unchanged env
-                return (results, env);
-            }
-            // Bytecode failed (e.g., unsupported operation encountered)
-            // Fall through to environment-aware check or tree-walker
-        }
-
-        // Try environment-aware bytecode for expressions that need rule dispatch
-        // This enables bytecode for workloads like mmverify that use rules
-        if BYTECODE_ENABLED && can_compile_with_env(&value) {
-            if let Ok((results, new_env)) = eval_bytecode_with_env(&value, env.clone()) {
-                return (results, new_env);
-            }
-            // Environment-aware bytecode failed - fall through to tree-walker
+        // Try existing hybrid evaluation path (also handles bytecode caching and JIT)
+        if let Ok(results) = eval_bytecode_hybrid(&value) {
+            global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
+            return (results, env);
         }
     }
 
+    // Try environment-aware bytecode for expressions that need rule dispatch
+    if can_compile_with_env(&value) {
+        if let Ok((results, new_env)) = eval_bytecode_with_env(&value, env.clone()) {
+            global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
+            return (results, new_env);
+        }
+    }
+
+    // Tier 0: Tree-walker interpreter (cold code or fallback)
+    global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
     eval_trampoline(value, env)
+}
+
+/// Execute a bytecode chunk via HybridExecutor
+///
+/// The HybridExecutor handles JIT tier dispatch internally, executing via:
+/// - JIT native code if hot and compiled
+/// - Bytecode VM otherwise
+fn execute_bytecode_chunk(chunk: &std::sync::Arc<crate::backend::bytecode::BytecodeChunk>) -> Result<Vec<MettaValue>, ()> {
+    use crate::backend::bytecode::{HybridExecutor, global_space_registry, SpaceRegistry};
+
+    let mut executor = HybridExecutor::new();
+
+    // Connect the global space registry
+    let registry_ptr = global_space_registry() as *const SpaceRegistry as *mut ();
+    unsafe {
+        executor.set_space_registry(registry_ptr);
+    }
+
+    executor.run(chunk).map_err(|_| ())
 }

@@ -3,26 +3,26 @@
 //! Handles: Return, Jump, JumpIfFalse, JumpIfTrue, JumpShort, JumpIfFalseShort,
 //! JumpIfTrueShort, JumpIfNil, JumpIfError, JumpTable, Halt
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift::codegen::ir::BlockArg;
-#[cfg(feature = "jit")]
+
 use cranelift_frontend::Switch;
-#[cfg(feature = "jit")]
+
 use std::collections::HashMap;
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::{JitError, JitResult};
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
-#[cfg(feature = "jit")]
+
 use crate::backend::bytecode::jit::types::TAG_NIL;
-#[cfg(feature = "jit")]
+
 use crate::backend::bytecode::jit::types::TAG_ERROR;
 
 /// Compile Return opcode
-#[cfg(feature = "jit")]
+
 pub fn compile_return<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
     // Return top of stack or 0
     let result = codegen.pop().unwrap_or_else(|_| {
@@ -34,7 +34,7 @@ pub fn compile_return<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult
 }
 
 /// Compile Halt opcode
-#[cfg(feature = "jit")]
+
 pub fn compile_halt<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
     // Stack: [] -> signal - halt execution
     let signal = codegen.builder.ins().iconst(types::I64, super::super::JIT_SIGNAL_HALT);
@@ -44,7 +44,7 @@ pub fn compile_halt<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<(
 }
 
 /// Compile Jump opcode (unconditional)
-#[cfg(feature = "jit")]
+
 pub fn compile_jump<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -80,7 +80,7 @@ pub fn compile_jump<'a, 'b>(
 }
 
 /// Compile JumpShort opcode (unconditional, 1-byte offset)
-#[cfg(feature = "jit")]
+
 pub fn compile_jump_short<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -116,7 +116,7 @@ pub fn compile_jump_short<'a, 'b>(
 }
 
 /// Compile JumpIfFalse opcode
-#[cfg(feature = "jit")]
+
 pub fn compile_jump_if_false<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -184,7 +184,7 @@ pub fn compile_jump_if_false<'a, 'b>(
 }
 
 /// Compile JumpIfFalseShort opcode
-#[cfg(feature = "jit")]
+
 pub fn compile_jump_if_false_short<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -248,7 +248,7 @@ pub fn compile_jump_if_false_short<'a, 'b>(
 }
 
 /// Compile JumpIfTrue opcode
-#[cfg(feature = "jit")]
+
 pub fn compile_jump_if_true<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -313,7 +313,7 @@ pub fn compile_jump_if_true<'a, 'b>(
 }
 
 /// Compile JumpIfTrueShort opcode
-#[cfg(feature = "jit")]
+
 pub fn compile_jump_if_true_short<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -377,7 +377,7 @@ pub fn compile_jump_if_true_short<'a, 'b>(
 }
 
 /// Compile JumpIfNil opcode
-#[cfg(feature = "jit")]
+
 pub fn compile_jump_if_nil<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -445,7 +445,7 @@ pub fn compile_jump_if_nil<'a, 'b>(
 }
 
 /// Compile JumpIfError opcode
-#[cfg(feature = "jit")]
+
 pub fn compile_jump_if_error<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -511,7 +511,7 @@ pub fn compile_jump_if_error<'a, 'b>(
 }
 
 /// Compile JumpTable opcode (multi-way branch / switch)
-#[cfg(feature = "jit")]
+
 pub fn compile_jump_table<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,

@@ -51,7 +51,7 @@ fn test_can_compile_fork_with_bailout() {
     assert!(!JitCompiler::can_compile_stage1(&chunk), "Fork chunks should not be JIT compilable (Phase 9 optimization)");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_compile_simple_addition() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -71,7 +71,7 @@ fn test_compile_simple_addition() {
 // End-to-End JIT Execution Tests
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_addition() {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
@@ -117,7 +117,7 @@ fn test_jit_execute_addition() {
     assert_eq!(result.as_long(), 30, "Expected 10 + 20 = 30");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_arithmetic_chain() {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
@@ -161,7 +161,7 @@ fn test_jit_execute_arithmetic_chain() {
     assert_eq!(result.as_long(), 85);
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_boolean_logic() {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
@@ -205,7 +205,7 @@ fn test_jit_execute_boolean_logic() {
     assert!(result.as_bool(), "Expected True");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_comparison() {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
@@ -246,7 +246,7 @@ fn test_jit_execute_comparison() {
     assert!(result.as_bool(), "Expected 5 < 10 = True");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_division() {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
@@ -287,7 +287,7 @@ fn test_jit_execute_division() {
     assert_eq!(result.as_long(), 25, "Expected 100 / 4 = 25");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_modulo() {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
@@ -332,7 +332,7 @@ fn test_jit_execute_modulo() {
 // Stage 2: Pow (Runtime Call) Tests
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_can_compile_pow() {
     // Test that Pow is now compilable (Stage 2)
@@ -346,7 +346,7 @@ fn test_can_compile_pow() {
     assert!(JitCompiler::can_compile_stage1(&chunk), "Pow should now be Stage 2 compilable");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_pow() {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
@@ -389,7 +389,7 @@ fn test_jit_execute_pow() {
     assert_eq!(result.as_long(), 1024, "Expected 2^10 = 1024");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_pow_zero_exponent() {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
@@ -434,7 +434,7 @@ fn test_jit_execute_pow_zero_exponent() {
 // Stage 2: PushConstant (Runtime Call) Tests
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_can_compile_push_constant() {
     use crate::backend::MettaValue;
@@ -449,7 +449,7 @@ fn test_can_compile_push_constant() {
     assert!(JitCompiler::can_compile_stage1(&chunk), "PushConstant should now be Stage 2 compilable");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_push_constant() {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
@@ -492,7 +492,7 @@ fn test_jit_execute_push_constant() {
     assert_eq!(result.as_long(), 1_000_000, "Expected constant 1_000_000");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_push_constant_arithmetic() {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
@@ -541,7 +541,7 @@ fn test_jit_execute_push_constant_arithmetic() {
 // =========================================================================
 
 /// Helper to execute JIT code and return the result
-#[cfg(feature = "jit")]
+
 fn exec_jit(code_ptr: *const (), constants: &[crate::backend::MettaValue]) -> crate::backend::bytecode::jit::JitValue {
     use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
 
@@ -564,7 +564,7 @@ fn exec_jit(code_ptr: *const (), constants: &[crate::backend::MettaValue]) -> cr
     JitValue::from_raw(result_bits as u64)
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_integration_simple_arithmetic() {
     use crate::backend::bytecode::compile;
@@ -592,7 +592,7 @@ fn test_jit_integration_simple_arithmetic() {
     assert_eq!(result.as_long(), 30, "Expected (+ 10 20) = 30");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_integration_nested_arithmetic() {
     use crate::backend::bytecode::compile;
@@ -627,7 +627,7 @@ fn test_jit_integration_nested_arithmetic() {
     assert_eq!(result.as_long(), 65, "Expected (+ (- 100 50) (* 5 3)) = 65");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_integration_comparison_chain() {
     use crate::backend::bytecode::compile;
@@ -658,7 +658,7 @@ fn test_jit_integration_comparison_chain() {
     assert!(result.as_bool(), "Expected (< (+ 5 5) 20) = True");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_integration_pow() {
     use crate::backend::bytecode::compile;
@@ -689,7 +689,7 @@ fn test_jit_integration_pow() {
 // JIT vs VM Equivalence Tests
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_vm_equivalence_arithmetic() {
     use crate::backend::bytecode::{compile, BytecodeVM};
@@ -743,7 +743,7 @@ fn test_jit_vm_equivalence_arithmetic() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_vm_equivalence_comparisons() {
     use crate::backend::bytecode::{compile, BytecodeVM};
@@ -801,7 +801,7 @@ fn test_jit_vm_equivalence_comparisons() {
 // Edge Cases and Boundary Tests
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_negative_numbers() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -822,7 +822,7 @@ fn test_jit_execute_negative_numbers() {
     assert_eq!(result.as_long(), -5, "Expected -10 + 5 = -5");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_all_comparisons() {
     let test_cases = vec![
@@ -858,7 +858,7 @@ fn test_jit_execute_all_comparisons() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_stack_operations() {
     // Test Dup: duplicate top of stack
@@ -910,7 +910,7 @@ fn test_jit_execute_stack_operations() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_special_values() {
     // Test Nil
@@ -956,7 +956,7 @@ fn test_jit_execute_special_values() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_floor_div() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -976,7 +976,7 @@ fn test_jit_execute_floor_div() {
     assert_eq!(result.as_long(), 3, "Expected 17 // 5 = 3");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_neg_and_abs() {
     // Test Neg
@@ -1022,7 +1022,7 @@ fn test_jit_execute_neg_and_abs() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_pow_chain() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -1044,7 +1044,7 @@ fn test_jit_execute_pow_chain() {
     assert_eq!(result.as_long(), 64, "Expected pow(pow(2,3),2) = 64");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_deep_expression() {
     use crate::backend::bytecode::compile;
@@ -1078,7 +1078,7 @@ fn test_jit_execute_deep_expression() {
     assert_eq!(result.as_long(), 15, "Expected 1+2+3+4+5 = 15");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_large_constant_arithmetic() {
     use crate::backend::MettaValue;
@@ -1270,7 +1270,7 @@ fn test_jit_bailout_reason_phase4_values() {
 // Phase 4: Fork/Yield/Collect Execution Tests (Native Semantics)
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_fork_creates_choice_points_native() {
     // Phase 9: Fork chunks are now detected statically and routed to bytecode tier
@@ -1296,7 +1296,7 @@ fn test_jit_fork_creates_choice_points_native() {
         "Fork chunks should not be JIT compilable (Phase 9: static nondeterminism routing)");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_yield_signals_bailout() {
     // Stage 2 JIT: Yield now returns JIT_SIGNAL_YIELD to dispatcher instead of bailout
@@ -1335,7 +1335,7 @@ fn test_jit_yield_signals_bailout() {
     assert_eq!(stored_result.as_long(), 42, "Yield should have stored 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_collect_signals_bailout() {
     // Stage 2 JIT: Collect now uses native function and pushes result to stack
@@ -1442,7 +1442,7 @@ fn test_can_compile_jump_short() {
     assert!(JitCompiler::can_compile_stage1(&chunk), "JumpShort should be Stage 3 compilable");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_conditional_jump_true_path() {
     // Test conditional jump: if True then 42 else 0
@@ -1476,7 +1476,7 @@ fn test_jit_execute_conditional_jump_true_path() {
     assert_eq!(result.as_long(), 42, "Expected true branch result 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_conditional_jump_false_path() {
     // Test conditional jump: if False then 42 else 99
@@ -1509,7 +1509,7 @@ fn test_jit_execute_conditional_jump_false_path() {
     assert_eq!(result.as_long(), 99, "Expected false branch result 99");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_comparison_with_jump() {
     // Test: if 10 < 20 then 1 else 0
@@ -1545,7 +1545,7 @@ fn test_jit_execute_comparison_with_jump() {
     assert_eq!(result.as_long(), 1, "Expected 10 < 20 = true, result 1");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_jump_if_true() {
     // Test JumpIfTrue: if True then jump to return, keeping 99 on stack
@@ -1731,7 +1731,7 @@ fn test_can_compile_phase_i_breakpoint() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_local_store_load() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -1754,7 +1754,7 @@ fn test_jit_execute_local_store_load() {
     assert_eq!(result.as_long(), 42, "Expected local variable value 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_local_arithmetic() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -1781,7 +1781,7 @@ fn test_jit_execute_local_arithmetic() {
     assert_eq!(result.as_long(), 42, "Expected 100 - 58 = 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_local_overwrite() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -1805,7 +1805,7 @@ fn test_jit_execute_local_overwrite() {
     assert_eq!(result.as_long(), 99, "Expected overwritten value 99");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_local_with_control_flow() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -1848,7 +1848,7 @@ fn test_jit_execute_local_with_control_flow() {
     assert_eq!(result.as_long(), 77, "Expected local value from true branch");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_many_locals() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -1883,7 +1883,7 @@ fn test_jit_execute_many_locals() {
 // Stage 5: JumpIfNil and JumpIfError Tests
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_can_compile_jump_if_nil() {
     // JumpIfNil should be compilable in Stage 5
@@ -1896,7 +1896,7 @@ fn test_jit_can_compile_jump_if_nil() {
     assert!(JitCompiler::can_compile_stage1(&chunk));
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_can_compile_jump_if_error() {
     // JumpIfError should be compilable in Stage 5
@@ -1909,7 +1909,7 @@ fn test_jit_can_compile_jump_if_error() {
     assert!(JitCompiler::can_compile_stage1(&chunk));
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_jump_if_nil_takes_jump() {
     // When value is nil, JumpIfNil should take the jump
@@ -1940,7 +1940,7 @@ fn test_jit_execute_jump_if_nil_takes_jump() {
     assert_eq!(result.as_long(), 99, "Expected nil branch result 99");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_jump_if_nil_fallthrough() {
     // When value is not nil, JumpIfNil should NOT jump (fallthrough)
@@ -1965,7 +1965,7 @@ fn test_jit_execute_jump_if_nil_fallthrough() {
     assert_eq!(result.as_long(), 42, "Expected non-nil branch result 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_jump_if_nil_with_bool_false() {
     // False is NOT nil, so should fallthrough
@@ -1987,7 +1987,7 @@ fn test_jit_execute_jump_if_nil_with_bool_false() {
     assert_eq!(result.as_long(), 42, "False is not nil, expected fallthrough to 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_jump_if_error_no_error() {
     // When value is not an error, JumpIfError should NOT jump (fallthrough)
@@ -2012,7 +2012,7 @@ fn test_jit_execute_jump_if_error_no_error() {
     assert_eq!(result.as_long(), 42, "JumpIfError should peek, not pop; stack should have 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_jump_if_nil_pops_value() {
     // JumpIfNil should POP the value being tested
@@ -2087,7 +2087,7 @@ fn test_jit_can_compile_is_symbol() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_is_variable_false_for_long() {
     // IsVariable(42) should return false
@@ -2106,7 +2106,7 @@ fn test_jit_execute_is_variable_false_for_long() {
     assert!(!result.as_bool(), "IsVariable(Long) should return false");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_is_sexpr_false_for_long() {
     // IsSExpr(42) should return false
@@ -2125,7 +2125,7 @@ fn test_jit_execute_is_sexpr_false_for_long() {
     assert!(!result.as_bool(), "IsSExpr(Long) should return false");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_is_symbol_false_for_long() {
     // IsSymbol(42) should return false
@@ -2144,7 +2144,7 @@ fn test_jit_execute_is_symbol_false_for_long() {
     assert!(!result.as_bool(), "IsSymbol(Long) should return false");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_is_variable_false_for_bool() {
     // IsVariable(true) should return false
@@ -2163,7 +2163,7 @@ fn test_jit_execute_is_variable_false_for_bool() {
     assert!(!result.as_bool(), "IsVariable(Bool) should return false");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_is_sexpr_false_for_nil() {
     // IsSExpr(nil) should return false
@@ -2182,7 +2182,7 @@ fn test_jit_execute_is_sexpr_false_for_nil() {
     assert!(!result.as_bool(), "IsSExpr(Nil) should return false");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_is_symbol_false_for_unit() {
     // IsSymbol(unit) should return false
@@ -2296,7 +2296,7 @@ fn test_jit_can_compile_pop_n() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_pop() {
     // Push 42, push 10, pop -> result should be 42
@@ -2316,7 +2316,7 @@ fn test_jit_execute_pop() {
     assert_eq!(result.as_long(), 42, "Pop should discard 10, leaving 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_dup() {
     // Push 21, dup, add -> result should be 42
@@ -2336,7 +2336,7 @@ fn test_jit_execute_dup() {
     assert_eq!(result.as_long(), 42, "Dup should duplicate 21, then add: 21+21=42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_swap() {
     // Push 10, push 5, swap, sub -> 5 - 10 = -5
@@ -2360,7 +2360,7 @@ fn test_jit_execute_swap() {
     assert_eq!(result.as_long(), -5, "Swap should swap, then sub: 5-10=-5");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_neg_positive() {
     // Neg(42) = -42
@@ -2379,7 +2379,7 @@ fn test_jit_execute_neg_positive() {
     assert_eq!(result.as_long(), -42, "Neg(42) should be -42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_neg_negative() {
     // Neg(-10) = 10
@@ -2401,7 +2401,7 @@ fn test_jit_execute_neg_negative() {
     assert_eq!(result.as_long(), 10, "Neg(-10) should be 10");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_dup_n() {
     // Push 1, push 2, DupN 2 -> [1, 2, 1, 2], add (2+1=3), add (3+2=5), add (5+1=6)
@@ -2424,7 +2424,7 @@ fn test_jit_execute_dup_n() {
     assert_eq!(result.as_long(), 7, "DupN should duplicate top 2, then add: 3+4=7");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_pop_n() {
     // Push 100, push 1, push 2, push 3, PopN 3 -> [100], return 100
@@ -2446,7 +2446,7 @@ fn test_jit_execute_pop_n() {
     assert_eq!(result.as_long(), 100, "PopN 3 should leave 100");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_neg_zero() {
     // Neg(0) = 0
@@ -2544,7 +2544,7 @@ fn test_jit_can_compile_over() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_abs_positive() {
     // Abs(42) = 42
@@ -2563,7 +2563,7 @@ fn test_jit_execute_abs_positive() {
     assert_eq!(result.as_long(), 42, "Abs(42) should be 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_abs_negative() {
     // Abs(-10) = 10
@@ -2585,7 +2585,7 @@ fn test_jit_execute_abs_negative() {
     assert_eq!(result.as_long(), 10, "Abs(-10) should be 10");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_mod() {
     // 17 % 5 = 2
@@ -2605,7 +2605,7 @@ fn test_jit_execute_mod() {
     assert_eq!(result.as_long(), 2, "17 % 5 should be 2");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_floor_div_stage8() {
     // 17 / 5 = 3 (floor)
@@ -2625,7 +2625,7 @@ fn test_jit_execute_floor_div_stage8() {
     assert_eq!(result.as_long(), 3, "17 / 5 (floor) should be 3");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_rot3() {
     // Stack: [1, 2, 3] -> Rot3 -> [3, 1, 2]
@@ -2647,7 +2647,7 @@ fn test_jit_execute_rot3() {
     assert_eq!(result.as_long(), 2, "Rot3([1,2,3]) top should be 2");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_rot3_verify_order() {
     // Verify the full rotation by adding: [a,b,c] -> [c,a,b]
@@ -2673,7 +2673,7 @@ fn test_jit_execute_rot3_verify_order() {
     assert_eq!(result.as_long(), -10, "Rot3 should make a-b = 10-20 = -10");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_over() {
     // Stack: [1, 2] -> Over -> [1, 2, 1]
@@ -2695,7 +2695,7 @@ fn test_jit_execute_over() {
     assert_eq!(result.as_long(), 3, "Over should copy 1, then add: 2+1=3");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_abs_zero() {
     // Abs(0) = 0
@@ -2714,7 +2714,7 @@ fn test_jit_execute_abs_zero() {
     assert_eq!(result.as_long(), 0, "Abs(0) should be 0");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_mod_exact() {
     // 15 % 5 = 0
@@ -2772,7 +2772,7 @@ fn test_jit_can_compile_boolean_ops_stage9() {
     assert!(JitCompiler::can_compile_stage1(&builder.build()), "Xor should be compilable");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_and() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -2814,7 +2814,7 @@ fn test_jit_execute_and() {
     assert_eq!(result.as_bool(), false, "False AND False should be False");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_or() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -2844,7 +2844,7 @@ fn test_jit_execute_or() {
     assert_eq!(result.as_bool(), false, "False OR False should be False");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_not() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -2872,7 +2872,7 @@ fn test_jit_execute_not() {
     assert_eq!(result.as_bool(), true, "NOT False should be True");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_xor() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -2914,7 +2914,7 @@ fn test_jit_execute_xor() {
     assert_eq!(result.as_bool(), false, "False XOR False should be False");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_boolean_chain() {
     // Complex: (True AND False) OR (NOT False) = False OR True = True
@@ -2951,7 +2951,7 @@ fn test_jit_can_compile_struct_eq() {
     assert!(JitCompiler::can_compile_stage1(&builder.build()), "StructEq should be compilable");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_struct_eq_equal_longs() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -2971,7 +2971,7 @@ fn test_jit_execute_struct_eq_equal_longs() {
     assert_eq!(result.as_bool(), true, "42 == 42 should be true");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_struct_eq_different_longs() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -2991,7 +2991,7 @@ fn test_jit_execute_struct_eq_different_longs() {
     assert_eq!(result.as_bool(), false, "42 == 43 should be false");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_struct_eq_bools() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3021,7 +3021,7 @@ fn test_jit_execute_struct_eq_bools() {
     assert_eq!(result.as_bool(), false, "True == False should be false");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_struct_eq_nil() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3041,7 +3041,7 @@ fn test_jit_execute_struct_eq_nil() {
     assert_eq!(result.as_bool(), true, "Nil == Nil should be true");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_struct_eq_different_types() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3065,7 +3065,7 @@ fn test_jit_execute_struct_eq_different_types() {
 // Stage 10: More Pow Tests (extend existing tests)
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_pow_zero_exp() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3085,7 +3085,7 @@ fn test_jit_execute_pow_zero_exp() {
     assert_eq!(result.as_long(), 1, "5^0 should be 1");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_pow_one_exp() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3105,7 +3105,7 @@ fn test_jit_execute_pow_one_exp() {
     assert_eq!(result.as_long(), 7, "7^1 should be 7");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_pow_small() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3190,7 +3190,7 @@ fn test_jit_can_compile_push_variable() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_push_empty() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3223,7 +3223,7 @@ fn test_jit_execute_push_empty() {
     assert!(result.is_heap(), "Expected Heap result for empty S-expr, got: {:?}", result);
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_push_atom() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3258,7 +3258,7 @@ fn test_jit_execute_push_atom() {
     assert!(result.is_heap(), "Expected Heap result for atom, got: {:?}", result);
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_push_string() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3293,7 +3293,7 @@ fn test_jit_execute_push_string() {
     assert!(result.is_heap(), "Expected Heap result for string, got: {:?}", result);
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_push_variable() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3374,7 +3374,7 @@ fn test_jit_can_compile_get_arity() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_arity_empty() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3410,7 +3410,7 @@ fn test_jit_execute_get_arity_empty() {
     assert_eq!(result.as_long(), 0, "Arity of empty S-expr should be 0");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_arity_nonempty() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3453,7 +3453,7 @@ fn test_jit_execute_get_arity_nonempty() {
     assert_eq!(result.as_long(), 3, "Arity of (1 2 3) should be 3");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_head() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3496,7 +3496,7 @@ fn test_jit_execute_get_head() {
     assert_eq!(result.as_long(), 42, "Head of (42 2 3) should be 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_tail() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3540,7 +3540,7 @@ fn test_jit_execute_get_tail() {
     assert_eq!(result.as_long(), 2, "Arity of tail of (1 2 3) should be 2");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_tail_get_head() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3588,7 +3588,7 @@ fn test_jit_execute_get_tail_get_head() {
 // Stage 14b: GetElement Tests
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_can_compile_get_element() {
     use crate::backend::MettaValue;
@@ -3611,7 +3611,7 @@ fn test_jit_can_compile_get_element() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_element_first() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3654,7 +3654,7 @@ fn test_jit_execute_get_element_first() {
     assert_eq!(result.as_long(), 10, "Element at index 0 of (10 20 30) should be 10");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_element_middle() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3697,7 +3697,7 @@ fn test_jit_execute_get_element_middle() {
     assert_eq!(result.as_long(), 20, "Element at index 1 of (10 20 30) should be 20");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_element_last() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3740,7 +3740,7 @@ fn test_jit_execute_get_element_last() {
     assert_eq!(result.as_long(), 30, "Element at index 2 of (10 20 30) should be 30");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_element_combined() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3791,7 +3791,7 @@ fn test_jit_execute_get_element_combined() {
 // Phase 1: Type Operations Tests (GetType, CheckType, IsType)
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_type_long() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3831,7 +3831,7 @@ fn test_jit_execute_get_type_long() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_type_bool() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3871,7 +3871,7 @@ fn test_jit_execute_get_type_bool() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_get_type_sexpr() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3917,7 +3917,7 @@ fn test_jit_execute_get_type_sexpr() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_check_type_match() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3957,7 +3957,7 @@ fn test_jit_execute_check_type_match() {
     assert_eq!(result.as_bool(), true, "CheckType(Long, 'Number') should return true");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_check_type_mismatch() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3997,7 +3997,7 @@ fn test_jit_execute_check_type_mismatch() {
     assert_eq!(result.as_bool(), false, "CheckType(Long, 'Bool') should return false");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_is_type_match() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4037,7 +4037,7 @@ fn test_jit_execute_is_type_match() {
     assert_eq!(result.as_bool(), true, "IsType(Bool, 'Bool') should return true");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_check_type_variable_matches_any() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4082,7 +4082,7 @@ fn test_jit_execute_check_type_variable_matches_any() {
 // Phase J: AssertType Tests
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_assert_type_match() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4122,7 +4122,7 @@ fn test_jit_execute_assert_type_match() {
     assert_eq!(result.as_long(), 42, "AssertType should return the original value");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_assert_type_mismatch() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4158,7 +4158,7 @@ fn test_jit_execute_assert_type_mismatch() {
     assert!(ctx.bailout, "JIT execution should bailout on type mismatch");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_assert_type_variable_matches_any() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4251,7 +4251,7 @@ fn test_jit_can_compile_cons_atom() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_make_sexpr_empty() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4291,7 +4291,7 @@ fn test_jit_execute_make_sexpr_empty() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_make_sexpr_single() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4336,7 +4336,7 @@ fn test_jit_execute_make_sexpr_single() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_make_sexpr_multiple() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4385,7 +4385,7 @@ fn test_jit_execute_make_sexpr_multiple() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_cons_atom_to_nil() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4431,7 +4431,7 @@ fn test_jit_execute_cons_atom_to_nil() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_cons_atom_to_sexpr() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4484,7 +4484,7 @@ fn test_jit_execute_cons_atom_to_sexpr() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_make_sexpr_nested() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4563,7 +4563,7 @@ fn test_jit_execute_make_sexpr_nested() {
 // Phase 2b: PushUri, MakeList, MakeQuote Tests
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_can_compile_push_uri() {
     use crate::backend::MettaValue;
@@ -4578,7 +4578,7 @@ fn test_jit_can_compile_push_uri() {
     assert!(JitCompiler::can_compile_stage1(&chunk), "PushUri should be compilable");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_can_compile_make_list() {
     // Test that MakeList is compilable
@@ -4592,7 +4592,7 @@ fn test_jit_can_compile_make_list() {
     assert!(JitCompiler::can_compile_stage1(&chunk), "MakeList should be compilable");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_can_compile_make_quote() {
     // Test that MakeQuote is compilable
@@ -4605,7 +4605,7 @@ fn test_jit_can_compile_make_quote() {
     assert!(JitCompiler::can_compile_stage1(&chunk), "MakeQuote should be compilable");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_push_uri() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4643,7 +4643,7 @@ fn test_jit_execute_push_uri() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_make_list_empty() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4678,7 +4678,7 @@ fn test_jit_execute_make_list_empty() {
     assert!(matches!(metta, MettaValue::Nil), "Expected Nil, got: {:?}", metta);
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_make_list_single() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4726,7 +4726,7 @@ fn test_jit_execute_make_list_single() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_make_list_multiple() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4778,7 +4778,7 @@ fn test_jit_execute_make_list_multiple() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_make_quote() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4826,7 +4826,7 @@ fn test_jit_execute_make_quote() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_make_quote_nested() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4890,7 +4890,7 @@ fn test_jit_execute_make_quote_nested() {
 // Phase 3: Call/TailCall Tests
 // =====================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_can_compile_call() {
     use crate::backend::MettaValue;
@@ -4910,7 +4910,7 @@ fn test_jit_can_compile_call() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_can_compile_tail_call() {
     use crate::backend::MettaValue;
@@ -4929,7 +4929,7 @@ fn test_jit_can_compile_tail_call() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_call_with_bailout() {
     use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
@@ -4970,7 +4970,7 @@ fn test_jit_execute_call_with_bailout() {
     // For bailout, the VM will dispatch this expression
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_call_no_args() {
     use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
@@ -5005,7 +5005,7 @@ fn test_jit_execute_call_no_args() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_execute_tail_call_with_bailout() {
     use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
@@ -5041,7 +5041,7 @@ fn test_jit_execute_tail_call_with_bailout() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_call_builds_correct_expression() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -5103,7 +5103,7 @@ fn test_jit_call_builds_correct_expression() {
 // for rule dispatch integration with the VM.
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_call_with_mixed_argument_types() {
     // Test Call with mixed argument types: atom, long, bool, nested sexpr
@@ -5208,7 +5208,7 @@ fn test_jit_call_with_mixed_argument_types() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_call_expression_valid_for_rule_pattern() {
     // Test that JIT-constructed expressions match expected rule patterns
@@ -5271,7 +5271,7 @@ fn test_jit_call_expression_valid_for_rule_pattern() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_tail_call_preserves_tco_flag() {
     // Test that TailCall sets the correct bailout reason for TCO
@@ -5333,7 +5333,7 @@ fn test_jit_tail_call_preserves_tco_flag() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_call_with_zero_args_returns_head_only() {
     // Test Call with no arguments returns just the head in an SExpr
@@ -5396,7 +5396,7 @@ fn test_can_compile_binding_opcodes() {
     assert!(JitCompiler::can_compile_stage1(&chunk), "Binding opcodes should be compilable");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_binding_frame_operations() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5455,7 +5455,7 @@ fn test_jit_binding_frame_operations() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_has_binding() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5514,7 +5514,7 @@ fn test_jit_has_binding() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_clear_bindings() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5620,7 +5620,7 @@ fn test_can_compile_pattern_matching_opcodes() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_pattern_match_simple() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5662,7 +5662,7 @@ fn test_jit_pattern_match_simple() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_pattern_match_mismatch() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5704,7 +5704,7 @@ fn test_jit_pattern_match_mismatch() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_unify_simple() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5746,7 +5746,7 @@ fn test_jit_unify_simple() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_match_arity() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5797,7 +5797,7 @@ fn test_jit_match_arity() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_match_head() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5849,7 +5849,7 @@ fn test_jit_match_head() {
     }
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_match_bind_variable_extraction() {
     // Test Phase 2.1: MatchBind with variable extraction
@@ -5963,7 +5963,7 @@ fn test_can_compile_space_opcodes() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_space_add_returns_result() {
     // Test that SpaceAdd JIT compilation produces valid code
@@ -6003,7 +6003,7 @@ fn test_jit_space_add_returns_result() {
         "SpaceAdd should return bool, unit, nil, or error");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_space_remove_returns_result() {
     // Test that SpaceRemove JIT compilation produces valid code
@@ -6040,7 +6040,7 @@ fn test_jit_space_remove_returns_result() {
         "SpaceRemove should return bool, unit, nil, or error");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_space_get_atoms_returns_result() {
     // Test that SpaceGetAtoms JIT compilation produces valid code
@@ -6077,7 +6077,7 @@ fn test_jit_space_get_atoms_returns_result() {
         "SpaceGetAtoms should return list, nil, unit, or error");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_space_match_returns_result() {
     // Test that SpaceMatch JIT compilation produces valid code
@@ -6166,7 +6166,7 @@ fn test_can_compile_rule_dispatch_opcodes() {
     );
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_dispatch_rules_returns_result() {
     // Test that DispatchRules JIT compilation produces valid code
@@ -6203,7 +6203,7 @@ fn test_jit_dispatch_rules_returns_result() {
         "DispatchRules should return count (Long), nil, unit, or error");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_try_rule_returns_result() {
     // Test that TryRule JIT compilation produces valid code
@@ -6239,7 +6239,7 @@ fn test_jit_try_rule_returns_result() {
         "TryRule should return unit, nil, heap, or error");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_lookup_rules_returns_result() {
     // Test that LookupRules JIT compilation produces valid code
@@ -6275,7 +6275,7 @@ fn test_jit_lookup_rules_returns_result() {
         "LookupRules should return count (Long), nil, unit, or error");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_apply_subst_returns_result() {
     // Test that ApplySubst JIT compilation produces valid code
@@ -6312,7 +6312,7 @@ fn test_jit_apply_subst_returns_result() {
         "ApplySubst should return substituted expr, nil, unit, or error");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_define_rule_returns_result() {
     // Test that DefineRule JIT compilation produces valid code
@@ -6354,7 +6354,7 @@ fn test_jit_define_rule_returns_result() {
 // Let Binding Scope Cleanup Tests (StackUnderflow fix)
 // =========================================================================
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_let_binding_scope_cleanup() {
     // Test that (let $x 1 0) compiles and executes correctly.
@@ -6408,7 +6408,7 @@ fn test_jit_let_binding_scope_cleanup() {
     assert_eq!(result.as_long(), 0, "Body result should be 0");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_nested_let_bindings() {
     // Test nested let bindings: (let $x 1 (let $y 2 $y))
@@ -6468,7 +6468,7 @@ fn test_jit_nested_let_bindings() {
     assert_eq!(result.as_long(), 2, "Should return $y = 2");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_pop_empty_stack_is_noop() {
     // Test that Pop on empty stack is a no-op (not an error)
@@ -6507,7 +6507,7 @@ fn test_jit_pop_empty_stack_is_noop() {
     assert_eq!(result.as_long(), 42, "Should return 42");
 }
 
-#[cfg(feature = "jit")]
+
 #[test]
 fn test_jit_swap_single_value_is_noop() {
     // Test that Swap with single value on stack is a no-op

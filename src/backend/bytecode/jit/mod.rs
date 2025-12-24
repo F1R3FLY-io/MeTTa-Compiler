@@ -55,10 +55,5 @@ pub use compiler::JitCompiler;
 pub use tiered::{Tier, TieredCompiler, TieredStats, JitCache, ChunkId, CacheEntry, STAGE2_THRESHOLD};
 pub use hybrid::{HybridExecutor, HybridConfig, HybridStats};
 
-/// Feature flag for JIT compilation
-/// When enabled, hot bytecode paths are compiled to native code
-#[cfg(feature = "jit")]
+/// JIT compilation is always enabled with tiered compilation
 pub const JIT_ENABLED: bool = true;
-
-#[cfg(not(feature = "jit"))]
-pub const JIT_ENABLED: bool = false;

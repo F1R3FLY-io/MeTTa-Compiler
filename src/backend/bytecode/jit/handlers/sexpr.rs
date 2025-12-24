@@ -2,11 +2,11 @@
 //!
 //! Handles: GetHead, GetTail, GetArity, GetElement, MakeSExpr, MakeSExprLarge, ConsAtom, MakeList, MakeQuote
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -14,7 +14,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
 /// Context for S-expression handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct SExprHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub get_head_func_id: FuncId,
@@ -28,7 +28,7 @@ pub struct SExprHandlerContext<'m> {
 }
 
 /// Compile S-expression access opcodes (GetHead, GetTail, GetArity, GetElement)
-#[cfg(feature = "jit")]
+
 pub fn compile_sexpr_access_op<'a, 'b>(
     ctx: &mut SExprHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -105,7 +105,7 @@ pub fn compile_sexpr_access_op<'a, 'b>(
 }
 
 /// Compile S-expression creation opcodes (MakeSExpr, MakeSExprLarge, ConsAtom, MakeList, MakeQuote)
-#[cfg(feature = "jit")]
+
 pub fn compile_sexpr_create_op<'a, 'b>(
     ctx: &mut SExprHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

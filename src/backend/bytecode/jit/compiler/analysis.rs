@@ -3,7 +3,7 @@
 //! This module contains functions for analyzing bytecode chunks to determine
 //! compilability and extract control flow information.
 
-#[cfg(feature = "jit")]
+
 use std::collections::HashMap;
 
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
@@ -309,7 +309,7 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
 /// Jump offsets are relative to the IP after reading the instruction and its operands.
 /// For example, if a Jump is at offset 6 with size 3 (1 opcode + 2 operand bytes),
 /// then the offset is relative to position 9 (6 + 3).
-#[cfg(feature = "jit")]
+
 pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
     let code = chunk.code();
     let mut targets = Vec::new();

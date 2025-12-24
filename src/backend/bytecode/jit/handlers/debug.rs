@@ -2,11 +2,11 @@
 //!
 //! Handles: Trace, Breakpoint
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -14,7 +14,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for debug handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct DebugHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub trace_func_id: FuncId,
@@ -25,7 +25,7 @@ pub struct DebugHandlerContext<'m> {
 ///
 /// Emit trace event
 /// Stack: [value] -> [], msg_idx from operand
-#[cfg(feature = "jit")]
+
 pub fn compile_trace<'a, 'b>(
     ctx: &mut DebugHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -54,7 +54,7 @@ pub fn compile_trace<'a, 'b>(
 ///
 /// Debugger breakpoint
 /// Stack: [] -> [], bp_id from operand
-#[cfg(feature = "jit")]
+
 pub fn compile_breakpoint<'a, 'b>(
     ctx: &mut DebugHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

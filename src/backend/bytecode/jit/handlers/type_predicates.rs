@@ -2,7 +2,7 @@
 //!
 //! Handles: IsVariable, IsSExpr, IsSymbol
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -10,7 +10,7 @@ use crate::backend::bytecode::jit::types::{JitResult, TAG_VAR, TAG_HEAP, TAG_ATO
 use crate::backend::bytecode::Opcode;
 
 /// Compile type predicate opcodes
-#[cfg(feature = "jit")]
+
 pub fn compile_type_predicate_op<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     op: Opcode,

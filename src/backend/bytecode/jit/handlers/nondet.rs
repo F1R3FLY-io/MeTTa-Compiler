@@ -2,11 +2,11 @@
 //!
 //! Handles: Fork, Yield, Collect, Cut, Guard, Amb, Commit, Backtrack, Fail, BeginNondet, EndNondet
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -14,7 +14,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for nondeterminism handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct NondetHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub fork_native_func_id: FuncId,
@@ -34,7 +34,7 @@ pub struct NondetHandlerContext<'m> {
 /// Fork: count:u16 (followed by count u16 indices in bytecode)
 /// Stack: [] -> [first_alternative]
 /// Stage 2 JIT: Use native fork which creates choice points without bailout
-#[cfg(feature = "jit")]
+
 pub fn compile_fork<'a, 'b>(
     ctx: &mut NondetHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -97,7 +97,7 @@ pub fn compile_fork<'a, 'b>(
 /// Stage 2 JIT: Yield stores result and returns signal to dispatcher
 /// Stack: [value] -> []
 /// Returns: JIT_SIGNAL_YIELD to signal dispatcher
-#[cfg(feature = "jit")]
+
 pub fn compile_yield<'a, 'b>(
     ctx: &mut NondetHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -130,7 +130,7 @@ pub fn compile_yield<'a, 'b>(
 /// Stage 2 JIT: Collect gathers all yielded results into SExpr
 /// Stack: [] -> [SExpr of results]
 /// Note: chunk_index is ignored in native version - results stored in ctx.results
-#[cfg(feature = "jit")]
+
 pub fn compile_collect<'a, 'b>(
     ctx: &mut NondetHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -158,7 +158,7 @@ pub fn compile_collect<'a, 'b>(
 /// Compile Cut opcode
 ///
 /// Stack: [] -> [Unit] - prune all choice points
-#[cfg(feature = "jit")]
+
 pub fn compile_cut<'a, 'b>(
     ctx: &mut NondetHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -182,7 +182,7 @@ pub fn compile_cut<'a, 'b>(
 /// Compile Guard opcode
 ///
 /// Stack: [bool] -> [] - backtrack if false
-#[cfg(feature = "jit")]
+
 pub fn compile_guard<'a, 'b>(
     ctx: &mut NondetHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -227,7 +227,7 @@ pub fn compile_guard<'a, 'b>(
 ///
 /// Stack: [alt1, alt2, ..., altN] -> [selected]
 /// alt_count from operand
-#[cfg(feature = "jit")]
+
 pub fn compile_amb<'a, 'b>(
     ctx: &mut NondetHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -255,7 +255,7 @@ pub fn compile_amb<'a, 'b>(
 /// Compile Commit opcode
 ///
 /// Stack: [] -> [Unit] - remove N choice points
-#[cfg(feature = "jit")]
+
 pub fn compile_commit<'a, 'b>(
     ctx: &mut NondetHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -283,7 +283,7 @@ pub fn compile_commit<'a, 'b>(
 /// Compile Backtrack opcode
 ///
 /// Stack: [] -> [] - force immediate backtracking
-#[cfg(feature = "jit")]
+
 pub fn compile_backtrack<'a, 'b>(
     ctx: &mut NondetHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -309,7 +309,7 @@ pub fn compile_backtrack<'a, 'b>(
 ///
 /// Stack: [] -> [] - trigger immediate backtracking
 /// Simply return the FAIL signal - semantically identical to Backtrack
-#[cfg(feature = "jit")]
+
 pub fn compile_fail<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
 ) -> JitResult<()> {
@@ -322,7 +322,7 @@ pub fn compile_fail<'a, 'b>(
 ///
 /// Stack: [] -> [] - mark start of nondeterministic section
 /// Increment fork_depth in JitContext
-#[cfg(feature = "jit")]
+
 pub fn compile_begin_nondet<'a, 'b>(
     ctx: &mut NondetHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -343,7 +343,7 @@ pub fn compile_begin_nondet<'a, 'b>(
 ///
 /// Stack: [] -> [] - mark end of nondeterministic section
 /// Decrement fork_depth in JitContext
-#[cfg(feature = "jit")]
+
 pub fn compile_end_nondet<'a, 'b>(
     ctx: &mut NondetHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

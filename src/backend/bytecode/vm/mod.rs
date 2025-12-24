@@ -295,7 +295,7 @@ impl BytecodeVM {
         }
 
         // JIT execution path
-        #[cfg(feature = "jit")]
+        
         if let Some(result) = self.try_jit_execute()? {
             return Ok(result);
         }
@@ -329,7 +329,7 @@ impl BytecodeVM {
     /// - `Ok(Some(results))` if JIT execution completed successfully
     /// - `Ok(None)` if JIT is not available or bailed out (fall back to interpreter)
     /// - `Err(_)` if an error occurred
-    #[cfg(feature = "jit")]
+    
     fn try_jit_execute(&mut self) -> VmResult<Option<Vec<MettaValue>>> {
         use super::jit::{JitCompiler, JitContext, JitValue, JitBailoutReason};
 

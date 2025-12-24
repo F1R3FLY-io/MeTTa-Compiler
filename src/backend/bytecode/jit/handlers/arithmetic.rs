@@ -2,11 +2,11 @@
 //!
 //! Handles: Add, Sub, Mul, Div, Mod, Neg, Abs, FloorDiv, Pow
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -14,14 +14,14 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::Opcode;
 
 /// Context for arithmetic handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct ArithmeticHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub pow_func_id: FuncId,
 }
 
 /// Compile simple arithmetic opcodes (no runtime calls needed)
-#[cfg(feature = "jit")]
+
 pub fn compile_simple_arithmetic_op<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     op: Opcode,
@@ -161,7 +161,7 @@ pub fn compile_simple_arithmetic_op<'a, 'b>(
 }
 
 /// Compile Pow opcode via runtime call
-#[cfg(feature = "jit")]
+
 pub fn compile_pow<'a, 'b>(
     ctx: &mut ArithmeticHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

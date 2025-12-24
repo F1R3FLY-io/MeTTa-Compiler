@@ -2,18 +2,18 @@
 //!
 //! Handles: SpaceAdd, SpaceRemove, SpaceGetAtoms, SpaceMatch, NewState, GetState, ChangeState
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::JitResult;
 
 /// Context for space handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct SpaceHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub space_add_func_id: FuncId,
@@ -29,7 +29,7 @@ pub struct SpaceHandlerContext<'m> {
 ///
 /// Add atom to space
 /// Stack: [space, atom] -> [bool]
-#[cfg(feature = "jit")]
+
 pub fn compile_space_add<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -58,7 +58,7 @@ pub fn compile_space_add<'a, 'b>(
 ///
 /// Remove atom from space
 /// Stack: [space, atom] -> [bool]
-#[cfg(feature = "jit")]
+
 pub fn compile_space_remove<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -87,7 +87,7 @@ pub fn compile_space_remove<'a, 'b>(
 ///
 /// Get all atoms from space
 /// Stack: [space] -> [list]
-#[cfg(feature = "jit")]
+
 pub fn compile_space_get_atoms<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -115,7 +115,7 @@ pub fn compile_space_get_atoms<'a, 'b>(
 ///
 /// Match pattern in space
 /// Stack: [space, pattern, template] -> [results]
-#[cfg(feature = "jit")]
+
 pub fn compile_space_match<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -146,7 +146,7 @@ pub fn compile_space_match<'a, 'b>(
 ///
 /// Create a new mutable state cell
 /// Stack: [initial_value] -> [state_handle]
-#[cfg(feature = "jit")]
+
 pub fn compile_new_state<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -174,7 +174,7 @@ pub fn compile_new_state<'a, 'b>(
 ///
 /// Get current value from a state cell
 /// Stack: [state_handle] -> [value]
-#[cfg(feature = "jit")]
+
 pub fn compile_get_state<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -202,7 +202,7 @@ pub fn compile_get_state<'a, 'b>(
 ///
 /// Change value of a state cell
 /// Stack: [state_handle, new_value] -> [state_handle]
-#[cfg(feature = "jit")]
+
 pub fn compile_change_state<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

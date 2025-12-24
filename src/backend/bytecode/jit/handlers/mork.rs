@@ -2,18 +2,18 @@
 //!
 //! Handles: MorkLookup, MorkMatch, MorkInsert, MorkDelete
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::JitResult;
 
 /// Context for MORK handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct MorkHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub mork_lookup_func_id: FuncId,
@@ -26,7 +26,7 @@ pub struct MorkHandlerContext<'m> {
 ///
 /// Lookup value at MORK path
 /// Stack: [path] -> [value]
-#[cfg(feature = "jit")]
+
 pub fn compile_mork_lookup<'a, 'b>(
     ctx: &mut MorkHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -53,7 +53,7 @@ pub fn compile_mork_lookup<'a, 'b>(
 ///
 /// Match pattern at MORK path
 /// Stack: [path, pattern] -> [results]
-#[cfg(feature = "jit")]
+
 pub fn compile_mork_match<'a, 'b>(
     ctx: &mut MorkHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -81,7 +81,7 @@ pub fn compile_mork_match<'a, 'b>(
 ///
 /// Insert value at MORK path
 /// Stack: [path, value] -> [bool]
-#[cfg(feature = "jit")]
+
 pub fn compile_mork_insert<'a, 'b>(
     ctx: &mut MorkHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -109,7 +109,7 @@ pub fn compile_mork_insert<'a, 'b>(
 ///
 /// Delete value at MORK path
 /// Stack: [path] -> [bool]
-#[cfg(feature = "jit")]
+
 pub fn compile_mork_delete<'a, 'b>(
     ctx: &mut MorkHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

@@ -2,11 +2,11 @@
 //!
 //! Handles: Call, TailCall, CallN, TailCallN, CallNative, CallExternal, CallCached
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -14,7 +14,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for call handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct CallHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub call_func_id: FuncId,
@@ -30,7 +30,7 @@ pub struct CallHandlerContext<'m> {
 ///
 /// Call: head_index:u16 arity:u8
 /// Stack: [arg1, arg2, ..., argN] -> [result]
-#[cfg(feature = "jit")]
+
 pub fn compile_call<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -95,7 +95,7 @@ pub fn compile_call<'a, 'b>(
 ///
 /// TailCall: head_index:u16 arity:u8
 /// Same as Call but signals TCO to VM
-#[cfg(feature = "jit")]
+
 pub fn compile_tail_call<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -151,7 +151,7 @@ pub fn compile_tail_call<'a, 'b>(
 /// CallN: arity:u8
 /// Stack: [head, arg1, arg2, ..., argN] -> [result]
 /// Unlike Call, head is on stack not in constant pool
-#[cfg(feature = "jit")]
+
 pub fn compile_call_n<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -215,7 +215,7 @@ pub fn compile_call_n<'a, 'b>(
 /// TailCallN: arity:u8
 /// Stack: [head, arg1, arg2, ..., argN] -> [result]
 /// Same as CallN but signals TCO to VM
-#[cfg(feature = "jit")]
+
 pub fn compile_tail_call_n<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -272,7 +272,7 @@ pub fn compile_tail_call_n<'a, 'b>(
 ///
 /// Stack: [args...] -> [result]
 /// func_id: u16, arity: u8
-#[cfg(feature = "jit")]
+
 pub fn compile_call_native<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -303,7 +303,7 @@ pub fn compile_call_native<'a, 'b>(
 ///
 /// Stack: [args...] -> [result]
 /// name_idx: u16, arity: u8
-#[cfg(feature = "jit")]
+
 pub fn compile_call_external<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -334,7 +334,7 @@ pub fn compile_call_external<'a, 'b>(
 ///
 /// Stack: [args...] -> [result]
 /// head_idx: u16, arity: u8
-#[cfg(feature = "jit")]
+
 pub fn compile_call_cached<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

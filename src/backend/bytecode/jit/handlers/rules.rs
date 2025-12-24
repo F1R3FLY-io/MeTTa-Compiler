@@ -2,11 +2,11 @@
 //!
 //! Handles: DispatchRules, TryRule, NextRule, CommitRule, FailRule, LookupRules, ApplySubst, DefineRule
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -14,7 +14,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for rule handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct RulesHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub dispatch_rules_func_id: FuncId,
@@ -31,7 +31,7 @@ pub struct RulesHandlerContext<'m> {
 ///
 /// Dispatch rules for an expression
 /// Stack: [expr] -> [count]
-#[cfg(feature = "jit")]
+
 pub fn compile_dispatch_rules<'a, 'b>(
     ctx: &mut RulesHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -59,7 +59,7 @@ pub fn compile_dispatch_rules<'a, 'b>(
 ///
 /// Try a single rule
 /// Stack: [] -> [result] (using rule_idx from operand)
-#[cfg(feature = "jit")]
+
 pub fn compile_try_rule<'a, 'b>(
     ctx: &mut RulesHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -88,7 +88,7 @@ pub fn compile_try_rule<'a, 'b>(
 ///
 /// Advance to next matching rule
 /// Stack: [] -> [] (returns status)
-#[cfg(feature = "jit")]
+
 pub fn compile_next_rule<'a, 'b>(
     ctx: &mut RulesHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -109,7 +109,7 @@ pub fn compile_next_rule<'a, 'b>(
 ///
 /// Commit to current rule (cut)
 /// Stack: [] -> []
-#[cfg(feature = "jit")]
+
 pub fn compile_commit_rule<'a, 'b>(
     ctx: &mut RulesHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -129,7 +129,7 @@ pub fn compile_commit_rule<'a, 'b>(
 ///
 /// Signal explicit rule failure
 /// Stack: [] -> [] (signals backtracking)
-#[cfg(feature = "jit")]
+
 pub fn compile_fail_rule<'a, 'b>(
     ctx: &mut RulesHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -150,7 +150,7 @@ pub fn compile_fail_rule<'a, 'b>(
 ///
 /// Look up rules by head symbol
 /// Stack: [] -> [count]
-#[cfg(feature = "jit")]
+
 pub fn compile_lookup_rules<'a, 'b>(
     ctx: &mut RulesHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -179,7 +179,7 @@ pub fn compile_lookup_rules<'a, 'b>(
 ///
 /// Apply substitution to an expression
 /// Stack: [expr] -> [result]
-#[cfg(feature = "jit")]
+
 pub fn compile_apply_subst<'a, 'b>(
     ctx: &mut RulesHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -206,7 +206,7 @@ pub fn compile_apply_subst<'a, 'b>(
 ///
 /// Define a new rule
 /// Stack: [pattern, body] -> [Unit]
-#[cfg(feature = "jit")]
+
 pub fn compile_define_rule<'a, 'b>(
     ctx: &mut RulesHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

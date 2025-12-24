@@ -2,11 +2,11 @@
 //!
 //! Handles: IndexAtom, MinAtom, MaxAtom
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -14,7 +14,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::Opcode;
 
 /// Context for expression manipulation handlers
-#[cfg(feature = "jit")]
+
 pub struct ExprHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub index_atom_func_id: FuncId,
@@ -23,7 +23,7 @@ pub struct ExprHandlerContext<'m> {
 }
 
 /// Compile expression manipulation opcodes via runtime calls
-#[cfg(feature = "jit")]
+
 pub fn compile_expr_op<'a, 'b>(
     ctx: &mut ExprHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

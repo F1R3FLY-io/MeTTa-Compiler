@@ -2,11 +2,11 @@
 //!
 //! Handles: LoadBinding, StoreBinding, HasBinding, ClearBindings, PushBindingFrame, PopBindingFrame
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -14,7 +14,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for binding handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct BindingHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub load_binding_func_id: FuncId,
@@ -29,7 +29,7 @@ pub struct BindingHandlerContext<'m> {
 ///
 /// Load binding by name index via runtime call
 /// Stack: [] -> [value]
-#[cfg(feature = "jit")]
+
 pub fn compile_load_binding<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -56,7 +56,7 @@ pub fn compile_load_binding<'a, 'b>(
 ///
 /// Store binding by name index via runtime call
 /// Stack: [value] -> []
-#[cfg(feature = "jit")]
+
 pub fn compile_store_binding<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -84,7 +84,7 @@ pub fn compile_store_binding<'a, 'b>(
 ///
 /// Check if binding exists by name index via runtime call
 /// Stack: [] -> [bool]
-#[cfg(feature = "jit")]
+
 pub fn compile_has_binding<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -110,7 +110,7 @@ pub fn compile_has_binding<'a, 'b>(
 ///
 /// Clear all bindings via runtime call
 /// Stack: [] -> []
-#[cfg(feature = "jit")]
+
 pub fn compile_clear_bindings<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -129,7 +129,7 @@ pub fn compile_clear_bindings<'a, 'b>(
 ///
 /// Push new binding frame via runtime call
 /// Stack: [] -> []
-#[cfg(feature = "jit")]
+
 pub fn compile_push_binding_frame<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -149,7 +149,7 @@ pub fn compile_push_binding_frame<'a, 'b>(
 ///
 /// Pop binding frame via runtime call
 /// Stack: [] -> []
-#[cfg(feature = "jit")]
+
 pub fn compile_pop_binding_frame<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

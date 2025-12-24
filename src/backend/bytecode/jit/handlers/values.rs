@@ -3,11 +3,11 @@
 //! Handles: PushNil, PushTrue, PushFalse, PushUnit, PushLongSmall, PushLong,
 //!          PushConstant, PushEmpty, PushAtom, PushString, PushVariable
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
-#[cfg(feature = "jit")]
+
 use cranelift_jit::JITModule;
-#[cfg(feature = "jit")]
+
 use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -15,7 +15,7 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
 /// Context for value creation handlers that need runtime function access
-#[cfg(feature = "jit")]
+
 pub struct ValueHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub load_const_func_id: FuncId,
@@ -63,7 +63,7 @@ pub fn compile_simple_value_op<'a, 'b>(
 }
 
 /// Compile value creation opcodes that require runtime calls
-#[cfg(feature = "jit")]
+
 pub fn compile_runtime_value_op<'a, 'b>(
     ctx: &mut ValueHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

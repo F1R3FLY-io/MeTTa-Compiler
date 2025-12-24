@@ -10,7 +10,6 @@ use crate::backend::models::MettaValue;
 use super::opcodes::Opcode;
 use super::optimizer::PeepholeOptimizer;
 
-#[cfg(feature = "jit")]
 use super::jit::{JitProfile, JitCompiler};
 
 /// A compiled bytecode chunk
@@ -55,7 +54,6 @@ pub struct BytecodeChunk {
     has_nondeterminism: bool,
 
     /// JIT profile for hotness tracking and native code pointer
-    #[cfg(feature = "jit")]
     jit_profile: JitProfile,
 }
 
@@ -105,7 +103,6 @@ impl BytecodeChunk {
             arity: 0,
             is_vararg: false,
             has_nondeterminism: false,
-            #[cfg(feature = "jit")]
             jit_profile: JitProfile::new(),
         }
     }
@@ -280,6 +277,26 @@ impl BytecodeChunk {
             return (format!("??? (0x{:02x})", self.code.get(offset).unwrap_or(&0)), offset + 1);
         };
 
+        // Fork has variable-length encoding, handle it specially
+        if opcode == Opcode::Fork {
+            let count = self.read_u16(offset + 1).unwrap_or(0) as usize;
+            let mut const_indices = Vec::with_capacity(count);
+            let mut pos = offset + 3;
+            for _ in 0..count {
+                if let Some(idx) = self.read_u16(pos) {
+                    let const_str = self.constants.get(idx as usize)
+                        .map(|c| format!("{:?}", c))
+                        .unwrap_or_else(|| "???".to_string());
+                    const_indices.push(format!("#{} ({})", idx, const_str));
+                } else {
+                    const_indices.push("???".to_string());
+                }
+                pos += 2;
+            }
+            let next_offset = offset + 3 + count * 2;
+            return (format!("fork count={} [{}]", count, const_indices.join(", ")), next_offset);
+        }
+
         let mnemonic = opcode.mnemonic();
         let imm_size = opcode.immediate_size();
         let next_offset = offset + 1 + imm_size;
@@ -335,13 +352,11 @@ impl BytecodeChunk {
     // =========================================================================
 
     /// Check if this chunk can be JIT compiled (Stage 1)
-    #[cfg(feature = "jit")]
     pub fn can_jit_compile(&self) -> bool {
         JitCompiler::can_compile_stage1(self)
     }
 
     /// Get the JIT profile for this chunk
-    #[cfg(feature = "jit")]
     pub fn jit_profile(&self) -> &JitProfile {
         &self.jit_profile
     }
@@ -350,19 +365,16 @@ impl BytecodeChunk {
     ///
     /// Returns `true` if this call triggered the transition to Hot state,
     /// meaning the caller should initiate JIT compilation.
-    #[cfg(feature = "jit")]
     pub fn record_jit_execution(&self) -> bool {
         self.jit_profile.record_execution()
     }
 
     /// Check if JIT-compiled code is available
-    #[cfg(feature = "jit")]
     pub fn has_jit_code(&self) -> bool {
         self.jit_profile.should_use_jit()
     }
 
     /// Get the native code pointer if available
-    #[cfg(feature = "jit")]
     pub fn jit_code(&self) -> Option<*const ()> {
         self.jit_profile.native_code()
     }
@@ -642,7 +654,6 @@ impl ChunkBuilder {
             arity: self.arity,
             is_vararg: self.is_vararg,
             has_nondeterminism: self.has_nondeterminism,
-            #[cfg(feature = "jit")]
             jit_profile: JitProfile::new(),
         }
     }
@@ -942,7 +953,6 @@ mod tests {
         assert!(!chunk.has_nondeterminism(), "Pattern matching without Fork should not have nondeterminism");
     }
 
-    #[cfg(feature = "jit")]
     #[test]
     fn test_cannot_jit_compile_fork_chunk() {
         let mut builder = ChunkBuilder::new("fork_chunk");
@@ -953,7 +963,6 @@ mod tests {
         assert!(!chunk.can_jit_compile(), "Fork chunk should not be JIT compilable");
     }
 
-    #[cfg(feature = "jit")]
     #[test]
     fn test_can_jit_compile_arithmetic_chunk() {
         let mut builder = ChunkBuilder::new("arith_chunk");

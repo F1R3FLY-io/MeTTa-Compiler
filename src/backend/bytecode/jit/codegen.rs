@@ -3,7 +3,7 @@
 //! This module provides helper functions for generating Cranelift IR,
 //! abstracting common patterns like NaN-boxing, type guards, and stack operations.
 
-#[cfg(feature = "jit")]
+
 use cranelift::prelude::*;
 
 use super::types::{
@@ -17,7 +17,7 @@ use super::types::{
 /// - NaN-boxing (box/unbox values)
 /// - Type guards (emit bailout on type mismatch)
 /// - Runtime function calls
-#[cfg(feature = "jit")]
+
 pub struct CodegenContext<'a, 'b> {
     pub builder: &'a mut FunctionBuilder<'b>,
 
@@ -35,7 +35,7 @@ pub struct CodegenContext<'a, 'b> {
     locals: Vec<Option<Value>>,
 }
 
-#[cfg(feature = "jit")]
+
 impl<'a, 'b> CodegenContext<'a, 'b> {
     /// Create a new codegen context
     pub fn new(builder: &'a mut FunctionBuilder<'b>, ctx_ptr: Value) -> Self {
@@ -332,41 +332,6 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         // Stage 2: This will be replaced with a proper runtime call
         // For now, return 1 as a placeholder (unreachable in Stage 1)
         self.const_long(1)
-    }
-}
-
-/// Stub implementation when JIT is not enabled
-#[cfg(not(feature = "jit"))]
-pub struct CodegenContext<'a> {
-    _phantom: std::marker::PhantomData<&'a ()>,
-}
-
-#[cfg(not(feature = "jit"))]
-impl<'a> CodegenContext<'a> {
-    pub fn new(_builder: &'a mut (), _ctx_ptr: ()) -> Self {
-        CodegenContext {
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    pub fn push(&mut self, _val: ()) -> JitResult<()> {
-        Err(JitError::NotCompilable("JIT not enabled".to_string()))
-    }
-
-    pub fn pop(&mut self) -> JitResult<()> {
-        Err(JitError::NotCompilable("JIT not enabled".to_string()))
-    }
-
-    pub fn peek(&self) -> JitResult<()> {
-        Err(JitError::NotCompilable("JIT not enabled".to_string()))
-    }
-
-    pub fn stack_depth(&self) -> usize {
-        0
-    }
-
-    pub fn is_terminated(&self) -> bool {
-        false
     }
 }
 

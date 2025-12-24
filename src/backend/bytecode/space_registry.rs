@@ -5,7 +5,7 @@
 //!
 //! # Design
 //!
-//! - Thread-safe via RwLock
+//! - Lock-free via DashMap (concurrent HashMap)
 //! - Maps space names to SpaceHandle instances
 //! - Supports creating, looking up, and removing spaces by name
 //!
@@ -23,9 +23,9 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+
+use dashmap::DashMap;
 
 use crate::backend::models::SpaceHandle;
 
@@ -38,17 +38,19 @@ fn next_space_id() -> u64 {
 }
 
 /// Registry for named spaces used by JIT runtime
+///
+/// Uses DashMap for lock-free concurrent access.
 pub struct SpaceRegistry {
-    /// Spaces stored by name
-    spaces: RwLock<HashMap<String, SpaceHandle>>,
+    /// Spaces stored by name (lock-free concurrent HashMap)
+    spaces: DashMap<String, SpaceHandle>,
 }
 
 impl std::fmt::Debug for SpaceRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let spaces = self.spaces.read().unwrap();
+        let names: Vec<_> = self.spaces.iter().map(|e| e.key().clone()).collect();
         f.debug_struct("SpaceRegistry")
-            .field("space_count", &spaces.len())
-            .field("names", &spaces.keys().collect::<Vec<_>>())
+            .field("space_count", &self.spaces.len())
+            .field("names", &names)
             .finish()
     }
 }
@@ -63,14 +65,13 @@ impl SpaceRegistry {
     /// Create a new empty space registry
     pub fn new() -> Self {
         Self {
-            spaces: RwLock::new(HashMap::new()),
+            spaces: DashMap::new(),
         }
     }
 
     /// Get a space by name
     pub fn get(&self, name: &str) -> Option<SpaceHandle> {
-        let spaces = self.spaces.read().unwrap();
-        spaces.get(name).cloned()
+        self.spaces.get(name).map(|e| e.value().clone())
     }
 
     /// Create a new space with the given name
@@ -78,16 +79,15 @@ impl SpaceRegistry {
     /// Returns the created SpaceHandle. If a space with this name already exists,
     /// returns the existing one.
     pub fn create(&self, name: &str) -> SpaceHandle {
-        let mut spaces = self.spaces.write().unwrap();
-
-        if let Some(existing) = spaces.get(name) {
-            return existing.clone();
-        }
-
-        let id = next_space_id();
-        let handle = SpaceHandle::new(id, name.to_string());
-        spaces.insert(name.to_string(), handle.clone());
-        handle
+        // Use entry API for atomic get-or-insert
+        self.spaces
+            .entry(name.to_string())
+            .or_insert_with(|| {
+                let id = next_space_id();
+                SpaceHandle::new(id, name.to_string())
+            })
+            .value()
+            .clone()
     }
 
     /// Get or create a space by name
@@ -95,15 +95,7 @@ impl SpaceRegistry {
     /// If a space with this name exists, returns it.
     /// Otherwise creates a new space with the given name.
     pub fn get_or_create(&self, name: &str) -> SpaceHandle {
-        // Try read-only first
-        {
-            let spaces = self.spaces.read().unwrap();
-            if let Some(existing) = spaces.get(name) {
-                return existing.clone();
-            }
-        }
-
-        // Need to create
+        // Use entry API for atomic get-or-insert
         self.create(name)
     }
 
@@ -111,44 +103,39 @@ impl SpaceRegistry {
     ///
     /// If a space with this name already exists, it will be replaced.
     pub fn register(&self, name: &str, handle: SpaceHandle) {
-        let mut spaces = self.spaces.write().unwrap();
-        spaces.insert(name.to_string(), handle);
+        self.spaces.insert(name.to_string(), handle);
     }
 
     /// Remove a space by name
     ///
     /// Returns true if the space was present and removed.
     pub fn remove(&self, name: &str) -> bool {
-        let mut spaces = self.spaces.write().unwrap();
-        spaces.remove(name).is_some()
+        self.spaces.remove(name).is_some()
     }
 
     /// Check if a space with the given name exists
     pub fn contains(&self, name: &str) -> bool {
-        let spaces = self.spaces.read().unwrap();
-        spaces.contains_key(name)
+        self.spaces.contains_key(name)
     }
 
     /// Get the number of registered spaces
     pub fn len(&self) -> usize {
-        self.spaces.read().unwrap().len()
+        self.spaces.len()
     }
 
     /// Check if the registry is empty
     pub fn is_empty(&self) -> bool {
-        self.spaces.read().unwrap().is_empty()
+        self.spaces.is_empty()
     }
 
     /// Get an iterator over space names
     pub fn names(&self) -> Vec<String> {
-        let spaces = self.spaces.read().unwrap();
-        spaces.keys().cloned().collect()
+        self.spaces.iter().map(|e| e.key().clone()).collect()
     }
 
     /// Clear all spaces
     pub fn clear(&self) {
-        let mut spaces = self.spaces.write().unwrap();
-        spaces.clear();
+        self.spaces.clear();
     }
 }
 

@@ -6,7 +6,7 @@
 //! # Design
 //!
 //! - LRU eviction when capacity is reached
-//! - Thread-safe via RwLock
+//! - Lock-free reads and writes via DashMap and atomics
 //! - Content-addressed via hash of function head and arguments
 //! - Configurable maximum entries
 //!
@@ -27,9 +27,10 @@
 //! cache.insert("factorial", &[MettaValue::Long(10)], result.clone());
 //! ```
 
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use dashmap::DashMap;
 
 use crate::backend::models::MettaValue;
 
@@ -63,34 +64,33 @@ impl MemoKey {
 struct MemoEntry {
     /// Cached result
     result: MettaValue,
-    /// Access count for LRU
+    /// Access count for LRU (updated atomically)
     access_count: u64,
 }
 
 /// Memoization cache for pure function calls
+///
+/// Uses DashMap for lock-free concurrent access and AtomicU64 for counters.
 pub struct MemoCache {
-    /// Cache storage
-    cache: RwLock<HashMap<MemoKey, MemoEntry>>,
+    /// Cache storage (lock-free concurrent HashMap)
+    cache: DashMap<MemoKey, MemoEntry>,
     /// Maximum number of entries
     max_entries: usize,
-    /// Global access counter for LRU
-    access_counter: RwLock<u64>,
-    /// Hit count for statistics
-    hits: RwLock<u64>,
-    /// Miss count for statistics
-    misses: RwLock<u64>,
+    /// Global access counter for LRU (atomic, lock-free)
+    access_counter: AtomicU64,
+    /// Hit count for statistics (atomic, lock-free)
+    hits: AtomicU64,
+    /// Miss count for statistics (atomic, lock-free)
+    misses: AtomicU64,
 }
 
 impl std::fmt::Debug for MemoCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let cache = self.cache.read().unwrap();
-        let hits = *self.hits.read().unwrap();
-        let misses = *self.misses.read().unwrap();
         f.debug_struct("MemoCache")
-            .field("entries", &cache.len())
+            .field("entries", &self.cache.len())
             .field("max_entries", &self.max_entries)
-            .field("hits", &hits)
-            .field("misses", &misses)
+            .field("hits", &self.hits.load(Ordering::Relaxed))
+            .field("misses", &self.misses.load(Ordering::Relaxed))
             .finish()
     }
 }
@@ -105,11 +105,11 @@ impl MemoCache {
     /// Create a new memo cache with specified capacity
     pub fn new(max_entries: usize) -> Self {
         Self {
-            cache: RwLock::new(HashMap::with_capacity(max_entries)),
+            cache: DashMap::with_capacity(max_entries),
             max_entries,
-            access_counter: RwLock::new(0),
-            hits: RwLock::new(0),
-            misses: RwLock::new(0),
+            access_counter: AtomicU64::new(0),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
     }
 
@@ -117,17 +117,16 @@ impl MemoCache {
     pub fn get(&self, head: &str, args: &[MettaValue]) -> Option<MettaValue> {
         let key = MemoKey::new(head, args);
 
-        let mut cache = self.cache.write().unwrap();
-        if let Some(entry) = cache.get_mut(&key) {
-            // Update access count for LRU
-            let mut counter = self.access_counter.write().unwrap();
-            *counter += 1;
-            entry.access_count = *counter;
+        // Use get_mut for in-place update of access count (lock-free per-shard)
+        if let Some(mut entry) = self.cache.get_mut(&key) {
+            // Update access count for LRU (atomic increment)
+            let new_count = self.access_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            entry.access_count = new_count;
 
-            *self.hits.write().unwrap() += 1;
+            self.hits.fetch_add(1, Ordering::Relaxed);
             Some(entry.result.clone())
         } else {
-            *self.misses.write().unwrap() += 1;
+            self.misses.fetch_add(1, Ordering::Relaxed);
             None
         }
     }
@@ -136,53 +135,53 @@ impl MemoCache {
     pub fn insert(&self, head: &str, args: &[MettaValue], result: MettaValue) {
         let key = MemoKey::new(head, args);
 
-        let mut cache = self.cache.write().unwrap();
-
-        // Evict if at capacity
-        if cache.len() >= self.max_entries && !cache.contains_key(&key) {
-            self.evict_lru(&mut cache);
+        // Evict if at capacity (check without lock, then evict if needed)
+        if self.cache.len() >= self.max_entries && !self.cache.contains_key(&key) {
+            self.evict_lru();
         }
 
-        let mut counter = self.access_counter.write().unwrap();
-        *counter += 1;
+        let new_count = self.access_counter.fetch_add(1, Ordering::Relaxed) + 1;
 
-        cache.insert(
+        self.cache.insert(
             key,
             MemoEntry {
                 result,
-                access_count: *counter,
+                access_count: new_count,
             },
         );
     }
 
     /// Evict least recently used entries
-    fn evict_lru(&self, cache: &mut HashMap<MemoKey, MemoEntry>) {
+    fn evict_lru(&self) {
         // Evict ~25% of entries
         let to_evict = (self.max_entries / 4).max(1);
 
         // Find entries with lowest access counts
-        let mut entries: Vec<_> = cache.iter().map(|(k, v)| (k.clone(), v.access_count)).collect();
+        // Note: This collects keys to avoid holding references during iteration
+        let mut entries: Vec<_> = self
+            .cache
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().access_count))
+            .collect();
         entries.sort_by_key(|(_, count)| *count);
 
         for (key, _) in entries.into_iter().take(to_evict) {
-            cache.remove(&key);
+            self.cache.remove(&key);
         }
     }
 
     /// Clear the cache
     pub fn clear(&self) {
-        let mut cache = self.cache.write().unwrap();
-        cache.clear();
+        self.cache.clear();
     }
 
     /// Get cache statistics
     pub fn stats(&self) -> CacheStats {
-        let cache = self.cache.read().unwrap();
-        let hits = *self.hits.read().unwrap();
-        let misses = *self.misses.read().unwrap();
+        let hits = self.hits.load(Ordering::Relaxed);
+        let misses = self.misses.load(Ordering::Relaxed);
 
         CacheStats {
-            entries: cache.len(),
+            entries: self.cache.len(),
             max_entries: self.max_entries,
             hits,
             misses,
@@ -196,12 +195,12 @@ impl MemoCache {
 
     /// Get the number of entries in the cache
     pub fn len(&self) -> usize {
-        self.cache.read().unwrap().len()
+        self.cache.len()
     }
 
     /// Check if the cache is empty
     pub fn is_empty(&self) -> bool {
-        self.cache.read().unwrap().is_empty()
+        self.cache.is_empty()
     }
 }
 

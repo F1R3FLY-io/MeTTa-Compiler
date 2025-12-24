@@ -26,8 +26,8 @@
 //! Compilation is asynchronous - we spawn rayon tasks and continue using the current tier
 //! until the next tier becomes Ready.
 
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
 
@@ -103,6 +103,7 @@ impl std::fmt::Debug for NativeCode {
 ///
 /// Tracks the execution count and compilation status for each tier.
 /// All fields use atomic operations for lock-free concurrent access.
+/// Code storage uses OnceLock for lock-free reads after initialization.
 pub struct ExprCompilationState {
     /// Number of times this expression has been executed
     pub execution_count: AtomicU32,
@@ -110,20 +111,20 @@ pub struct ExprCompilationState {
     // Bytecode tier (Tier 1)
     /// Status of bytecode compilation
     bytecode_status: AtomicU8,
-    /// Compiled bytecode chunk (set when status is Ready)
-    bytecode_chunk: std::sync::RwLock<Option<Arc<BytecodeChunk>>>,
+    /// Compiled bytecode chunk (write-once via OnceLock, lock-free reads)
+    bytecode_chunk: OnceLock<Arc<BytecodeChunk>>,
 
     // JIT Stage 1 (Tier 2)
     /// Status of JIT Stage 1 compilation
     jit1_status: AtomicU8,
-    /// JIT Stage 1 native code (set when status is Ready)
-    jit1_code: std::sync::RwLock<Option<Arc<NativeCode>>>,
+    /// JIT Stage 1 native code (write-once via OnceLock, lock-free reads)
+    jit1_code: OnceLock<Arc<NativeCode>>,
 
     // JIT Stage 2 (Tier 3)
     /// Status of JIT Stage 2 compilation
     jit2_status: AtomicU8,
-    /// JIT Stage 2 native code (set when status is Ready)
-    jit2_code: std::sync::RwLock<Option<Arc<NativeCode>>>,
+    /// JIT Stage 2 native code (write-once via OnceLock, lock-free reads)
+    jit2_code: OnceLock<Arc<NativeCode>>,
 
     /// Original expression for recompilation (if needed)
     /// Stored as hash to avoid cloning large expressions
@@ -136,11 +137,11 @@ impl ExprCompilationState {
         Self {
             execution_count: AtomicU32::new(0),
             bytecode_status: AtomicU8::new(TierStatusKind::NotStarted as u8),
-            bytecode_chunk: std::sync::RwLock::new(None),
+            bytecode_chunk: OnceLock::new(),
             jit1_status: AtomicU8::new(TierStatusKind::NotStarted as u8),
-            jit1_code: std::sync::RwLock::new(None),
+            jit1_code: OnceLock::new(),
             jit2_status: AtomicU8::new(TierStatusKind::NotStarted as u8),
-            jit2_code: std::sync::RwLock::new(None),
+            jit2_code: OnceLock::new(),
             expr_hash,
         }
     }
@@ -157,14 +158,11 @@ impl ExprCompilationState {
         TierStatusKind::from(self.bytecode_status.load(Ordering::Acquire))
     }
 
-    /// Get bytecode chunk if ready
+    /// Get bytecode chunk if ready (lock-free read via OnceLock)
     #[inline]
     pub fn bytecode_chunk(&self) -> Option<Arc<BytecodeChunk>> {
         if self.bytecode_status() == TierStatusKind::Ready {
-            self.bytecode_chunk
-                .read()
-                .ok()
-                .and_then(|guard| guard.clone())
+            self.bytecode_chunk.get().cloned()
         } else {
             None
         }
@@ -176,11 +174,11 @@ impl ExprCompilationState {
         TierStatusKind::from(self.jit1_status.load(Ordering::Acquire))
     }
 
-    /// Get JIT Stage 1 native code if ready
+    /// Get JIT Stage 1 native code if ready (lock-free read via OnceLock)
     #[inline]
     pub fn jit1_code(&self) -> Option<Arc<NativeCode>> {
         if self.jit1_status() == TierStatusKind::Ready {
-            self.jit1_code.read().ok().and_then(|guard| guard.clone())
+            self.jit1_code.get().cloned()
         } else {
             None
         }
@@ -192,11 +190,11 @@ impl ExprCompilationState {
         TierStatusKind::from(self.jit2_status.load(Ordering::Acquire))
     }
 
-    /// Get JIT Stage 2 native code if ready
+    /// Get JIT Stage 2 native code if ready (lock-free read via OnceLock)
     #[inline]
     pub fn jit2_code(&self) -> Option<Arc<NativeCode>> {
         if self.jit2_status() == TierStatusKind::Ready {
-            self.jit2_code.read().ok().and_then(|guard| guard.clone())
+            self.jit2_code.get().cloned()
         } else {
             None
         }
@@ -216,11 +214,10 @@ impl ExprCompilationState {
             .is_ok()
     }
 
-    /// Set bytecode compilation result
+    /// Set bytecode compilation result (write-once via OnceLock)
     pub fn set_bytecode_ready(&self, chunk: Arc<BytecodeChunk>) {
-        if let Ok(mut guard) = self.bytecode_chunk.write() {
-            *guard = Some(chunk);
-        }
+        // OnceLock::set ignores the value if already set (write-once semantics)
+        let _ = self.bytecode_chunk.set(chunk);
         self.bytecode_status
             .store(TierStatusKind::Ready as u8, Ordering::Release);
     }
@@ -245,11 +242,10 @@ impl ExprCompilationState {
             .is_ok()
     }
 
-    /// Set JIT Stage 1 compilation result
+    /// Set JIT Stage 1 compilation result (write-once via OnceLock)
     pub fn set_jit1_ready(&self, code: Arc<NativeCode>) {
-        if let Ok(mut guard) = self.jit1_code.write() {
-            *guard = Some(code);
-        }
+        // OnceLock::set ignores the value if already set (write-once semantics)
+        let _ = self.jit1_code.set(code);
         self.jit1_status
             .store(TierStatusKind::Ready as u8, Ordering::Release);
     }
@@ -274,11 +270,10 @@ impl ExprCompilationState {
             .is_ok()
     }
 
-    /// Set JIT Stage 2 compilation result
+    /// Set JIT Stage 2 compilation result (write-once via OnceLock)
     pub fn set_jit2_ready(&self, code: Arc<NativeCode>) {
-        if let Ok(mut guard) = self.jit2_code.write() {
-            *guard = Some(code);
-        }
+        // OnceLock::set ignores the value if already set (write-once semantics)
+        let _ = self.jit2_code.set(code);
         self.jit2_status
             .store(TierStatusKind::Ready as u8, Ordering::Release);
     }
@@ -333,8 +328,22 @@ pub struct TieredCompilationCache {
     /// Threshold for JIT Stage 2 compilation
     pub jit2_threshold: u32,
 
-    /// Statistics tracking
-    stats: std::sync::RwLock<TieredCacheStats>,
+    // Atomic statistics counters (lock-free to avoid contention at 4+ threads)
+    expressions_tracked: AtomicU64,
+    total_executions: AtomicU64,
+    bytecode_compilations_triggered: AtomicU64,
+    bytecode_compilations_completed: AtomicU64,
+    bytecode_compilations_failed: AtomicU64,
+    jit1_compilations_triggered: AtomicU64,
+    jit1_compilations_completed: AtomicU64,
+    jit1_compilations_failed: AtomicU64,
+    jit2_compilations_triggered: AtomicU64,
+    jit2_compilations_completed: AtomicU64,
+    jit2_compilations_failed: AtomicU64,
+    interpreter_executions: AtomicU64,
+    bytecode_executions: AtomicU64,
+    jit1_executions: AtomicU64,
+    jit2_executions: AtomicU64,
 }
 
 /// Statistics for the tiered compilation cache
@@ -394,7 +403,21 @@ impl TieredCompilationCache {
             bytecode_threshold: BYTECODE_THRESHOLD,
             jit1_threshold: JIT1_THRESHOLD,
             jit2_threshold: JIT2_THRESHOLD,
-            stats: std::sync::RwLock::new(TieredCacheStats::default()),
+            expressions_tracked: AtomicU64::new(0),
+            total_executions: AtomicU64::new(0),
+            bytecode_compilations_triggered: AtomicU64::new(0),
+            bytecode_compilations_completed: AtomicU64::new(0),
+            bytecode_compilations_failed: AtomicU64::new(0),
+            jit1_compilations_triggered: AtomicU64::new(0),
+            jit1_compilations_completed: AtomicU64::new(0),
+            jit1_compilations_failed: AtomicU64::new(0),
+            jit2_compilations_triggered: AtomicU64::new(0),
+            jit2_compilations_completed: AtomicU64::new(0),
+            jit2_compilations_failed: AtomicU64::new(0),
+            interpreter_executions: AtomicU64::new(0),
+            bytecode_executions: AtomicU64::new(0),
+            jit1_executions: AtomicU64::new(0),
+            jit2_executions: AtomicU64::new(0),
         }
     }
 
@@ -405,7 +428,21 @@ impl TieredCompilationCache {
             bytecode_threshold: bytecode,
             jit1_threshold: jit1,
             jit2_threshold: jit2,
-            stats: std::sync::RwLock::new(TieredCacheStats::default()),
+            expressions_tracked: AtomicU64::new(0),
+            total_executions: AtomicU64::new(0),
+            bytecode_compilations_triggered: AtomicU64::new(0),
+            bytecode_compilations_completed: AtomicU64::new(0),
+            bytecode_compilations_failed: AtomicU64::new(0),
+            jit1_compilations_triggered: AtomicU64::new(0),
+            jit1_compilations_completed: AtomicU64::new(0),
+            jit1_compilations_failed: AtomicU64::new(0),
+            jit2_compilations_triggered: AtomicU64::new(0),
+            jit2_compilations_completed: AtomicU64::new(0),
+            jit2_compilations_failed: AtomicU64::new(0),
+            interpreter_executions: AtomicU64::new(0),
+            bytecode_executions: AtomicU64::new(0),
+            jit1_executions: AtomicU64::new(0),
+            jit2_executions: AtomicU64::new(0),
         }
     }
 
@@ -423,10 +460,8 @@ impl TieredCompilationCache {
         self.entries
             .entry(hash)
             .or_insert_with(|| {
-                // Update stats
-                if let Ok(mut stats) = self.stats.write() {
-                    stats.expressions_tracked += 1;
-                }
+                // Update stats atomically (lock-free)
+                self.expressions_tracked.fetch_add(1, Ordering::Relaxed);
                 Arc::clone(&state)
             });
 
@@ -446,10 +481,8 @@ impl TieredCompilationCache {
         // Atomically increment execution count
         let count = state.execution_count.fetch_add(1, Ordering::Relaxed) + 1;
 
-        // Update total execution stats
-        if let Ok(mut stats) = self.stats.write() {
-            stats.total_executions += 1;
-        }
+        // Update total execution stats atomically (lock-free)
+        self.total_executions.fetch_add(1, Ordering::Relaxed);
 
         // Check for tier transitions
         self.maybe_trigger_bytecode(expr, &state, count);
@@ -481,33 +514,24 @@ impl TieredCompilationCache {
             return;
         }
 
-        // Update stats
-        if let Ok(mut stats) = self.stats.write() {
-            stats.bytecode_compilations_triggered += 1;
-        }
+        // Update stats atomically (lock-free)
+        self.bytecode_compilations_triggered.fetch_add(1, Ordering::Relaxed);
 
         // Clone what we need for the background task
         let expr_clone = expr.clone();
         let state_clone = Arc::clone(state);
-        let stats_ref = &self.stats;
 
         // Spawn background compilation on rayon
         rayon::spawn(move || {
             match compile_arc("tiered", &expr_clone) {
                 Ok(chunk) => {
                     state_clone.set_bytecode_ready(chunk);
-                    // Note: We can't easily update stats here since rayon::spawn
-                    // requires 'static lifetime. Stats updates would require
-                    // Arc<RwLock<Stats>> passed to the closure.
                 }
                 Err(_) => {
                     state_clone.set_bytecode_failed();
                 }
             }
         });
-
-        // For now, just mark triggered (completion tracking would need Arc)
-        let _ = stats_ref;
     }
 
     /// Maybe trigger JIT Stage 1 compilation
@@ -532,10 +556,8 @@ impl TieredCompilationCache {
             return;
         }
 
-        // Update stats
-        if let Ok(mut stats) = self.stats.write() {
-            stats.jit1_compilations_triggered += 1;
-        }
+        // Update stats atomically (lock-free)
+        self.jit1_compilations_triggered.fetch_add(1, Ordering::Relaxed);
 
         // Get the bytecode chunk
         let chunk = match state.bytecode_chunk() {
@@ -606,10 +628,8 @@ impl TieredCompilationCache {
             return;
         }
 
-        // Update stats
-        if let Ok(mut stats) = self.stats.write() {
-            stats.jit2_compilations_triggered += 1;
-        }
+        // Update stats atomically (lock-free)
+        self.jit2_compilations_triggered.fetch_add(1, Ordering::Relaxed);
 
         // Get the bytecode chunk
         let chunk = match state.bytecode_chunk() {
@@ -687,19 +707,44 @@ impl TieredCompilationCache {
         self.entries.get(&hash).map(|e| Arc::clone(e.value()))
     }
 
-    /// Get current cache statistics
+    /// Get current cache statistics (builds from atomics, lock-free)
     pub fn stats(&self) -> TieredCacheStats {
-        self.stats
-            .read()
-            .map(|s| s.clone())
-            .unwrap_or_default()
+        TieredCacheStats {
+            expressions_tracked: self.expressions_tracked.load(Ordering::Relaxed),
+            total_executions: self.total_executions.load(Ordering::Relaxed),
+            bytecode_compilations_triggered: self.bytecode_compilations_triggered.load(Ordering::Relaxed),
+            bytecode_compilations_completed: self.bytecode_compilations_completed.load(Ordering::Relaxed),
+            bytecode_compilations_failed: self.bytecode_compilations_failed.load(Ordering::Relaxed),
+            jit1_compilations_triggered: self.jit1_compilations_triggered.load(Ordering::Relaxed),
+            jit1_compilations_completed: self.jit1_compilations_completed.load(Ordering::Relaxed),
+            jit1_compilations_failed: self.jit1_compilations_failed.load(Ordering::Relaxed),
+            jit2_compilations_triggered: self.jit2_compilations_triggered.load(Ordering::Relaxed),
+            jit2_compilations_completed: self.jit2_compilations_completed.load(Ordering::Relaxed),
+            jit2_compilations_failed: self.jit2_compilations_failed.load(Ordering::Relaxed),
+            interpreter_executions: self.interpreter_executions.load(Ordering::Relaxed),
+            bytecode_executions: self.bytecode_executions.load(Ordering::Relaxed),
+            jit1_executions: self.jit1_executions.load(Ordering::Relaxed),
+            jit2_executions: self.jit2_executions.load(Ordering::Relaxed),
+        }
     }
 
-    /// Reset statistics
+    /// Reset statistics (lock-free via atomic stores)
     pub fn reset_stats(&self) {
-        if let Ok(mut stats) = self.stats.write() {
-            *stats = TieredCacheStats::default();
-        }
+        self.expressions_tracked.store(0, Ordering::Relaxed);
+        self.total_executions.store(0, Ordering::Relaxed);
+        self.bytecode_compilations_triggered.store(0, Ordering::Relaxed);
+        self.bytecode_compilations_completed.store(0, Ordering::Relaxed);
+        self.bytecode_compilations_failed.store(0, Ordering::Relaxed);
+        self.jit1_compilations_triggered.store(0, Ordering::Relaxed);
+        self.jit1_compilations_completed.store(0, Ordering::Relaxed);
+        self.jit1_compilations_failed.store(0, Ordering::Relaxed);
+        self.jit2_compilations_triggered.store(0, Ordering::Relaxed);
+        self.jit2_compilations_completed.store(0, Ordering::Relaxed);
+        self.jit2_compilations_failed.store(0, Ordering::Relaxed);
+        self.interpreter_executions.store(0, Ordering::Relaxed);
+        self.bytecode_executions.store(0, Ordering::Relaxed);
+        self.jit1_executions.store(0, Ordering::Relaxed);
+        self.jit2_executions.store(0, Ordering::Relaxed);
     }
 
     /// Clear the entire cache
@@ -718,14 +763,20 @@ impl TieredCompilationCache {
         self.entries.is_empty()
     }
 
-    /// Record an execution at a specific tier (for statistics)
+    /// Record an execution at a specific tier (for statistics, lock-free)
     pub fn record_tier_execution(&self, tier: ExecutionTier) {
-        if let Ok(mut stats) = self.stats.write() {
-            match tier {
-                ExecutionTier::Interpreter => stats.interpreter_executions += 1,
-                ExecutionTier::Bytecode => stats.bytecode_executions += 1,
-                ExecutionTier::JitStage1 => stats.jit1_executions += 1,
-                ExecutionTier::JitStage2 => stats.jit2_executions += 1,
+        match tier {
+            ExecutionTier::Interpreter => {
+                self.interpreter_executions.fetch_add(1, Ordering::Relaxed);
+            }
+            ExecutionTier::Bytecode => {
+                self.bytecode_executions.fetch_add(1, Ordering::Relaxed);
+            }
+            ExecutionTier::JitStage1 => {
+                self.jit1_executions.fetch_add(1, Ordering::Relaxed);
+            }
+            ExecutionTier::JitStage2 => {
+                self.jit2_executions.fetch_add(1, Ordering::Relaxed);
             }
         }
     }

@@ -1,35 +1,44 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use crate::backend::pathmap_converter::{
-    metta_expr_to_pathmap_multiset, metta_expr_to_pathmap_set, pathmap_to_metta_expr,
+    metta_expr_to_pathmap_multiset, pathmap_multiset_to_metta_expr,
 };
 use std::sync::Arc;
 
 use tracing::trace;
 
-/*
-    TODO -> impl checklist
-
-    - [ ] Finish serialization
-    - [ ] Implement eval_unique_atom
-    // - [x] Finish eval_union_atom
-    - [ ] Double check Lattice and DistributiveLattice impls
-    - [ ] Custom errors; fix unwraps
-
-    - [ ] Tests for eval/set.rs
-    - [ ] Documentation (MeTTa lists being multisets etc.)
-    - [ ] Examples
-*/
-
 /// Unique atom: (unique-atom $list)
 /// Returns only unique entities from a tuple
 /// Example: (unique-atom (a b c d d)) -> (a b c d)
 pub fn eval_unique_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    // TODO -> just take an advantage from default PathMap semantics over Set?
+    require_args_with_usage!("unique-atom", items, 1, env, "(unique-atom list)");
 
-    // metta_expr_to_pathmap_set();
+    let input = &items[1];
+    let input_vec = match input {
+        MettaValue::SExpr(vec) => vec.clone(),
+        MettaValue::Nil => Vec::new(),
+        _ => {
+            return (
+                vec![MettaValue::Error(
+                    "unique-atom: argument must be a list".to_string(),
+                    Arc::new(input.clone()),
+                )],
+                env,
+            );
+        }
+    };
 
-    todo!()
+    let mut seen = std::collections::HashSet::new();
+    let mut unique_items = Vec::new();
+
+    for item in input_vec {
+        if seen.insert(item.clone()) {
+            unique_items.push(item);
+        }
+    }
+
+    let result = MettaValue::SExpr(unique_items);
+    (vec![result], env)
 }
 
 /// Union atom: (union-atom $list1 $list2)
@@ -93,11 +102,13 @@ pub fn eval_intersection_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
     let left = &items[1];
     let right = &items[2];
 
+    // TODO -> check if left and right are lists
+
     // TODO -> fix unwraps
     let left_pm = metta_expr_to_pathmap_multiset(left).unwrap();
     let right_pm = metta_expr_to_pathmap_multiset(right).unwrap();
     let intersection_pm = left_pm.meet(&right_pm);
-    let res = pathmap_to_metta_expr(intersection_pm).unwrap();
+    let res = pathmap_multiset_to_metta_expr(intersection_pm).unwrap();
 
     (vec![res], env)
 }
@@ -118,23 +129,22 @@ pub fn eval_subtraction_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
     let left = &items[1];
     let right = &items[2];
 
+    // TODO -> check if left and right are lists
+
     // TODO -> fix unwraps
     let left_pm = metta_expr_to_pathmap_multiset(left).unwrap();
     let right_pm = metta_expr_to_pathmap_multiset(right).unwrap();
     let subtraction_pm = left_pm.subtract(&right_pm);
-    let res = pathmap_to_metta_expr(subtraction_pm).unwrap();
+    let res = pathmap_multiset_to_metta_expr(subtraction_pm).unwrap();
 
     (vec![res], env)
 }
 
-// TODO -> tests for each method
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::compile::compile;
     use crate::backend::environment::Environment;
     use crate::backend::models::MettaValue;
-    use crate::eval;
 
     #[test]
     fn test_unique_atom() {
@@ -167,11 +177,62 @@ mod tests {
     }
 
     #[test]
-    fn test_union_atom() {
+    fn test_unique_atom_empty_list() {
         let env = Environment::new();
 
-        // let source = "(union-atom (a b (1 2 3)) (d e f))";
-        // let state = compile(source).unwrap();
+        // (unique-atom ()) -> ()
+        let items = vec![
+            MettaValue::Atom("unique-atom".to_string()),
+            MettaValue::SExpr(vec![]),
+        ];
+
+        let (results, _) = eval_unique_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(unique) => {
+                assert_eq!(unique.len(), 0);
+            }
+            _ => panic!("Expected S-expression result"),
+        }
+    }
+
+    #[test]
+    fn test_unique_atom_mixed_types() {
+        let env = Environment::new();
+
+        // (unique-atom (a 1 1 "hello" true false a)) -> (a 1 "hello" true false)
+        let items = vec![
+            MettaValue::Atom("unique-atom".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("a".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(1),
+                MettaValue::String("hello".to_string()),
+                MettaValue::Bool(true),
+                MettaValue::Bool(false),
+                MettaValue::Atom("a".to_string()),
+            ]),
+        ];
+
+        let (results, _) = eval_unique_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(unique) => {
+                assert_eq!(unique.len(), 5);
+                // Check that all unique values are present
+                assert!(unique.contains(&MettaValue::Atom("a".to_string())));
+                assert!(unique.contains(&MettaValue::Long(1)));
+                assert!(unique.contains(&MettaValue::String("hello".to_string())));
+                assert!(unique.contains(&MettaValue::Bool(true)));
+                assert!(unique.contains(&MettaValue::Bool(false)));
+            }
+            _ => panic!("Expected S-expression result"),
+        }
+    }
+
+    #[test]
+    fn test_union_atom() {
+        let env = Environment::new();
 
         // (union-atom (a b b c) (b c c d)) -> (a b b c b c c d)
         let items = vec![
@@ -191,21 +252,70 @@ mod tests {
         ];
 
         let (results, _) = eval_union_atom(items, env);
-        // assert_eq!(results.len(), 1);
-        // match &results[0] {
-        //     MettaValue::SExpr(union) => {
-        //         assert_eq!(union.len(), 8);
-        //         assert_eq!(union[0], MettaValue::Atom("a".to_string()));
-        //         assert_eq!(union[1], MettaValue::Atom("b".to_string()));
-        //         assert_eq!(union[2], MettaValue::Atom("b".to_string()));
-        //         assert_eq!(union[3], MettaValue::Atom("c".to_string()));
-        //         assert_eq!(union[4], MettaValue::Atom("b".to_string()));
-        //         assert_eq!(union[5], MettaValue::Atom("c".to_string()));
-        //         assert_eq!(union[6], MettaValue::Atom("c".to_string()));
-        //         assert_eq!(union[7], MettaValue::Atom("d".to_string()));
-        //     }
-        //     _ => panic!("Expected S-expression result"),
-        // }
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(union) => {
+                assert_eq!(union.len(), 8);
+                assert_eq!(union[0], MettaValue::Atom("a".to_string()));
+                assert_eq!(union[1], MettaValue::Atom("b".to_string()));
+                assert_eq!(union[2], MettaValue::Atom("b".to_string()));
+                assert_eq!(union[3], MettaValue::Atom("c".to_string()));
+                assert_eq!(union[4], MettaValue::Atom("b".to_string()));
+                assert_eq!(union[5], MettaValue::Atom("c".to_string()));
+                assert_eq!(union[6], MettaValue::Atom("c".to_string()));
+                assert_eq!(union[7], MettaValue::Atom("d".to_string()));
+            }
+            _ => panic!("Expected S-expression result"),
+        }
+    }
+
+    #[test]
+    fn test_union_atom_empty_lists() {
+        let env = Environment::new();
+
+        // (union-atom () ()) -> ()
+        let items = vec![
+            MettaValue::Atom("union-atom".to_string()),
+            MettaValue::SExpr(vec![]),
+            MettaValue::SExpr(vec![]),
+        ];
+
+        let (results, _) = eval_union_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(union) => {
+                assert_eq!(union.len(), 0);
+            }
+            _ => panic!("Expected S-expression result"),
+        }
+    }
+
+    #[test]
+    fn test_union_atom_mixed_types() {
+        let env = Environment::new();
+
+        // (union-atom (a 1) (2 "hello")) -> (a 1 2 "hello")
+        let items = vec![
+            MettaValue::Atom("union-atom".to_string()),
+            MettaValue::SExpr(vec![MettaValue::Atom("a".to_string()), MettaValue::Long(1)]),
+            MettaValue::SExpr(vec![
+                MettaValue::Long(2),
+                MettaValue::String("hello".to_string()),
+            ]),
+        ];
+
+        let (results, _) = eval_union_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(union) => {
+                assert_eq!(union.len(), 4);
+                assert_eq!(union[0], MettaValue::Atom("a".to_string()));
+                assert_eq!(union[1], MettaValue::Long(1));
+                assert_eq!(union[2], MettaValue::Long(2));
+                assert_eq!(union[3], MettaValue::String("hello".to_string()));
+            }
+            _ => panic!("Expected S-expression result"),
+        }
     }
 
     #[test]
@@ -244,6 +354,67 @@ mod tests {
     }
 
     #[test]
+    fn test_intersection_atom_empty_result() {
+        let env = Environment::new();
+
+        // (intersection-atom (a b) (c d)) -> ()
+        let items = vec![
+            MettaValue::Atom("intersection-atom".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("a".to_string()),
+                MettaValue::Atom("b".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("c".to_string()),
+                MettaValue::Atom("d".to_string()),
+            ]),
+        ];
+
+        let (results, _) = eval_intersection_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(intersection) => {
+                assert_eq!(intersection.len(), 0);
+            }
+            _ => panic!("Expected S-expression result"),
+        }
+    }
+
+    #[test]
+    fn test_intersection_atom_mixed_types() {
+        let env = Environment::new();
+
+        // (intersection-atom (a 1 "hello" true) (1 "hello" 2 false)) -> (1 "hello")
+        let items = vec![
+            MettaValue::Atom("intersection-atom".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("a".to_string()),
+                MettaValue::Long(1),
+                MettaValue::String("hello".to_string()),
+                MettaValue::Bool(true),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Long(1),
+                MettaValue::String("hello".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Bool(false),
+            ]),
+        ];
+
+        let (results, _) = eval_intersection_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(intersection) => {
+                assert_eq!(intersection.len(), 2);
+                // Check that both common values are present
+                assert!(intersection.contains(&MettaValue::Long(1)));
+                assert!(intersection.contains(&MettaValue::String("hello".to_string())));
+            }
+            _ => panic!("Expected S-expression result"),
+        }
+    }
+
+    #[test]
     fn test_subtraction_atom() {
         let env = Environment::new();
 
@@ -271,6 +442,65 @@ mod tests {
                 assert_eq!(subtraction.len(), 2);
                 assert_eq!(subtraction[0], MettaValue::Atom("a".to_string()));
                 assert_eq!(subtraction[1], MettaValue::Atom("b".to_string()));
+            }
+            _ => panic!("Expected S-expression result"),
+        }
+    }
+
+    #[test]
+    fn test_subtraction_atom_empty_result() {
+        let env = Environment::new();
+
+        // (subtraction-atom (a b) (a b)) -> ()
+        let items = vec![
+            MettaValue::Atom("subtraction-atom".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("a".to_string()),
+                MettaValue::Atom("b".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("a".to_string()),
+                MettaValue::Atom("b".to_string()),
+            ]),
+        ];
+
+        let (results, _) = eval_subtraction_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(subtraction) => {
+                assert_eq!(subtraction.len(), 0);
+            }
+            _ => panic!("Expected S-expression result"),
+        }
+    }
+
+    #[test]
+    fn test_subtraction_atom_mixed_types() {
+        let env = Environment::new();
+
+        // (subtraction-atom (a 1 "hello" true) (1 "hello")) -> (a true)
+        let items = vec![
+            MettaValue::Atom("subtraction-atom".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("a".to_string()),
+                MettaValue::Long(1),
+                MettaValue::String("hello".to_string()),
+                MettaValue::Bool(true),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Long(1),
+                MettaValue::String("hello".to_string()),
+            ]),
+        ];
+
+        let (results, _) = eval_subtraction_atom(items, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(subtraction) => {
+                assert_eq!(subtraction.len(), 2);
+                // Check that remaining values are present
+                assert!(subtraction.contains(&MettaValue::Atom("a".to_string())));
+                assert!(subtraction.contains(&MettaValue::Bool(true)));
             }
             _ => panic!("Expected S-expression result"),
         }

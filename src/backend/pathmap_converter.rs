@@ -15,7 +15,6 @@ impl MultisetCount {
     }
 }
 
-// TODO -> need to make sure it works correctly
 impl Lattice for MultisetCount {
     fn pjoin(&self, other: &Self) -> AlgebraicResult<Self> {
         AlgebraicResult::Element(MultisetCount(self.0 + other.0))
@@ -26,7 +25,6 @@ impl Lattice for MultisetCount {
     }
 }
 
-// TODO -> need to make sure it works correctly
 impl DistributiveLattice for MultisetCount {
     fn psubtract(&self, other: &Self) -> AlgebraicResult<Self> {
         let diff = self.0.saturating_sub(other.0);
@@ -38,22 +36,9 @@ impl DistributiveLattice for MultisetCount {
     }
 }
 
-// TODO -> will be used for unique_atom
-pub(crate) fn metta_expr_to_pathmap_set(value: &MettaValue) -> Result<PathMap<()>, String> {
-    // TODO -> what about Conjunction?
-    match value {
-        MettaValue::SExpr(items) => {
-            todo!()
-        }
-        MettaValue::Nil => Ok(PathMap::<()>::new()),
-        _ => Err(format!("Cannot convert {:?} to PathMap set", value)),
-    }
-}
-
 pub(crate) fn metta_expr_to_pathmap_multiset(
     value: &MettaValue,
 ) -> Result<PathMap<MultisetCount>, String> {
-    // TODO -> what about Conjunction?
     match value {
         MettaValue::SExpr(items) => {
             let mut path_map = PathMap::<MultisetCount>::new();
@@ -79,7 +64,9 @@ pub(crate) fn metta_expr_to_pathmap_multiset(
     }
 }
 
-pub(crate) fn pathmap_to_metta_expr(pm: PathMap<MultisetCount>) -> Result<MettaValue, String> {
+pub(crate) fn pathmap_multiset_to_metta_expr(
+    pm: PathMap<MultisetCount>,
+) -> Result<MettaValue, String> {
     let mut rz = pm.read_zipper();
 
     let mut res_items: Vec<MettaValue> = vec![];
@@ -316,7 +303,7 @@ mod tests {
         ]);
 
         let path_map = metta_expr_to_pathmap_multiset(&value).unwrap();
-        let result = pathmap_to_metta_expr(path_map).unwrap();
+        let result = pathmap_multiset_to_metta_expr(path_map).unwrap();
 
         // Result should contain all strings (order may vary, so we check counts)
         if let MettaValue::SExpr(items) = result {
@@ -342,7 +329,7 @@ mod tests {
         ]);
 
         let path_map = metta_expr_to_pathmap_multiset(&value).unwrap();
-        let result = pathmap_to_metta_expr(path_map).unwrap();
+        let result = pathmap_multiset_to_metta_expr(path_map).unwrap();
 
         if let MettaValue::SExpr(items) = result {
             assert_eq!(items.len(), 5);
@@ -371,7 +358,7 @@ mod tests {
         ]);
 
         let path_map = metta_expr_to_pathmap_multiset(&value).unwrap();
-        let result = pathmap_to_metta_expr(path_map).unwrap();
+        let result = pathmap_multiset_to_metta_expr(path_map).unwrap();
 
         // The nested SExpr should be serialized as "(b c)" and parsed back
         if let MettaValue::SExpr(items) = result {
@@ -395,7 +382,7 @@ mod tests {
         ]);
 
         let path_map = metta_expr_to_pathmap_multiset(&value).unwrap();
-        let result = pathmap_to_metta_expr(path_map).unwrap();
+        let result = pathmap_multiset_to_metta_expr(path_map).unwrap();
 
         if let MettaValue::SExpr(items) = result {
             assert_eq!(items.len(), 3);

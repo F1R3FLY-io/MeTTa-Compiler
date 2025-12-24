@@ -74,9 +74,6 @@ pub fn metta_to_mork_bytes(
         e
     })?;
 
-    dbg!(ez.loc);
-    dbg!(buffer[..ez.loc].to_vec());
-
     Ok(buffer[..ez.loc].to_vec())
 }
 

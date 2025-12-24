@@ -1,40 +1,24 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
-use crate::backend::pathmap_converter::{metta_expr_to_pathmap, pathmap_to_metta_expr};
+use crate::backend::pathmap_converter::{
+    metta_expr_to_pathmap_multiset, metta_expr_to_pathmap_set, pathmap_to_metta_expr,
+};
 
-use pathmap::PathMap;
 use tracing::trace;
 
-// TODO -> comment about MeTTa lists being multisets
-
 /*
-  TODO -> serialization strategy options
-  - Canonical String Serialization -> Recursive?
-  - Structural Hash
-  - PathMap with Structural Keys?
+    TODO -> impl checklist
 
+    - [ ] Finish serialization
+    - [ ] Implement eval_unique_atom
+    - [ ] Finish eval_union_atom
+    - [ ] Double check Lattice and DistributiveLattice impls
+    - [ ] Custom errors; fix unwraps
 
-  TODO -> example with PathMap rationalization
-  If you need several set operations, PathMap avoids repeated serialization:
-  Convert once, use many times
-  let pathmap1 = items_to_pathmap(list1);
-  let pathmap2 = items_to_pathmap(list2);
+    - [ ] Tests for eval/set.rs
+    - [ ] Documentation (MeTTa lists being multisets etc.)
+    - [ ] Examples
 
-  let results = vec![
-      pathmap1.join(&pathmap2),     // union
-      pathmap1.meet(&pathmap2),     // intersection
-      pathmap1.subtract(&pathmap2), // difference
-  ];
-
-
-  TODO -> implementation checklist
-  - [ ] Implement back and forth conversion between metta value and path map. Choose algorithm
-        for serializatio nested structures. Make sure PathMap is used efficient. Use zippers?
-  - [ ] Implemented main methods: eval_unique_atom, eval_union_atom, eval_intersection_atom, eval_subtraction_atom
-  - [ ] ?Provide optimization for rust interpreter level manipulations for < 100 lists?
-
-  - [ ] Provide benchmarks
-  - [ ] Update examples and docs
 */
 
 /// Unique atom: (unique-atom $list)
@@ -42,6 +26,8 @@ use tracing::trace;
 /// Example: (unique-atom (a b c d d)) -> (a b c d)
 pub fn eval_unique_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     // TODO -> just take an advantage from default PathMap semantics over Set?
+
+    // metta_expr_to_pathmap_set();
 
     todo!()
 }
@@ -56,34 +42,17 @@ pub fn eval_union_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let left = &items[1];
     let right = &items[2];
 
+    // TODO -> for union, perhaps just have simple Vec joining?
+
     // TODO -> fix unwraps
-    let left_pm = metta_expr_to_pathmap(left).unwrap();
-    let right_pm = metta_expr_to_pathmap(right).unwrap();
-    let union_pm = left_pm.join(&right_pm);
+    // let left_pm = metta_expr_to_pathmap(left).unwrap();
+    // let right_pm = metta_expr_to_pathmap(right).unwrap();
+    // let union_pm = left_pm.join(&right_pm);
 
     // dbg!(&union_pm);
 
-    let res = pathmap_to_metta_expr(union_pm).unwrap();
-
-    dbg!(res);
-
-    // for (key_bytes, value) in union_result.iter() {
-    //     let key_string = String::from_utf8(key_bytes.to_vec())
-    //         .map_err(|_| "Invalid UTF-8 in PathMap key")
-    //         .unwrap();
-    //     println!("{} {:?}", key_string, value);
-    // }
-
-    /*
-
-
-      let pathmap1 = items_to_pathmap(list1);
-      let pathmap2 = items_to_pathmap(list2);
-
-      let union_result = pathmap1.join(&pathmap2);  // Ring algebra!
-
-      pathmap_to_items(union_result)
-    */
+    // let res = pathmap_to_metta_expr(union_pm).unwrap();
+    // dbg!(res);
 
     todo!()
 }
@@ -94,7 +63,7 @@ pub fn eval_union_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 pub fn eval_intersection_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_intersection-atom", ?items);
     require_args_with_usage!(
-        "union-atom",
+        "intersection-atom",
         items,
         2,
         env,
@@ -105,22 +74,40 @@ pub fn eval_intersection_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
     let right = &items[2];
 
     // TODO -> fix unwraps
-    let left_pm = metta_expr_to_pathmap(left).unwrap();
-    let right_pm = metta_expr_to_pathmap(right).unwrap();
+    let left_pm = metta_expr_to_pathmap_multiset(left).unwrap();
+    let right_pm = metta_expr_to_pathmap_multiset(right).unwrap();
     let intersection_pm = left_pm.meet(&right_pm);
+    let res = pathmap_to_metta_expr(intersection_pm).unwrap();
 
-    dbg!(intersection_pm);
-
-    todo!()
+    (vec![res], env)
 }
 
 /// Subtraction atom: (subtraction-atom $list1 $list2)
 /// Returns the subtraction of two tuples
 /// Example: (subtraction-atom (a b b c) (b c c d)) -> (a b)
 pub fn eval_subtraction_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    todo!()
+    trace!(target: "mettatron::eval::eval_subtraction-atom", ?items);
+    require_args_with_usage!(
+        "subtraction-atom",
+        items,
+        2,
+        env,
+        "(subtraction-atom left right)"
+    );
+
+    let left = &items[1];
+    let right = &items[2];
+
+    // TODO -> fix unwraps
+    let left_pm = metta_expr_to_pathmap_multiset(left).unwrap();
+    let right_pm = metta_expr_to_pathmap_multiset(right).unwrap();
+    let subtraction_pm = left_pm.subtract(&right_pm);
+    let res = pathmap_to_metta_expr(subtraction_pm).unwrap();
+
+    (vec![res], env)
 }
 
+// TODO -> tests for each method
 #[cfg(test)]
 mod tests {
     use super::*;

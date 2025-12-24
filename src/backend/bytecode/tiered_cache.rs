@@ -26,7 +26,7 @@
 //! Compilation is asynchronous - we spawn rayon tasks and continue using the current tier
 //! until the next tier becomes Ready.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
@@ -47,6 +47,13 @@ pub const JIT1_THRESHOLD: u32 = 100;
 
 /// Threshold to trigger JIT Stage 2 compilation (after 500 executions)
 pub const JIT2_THRESHOLD: u32 = 500;
+
+/// Default warm-up threshold - skip tiered compilation tracking until this many total evaluations
+///
+/// Set to 1000 to skip overhead for small workloads while still benefiting hot code.
+/// This addresses the parallel-4 regression where tiered cache overhead was higher
+/// than the benefit for short benchmark runs.
+pub const DEFAULT_WARMUP_THRESHOLD: u64 = 1000;
 
 /// Compilation status for a tier
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,6 +335,12 @@ pub struct TieredCompilationCache {
     /// Threshold for JIT Stage 2 compilation
     pub jit2_threshold: u32,
 
+    // Warm-up period to skip tracking overhead for small workloads
+    /// Threshold for warm-up period - no tracking until this many total evaluations
+    warmup_threshold: u64,
+    /// Flag indicating warm-up period is complete (set once, never reverts)
+    warmup_complete: AtomicBool,
+
     // Atomic statistics counters (lock-free to avoid contention at 4+ threads)
     expressions_tracked: AtomicU64,
     total_executions: AtomicU64,
@@ -403,6 +416,8 @@ impl TieredCompilationCache {
             bytecode_threshold: BYTECODE_THRESHOLD,
             jit1_threshold: JIT1_THRESHOLD,
             jit2_threshold: JIT2_THRESHOLD,
+            warmup_threshold: DEFAULT_WARMUP_THRESHOLD,
+            warmup_complete: AtomicBool::new(false),
             expressions_tracked: AtomicU64::new(0),
             total_executions: AtomicU64::new(0),
             bytecode_compilations_triggered: AtomicU64::new(0),
@@ -423,11 +438,18 @@ impl TieredCompilationCache {
 
     /// Create a new cache with custom thresholds
     pub fn with_thresholds(bytecode: u32, jit1: u32, jit2: u32) -> Self {
+        Self::with_thresholds_and_warmup(bytecode, jit1, jit2, DEFAULT_WARMUP_THRESHOLD)
+    }
+
+    /// Create a new cache with custom thresholds and warm-up threshold
+    pub fn with_thresholds_and_warmup(bytecode: u32, jit1: u32, jit2: u32, warmup: u64) -> Self {
         Self {
             entries: DashMap::new(),
             bytecode_threshold: bytecode,
             jit1_threshold: jit1,
             jit2_threshold: jit2,
+            warmup_threshold: warmup,
+            warmup_complete: AtomicBool::new(warmup == 0),
             expressions_tracked: AtomicU64::new(0),
             total_executions: AtomicU64::new(0),
             bytecode_compilations_triggered: AtomicU64::new(0),
@@ -474,22 +496,42 @@ impl TieredCompilationCache {
 
     /// Record an execution and trigger appropriate tier compilations
     ///
-    /// Returns the compilation state for dispatch decisions.
-    pub fn record_execution(&self, expr: &MettaValue) -> Arc<ExprCompilationState> {
+    /// Returns the compilation state for dispatch decisions, or `None` during warm-up.
+    ///
+    /// During the warm-up period, tracking is skipped to avoid overhead for small workloads.
+    /// After `warmup_threshold` total evaluations, full tracking resumes.
+    pub fn record_execution(&self, expr: &MettaValue) -> Option<Arc<ExprCompilationState>> {
+        // Increment total execution count (always tracked for warm-up check)
+        let global_count = self.total_executions.fetch_add(1, Ordering::Relaxed);
+
+        // Fast path during warm-up: single atomic load, no hash computation or DashMap access
+        if !self.warmup_complete.load(Ordering::Relaxed) {
+            if global_count < self.warmup_threshold {
+                return None; // Skip all tracking during warm-up
+            }
+            // Transition out of warm-up (set once, never reverts)
+            // Race is benign - multiple threads may set this, but result is the same
+            self.warmup_complete.store(true, Ordering::Relaxed);
+        }
+
+        // Normal tracking after warm-up
         let state = self.get_or_create_state(expr);
 
         // Atomically increment execution count
         let count = state.execution_count.fetch_add(1, Ordering::Relaxed) + 1;
-
-        // Update total execution stats atomically (lock-free)
-        self.total_executions.fetch_add(1, Ordering::Relaxed);
 
         // Check for tier transitions
         self.maybe_trigger_bytecode(expr, &state, count);
         self.maybe_trigger_jit1(&state, count);
         self.maybe_trigger_jit2(&state, count);
 
-        state
+        Some(state)
+    }
+
+    /// Check if warm-up period is complete
+    #[inline]
+    pub fn is_warmup_complete(&self) -> bool {
+        self.warmup_complete.load(Ordering::Relaxed)
     }
 
     /// Maybe trigger bytecode compilation
@@ -859,15 +901,21 @@ mod tests {
 
     #[test]
     fn test_tiered_cache_record_execution() {
-        let cache = TieredCompilationCache::new();
+        // Use warmup=0 to disable warm-up period for testing
+        let cache = TieredCompilationCache::with_thresholds_and_warmup(
+            BYTECODE_THRESHOLD,
+            JIT1_THRESHOLD,
+            JIT2_THRESHOLD,
+            0, // No warm-up
+        );
         let expr = MettaValue::Long(42);
 
-        // Record first execution
-        let state = cache.record_execution(&expr);
+        // Record first execution - should return Some since warmup=0
+        let state = cache.record_execution(&expr).expect("warm-up disabled");
         assert_eq!(state.count(), 1);
 
         // Record more executions
-        let state = cache.record_execution(&expr);
+        let state = cache.record_execution(&expr).expect("warm-up disabled");
         assert_eq!(state.count(), 2);
 
         // Cache should have one entry
@@ -875,8 +923,42 @@ mod tests {
     }
 
     #[test]
+    fn test_tiered_cache_warmup_period() {
+        // Use a small warmup threshold to test warm-up behavior
+        let cache = TieredCompilationCache::with_thresholds_and_warmup(
+            BYTECODE_THRESHOLD,
+            JIT1_THRESHOLD,
+            JIT2_THRESHOLD,
+            5, // 5 executions warm-up
+        );
+        let expr = MettaValue::Long(42);
+
+        // During warm-up, record_execution should return None
+        for i in 0..5 {
+            let result = cache.record_execution(&expr);
+            assert!(result.is_none(), "execution {} should be in warm-up", i);
+            assert!(!cache.is_warmup_complete());
+        }
+
+        // After warm-up, should return Some
+        let state = cache.record_execution(&expr);
+        assert!(state.is_some(), "execution 5 should be past warm-up");
+        assert!(cache.is_warmup_complete());
+
+        // Subsequent executions should also return Some
+        let state = cache.record_execution(&expr);
+        assert!(state.is_some());
+    }
+
+    #[test]
     fn test_tiered_cache_get_best_tier() {
-        let cache = TieredCompilationCache::new();
+        // Use warmup=0 to disable warm-up for testing
+        let cache = TieredCompilationCache::with_thresholds_and_warmup(
+            BYTECODE_THRESHOLD,
+            JIT1_THRESHOLD,
+            JIT2_THRESHOLD,
+            0,
+        );
         let expr = MettaValue::Long(42);
 
         // Before any execution, should be interpreter
@@ -884,7 +966,7 @@ mod tests {
 
         // After some executions (bytecode not ready yet)
         for _ in 0..10 {
-            cache.record_execution(&expr);
+            let _ = cache.record_execution(&expr);
         }
         // Still interpreter because compilation is async
         // (In real scenario, bytecode would become ready after rayon task completes)
@@ -900,10 +982,16 @@ mod tests {
 
     #[test]
     fn test_tiered_cache_clear() {
-        let cache = TieredCompilationCache::new();
+        // Use warmup=0 to disable warm-up for testing
+        let cache = TieredCompilationCache::with_thresholds_and_warmup(
+            BYTECODE_THRESHOLD,
+            JIT1_THRESHOLD,
+            JIT2_THRESHOLD,
+            0,
+        );
         let expr = MettaValue::Long(42);
 
-        cache.record_execution(&expr);
+        let _ = cache.record_execution(&expr);
         assert_eq!(cache.len(), 1);
 
         cache.clear();

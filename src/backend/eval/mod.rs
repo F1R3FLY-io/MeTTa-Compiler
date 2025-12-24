@@ -129,9 +129,14 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
     };
 
     // Record execution in unified tiered cache for async background compilation
-    // This triggers bytecode compilation at 2 executions, JIT Stage 1 at 100, JIT Stage 2 at 500
-    // Background compilation via Rayon is non-blocking
-    let _state = global_tiered_cache().record_execution(&value);
+    // Returns None during warm-up period to skip tracking overhead for small workloads
+    // After warm-up: triggers bytecode compilation at 2 executions, JIT Stage 1 at 100, JIT Stage 2 at 500
+    let state_opt = global_tiered_cache().record_execution(&value);
+
+    // During warm-up period, use tree-walker interpreter directly (zero overhead)
+    let Some(state) = state_opt else {
+        return eval_trampoline(value, env);
+    };
 
     // Check if this expression can be compiled to bytecode
     // Only some expressions are compilable - others need tree-walker semantics
@@ -139,8 +144,8 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
     if can_compile_cached(&value) {
         // Check if bytecode is ready in the unified cache
         // If so, execute it via HybridExecutor (which handles JIT tiering internally)
-        if _state.bytecode_status() == TierStatusKind::Ready {
-            if let Some(chunk) = _state.bytecode_chunk() {
+        if state.bytecode_status() == TierStatusKind::Ready {
+            if let Some(chunk) = state.bytecode_chunk() {
                 if let Ok(results) = execute_bytecode_chunk(&chunk) {
                     global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
                     return (results, env);

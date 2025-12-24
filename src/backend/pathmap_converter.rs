@@ -99,99 +99,46 @@ pub(crate) fn pathmap_to_metta_expr(pm: PathMap<MultisetCount>) -> Result<MettaV
 }
 
 fn parse_pathmap_path(s: &str) -> Result<MettaValue, String> {
-    // Try simple types first
+    if s == "()" {
+        return Ok(MettaValue::Nil);
+    }
+
+    if s == "true" {
+        return Ok(MettaValue::Bool(true));
+    }
+    if s == "false" {
+        return Ok(MettaValue::Bool(false));
+    }
+
+    // Parse string literals (quoted)
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        let inner = &s[1..s.len() - 1];
+        // Handle escape sequences
+        let unescaped = inner
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
+            .replace("\\n", "\n")
+            .replace("\\r", "\r")
+            .replace("\\t", "\t");
+        return Ok(MettaValue::String(unescaped));
+    }
+
     if let Ok(n) = s.parse::<i64>() {
         return Ok(MettaValue::Long(n));
     }
+
     if let Ok(f) = s.parse::<f64>() {
         return Ok(MettaValue::Float(f));
     }
 
-    // For S-expressions, don't parse - treat as atomic string
+    if s.starts_with('(') && s.ends_with(')') {
+        // FIXME:
+        todo!()
+    }
+
     Ok(MettaValue::Atom(s.to_string()))
 }
 
-// /// Parse a string path from PathMap back into a MettaValue
-// ///
-// /// This function handles parsing flat s-expressions (no nested structures) from PathMap paths.
-// /// It supports:
-// /// - Nil: "()"
-// /// - Booleans: "true", "false"
-// /// - String literals: quoted strings with escape sequences
-// /// - Integers and floats
-// /// - Flat s-expressions: "(a b c)" parsed as space-separated tokens
-// /// - Conjunctions: "(, a b)" parsed as Conjunction variant
-// /// - Atoms: everything else
-// fn parse_pathmap_path(s: &str) -> Result<MettaValue, String> {
-//     if s == "()" {
-//         return Ok(MettaValue::Nil);
-//     }
-
-//     if s == "true" {
-//         return Ok(MettaValue::Bool(true));
-//     }
-//     if s == "false" {
-//         return Ok(MettaValue::Bool(false));
-//     }
-
-//     // Parse string literals (quoted)
-//     if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-//         let inner = &s[1..s.len() - 1];
-//         // Handle escape sequences
-//         let unescaped = inner
-//             .replace("\\\"", "\"")
-//             .replace("\\\\", "\\")
-//             .replace("\\n", "\n")
-//             .replace("\\r", "\r")
-//             .replace("\\t", "\t");
-//         return Ok(MettaValue::String(unescaped));
-//     }
-
-//     if let Ok(n) = s.parse::<i64>() {
-//         return Ok(MettaValue::Long(n));
-//     }
-
-//     if let Ok(f) = s.parse::<f64>() {
-//         return Ok(MettaValue::Float(f));
-//     }
-
-//     if s.starts_with('(') && s.ends_with(')') {
-//         let content = s[1..s.len() - 1].trim();
-
-//         if content.is_empty() {
-//             return Ok(MettaValue::Nil);
-//         }
-
-//         // FIXME: this is wrong
-//         // Split by whitespace and parse each token (flat, no nested parsing)
-//         let items: Result<Vec<_>, _> = content
-//             .split_whitespace()
-//             .map(|token| parse_pathmap_path(token))
-//             .collect();
-
-//         let items = items?;
-
-//         if items.is_empty() {
-//             return Ok(MettaValue::Nil);
-//         }
-
-//         // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
-//         if let Some(MettaValue::Atom(first)) = items.first() {
-//             if first == "," {
-//                 // Skip the comma operator and create Conjunction
-//                 let goals = items[1..].to_vec();
-//                 return Ok(MettaValue::Conjunction(goals));
-//             }
-//         }
-
-//         // Regular S-expression
-//         return Ok(MettaValue::SExpr(items));
-//     }
-
-//     Ok(MettaValue::Atom(s.to_string()))
-// }
-
-// TODO -> test nested S-expr
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,6 +3,7 @@ use crate::backend::models::{EvalResult, MettaValue};
 use crate::backend::pathmap_converter::{
     metta_expr_to_pathmap_multiset, metta_expr_to_pathmap_set, pathmap_to_metta_expr,
 };
+use std::sync::Arc;
 
 use tracing::trace;
 
@@ -11,14 +12,13 @@ use tracing::trace;
 
     - [ ] Finish serialization
     - [ ] Implement eval_unique_atom
-    - [ ] Finish eval_union_atom
+    // - [x] Finish eval_union_atom
     - [ ] Double check Lattice and DistributiveLattice impls
     - [ ] Custom errors; fix unwraps
 
     - [ ] Tests for eval/set.rs
     - [ ] Documentation (MeTTa lists being multisets etc.)
     - [ ] Examples
-
 */
 
 /// Unique atom: (unique-atom $list)
@@ -42,19 +42,39 @@ pub fn eval_union_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let left = &items[1];
     let right = &items[2];
 
-    // TODO -> for union, perhaps just have simple Vec joining?
+    let left_vec = match left {
+        MettaValue::SExpr(vec) => vec.clone(),
+        MettaValue::Nil => Vec::new(),
+        _ => {
+            return (
+                vec![MettaValue::Error(
+                    "union-atom: left argument must be a list".to_string(),
+                    Arc::new(left.clone()),
+                )],
+                env,
+            );
+        }
+    };
 
-    // TODO -> fix unwraps
-    // let left_pm = metta_expr_to_pathmap(left).unwrap();
-    // let right_pm = metta_expr_to_pathmap(right).unwrap();
-    // let union_pm = left_pm.join(&right_pm);
+    let right_vec = match right {
+        MettaValue::SExpr(vec) => vec.clone(),
+        MettaValue::Nil => Vec::new(),
+        _ => {
+            return (
+                vec![MettaValue::Error(
+                    "union-atom: right argument must be a list".to_string(),
+                    Arc::new(right.clone()),
+                )],
+                env,
+            );
+        }
+    };
 
-    // dbg!(&union_pm);
+    let mut union_vec = left_vec;
+    union_vec.extend(right_vec);
 
-    // let res = pathmap_to_metta_expr(union_pm).unwrap();
-    // dbg!(res);
-
-    todo!()
+    let result = MettaValue::SExpr(union_vec);
+    (vec![result], env)
 }
 
 /// Intersection atom: (intersection-atom $list1 $list2)

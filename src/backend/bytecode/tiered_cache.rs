@@ -37,8 +37,10 @@ use super::cache::hash_metta_value;
 use super::chunk::BytecodeChunk;
 use super::compiler::compile_arc;
 
-/// Threshold to trigger bytecode compilation (after 2 executions)
-pub const BYTECODE_THRESHOLD: u32 = 2;
+/// Threshold to trigger bytecode compilation (eager: after 1st execution)
+/// Compilation is non-blocking (rayon background), so eager compilation
+/// provides faster VM execution with minimal overhead.
+pub const BYTECODE_THRESHOLD: u32 = 1;
 
 /// Threshold to trigger JIT Stage 1 compilation (after 100 executions)
 pub const JIT1_THRESHOLD: u32 = 100;

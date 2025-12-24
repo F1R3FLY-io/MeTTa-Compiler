@@ -37,61 +37,56 @@ pub fn handle_no_rule_match(
     unified_env: &mut Environment,
 ) -> MettaValue {
     // Check for likely typos before falling back to ADD mode
-    // Only check atoms >= 3 chars to avoid false positives on short symbols
-    // and reduce fuzzy matching overhead (which is O(n*m) for query)
     if let Some(MettaValue::Atom(head)) = evaled_items.first() {
-        if head.len() >= 3 {
-            // Check for misspelled special form using context-aware heuristics
-            // The three-pillar validation filters out structurally incompatible suggestions
-            if let Some(suggestion) =
-                suggest_special_form_with_context(head, &evaled_items, unified_env)
-            {
-                trace!(
-                    target: "mettatron::backend::eval::handle_no_rule_match",
-                    head, ?suggestion, "Unknown special form"
-                );
-                // Always emit as a note/warning, never as an error
-                // This allows the expression to continue evaluating in ADD mode
-                match suggestion.confidence {
-                    SuggestionConfidence::High => {
-                        eprintln!(
-                            "Warning: '{}' is not defined. {}",
-                            head, suggestion.message
-                        );
-                    }
-                    SuggestionConfidence::Low => {
-                        eprintln!("Note: '{}' is not defined. {}", head, suggestion.message);
-                    }
-                    SuggestionConfidence::None => {
-                        // No suggestion - don't print anything
-                    }
+        // Check for misspelled special form using context-aware heuristics
+        // The three-pillar validation filters out structurally incompatible suggestions
+        if let Some(suggestion) =
+            suggest_special_form_with_context(head, &evaled_items, unified_env)
+        {
+            trace!(
+                target: "mettatron::backend::eval::handle_no_rule_match",
+                head, ?suggestion, "Unknown special form"
+            );
+            // Always emit as a note/warning, never as an error
+            // This allows the expression to continue evaluating in ADD mode
+            match suggestion.confidence {
+                SuggestionConfidence::High => {
+                    eprintln!(
+                        "Warning: '{}' is not defined. {}",
+                        head, suggestion.message
+                    );
                 }
-                // Fall through to ADD mode (don't return error)
+                SuggestionConfidence::Low => {
+                    eprintln!("Note: '{}' is not defined. {}", head, suggestion.message);
+                }
+                SuggestionConfidence::None => {
+                    // No suggestion - don't print anything
+                }
             }
+            // Fall through to ADD mode (don't return error)
+        }
 
-            // Check for misspelled rule head using smart heuristics
-            // Use max_distance=1 to reduce false positives and improve performance
-            if let Some(suggestion) = unified_env.smart_did_you_mean(head, 1) {
-                trace!(
-                    target: "mettatron::backend::eval::handle_no_rule_match",
-                    head, ?suggestion, "No rule matches"
-                );
-                match suggestion.confidence {
-                    SuggestionConfidence::High => {
-                        eprintln!(
-                            "Warning: No rule matches '{}'. {}",
-                            head, suggestion.message
-                        );
-                    }
-                    SuggestionConfidence::Low => {
-                        eprintln!("Note: No rule matches '{}'. {}", head, suggestion.message);
-                    }
-                    SuggestionConfidence::None => {
-                        // No suggestion - don't print anything
-                    }
+        // Check for misspelled rule head using smart heuristics
+        if let Some(suggestion) = unified_env.smart_did_you_mean(head, 2) {
+            trace!(
+                target: "mettatron::backend::eval::handle_no_rule_match",
+                head, ?suggestion, "No rule matches"
+            );
+            match suggestion.confidence {
+                SuggestionConfidence::High => {
+                    eprintln!(
+                        "Warning: No rule matches '{}'. {}",
+                        head, suggestion.message
+                    );
                 }
-                // Fall through to ADD mode (don't return error)
+                SuggestionConfidence::Low => {
+                    eprintln!("Note: No rule matches '{}'. {}", head, suggestion.message);
+                }
+                SuggestionConfidence::None => {
+                    // No suggestion - don't print anything
+                }
             }
+            // Fall through to ADD mode (don't return error)
         }
     }
 

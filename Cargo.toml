@@ -187,6 +187,11 @@ symbol-interning = ["lasso"]
 bytecode = []
 jit = []
 
+# Fuzzy suggestions: "Did you mean?" suggestions for typos
+# DISABLED by default because it adds significant overhead (10-20%)
+# Enable with: cargo build --release --features fuzzy-suggestions
+fuzzy-suggestions = []
+
 [dev-dependencies]
 # For integration tests
 regex = "1.10"

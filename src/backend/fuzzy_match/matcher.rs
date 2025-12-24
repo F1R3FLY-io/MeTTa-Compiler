@@ -126,22 +126,32 @@ impl FuzzyMatcher {
         *dict_guard = Some(dawg);
     }
 
-    /// Add a term to the dictionary (or pending set if not initialized)
+    /// Add a term to the dictionary.
     ///
-    /// **Lazy**: If dictionary is not yet initialized, the term is added to
-    /// the pending set (O(1) HashSet insert). Only when the dictionary IS
-    /// initialized do we insert directly.
+    /// **Performance Optimization**: Always adds to the pending set and invalidates
+    /// the dictionary if it was initialized. The dictionary will be rebuilt lazily
+    /// on the next query. This ensures O(1) insert time during normal evaluation,
+    /// deferring the expensive DynamicDawgChar construction to error-handling time.
+    ///
+    /// This is critical for performance: DynamicDawgChar::insert() rebuilds internal
+    /// automaton structures which is O(n) where n = number of terms. By always using
+    /// pending and invalidating, we batch all insertions until a query is needed.
     pub fn insert(&self, term: &str) {
-        // Check if dictionary is initialized
-        let dict_guard = self.dictionary.read().unwrap();
-        if let Some(ref dict) = *dict_guard {
-            // Dictionary exists, insert directly
-            dict.insert(term);
-        } else {
-            // Dictionary not initialized, add to pending set
-            drop(dict_guard); // Release read lock before write
+        // Always add to pending set (O(1) HashSet insert)
+        {
             let mut pending_guard = self.pending.write().unwrap();
             pending_guard.insert(term.to_string());
+        }
+
+        // Invalidate dictionary if it was initialized
+        // This ensures rebuild includes the new term on next query
+        {
+            let dict_guard = self.dictionary.read().unwrap();
+            if dict_guard.is_some() {
+                drop(dict_guard);
+                let mut dict_write = self.dictionary.write().unwrap();
+                *dict_write = None;
+            }
         }
     }
 

@@ -12,7 +12,7 @@
 //!
 //! Both caches use LRU eviction for bounded memory usage.
 
-use std::collections::hash_map::DefaultHasher;
+use gxhash::GxHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::{LazyLock, RwLock};
@@ -68,10 +68,13 @@ fn get_bytecode_cache_size() -> NonZeroUsize {
         .unwrap_or(NonZeroUsize::new(4096).expect("4096 is non-zero"))
 }
 
-/// Compute hash for a MettaValue
+/// Compute hash for a MettaValue using SIMD-accelerated gxhash
+///
+/// gxhash provides 2-5x faster hashing than SipHash (DefaultHasher) while
+/// maintaining good distribution for hash table usage.
 #[inline]
 pub fn hash_metta_value(expr: &MettaValue) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = GxHasher::with_seed(0);
     expr.hash(&mut hasher);
     hasher.finish()
 }

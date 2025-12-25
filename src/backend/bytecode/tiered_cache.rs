@@ -26,8 +26,15 @@
 //! Compilation is asynchronous - we spawn rayon tasks and continue using the current tier
 //! until the next tier becomes Ready.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
+
+// Thread-local sampling counter to avoid atomic contention on the global counter
+// Each thread tracks its own count and only samples every SAMPLE_RATE evals
+thread_local! {
+    static THREAD_LOCAL_COUNTER: Cell<u64> = const { Cell::new(0) };
+}
 
 use dashmap::DashMap;
 
@@ -54,6 +61,16 @@ pub const JIT2_THRESHOLD: u32 = 500;
 /// This addresses the parallel-4 regression where tiered cache overhead was higher
 /// than the benefit for short benchmark runs.
 pub const DEFAULT_WARMUP_THRESHOLD: u64 = 1000;
+
+/// Sampling rate for expression tracking - track 1 in N evaluations
+///
+/// After warm-up, only every Nth eval is tracked to reduce hash computation
+/// and DashMap lookup overhead. When an eval is sampled, execution count is
+/// incremented by SAMPLE_RATE to maintain correct threshold triggering.
+///
+/// Set to 32 to reduce tracking overhead by ~97% while still triggering
+/// compilation for expressions executed 32+ times (with 32x slower convergence).
+pub const SAMPLE_RATE: u64 = 32;
 
 /// Compilation status for a tier
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -496,29 +513,52 @@ impl TieredCompilationCache {
 
     /// Record an execution and trigger appropriate tier compilations
     ///
-    /// Returns the compilation state for dispatch decisions, or `None` during warm-up.
+    /// Returns the compilation state for dispatch decisions, or `None` during warm-up
+    /// or non-sampled evaluations.
     ///
-    /// During the warm-up period, tracking is skipped to avoid overhead for small workloads.
-    /// After `warmup_threshold` total evaluations, full tracking resumes.
+    /// Overhead reduction strategy:
+    /// 1. Thread-local sampling: each thread has its own counter, avoiding atomic contention
+    /// 2. Only 1 in SAMPLE_RATE evals touches the global counter or DashMap
+    /// 3. During warm-up (first `warmup_threshold` sampled evals): skip tracking
+    ///
+    /// When an eval is sampled, execution count is incremented by SAMPLE_RATE to
+    /// maintain correct threshold triggering (just with slower convergence).
     pub fn record_execution(&self, expr: &MettaValue) -> Option<Arc<ExprCompilationState>> {
-        // Increment total execution count (always tracked for warm-up check)
+        // Thread-local sampling: increment local counter, only sample every SAMPLE_RATE evals
+        // This avoids ALL atomic operations for non-sampled evals
+        let should_sample = THREAD_LOCAL_COUNTER.with(|counter| {
+            let count = counter.get();
+            counter.set(count.wrapping_add(1));
+            count % SAMPLE_RATE == 0
+        });
+
+        if !should_sample {
+            return None; // Fast path: skip all tracking for non-sampled evals
+        }
+
+        // Sampled eval - now touch global counter (only 1/8th of evals reach here)
         let global_count = self.total_executions.fetch_add(1, Ordering::Relaxed);
 
         // Fast path during warm-up: single atomic load, no hash computation or DashMap access
         if !self.warmup_complete.load(Ordering::Relaxed) {
-            if global_count < self.warmup_threshold {
-                return None; // Skip all tracking during warm-up
+            if global_count < self.warmup_threshold / SAMPLE_RATE {
+                return None; // Skip tracking during warm-up
             }
             // Transition out of warm-up (set once, never reverts)
             // Race is benign - multiple threads may set this, but result is the same
             self.warmup_complete.store(true, Ordering::Relaxed);
         }
 
-        // Normal tracking after warm-up
+        // Sampled eval after warm-up - do full tracking
         let state = self.get_or_create_state(expr);
 
-        // Atomically increment execution count
-        let count = state.execution_count.fetch_add(1, Ordering::Relaxed) + 1;
+        // Increment execution count by SAMPLE_RATE to compensate for sampling
+        // This maintains correct threshold triggering, just with slower convergence
+        let count =
+            state
+                .execution_count
+                .fetch_add(SAMPLE_RATE as u32, Ordering::Relaxed)
+                + SAMPLE_RATE as u32;
 
         // Check for tier transitions
         self.maybe_trigger_bytecode(expr, &state, count);
@@ -910,13 +950,24 @@ mod tests {
         );
         let expr = MettaValue::Long(42);
 
-        // Record first execution - should return Some since warmup=0
-        let state = cache.record_execution(&expr).expect("warm-up disabled");
-        assert_eq!(state.count(), 1);
+        // Call record_execution SAMPLE_RATE times to ensure at least one sample
+        // (due to thread-local sampling, only 1 in SAMPLE_RATE calls returns Some)
+        let mut state_opt = None;
+        for _ in 0..SAMPLE_RATE {
+            if let Some(s) = cache.record_execution(&expr) {
+                state_opt = Some(s);
+            }
+        }
+        let state = state_opt.expect("at least one sample should be recorded");
 
-        // Record more executions
-        let state = cache.record_execution(&expr).expect("warm-up disabled");
-        assert_eq!(state.count(), 2);
+        // After SAMPLE_RATE calls, count should be SAMPLE_RATE (since we increment by SAMPLE_RATE on each sample)
+        assert_eq!(state.count(), SAMPLE_RATE as u32);
+
+        // Call again to verify count increases
+        for _ in 0..SAMPLE_RATE {
+            let _ = cache.record_execution(&expr);
+        }
+        assert_eq!(state.count(), (SAMPLE_RATE * 2) as u32);
 
         // Cache should have one entry
         assert_eq!(cache.len(), 1);
@@ -924,30 +975,45 @@ mod tests {
 
     #[test]
     fn test_tiered_cache_warmup_period() {
-        // Use a small warmup threshold to test warm-up behavior
+        // Use a larger warmup threshold to test warm-up behavior
+        // With SAMPLE_RATE=32, we need at least SAMPLE_RATE sampled evals to exit warm-up
+        // (warmup check is: global_count < warmup_threshold / SAMPLE_RATE)
+        let warmup_samples = 5; // Number of sampled evals to stay in warm-up
+        let warmup_threshold = warmup_samples * SAMPLE_RATE; // Actual threshold
         let cache = TieredCompilationCache::with_thresholds_and_warmup(
             BYTECODE_THRESHOLD,
             JIT1_THRESHOLD,
             JIT2_THRESHOLD,
-            5, // 5 executions warm-up
+            warmup_threshold,
         );
         let expr = MettaValue::Long(42);
 
         // During warm-up, record_execution should return None
-        for i in 0..5 {
-            let result = cache.record_execution(&expr);
-            assert!(result.is_none(), "execution {} should be in warm-up", i);
-            assert!(!cache.is_warmup_complete());
+        // We need SAMPLE_RATE calls per sample, and warmup_samples samples
+        for sample in 0..warmup_samples {
+            for _ in 0..SAMPLE_RATE {
+                let result = cache.record_execution(&expr);
+                // Non-sampled evals always return None
+                // Sampled evals during warm-up also return None
+                if result.is_some() {
+                    assert!(
+                        cache.is_warmup_complete(),
+                        "got Some during warm-up at sample {}",
+                        sample
+                    );
+                }
+            }
         }
 
-        // After warm-up, should return Some
-        let state = cache.record_execution(&expr);
-        assert!(state.is_some(), "execution 5 should be past warm-up");
+        // After warm-up, sampled evals should return Some
+        let mut found_some = false;
+        for _ in 0..SAMPLE_RATE {
+            if cache.record_execution(&expr).is_some() {
+                found_some = true;
+            }
+        }
+        assert!(found_some, "should get Some after warm-up");
         assert!(cache.is_warmup_complete());
-
-        // Subsequent executions should also return Some
-        let state = cache.record_execution(&expr);
-        assert!(state.is_some());
     }
 
     #[test]

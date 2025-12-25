@@ -163,6 +163,9 @@ cranelift-native = "0.126"
 # DashMap - Lock-free concurrent hash map for tiered compilation cache
 dashmap = "6.1"
 
+# GxHash - Ultra-fast SIMD-accelerated hash for expression tracking
+gxhash = "3.4"
+
 # Rayon - Work-stealing thread pool for background compilation
 rayon = "1.10"
 

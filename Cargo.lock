@@ -2179,6 +2179,7 @@ dependencies = [
  "dashmap 6.1.0",
  "dirs",
  "divan",
+ "gxhash 3.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "itertools 0.14.0",
  "lasso",
  "liblevenshtein",

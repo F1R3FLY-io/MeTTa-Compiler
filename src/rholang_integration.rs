@@ -470,42 +470,48 @@ pub async fn run_state_async(
 
 /// Helper function to evaluate a batch of expressions in parallel
 /// Returns results in original order with their indices
+///
+/// Uses a priority-based thread pool with P² runtime estimation for intelligent
+/// task scheduling. Shorter tasks are prioritized to minimize latency, while
+/// time decay prevents starvation of longer tasks.
 #[cfg(feature = "async")]
 async fn evaluate_batch_parallel(
     batch: Vec<(usize, MettaValue, bool)>,
     env: crate::backend::environment::Environment,
 ) -> Vec<(usize, Vec<MettaValue>, bool)> {
     use crate::backend::eval::eval;
-    use tokio::task;
+    use crate::backend::priority_scheduler::global_priority_eval_pool;
 
     debug!(
         batch = ?batch,
         "Evaluate batch parallel"
     );
 
-    // Spawn parallel evaluation tasks
-    let tasks: Vec<_> = batch
+    let pool = global_priority_eval_pool();
+
+    // Spawn parallel evaluation tasks with NORMAL priority (P² runtime estimation)
+    let receivers: Vec<_> = batch
         .into_iter()
         .map(|(idx, expr, should_output)| {
             let env = env.clone(); // Arc clone is cheap
-            task::spawn_blocking(move || {
+            pool.spawn(move || {
                 let (results, _new_env) = eval(expr, env);
                 (idx, results, should_output)
             })
         })
         .collect();
 
-    trace!(?tasks, "Tasks to handle");
+    trace!(num_tasks = receivers.len(), "Tasks spawned on priority pool");
 
-    // Collect results
-    let mut results = Vec::new();
-    for task_handle in tasks {
-        match task_handle.await {
+    // Collect results from receivers
+    let mut results = Vec::with_capacity(receivers.len());
+    for receiver in receivers {
+        match receiver.recv() {
             Ok(result) => results.push(result),
             Err(e) => {
                 error!(
                     text = %e,
-                    "Parallel evaluation task panicked"
+                    "Parallel evaluation task failed"
                 );
             }
         }

@@ -169,6 +169,15 @@ gxhash = "3.4"
 # Rayon - Work-stealing thread pool for background compilation
 rayon = "1.10"
 
+# Crossbeam - Lock-free channels for custom eval thread pool
+crossbeam-channel = "0.5"
+
+# num_cpus - CPU count detection for thread pool sizing
+num_cpus = "1.16"
+
+# parking_lot - Faster mutexes and condition variables for priority scheduler
+parking_lot = "0.12"
+
 [features]
 default = ["interning", "async"]
 async = ["tokio"]

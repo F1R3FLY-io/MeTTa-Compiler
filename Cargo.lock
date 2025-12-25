@@ -795,6 +795,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2176,6 +2185,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "criterion",
+ "crossbeam-channel",
  "dashmap 6.1.0",
  "dirs",
  "divan",
@@ -2190,6 +2200,8 @@ dependencies = [
  "mork-frontend",
  "mork-interning",
  "nom",
+ "num_cpus",
+ "parking_lot",
  "paste",
  "pathmap 0.3.0",
  "rayon",
@@ -2411,6 +2423,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "num_cpus"
+version = "1.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
+dependencies = [
+ "hermit-abi",
+ "libc",
 ]
 
 [[package]]

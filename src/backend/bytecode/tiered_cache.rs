@@ -11,10 +11,11 @@
 //!
 //! ## Key Features
 //!
-//! - **Non-blocking compilation**: All tier transitions happen in the background via Rayon
+//! - **Non-blocking compilation**: All tier transitions happen in the background via priority scheduler
 //! - **Graceful fallback**: Always executes with the best available tier
 //! - **Lock-free access**: Uses DashMap and atomics for thread-safe concurrent access
 //! - **Unified state management**: Single cache tracks all tier states per expression
+//! - **Priority-based scheduling**: Compilation tasks use BACKGROUND_COMPILE priority to avoid starving eval tasks
 //!
 //! ## Design
 //!
@@ -23,7 +24,7 @@
 //! 2. If a threshold is crossed and the previous tier is Ready, spawn background compilation
 //! 3. Dispatch to the best available tier (highest Ready tier)
 //!
-//! Compilation is asynchronous - we spawn rayon tasks and continue using the current tier
+//! Compilation is asynchronous - we spawn priority-scheduled tasks and continue using the current tier
 //! until the next tier becomes Ready.
 
 use std::cell::Cell;
@@ -39,6 +40,7 @@ thread_local! {
 use dashmap::DashMap;
 
 use crate::backend::models::MettaValue;
+use crate::backend::priority_scheduler::{global_priority_eval_pool, priority_levels, TaskTypeId};
 
 use super::cache::hash_metta_value;
 use super::chunk::BytecodeChunk;
@@ -603,17 +605,21 @@ impl TieredCompilationCache {
         let expr_clone = expr.clone();
         let state_clone = Arc::clone(state);
 
-        // Spawn background compilation on rayon
-        rayon::spawn(move || {
-            match compile_arc("tiered", &expr_clone) {
-                Ok(chunk) => {
-                    state_clone.set_bytecode_ready(chunk);
+        // Spawn background compilation with BACKGROUND_COMPILE priority
+        global_priority_eval_pool().spawn_with_priority(
+            move || {
+                match compile_arc("tiered", &expr_clone) {
+                    Ok(chunk) => {
+                        state_clone.set_bytecode_ready(chunk);
+                    }
+                    Err(_) => {
+                        state_clone.set_bytecode_failed();
+                    }
                 }
-                Err(_) => {
-                    state_clone.set_bytecode_failed();
-                }
-            }
-        });
+            },
+            priority_levels::BACKGROUND_COMPILE,
+            TaskTypeId::BytecodeCompile,
+        );
     }
 
     /// Maybe trigger JIT Stage 1 compilation
@@ -653,11 +659,10 @@ impl TieredCompilationCache {
         // Clone state for background task
         let state_clone = Arc::clone(state);
 
-        // Spawn background JIT compilation on rayon
-        rayon::spawn(move || {
-            // JIT compilation using Cranelift
-            
-            {
+        // Spawn background JIT compilation with BACKGROUND_COMPILE priority
+        global_priority_eval_pool().spawn_with_priority(
+            move || {
+                // JIT compilation using Cranelift
                 use super::jit::compiler::JitCompiler;
 
                 // Check if chunk can be JIT compiled
@@ -684,8 +689,10 @@ impl TieredCompilationCache {
                         state_clone.set_jit1_failed();
                     }
                 }
-            }
-        });
+            },
+            priority_levels::BACKGROUND_COMPILE,
+            TaskTypeId::JitCompile,
+        );
     }
 
     /// Maybe trigger JIT Stage 2 compilation
@@ -725,37 +732,41 @@ impl TieredCompilationCache {
         // Clone state for background task
         let state_clone = Arc::clone(state);
 
-        // Spawn background JIT Stage 2 compilation on rayon
-        rayon::spawn(move || {
-            use super::jit::compiler::JitCompiler;
+        // Spawn background JIT Stage 2 compilation with BACKGROUND_COMPILE priority
+        global_priority_eval_pool().spawn_with_priority(
+            move || {
+                use super::jit::compiler::JitCompiler;
 
-            // Check if chunk can be JIT compiled
-            // Stage 2 uses same compilability check as Stage 1 for now
-            if !JitCompiler::can_compile_stage1(&chunk) {
-                state_clone.set_jit2_failed();
-                return;
-            }
+                // Check if chunk can be JIT compiled
+                // Stage 2 uses same compilability check as Stage 1 for now
+                if !JitCompiler::can_compile_stage1(&chunk) {
+                    state_clone.set_jit2_failed();
+                    return;
+                }
 
-            // Create JIT compiler and compile
-            // TODO: Add Stage 2-specific optimizations (more aggressive inlining, etc.)
-            match JitCompiler::new() {
-                Ok(mut compiler) => match compiler.compile(&chunk) {
-                    Ok(ptr) => {
-                        let code = NativeCode {
-                            ptr,
-                            code_size: chunk.len() * 10, // Stage 2 generates more code
-                        };
-                        state_clone.set_jit2_ready(Arc::new(code));
-                    }
+                // Create JIT compiler and compile
+                // TODO: Add Stage 2-specific optimizations (more aggressive inlining, etc.)
+                match JitCompiler::new() {
+                    Ok(mut compiler) => match compiler.compile(&chunk) {
+                        Ok(ptr) => {
+                            let code = NativeCode {
+                                ptr,
+                                code_size: chunk.len() * 10, // Stage 2 generates more code
+                            };
+                            state_clone.set_jit2_ready(Arc::new(code));
+                        }
+                        Err(_) => {
+                            state_clone.set_jit2_failed();
+                        }
+                    },
                     Err(_) => {
                         state_clone.set_jit2_failed();
                     }
-                },
-                Err(_) => {
-                    state_clone.set_jit2_failed();
                 }
-            }
-        });
+            },
+            priority_levels::BACKGROUND_COMPILE,
+            TaskTypeId::JitCompile,
+        );
     }
 
     /// Get the best available execution tier for an expression

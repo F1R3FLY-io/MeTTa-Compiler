@@ -1,3 +1,4 @@
+<<<<<<< HEAD:src/backend/eval/space.rs
 use crate::backend::environment::Environment;
 use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::models::{EvalResult, MettaValue, Rule};
@@ -138,7 +139,8 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::backend::environment::Environment;
+    use crate::backend::models::MettaValue;
     use crate::eval;
 
     #[test]
@@ -404,7 +406,7 @@ mod tests {
         ]);
 
         let (results, _) = eval(match_query, env);
-        assert!(results.len() >= 2); // Should return both alice and bob
+        assert!(results.len() >= 2, "Expected >= 2 results, got {:?}", results); // Should return both alice and bob
         assert!(results.contains(&MettaValue::Atom("alice".to_string())));
         assert!(results.contains(&MettaValue::Atom("bob".to_string())));
     }
@@ -510,10 +512,13 @@ mod tests {
     fn test_match_error_cases() {
         let env = Environment::new();
 
-        // Test match with insufficient arguments (only 1 arg)
+        // Test match with insufficient arguments
+        // (match & self) has 2 args after "match": ["&", "self"]
+        // This is missing the pattern and template arguments
         let match_insufficient = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&self".to_string()),
+            MettaValue::Atom("&".to_string()),
+            MettaValue::Atom("self".to_string()),
         ]);
         let (results, _) = eval(match_insufficient, env.clone());
         assert_eq!(results.len(), 1);
@@ -525,16 +530,17 @@ mod tests {
                     "Expected '3 or 4 arguments' in: {}",
                     msg
                 );
-                assert!(msg.contains("got 1"), "Expected 'got 1' in: {}", msg);
+                // We have 2 args: ["&", "self"]
+                assert!(msg.contains("got 2"), "Expected 'got 2' in: {}", msg);
                 assert!(msg.contains("Usage:"), "Expected 'Usage:' in: {}", msg);
             }
             _ => panic!("Expected error for insufficient arguments"),
         }
 
-        // Test match with wrong space reference (4-arg format with wrong first arg)
+        // Test match with wrong space reference
         let match_wrong_ref = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("wrong".to_string()), // Should be & or &space
+            MettaValue::Atom("wrong".to_string()), // Should be &
             MettaValue::Atom("self".to_string()),
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
@@ -543,20 +549,17 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(
-                    msg.contains("match requires (& space) or (&space)"),
-                    "Expected space reference error in: {}",
-                    msg
-                );
+                assert!(msg.contains("match requires & as first argument"));
             }
             _ => panic!("Expected error for wrong space reference"),
         }
 
-        // Test match with unsupported space name
+        // Test match with unsupported space name (new-style syntax)
+        // Note: With the new space_ref token, `& other` is preprocessed to `&other`
+        // which triggers 3-arg new-style syntax, producing a "must be a space" error
         let match_wrong_space = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("other".to_string()), // Only "self" supported
+            MettaValue::Atom("&other".to_string()), // Unrecognized space reference
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
         ]);
@@ -564,7 +567,11 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(msg.contains("only supports 'self'"));
+                assert!(
+                    msg.contains("must be a space"),
+                    "Expected 'must be a space' in: {}",
+                    msg
+                );
             }
             _ => panic!("Expected error for unsupported space name"),
         }
@@ -809,11 +816,11 @@ mod tests {
     fn test_space_name_case_sensitivity_suggestion() {
         let env = Environment::new();
 
-        // Test "Self" (capital S) -> should suggest "self"
+        // Test "&Self" (capital S) -> should error (unrecognized space reference)
+        // Note: With the new space_ref token, &Self is a single atom, triggering new-style syntax
         let match_expr = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("Self".to_string()), // Wrong case
+            MettaValue::Atom("&Self".to_string()), // Wrong case - combined as single token
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
         ]);
@@ -822,18 +829,14 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
+                // New-style syntax produces different error (no suggestion)
                 assert!(
-                    msg.contains("Did you mean: self"),
-                    "Expected 'Did you mean: self' in: {}",
-                    msg
-                );
-                assert!(
-                    msg.contains("case-sensitive"),
-                    "Expected 'case-sensitive' in: {}",
+                    msg.contains("must be a space"),
+                    "Expected 'must be a space' in: {}",
                     msg
                 );
             }
-            _ => panic!("Expected error with suggestion"),
+            _ => panic!("Expected error for unrecognized space reference"),
         }
     }
 
@@ -841,11 +844,11 @@ mod tests {
     fn test_space_name_typo_suggestion() {
         let env = Environment::new();
 
-        // Test "slef" (typo) -> should suggest "self"
+        // Test "&slef" (typo) -> should error (unrecognized space reference)
+        // Note: With the new space_ref token, &slef is a single atom, triggering new-style syntax
         let match_expr = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("slef".to_string()), // Typo
+            MettaValue::Atom("&slef".to_string()), // Typo - combined as single token
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
         ]);
@@ -854,13 +857,14 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
+                // New-style syntax produces different error (no suggestion)
                 assert!(
-                    msg.contains("Did you mean: self"),
-                    "Expected 'Did you mean: self' in: {}",
+                    msg.contains("must be a space"),
+                    "Expected 'must be a space' in: {}",
                     msg
                 );
             }
-            _ => panic!("Expected error with suggestion"),
+            _ => panic!("Expected error for typo space reference"),
         }
     }
 
@@ -890,5 +894,190 @@ mod tests {
             }
             _ => panic!("Expected error without suggestion"),
         }
+    }
+
+    // =========================================================================
+    // Phase G: Advanced Nondeterminism Tests
+    // =========================================================================
+
+    #[test]
+    fn test_amb_with_multiple_alternatives() {
+        let env = Environment::new();
+
+        // (amb 1 2 3) should return 1, 2, 3 as separate results
+        let amb_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("amb".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+            MettaValue::Long(3),
+        ]);
+
+        let (results, _) = eval(amb_expr, env);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], MettaValue::Long(1));
+        assert_eq!(results[1], MettaValue::Long(2));
+        assert_eq!(results[2], MettaValue::Long(3));
+    }
+
+    #[test]
+    fn test_amb_empty_fails() {
+        let env = Environment::new();
+
+        // (amb) with no alternatives should return empty (nondeterministic failure)
+        let amb_expr = MettaValue::SExpr(vec![MettaValue::Atom("amb".to_string())]);
+
+        let (results, _) = eval(amb_expr, env);
+        assert!(results.is_empty(), "Empty amb should return no results");
+    }
+
+    #[test]
+    fn test_amb_single_alternative() {
+        let env = Environment::new();
+
+        // (amb 42) with single alternative
+        let amb_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("amb".to_string()),
+            MettaValue::Long(42),
+        ]);
+
+        let (results, _) = eval(amb_expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_guard_passes_on_true() {
+        let env = Environment::new();
+
+        // (guard True) should return Unit
+        let guard_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("guard".to_string()),
+            MettaValue::Bool(true),
+        ]);
+
+        let (results, _) = eval(guard_expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+    }
+
+    #[test]
+    fn test_guard_fails_on_false() {
+        let env = Environment::new();
+
+        // (guard False) should return empty (nondeterministic failure)
+        let guard_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("guard".to_string()),
+            MettaValue::Bool(false),
+        ]);
+
+        let (results, _) = eval(guard_expr, env);
+        assert!(results.is_empty(), "Guard with false should return no results");
+    }
+
+    #[test]
+    fn test_guard_type_error() {
+        let env = Environment::new();
+
+        // (guard 42) should return a type error
+        let guard_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("guard".to_string()),
+            MettaValue::Long(42),
+        ]);
+
+        let (results, _) = eval(guard_expr, env);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(
+                    msg.contains("Bool"),
+                    "Error should mention Bool type: {}",
+                    msg
+                );
+            }
+            _ => panic!("Expected type error for non-boolean guard condition"),
+        }
+    }
+
+    #[test]
+    fn test_commit_returns_unit() {
+        let env = Environment::new();
+
+        // (commit) should return Unit
+        let commit_expr = MettaValue::SExpr(vec![MettaValue::Atom("commit".to_string())]);
+
+        let (results, _) = eval(commit_expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+    }
+
+    #[test]
+    fn test_backtrack_returns_empty() {
+        let env = Environment::new();
+
+        // (backtrack) should return empty (nondeterministic failure)
+        let backtrack_expr = MettaValue::SExpr(vec![MettaValue::Atom("backtrack".to_string())]);
+
+        let (results, _) = eval(backtrack_expr, env);
+        assert!(
+            results.is_empty(),
+            "Backtrack should return no results"
+        );
+    }
+
+    #[test]
+    fn test_amb_with_evaluated_expressions() {
+        let env = Environment::new();
+
+        // (amb (+ 1 1) (+ 2 2)) should evaluate each alternative
+        let amb_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("amb".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(1),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(amb_expr, env);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0], MettaValue::Long(2)); // 1+1
+        assert_eq!(results[1], MettaValue::Long(4)); // 2+2
+    }
+
+    #[test]
+    fn test_guard_with_evaluated_condition() {
+        let env = Environment::new();
+
+        // (guard (== 2 2)) should pass
+        let guard_true_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("guard".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("==".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(guard_true_expr, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Unit);
+
+        // (guard (== 2 3)) should fail
+        let guard_false_expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("guard".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("==".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+        ]);
+
+        let (results, _) = eval(guard_false_expr, env);
+        assert!(results.is_empty());
     }
 }

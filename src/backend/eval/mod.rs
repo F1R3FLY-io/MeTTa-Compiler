@@ -78,26 +78,6 @@ pub(crate) use processing::{handle_no_rule_match, process_collected_sexpr, proce
 // Re-export from conjunction module
 use conjunction::eval_conjunction;
 
-/// Fast-path check: Is this expression potentially compilable?
-///
-/// Returns `true` only for SExprs with atom heads that could be compilable operations.
-/// Skips tiered cache overhead for:
-/// - Atoms (evaluate to themselves instantly)
-/// - Literals: Long, Bool, String (evaluate to themselves)
-/// - Empty SExprs
-/// - SExprs with non-atom heads (data lists like (1 2 3))
-///
-/// This eliminates 60-80% of tiered cache overhead for typical MeTTa programs.
-#[inline]
-fn is_potentially_compilable(value: &MettaValue) -> bool {
-    match value {
-        MettaValue::SExpr(items) if !items.is_empty() => {
-            matches!(&items[0], MettaValue::Atom(_))
-        }
-        _ => false,
-    }
-}
-
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)
 /// This is the public entry point that uses iterative evaluation with an explicit work stack
@@ -117,26 +97,19 @@ fn is_potentially_compilable(value: &MettaValue) -> bool {
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
     debug!(metta_val = ?value);
 
-    // Fast-path: Skip tiered cache for expressions that don't benefit from compilation
-    // This avoids hash computation, cache lookup, and stats tracking for atoms/literals
-    if !is_potentially_compilable(&value) {
-        return eval_trampoline(value, env);
-    }
-
     use crate::backend::bytecode::{
-        can_compile_cached, can_compile_with_env, eval_bytecode_hybrid,
-        eval_bytecode_with_env, global_tiered_cache, ExecutionTier, TierStatusKind,
+        can_compile_cached, can_compile_with_env, enter_eval, eval_bytecode_hybrid,
+        eval_bytecode_with_env, exit_eval, global_tiered_cache, ExecutionTier, TierStatusKind,
     };
+
+    // Track concurrent evaluations for sequential mode detection
+    // This allows us to use Rayon's lightweight spawn instead of P2 scheduler
+    // when running sequentially, reducing overhead by ~500-1000ns per spawn
+    enter_eval();
 
     // Record execution in unified tiered cache for async background compilation
-    // Returns None during warm-up period to skip tracking overhead for small workloads
-    // After warm-up: triggers bytecode compilation at 2 executions, JIT Stage 1 at 100, JIT Stage 2 at 500
-    let state_opt = global_tiered_cache().record_execution(&value);
-
-    // During warm-up period, use tree-walker interpreter directly (zero overhead)
-    let Some(state) = state_opt else {
-        return eval_trampoline(value, env);
-    };
+    // Triggers bytecode compilation at threshold (default 1), JIT Stage 1 at 100, JIT Stage 2 at 500
+    let state = global_tiered_cache().record_execution(&value);
 
     // Check if this expression can be compiled to bytecode
     // Only some expressions are compilable - others need tree-walker semantics
@@ -148,6 +121,7 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
             if let Some(chunk) = state.bytecode_chunk() {
                 if let Ok(results) = execute_bytecode_chunk(&chunk) {
                     global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
+                    exit_eval();
                     return (results, env);
                 }
                 // Bytecode execution failed, fall through to hybrid path
@@ -157,6 +131,7 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
         // Try existing hybrid evaluation path (also handles bytecode caching and JIT)
         if let Ok(results) = eval_bytecode_hybrid(&value) {
             global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
+            exit_eval();
             return (results, env);
         }
     }
@@ -165,13 +140,16 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
     if can_compile_with_env(&value) {
         if let Ok((results, new_env)) = eval_bytecode_with_env(&value, env.clone()) {
             global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
+            exit_eval();
             return (results, new_env);
         }
     }
 
     // Tier 0: Tree-walker interpreter (cold code or fallback)
     global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
-    eval_trampoline(value, env)
+    let result = eval_trampoline(value, env);
+    exit_eval();
+    result
 }
 
 /// Execute a bytecode chunk via HybridExecutor

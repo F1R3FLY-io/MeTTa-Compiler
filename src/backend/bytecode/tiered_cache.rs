@@ -28,13 +28,51 @@
 //! until the next tier becomes Ready.
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 // Thread-local sampling counter to avoid atomic contention on the global counter
 // Each thread tracks its own count and only samples every SAMPLE_RATE evals
 thread_local! {
     static THREAD_LOCAL_COUNTER: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Global counter for concurrent eval operations
+///
+/// Tracks how many eval operations are currently in-flight across all threads.
+/// When count is low (< SEQUENTIAL_THRESHOLD), we use Rayon's lightweight spawn
+/// instead of the P2 priority scheduler to avoid scheduler overhead (~500-1000ns per spawn).
+static CONCURRENT_EVALS: AtomicUsize = AtomicUsize::new(0);
+
+/// Threshold for detecting sequential execution mode
+///
+/// If fewer than this many evals are in-flight, we're likely running sequentially
+/// and should use Rayon's spawn instead of P2 scheduler for lower overhead.
+const SEQUENTIAL_THRESHOLD: usize = 2;
+
+/// Check if we're in sequential execution mode
+///
+/// Returns true if fewer than SEQUENTIAL_THRESHOLD evals are in-flight,
+/// indicating we should use Rayon's lightweight spawn for background work.
+#[inline]
+pub fn is_sequential_mode() -> bool {
+    CONCURRENT_EVALS.load(Ordering::Relaxed) < SEQUENTIAL_THRESHOLD
+}
+
+/// Enter an eval operation (increment concurrent counter)
+///
+/// Call this at the start of eval() to track concurrent evaluations.
+#[inline]
+pub fn enter_eval() {
+    CONCURRENT_EVALS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Exit an eval operation (decrement concurrent counter)
+///
+/// Call this at the end of eval() to track concurrent evaluations.
+#[inline]
+pub fn exit_eval() {
+    CONCURRENT_EVALS.fetch_sub(1, Ordering::Relaxed);
 }
 
 use dashmap::DashMap;
@@ -515,59 +553,24 @@ impl TieredCompilationCache {
 
     /// Record an execution and trigger appropriate tier compilations
     ///
-    /// Returns the compilation state for dispatch decisions, or `None` during warm-up
-    /// or non-sampled evaluations.
-    ///
-    /// Overhead reduction strategy:
-    /// 1. Thread-local sampling: each thread has its own counter, avoiding atomic contention
-    /// 2. Only 1 in SAMPLE_RATE evals touches the global counter or DashMap
-    /// 3. During warm-up (first `warmup_threshold` sampled evals): skip tracking
-    ///
-    /// When an eval is sampled, execution count is incremented by SAMPLE_RATE to
-    /// maintain correct threshold triggering (just with slower convergence).
-    pub fn record_execution(&self, expr: &MettaValue) -> Option<Arc<ExprCompilationState>> {
-        // Thread-local sampling: increment local counter, only sample every SAMPLE_RATE evals
-        // This avoids ALL atomic operations for non-sampled evals
-        let should_sample = THREAD_LOCAL_COUNTER.with(|counter| {
-            let count = counter.get();
-            counter.set(count.wrapping_add(1));
-            count % SAMPLE_RATE == 0
-        });
-
-        if !should_sample {
-            return None; // Fast path: skip all tracking for non-sampled evals
-        }
-
-        // Sampled eval - now touch global counter (only 1/8th of evals reach here)
-        let global_count = self.total_executions.fetch_add(1, Ordering::Relaxed);
-
-        // Fast path during warm-up: single atomic load, no hash computation or DashMap access
-        if !self.warmup_complete.load(Ordering::Relaxed) {
-            if global_count < self.warmup_threshold / SAMPLE_RATE {
-                return None; // Skip tracking during warm-up
-            }
-            // Transition out of warm-up (set once, never reverts)
-            // Race is benign - multiple threads may set this, but result is the same
-            self.warmup_complete.store(true, Ordering::Relaxed);
-        }
-
-        // Sampled eval after warm-up - do full tracking
+    /// Returns the compilation state for dispatch decisions.
+    /// Every execution is tracked and triggers bytecode compilation at threshold.
+    pub fn record_execution(&self, expr: &MettaValue) -> Arc<ExprCompilationState> {
+        // Get or create state for this expression
         let state = self.get_or_create_state(expr);
 
-        // Increment execution count by SAMPLE_RATE to compensate for sampling
-        // This maintains correct threshold triggering, just with slower convergence
-        let count =
-            state
-                .execution_count
-                .fetch_add(SAMPLE_RATE as u32, Ordering::Relaxed)
-                + SAMPLE_RATE as u32;
+        // Atomically increment execution count
+        let count = state.execution_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+        // Update total execution stats
+        self.total_executions.fetch_add(1, Ordering::Relaxed);
 
         // Check for tier transitions
         self.maybe_trigger_bytecode(expr, &state, count);
         self.maybe_trigger_jit1(&state, count);
         self.maybe_trigger_jit2(&state, count);
 
-        Some(state)
+        state
     }
 
     /// Check if warm-up period is complete
@@ -605,9 +608,12 @@ impl TieredCompilationCache {
         let expr_clone = expr.clone();
         let state_clone = Arc::clone(state);
 
-        // Spawn background compilation with BACKGROUND_COMPILE priority
-        global_priority_eval_pool().spawn_with_priority(
-            move || {
+        // Choose spawn method based on execution mode:
+        // - Sequential mode: Use Rayon's lightweight spawn (~100-200ns)
+        // - Parallel mode: Use P2 scheduler for fair priority scheduling
+        if is_sequential_mode() {
+            // Rayon spawn for lower overhead in sequential workloads
+            rayon::spawn(move || {
                 match compile_arc("tiered", &expr_clone) {
                     Ok(chunk) => {
                         state_clone.set_bytecode_ready(chunk);
@@ -616,10 +622,24 @@ impl TieredCompilationCache {
                         state_clone.set_bytecode_failed();
                     }
                 }
-            },
-            priority_levels::BACKGROUND_COMPILE,
-            TaskTypeId::BytecodeCompile,
-        );
+            });
+        } else {
+            // P2 scheduler for priority-based scheduling in parallel workloads
+            global_priority_eval_pool().spawn_with_priority(
+                move || {
+                    match compile_arc("tiered", &expr_clone) {
+                        Ok(chunk) => {
+                            state_clone.set_bytecode_ready(chunk);
+                        }
+                        Err(_) => {
+                            state_clone.set_bytecode_failed();
+                        }
+                    }
+                },
+                priority_levels::BACKGROUND_COMPILE,
+                TaskTypeId::BytecodeCompile,
+            );
+        }
     }
 
     /// Maybe trigger JIT Stage 1 compilation
@@ -659,40 +679,47 @@ impl TieredCompilationCache {
         // Clone state for background task
         let state_clone = Arc::clone(state);
 
-        // Spawn background JIT compilation with BACKGROUND_COMPILE priority
-        global_priority_eval_pool().spawn_with_priority(
-            move || {
-                // JIT compilation using Cranelift
-                use super::jit::compiler::JitCompiler;
+        // JIT compilation closure
+        let jit_compile = move || {
+            // JIT compilation using Cranelift
+            use super::jit::compiler::JitCompiler;
 
-                // Check if chunk can be JIT compiled
-                if !JitCompiler::can_compile_stage1(&chunk) {
-                    state_clone.set_jit1_failed();
-                    return;
-                }
+            // Check if chunk can be JIT compiled
+            if !JitCompiler::can_compile_stage1(&chunk) {
+                state_clone.set_jit1_failed();
+                return;
+            }
 
-                // Create JIT compiler and compile
-                match JitCompiler::new() {
-                    Ok(mut compiler) => match compiler.compile(&chunk) {
-                        Ok(ptr) => {
-                            let code = NativeCode {
-                                ptr,
-                                code_size: chunk.len() * 8, // Rough estimate
-                            };
-                            state_clone.set_jit1_ready(Arc::new(code));
-                        }
-                        Err(_) => {
-                            state_clone.set_jit1_failed();
-                        }
-                    },
+            // Create JIT compiler and compile
+            match JitCompiler::new() {
+                Ok(mut compiler) => match compiler.compile(&chunk) {
+                    Ok(ptr) => {
+                        let code = NativeCode {
+                            ptr,
+                            code_size: chunk.len() * 8, // Rough estimate
+                        };
+                        state_clone.set_jit1_ready(Arc::new(code));
+                    }
                     Err(_) => {
                         state_clone.set_jit1_failed();
                     }
+                },
+                Err(_) => {
+                    state_clone.set_jit1_failed();
                 }
-            },
-            priority_levels::BACKGROUND_COMPILE,
-            TaskTypeId::JitCompile,
-        );
+            }
+        };
+
+        // Choose spawn method based on execution mode
+        if is_sequential_mode() {
+            rayon::spawn(jit_compile);
+        } else {
+            global_priority_eval_pool().spawn_with_priority(
+                jit_compile,
+                priority_levels::BACKGROUND_COMPILE,
+                TaskTypeId::JitCompile,
+            );
+        }
     }
 
     /// Maybe trigger JIT Stage 2 compilation
@@ -732,41 +759,48 @@ impl TieredCompilationCache {
         // Clone state for background task
         let state_clone = Arc::clone(state);
 
-        // Spawn background JIT Stage 2 compilation with BACKGROUND_COMPILE priority
-        global_priority_eval_pool().spawn_with_priority(
-            move || {
-                use super::jit::compiler::JitCompiler;
+        // JIT Stage 2 compilation closure
+        let jit_compile = move || {
+            use super::jit::compiler::JitCompiler;
 
-                // Check if chunk can be JIT compiled
-                // Stage 2 uses same compilability check as Stage 1 for now
-                if !JitCompiler::can_compile_stage1(&chunk) {
-                    state_clone.set_jit2_failed();
-                    return;
-                }
+            // Check if chunk can be JIT compiled
+            // Stage 2 uses same compilability check as Stage 1 for now
+            if !JitCompiler::can_compile_stage1(&chunk) {
+                state_clone.set_jit2_failed();
+                return;
+            }
 
-                // Create JIT compiler and compile
-                // TODO: Add Stage 2-specific optimizations (more aggressive inlining, etc.)
-                match JitCompiler::new() {
-                    Ok(mut compiler) => match compiler.compile(&chunk) {
-                        Ok(ptr) => {
-                            let code = NativeCode {
-                                ptr,
-                                code_size: chunk.len() * 10, // Stage 2 generates more code
-                            };
-                            state_clone.set_jit2_ready(Arc::new(code));
-                        }
-                        Err(_) => {
-                            state_clone.set_jit2_failed();
-                        }
-                    },
+            // Create JIT compiler and compile
+            // TODO: Add Stage 2-specific optimizations (more aggressive inlining, etc.)
+            match JitCompiler::new() {
+                Ok(mut compiler) => match compiler.compile(&chunk) {
+                    Ok(ptr) => {
+                        let code = NativeCode {
+                            ptr,
+                            code_size: chunk.len() * 10, // Stage 2 generates more code
+                        };
+                        state_clone.set_jit2_ready(Arc::new(code));
+                    }
                     Err(_) => {
                         state_clone.set_jit2_failed();
                     }
+                },
+                Err(_) => {
+                    state_clone.set_jit2_failed();
                 }
-            },
-            priority_levels::BACKGROUND_COMPILE,
-            TaskTypeId::JitCompile,
-        );
+            }
+        };
+
+        // Choose spawn method based on execution mode
+        if is_sequential_mode() {
+            rayon::spawn(jit_compile);
+        } else {
+            global_priority_eval_pool().spawn_with_priority(
+                jit_compile,
+                priority_levels::BACKGROUND_COMPILE,
+                TaskTypeId::JitCompile,
+            );
+        }
     }
 
     /// Get the best available execution tier for an expression
@@ -952,90 +986,60 @@ mod tests {
 
     #[test]
     fn test_tiered_cache_record_execution() {
-        // Use warmup=0 to disable warm-up period for testing
-        let cache = TieredCompilationCache::with_thresholds_and_warmup(
-            BYTECODE_THRESHOLD,
-            JIT1_THRESHOLD,
-            JIT2_THRESHOLD,
-            0, // No warm-up
-        );
+        // Create cache with default settings
+        let cache = TieredCompilationCache::new();
         let expr = MettaValue::Long(42);
 
-        // Call record_execution SAMPLE_RATE times to ensure at least one sample
-        // (due to thread-local sampling, only 1 in SAMPLE_RATE calls returns Some)
-        let mut state_opt = None;
-        for _ in 0..SAMPLE_RATE {
-            if let Some(s) = cache.record_execution(&expr) {
-                state_opt = Some(s);
-            }
-        }
-        let state = state_opt.expect("at least one sample should be recorded");
+        // record_execution always returns state directly (simplified API)
+        let state = cache.record_execution(&expr);
 
-        // After SAMPLE_RATE calls, count should be SAMPLE_RATE (since we increment by SAMPLE_RATE on each sample)
-        assert_eq!(state.count(), SAMPLE_RATE as u32);
+        // After 1 call, count should be 1
+        assert_eq!(state.count(), 1);
 
         // Call again to verify count increases
-        for _ in 0..SAMPLE_RATE {
+        let _ = cache.record_execution(&expr);
+        assert_eq!(state.count(), 2);
+
+        // Call more times
+        for _ in 0..8 {
             let _ = cache.record_execution(&expr);
         }
-        assert_eq!(state.count(), (SAMPLE_RATE * 2) as u32);
+        assert_eq!(state.count(), 10);
 
         // Cache should have one entry
         assert_eq!(cache.len(), 1);
     }
 
     #[test]
-    fn test_tiered_cache_warmup_period() {
-        // Use a larger warmup threshold to test warm-up behavior
-        // With SAMPLE_RATE=32, we need at least SAMPLE_RATE sampled evals to exit warm-up
-        // (warmup check is: global_count < warmup_threshold / SAMPLE_RATE)
-        let warmup_samples = 5; // Number of sampled evals to stay in warm-up
-        let warmup_threshold = warmup_samples * SAMPLE_RATE; // Actual threshold
-        let cache = TieredCompilationCache::with_thresholds_and_warmup(
-            BYTECODE_THRESHOLD,
-            JIT1_THRESHOLD,
-            JIT2_THRESHOLD,
-            warmup_threshold,
-        );
-        let expr = MettaValue::Long(42);
+    fn test_tiered_cache_multiple_expressions() {
+        // Test that different expressions get different states
+        let cache = TieredCompilationCache::new();
+        let expr1 = MettaValue::Long(42);
+        let expr2 = MettaValue::Long(43);
 
-        // During warm-up, record_execution should return None
-        // We need SAMPLE_RATE calls per sample, and warmup_samples samples
-        for sample in 0..warmup_samples {
-            for _ in 0..SAMPLE_RATE {
-                let result = cache.record_execution(&expr);
-                // Non-sampled evals always return None
-                // Sampled evals during warm-up also return None
-                if result.is_some() {
-                    assert!(
-                        cache.is_warmup_complete(),
-                        "got Some during warm-up at sample {}",
-                        sample
-                    );
-                }
-            }
-        }
+        // Record first expression
+        let state1 = cache.record_execution(&expr1);
+        assert_eq!(state1.count(), 1);
 
-        // After warm-up, sampled evals should return Some
-        let mut found_some = false;
-        for _ in 0..SAMPLE_RATE {
-            if cache.record_execution(&expr).is_some() {
-                found_some = true;
-            }
-        }
-        assert!(found_some, "should get Some after warm-up");
-        assert!(cache.is_warmup_complete());
+        // Record second expression
+        let state2 = cache.record_execution(&expr2);
+        assert_eq!(state2.count(), 1);
+
+        // Record first expression again
+        let state1_again = cache.record_execution(&expr1);
+        assert_eq!(state1_again.count(), 2);
+
+        // Second expression should still have count 1
+        let state2_check = cache.record_execution(&expr2);
+        assert_eq!(state2_check.count(), 2);
+
+        // Cache should have two entries
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]
     fn test_tiered_cache_get_best_tier() {
-        // Use warmup=0 to disable warm-up for testing
-        let cache = TieredCompilationCache::with_thresholds_and_warmup(
-            BYTECODE_THRESHOLD,
-            JIT1_THRESHOLD,
-            JIT2_THRESHOLD,
-            0,
-        );
+        let cache = TieredCompilationCache::new();
         let expr = MettaValue::Long(42);
 
         // Before any execution, should be interpreter
@@ -1059,13 +1063,7 @@ mod tests {
 
     #[test]
     fn test_tiered_cache_clear() {
-        // Use warmup=0 to disable warm-up for testing
-        let cache = TieredCompilationCache::with_thresholds_and_warmup(
-            BYTECODE_THRESHOLD,
-            JIT1_THRESHOLD,
-            JIT2_THRESHOLD,
-            0,
-        );
+        let cache = TieredCompilationCache::new();
         let expr = MettaValue::Long(42);
 
         let _ = cache.record_execution(&expr);

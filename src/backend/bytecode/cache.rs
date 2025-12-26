@@ -68,15 +68,52 @@ fn get_bytecode_cache_size() -> NonZeroUsize {
         .unwrap_or(NonZeroUsize::new(4096).expect("4096 is non-zero"))
 }
 
-/// Compute hash for a MettaValue using SIMD-accelerated gxhash
+/// Compute hash for a MettaValue
 ///
-/// gxhash provides 2-5x faster hashing than SipHash (DefaultHasher) while
-/// maintaining good distribution for hash table usage.
+/// Uses fast inline hashing for primitives (Long, Bool, Nil, Float) to avoid
+/// GxHasher allocation overhead. Falls back to SIMD-accelerated gxhash for
+/// complex types (SExpr, Atom, String, etc.).
 #[inline]
 pub fn hash_metta_value(expr: &MettaValue) -> u64 {
-    let mut hasher = GxHasher::with_seed(0);
-    expr.hash(&mut hasher);
-    hasher.finish()
+    // Fast path for primitives - avoids GxHasher allocation
+    // Golden ratio constant for good hash distribution
+    const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
+
+    // Type discriminant seeds to avoid collisions between different types
+    // These are arbitrary primes chosen to be well-distributed
+    const LONG_SEED: u64 = 0x517cc1b727220a95;
+    const BOOL_SEED: u64 = 0x2d358dccaa6c78a5;
+    const NIL_HASH: u64 = 0x6e696c5f_68617368; // "nil_hash" as bytes
+    const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
+
+    match expr {
+        MettaValue::Long(n) => {
+            // FxHash-style mixing with type-specific seed
+            let x = (*n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+            x ^ (x >> 32)
+        }
+        MettaValue::Bool(b) => {
+            // Distinct well-distributed values for true/false with type seed
+            if *b {
+                BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
+            } else {
+                BOOL_SEED
+            }
+        }
+        MettaValue::Nil => NIL_HASH,
+        MettaValue::Float(f) => {
+            // Use bit representation with type-specific seed and mixing
+            let bits = f.to_bits();
+            let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
+            x ^ (x >> 32)
+        }
+        _ => {
+            // Full GxHasher for complex types (SExpr, Atom, String, etc.)
+            let mut hasher = GxHasher::with_seed(0);
+            expr.hash(&mut hasher);
+            hasher.finish()
+        }
+    }
 }
 
 /// Check can_compile cache, returning cached result if available
@@ -218,4 +255,55 @@ mod tests {
 
     // Note: stats tracking removed from hot path for performance.
     // Stats can be re-enabled with a debug feature flag if needed.
+
+    #[test]
+    fn test_fast_hash_primitives() {
+        // Long hashing
+        let h1 = hash_metta_value(&MettaValue::Long(42));
+        let h2 = hash_metta_value(&MettaValue::Long(42));
+        assert_eq!(h1, h2, "Long hash should be stable");
+
+        let h3 = hash_metta_value(&MettaValue::Long(43));
+        assert_ne!(h1, h3, "Different Longs should have different hashes");
+
+        // Bool hashing
+        let h_true1 = hash_metta_value(&MettaValue::Bool(true));
+        let h_true2 = hash_metta_value(&MettaValue::Bool(true));
+        let h_false = hash_metta_value(&MettaValue::Bool(false));
+        assert_eq!(h_true1, h_true2, "Bool(true) hash should be stable");
+        assert_ne!(h_true1, h_false, "Bool(true) and Bool(false) should differ");
+
+        // Nil hashing
+        let h_nil1 = hash_metta_value(&MettaValue::Nil);
+        let h_nil2 = hash_metta_value(&MettaValue::Nil);
+        assert_eq!(h_nil1, h_nil2, "Nil hash should be stable");
+
+        // Float hashing
+        let h_f1 = hash_metta_value(&MettaValue::Float(3.14));
+        let h_f2 = hash_metta_value(&MettaValue::Float(3.14));
+        let h_f3 = hash_metta_value(&MettaValue::Float(2.71));
+        assert_eq!(h_f1, h_f2, "Float hash should be stable");
+        assert_ne!(h_f1, h_f3, "Different Floats should have different hashes");
+    }
+
+    #[test]
+    fn test_fast_hash_distinct_types() {
+        // Different types should produce different hashes
+        let h_long = hash_metta_value(&MettaValue::Long(0));
+        let h_false = hash_metta_value(&MettaValue::Bool(false));
+        let h_nil = hash_metta_value(&MettaValue::Nil);
+        let h_float = hash_metta_value(&MettaValue::Float(0.0));
+
+        // All should be distinct
+        let hashes = vec![h_long, h_false, h_nil, h_float];
+        for i in 0..hashes.len() {
+            for j in i + 1..hashes.len() {
+                assert_ne!(
+                    hashes[i], hashes[j],
+                    "Hash collision between types at indices {} and {}",
+                    i, j
+                );
+            }
+        }
+    }
 }

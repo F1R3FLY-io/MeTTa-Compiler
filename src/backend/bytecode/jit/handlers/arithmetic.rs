@@ -127,6 +127,9 @@ pub fn compile_simple_arithmetic_op<'a, 'b>(
 
             let a_val = codegen.extract_long(a);
 
+            // Guard against i64::MIN - abs(i64::MIN) overflows
+            codegen.guard_not_i64_min(a_val, offset)?;
+
             // abs(x) = x < 0 ? -x : x
             let zero = codegen.builder.ins().iconst(types::I64, 0);
             let is_neg = codegen.builder.ins().icmp(IntCC::SignedLessThan, a_val, zero);

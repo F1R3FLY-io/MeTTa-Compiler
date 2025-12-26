@@ -561,3 +561,109 @@ See the implementation of `sqrt-math` as a reference:
 3. **VM**: `op_sqrt()` method in `vm.rs`
 4. **JIT Compiler**: `sqrt_func_id` and translation in `jit/compiler.rs`
 5. **JIT Runtime**: `jit_runtime_sqrt()` in `jit/runtime.rs`
+
+---
+
+## Cross-Project Portability
+
+This bytecode/JIT infrastructure is designed to be portable to other languages. Here's how to adapt it.
+
+### Portable Components
+
+The following can be reused with minimal changes:
+
+| Component | What it does | Portability |
+|-----------|--------------|-------------|
+| NaN-boxing | Value representation | Redefine `TAG_*` constants |
+| `JitProfile` | Hotness tracking | Works as-is |
+| `JitCache` | Code caching with LRU | Works as-is |
+| `HybridExecutor` | Tier dispatch | Adapt value conversions |
+| Cranelift setup | ISA detection, module creation | Works as-is |
+
+### Adaptation Steps for New Language
+
+1. **Define your value tags**
+
+   ```rust
+   // Example: Rholang process calculus
+   pub const TAG_PROCESS: u64 = QNAN | (0 << 48);
+   pub const TAG_CHANNEL: u64 = QNAN | (1 << 48);
+   pub const TAG_NAME: u64 = QNAN | (2 << 48);
+   pub const TAG_PAR: u64 = QNAN | (3 << 48);
+   pub const TAG_SEND: u64 = QNAN | (4 << 48);
+   pub const TAG_RECEIVE: u64 = QNAN | (5 << 48);
+   pub const TAG_HEAP: u64 = QNAN | (6 << 48);
+   pub const TAG_NIL: u64 = QNAN | (7 << 48);
+   ```
+
+2. **Define your opcode set**
+
+   Design opcodes for your language's primitives. Consider:
+   - Stack operations (push, pop, dup, swap)
+   - Language-specific operations
+   - Control flow
+   - Runtime calls for complex operations
+
+3. **Implement JitContext fields**
+
+   Add language-specific context fields:
+   ```rust
+   #[repr(C)]
+   pub struct RhoContext {
+       // Standard fields
+       pub value_stack: *mut JitValue,
+       pub sp: usize,
+
+       // Rholang-specific
+       pub channel_registry: *mut (),
+       pub pending_comms: *mut (),
+       pub reduction_ctx: *mut (),
+   }
+   ```
+
+4. **Implement runtime helpers**
+
+   Create `extern "C"` functions for operations that can't be inlined:
+   ```rust
+   #[no_mangle]
+   pub extern "C" fn jit_runtime_rho_send(
+       ctx: *mut RhoContext,
+       channel: u64,
+       data: u64,
+   ) -> i64 {
+       // Language-specific implementation
+   }
+   ```
+
+### Shared Scheduler Integration
+
+If your project uses Rayon, the P2 priority scheduler integrates seamlessly:
+
+```rust
+// In your build configuration
+#[cfg(feature = "hybrid-p2-priority-scheduler")]
+{
+    // Use P2 scheduler for smart ordering
+    use mettatron::priority_scheduler::{
+        global_priority_eval_pool, priority_levels, TaskTypeId,
+    };
+
+    global_priority_eval_pool().spawn_with_priority(
+        compile_task,
+        priority_levels::BACKGROUND_COMPILE,
+        TaskTypeId::JitCompile,
+    );
+}
+
+#[cfg(not(feature = "hybrid-p2-priority-scheduler"))]
+{
+    // Fall back to Rayon
+    rayon::spawn(compile_task);
+}
+```
+
+### Further Reading
+
+- `docs/architecture/TIERED_COMPILER_IMPLEMENTATION_GUIDE.md` - Comprehensive porting guide
+- `docs/architecture/HYBRID_P2_PRIORITY_SCHEDULER.md` - Background compilation scheduling
+- `docs/optimization/jit/JIT_PIPELINE_ARCHITECTURE.md` - Architecture overview with portability section

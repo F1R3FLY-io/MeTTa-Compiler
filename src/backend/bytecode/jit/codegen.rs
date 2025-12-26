@@ -290,6 +290,26 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         Ok(())
     }
 
+    /// Emit a guard that checks if value is not i64::MIN (for abs overflow)
+    pub fn guard_not_i64_min(&mut self, val: Value, ip: usize) -> JitResult<()> {
+        let i64_min = self.builder.ins().iconst(types::I64, i64::MIN);
+        let is_not_min = self.builder.ins().icmp(IntCC::NotEqual, val, i64_min);
+
+        let continue_block = self.builder.create_block();
+        let bailout_block = self.builder.create_block();
+
+        self.builder.ins().brif(is_not_min, continue_block, &[], bailout_block, &[]);
+
+        self.builder.switch_to_block(bailout_block);
+        self.builder.seal_block(bailout_block);
+        self.emit_overflow_bailout(ip);
+
+        self.builder.switch_to_block(continue_block);
+        self.builder.seal_block(continue_block);
+
+        Ok(())
+    }
+
     // =========================================================================
     // Bailout Emission
     // =========================================================================
@@ -306,6 +326,13 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
     fn emit_div_zero_bailout(&mut self, _ip: usize) {
         // Use user trap code 2 for division by zero
         self.builder.ins().trap(TrapCode::unwrap_user(2));
+        self.terminated = true;
+    }
+
+    /// Emit code for arithmetic overflow bailout
+    fn emit_overflow_bailout(&mut self, _ip: usize) {
+        // Use user trap code 3 for arithmetic overflow
+        self.builder.ins().trap(TrapCode::unwrap_user(3));
         self.terminated = true;
     }
 

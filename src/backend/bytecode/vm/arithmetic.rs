@@ -90,7 +90,13 @@ impl BytecodeVM {
     pub(super) fn op_abs(&mut self) -> VmResult<()> {
         let a = self.pop()?;
         let result = match a {
-            MettaValue::Long(x) => MettaValue::Long(x.abs()),
+            MettaValue::Long(x) => {
+                // i64::MIN.abs() overflows because |i64::MIN| > i64::MAX
+                if x == i64::MIN {
+                    return Err(VmError::ArithmeticOverflow);
+                }
+                MettaValue::Long(x.abs())
+            }
             _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
         };
         self.push(result);

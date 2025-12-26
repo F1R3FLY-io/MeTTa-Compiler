@@ -143,7 +143,14 @@ pub fn try_fold_unary_arith(op: &str, a: &MettaValue) -> Option<MettaValue> {
     match a {
         MettaValue::Long(x) => {
             match op {
-                "abs" | "abs-math" => Some(MettaValue::Long(x.abs())),
+                "abs" | "abs-math" => {
+                    // i64::MIN.abs() overflows - let runtime handle the error
+                    if *x == i64::MIN {
+                        None
+                    } else {
+                        Some(MettaValue::Long(x.abs()))
+                    }
+                }
                 "neg" => Some(MettaValue::Long(-x)),
                 _ => None,
             }

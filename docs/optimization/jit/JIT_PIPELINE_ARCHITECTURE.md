@@ -1074,3 +1074,69 @@ MeTTaTron's JIT pipeline provides **automatic, transparent optimization** of hot
 6. **Performance gains**: 700-1500x speedup for hot arithmetic/control-flow code
 
 The key insight is that most code is cold and doesn't need optimization, while the small fraction that's hot gets the full benefit of native compilation - achieving the best of both worlds.
+
+---
+
+## 15. Implementing for Other Languages
+
+This tiered JIT architecture is designed to be portable. Here's how to adapt it for other languages like Rholang.
+
+### What's Portable
+
+1. **Core infrastructure** - The following components work for any language:
+   - `JitProfile` state machine (Cold → Warming → Hot → Compiling → Jitted)
+   - Atomic profiling with compare-exchange for thread safety
+   - `HybridExecutor` pattern for tier dispatch and bailout
+   - Cranelift code generation infrastructure
+   - LRU cache for compiled code
+
+2. **NaN-boxing scheme** - The 8 tag types with 48-bit payloads can represent any language's primitives:
+   - Redefine `TAG_*` constants for your language's types
+   - 48-bit pointers cover modern x86-64 addresses
+   - Type checks remain 2-3 CPU cycles
+
+3. **Background compilation** - The P2 priority scheduler works for any compilation task:
+   - Feature-gated via `hybrid-p2-priority-scheduler`
+   - Falls back to Rayon when disabled
+   - Compatible with shared thread pools
+
+### What to Adapt
+
+1. **Value representation** - Define NaN-boxing tags for your types:
+   ```rust
+   // Example for Rholang
+   pub const TAG_PROCESS: u64 = QNAN | (0 << 48);
+   pub const TAG_CHANNEL: u64 = QNAN | (1 << 48);
+   pub const TAG_NAME: u64 = QNAN | (2 << 48);
+   ```
+
+2. **Runtime helpers** - Implement `extern "C"` functions for language-specific operations:
+   - Pattern matching semantics
+   - Concurrency primitives
+   - Type system operations
+
+3. **JitContext fields** - Add language-specific context:
+   - Rholang: channel registry, pending sends/receives
+   - Prolog: unification stack, clause database
+   - Datalog: fact database, stratification info
+
+### Implementation Guide
+
+For detailed implementation steps, see:
+- `docs/architecture/TIERED_COMPILER_IMPLEMENTATION_GUIDE.md` - Comprehensive porting guide
+- `docs/architecture/HYBRID_P2_PRIORITY_SCHEDULER.md` - Background compilation scheduling
+
+### Shared Rayon Compatibility
+
+If your project already uses Rayon, the JIT infrastructure integrates seamlessly:
+
+```rust
+// Both languages share the global Rayon pool
+rayon::ThreadPoolBuilder::new()
+    .num_threads(num_cpus::get())
+    .build_global()
+    .expect("Failed to initialize Rayon");
+
+// Compilation tasks use rayon::spawn() by default
+// Enable P2 scheduler with: --features hybrid-p2-priority-scheduler
+```

@@ -1099,7 +1099,7 @@ fn try_match_all_rules_iterative(
     for rule in sorted_rules {
         if let Some(bindings) = pattern_match(&rule.lhs, expr) {
             let lhs_specificity = pattern_specificity(&rule.lhs);
-            matches.push((rule.rhs.clone(), bindings, lhs_specificity, rule));
+            matches.push(((*rule.rhs).clone(), bindings, lhs_specificity, rule));
         }
     }
 
@@ -1186,17 +1186,17 @@ mod tests {
         let mut env = Environment::new();
 
         // Add rule: (= (double $x) (mul $x 2))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
-        };
+        );
         env.add_rule(rule);
 
         // Evaluate (double 5)
@@ -1240,13 +1240,13 @@ mod tests {
         let mut env = Environment::new();
 
         // Add a rule: (= (safe-div $x $y) (if (== $y 0) (error "division by zero" $y) (div $x $y)))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("safe-div".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Atom("$y".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("==".to_string()),
@@ -1264,7 +1264,7 @@ mod tests {
                     MettaValue::Atom("$y".to_string()),
                 ]),
             ]),
-        };
+        );
         env.add_rule(rule);
 
         // Test successful division: (safe-div 10 2) -> 5
@@ -1371,12 +1371,12 @@ mod tests {
         // (= (fact $n) (if (> $n 0) (* $n (fact (- $n 1))) 1))
         let mut env = Environment::new();
 
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("fact".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 // Condition: (> $n 0)
                 MettaValue::SExpr(vec![
@@ -1400,7 +1400,7 @@ mod tests {
                 // Else branch: 1
                 MettaValue::Long(1),
             ]),
-        };
+        );
         env.add_rule(rule);
 
         // Test (fact 3) = 6
@@ -1475,14 +1475,14 @@ mod tests {
         let mut env = Environment::new();
 
         // Define rule: (= (f) (+ 2 3))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![MettaValue::Atom("f".to_string())]),
-            rhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+            MettaValue::SExpr(vec![MettaValue::Atom("f".to_string())]),
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("+".to_string()),
                 MettaValue::Long(2),
                 MettaValue::Long(3),
             ]),
-        };
+        );
         env.add_rule(rule);
 
         // Evaluate (f)
@@ -1497,14 +1497,14 @@ mod tests {
         let mut env = Environment::new();
 
         // (= (add3 $a $b $c) (+ $a (+ $b $c)))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("add3".to_string()),
                 MettaValue::Atom("$a".to_string()),
                 MettaValue::Atom("$b".to_string()),
                 MettaValue::Atom("$c".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("+".to_string()),
                 MettaValue::Atom("$a".to_string()),
                 MettaValue::SExpr(vec![
@@ -1513,7 +1513,7 @@ mod tests {
                     MettaValue::Atom("$c".to_string()),
                 ]),
             ]),
-        };
+        );
         env.add_rule(rule);
 
         // (add3 10 20 30) = 60
@@ -1533,8 +1533,8 @@ mod tests {
         let mut env = Environment::new();
 
         // (= (eval-pair (pair $x $y)) (+ $x $y))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("eval-pair".to_string()),
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("pair".to_string()),
@@ -1542,12 +1542,12 @@ mod tests {
                     MettaValue::Atom("$y".to_string()),
                 ]),
             ]),
-            rhs: MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("+".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Atom("$y".to_string()),
             ]),
-        };
+        );
         env.add_rule(rule);
 
         // (eval-pair (pair 5 7)) = 12
@@ -1608,12 +1608,12 @@ mod tests {
         let mut env = Environment::new();
 
         // (= (abs $x) (if (< $x 0) (- 0 $x) $x))
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("abs".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("<".to_string()),
@@ -1627,7 +1627,7 @@ mod tests {
                 ]),
                 MettaValue::Atom("$x".to_string()),
             ]),
-        };
+        );
         env.add_rule(rule);
 
         // abs(-5) = 5
@@ -2111,17 +2111,17 @@ mod tests {
         let mut env = Environment::new();
 
         // Add a rule for "fibonacci"
-        let rule = Rule {
-            lhs: MettaValue::SExpr(vec![
+        let rule = Rule::new(
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("fibonacci".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-            rhs: MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$n".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-        };
+        );
         env.add_rule(rule);
 
         // Try to call "fibonaci" (misspelled - missing 'n')

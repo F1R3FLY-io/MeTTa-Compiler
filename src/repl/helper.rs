@@ -101,7 +101,7 @@ impl MettaHelper {
         // Extract function names from rules
         for rule in env.iter_rules() {
             // Extract function name from lhs
-            match &rule.lhs {
+            match &*rule.lhs {
                 MettaValue::SExpr(items) if !items.is_empty() => {
                     // Pattern like (fibonacci $n) -> extract "fibonacci"
                     if let MettaValue::Atom(name) = &items[0] {

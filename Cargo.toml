@@ -109,6 +109,11 @@ lasso = { version = "0.7", features = ["multi-threaded"], optional = true }
 # liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
 liblevenshtein = { version = "^0.7", features = ["pathmap-backend"] }
 
+# Module system dependencies
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+semver = "1.0"
+
 tracing = "0.1"
 tracing-subscriber = "0.3"
 

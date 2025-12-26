@@ -1976,6 +1976,7 @@ dependencies = [
  "regex",
  "ropey",
  "rustyline",
+ "semver",
  "serde",
  "smallvec",
  "tokio",

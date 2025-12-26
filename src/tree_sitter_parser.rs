@@ -271,6 +271,9 @@ impl TreeSitterMettaParser {
             // Special type symbols: %Undefined%, %Irreducible%, etc.
             "special_type_symbol" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
+            // Space references: &self, &kb, etc.
+            "space_reference" => Ok(vec![SExpr::Atom(text, Some(span))]),
+
             // All operator types (already decomposed by grammar)
             "operator"
             | "arrow_operator"
@@ -527,15 +530,9 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("$x").unwrap());
         assert_eq!(result, vec![SExpr::Atom("$x".to_string(), None)]);
 
-        // & is now an operator (space reference), not a variable prefix
+        // &name is a space reference - parsed as single token (HE-compatible)
         let result = strip_spans_vec(&parser.parse("&y").unwrap());
-        assert_eq!(
-            result,
-            vec![
-                SExpr::Atom("&".to_string(), None),
-                SExpr::Atom("y".to_string(), None)
-            ]
-        );
+        assert_eq!(result, vec![SExpr::Atom("&y".to_string(), None)]);
 
         // Wildcard
         let result = strip_spans_vec(&parser.parse("_").unwrap());

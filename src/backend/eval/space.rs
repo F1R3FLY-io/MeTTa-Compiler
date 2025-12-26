@@ -41,8 +41,12 @@ pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     (vec![], new_env)
 }
 
-/// Evaluate match: (match <space-ref> <space-name> <pattern> <template>)
+/// Evaluate match: (match &space pattern template) or (match & space pattern template)
 /// Searches the space for all atoms matching the pattern and returns instantiated templates
+///
+/// Supports two formats:
+/// - New (HE-compatible): `(match &self pattern template)` - 3 args, space reference is single token
+/// - Old (legacy): `(match & self pattern template)` - 4 args, & and space are separate
 ///
 /// Optimized to use Environment::match_space which performs pattern matching
 /// directly on MORK expressions without unnecessary intermediate allocations
@@ -50,73 +54,87 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
     let args = &items[1..];
     debug!(target: "mettatron::eval::eval_match", ?args, ?items);
 
-    if args.len() < 4 {
-        let got = args.len();
-        debug!(
-            target: "mettatron::eval::eval_match",
-            got = args.len(), expected = 4, args = ?args,
-            "Match called with incorrect number of arguments"
-        );
-
-        let err = MettaValue::Error(
-            format!(
-                "match requires exactly 4 arguments, got {}. Usage: (match & space pattern template)",
-                got
-            ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
-        );
-        return (vec![err], env);
-    }
-
-    let space_ref = &args[0];
-    let space_name = &args[1];
-    let pattern = &args[2];
-    let template = &args[3];
-
-    // Check that first arg is & (space reference operator)
-    match space_ref {
-        MettaValue::Atom(s) if s == "&" => {
-            // Check space name (for now, only support "self")
-            match space_name {
-                MettaValue::Atom(name) if name == "self" => {
-                    // Use optimized match_space method that works directly with MORK
-                    let results = env.match_space(pattern, template);
-                    (results, env)
+    // Try to parse space reference and extract pattern/template
+    let (space_name, pattern, template) = match args.len() {
+        // New format: (match &self pattern template) - 3 args
+        3 => {
+            match &args[0] {
+                MettaValue::Atom(s) if s.starts_with('&') => {
+                    // Extract space name from &name token
+                    let name = &s[1..]; // Skip the '&' prefix
+                    (name.to_string(), &args[1], &args[2])
                 }
                 _ => {
-                    // Try to suggest a valid space name
-                    let name_str = match space_name {
-                        MettaValue::Atom(s) => s.as_str(),
-                        _ => "",
-                    };
-
-                    let suggestion = suggest_space_name(name_str);
-                    let msg = match suggestion {
-                        Some(s) => format!(
-                            "match only supports 'self' as space name, got: {:?}. {}",
-                            space_name, s
+                    let err = MettaValue::Error(
+                        format!(
+                            "match requires space reference (e.g., &self), got: {}",
+                            super::friendly_value_repr(&args[0])
                         ),
-                        None => format!(
-                            "match only supports 'self' as space name, got: {:?}",
-                            space_name
+                        Arc::new(MettaValue::SExpr(args.to_vec())),
+                    );
+                    return (vec![err], env);
+                }
+            }
+        }
+        // Old format: (match & self pattern template) - 4 args (backward compatibility)
+        4 => {
+            match (&args[0], &args[1]) {
+                (MettaValue::Atom(amp), MettaValue::Atom(name)) if amp == "&" => {
+                    (name.clone(), &args[2], &args[3])
+                }
+                _ => {
+                    let err = MettaValue::Error(
+                        format!(
+                            "match requires (& space) or (&space), got: {} {}",
+                            super::friendly_value_repr(&args[0]),
+                            super::friendly_value_repr(&args[1])
                         ),
-                    };
-
-                    let err = MettaValue::Error(msg, Arc::new(MettaValue::SExpr(args.to_vec())));
-                    (vec![err], env)
+                        Arc::new(MettaValue::SExpr(args.to_vec())),
+                    );
+                    return (vec![err], env);
                 }
             }
         }
         _ => {
+            let got = args.len();
+            debug!(
+                target: "mettatron::eval::eval_match",
+                got = args.len(), expected = "3 or 4", args = ?args,
+                "Match called with incorrect number of arguments"
+            );
+
             let err = MettaValue::Error(
                 format!(
-                    "match requires & as first argument, got: {}",
-                    super::friendly_value_repr(space_ref)
+                    "match requires 3 or 4 arguments, got {}. Usage: (match &self pattern template)",
+                    got
                 ),
                 Arc::new(MettaValue::SExpr(args.to_vec())),
             );
-            (vec![err], env)
+            return (vec![err], env);
         }
+    };
+
+    // Check space name (for now, only support "self")
+    if space_name == "self" {
+        // Use optimized match_space method that works directly with MORK
+        let results = env.match_space(pattern, template);
+        (results, env)
+    } else {
+        // Try to suggest a valid space name
+        let suggestion = suggest_space_name(&space_name);
+        let msg = match suggestion {
+            Some(s) => format!(
+                "match only supports 'self' as space name, got: '{}'. {}",
+                space_name, s
+            ),
+            None => format!(
+                "match only supports 'self' as space name, got: '{}'",
+                space_name
+            ),
+        };
+
+        let err = MettaValue::Error(msg, Arc::new(MettaValue::SExpr(args.to_vec())));
+        (vec![err], env)
     }
 }
 
@@ -494,11 +512,10 @@ mod tests {
     fn test_match_error_cases() {
         let env = Environment::new();
 
-        // Test match with insufficient arguments
+        // Test match with insufficient arguments (only 1 arg)
         let match_insufficient = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("self".to_string()),
+            MettaValue::Atom("&self".to_string()),
         ]);
         let (results, _) = eval(match_insufficient, env.clone());
         assert_eq!(results.len(), 1);
@@ -506,20 +523,20 @@ mod tests {
             MettaValue::Error(msg, _) => {
                 assert!(msg.contains("match"), "Expected 'match' in: {}", msg);
                 assert!(
-                    msg.contains("4 arguments"),
-                    "Expected '4 arguments' in: {}",
+                    msg.contains("3 or 4 arguments"),
+                    "Expected '3 or 4 arguments' in: {}",
                     msg
                 );
-                assert!(msg.contains("got 2"), "Expected 'got 2' in: {}", msg);
+                assert!(msg.contains("got 1"), "Expected 'got 1' in: {}", msg);
                 assert!(msg.contains("Usage:"), "Expected 'Usage:' in: {}", msg);
             }
             _ => panic!("Expected error for insufficient arguments"),
         }
 
-        // Test match with wrong space reference
+        // Test match with wrong space reference (4-arg format with wrong first arg)
         let match_wrong_ref = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("wrong".to_string()), // Should be &
+            MettaValue::Atom("wrong".to_string()), // Should be & or &space
             MettaValue::Atom("self".to_string()),
             MettaValue::Atom("pattern".to_string()),
             MettaValue::Atom("template".to_string()),
@@ -528,7 +545,11 @@ mod tests {
         assert_eq!(results.len(), 1);
         match &results[0] {
             MettaValue::Error(msg, _) => {
-                assert!(msg.contains("match requires & as first argument"));
+                assert!(
+                    msg.contains("match requires (& space) or (&space)"),
+                    "Expected space reference error in: {}",
+                    msg
+                );
             }
             _ => panic!("Expected error for wrong space reference"),
         }

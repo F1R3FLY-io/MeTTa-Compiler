@@ -12,6 +12,7 @@ pub mod environment;
 pub mod eval;
 pub mod fuzzy_match;
 pub mod models;
+pub mod modules;
 pub mod mork_convert;
 pub mod symbol;
 

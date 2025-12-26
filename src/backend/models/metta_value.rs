@@ -49,6 +49,72 @@ impl MettaValue {
         MettaValue::SExpr(vec![MettaValue::Atom("quote".to_string()), inner])
     }
 
+    /// Create a symbol atom
+    ///
+    /// # Example
+    /// ```ignore
+    /// let sym = MettaValue::sym("+");
+    /// // Produces: Atom("+")
+    /// ```
+    #[inline]
+    pub fn sym(s: &str) -> Self {
+        MettaValue::Atom(s.to_string())
+    }
+
+    /// Create a variable atom (prefixed with $)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let var = MettaValue::var("x");
+    /// // Produces: Atom("$x")
+    /// ```
+    #[inline]
+    pub fn var(name: &str) -> Self {
+        MettaValue::Atom(format!("${}", name))
+    }
+
+    /// Create an S-expression from a vector of values
+    ///
+    /// HE-compatible: Empty S-expression () is distinct from Nil.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let sexpr = MettaValue::sexpr(vec![MettaValue::sym("+"), MettaValue::Long(1), MettaValue::Long(2)]);
+    /// // Produces: SExpr([Atom("+"), Long(1), Long(2)])
+    /// let empty = MettaValue::sexpr(vec![]);
+    /// // Produces: SExpr([]) - distinct from Nil
+    /// ```
+    #[inline]
+    pub fn sexpr(items: Vec<MettaValue>) -> Self {
+        MettaValue::SExpr(items)
+    }
+
+    /// Get the type name of this value as a string slice
+    ///
+    /// Returns the MeTTa type name for this value variant.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            MettaValue::Atom(s) if s.starts_with('$') => "Variable",
+            MettaValue::Atom(_) => "Symbol",
+            MettaValue::Bool(_) => "Bool",
+            MettaValue::Long(_) => "Number",
+            MettaValue::Float(_) => "Number",
+            MettaValue::String(_) => "String",
+            MettaValue::SExpr(_) => "Expression",
+            MettaValue::Nil => "Nil",
+            MettaValue::Error(_, _) => "Error",
+            MettaValue::Type(_) => "Type",
+            MettaValue::Conjunction(_) => "Conjunction",
+            MettaValue::Unit => "Unit",
+        }
+    }
+
+    /// Check if this value is a variable (Atom starting with $)
+    #[inline]
+    pub fn is_variable(&self) -> bool {
+        matches!(self, MettaValue::Atom(s) if s.starts_with('$'))
+    }
+
     /// Check if this value is a ground type (non-reducible literal)
     /// Ground types: Bool, Long, Float, String, Nil
     /// Returns true if the value doesn't require further evaluation
@@ -1056,5 +1122,145 @@ mod tests {
         assert!(json.contains(r#"\n"#));
         assert!(json.contains(r#"\""#));
         assert!(json.contains(r#"\\"#));
+    }
+
+    // Tests for sym helper
+    #[test]
+    fn test_sym_creates_atom() {
+        let s = MettaValue::sym("foo");
+        assert_eq!(s, MettaValue::Atom("foo".to_string()));
+    }
+
+    #[test]
+    fn test_sym_with_operator() {
+        let s = MettaValue::sym("+");
+        assert_eq!(s, MettaValue::Atom("+".to_string()));
+    }
+
+    // Tests for var helper
+    #[test]
+    fn test_var_creates_dollar_prefixed_atom() {
+        let v = MettaValue::var("x");
+        assert_eq!(v, MettaValue::Atom("$x".to_string()));
+    }
+
+    #[test]
+    fn test_var_with_longer_name() {
+        let v = MettaValue::var("myVar");
+        assert_eq!(v, MettaValue::Atom("$myVar".to_string()));
+    }
+
+    // Tests for sexpr helper
+    #[test]
+    fn test_sexpr_creates_sexpr() {
+        let s = MettaValue::sexpr(vec![
+            MettaValue::sym("+"),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        assert_eq!(
+            s,
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_sexpr_empty_is_not_nil() {
+        // Empty sexpr should be SExpr([]), not Nil
+        let s = MettaValue::sexpr(vec![]);
+        assert_eq!(s, MettaValue::SExpr(vec![]));
+        assert_ne!(s, MettaValue::Nil);
+    }
+
+    // Tests for type_name
+    #[test]
+    fn test_type_name_variable() {
+        assert_eq!(MettaValue::Atom("$x".to_string()).type_name(), "Variable");
+        assert_eq!(MettaValue::var("y").type_name(), "Variable");
+    }
+
+    #[test]
+    fn test_type_name_symbol() {
+        assert_eq!(MettaValue::Atom("foo".to_string()).type_name(), "Symbol");
+        assert_eq!(MettaValue::sym("bar").type_name(), "Symbol");
+    }
+
+    #[test]
+    fn test_type_name_bool() {
+        assert_eq!(MettaValue::Bool(true).type_name(), "Bool");
+        assert_eq!(MettaValue::Bool(false).type_name(), "Bool");
+    }
+
+    #[test]
+    fn test_type_name_number() {
+        assert_eq!(MettaValue::Long(42).type_name(), "Number");
+        assert_eq!(MettaValue::Float(3.14).type_name(), "Number");
+    }
+
+    #[test]
+    fn test_type_name_string() {
+        assert_eq!(MettaValue::String("hello".to_string()).type_name(), "String");
+    }
+
+    #[test]
+    fn test_type_name_expression() {
+        let expr = MettaValue::sexpr(vec![MettaValue::sym("+"), MettaValue::Long(1)]);
+        assert_eq!(expr.type_name(), "Expression");
+    }
+
+    #[test]
+    fn test_type_name_nil() {
+        assert_eq!(MettaValue::Nil.type_name(), "Nil");
+    }
+
+    #[test]
+    fn test_type_name_error() {
+        let err = MettaValue::Error("msg".to_string(), Arc::new(MettaValue::Nil));
+        assert_eq!(err.type_name(), "Error");
+    }
+
+    #[test]
+    fn test_type_name_type() {
+        let t = MettaValue::Type(Arc::new(MettaValue::Atom("Int".to_string())));
+        assert_eq!(t.type_name(), "Type");
+    }
+
+    #[test]
+    fn test_type_name_conjunction() {
+        let c = MettaValue::Conjunction(vec![MettaValue::Bool(true)]);
+        assert_eq!(c.type_name(), "Conjunction");
+    }
+
+    #[test]
+    fn test_type_name_unit() {
+        assert_eq!(MettaValue::Unit.type_name(), "Unit");
+    }
+
+    // Tests for is_variable
+    #[test]
+    fn test_is_variable_true() {
+        assert!(MettaValue::Atom("$x".to_string()).is_variable());
+        assert!(MettaValue::var("y").is_variable());
+        assert!(MettaValue::Atom("$foo".to_string()).is_variable());
+    }
+
+    #[test]
+    fn test_is_variable_false_for_non_variables() {
+        assert!(!MettaValue::Atom("foo".to_string()).is_variable());
+        assert!(!MettaValue::sym("bar").is_variable());
+        assert!(!MettaValue::Long(42).is_variable());
+        assert!(!MettaValue::Bool(true).is_variable());
+        assert!(!MettaValue::Nil.is_variable());
+    }
+
+    #[test]
+    fn test_is_variable_false_for_ampersand_prefix() {
+        // Only $ prefix counts as variable for is_variable
+        assert!(!MettaValue::Atom("&x".to_string()).is_variable());
+        assert!(!MettaValue::Atom("'y".to_string()).is_variable());
     }
 }

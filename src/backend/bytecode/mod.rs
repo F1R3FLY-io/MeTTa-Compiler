@@ -6,7 +6,12 @@
 //! # Module Structure
 //!
 //! - `opcodes`: Bytecode instruction definitions
+//! - `optimizer`: Peephole optimization and dead code elimination
 
 pub mod opcodes;
+pub mod optimizer;
 
 pub use opcodes::Opcode;
+pub use optimizer::{
+    optimize_bytecode_full, DeadCodeEliminator, OptimizationStats, PeepholeOptimizer,
+};

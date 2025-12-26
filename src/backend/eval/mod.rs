@@ -146,6 +146,7 @@ pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
             format!("(, {})", inner.join(" "))
         }
         MettaValue::Unit => "()".to_string(),
+        MettaValue::Space(handle) => format!("(space \"{}\")", handle.name),
         MettaValue::State(id) => format!("(state {})", id),
         MettaValue::Memo(handle) => format!("(memo {})", handle.name),
         MettaValue::Empty => "%empty%".to_string(),
@@ -461,6 +462,7 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         | MettaValue::Nil
         | MettaValue::Type(_)
         | MettaValue::Unit
+        | MettaValue::Space(_)
         | MettaValue::State(_)
         | MettaValue::Memo(_)
         | MettaValue::Empty => EvalStep::Done((vec![value], env)),
@@ -959,6 +961,7 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         | MettaValue::String(_)
         | MettaValue::Nil
         | MettaValue::Unit
+        | MettaValue::Space(_)
         | MettaValue::State(_)
         | MettaValue::Memo(_)
         | MettaValue::Empty => {

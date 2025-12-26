@@ -205,6 +205,9 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
 
         // Empty has Empty type (used in nondeterministic evaluation)
         MettaValue::Empty => MettaValue::Atom("Empty".to_string()),
+
+        // Space handles have Space type
+        MettaValue::Space(_) => MettaValue::Atom("Space".to_string()),
     }
 }
 

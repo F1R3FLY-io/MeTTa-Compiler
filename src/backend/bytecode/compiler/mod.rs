@@ -138,6 +138,12 @@ impl Compiler {
             MettaValue::Empty => {
                 self.builder.emit(Opcode::PushNil); // Empty is similar to Nil
             }
+
+            // Space handle
+            MettaValue::Space(handle) => {
+                let idx = self.builder.add_constant(MettaValue::Space(handle.clone()));
+                self.builder.emit_u16(Opcode::PushConstant, idx);
+            }
         }
         Ok(())
     }

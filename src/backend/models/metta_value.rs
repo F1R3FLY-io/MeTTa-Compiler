@@ -3,6 +3,7 @@ use crate::ir::MettaExpr;
 use std::sync::Arc;
 
 use super::MemoHandle;
+use super::SpaceHandle;
 
 /// Represents a MeTTa value as an s-expression
 /// S-expressions are nested lists with textual operator names
@@ -33,6 +34,9 @@ pub enum MettaValue {
     /// Unit value - represents a successful operation with no meaningful return value
     /// Similar to () in Rust or void in other languages
     Unit,
+    /// First-class space reference
+    /// Enables programmatic access to spaces with CoW semantics
+    Space(SpaceHandle),
     /// State cell ID - represents a mutable state cell reference
     /// The u64 is a unique identifier for the state cell in the environment
     State(u64),
@@ -117,6 +121,7 @@ impl MettaValue {
             MettaValue::Type(_) => "Type",
             MettaValue::Conjunction(_) => "Conjunction",
             MettaValue::Unit => "Unit",
+            MettaValue::Space(_) => "Space",
             MettaValue::State(_) => "State",
             MettaValue::Memo(_) => "Memo",
             MettaValue::Empty => "Empty",
@@ -159,6 +164,7 @@ impl MettaValue {
             MettaValue::Type(_) => "Type",
             MettaValue::Conjunction(_) => "Conjunction",
             MettaValue::Unit => "Unit",
+            MettaValue::Space(_) => "Space",
             MettaValue::State(_) => "State cell",
             MettaValue::Memo(_) => "Memoization handle",
             MettaValue::Empty => "Empty result",
@@ -240,6 +246,12 @@ impl MettaValue {
 
             // Unit matches unit
             (MettaValue::Unit, MettaValue::Unit) => true,
+
+            // Spaces must have same id
+            (MettaValue::Space(a), MettaValue::Space(b)) => a.id == b.id,
+
+            // States must have same id
+            (MettaValue::State(a_id), MettaValue::State(b_id)) => a_id == b_id,
 
             _ => false,
         }
@@ -327,8 +339,9 @@ impl MettaValue {
                 format!("(, {})", inner)
             }
             MettaValue::Unit => "()".to_string(),
-            MettaValue::State(id) => format!("(state {})", id),
-            MettaValue::Memo(handle) => format!("(memo {})", handle.name),
+            MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+            MettaValue::State(id) => format!("(State {})", id),
+            MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
             MettaValue::Empty => "%empty%".to_string(),
         }
     }
@@ -367,10 +380,18 @@ impl MettaValue {
                 )
             }
             MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
+            MettaValue::Space(handle) => {
+                format!(
+                    r#"{{"type":"space","id":{},"name":"{}"}}"#,
+                    handle.id,
+                    escape_json(&handle.name)
+                )
+            }
             MettaValue::State(id) => format!(r#"{{"type":"state","id":{}}}"#, id),
             MettaValue::Memo(handle) => {
                 format!(
-                    r#"{{"type":"memo","name":"{}"}}"#,
+                    r#"{{"type":"memo","id":{},"name":"{}"}}"#,
+                    handle.id,
                     escape_json(&handle.name)
                 )
             }
@@ -439,16 +460,21 @@ impl std::hash::Hash for MettaValue {
             MettaValue::Unit => {
                 11u8.hash(state);
             }
-            MettaValue::State(id) => {
+            MettaValue::Space(handle) => {
                 12u8.hash(state);
+                handle.hash(state);
+            }
+            MettaValue::State(id) => {
+                13u8.hash(state);
                 id.hash(state);
             }
             MettaValue::Memo(handle) => {
-                13u8.hash(state);
+                14u8.hash(state);
                 handle.name.hash(state);
+                handle.id.hash(state);
             }
             MettaValue::Empty => {
-                14u8.hash(state);
+                15u8.hash(state);
             }
         }
     }

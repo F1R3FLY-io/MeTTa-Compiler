@@ -16,6 +16,7 @@ pub mod grounded;
 pub mod models;
 pub mod modules;
 pub mod mork_convert;
+#[cfg(feature = "hybrid-p2-priority-scheduler")]
 pub mod priority_scheduler;
 pub mod symbol;
 pub mod thread_pool;
@@ -30,6 +31,7 @@ pub use eval::{eval, pattern_match};
 pub use fuzzy_match::FuzzyMatcher;
 pub use grounded::{ExecError, GroundedOperation, GroundedRegistry, GroundedResult};
 pub use models::*;
+#[cfg(feature = "hybrid-p2-priority-scheduler")]
 pub use priority_scheduler::{
     global_priority_eval_pool, priority_levels, P2MedianEstimator, PriorityEvalThreadPool,
     PriorityPoolStats, RuntimeTracker, SchedulerConfig, TaskTypeId,

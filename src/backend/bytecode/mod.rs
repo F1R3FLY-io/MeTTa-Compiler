@@ -159,9 +159,11 @@ pub use tiered_cache::{
     TieredCacheStats,
     // Thresholds
     BYTECODE_THRESHOLD, JIT1_THRESHOLD, JIT2_THRESHOLD,
-    // Sequential mode detection (for bypassing P2 scheduler overhead)
-    enter_eval, exit_eval, is_sequential_mode,
 };
+
+// Sequential mode detection (only with hybrid-p2-priority-scheduler feature)
+#[cfg(feature = "hybrid-p2-priority-scheduler")]
+pub use tiered_cache::{enter_eval, exit_eval, is_sequential_mode};
 
 /// Bytecode VM is always enabled with tiered compilation
 ///

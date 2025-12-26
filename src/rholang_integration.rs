@@ -471,10 +471,10 @@ pub async fn run_state_async(
 /// Helper function to evaluate a batch of expressions in parallel
 /// Returns results in original order with their indices
 ///
-/// Uses a priority-based thread pool with P² runtime estimation for intelligent
-/// task scheduling. Shorter tasks are prioritized to minimize latency, while
-/// time decay prevents starvation of longer tasks.
-#[cfg(feature = "async")]
+/// Uses Rayon by default for compatibility with Rholang's shared scheduler.
+/// When `hybrid-p2-priority-scheduler` feature is enabled, uses the P2 priority
+/// scheduler with P² runtime estimation for intelligent task scheduling.
+#[cfg(all(feature = "async", feature = "hybrid-p2-priority-scheduler"))]
 async fn evaluate_batch_parallel(
     batch: Vec<(usize, MettaValue, bool)>,
     env: crate::backend::environment::Environment,
@@ -484,7 +484,7 @@ async fn evaluate_batch_parallel(
 
     debug!(
         batch = ?batch,
-        "Evaluate batch parallel"
+        "Evaluate batch parallel (P2 scheduler)"
     );
 
     let pool = global_priority_eval_pool();
@@ -516,6 +516,44 @@ async fn evaluate_batch_parallel(
             }
         }
     }
+
+    // Sort results by original index to preserve order
+    results.sort_by_key(|(idx, _, _)| *idx);
+
+    debug!(
+        results = ?results,
+        "Batch evaluated with results"
+    );
+
+    results
+}
+
+/// Helper function to evaluate a batch of expressions in parallel
+/// Returns results in original order with their indices
+///
+/// Uses Rayon's work-stealing thread pool for parallel evaluation.
+/// This is the default implementation for compatibility with Rholang's shared schedulers.
+#[cfg(all(feature = "async", not(feature = "hybrid-p2-priority-scheduler")))]
+async fn evaluate_batch_parallel(
+    batch: Vec<(usize, MettaValue, bool)>,
+    env: crate::backend::environment::Environment,
+) -> Vec<(usize, Vec<MettaValue>, bool)> {
+    use crate::backend::eval::eval;
+    use rayon::prelude::*;
+
+    debug!(
+        batch = ?batch,
+        "Evaluate batch parallel (Rayon)"
+    );
+
+    // Use Rayon's parallel iterator for work-stealing parallelism
+    let mut results: Vec<_> = batch
+        .into_par_iter()
+        .map(|(idx, expr, should_output)| {
+            let (results, _new_env) = eval(expr, env.clone());
+            (idx, results, should_output)
+        })
+        .collect();
 
     // Sort results by original index to preserve order
     results.sort_by_key(|(idx, _, _)| *idx);

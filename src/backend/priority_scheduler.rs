@@ -1,3 +1,4 @@
+#![cfg(feature = "hybrid-p2-priority-scheduler")]
 //! Priority Scheduler with P² Runtime Estimation
 //!
 //! This module provides a priority-based thread pool scheduler featuring:

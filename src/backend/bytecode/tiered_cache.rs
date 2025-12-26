@@ -37,47 +37,58 @@ thread_local! {
     static THREAD_LOCAL_COUNTER: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Global counter for concurrent eval operations
-///
-/// Tracks how many eval operations are currently in-flight across all threads.
-/// When count is low (< SEQUENTIAL_THRESHOLD), we use Rayon's lightweight spawn
-/// instead of the P2 priority scheduler to avoid scheduler overhead (~500-1000ns per spawn).
-static CONCURRENT_EVALS: AtomicUsize = AtomicUsize::new(0);
+// Sequential mode detection - only needed with hybrid-p2-priority-scheduler
+#[cfg(feature = "hybrid-p2-priority-scheduler")]
+mod sequential_mode {
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Threshold for detecting sequential execution mode
-///
-/// If fewer than this many evals are in-flight, we're likely running sequentially
-/// and should use Rayon's spawn instead of P2 scheduler for lower overhead.
-const SEQUENTIAL_THRESHOLD: usize = 2;
+    /// Global counter for concurrent eval operations
+    ///
+    /// Tracks how many eval operations are currently in-flight across all threads.
+    /// When count is low (< SEQUENTIAL_THRESHOLD), we use Rayon's lightweight spawn
+    /// instead of the P2 priority scheduler to avoid scheduler overhead (~500-1000ns per spawn).
+    static CONCURRENT_EVALS: AtomicUsize = AtomicUsize::new(0);
 
-/// Check if we're in sequential execution mode
-///
-/// Returns true if fewer than SEQUENTIAL_THRESHOLD evals are in-flight,
-/// indicating we should use Rayon's lightweight spawn for background work.
-#[inline]
-pub fn is_sequential_mode() -> bool {
-    CONCURRENT_EVALS.load(Ordering::Relaxed) < SEQUENTIAL_THRESHOLD
+    /// Threshold for detecting sequential execution mode
+    ///
+    /// If fewer than this many evals are in-flight, we're likely running sequentially
+    /// and should use Rayon's spawn instead of P2 scheduler for lower overhead.
+    const SEQUENTIAL_THRESHOLD: usize = 2;
+
+    /// Check if we're in sequential execution mode
+    ///
+    /// Returns true if fewer than SEQUENTIAL_THRESHOLD evals are in-flight,
+    /// indicating we should use Rayon's lightweight spawn for background work.
+    #[inline]
+    pub fn is_sequential_mode() -> bool {
+        CONCURRENT_EVALS.load(Ordering::Relaxed) < SEQUENTIAL_THRESHOLD
+    }
+
+    /// Enter an eval operation (increment concurrent counter)
+    ///
+    /// Call this at the start of eval() to track concurrent evaluations.
+    #[inline]
+    pub fn enter_eval() {
+        CONCURRENT_EVALS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Exit an eval operation (decrement concurrent counter)
+    ///
+    /// Call this at the end of eval() to track concurrent evaluations.
+    #[inline]
+    pub fn exit_eval() {
+        CONCURRENT_EVALS.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
-/// Enter an eval operation (increment concurrent counter)
-///
-/// Call this at the start of eval() to track concurrent evaluations.
-#[inline]
-pub fn enter_eval() {
-    CONCURRENT_EVALS.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Exit an eval operation (decrement concurrent counter)
-///
-/// Call this at the end of eval() to track concurrent evaluations.
-#[inline]
-pub fn exit_eval() {
-    CONCURRENT_EVALS.fetch_sub(1, Ordering::Relaxed);
-}
+#[cfg(feature = "hybrid-p2-priority-scheduler")]
+pub use sequential_mode::{enter_eval, exit_eval, is_sequential_mode};
 
 use dashmap::DashMap;
 
 use crate::backend::models::MettaValue;
+
+#[cfg(feature = "hybrid-p2-priority-scheduler")]
 use crate::backend::priority_scheduler::{global_priority_eval_pool, priority_levels, TaskTypeId};
 
 use super::cache::hash_metta_value;
@@ -608,37 +619,37 @@ impl TieredCompilationCache {
         let expr_clone = expr.clone();
         let state_clone = Arc::clone(state);
 
-        // Choose spawn method based on execution mode:
-        // - Sequential mode: Use Rayon's lightweight spawn (~100-200ns)
-        // - Parallel mode: Use P2 scheduler for fair priority scheduling
-        if is_sequential_mode() {
-            // Rayon spawn for lower overhead in sequential workloads
-            rayon::spawn(move || {
-                match compile_arc("tiered", &expr_clone) {
-                    Ok(chunk) => {
-                        state_clone.set_bytecode_ready(chunk);
-                    }
-                    Err(_) => {
-                        state_clone.set_bytecode_failed();
-                    }
+        // Compilation closure
+        let compile_task = move || {
+            match compile_arc("tiered", &expr_clone) {
+                Ok(chunk) => {
+                    state_clone.set_bytecode_ready(chunk);
                 }
-            });
-        } else {
-            // P2 scheduler for priority-based scheduling in parallel workloads
-            global_priority_eval_pool().spawn_with_priority(
-                move || {
-                    match compile_arc("tiered", &expr_clone) {
-                        Ok(chunk) => {
-                            state_clone.set_bytecode_ready(chunk);
-                        }
-                        Err(_) => {
-                            state_clone.set_bytecode_failed();
-                        }
-                    }
-                },
-                priority_levels::BACKGROUND_COMPILE,
-                TaskTypeId::BytecodeCompile,
-            );
+                Err(_) => {
+                    state_clone.set_bytecode_failed();
+                }
+            }
+        };
+
+        // Choose spawn method based on feature and execution mode
+        #[cfg(feature = "hybrid-p2-priority-scheduler")]
+        {
+            // Hybrid mode: Use Rayon for sequential, P2 scheduler for parallel
+            if is_sequential_mode() {
+                rayon::spawn(compile_task);
+            } else {
+                global_priority_eval_pool().spawn_with_priority(
+                    compile_task,
+                    priority_levels::BACKGROUND_COMPILE,
+                    TaskTypeId::BytecodeCompile,
+                );
+            }
+        }
+
+        #[cfg(not(feature = "hybrid-p2-priority-scheduler"))]
+        {
+            // Default: Always use Rayon (compatible with Rholang shared schedulers)
+            rayon::spawn(compile_task);
         }
     }
 
@@ -710,15 +721,23 @@ impl TieredCompilationCache {
             }
         };
 
-        // Choose spawn method based on execution mode
-        if is_sequential_mode() {
+        // Choose spawn method based on feature and execution mode
+        #[cfg(feature = "hybrid-p2-priority-scheduler")]
+        {
+            if is_sequential_mode() {
+                rayon::spawn(jit_compile);
+            } else {
+                global_priority_eval_pool().spawn_with_priority(
+                    jit_compile,
+                    priority_levels::BACKGROUND_COMPILE,
+                    TaskTypeId::JitCompile,
+                );
+            }
+        }
+
+        #[cfg(not(feature = "hybrid-p2-priority-scheduler"))]
+        {
             rayon::spawn(jit_compile);
-        } else {
-            global_priority_eval_pool().spawn_with_priority(
-                jit_compile,
-                priority_levels::BACKGROUND_COMPILE,
-                TaskTypeId::JitCompile,
-            );
         }
     }
 
@@ -791,15 +810,23 @@ impl TieredCompilationCache {
             }
         };
 
-        // Choose spawn method based on execution mode
-        if is_sequential_mode() {
+        // Choose spawn method based on feature and execution mode
+        #[cfg(feature = "hybrid-p2-priority-scheduler")]
+        {
+            if is_sequential_mode() {
+                rayon::spawn(jit_compile);
+            } else {
+                global_priority_eval_pool().spawn_with_priority(
+                    jit_compile,
+                    priority_levels::BACKGROUND_COMPILE,
+                    TaskTypeId::JitCompile,
+                );
+            }
+        }
+
+        #[cfg(not(feature = "hybrid-p2-priority-scheduler"))]
+        {
             rayon::spawn(jit_compile);
-        } else {
-            global_priority_eval_pool().spawn_with_priority(
-                jit_compile,
-                priority_levels::BACKGROUND_COMPILE,
-                TaskTypeId::JitCompile,
-            );
         }
     }
 

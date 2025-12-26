@@ -98,14 +98,16 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
     debug!(metta_val = ?value);
 
     use crate::backend::bytecode::{
-        can_compile_cached, can_compile_with_env, enter_eval, eval_bytecode_hybrid,
-        eval_bytecode_with_env, exit_eval, global_tiered_cache, ExecutionTier, TierStatusKind,
+        can_compile_cached, can_compile_with_env, eval_bytecode_hybrid,
+        eval_bytecode_with_env, global_tiered_cache, ExecutionTier, TierStatusKind,
     };
 
-    // Track concurrent evaluations for sequential mode detection
-    // This allows us to use Rayon's lightweight spawn instead of P2 scheduler
-    // when running sequentially, reducing overhead by ~500-1000ns per spawn
-    enter_eval();
+    // Track concurrent evaluations for sequential mode detection (hybrid scheduler only)
+    #[cfg(feature = "hybrid-p2-priority-scheduler")]
+    {
+        use crate::backend::bytecode::enter_eval;
+        enter_eval();
+    }
 
     // Record execution in unified tiered cache for async background compilation
     // Triggers bytecode compilation at threshold (default 1), JIT Stage 1 at 100, JIT Stage 2 at 500
@@ -121,7 +123,11 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
             if let Some(chunk) = state.bytecode_chunk() {
                 if let Ok(results) = execute_bytecode_chunk(&chunk) {
                     global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
-                    exit_eval();
+                    #[cfg(feature = "hybrid-p2-priority-scheduler")]
+                    {
+                        use crate::backend::bytecode::exit_eval;
+                        exit_eval();
+                    }
                     return (results, env);
                 }
                 // Bytecode execution failed, fall through to hybrid path
@@ -131,7 +137,11 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
         // Try existing hybrid evaluation path (also handles bytecode caching and JIT)
         if let Ok(results) = eval_bytecode_hybrid(&value) {
             global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
-            exit_eval();
+            #[cfg(feature = "hybrid-p2-priority-scheduler")]
+            {
+                use crate::backend::bytecode::exit_eval;
+                exit_eval();
+            }
             return (results, env);
         }
     }
@@ -140,7 +150,11 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
     if can_compile_with_env(&value) {
         if let Ok((results, new_env)) = eval_bytecode_with_env(&value, env.clone()) {
             global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
-            exit_eval();
+            #[cfg(feature = "hybrid-p2-priority-scheduler")]
+            {
+                use crate::backend::bytecode::exit_eval;
+                exit_eval();
+            }
             return (results, new_env);
         }
     }
@@ -148,7 +162,11 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
     // Tier 0: Tree-walker interpreter (cold code or fallback)
     global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
     let result = eval_trampoline(value, env);
-    exit_eval();
+    #[cfg(feature = "hybrid-p2-priority-scheduler")]
+    {
+        use crate::backend::bytecode::exit_eval;
+        exit_eval();
+    }
     result
 }
 

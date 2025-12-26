@@ -204,6 +204,13 @@ jit = []
 # Enable with: cargo build --release --features fuzzy-suggestions
 fuzzy-suggestions = []
 
+# Hybrid P2 Priority Scheduler: Custom priority-based thread pool
+# DISABLED by default to share schedulers with Rholang (which uses Rayon/Tokio)
+# When enabled, uses P2 priority scheduler for parallel workloads with
+# sequential mode detection (< 2 concurrent evals uses Rayon for lower overhead)
+# Enable with: cargo build --release --features hybrid-p2-priority-scheduler
+hybrid-p2-priority-scheduler = []
+
 [dev-dependencies]
 # For integration tests
 regex = "1.10"

@@ -35,7 +35,7 @@ pub(super) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let mut new_env = env.clone();
 
     // Add rule using add_rule (stores in both rule_cache and MORK Space)
-    new_env.add_rule(Rule { lhs, rhs });
+    new_env.add_rule(Rule::new(lhs, rhs));
 
     // Return empty list (rule definitions don't produce output)
     (vec![], new_env)

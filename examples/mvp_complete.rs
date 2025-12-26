@@ -24,17 +24,17 @@ fn test_variable_binding() {
     let mut env = Environment::new();
 
     // Rule: (= (double $x) (mul $x 2))
-    env.add_rule(Rule {
-        lhs: MettaValue::SExpr(vec![
+    env.add_rule(Rule::new(
+            MettaValue::SExpr(vec![
             MettaValue::Atom("double".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]),
-        rhs: MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
             MettaValue::Atom("mul".to_string()),
             MettaValue::Atom("$x".to_string()),
             MettaValue::Long(2),
         ]),
-    });
+        ));
 
     // Evaluate: (double (+ 3 4))
     let expr = MettaValue::SExpr(vec![
@@ -59,21 +59,21 @@ fn test_multivalued_results() {
     let mut env = Environment::new();
 
     // Multiple rules with same pattern
-    env.add_rule(Rule {
-        lhs: MettaValue::SExpr(vec![
+    env.add_rule(Rule::new(
+            MettaValue::SExpr(vec![
             MettaValue::Atom("color".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]),
-        rhs: MettaValue::String("red".to_string()),
-    });
+            MettaValue::String("red".to_string()),
+        ));
 
-    env.add_rule(Rule {
-        lhs: MettaValue::SExpr(vec![
+    env.add_rule(Rule::new(
+            MettaValue::SExpr(vec![
             MettaValue::Atom("color".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]),
-        rhs: MettaValue::String("blue".to_string()),
-    });
+            MettaValue::String("blue".to_string()),
+        ));
 
     // Query would return multiple results (first match returned for now)
     let expr = MettaValue::SExpr(vec![
@@ -193,21 +193,21 @@ fn test_equality_operator() {
 
     // (= (factorial $n) (if (< $n 2) 1 (* $n (factorial (- $n 1)))))
     // Simplified version for testing
-    env.add_rule(Rule {
-        lhs: MettaValue::SExpr(vec![
+    env.add_rule(Rule::new(
+            MettaValue::SExpr(vec![
             MettaValue::Atom("factorial".to_string()),
             MettaValue::Long(0),
         ]),
-        rhs: MettaValue::Long(1),
-    });
+            MettaValue::Long(1),
+        ));
 
-    env.add_rule(Rule {
-        lhs: MettaValue::SExpr(vec![
+    env.add_rule(Rule::new(
+            MettaValue::SExpr(vec![
             MettaValue::Atom("factorial".to_string()),
             MettaValue::Long(1),
         ]),
-        rhs: MettaValue::Long(1),
-    });
+            MettaValue::Long(1),
+        ));
 
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("factorial".to_string()),
@@ -227,13 +227,13 @@ fn test_error_termination() {
     let mut env = Environment::new();
 
     // (= (safe-div $x $y) (if (== $y 0) (error "div by zero" $y) (div $x $y)))
-    env.add_rule(Rule {
-        lhs: MettaValue::SExpr(vec![
+    env.add_rule(Rule::new(
+            MettaValue::SExpr(vec![
             MettaValue::Atom("safe-div".to_string()),
             MettaValue::Atom("$x".to_string()),
             MettaValue::Atom("$y".to_string()),
         ]),
-        rhs: MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
             MettaValue::Atom("if".to_string()),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("eq".to_string()),
@@ -251,7 +251,7 @@ fn test_error_termination() {
                 MettaValue::Atom("$y".to_string()),
             ]),
         ]),
-    });
+        ));
 
     // Test error case
     let expr = MettaValue::SExpr(vec![

@@ -193,7 +193,7 @@ impl MorkBridge {
         for rule in matching_rules {
             if let Some(bindings) = pattern_match(&rule.lhs, expr) {
                 let specificity = pattern_specificity(&rule.lhs);
-                matches.push((Arc::new(rule.lhs.clone()), Arc::new(rule.rhs.clone()), bindings, specificity));
+                matches.push((Arc::clone(&rule.lhs), Arc::clone(&rule.rhs), bindings, specificity));
             }
         }
 

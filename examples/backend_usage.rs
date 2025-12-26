@@ -35,17 +35,17 @@ fn example_rules() {
 
     // Create an environment and add a rule: (= (double $x) (mul $x 2))
     let mut env = Environment::new();
-    env.add_rule(Rule {
-        lhs: MettaValue::SExpr(vec![
+    env.add_rule(Rule::new(
+            MettaValue::SExpr(vec![
             MettaValue::Atom("double".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]),
-        rhs: MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
             MettaValue::Atom("mul".to_string()),
             MettaValue::Atom("$x".to_string()),
             MettaValue::Long(2),
         ]),
-    });
+        ));
 
     // Evaluate (double 7)
     let expr = MettaValue::SExpr(vec![

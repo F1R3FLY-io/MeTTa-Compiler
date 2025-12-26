@@ -120,8 +120,22 @@ impl Compiler {
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
 
-            // Note: Space, State, Memo, Empty variants are handled when those MettaValue
-            // variants are added. For now, they don't exist in this branch.
+            // State cell reference
+            MettaValue::State(id) => {
+                let idx = self.builder.add_constant(MettaValue::State(*id));
+                self.builder.emit_u16(Opcode::PushConstant, idx);
+            }
+
+            // Memo handle
+            MettaValue::Memo(handle) => {
+                let idx = self.builder.add_constant(MettaValue::Memo(handle.clone()));
+                self.builder.emit_u16(Opcode::PushConstant, idx);
+            }
+
+            // Empty - used in nondeterministic evaluation
+            MettaValue::Empty => {
+                self.builder.emit(Opcode::PushNil); // Empty is similar to Nil
+            }
         }
         Ok(())
     }

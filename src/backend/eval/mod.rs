@@ -145,6 +145,7 @@ pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
             let inner: Vec<String> = goals.iter().map(friendly_value_repr).collect();
             format!("(, {})", inner.join(" "))
         }
+        MettaValue::Unit => "()".to_string(),
     }
 }
 
@@ -455,7 +456,8 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         | MettaValue::Float(_)
         | MettaValue::String(_)
         | MettaValue::Nil
-        | MettaValue::Type(_) => EvalStep::Done((vec![value], env)),
+        | MettaValue::Type(_)
+        | MettaValue::Unit => EvalStep::Done((vec![value], env)),
 
         // S-expressions need special handling
         MettaValue::SExpr(items) => eval_sexpr_step(items, env, depth),
@@ -949,7 +951,8 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         | MettaValue::Long(_)
         | MettaValue::Float(_)
         | MettaValue::String(_)
-        | MettaValue::Nil => {
+        | MettaValue::Nil
+        | MettaValue::Unit => {
             0 // Literals are most specific (including standalone "&")
         }
         MettaValue::SExpr(items) => {

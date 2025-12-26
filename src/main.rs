@@ -158,6 +158,7 @@ fn format_result(value: &MettaValue) -> String {
             let formatted: Vec<String> = goals.iter().map(format_result).collect();
             format!("(, {})", formatted.join(" "))
         }
+        MettaValue::Unit => "()".to_string(),
     }
 }
 

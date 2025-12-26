@@ -28,6 +28,9 @@ pub enum MettaValue {
     /// Represents (,), (, expr), or (, expr1 expr2 ...)
     /// Goals are evaluated left-to-right with variable binding threading
     Conjunction(Vec<MettaValue>),
+    /// Unit value - represents a successful operation with no meaningful return value
+    /// Similar to () in Rust or void in other languages
+    Unit,
 }
 
 impl MettaValue {
@@ -57,6 +60,7 @@ impl MettaValue {
                 | MettaValue::Float(_)
                 | MettaValue::String(_)
                 | MettaValue::Nil
+                | MettaValue::Unit
         )
     }
 
@@ -74,6 +78,7 @@ impl MettaValue {
             MettaValue::Error(_, _) => "Error",
             MettaValue::Type(_) => "Type",
             MettaValue::Conjunction(_) => "Conjunction",
+            MettaValue::Unit => "Unit",
         }
     }
 
@@ -149,6 +154,9 @@ impl MettaValue {
                     .zip(b_goals.iter())
                     .all(|(a, b)| a.structurally_equivalent(b))
             }
+
+            // Unit matches unit
+            (MettaValue::Unit, MettaValue::Unit) => true,
 
             _ => false,
         }
@@ -235,6 +243,7 @@ impl MettaValue {
                     .join(" ");
                 format!("(, {})", inner)
             }
+            MettaValue::Unit => "()".to_string(),
         }
     }
 
@@ -271,6 +280,7 @@ impl MettaValue {
                     goals_json.join(",")
                 )
             }
+            MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
         }
     }
 }
@@ -331,6 +341,9 @@ impl std::hash::Hash for MettaValue {
             MettaValue::Conjunction(goals) => {
                 10u8.hash(state);
                 goals.hash(state);
+            }
+            MettaValue::Unit => {
+                11u8.hash(state);
             }
         }
     }

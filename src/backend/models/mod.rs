@@ -62,3 +62,10 @@ impl Rule {
         Arc::clone(&self.lhs)
     }
 }
+
+impl Rule {
+    /// Create a new rule from LHS and RHS expressions
+    pub fn new(lhs: MettaValue, rhs: MettaValue) -> Self {
+        Rule { lhs, rhs }
+    }
+}

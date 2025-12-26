@@ -280,7 +280,7 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
     match pattern {
         MettaValue::Atom(name) if name == "_" => 1000, // Wildcard - least specific
         MettaValue::Atom(name) if name.starts_with('$') => 100, // Variable
-        MettaValue::Atom(_) => 0,                      // Concrete symbol
+        MettaValue::Atom(_) => 0, // Concrete symbol
         MettaValue::SExpr(items) => items.iter().map(pattern_specificity).sum(),
         MettaValue::Long(_)
         | MettaValue::Float(_)

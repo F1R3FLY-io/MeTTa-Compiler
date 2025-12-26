@@ -109,6 +109,36 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
             // Represent Unit as empty Par (similar to Nil)
             Par::default()
         }
+        MettaValue::State(id) => {
+            // Represent state as tagged tuple: ("state", id)
+            let tag_par = create_string_par("state".to_string());
+            let id_par = create_int_par(*id as i64);
+
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps: vec![tag_par, id_par],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
+        MettaValue::Memo(handle) => {
+            // Represent memo as tagged tuple: ("memo", name)
+            let tag_par = create_string_par("memo".to_string());
+            let name_par = create_string_par(handle.name.clone());
+
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps: vec![tag_par, name_par],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
+        MettaValue::Empty => {
+            // Represent Empty as empty Par (similar to Nil/Unit)
+            Par::default()
+        }
     };
 
     trace!(target: "mettatron::rholang_integration::metta_value_to_par", ?par, "Par");

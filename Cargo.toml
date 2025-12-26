@@ -92,6 +92,9 @@ ropey = "1.6"
 # LRU cache for pattern caching optimization
 lru = "0.12"
 
+# DashMap - Concurrent HashMap for lock-free bytecode caching
+dashmap = "6.1"
+
 # SmallVec - Stack-allocated vector for optimizing pattern matching bindings
 smallvec = "1.11"
 

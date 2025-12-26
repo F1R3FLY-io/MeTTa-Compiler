@@ -121,6 +121,29 @@ const SPECIAL_FORMS: &[&str] = &[
     "map-atom",
     "filter-atom",
     "foldl-atom",
+    // Nondeterminism / space operations
+    "superpose",
+    "collapse",
+    "collapse-bind",
+    "amb",
+    "guard",
+    "commit",
+    "backtrack",
+    "get-atoms",
+    // Space management
+    "new-space",
+    "add-atom",
+    "remove-atom",
+    // State operations
+    "new-state",
+    "get-state",
+    "change-state!",
+    // Memoization
+    "new-memo",
+    "memo",
+    "memo-first",
+    "memo-stats",
+    "clear-memo",
 ];
 
 /// Convert MettaValue to a user-friendly representation for error messages
@@ -583,6 +606,34 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),
             "lookup" => return EvalStep::Done(mork_forms::eval_lookup(items, env)),
             "rulify" => return EvalStep::Done(mork_forms::eval_rulify(items, env)),
+
+            // Nondeterminism / Space operations
+            "superpose" => return EvalStep::Done(space::eval_superpose(items, env)),
+            "collapse" => return EvalStep::Done(space::eval_collapse(items, env)),
+            "collapse-bind" => return EvalStep::Done(space::eval_collapse_bind(items, env)),
+            "amb" => return EvalStep::Done(space::eval_amb(items, env)),
+            "guard" => return EvalStep::Done(space::eval_guard(items, env)),
+            "commit" => return EvalStep::Done(space::eval_commit(items, env)),
+            "backtrack" => return EvalStep::Done(space::eval_backtrack(items, env)),
+            "get-atoms" => return EvalStep::Done(space::eval_get_atoms(items, env)),
+
+            // Space management
+            "new-space" => return EvalStep::Done(space::eval_new_space(items, env)),
+            "add-atom" => return EvalStep::Done(space::eval_add_atom(items, env)),
+            "remove-atom" => return EvalStep::Done(space::eval_remove_atom(items, env)),
+
+            // State operations
+            "new-state" => return EvalStep::Done(space::eval_new_state(items, env)),
+            "get-state" => return EvalStep::Done(space::eval_get_state(items, env)),
+            "change-state!" => return EvalStep::Done(space::eval_change_state(items, env)),
+
+            // Memoization
+            "new-memo" => return EvalStep::Done(space::eval_new_memo(items, env)),
+            "memo" => return EvalStep::Done(space::eval_memo(items, env)),
+            "memo-first" => return EvalStep::Done(space::eval_memo_first(items, env)),
+            "memo-stats" => return EvalStep::Done(space::eval_memo_stats(items, env)),
+            "clear-memo" => return EvalStep::Done(space::eval_clear_memo(items, env)),
+
             _ => {}
         }
     }

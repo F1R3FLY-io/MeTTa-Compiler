@@ -111,6 +111,10 @@ const SPECIAL_FORMS: &[&str] = &[
     "case",
     "switch",
     "let",
+    "let*",
+    "unify",
+    "sealed",
+    "atom-subst",
     ":",
     "get-type",
     "check-type",
@@ -245,6 +249,39 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 cont_id: collect_cont_id,
                             });
                         }
+                    }
+
+                    // TCO-enabled let binding - evaluate value then body
+                    EvalStep::StartLetBinding {
+                        pattern,
+                        value_expr,
+                        body,
+                        env,
+                        depth,
+                    } => {
+                        // First, evaluate the value expression
+                        let (value_results, value_env) = eval(value_expr, env);
+
+                        // Process each result (nondeterminism)
+                        let mut all_results = Vec::new();
+                        let mut current_env = value_env;
+
+                        for value in value_results {
+                            // Try to match pattern against value
+                            if let Some(bindings) = pattern_match(&pattern, &value) {
+                                // Apply bindings to body and evaluate
+                                let instantiated_body = apply_bindings(&body, &bindings);
+                                let (body_results, body_env) = eval(instantiated_body, current_env);
+                                current_env = body_env;
+                                all_results.extend(body_results);
+                            }
+                            // Pattern mismatch: silent failure (nondeterminism)
+                        }
+
+                        work_stack.push(WorkItem::Resume {
+                            cont_id,
+                            result: (all_results, current_env),
+                        });
                     }
                 }
             }
@@ -394,13 +431,27 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
 /// Result of a single evaluation step
 #[derive(Debug)]
-enum EvalStep {
+pub(crate) enum EvalStep {
     /// Evaluation complete, return this result
     Done(EvalResult),
     /// Need to evaluate S-expression items (iteratively)
     EvalSExpr {
         items: Vec<MettaValue>,
         env: Environment,
+        depth: usize,
+    },
+    /// Start let binding - first evaluates value expression, then pattern matches
+    /// and evaluates body. This enables let body to participate in trampoline (TCO).
+    StartLetBinding {
+        /// Pattern to match against evaluated value
+        pattern: MettaValue,
+        /// Value expression to evaluate first
+        value_expr: MettaValue,
+        /// Body template to instantiate with bindings
+        body: MettaValue,
+        /// Environment for evaluation
+        env: Environment,
+        /// Evaluation depth (preserved for TCO)
         depth: usize,
     },
 }
@@ -506,6 +557,10 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
                 return EvalStep::Done(control_flow::eval_switch_internal_handler(items, env))
             }
             "let" => return EvalStep::Done(bindings::eval_let(items, env)),
+            "let*" => return EvalStep::Done(bindings::eval_let_star(items, env)),
+            "unify" => return EvalStep::Done(bindings::eval_unify(items, env)),
+            "sealed" => return EvalStep::Done(bindings::eval_sealed(items, env)),
+            "atom-subst" => return EvalStep::Done(bindings::eval_atom_subst(items, env)),
             ":" => return EvalStep::Done(types::eval_type_assertion(items, env)),
             "get-type" => return EvalStep::Done(types::eval_get_type(items, env)),
             "check-type" => return EvalStep::Done(types::eval_check_type(items, env)),

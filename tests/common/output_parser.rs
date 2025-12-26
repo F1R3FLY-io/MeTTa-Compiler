@@ -43,6 +43,7 @@ impl MettaValueTestExt for MettaValue {
                 let inner: Vec<String> = goals.iter().map(|g| g.to_display_string()).collect();
                 format!("(, {})", inner.join(" "))
             }
+            MettaValue::Unit => "()".to_string(),
         }
     }
 
@@ -61,6 +62,7 @@ impl MettaValueTestExt for MettaValue {
             MettaValue::Nil => s == "()" || s == "Nil",
             MettaValue::Type(_) => self.to_display_string() == s,
             MettaValue::Conjunction(_) => self.to_display_string() == s,
+            MettaValue::Unit => s == "()" || s == "Unit",
         }
     }
 }

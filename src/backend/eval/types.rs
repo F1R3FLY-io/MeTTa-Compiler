@@ -193,6 +193,9 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
                 infer_type(goals.last().unwrap(), env)
             }
         }
+
+        // Unit has Unit type
+        MettaValue::Unit => MettaValue::Atom("Unit".to_string()),
     }
 }
 

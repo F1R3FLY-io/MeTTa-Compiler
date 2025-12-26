@@ -120,6 +120,30 @@ tracing-subscriber = "0.3"
 # Note: jemalloc is already enabled globally via PathMap's features = ["jemalloc"]
 # PathMap sets tikv-jemallocator as the global allocator, providing 100-1000× parallel speedup
 
+# Itertools - Lazy iterator combinators for cartesian products and nondeterminism
+itertools = "0.14"
+
+# Cranelift JIT - Native code generation for hot bytecode paths
+# Provides 2-5x additional speedup over bytecode VM for arithmetic chains
+# Always included - tiered compilation is always enabled
+cranelift = "0.126"
+cranelift-frontend = "0.126"
+cranelift-jit = "0.126"
+cranelift-module = "0.126"
+cranelift-native = "0.126"
+
+# Rayon - Work-stealing thread pool for background compilation
+rayon = "1.10"
+
+# Crossbeam - Lock-free channels for custom eval thread pool
+crossbeam-channel = "0.5"
+
+# num_cpus - CPU count detection for thread pool sizing
+num_cpus = "1.16"
+
+# parking_lot - Faster mutexes and condition variables for priority scheduler
+parking_lot = "0.12"
+
 [features]
 default = ["interning", "async"]
 async = ["tokio"]
@@ -127,6 +151,31 @@ interning = []
 # Symbol interning: O(1) symbol comparison via lasso crate
 # Provides 5-10% improvement for rule-heavy workloads
 symbol-interning = ["lasso"]
+
+# NOTE: Bytecode VM and JIT compilation are now ALWAYS ENABLED
+# The tiered compilation system provides automatic tier progression:
+#   Tier 0: Tree-walker (0-1 executions)
+#   Tier 1: Bytecode VM (2+ executions, compiled in background)
+#   Tier 2: JIT Stage 1 (100+ executions, native code)
+#   Tier 3: JIT Stage 2 (500+ executions, optimized native code)
+# All compilation happens in the background via Rayon, so the evaluator
+# is never blocked waiting for compilation.
+
+# Legacy feature flags for backwards compatibility (now no-ops)
+bytecode = []
+jit = []
+
+# Fuzzy suggestions: "Did you mean?" suggestions for typos
+# DISABLED by default because it adds significant overhead (10-20%)
+# Enable with: cargo build --release --features fuzzy-suggestions
+fuzzy-suggestions = []
+
+# Hybrid P2 Priority Scheduler: Custom priority-based thread pool
+# DISABLED by default to share schedulers with Rholang (which uses Rayon/Tokio)
+# When enabled, uses P2 priority scheduler for parallel workloads with
+# sequential mode detection (< 2 concurrent evals uses Rayon for lower overhead)
+# Enable with: cargo build --release --features hybrid-p2-priority-scheduler
+hybrid-p2-priority-scheduler = []
 
 [dev-dependencies]
 # For integration tests

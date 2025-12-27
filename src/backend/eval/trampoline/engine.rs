@@ -13,11 +13,11 @@ use crate::backend::environment::Environment;
 use crate::backend::grounded::{ExecError, GroundedWork};
 use crate::backend::models::{EvalResult, MettaValue};
 
-use super::types::{Continuation, WorkItem, MAX_EVAL_DEPTH};
 use super::super::{
-    apply_bindings, eval_step, friendly_value_repr, process_collected_sexpr,
-    EvalStep, ProcessedSExpr,
+    apply_bindings, eval_step, friendly_value_repr, process_collected_sexpr, EvalStep,
+    ProcessedSExpr,
 };
+use super::types::{Continuation, WorkItem, MAX_EVAL_DEPTH};
 
 /// Iterative evaluation using a trampoline pattern with explicit work stack.
 /// This prevents stack overflow by using heap-allocated work items instead of
@@ -32,7 +32,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
         value,
         env: env.clone(),
         depth: 0,
-        cont_id: 0, // Done continuation
+        cont_id: 0,          // Done continuation
         is_tail_call: false, // Initial evaluation is not a tail call
     }];
 
@@ -166,7 +166,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         ),
                                         ExecError::Arithmetic(msg) => MettaValue::Error(
                                             msg,
-                                            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+                                            Arc::new(MettaValue::Atom(
+                                                "ArithmeticError".to_string(),
+                                            )),
                                         ),
                                         ExecError::IncorrectArgument(msg) => MettaValue::Error(
                                             msg,
@@ -241,7 +243,11 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                     // Evaluate rule matches with UNEVALUATED arguments (lazy evaluation)
                     // This is used when user-defined rules match before argument evaluation.
-                    EvalStep::EvalRuleMatchesLazy { matches, env, depth } => {
+                    EvalStep::EvalRuleMatchesLazy {
+                        matches,
+                        env,
+                        depth,
+                    } => {
                         if matches.is_empty() {
                             // No rule matches - shouldn't happen (this variant is only used when matches exist)
                             work_stack.push(WorkItem::Resume {
@@ -343,7 +349,8 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                                         // Evaluate first rule RHS - THIS IS A TAIL CALL
                                         // TCO: Don't increment depth for tail calls
-                                        let instantiated_rhs = apply_bindings(&rhs, &bindings).into_owned();
+                                        let instantiated_rhs =
+                                            apply_bindings(&rhs, &bindings).into_owned();
                                         work_stack.push(WorkItem::Eval {
                                             value: instantiated_rhs,
                                             env,
@@ -458,9 +465,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         state.set_arg(arg_idx, result.0);
 
                         // Look up the TCO operation and continue
-                        if let Some(grounded_op) =
-                            env.get_grounded_operation_tco(&state.op_name)
-                        {
+                        if let Some(grounded_op) = env.get_grounded_operation_tco(&state.op_name) {
                             match grounded_op.execute_step(&mut state) {
                                 GroundedWork::Done(results) => {
                                     // Operation complete
@@ -504,7 +509,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         ),
                                         ExecError::Arithmetic(msg) => MettaValue::Error(
                                             msg,
-                                            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+                                            Arc::new(MettaValue::Atom(
+                                                "ArithmeticError".to_string(),
+                                            )),
                                         ),
                                         ExecError::IncorrectArgument(msg) => MettaValue::Error(
                                             msg,
@@ -615,27 +622,31 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     // Example: (intensity (color)) → (intensity red) → 100
                                     let evaled_vec: Vec<MettaValue> = evaled_items.into_vec();
                                     let sexpr = MettaValue::SExpr(evaled_vec.clone());
-                                    let all_matches = super::super::try_match_all_rules(&sexpr, &env);
+                                    let all_matches =
+                                        super::super::try_match_all_rules(&sexpr, &env);
 
                                     if !all_matches.is_empty() {
                                         // Rules match! Queue them for evaluation
                                         pending_rule_matches = all_matches.into_iter().collect();
 
                                         // Take the first match and evaluate it
-                                        let (rhs, bindings) = pending_rule_matches.pop_front().unwrap();
+                                        let (rhs, bindings) =
+                                            pending_rule_matches.pop_front().unwrap();
 
                                         // Update continuation with pending matches
-                                        continuations[cont_id] = Continuation::ProcessCombinations {
-                                            combinations,
-                                            results,
-                                            pending_rule_matches,
-                                            env: env.clone(),
-                                            depth,
-                                            parent_cont,
-                                        };
+                                        continuations[cont_id] =
+                                            Continuation::ProcessCombinations {
+                                                combinations,
+                                                results,
+                                                pending_rule_matches,
+                                                env: env.clone(),
+                                                depth,
+                                                parent_cont,
+                                            };
 
                                         // Evaluate the rule RHS
-                                        let instantiated_rhs = apply_bindings(&rhs, &bindings).into_owned();
+                                        let instantiated_rhs =
+                                            apply_bindings(&rhs, &bindings).into_owned();
                                         work_stack.push(WorkItem::Eval {
                                             value: instantiated_rhs,
                                             env,
@@ -647,7 +658,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     }
 
                                     // No rules matched even with evaluated arguments - data constructor
-                                    let result_value = super::super::handle_no_rule_match(evaled_vec, &sexpr, &mut env);
+                                    let result_value = super::super::handle_no_rule_match(
+                                        evaled_vec, &sexpr, &mut env,
+                                    );
                                     results.push(result_value);
 
                                     // Continue to next combination
@@ -692,7 +705,8 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 loop {
                                     match values.pop_front() {
                                         Some(value) => {
-                                            if let Some(bindings) = super::super::pattern_match(&pattern, &value)
+                                            if let Some(bindings) =
+                                                super::super::pattern_match(&pattern, &value)
                                             {
                                                 // Pattern matches - evaluate body with bindings
                                                 let instantiated_body =
@@ -742,7 +756,8 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 loop {
                                     match remaining_values.pop_front() {
                                         Some(value) => {
-                                            if let Some(bindings) = super::super::pattern_match(&pattern, &value)
+                                            if let Some(bindings) =
+                                                super::super::pattern_match(&pattern, &value)
                                             {
                                                 // Pattern matches - evaluate body with bindings
                                                 let instantiated_body =

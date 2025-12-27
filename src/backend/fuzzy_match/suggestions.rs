@@ -1,6 +1,8 @@
 //! Suggestion generation methods for FuzzyMatcher.
 
-use super::helpers::{are_prefixes_compatible, compute_suggestion_confidence, is_likely_data_constructor};
+use super::helpers::{
+    are_prefixes_compatible, compute_suggestion_confidence, is_likely_data_constructor,
+};
 use super::matcher::FuzzyMatcher;
 use super::types::{SmartSuggestion, SuggestionConfidence};
 

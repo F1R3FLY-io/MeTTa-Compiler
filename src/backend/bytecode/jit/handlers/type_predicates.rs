@@ -2,11 +2,10 @@
 //!
 //! Handles: IsVariable, IsSExpr, IsSymbol
 
-
 use cranelift::prelude::*;
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
-use crate::backend::bytecode::jit::types::{JitResult, TAG_VAR, TAG_HEAP, TAG_ATOM};
+use crate::backend::bytecode::jit::types::{JitResult, TAG_ATOM, TAG_HEAP, TAG_VAR};
 use crate::backend::bytecode::Opcode;
 
 /// Compile type predicate opcodes
@@ -52,7 +51,10 @@ pub fn compile_type_predicate_op<'a, 'b>(
             codegen.push(result)?;
         }
 
-        _ => unreachable!("compile_type_predicate_op called with wrong opcode: {:?}", op),
+        _ => unreachable!(
+            "compile_type_predicate_op called with wrong opcode: {:?}",
+            op
+        ),
     }
     Ok(())
 }

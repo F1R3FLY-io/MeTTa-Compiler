@@ -6,11 +6,11 @@
 //! - mork_insert - Insert a value into MORK PathMap/space
 //! - mork_delete - Delete a value from MORK PathMap/space
 
-use crate::backend::bytecode::jit::types::{JitContext, JitValue};
-use crate::backend::models::MettaValue;
-use crate::backend::bytecode::mork_bridge::MorkBridge;
 use super::helpers::metta_to_jit;
 use super::space_ops::jit_runtime_space_match;
+use crate::backend::bytecode::jit::types::{JitContext, JitValue};
+use crate::backend::bytecode::mork_bridge::MorkBridge;
+use crate::backend::models::MettaValue;
 
 // =============================================================================
 // Phase H: MORK Bridge
@@ -26,11 +26,7 @@ use super::space_ops::jit_runtime_space_match;
 /// # Returns
 /// NaN-boxed value from MORK, or Nil if not found
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_mork_lookup(
-    ctx: *mut JitContext,
-    path: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_mork_lookup(ctx: *mut JitContext, path: u64, _ip: u64) -> u64 {
     let ctx_ref = match ctx.as_ref() {
         Some(c) => c,
         None => return JitValue::nil().to_bits(),
@@ -133,11 +129,7 @@ pub unsafe extern "C" fn jit_runtime_mork_insert(
 /// # Returns
 /// 1 if deleted, 0 if not found
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_mork_delete(
-    ctx: *mut JitContext,
-    path: u64,
-    _ip: u64,
-) -> i64 {
+pub unsafe extern "C" fn jit_runtime_mork_delete(ctx: *mut JitContext, path: u64, _ip: u64) -> i64 {
     let ctx_ref = match ctx.as_ref() {
         Some(c) => c,
         None => return 0,

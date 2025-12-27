@@ -122,9 +122,8 @@ pub fn parse_pkg_info_metta(content: &str) -> Result<PackageInfo, PkgInfoParseEr
     }
 
     // Validate required fields
-    let package = package_meta.ok_or_else(|| {
-        PkgInfoParseError::from("Missing required #package section")
-    })?;
+    let package =
+        package_meta.ok_or_else(|| PkgInfoParseError::from("Missing required #package section"))?;
 
     Ok(PackageInfo {
         package,
@@ -298,7 +297,9 @@ fn parse_dependency(expr: &SExpr) -> Result<Dependency, PkgInfoParseError> {
                                 "branch" => detail.branch = extract_string(value),
                                 "rev" => detail.rev = extract_string(value),
                                 "features" => detail.features = extract_string_list(value),
-                                "optional" => detail.optional = extract_bool(value).unwrap_or(false),
+                                "optional" => {
+                                    detail.optional = extract_bool(value).unwrap_or(false)
+                                }
                                 _ => {}
                             }
                             i += 2;
@@ -631,7 +632,10 @@ mod tests {
 
         let result = parse_pkg_info_metta(content);
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("Missing required #name"));
+        assert!(result
+            .unwrap_err()
+            .message
+            .contains("Missing required #name"));
     }
 
     #[test]

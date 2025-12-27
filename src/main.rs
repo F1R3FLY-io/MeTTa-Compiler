@@ -195,7 +195,11 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     }
 
     // Compile to MettaValue (include file path in error messages)
-    let file_path = options.input.as_ref().filter(|p| *p != "-").map(|s| s.as_str());
+    let file_path = options
+        .input
+        .as_ref()
+        .filter(|p| *p != "-")
+        .map(|s| s.as_str());
     let state = compile_with_path(input, file_path).map_err(|e| e.to_string())?;
     let mut env = state.environment;
 

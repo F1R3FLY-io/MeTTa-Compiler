@@ -10,7 +10,9 @@ use mork_expr::Expr;
 
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, MettaValue, Rule};
-use crate::backend::mork_convert::{metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext};
+use crate::backend::mork_convert::{
+    metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext,
+};
 
 use super::helpers::{get_head_symbol, pattern_specificity};
 use super::pattern::pattern_match;
@@ -21,7 +23,10 @@ use super::pattern::pattern_match;
 ///
 /// This function supports MeTTa's non-deterministic semantics where multiple rules
 /// can match the same expression and all results should be returned.
-pub fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(Arc<MettaValue>, Bindings)> {
+pub fn try_match_all_rules(
+    expr: &MettaValue,
+    env: &Environment,
+) -> Vec<(Arc<MettaValue>, Bindings)> {
     // Try MORK's query_multi first for O(k) matching where k = number of matching rules
     // Falls back to iterative O(n) matching if query_multi fails (e.g., arity >= 64)
     let query_multi_results = try_match_all_rules_query_multi(expr, env);
@@ -84,9 +89,7 @@ pub fn try_match_all_rules_query_multi(
             // The ctx now has variable names registered from metta_to_mork_bytes
             if let Ok(our_bindings) = mork_bindings_to_metta(&bindings, &ctx, &space) {
                 // Extract the RHS from bindings - variable name is "rhs" (without $)
-                if let Some((_, rhs)) = our_bindings
-                    .iter()
-                    .find(|(name, _)| name.as_str() == "rhs")
+                if let Some((_, rhs)) = our_bindings.iter().find(|(name, _)| name.as_str() == "rhs")
                 {
                     matches.push((Arc::new(rhs.clone()), our_bindings));
                 }

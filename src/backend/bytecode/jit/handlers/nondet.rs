@@ -2,7 +2,6 @@
 //!
 //! Handles: Fork, Yield, Collect, Cut, Guard, Amb, Commit, Backtrack, Fail, BeginNondet, EndNondet
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -66,26 +65,32 @@ pub fn compile_fork<'a, 'b>(
             let idx = chunk.read_u16(offset + 3 + (i * 2)).unwrap_or(0);
             let idx_val = codegen.builder.ins().iconst(types::I64, idx as i64);
             let slot_offset = (i * 8) as i32;
-            codegen.builder.ins().stack_store(idx_val, indices_slot, slot_offset);
+            codegen
+                .builder
+                .ins()
+                .stack_store(idx_val, indices_slot, slot_offset);
         }
 
         // Get pointer to indices array
-        let indices_ptr = codegen.builder.ins().stack_addr(types::I64, indices_slot, 0);
+        let indices_ptr = codegen
+            .builder
+            .ins()
+            .stack_addr(types::I64, indices_slot, 0);
 
         // Call jit_runtime_fork_native(ctx, count, indices_ptr, ip)
-        let call_inst = codegen.builder.ins().call(
-            func_ref,
-            &[ctx_ptr, count_val, indices_ptr, ip_val],
-        );
+        let call_inst = codegen
+            .builder
+            .ins()
+            .call(func_ref, &[ctx_ptr, count_val, indices_ptr, ip_val]);
         let result = codegen.builder.inst_results(call_inst)[0];
         codegen.push(result)?;
     } else {
         // No alternatives - pass null pointer
         let null_ptr = codegen.builder.ins().iconst(types::I64, 0);
-        let call_inst = codegen.builder.ins().call(
-            func_ref,
-            &[ctx_ptr, count_val, null_ptr, ip_val],
-        );
+        let call_inst = codegen
+            .builder
+            .ins()
+            .call(func_ref, &[ctx_ptr, count_val, null_ptr, ip_val]);
         let result = codegen.builder.inst_results(call_inst)[0];
         codegen.push(result)?;
     }
@@ -113,10 +118,10 @@ pub fn compile_yield<'a, 'b>(
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
 
     // Call jit_runtime_yield_native(ctx, value, ip) -> signal
-    let call_inst = codegen.builder.ins().call(
-        func_ref,
-        &[ctx_ptr, value, ip_val],
-    );
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, value, ip_val]);
     let signal = codegen.builder.inst_results(call_inst)[0];
 
     // Return the signal to dispatcher (JIT_SIGNAL_YIELD = 2)
@@ -146,10 +151,7 @@ pub fn compile_collect<'a, 'b>(
     let ctx_ptr = codegen.ctx_ptr();
 
     // Call jit_runtime_collect_native(ctx) -> NaN-boxed SExpr
-    let call_inst = codegen.builder.ins().call(
-        func_ref,
-        &[ctx_ptr],
-    );
+    let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
     Ok(())
@@ -170,10 +172,7 @@ pub fn compile_cut<'a, 'b>(
 
     let ctx_ptr = codegen.ctx_ptr();
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let call_inst = codegen
-        .builder
-        .ins()
-        .call(func_ref, &[ctx_ptr, ip_val]);
+    let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, ip_val]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
     Ok(())
@@ -209,12 +208,18 @@ pub fn compile_guard<'a, 'b>(
     let fail_block = codegen.builder.create_block();
     let cont_block = codegen.builder.create_block();
 
-    codegen.builder.ins().brif(is_fail, fail_block, &[], cont_block, &[]);
+    codegen
+        .builder
+        .ins()
+        .brif(is_fail, fail_block, &[], cont_block, &[]);
 
     // Fail block - return FAIL signal
     codegen.builder.switch_to_block(fail_block);
     codegen.builder.seal_block(fail_block);
-    let fail_signal = codegen.builder.ins().iconst(types::I64, crate::backend::bytecode::jit::JIT_SIGNAL_FAIL);
+    let fail_signal = codegen
+        .builder
+        .ins()
+        .iconst(types::I64, crate::backend::bytecode::jit::JIT_SIGNAL_FAIL);
     codegen.builder.ins().return_(&[fail_signal]);
 
     // Continue block
@@ -295,10 +300,7 @@ pub fn compile_backtrack<'a, 'b>(
 
     let ctx_ptr = codegen.ctx_ptr();
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let call_inst = codegen
-        .builder
-        .ins()
-        .call(func_ref, &[ctx_ptr, ip_val]);
+    let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, ip_val]);
     let signal = codegen.builder.inst_results(call_inst)[0];
     // Return the FAIL signal
     codegen.builder.ins().return_(&[signal]);
@@ -310,10 +312,11 @@ pub fn compile_backtrack<'a, 'b>(
 /// Stack: [] -> [] - trigger immediate backtracking
 /// Simply return the FAIL signal - semantically identical to Backtrack
 
-pub fn compile_fail<'a, 'b>(
-    codegen: &mut CodegenContext<'a, 'b>,
-) -> JitResult<()> {
-    let signal = codegen.builder.ins().iconst(types::I64, crate::backend::bytecode::jit::JIT_SIGNAL_FAIL);
+pub fn compile_fail<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
+    let signal = codegen
+        .builder
+        .ins()
+        .iconst(types::I64, crate::backend::bytecode::jit::JIT_SIGNAL_FAIL);
     codegen.builder.ins().return_(&[signal]);
     Ok(())
 }

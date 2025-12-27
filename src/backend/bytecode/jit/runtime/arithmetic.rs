@@ -6,9 +6,9 @@
 //! - Trigonometric: sin, cos, tan, asin, acos, atan
 //! - Predicates: isnan, isinf
 
+use super::helpers::{box_long, extract_long_signed, metta_to_jit};
 use crate::backend::bytecode::jit::types::JitValue;
 use crate::backend::models::MettaValue;
-use super::helpers::{extract_long_signed, box_long, metta_to_jit};
 
 // =============================================================================
 // Integer Arithmetic Operations
@@ -78,7 +78,13 @@ pub unsafe extern "C" fn jit_runtime_abs(val: u64) -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_signum(val: u64) -> u64 {
     let n = extract_long_signed(val);
-    let result = if n < 0 { -1 } else if n > 0 { 1 } else { 0 };
+    let result = if n < 0 {
+        -1
+    } else if n > 0 {
+        1
+    } else {
+        0
+    };
     box_long(result)
 }
 
@@ -138,7 +144,7 @@ pub unsafe extern "C" fn jit_runtime_trunc(val: u64) -> u64 {
     let result = match mv {
         MettaValue::Float(x) => MettaValue::Long(x.trunc() as i64),
         MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0), // Type error
+        _ => MettaValue::Long(0),                   // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -156,7 +162,7 @@ pub unsafe extern "C" fn jit_runtime_ceil(val: u64) -> u64 {
     let result = match mv {
         MettaValue::Float(x) => MettaValue::Long(x.ceil() as i64),
         MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0), // Type error
+        _ => MettaValue::Long(0),                   // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -174,7 +180,7 @@ pub unsafe extern "C" fn jit_runtime_floor_math(val: u64) -> u64 {
     let result = match mv {
         MettaValue::Float(x) => MettaValue::Long(x.floor() as i64),
         MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0), // Type error
+        _ => MettaValue::Long(0),                   // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -192,7 +198,7 @@ pub unsafe extern "C" fn jit_runtime_round(val: u64) -> u64 {
     let result = match mv {
         MettaValue::Float(x) => MettaValue::Long(x.round() as i64),
         MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0), // Type error
+        _ => MettaValue::Long(0),                   // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -326,7 +332,7 @@ pub unsafe extern "C" fn jit_runtime_isnan(val: u64) -> u64 {
     let is_nan = match mv {
         MettaValue::Float(x) => x.is_nan(),
         MettaValue::Long(_) => false, // Integers are never NaN
-        _ => false, // Non-numeric types are not NaN
+        _ => false,                   // Non-numeric types are not NaN
     };
 
     JitValue::from_bool(is_nan).to_bits()
@@ -344,7 +350,7 @@ pub unsafe extern "C" fn jit_runtime_isinf(val: u64) -> u64 {
     let is_inf = match mv {
         MettaValue::Float(x) => x.is_infinite(),
         MettaValue::Long(_) => false, // Integers are never infinite
-        _ => false, // Non-numeric types are not infinite
+        _ => false,                   // Non-numeric types are not infinite
     };
 
     JitValue::from_bool(is_inf).to_bits()

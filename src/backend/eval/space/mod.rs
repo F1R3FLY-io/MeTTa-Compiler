@@ -24,7 +24,9 @@ mod tests;
 
 // Re-export all public functions
 pub(crate) use match_ops::eval_match;
-pub(crate) use memoization::{eval_clear_memo, eval_memo, eval_memo_first, eval_memo_stats, eval_new_memo};
+pub(crate) use memoization::{
+    eval_clear_memo, eval_memo, eval_memo_first, eval_memo_stats, eval_new_memo,
+};
 pub(crate) use nondeterminism::{
     eval_amb, eval_backtrack, eval_collapse, eval_collapse_bind, eval_commit, eval_get_atoms,
     eval_guard, eval_superpose,

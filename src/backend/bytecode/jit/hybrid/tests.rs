@@ -1,9 +1,9 @@
 //! Tests for hybrid JIT/VM execution.
 
 use super::*;
-use std::sync::Arc;
 use crate::backend::bytecode::{BytecodeVM, ChunkBuilder, Opcode};
 use crate::backend::models::MettaValue;
+use std::sync::Arc;
 
 #[test]
 fn test_hybrid_executor_new() {
@@ -130,10 +130,16 @@ fn test_hybrid_executor_run_with_backtracking_simple() {
     // First verify the bytecode works via VM
     let vm_results = executor.run(&chunk).expect("VM should succeed");
     assert_eq!(vm_results.len(), 1, "VM should return 1 result");
-    assert_eq!(vm_results[0], MettaValue::Long(42), "VM should return Long(42)");
+    assert_eq!(
+        vm_results[0],
+        MettaValue::Long(42),
+        "VM should return Long(42)"
+    );
 
     // Now use run_with_backtracking (uses VM since not JIT-compiled yet)
-    let results = executor.run_with_backtracking(&chunk).expect("should succeed");
+    let results = executor
+        .run_with_backtracking(&chunk)
+        .expect("should succeed");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], MettaValue::Long(42));
 }
@@ -154,10 +160,16 @@ fn test_hybrid_executor_run_with_backtracking_arithmetic() {
     // First verify the bytecode works via VM
     let vm_results = executor.run(&chunk).expect("VM should succeed");
     assert_eq!(vm_results.len(), 1, "VM should return 1 result");
-    assert_eq!(vm_results[0], MettaValue::Long(42), "VM should return Long(42)");
+    assert_eq!(
+        vm_results[0],
+        MettaValue::Long(42),
+        "VM should return Long(42)"
+    );
 
     // Now use run_with_backtracking (uses VM since not JIT-compiled yet)
-    let results = executor.run_with_backtracking(&chunk).expect("should succeed");
+    let results = executor
+        .run_with_backtracking(&chunk)
+        .expect("should succeed");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], MettaValue::Long(42));
 }
@@ -201,25 +213,47 @@ fn test_semantic_equivalence_fork_basic() {
 
     // 2. Run with HybridExecutor (uses VM path for first few runs)
     let mut executor = HybridExecutor::new();
-    let hybrid_results = executor.run_with_backtracking(&chunk).expect("Hybrid should succeed");
+    let hybrid_results = executor
+        .run_with_backtracking(&chunk)
+        .expect("Hybrid should succeed");
 
     // 3. Verify semantic equivalence
     assert_eq!(
-        vm_results.len(), hybrid_results.len(),
+        vm_results.len(),
+        hybrid_results.len(),
         "VM and Hybrid must return same number of results"
     );
 
     // Expected: 3 results [11, 12, 13] in some order
-    assert_eq!(vm_results.len(), num_alternatives, "Must return ALL {} alternatives", num_alternatives);
+    assert_eq!(
+        vm_results.len(),
+        num_alternatives,
+        "Must return ALL {} alternatives",
+        num_alternatives
+    );
 
     // Verify all expected values are present
-    let vm_longs: Vec<i64> = vm_results.iter().filter_map(|v| {
-        if let MettaValue::Long(n) = v { Some(*n) } else { None }
-    }).collect();
+    let vm_longs: Vec<i64> = vm_results
+        .iter()
+        .filter_map(|v| {
+            if let MettaValue::Long(n) = v {
+                Some(*n)
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    let hybrid_longs: Vec<i64> = hybrid_results.iter().filter_map(|v| {
-        if let MettaValue::Long(n) = v { Some(*n) } else { None }
-    }).collect();
+    let hybrid_longs: Vec<i64> = hybrid_results
+        .iter()
+        .filter_map(|v| {
+            if let MettaValue::Long(n) = v {
+                Some(*n)
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Both should contain {11, 12, 13}
     let mut vm_sorted = vm_longs.clone();
@@ -227,8 +261,16 @@ fn test_semantic_equivalence_fork_basic() {
     vm_sorted.sort();
     hybrid_sorted.sort();
 
-    assert_eq!(vm_sorted, vec![11, 12, 13], "VM results should be 11, 12, 13");
-    assert_eq!(hybrid_sorted, vec![11, 12, 13], "Hybrid results should be 11, 12, 13");
+    assert_eq!(
+        vm_sorted,
+        vec![11, 12, 13],
+        "VM results should be 11, 12, 13"
+    );
+    assert_eq!(
+        hybrid_sorted,
+        vec![11, 12, 13],
+        "Hybrid results should be 11, 12, 13"
+    );
     assert_eq!(vm_sorted, hybrid_sorted, "Results must match exactly");
 }
 
@@ -261,19 +303,35 @@ fn test_semantic_equivalence_fork_five_alternatives() {
     let vm_results = vm.run().expect("VM should succeed");
 
     let mut executor = HybridExecutor::new();
-    let hybrid_results = executor.run_with_backtracking(&chunk).expect("Hybrid should succeed");
+    let hybrid_results = executor
+        .run_with_backtracking(&chunk)
+        .expect("Hybrid should succeed");
 
     // Verify equivalence
     assert_eq!(vm_results.len(), num_alternatives);
     assert_eq!(hybrid_results.len(), num_alternatives);
 
-    let mut vm_longs: Vec<i64> = vm_results.iter().filter_map(|v| {
-        if let MettaValue::Long(n) = v { Some(*n) } else { None }
-    }).collect();
+    let mut vm_longs: Vec<i64> = vm_results
+        .iter()
+        .filter_map(|v| {
+            if let MettaValue::Long(n) = v {
+                Some(*n)
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    let mut hybrid_longs: Vec<i64> = hybrid_results.iter().filter_map(|v| {
-        if let MettaValue::Long(n) = v { Some(*n) } else { None }
-    }).collect();
+    let mut hybrid_longs: Vec<i64> = hybrid_results
+        .iter()
+        .filter_map(|v| {
+            if let MettaValue::Long(n) = v {
+                Some(*n)
+            } else {
+                None
+            }
+        })
+        .collect();
 
     vm_longs.sort();
     hybrid_longs.sort();
@@ -302,7 +360,9 @@ fn test_semantic_equivalence_fork_single() {
     let vm_results = vm.run().expect("VM should succeed");
 
     let mut executor = HybridExecutor::new();
-    let hybrid_results = executor.run_with_backtracking(&chunk).expect("Hybrid should succeed");
+    let hybrid_results = executor
+        .run_with_backtracking(&chunk)
+        .expect("Hybrid should succeed");
 
     assert_eq!(vm_results.len(), 1, "Single alternative = 1 result");
     assert_eq!(hybrid_results.len(), 1);
@@ -336,6 +396,14 @@ fn test_fork_without_yield_returns_first_only() {
     let vm_results = vm.run().expect("VM should succeed");
 
     // Without Yield, we only get the first alternative
-    assert_eq!(vm_results.len(), 1, "Without Yield, only first result is returned");
-    assert_eq!(vm_results[0], MettaValue::Long(1), "First alternative should be 1");
+    assert_eq!(
+        vm_results.len(),
+        1,
+        "Without Yield, only first result is returned"
+    );
+    assert_eq!(
+        vm_results[0],
+        MettaValue::Long(1),
+        "First alternative should be 1"
+    );
 }

@@ -10,9 +10,7 @@ use crate::backend::bytecode::{BytecodeChunk, BytecodeVM, VmError, VmResult};
 use crate::backend::models::MettaValue;
 
 use super::super::{
-    JitContext, JitValue, JitChoicePoint, JitBindingFrame,
-    STAGE2_THRESHOLD,
-    JIT_SIGNAL_FAIL,
+    JitBindingFrame, JitChoicePoint, JitContext, JitValue, JIT_SIGNAL_FAIL, STAGE2_THRESHOLD,
 };
 use super::executor::HybridExecutor;
 
@@ -60,18 +58,14 @@ impl HybridExecutor {
             self.config.jit_choice_point_capacity,
             JitChoicePoint::default(),
         );
-        self.jit_results.resize(
-            self.config.jit_results_capacity,
-            JitValue::nil(),
-        );
+        self.jit_results
+            .resize(self.config.jit_results_capacity, JitValue::nil());
         self.jit_binding_frames.resize(
             self.config.jit_binding_frames_capacity,
             JitBindingFrame::default(),
         );
-        self.jit_cut_markers.resize(
-            self.config.jit_cut_markers_capacity,
-            0,
-        );
+        self.jit_cut_markers
+            .resize(self.config.jit_cut_markers_capacity, 0);
 
         let constants = chunk.constants();
 
@@ -135,7 +129,10 @@ impl HybridExecutor {
 
         // Set up template results buffer (Space Ops - Phase 2)
         unsafe {
-            ctx.set_template_results(self.template_results.as_mut_ptr(), self.template_results.capacity());
+            ctx.set_template_results(
+                self.template_results.as_mut_ptr(),
+                self.template_results.capacity(),
+            );
         }
 
         // Set up stack save pool (Optimization 5.2)
@@ -173,7 +170,7 @@ impl HybridExecutor {
                     ctx.cleanup_heap_allocations();
                 }
                 return Err(VmError::Runtime(
-                    "Maximum backtracking iterations exceeded".to_string()
+                    "Maximum backtracking iterations exceeded".to_string(),
                 ));
             }
 
@@ -232,9 +229,7 @@ impl HybridExecutor {
             // If there are choice points, backtrack to try next alternative
             if ctx.choice_point_count > 0 {
                 // Call fail_native to get next alternative
-                let next_val = unsafe {
-                    super::super::runtime::jit_runtime_fail_native(&mut ctx)
-                };
+                let next_val = unsafe { super::super::runtime::jit_runtime_fail_native(&mut ctx) };
 
                 // Check if fail_native returned FAIL signal (no more alternatives)
                 if next_val == JIT_SIGNAL_FAIL as u64 {

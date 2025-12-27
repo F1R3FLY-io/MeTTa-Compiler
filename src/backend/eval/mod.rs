@@ -44,9 +44,7 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 
 // Re-export from cartesian module
-use cartesian::{
-    cartesian_product_lazy, CartesianProductResult,
-};
+use cartesian::{cartesian_product_lazy, CartesianProductResult};
 // Re-export CartesianProductIter for trampoline module access
 pub(crate) use cartesian::CartesianProductIter;
 
@@ -70,10 +68,12 @@ use rules::{try_match_all_rules, try_match_all_rules_iterative, try_match_all_ru
 use trampoline::{eval_trampoline, Continuation, WorkItem, MAX_EVAL_DEPTH};
 
 // Re-export from step module
-pub(crate) use step::{eval_step, eval_sexpr_step, EvalStep, ProcessedSExpr};
+pub(crate) use step::{eval_sexpr_step, eval_step, EvalStep, ProcessedSExpr};
 
 // Re-export from processing module
-pub(crate) use processing::{handle_no_rule_match, process_collected_sexpr, process_single_combination};
+pub(crate) use processing::{
+    handle_no_rule_match, process_collected_sexpr, process_single_combination,
+};
 
 // Re-export from conjunction module
 use conjunction::eval_conjunction;
@@ -98,8 +98,8 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
     debug!(metta_val = ?value);
 
     use crate::backend::bytecode::{
-        can_compile_cached, can_compile_with_env, eval_bytecode_hybrid,
-        eval_bytecode_with_env, global_tiered_cache, ExecutionTier, TierStatusKind,
+        can_compile_cached, can_compile_with_env, eval_bytecode_hybrid, eval_bytecode_with_env,
+        global_tiered_cache, ExecutionTier, TierStatusKind,
     };
 
     // Track concurrent evaluations for sequential mode detection (hybrid scheduler only)
@@ -175,8 +175,10 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
 /// The HybridExecutor handles JIT tier dispatch internally, executing via:
 /// - JIT native code if hot and compiled
 /// - Bytecode VM otherwise
-fn execute_bytecode_chunk(chunk: &std::sync::Arc<crate::backend::bytecode::BytecodeChunk>) -> Result<Vec<MettaValue>, ()> {
-    use crate::backend::bytecode::{HybridExecutor, global_space_registry, SpaceRegistry};
+fn execute_bytecode_chunk(
+    chunk: &std::sync::Arc<crate::backend::bytecode::BytecodeChunk>,
+) -> Result<Vec<MettaValue>, ()> {
+    use crate::backend::bytecode::{global_space_registry, HybridExecutor, SpaceRegistry};
 
     let mut executor = HybridExecutor::new();
 

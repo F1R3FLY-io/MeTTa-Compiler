@@ -2,7 +2,6 @@
 //!
 //! Handles: Call, TailCall, CallN, TailCallN, CallNative, CallExternal, CallCached
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -61,7 +60,10 @@ pub fn compile_call<'a, 'b>(
         for i in (0..arity).rev() {
             let arg = codegen.pop()?;
             let slot_offset = (i * 8) as i32;
-            codegen.builder.ins().stack_store(arg, args_slot, slot_offset);
+            codegen
+                .builder
+                .ins()
+                .stack_store(arg, args_slot, slot_offset);
         }
 
         // Get pointer to arguments array
@@ -124,7 +126,10 @@ pub fn compile_tail_call<'a, 'b>(
         for i in (0..arity).rev() {
             let arg = codegen.pop()?;
             let slot_offset = (i * 8) as i32;
-            codegen.builder.ins().stack_store(arg, args_slot, slot_offset);
+            codegen
+                .builder
+                .ins()
+                .stack_store(arg, args_slot, slot_offset);
         }
 
         let args_ptr = codegen.builder.ins().stack_addr(types::I64, args_slot, 0);
@@ -180,7 +185,10 @@ pub fn compile_call_n<'a, 'b>(
         for i in (0..arity).rev() {
             let arg = codegen.pop()?;
             let slot_offset = (i * 8) as i32;
-            codegen.builder.ins().stack_store(arg, args_slot, slot_offset);
+            codegen
+                .builder
+                .ins()
+                .stack_store(arg, args_slot, slot_offset);
         }
 
         // Pop head value (it's below the args on stack)
@@ -190,20 +198,20 @@ pub fn compile_call_n<'a, 'b>(
         let args_ptr = codegen.builder.ins().stack_addr(types::I64, args_slot, 0);
 
         // Call jit_runtime_call_n(ctx, head_val, args_ptr, arity, ip)
-        let call_inst = codegen.builder.ins().call(
-            func_ref,
-            &[ctx_ptr, head_val, args_ptr, arity_val, ip_val],
-        );
+        let call_inst = codegen
+            .builder
+            .ins()
+            .call(func_ref, &[ctx_ptr, head_val, args_ptr, arity_val, ip_val]);
         let result = codegen.builder.inst_results(call_inst)[0];
         codegen.push(result)?;
     } else {
         // No args - just pop head
         let head_val = codegen.pop()?;
         let null_ptr = codegen.builder.ins().iconst(types::I64, 0);
-        let call_inst = codegen.builder.ins().call(
-            func_ref,
-            &[ctx_ptr, head_val, null_ptr, arity_val, ip_val],
-        );
+        let call_inst = codegen
+            .builder
+            .ins()
+            .call(func_ref, &[ctx_ptr, head_val, null_ptr, arity_val, ip_val]);
         let result = codegen.builder.inst_results(call_inst)[0];
         codegen.push(result)?;
     }
@@ -242,26 +250,29 @@ pub fn compile_tail_call_n<'a, 'b>(
         for i in (0..arity).rev() {
             let arg = codegen.pop()?;
             let slot_offset = (i * 8) as i32;
-            codegen.builder.ins().stack_store(arg, args_slot, slot_offset);
+            codegen
+                .builder
+                .ins()
+                .stack_store(arg, args_slot, slot_offset);
         }
 
         // Pop head value
         let head_val = codegen.pop()?;
 
         let args_ptr = codegen.builder.ins().stack_addr(types::I64, args_slot, 0);
-        let call_inst = codegen.builder.ins().call(
-            func_ref,
-            &[ctx_ptr, head_val, args_ptr, arity_val, ip_val],
-        );
+        let call_inst = codegen
+            .builder
+            .ins()
+            .call(func_ref, &[ctx_ptr, head_val, args_ptr, arity_val, ip_val]);
         let result = codegen.builder.inst_results(call_inst)[0];
         codegen.push(result)?;
     } else {
         let head_val = codegen.pop()?;
         let null_ptr = codegen.builder.ins().iconst(types::I64, 0);
-        let call_inst = codegen.builder.ins().call(
-            func_ref,
-            &[ctx_ptr, head_val, null_ptr, arity_val, ip_val],
-        );
+        let call_inst = codegen
+            .builder
+            .ins()
+            .call(func_ref, &[ctx_ptr, head_val, null_ptr, arity_val, ip_val]);
         let result = codegen.builder.inst_results(call_inst)[0];
         codegen.push(result)?;
     }

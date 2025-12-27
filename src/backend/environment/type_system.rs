@@ -30,7 +30,11 @@ impl Environment {
         self.add_to_space(&type_assertion);
 
         // Invalidate type index cache
-        *self.shared.type_index_dirty.write().expect("type_index_dirty lock poisoned") = true;
+        *self
+            .shared
+            .type_index_dirty
+            .write()
+            .expect("type_index_dirty lock poisoned") = true;
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
@@ -40,7 +44,11 @@ impl Environment {
     ///
     /// The type index is lazily initialized and cached until invalidated
     pub(crate) fn ensure_type_index(&self) {
-        let dirty = *self.shared.type_index_dirty.read().expect("type_index_dirty lock poisoned");
+        let dirty = *self
+            .shared
+            .type_index_dirty
+            .read()
+            .expect("type_index_dirty lock poisoned");
         if !dirty {
             return; // Index is up to date
         }
@@ -68,8 +76,16 @@ impl Environment {
         let type_subtrie = btm.restrict(&type_prefix_map);
 
         // Cache the subtrie
-        *self.shared.type_index.write().expect("type_index lock poisoned") = Some(type_subtrie);
-        *self.shared.type_index_dirty.write().expect("type_index_dirty lock poisoned") = false;
+        *self
+            .shared
+            .type_index
+            .write()
+            .expect("type_index lock poisoned") = Some(type_subtrie);
+        *self
+            .shared
+            .type_index_dirty
+            .write()
+            .expect("type_index_dirty lock poisoned") = false;
     }
 
     /// Get type for an atom by querying MORK Space
@@ -87,7 +103,11 @@ impl Environment {
         self.ensure_type_index();
 
         // Get the type index subtrie
-        let type_index_opt = self.shared.type_index.read().expect("type_index lock poisoned");
+        let type_index_opt = self
+            .shared
+            .type_index
+            .read()
+            .expect("type_index lock poisoned");
         let type_index = match type_index_opt.as_ref() {
             Some(index) => index,
             None => {

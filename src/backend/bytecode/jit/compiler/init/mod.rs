@@ -9,7 +9,6 @@
 //! All traits use static dispatch - they're implemented directly on JitCompiler
 //! and the compiler inlines everything at compile time. No `dyn Trait` is used.
 
-
 use cranelift_module::FuncId;
 
 // Re-export all initialization traits

@@ -501,7 +501,10 @@ async fn evaluate_batch_parallel(
         })
         .collect();
 
-    trace!(num_tasks = receivers.len(), "Tasks spawned on priority pool");
+    trace!(
+        num_tasks = receivers.len(),
+        "Tasks spawned on priority pool"
+    );
 
     // Collect results from receivers
     let mut results = Vec::with_capacity(receivers.len());

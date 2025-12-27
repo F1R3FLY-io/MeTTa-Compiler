@@ -5,7 +5,6 @@
 //!          EvalSuperpose, EvalMemo, EvalMemoFirst, EvalPragma, EvalFunction,
 //!          EvalLambda, EvalApply
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -44,9 +43,7 @@ pub struct SpecialFormsHandlerContext<'m> {
 /// Everything else (including TAG_BOOL_TRUE, integers, heap values) is truthy.
 /// Stack: [condition, then_val, else_val] -> [result]
 
-pub fn compile_eval_if<'a, 'b>(
-    codegen: &mut CodegenContext<'a, 'b>,
-) -> JitResult<()> {
+pub fn compile_eval_if<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
     let else_val = codegen.pop()?;
     let then_val = codegen.pop()?;
     let condition = codegen.pop()?;
@@ -62,19 +59,13 @@ pub fn compile_eval_if<'a, 'b>(
         .icmp(IntCC::Equal, condition, tag_bool_false);
 
     // is_nil = (condition == TAG_NIL)
-    let is_nil = codegen
-        .builder
-        .ins()
-        .icmp(IntCC::Equal, condition, tag_nil);
+    let is_nil = codegen.builder.ins().icmp(IntCC::Equal, condition, tag_nil);
 
     // is_falsy = is_false || is_nil
     let is_falsy = codegen.builder.ins().bor(is_false, is_nil);
 
     // result = is_falsy ? else_val : then_val
-    let result = codegen
-        .builder
-        .ins()
-        .select(is_falsy, else_val, then_val);
+    let result = codegen.builder.ins().select(is_falsy, else_val, then_val);
     codegen.push(result)?;
     Ok(())
 }
@@ -120,9 +111,7 @@ pub fn compile_eval_let<'a, 'b>(
 /// This opcode is a marker/placeholder that just returns Unit.
 /// Stack: [] -> [Unit]
 
-pub fn compile_eval_let_star<'a, 'b>(
-    codegen: &mut CodegenContext<'a, 'b>,
-) -> JitResult<()> {
+pub fn compile_eval_let_star<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
     let unit_val = codegen.const_unit();
     codegen.push(unit_val)?;
     Ok(())
@@ -194,9 +183,7 @@ pub fn compile_eval_case<'a, 'b>(
 /// Chain (;) evaluates both but only returns the second result.
 /// Stack: [first, second] -> [second]
 
-pub fn compile_eval_chain<'a, 'b>(
-    codegen: &mut CodegenContext<'a, 'b>,
-) -> JitResult<()> {
+pub fn compile_eval_chain<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
     let second = codegen.pop()?;
     let _first = codegen.pop()?; // Discard first value
     codegen.push(second)?;
@@ -489,10 +476,10 @@ pub fn compile_eval_function<'a, 'b>(
     let name_idx_val = codegen.builder.ins().iconst(types::I64, name_idx);
     let param_count_val = codegen.builder.ins().iconst(types::I64, param_count);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let call_inst = codegen.builder.ins().call(
-        func_ref,
-        &[ctx_ptr, name_idx_val, param_count_val, ip_val],
-    );
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, name_idx_val, param_count_val, ip_val]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
     Ok(())

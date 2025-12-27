@@ -25,7 +25,7 @@
 //! - [`handlers`]: Opcode-specific IR generation handlers
 //! - [`tiered`]: Tiered compilation strategy and JIT cache management
 //! - [`runtime`]: Runtime support functions callable from JIT code
-//! - [`hybrid`]: Hybrid executor combining JIT with interpreter fallback (not yet available)
+//! - [`hybrid`]: Hybrid executor combining JIT with interpreter fallback
 
 pub mod types;
 pub mod profile;
@@ -34,6 +34,7 @@ pub mod compiler;
 pub mod handlers;
 pub mod runtime;
 pub mod tiered;
+pub mod hybrid;
 
 // Re-export main types
 pub use types::{
@@ -54,7 +55,7 @@ pub use types::{
 pub use profile::{JitProfile, JitState, HOT_THRESHOLD};
 pub use codegen::CodegenContext;
 pub use compiler::JitCompiler;
-pub use tiered::{Tier, JitCache, TieredCompiler, STAGE2_THRESHOLD};
+pub use tiered::{Tier, JitCache, TieredCompiler, TieredStats, ChunkId, STAGE2_THRESHOLD};
 
 /// JIT compilation is always enabled with tiered compilation
 pub const JIT_ENABLED: bool = true;

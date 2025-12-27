@@ -8,6 +8,7 @@
 //! - `opcodes`: Bytecode instruction definitions
 //! - `optimizer`: Peephole optimization and dead code elimination
 //! - `jit`: Just-in-time compilation infrastructure
+//! - `vm`: Virtual machine for bytecode execution
 //! - `chunk`: Compiled bytecode container
 //! - `compiler`: MeTTa to bytecode compiler
 //! - `memo_cache`: Thread-safe memoization cache
@@ -26,6 +27,7 @@ pub mod mork_bridge;
 pub mod native_registry;
 pub mod opcodes;
 pub mod optimizer;
+pub mod vm;
 
 pub use cache::{cache_sizes, clear_caches, get_stats as cache_stats, BytecodeCacheStats};
 pub use chunk::{BytecodeChunk, ChunkBuilder};

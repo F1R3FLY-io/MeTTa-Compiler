@@ -454,6 +454,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
 /// Result of a single evaluation step
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum EvalStep {
     /// Evaluation complete, return this result
     Done(EvalResult),

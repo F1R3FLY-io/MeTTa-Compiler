@@ -18,6 +18,7 @@ use super::super::eval;
 /// car-atom: (car-atom expr) -> first element
 /// Returns the first element of an expression (head)
 /// Example: (car-atom (a b c)) -> a
+#[allow(dead_code)]
 pub(crate) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("car-atom", items, 1, env, "(car-atom expr)");
 
@@ -64,6 +65,7 @@ pub(crate) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// cdr-atom: (cdr-atom expr) -> rest of expression (tail)
 /// Returns all elements except the first
 /// Example: (cdr-atom (a b c)) -> (b c)
+#[allow(dead_code)]
 pub(crate) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("cdr-atom", items, 1, env, "(cdr-atom expr)");
 
@@ -115,6 +117,7 @@ pub(crate) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// cons-atom: (cons-atom head tail) -> (head elements...)
 /// Constructs an expression by prepending head to tail
 /// Example: (cons-atom a (b c)) -> (a b c)
+#[allow(dead_code)]
 pub(crate) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("cons-atom", items, 2, env, "(cons-atom head tail)");
 
@@ -155,6 +158,7 @@ pub(crate) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// decons-atom: (decons-atom expr) -> (head tail)
 /// Deconstructs an expression into (head tail) pair
 /// Example: (decons-atom (a b c)) -> (a (b c))
+#[allow(dead_code)]
 pub(crate) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("decons-atom", items, 1, env, "(decons-atom expr)");
 
@@ -193,6 +197,7 @@ pub(crate) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 /// size-atom: (size-atom expr) -> number
 /// Returns the number of elements in an expression
 /// Example: (size-atom (a b c)) -> 3
+#[allow(dead_code)]
 pub(crate) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("size-atom", items, 1, env, "(size-atom expr)");
 
@@ -228,6 +233,7 @@ pub(crate) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// max-atom: (max-atom expr) -> maximum number
 /// Returns the maximum numeric value in an expression
 /// Example: (max-atom (1 5 3 2)) -> 5
+#[allow(dead_code)]
 pub(crate) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("max-atom", items, 1, env, "(max-atom expr)");
 

@@ -222,6 +222,7 @@ pub(crate) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 /// This is the TCO-enabled version of eval_let(). Instead of calling eval()
 /// directly for the value and body, it returns an EvalStep that the trampoline
 /// will process, preventing nested trampolines.
+#[allow(dead_code)]
 pub(crate) fn eval_let_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     let args = &items[1..];
 

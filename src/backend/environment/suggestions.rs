@@ -19,7 +19,11 @@ impl Environment {
     /// let suggestions = env.suggest_similar_symbols("fibonaci", 2);
     /// // Returns: [("fibonacci", 1)]
     /// ```
-    pub fn suggest_similar_symbols(&self, query: &str, max_distance: usize) -> Vec<(String, usize)> {
+    pub fn suggest_similar_symbols(
+        &self,
+        query: &str,
+        max_distance: usize,
+    ) -> Vec<(String, usize)> {
         self.shared
             .fuzzy_matcher
             .read()

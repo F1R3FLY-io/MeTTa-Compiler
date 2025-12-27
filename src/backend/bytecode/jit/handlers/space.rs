@@ -2,7 +2,6 @@
 //!
 //! Handles: SpaceAdd, SpaceRemove, SpaceGetAtoms, SpaceMatch, NewState, GetState, ChangeState
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;

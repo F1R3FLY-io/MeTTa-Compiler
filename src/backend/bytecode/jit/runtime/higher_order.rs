@@ -7,12 +7,12 @@
 //! - decon_atom - Deconstruct an S-expression into (head, tail) pair
 //! - repr - Convert value to string representation
 
-use std::sync::Arc;
-use crate::backend::bytecode::jit::types::{JitBailoutReason, JitContext, JitValue};
+use super::helpers::metta_to_jit;
 use crate::backend::bytecode::chunk::BytecodeChunk;
+use crate::backend::bytecode::jit::types::{JitBailoutReason, JitContext, JitValue};
 use crate::backend::bytecode::vm::BytecodeVM;
 use crate::backend::models::MettaValue;
-use super::helpers::metta_to_jit;
+use std::sync::Arc;
 
 // =============================================================================
 // Phase 1.7: S-Expression Operations - DeconAtom, Repr
@@ -29,11 +29,7 @@ use super::helpers::metta_to_jit;
 /// # Returns
 /// NaN-boxed S-expression `(head tail)`, or Nil for non-S-expressions
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_decon_atom(
-    _ctx: *mut JitContext,
-    val: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_decon_atom(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
     let metta_val = jit_val.to_metta();
 
@@ -46,10 +42,7 @@ pub unsafe extern "C" fn jit_runtime_decon_atom(
         }
         MettaValue::SExpr(_) => {
             // Empty S-expression - return (Nil, ())
-            let result = MettaValue::SExpr(vec![
-                MettaValue::Nil,
-                MettaValue::SExpr(vec![]),
-            ]);
+            let result = MettaValue::SExpr(vec![MettaValue::Nil, MettaValue::SExpr(vec![])]);
             metta_to_jit(&result).to_bits()
         }
         _ => {
@@ -69,11 +62,7 @@ pub unsafe extern "C" fn jit_runtime_decon_atom(
 /// # Returns
 /// NaN-boxed String containing the representation
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_repr(
-    _ctx: *mut JitContext,
-    val: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_repr(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
     let metta_val = jit_val.to_metta();
 
@@ -104,7 +93,11 @@ fn execute_template_single(chunk: &Arc<BytecodeChunk>, binding: MettaValue) -> M
 /// Helper: Execute a foldl template chunk with accumulator and item
 ///
 /// Creates a mini-VM, pushes (acc, item) as local slots, and executes.
-fn execute_foldl_template(chunk: &Arc<BytecodeChunk>, acc: MettaValue, item: MettaValue) -> MettaValue {
+fn execute_foldl_template(
+    chunk: &Arc<BytecodeChunk>,
+    acc: MettaValue,
+    item: MettaValue,
+) -> MettaValue {
     let mut vm = BytecodeVM::new(Arc::clone(chunk));
     // Push acc as local slot 0, item as local slot 1
     vm.push_initial_value(acc);

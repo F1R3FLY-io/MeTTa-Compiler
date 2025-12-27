@@ -6,7 +6,7 @@
 //! - load_constant - Constant pool access
 //! - debug_print, debug_stack - Debugging utilities
 
-use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_NIL, TAG_HEAP, PAYLOAD_MASK};
+use crate::backend::bytecode::jit::types::{JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_NIL};
 use crate::backend::models::MettaValue;
 use tracing::trace;
 

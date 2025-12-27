@@ -117,10 +117,7 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
                 if let MettaValue::Atom(ref op) = sexpr_items[0] {
                     if op == "=" {
                         // Collect the rule for bulk addition
-                        let rule = Rule::new(
-                            sexpr_items[1].clone(),
-                            sexpr_items[2].clone(),
-                        );
+                        let rule = Rule::new(sexpr_items[1].clone(), sexpr_items[2].clone());
                         rules_to_add.push(rule);
                         continue;
                     }
@@ -499,7 +496,6 @@ pub(super) fn eval_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 
     (vec![MettaValue::Unit], new_env)
 }
-
 
 #[cfg(test)]
 mod tests {

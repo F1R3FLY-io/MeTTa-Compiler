@@ -10,14 +10,13 @@
 //! - apply_subst - Apply substitution to an expression
 //! - define_rule - Define a new rule
 
-use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, JitBindingEntry,
-    JIT_SIGNAL_FAIL,
-};
-use crate::backend::models::{MettaValue, Bindings};
-use crate::backend::bytecode::mork_bridge::{MorkBridge, CompiledRule};
-use crate::backend::eval::apply_bindings;
 use super::helpers::{box_long, metta_to_jit};
+use crate::backend::bytecode::jit::types::{
+    JitBailoutReason, JitBindingEntry, JitContext, JitValue, JIT_SIGNAL_FAIL,
+};
+use crate::backend::bytecode::mork_bridge::{CompiledRule, MorkBridge};
+use crate::backend::eval::apply_bindings;
+use crate::backend::models::{Bindings, MettaValue};
 
 // =============================================================================
 // Phase C: Rule Dispatch Operations
@@ -88,11 +87,7 @@ pub unsafe extern "C" fn jit_runtime_dispatch_rules(
 /// # Returns
 /// NaN-boxed result value, or nil if rule doesn't match/doesn't exist
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_try_rule(
-    ctx: *mut JitContext,
-    rule_idx: u64,
-    ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_try_rule(ctx: *mut JitContext, rule_idx: u64, ip: u64) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
         // No context - return nil as a valid "no match" result
@@ -118,7 +113,9 @@ pub unsafe extern "C" fn jit_runtime_try_rule(
 
     // Install bindings from the pattern match into the JIT context
     // We need to push a new binding frame and populate it with the rule's bindings
-    if ctx_ref.binding_frames_count < ctx_ref.binding_frames_cap && !ctx_ref.binding_frames.is_null() {
+    if ctx_ref.binding_frames_count < ctx_ref.binding_frames_cap
+        && !ctx_ref.binding_frames.is_null()
+    {
         // Push a new binding frame for this rule
         let frame_ptr = ctx_ref.binding_frames.add(ctx_ref.binding_frames_count);
         let frame = &mut *frame_ptr;
@@ -295,11 +292,7 @@ pub unsafe extern "C" fn jit_runtime_lookup_rules(
 /// # Returns
 /// NaN-boxed result with variables substituted
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_apply_subst(
-    ctx: *mut JitContext,
-    expr: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_apply_subst(ctx: *mut JitContext, expr: u64, _ip: u64) -> u64 {
     let expr_val = JitValue::from_raw(expr);
     let expr_metta = expr_val.to_metta();
 

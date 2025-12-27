@@ -3,8 +3,8 @@
 //! Handles LoadGlobal, StoreGlobal, LoadSpace, and LoadUpvalue opcodes.
 
 use cranelift::prelude::*;
-use cranelift_module::{FuncId, Module};
 use cranelift_jit::JITModule;
+use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::JitResult;
@@ -40,7 +40,10 @@ pub fn compile_load_global(
     let ctx_ptr = codegen.ctx_ptr();
     let idx_val = codegen.builder.ins().iconst(types::I64, symbol_idx);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, idx_val, ip_val]);
+    let inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, idx_val, ip_val]);
     let result = codegen.builder.inst_results(inst)[0];
     codegen.push(result)?;
 
@@ -68,7 +71,10 @@ pub fn compile_store_global(
     let value = codegen.pop()?;
     let idx_val = codegen.builder.ins().iconst(types::I64, symbol_idx);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    codegen.builder.ins().call(func_ref, &[ctx_ptr, idx_val, value, ip_val]);
+    codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, idx_val, value, ip_val]);
     // Result is Unit, but we don't push it (store is side-effect only)
 
     Ok(())
@@ -94,7 +100,10 @@ pub fn compile_load_space(
     let ctx_ptr = codegen.ctx_ptr();
     let idx_val = codegen.builder.ins().iconst(types::I64, name_idx);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, idx_val, ip_val]);
+    let inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, idx_val, ip_val]);
     let result = codegen.builder.inst_results(inst)[0];
     codegen.push(result)?;
 
@@ -122,7 +131,10 @@ pub fn compile_load_upvalue(
     let depth_val = codegen.builder.ins().iconst(types::I64, depth);
     let index_val = codegen.builder.ins().iconst(types::I64, index);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, depth_val, index_val, ip_val]);
+    let inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, depth_val, index_val, ip_val]);
     let result = codegen.builder.inst_results(inst)[0];
     codegen.push(result)?;
 

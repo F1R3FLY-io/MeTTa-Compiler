@@ -5,15 +5,15 @@
 //! - call_external - Call an external function by name index
 //! - call_cached - Call a function with memoization
 
+use super::helpers::metta_to_jit;
+use crate::backend::bytecode::chunk::BytecodeChunk;
+use crate::backend::bytecode::external_registry::{ExternalContext, ExternalRegistry};
+use crate::backend::bytecode::jit::types::{JitContext, JitValue};
+use crate::backend::bytecode::mork_bridge::MorkBridge;
+use crate::backend::bytecode::vm::BytecodeVM;
+use crate::backend::models::MettaValue;
 use std::sync::Arc;
 use tracing::warn;
-use crate::backend::bytecode::jit::types::{JitContext, JitValue};
-use crate::backend::models::MettaValue;
-use crate::backend::bytecode::mork_bridge::MorkBridge;
-use crate::backend::bytecode::chunk::BytecodeChunk;
-use crate::backend::bytecode::vm::BytecodeVM;
-use crate::backend::bytecode::external_registry::{ExternalRegistry, ExternalContext};
-use super::helpers::metta_to_jit;
 
 // =============================================================================
 // Phase F: Advanced Calls

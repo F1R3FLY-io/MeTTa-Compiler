@@ -27,36 +27,51 @@
 //! - [`runtime`]: Runtime support functions callable from JIT code
 //! - [`hybrid`]: Hybrid executor combining JIT with interpreter fallback
 
-pub mod types;
-pub mod profile;
 pub mod codegen;
 pub mod compiler;
 pub mod handlers;
+pub mod hybrid;
+pub mod profile;
 pub mod runtime;
 pub mod tiered;
-pub mod hybrid;
+pub mod types;
 
 // Re-export main types
+pub use codegen::CodegenContext;
+pub use compiler::JitCompiler;
+pub use hybrid::{HybridConfig, HybridExecutor, HybridStats};
+pub use profile::{JitProfile, JitState, HOT_THRESHOLD};
+pub use tiered::{
+    CacheEntry, ChunkId, JitCache, Tier, TieredCompiler, TieredStats, STAGE2_THRESHOLD,
+};
 pub use types::{
-    JitValue, JitContext, JitResult, JitError, JitBailoutReason,
-    JitChoicePoint, JitAlternative, JitAlternativeTag,
+    JitAlternative,
+    JitAlternativeTag,
+    JitBailoutReason,
     // Binding/Environment support (Phase A)
-    JitBindingEntry, JitBindingFrame,
+    JitBindingEntry,
+    JitBindingFrame,
+    JitChoicePoint,
     // Lambda closure support
     JitClosure,
-    // Stage 2 JIT signal constants
-    JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, JIT_SIGNAL_FAIL, JIT_SIGNAL_ERROR, JIT_SIGNAL_HALT,
+    JitContext,
+    JitError,
+    JitResult,
+    JitValue,
     JIT_SIGNAL_BAILOUT,
+    JIT_SIGNAL_ERROR,
+    JIT_SIGNAL_FAIL,
+    JIT_SIGNAL_HALT,
+    // Stage 2 JIT signal constants
+    JIT_SIGNAL_OK,
+    JIT_SIGNAL_YIELD,
     // Optimization 5.2: Pre-allocation constants
-    MAX_ALTERNATIVES_INLINE, STACK_SAVE_POOL_SIZE, MAX_STACK_SAVE_VALUES,
+    MAX_ALTERNATIVES_INLINE,
+    MAX_STACK_SAVE_VALUES,
+    STACK_SAVE_POOL_SIZE,
     // Optimization 5.3: Variable index cache
     VAR_INDEX_CACHE_SIZE,
 };
-pub use profile::{JitProfile, JitState, HOT_THRESHOLD};
-pub use codegen::CodegenContext;
-pub use compiler::JitCompiler;
-pub use tiered::{Tier, JitCache, TieredCompiler, TieredStats, ChunkId, CacheEntry, STAGE2_THRESHOLD};
-pub use hybrid::{HybridExecutor, HybridConfig, HybridStats};
 
 /// JIT compilation is always enabled with tiered compilation
 pub const JIT_ENABLED: bool = true;

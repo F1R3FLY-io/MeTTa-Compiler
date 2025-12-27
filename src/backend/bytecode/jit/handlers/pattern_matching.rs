@@ -2,7 +2,6 @@
 //!
 //! Handles: Match, MatchBind, MatchHead, MatchArity, MatchGuard, Unify, UnifyBind
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -193,10 +192,7 @@ pub fn compile_match_guard<'a, 'b>(
         .icmp(IntCC::Equal, match_result, true_val);
     let guard_is_true = codegen.builder.ins().icmp(IntCC::Equal, guard, true_val);
     let both_true = codegen.builder.ins().band(match_is_true, guard_is_true);
-    let result = codegen
-        .builder
-        .ins()
-        .select(both_true, true_val, false_val);
+    let result = codegen.builder.ins().select(both_true, true_val, false_val);
     codegen.push(result)?;
     Ok(())
 }

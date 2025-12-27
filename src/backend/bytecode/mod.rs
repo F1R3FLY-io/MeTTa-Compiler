@@ -96,18 +96,18 @@
 //! This hybrid approach keeps MORK's O(k) pattern matching while
 //! gaining bytecode's execution efficiency.
 
-pub mod opcodes;
 pub mod cache;
 pub mod chunk;
-pub mod vm;
 pub mod compiler;
+pub mod external_registry;
+pub mod memo_cache;
 pub mod mork_bridge;
 pub mod native_registry;
-pub mod memo_cache;
-pub mod external_registry;
-pub mod space_registry;
+pub mod opcodes;
 pub mod optimizer;
+pub mod space_registry;
 pub mod tiered_cache;
+pub mod vm;
 
 /// Cranelift JIT compilation module
 ///
@@ -116,49 +116,81 @@ pub mod tiered_cache;
 pub mod jit;
 
 // Re-export main types
+pub use cache::{cache_sizes, clear_caches, get_stats as cache_stats, BytecodeCacheStats};
+pub use chunk::{
+    BytecodeChunk, ChunkBuilder, CompiledPattern, JumpLabel, JumpLabelShort, JumpTable,
+};
+pub use compiler::{compile, compile_arc, CompileContext, CompileError, CompileResult, Compiler};
+pub use external_registry::{
+    ExternalContext, ExternalError, ExternalFn, ExternalRegistry, ExternalResult,
+};
+pub use memo_cache::{CacheStats as MemoCacheStats, MemoCache};
+pub use mork_bridge::{BridgeStats, CompiledRule, MorkBridge};
+pub use native_registry::{NativeContext, NativeError, NativeFn, NativeRegistry, NativeResult};
 pub use opcodes::Opcode;
-pub use chunk::{BytecodeChunk, ChunkBuilder, CompiledPattern, JumpLabel, JumpLabelShort, JumpTable};
-pub use vm::{BytecodeVM, VmConfig, VmError, VmResult, CallFrame, BindingFrame, ChoicePoint, Alternative};
-pub use compiler::{Compiler, CompileContext, CompileError, CompileResult, compile, compile_arc};
-pub use mork_bridge::{MorkBridge, CompiledRule, BridgeStats};
-pub use cache::{BytecodeCacheStats, get_stats as cache_stats, cache_sizes, clear_caches};
-pub use native_registry::{NativeRegistry, NativeContext, NativeError, NativeResult, NativeFn};
-pub use memo_cache::{MemoCache, CacheStats as MemoCacheStats};
-pub use external_registry::{ExternalRegistry, ExternalContext, ExternalError, ExternalResult, ExternalFn};
-pub use space_registry::SpaceRegistry;
 pub use optimizer::{
-    PeepholeOptimizer, OptimizationStats, optimize_bytecode,
-    DeadCodeEliminator, DceStats, eliminate_dead_code, optimize_bytecode_full,
-    PeepholeAction,
+    eliminate_dead_code, optimize_bytecode, optimize_bytecode_full, DceStats, DeadCodeEliminator,
+    OptimizationStats, PeepholeAction, PeepholeOptimizer,
+};
+pub use space_registry::SpaceRegistry;
+pub use vm::{
+    Alternative, BindingFrame, BytecodeVM, CallFrame, ChoicePoint, VmConfig, VmError, VmResult,
 };
 
 // JIT re-exports - always available with tiered compilation
 pub use jit::{
+    CacheEntry,
+    ChunkId,
+    HybridConfig,
     // Hybrid executor
-    HybridExecutor, HybridConfig, HybridStats,
+    HybridExecutor,
+    HybridStats,
+    JitAlternative,
+    JitAlternativeTag,
+    JitBailoutReason,
+    JitBindingEntry,
+    JitBindingFrame,
     // Tiered compilation
-    JitCache, TieredCompiler, TieredStats, Tier, ChunkId, CacheEntry,
-    // JIT types
-    JitValue, JitContext, JitResult, JitError, JitBailoutReason,
-    JitChoicePoint, JitAlternative, JitAlternativeTag,
-    JitBindingEntry, JitBindingFrame,
+    JitCache,
+    JitChoicePoint,
+    JitContext,
+    JitError,
     // JIT profiling
-    JitProfile, JitState, HOT_THRESHOLD, STAGE2_THRESHOLD,
+    JitProfile,
+    JitResult,
+    JitState,
+    // JIT types
+    JitValue,
+    Tier,
+    TieredCompiler,
+    TieredStats,
+    HOT_THRESHOLD,
+    JIT_SIGNAL_BAILOUT,
+    JIT_SIGNAL_ERROR,
+    JIT_SIGNAL_FAIL,
+    JIT_SIGNAL_HALT,
     // JIT signals
-    JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, JIT_SIGNAL_FAIL, JIT_SIGNAL_ERROR,
-    JIT_SIGNAL_HALT, JIT_SIGNAL_BAILOUT,
+    JIT_SIGNAL_OK,
+    JIT_SIGNAL_YIELD,
+    STAGE2_THRESHOLD,
 };
 
 // Unified tiered compilation cache re-exports
 pub use tiered_cache::{
-    // Main cache
-    TieredCompilationCache, global_tiered_cache,
+    global_tiered_cache,
+    ExecutionTier,
     // State and tier types
-    ExprCompilationState, ExecutionTier, TierStatusKind, NativeCode,
+    ExprCompilationState,
+    NativeCode,
+    TierStatusKind,
     // Statistics
     TieredCacheStats,
+    // Main cache
+    TieredCompilationCache,
     // Thresholds
-    BYTECODE_THRESHOLD, JIT1_THRESHOLD, JIT2_THRESHOLD,
+    BYTECODE_THRESHOLD,
+    JIT1_THRESHOLD,
+    JIT2_THRESHOLD,
 };
 
 // Sequential mode detection (only with hybrid-p2-priority-scheduler feature)
@@ -175,7 +207,10 @@ pub use tiered_cache::{enter_eval, exit_eval, is_sequential_mode};
 /// This constant is always `true` since tiered compilation is unconditionally
 /// enabled. It's kept for backward API compatibility but should not be used
 /// for conditional checks (which would be dead code).
-#[deprecated(since = "0.3.0", note = "Bytecode is always enabled; this constant will be removed in a future version")]
+#[deprecated(
+    since = "0.3.0",
+    note = "Bytecode is always enabled; this constant will be removed in a future version"
+)]
 pub const BYTECODE_ENABLED: bool = true;
 
 /// Global space registry for JIT runtime
@@ -242,8 +277,12 @@ impl std::error::Error for BytecodeEvalError {}
 pub fn can_compile(expr: &MettaValue) -> bool {
     match expr {
         // Always compilable literals
-        MettaValue::Nil | MettaValue::Unit | MettaValue::Bool(_) |
-        MettaValue::Long(_) | MettaValue::Float(_) | MettaValue::String(_) => true,
+        MettaValue::Nil
+        | MettaValue::Unit
+        | MettaValue::Bool(_)
+        | MettaValue::Long(_)
+        | MettaValue::Float(_)
+        | MettaValue::String(_) => true,
 
         // Atoms: only variables and known constants are safe
         // - Variables (start with $) are OK - they'll be substituted
@@ -325,8 +364,11 @@ pub fn can_compile(expr: &MettaValue) -> bool {
         MettaValue::Error(_, _) => true,
 
         // Types that need environment or special runtime support
-        MettaValue::Space(_) | MettaValue::State(_) | MettaValue::Type(_) |
-        MettaValue::Conjunction(_) | MettaValue::Memo(_) => false,
+        MettaValue::Space(_)
+        | MettaValue::State(_)
+        | MettaValue::Type(_)
+        | MettaValue::Conjunction(_)
+        | MettaValue::Memo(_) => false,
 
         // Empty is a sentinel that should be filtered, but can be compiled if needed
         MettaValue::Empty => true,
@@ -364,8 +406,12 @@ pub fn can_compile_cached(expr: &MettaValue) -> bool {
 pub fn can_compile_with_env(expr: &MettaValue) -> bool {
     match expr {
         // Always compilable literals
-        MettaValue::Nil | MettaValue::Unit | MettaValue::Bool(_) |
-        MettaValue::Long(_) | MettaValue::Float(_) | MettaValue::String(_) => true,
+        MettaValue::Nil
+        | MettaValue::Unit
+        | MettaValue::Bool(_)
+        | MettaValue::Long(_)
+        | MettaValue::Float(_)
+        | MettaValue::String(_) => true,
 
         // Atoms: variables, known constants, AND unknown atoms (for rule dispatch)
         MettaValue::Atom(name) => {
@@ -408,8 +454,8 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     // Nondeterminism
                     "superpose" => true,
                     // List operations
-                    "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" |
-                    "decons-atom" | "empty" => true,
+                    "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" | "decons-atom"
+                    | "empty" => true,
                     // String operations
                     "repr" => true,
                     // Type operations (only get-metatype doesn't need env type assertions)
@@ -449,8 +495,11 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
         MettaValue::Error(_, _) => true,
 
         // Types that need special runtime support (even with environment)
-        MettaValue::Space(_) | MettaValue::State(_) | MettaValue::Type(_) |
-        MettaValue::Conjunction(_) | MettaValue::Memo(_) => false,
+        MettaValue::Space(_)
+        | MettaValue::State(_)
+        | MettaValue::Type(_)
+        | MettaValue::Conjunction(_)
+        | MettaValue::Memo(_) => false,
 
         // Empty sentinel
         MettaValue::Empty => true,
@@ -937,6 +986,7 @@ mod tests {
     // Integration function tests
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_can_compile_literals() {
         // Compilable literals
         assert!(can_compile(&MettaValue::Nil));
@@ -1006,10 +1056,7 @@ mod tests {
         ]);
         assert!(can_compile(&if_expr));
 
-        let quote_expr = MettaValue::SExpr(vec![
-            MettaValue::sym("quote"),
-            MettaValue::Long(42),
-        ]);
+        let quote_expr = MettaValue::SExpr(vec![MettaValue::sym("quote"), MettaValue::Long(42)]);
         assert!(can_compile(&quote_expr));
     }
 
@@ -1026,10 +1073,7 @@ mod tests {
         assert!(can_compile(&superpose));
 
         // collapse is NOT compilable (EvalCollapse opcode not implemented)
-        let collapse = MettaValue::SExpr(vec![
-            MettaValue::sym("collapse"),
-            MettaValue::Long(42),
-        ]);
+        let collapse = MettaValue::SExpr(vec![MettaValue::sym("collapse"), MettaValue::Long(42)]);
         assert!(!can_compile(&collapse));
     }
 
@@ -1054,10 +1098,8 @@ mod tests {
         assert!(!can_compile(&state));
 
         // User-defined function calls (need rule lookup)
-        let func_call = MettaValue::SExpr(vec![
-            MettaValue::sym("my-function"),
-            MettaValue::Long(1),
-        ]);
+        let func_call =
+            MettaValue::SExpr(vec![MettaValue::sym("my-function"), MettaValue::Long(1)]);
         assert!(!can_compile(&func_call));
 
         // Bind operation (needs environment mutation)

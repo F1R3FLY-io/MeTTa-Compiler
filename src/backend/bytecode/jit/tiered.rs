@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 
-
 use super::compiler::JitCompiler;
 use super::profile::{JitProfile, JitState, HOT_THRESHOLD, WARM_THRESHOLD};
 use crate::backend::bytecode::chunk::BytecodeChunk;
@@ -369,7 +368,6 @@ pub struct TieredCompiler {
     profiles: RwLock<HashMap<ChunkId, Arc<JitProfile>>>,
 
     /// JIT compiler instance (when jit feature is enabled)
-    
     jit_compiler: RwLock<Option<JitCompiler>>,
 
     /// Statistics about tiered compilation
@@ -382,7 +380,7 @@ impl TieredCompiler {
         TieredCompiler {
             cache: JitCache::new(),
             profiles: RwLock::new(HashMap::new()),
-            
+
             jit_compiler: RwLock::new(None),
             stats: RwLock::new(TieredStats::new()),
         }
@@ -393,7 +391,7 @@ impl TieredCompiler {
         TieredCompiler {
             cache: JitCache::with_limits(max_entries, max_code_bytes),
             profiles: RwLock::new(HashMap::new()),
-            
+
             jit_compiler: RwLock::new(None),
             stats: RwLock::new(TieredStats::new()),
         }
@@ -411,7 +409,10 @@ impl TieredCompiler {
         }
 
         // Need to create a new profile
-        let mut profiles = self.profiles.write().expect("Failed to acquire profile lock");
+        let mut profiles = self
+            .profiles
+            .write()
+            .expect("Failed to acquire profile lock");
         profiles
             .entry(id)
             .or_insert_with(|| Arc::new(JitProfile::new()))
@@ -440,7 +441,7 @@ impl TieredCompiler {
     /// Record an execution and potentially trigger JIT compilation
     ///
     /// Returns the tier that should be used for this execution.
-    
+
     pub fn record_execution(&self, chunk: &BytecodeChunk) -> Tier {
         let profile = self.get_or_create_profile(chunk);
         let triggered_hot = profile.record_execution();
@@ -460,7 +461,7 @@ impl TieredCompiler {
     }
 
     /// Attempt to JIT compile a chunk
-    
+
     fn maybe_compile(&self, chunk: &BytecodeChunk, profile: &Arc<JitProfile>, tier: Tier) {
         // Try to start compilation (only one thread will win)
         if !profile.try_start_compiling() {
@@ -478,10 +479,12 @@ impl TieredCompiler {
 
         // Create or get JIT compiler
         let compile_result = {
-            let mut compiler_lock = self.jit_compiler.write().expect("Failed to acquire JIT compiler lock");
-            let compiler = compiler_lock.get_or_insert_with(|| {
-                JitCompiler::new().expect("Failed to create JIT compiler")
-            });
+            let mut compiler_lock = self
+                .jit_compiler
+                .write()
+                .expect("Failed to acquire JIT compiler lock");
+            let compiler = compiler_lock
+                .get_or_insert_with(|| JitCompiler::new().expect("Failed to create JIT compiler"));
             compiler.compile(chunk)
         };
 
@@ -589,7 +592,7 @@ mod tests {
         assert_eq!(Tier::from_count(5), Tier::Interpreter);
         assert_eq!(Tier::from_count(10), Tier::Bytecode);
         assert_eq!(Tier::from_count(50), Tier::Bytecode);
-        
+
         {
             assert_eq!(Tier::from_count(100), Tier::JitStage1);
             assert_eq!(Tier::from_count(200), Tier::JitStage1);
@@ -746,7 +749,7 @@ mod tests {
         }
 
         // Should now be JitStage1 tier (or Bytecode if JIT not enabled)
-        
+
         assert!(
             compiler.get_tier(&chunk) == Tier::JitStage1
                 || compiler.get_tier(&chunk) == Tier::Bytecode

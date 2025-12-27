@@ -23,9 +23,11 @@ impl Compiler {
         // Extract variable name (must be $var format)
         let var_name = match var {
             MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
-            _ => return Err(CompileError::InvalidExpression(
-                "map-atom variable must be $var".to_string()
-            )),
+            _ => {
+                return Err(CompileError::InvalidExpression(
+                    "map-atom variable must be $var".to_string(),
+                ))
+            }
         };
 
         // Compile list expression first
@@ -51,9 +53,11 @@ impl Compiler {
         // Extract variable name
         let var_name = match var {
             MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
-            _ => return Err(CompileError::InvalidExpression(
-                "filter-atom variable must be $var".to_string()
-            )),
+            _ => {
+                return Err(CompileError::InvalidExpression(
+                    "filter-atom variable must be $var".to_string(),
+                ))
+            }
         };
 
         // Compile list expression first
@@ -63,7 +67,8 @@ impl Compiler {
         let predicate_chunk_idx = self.compile_template_chunk(predicate, &[var_name])?;
 
         // Emit FilterAtom with chunk index
-        self.builder.emit_u16(Opcode::FilterAtom, predicate_chunk_idx);
+        self.builder
+            .emit_u16(Opcode::FilterAtom, predicate_chunk_idx);
 
         Ok(())
     }
@@ -81,16 +86,20 @@ impl Compiler {
         // Extract variable names
         let acc_name = match acc_var {
             MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
-            _ => return Err(CompileError::InvalidExpression(
-                "foldl-atom accumulator must be $var".to_string()
-            )),
+            _ => {
+                return Err(CompileError::InvalidExpression(
+                    "foldl-atom accumulator must be $var".to_string(),
+                ))
+            }
         };
 
         let item_name = match item_var {
             MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
-            _ => return Err(CompileError::InvalidExpression(
-                "foldl-atom item must be $var".to_string()
-            )),
+            _ => {
+                return Err(CompileError::InvalidExpression(
+                    "foldl-atom item must be $var".to_string(),
+                ))
+            }
         };
 
         // Compile list expression first (will be popped second)
@@ -109,7 +118,11 @@ impl Compiler {
     }
 
     /// Compile a template expression as a sub-chunk with parameter bindings
-    pub(crate) fn compile_template_chunk(&mut self, template: &MettaValue, params: &[String]) -> CompileResult<u16> {
+    pub(crate) fn compile_template_chunk(
+        &mut self,
+        template: &MettaValue,
+        params: &[String],
+    ) -> CompileResult<u16> {
         // Create a new compiler for the sub-chunk
         let mut sub_compiler = Compiler::new(format!("{}_template", self.builder.name()));
 
@@ -125,7 +138,9 @@ impl Compiler {
         sub_compiler.builder.emit(Opcode::Return);
 
         // Build the sub-chunk
-        sub_compiler.builder.set_local_count(sub_compiler.context.local_count());
+        sub_compiler
+            .builder
+            .set_local_count(sub_compiler.context.local_count());
         let sub_chunk = sub_compiler.builder.build();
 
         // Add to parent's sub-chunk pool

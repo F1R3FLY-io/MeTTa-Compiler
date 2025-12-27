@@ -78,9 +78,11 @@ impl Compiler {
         // args[1] contains ALL case branches wrapped in an SExpr
         let cases = match &args[1] {
             MettaValue::SExpr(items) => items,
-            _ => return Err(CompileError::InvalidExpression(
-                "case branches must be an S-expression".to_string()
-            )),
+            _ => {
+                return Err(CompileError::InvalidExpression(
+                    "case branches must be an S-expression".to_string(),
+                ))
+            }
         };
 
         // Compile each case as pattern matching
@@ -89,9 +91,11 @@ impl Compiler {
         for case in cases {
             let (pattern, result) = match case {
                 MettaValue::SExpr(items) if items.len() == 2 => (&items[0], &items[1]),
-                _ => return Err(CompileError::InvalidExpression(
-                    "case branch must be (pattern result)".to_string()
-                )),
+                _ => {
+                    return Err(CompileError::InvalidExpression(
+                        "case branch must be (pattern result)".to_string(),
+                    ))
+                }
             };
 
             // Duplicate scrutinee for matching
@@ -184,7 +188,8 @@ impl Compiler {
             alt_indices.push(idx);
         }
 
-        self.builder.emit_u16(Opcode::Fork, alt_indices.len() as u16);
+        self.builder
+            .emit_u16(Opcode::Fork, alt_indices.len() as u16);
         for idx in alt_indices {
             self.builder.emit_raw(&idx.to_be_bytes());
         }

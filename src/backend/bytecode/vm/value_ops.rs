@@ -3,9 +3,9 @@
 //! This module contains methods for creating and manipulating values
 //! such as pushing constants, making S-expressions, and variable operations.
 
-use crate::backend::models::MettaValue;
-use super::types::{VmError, VmResult, BindingFrame};
+use super::types::{BindingFrame, VmError, VmResult};
 use super::BytecodeVM;
+use crate::backend::models::MettaValue;
 
 impl BytecodeVM {
     // === Value Creation ===
@@ -18,7 +18,9 @@ impl BytecodeVM {
 
     pub(super) fn op_push_constant(&mut self) -> VmResult<()> {
         let index = self.read_u16()?;
-        let value = self.chunk.get_constant(index)
+        let value = self
+            .chunk
+            .get_constant(index)
             .ok_or(VmError::InvalidConstant(index))?
             .clone();
         self.push(value);
@@ -32,7 +34,9 @@ impl BytecodeVM {
     /// the variable symbol as-is (for irreducible expressions).
     pub(super) fn op_push_variable(&mut self) -> VmResult<()> {
         let index = self.read_u16()?;
-        let value = self.chunk.get_constant(index)
+        let value = self
+            .chunk
+            .get_constant(index)
             .ok_or(VmError::InvalidConstant(index))?;
 
         // Check if it's a pattern variable that should be resolved from bindings
@@ -83,11 +87,7 @@ impl BytecodeVM {
         // Build proper list
         let mut list = MettaValue::Nil;
         for elem in elements.into_iter().rev() {
-            list = MettaValue::sexpr(vec![
-                MettaValue::sym("Cons"),
-                elem,
-                list,
-            ]);
+            list = MettaValue::sexpr(vec![MettaValue::sym("Cons"), elem, list]);
         }
         self.push(list);
         Ok(())
@@ -95,10 +95,7 @@ impl BytecodeVM {
 
     pub(super) fn op_make_quote(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        self.push(MettaValue::sexpr(vec![
-            MettaValue::sym("quote"),
-            value,
-        ]));
+        self.push(MettaValue::sexpr(vec![MettaValue::sym("quote"), value]));
         Ok(())
     }
 
@@ -115,9 +112,7 @@ impl BytecodeVM {
     }
 
     pub(super) fn load_local_impl(&mut self, index: usize) -> VmResult<()> {
-        let base = self.call_stack.last()
-            .map(|f| f.base_ptr)
-            .unwrap_or(0);
+        let base = self.call_stack.last().map(|f| f.base_ptr).unwrap_or(0);
         let abs_index = base + index;
         if abs_index >= self.value_stack.len() {
             return Err(VmError::InvalidLocal(index as u16));
@@ -139,9 +134,7 @@ impl BytecodeVM {
 
     pub(super) fn store_local_impl(&mut self, index: usize) -> VmResult<()> {
         let value = self.pop()?;
-        let base = self.call_stack.last()
-            .map(|f| f.base_ptr)
-            .unwrap_or(0);
+        let base = self.call_stack.last().map(|f| f.base_ptr).unwrap_or(0);
         let abs_index = base + index;
         if abs_index >= self.value_stack.len() {
             return Err(VmError::InvalidLocal(index as u16));
@@ -185,7 +178,9 @@ impl BytecodeVM {
             Some(MettaValue::Atom(s)) => s.clone(),
             _ => return Err(VmError::InvalidConstant(index)),
         };
-        let exists = self.bindings_stack.iter()
+        let exists = self
+            .bindings_stack
+            .iter()
             .rev()
             .any(|frame| frame.has(&name));
         self.push(MettaValue::Bool(exists));

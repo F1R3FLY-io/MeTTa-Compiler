@@ -20,10 +20,12 @@
 //!
 //! - [`types`]: JitValue (NaN-boxed), JitContext, JitResult
 //! - [`profile`]: Hotness tracking and compilation triggering
-//! - [`compiler`]: Bytecode-to-Cranelift IR translation (not yet available)
-//! - [`codegen`]: Cranelift IR generation helpers (not yet available)
-//! - [`runtime`]: Runtime support functions callable from JIT code (not yet available)
-//! - [`tiered`]: Tiered compilation strategy and JIT cache management (not yet available)
+//! - [`codegen`]: Cranelift IR generation helpers
+//! - [`compiler`]: Bytecode-to-Cranelift IR translation
+//! - [`handlers`]: Opcode-specific IR generation handlers
+//! - [`tiered`]: Tiered compilation strategy and JIT cache management
+//! - [`runtime`]: Runtime support functions callable from JIT code
+//! - [`hybrid`]: Hybrid executor combining JIT with interpreter fallback (not yet available)
 
 pub mod profile;
 pub mod types;

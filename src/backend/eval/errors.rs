@@ -562,10 +562,10 @@ mod tests {
 
         // Create a rule that returns empty: (= (returns-empty) ())
         use crate::backend::models::Rule;
-        let empty_rule = Rule {
-            lhs: MettaValue::SExpr(vec![MettaValue::Atom("returns-empty".to_string())]),
-            rhs: MettaValue::SExpr(vec![]),
-        };
+        let empty_rule = Rule::new(
+            MettaValue::SExpr(vec![MettaValue::Atom("returns-empty".to_string())]),
+            MettaValue::SExpr(vec![]),
+        );
         env.add_rule(empty_rule);
 
         // Test is-error with expression that returns empty

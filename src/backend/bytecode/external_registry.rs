@@ -156,12 +156,7 @@ impl ExternalRegistry {
     }
 
     /// Call an external function by name
-    pub fn call(
-        &self,
-        name: &str,
-        args: &[MettaValue],
-        ctx: &ExternalContext,
-    ) -> ExternalResult {
+    pub fn call(&self, name: &str, args: &[MettaValue], ctx: &ExternalContext) -> ExternalResult {
         let entry = self
             .functions
             .get(name)
@@ -195,12 +190,14 @@ mod tests {
         let mut registry = ExternalRegistry::new();
 
         registry.register("double", |args, _ctx| {
-            let n = match args.get(0) {
+            let n = match args.first() {
                 Some(MettaValue::Long(n)) => *n,
-                _ => return Err(ExternalError::TypeError {
-                    expected: "Long",
-                    got: "other".to_string(),
-                }),
+                _ => {
+                    return Err(ExternalError::TypeError {
+                        expected: "Long",
+                        got: "other".to_string(),
+                    })
+                }
             };
             Ok(vec![MettaValue::Long(n * 2)])
         });

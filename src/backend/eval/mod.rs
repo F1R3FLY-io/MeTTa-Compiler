@@ -11,15 +11,20 @@ mod macros;
 
 mod bindings;
 mod builtin;
+pub mod cartesian;
+mod conjunction;
 mod control_flow;
 mod errors;
 mod evaluation;
 mod expression;
 pub mod fixed_point;
+mod helpers;
 mod list_ops;
 mod mork_forms;
+mod pattern;
 pub mod priority;
 mod quoting;
+mod rules;
 mod space;
 mod types;
 

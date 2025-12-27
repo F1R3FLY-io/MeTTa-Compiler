@@ -61,7 +61,7 @@ pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
         return (vec![err], env1);
     }
 
-    let (atom_results, mut env2) = eval(atom.clone(), env1);
+    let (atom_results, env2) = eval(atom.clone(), env1);
     if atom_results.is_empty() {
         let err = MettaValue::Error(
             "add-atom: atom evaluated to empty".to_string(),
@@ -111,7 +111,7 @@ pub(crate) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> Eval
         return (vec![err], env1);
     }
 
-    let (atom_results, mut env2) = eval(atom.clone(), env1);
+    let (atom_results, env2) = eval(atom.clone(), env1);
     if atom_results.is_empty() {
         let err = MettaValue::Error(
             "remove-atom: atom evaluated to empty".to_string(),

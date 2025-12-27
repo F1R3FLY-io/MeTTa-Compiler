@@ -146,6 +146,9 @@ pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
             format!("(, {})", inner.join(" "))
         }
         MettaValue::Unit => "()".to_string(),
+        MettaValue::State(id) => format!("(state {})", id),
+        MettaValue::Memo(handle) => format!("(memo {})", handle.name),
+        MettaValue::Empty => "%empty%".to_string(),
     }
 }
 
@@ -457,7 +460,10 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         | MettaValue::String(_)
         | MettaValue::Nil
         | MettaValue::Type(_)
-        | MettaValue::Unit => EvalStep::Done((vec![value], env)),
+        | MettaValue::Unit
+        | MettaValue::State(_)
+        | MettaValue::Memo(_)
+        | MettaValue::Empty => EvalStep::Done((vec![value], env)),
 
         // S-expressions need special handling
         MettaValue::SExpr(items) => eval_sexpr_step(items, env, depth),
@@ -952,7 +958,10 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
         | MettaValue::Float(_)
         | MettaValue::String(_)
         | MettaValue::Nil
-        | MettaValue::Unit => {
+        | MettaValue::Unit
+        | MettaValue::State(_)
+        | MettaValue::Memo(_)
+        | MettaValue::Empty => {
             0 // Literals are most specific (including standalone "&")
         }
         MettaValue::SExpr(items) => {

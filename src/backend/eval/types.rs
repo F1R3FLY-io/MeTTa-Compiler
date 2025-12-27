@@ -196,6 +196,15 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
 
         // Unit has Unit type
         MettaValue::Unit => MettaValue::Atom("Unit".to_string()),
+
+        // State cells have State type
+        MettaValue::State(_) => MettaValue::Atom("State".to_string()),
+
+        // Memo handles have Memo type
+        MettaValue::Memo(_) => MettaValue::Atom("Memo".to_string()),
+
+        // Empty has Empty type (used in nondeterministic evaluation)
+        MettaValue::Empty => MettaValue::Atom("Empty".to_string()),
     }
 }
 

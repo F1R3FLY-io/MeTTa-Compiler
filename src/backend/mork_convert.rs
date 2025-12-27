@@ -188,6 +188,28 @@ fn write_metta_value(
             ez.write_arity(0);
             ez.loc += 1;
         }
+
+        MettaValue::State(id) => {
+            // State cells: (state <id>)
+            ez.write_arity(2);
+            ez.loc += 1;
+            write_symbol(b"state", space, ez)?;
+            write_symbol(id.to_string().as_bytes(), space, ez)?;
+        }
+
+        MettaValue::Memo(handle) => {
+            // Memo handles: (memo <name>)
+            ez.write_arity(2);
+            ez.loc += 1;
+            write_symbol(b"memo", space, ez)?;
+            write_symbol(handle.name.as_bytes(), space, ez)?;
+        }
+
+        MettaValue::Empty => {
+            // Empty is represented similarly to Nil
+            ez.write_arity(0);
+            ez.loc += 1;
+        }
     }
 
     Ok(())

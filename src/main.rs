@@ -159,6 +159,9 @@ fn format_result(value: &MettaValue) -> String {
             format!("(, {})", formatted.join(" "))
         }
         MettaValue::Unit => "()".to_string(),
+        MettaValue::State(id) => format!("(state {})", id),
+        MettaValue::Memo(handle) => format!("(memo {})", handle.name),
+        MettaValue::Empty => "%empty%".to_string(),
     }
 }
 

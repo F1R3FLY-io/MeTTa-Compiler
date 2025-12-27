@@ -59,6 +59,7 @@ struct MemoEntry {
     /// Cached evaluation results
     results: Vec<MettaValue>,
     /// Whether this was a first-only cache (memo-first vs memo)
+    #[allow(dead_code)]
     first_only: bool,
 }
 
@@ -166,12 +167,7 @@ impl MemoHandle {
     /// Returns (hits, misses, current_size, max_size)
     pub fn stats(&self) -> (u64, u64, usize, usize) {
         let inner = self.inner.read().unwrap();
-        (
-            inner.hits,
-            inner.misses,
-            inner.cache.len(),
-            inner.max_size,
-        )
+        (inner.hits, inner.misses, inner.cache.len(), inner.max_size)
     }
 
     /// Get the hit rate as a percentage (0.0 - 100.0)

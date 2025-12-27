@@ -235,10 +235,10 @@ Arrow operators
           (identifier))))))
 
 ==================
-Space reference operator
+Space reference token (HE-compatible single token)
 ==================
 
-(match & self ($x leaf2) $x)
+(match &self ($x leaf2) $x)
 
 ---
 
@@ -250,11 +250,7 @@ Space reference operator
           (identifier)))
       (expression
         (atom_expression
-          (operator
-            (punctuation_operator))))
-      (expression
-        (atom_expression
-          (identifier)))
+          (space_reference)))
       (expression
         (list
           (expression

@@ -43,11 +43,11 @@ impl MettaValueTestExt for MettaValue {
                 let inner: Vec<String> = goals.iter().map(|g| g.to_display_string()).collect();
                 format!("(, {})", inner.join(" "))
             }
-            MettaValue::Unit => "()".to_string(),
             MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-            MettaValue::State(id) => format!("(state {})", id),
-            MettaValue::Memo(handle) => format!("(memo {})", handle.name),
-            MettaValue::Empty => "%empty%".to_string(),
+            MettaValue::State(id) => format!("(State {})", id),
+            MettaValue::Unit => "()".to_string(),
+            MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+            MettaValue::Empty => "Empty".to_string(),
         }
     }
 
@@ -66,11 +66,11 @@ impl MettaValueTestExt for MettaValue {
             MettaValue::Nil => s == "()" || s == "Nil",
             MettaValue::Type(_) => self.to_display_string() == s,
             MettaValue::Conjunction(_) => self.to_display_string() == s,
-            MettaValue::Unit => s == "()" || s == "Unit",
             MettaValue::Space(_) => self.to_display_string() == s,
             MettaValue::State(_) => self.to_display_string() == s,
+            MettaValue::Unit => s == "()",
             MettaValue::Memo(_) => self.to_display_string() == s,
-            MettaValue::Empty => s == "%empty%" || s == "Empty",
+            MettaValue::Empty => s == "Empty",
         }
     }
 }

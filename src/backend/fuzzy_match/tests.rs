@@ -31,8 +31,7 @@ fn test_transposition_typos() {
 
 #[test]
 fn test_multiple_suggestions() {
-    let matcher =
-        FuzzyMatcher::from_terms(vec!["fibonacci", "fib", "fibonacci-fast", "factorial"]);
+    let matcher = FuzzyMatcher::from_terms(vec!["fibonacci", "fib", "fibonacci-fast", "factorial"]);
 
     // Should find multiple similar matches
     let suggestions = matcher.suggest("fibonaci", 2);
@@ -360,10 +359,7 @@ fn test_context_arity_catch_matching() {
     let ctx = SuggestionContext::for_head(&expr, &env);
 
     let result = matcher.smart_suggest_with_context("cach", 2, &ctx);
-    assert!(
-        result.is_some(),
-        "cach with arity 2 should suggest catch"
-    );
+    assert!(result.is_some(), "cach with arity 2 should suggest catch");
     assert!(result.unwrap().suggestions.contains(&"catch".to_string()));
 }
 
@@ -375,7 +371,7 @@ fn test_context_type_filtering_match_space() {
 
     // Expression with String where Space is expected
     let expr = vec![
-        MettaValue::Atom("metch".to_string()),  // typo for 'match'
+        MettaValue::Atom("metch".to_string()),   // typo for 'match'
         MettaValue::String("hello".to_string()), // String, not Space
         MettaValue::Atom("p".to_string()),
         MettaValue::Atom("t".to_string()),
@@ -400,18 +396,15 @@ fn test_context_type_matching_match_space() {
 
     // Expression with proper Space reference
     let expr = vec![
-        MettaValue::Atom("metch".to_string()),  // typo for 'match'
-        MettaValue::Atom("&self".to_string()),  // Space reference
+        MettaValue::Atom("metch".to_string()), // typo for 'match'
+        MettaValue::Atom("&self".to_string()), // Space reference
         MettaValue::Atom("p".to_string()),
         MettaValue::Atom("t".to_string()),
     ];
     let ctx = SuggestionContext::for_head(&expr, &env);
 
     let result = matcher.smart_suggest_with_context("metch", 2, &ctx);
-    assert!(
-        result.is_some(),
-        "metch with &self should suggest match"
-    );
+    assert!(result.is_some(), "metch with &self should suggest match");
     assert!(result.unwrap().suggestions.contains(&"match".to_string()));
 }
 
@@ -424,7 +417,7 @@ fn test_context_prefix_suggestion_match_self() {
     // Expression: (match self p t) - need to check 'self' in arg position
     let expr = vec![
         MettaValue::Atom("match".to_string()),
-        MettaValue::Atom("self".to_string()),  // Should suggest &self
+        MettaValue::Atom("self".to_string()), // Should suggest &self
         MettaValue::Atom("p".to_string()),
         MettaValue::Atom("t".to_string()),
     ];
@@ -471,24 +464,48 @@ fn test_context_no_prefix_suggestion_head_position() {
 fn test_type_matches_number() {
     let env = Environment::new();
     assert!(type_matches(&MettaValue::Long(42), &TypeExpr::Number, &env));
-    assert!(type_matches(&MettaValue::Float(3.14), &TypeExpr::Number, &env));
-    assert!(!type_matches(&MettaValue::String("42".to_string()), &TypeExpr::Number, &env));
+    assert!(type_matches(
+        &MettaValue::Float(3.14),
+        &TypeExpr::Number,
+        &env
+    ));
+    assert!(!type_matches(
+        &MettaValue::String("42".to_string()),
+        &TypeExpr::Number,
+        &env
+    ));
 }
 
 #[test]
 fn test_type_matches_bool() {
     let env = Environment::new();
     assert!(type_matches(&MettaValue::Bool(true), &TypeExpr::Bool, &env));
-    assert!(type_matches(&MettaValue::Atom("True".to_string()), &TypeExpr::Bool, &env));
+    assert!(type_matches(
+        &MettaValue::Atom("True".to_string()),
+        &TypeExpr::Bool,
+        &env
+    ));
     assert!(!type_matches(&MettaValue::Long(1), &TypeExpr::Bool, &env));
 }
 
 #[test]
 fn test_type_matches_space() {
     let env = Environment::new();
-    assert!(type_matches(&MettaValue::Atom("&self".to_string()), &TypeExpr::Space, &env));
-    assert!(type_matches(&MettaValue::Atom("&kb".to_string()), &TypeExpr::Space, &env));
-    assert!(!type_matches(&MettaValue::Atom("self".to_string()), &TypeExpr::Space, &env));
+    assert!(type_matches(
+        &MettaValue::Atom("&self".to_string()),
+        &TypeExpr::Space,
+        &env
+    ));
+    assert!(type_matches(
+        &MettaValue::Atom("&kb".to_string()),
+        &TypeExpr::Space,
+        &env
+    ));
+    assert!(!type_matches(
+        &MettaValue::Atom("self".to_string()),
+        &TypeExpr::Space,
+        &env
+    ));
 }
 
 #[test]
@@ -496,21 +513,47 @@ fn test_type_matches_any_and_pattern() {
     let env = Environment::new();
     // Any and Pattern should match anything
     assert!(type_matches(&MettaValue::Long(42), &TypeExpr::Any, &env));
-    assert!(type_matches(&MettaValue::String("x".to_string()), &TypeExpr::Pattern, &env));
-    assert!(type_matches(&MettaValue::Bool(false), &TypeExpr::Var("a"), &env));
+    assert!(type_matches(
+        &MettaValue::String("x".to_string()),
+        &TypeExpr::Pattern,
+        &env
+    ));
+    assert!(type_matches(
+        &MettaValue::Bool(false),
+        &TypeExpr::Var("a"),
+        &env
+    ));
 }
 
 #[test]
 fn test_values_compatible() {
     // Same types should be compatible
-    assert!(values_compatible(&MettaValue::Long(1), &MettaValue::Long(2)));
-    assert!(values_compatible(&MettaValue::Long(1), &MettaValue::Float(2.0)));
-    assert!(values_compatible(&MettaValue::Bool(true), &MettaValue::Bool(false)));
-    assert!(values_compatible(&MettaValue::Atom("a".to_string()), &MettaValue::Atom("b".to_string())));
+    assert!(values_compatible(
+        &MettaValue::Long(1),
+        &MettaValue::Long(2)
+    ));
+    assert!(values_compatible(
+        &MettaValue::Long(1),
+        &MettaValue::Float(2.0)
+    ));
+    assert!(values_compatible(
+        &MettaValue::Bool(true),
+        &MettaValue::Bool(false)
+    ));
+    assert!(values_compatible(
+        &MettaValue::Atom("a".to_string()),
+        &MettaValue::Atom("b".to_string())
+    ));
 
     // Different types should not be compatible
-    assert!(!values_compatible(&MettaValue::Long(1), &MettaValue::String("1".to_string())));
-    assert!(!values_compatible(&MettaValue::Bool(true), &MettaValue::Long(1)));
+    assert!(!values_compatible(
+        &MettaValue::Long(1),
+        &MettaValue::String("1".to_string())
+    ));
+    assert!(!values_compatible(
+        &MettaValue::Bool(true),
+        &MettaValue::Long(1)
+    ));
 }
 
 // ============================================================
@@ -713,10 +756,7 @@ fn test_context_arity_unify_four_args() {
 
     let result = matcher.smart_suggest_with_context("uniffy", 2, &ctx);
     // uniffy (6 chars) → unify (5 chars), distance 1, ratio ~0.2
-    assert!(
-        result.is_some(),
-        "uniffy with arity 4 should suggest unify"
-    );
+    assert!(result.is_some(), "uniffy with arity 4 should suggest unify");
     assert!(result.unwrap().suggestions.contains(&"unify".to_string()));
 }
 
@@ -771,32 +811,72 @@ fn test_type_matches_error() {
         std::sync::Arc::new(MettaValue::String("error msg".to_string())),
     );
     assert!(type_matches(&error_val, &TypeExpr::Error, &env));
-    assert!(!type_matches(&MettaValue::Atom("error".to_string()), &TypeExpr::Error, &env));
+    assert!(!type_matches(
+        &MettaValue::Atom("error".to_string()),
+        &TypeExpr::Error,
+        &env
+    ));
 }
 
 #[test]
 fn test_type_matches_atom() {
     let env = Environment::new();
-    assert!(type_matches(&MettaValue::Atom("foo".to_string()), &TypeExpr::Atom, &env));
-    assert!(type_matches(&MettaValue::Atom("bar".to_string()), &TypeExpr::Atom, &env));
-    assert!(!type_matches(&MettaValue::String("foo".to_string()), &TypeExpr::Atom, &env));
+    assert!(type_matches(
+        &MettaValue::Atom("foo".to_string()),
+        &TypeExpr::Atom,
+        &env
+    ));
+    assert!(type_matches(
+        &MettaValue::Atom("bar".to_string()),
+        &TypeExpr::Atom,
+        &env
+    ));
+    assert!(!type_matches(
+        &MettaValue::String("foo".to_string()),
+        &TypeExpr::Atom,
+        &env
+    ));
 }
 
 #[test]
 fn test_type_matches_string() {
     let env = Environment::new();
-    assert!(type_matches(&MettaValue::String("hello".to_string()), &TypeExpr::String, &env));
-    assert!(!type_matches(&MettaValue::Atom("hello".to_string()), &TypeExpr::String, &env));
+    assert!(type_matches(
+        &MettaValue::String("hello".to_string()),
+        &TypeExpr::String,
+        &env
+    ));
+    assert!(!type_matches(
+        &MettaValue::Atom("hello".to_string()),
+        &TypeExpr::String,
+        &env
+    ));
 }
 
 #[test]
 fn test_type_matches_type_names() {
     let env = Environment::new();
     // Standard type names should match TypeExpr::Type
-    assert!(type_matches(&MettaValue::Atom("Number".to_string()), &TypeExpr::Type, &env));
-    assert!(type_matches(&MettaValue::Atom("Bool".to_string()), &TypeExpr::Type, &env));
-    assert!(type_matches(&MettaValue::Atom("String".to_string()), &TypeExpr::Type, &env));
-    assert!(type_matches(&MettaValue::Atom("List".to_string()), &TypeExpr::Type, &env));
+    assert!(type_matches(
+        &MettaValue::Atom("Number".to_string()),
+        &TypeExpr::Type,
+        &env
+    ));
+    assert!(type_matches(
+        &MettaValue::Atom("Bool".to_string()),
+        &TypeExpr::Type,
+        &env
+    ));
+    assert!(type_matches(
+        &MettaValue::Atom("String".to_string()),
+        &TypeExpr::Type,
+        &env
+    ));
+    assert!(type_matches(
+        &MettaValue::Atom("List".to_string()),
+        &TypeExpr::Type,
+        &env
+    ));
 }
 
 #[test]
@@ -807,14 +887,22 @@ fn test_type_matches_list_sexpr() {
         MettaValue::Long(2),
         MettaValue::Long(3),
     ]);
-    assert!(type_matches(&list, &TypeExpr::List(Box::new(TypeExpr::Var("a"))), &env));
+    assert!(type_matches(
+        &list,
+        &TypeExpr::List(Box::new(TypeExpr::Var("a"))),
+        &env
+    ));
 }
 
 #[test]
 fn test_type_matches_empty_list() {
     let env = Environment::new();
     let empty_list = MettaValue::SExpr(vec![]);
-    assert!(type_matches(&empty_list, &TypeExpr::List(Box::new(TypeExpr::Number)), &env));
+    assert!(type_matches(
+        &empty_list,
+        &TypeExpr::List(Box::new(TypeExpr::Number)),
+        &env
+    ));
 }
 
 #[test]
@@ -824,7 +912,11 @@ fn test_type_matches_nested_list() {
         MettaValue::SExpr(vec![MettaValue::Long(1)]),
         MettaValue::SExpr(vec![MettaValue::Long(2)]),
     ]);
-    assert!(type_matches(&nested, &TypeExpr::List(Box::new(TypeExpr::List(Box::new(TypeExpr::Var("a"))))), &env));
+    assert!(type_matches(
+        &nested,
+        &TypeExpr::List(Box::new(TypeExpr::List(Box::new(TypeExpr::Var("a"))))),
+        &env
+    ));
 }
 
 #[test]
@@ -832,7 +924,11 @@ fn test_type_matches_arrow_atom() {
     let env = Environment::new();
     // Function names (atoms) match arrow types
     let arrow_type = TypeExpr::Arrow(vec![TypeExpr::Number], Box::new(TypeExpr::Number));
-    assert!(type_matches(&MettaValue::Atom("my-func".to_string()), &arrow_type, &env));
+    assert!(type_matches(
+        &MettaValue::Atom("my-func".to_string()),
+        &arrow_type,
+        &env
+    ));
 }
 
 #[test]
@@ -852,35 +948,63 @@ fn test_type_matches_arrow_sexpr() {
 fn test_type_matches_bindings() {
     let env = Environment::new();
     // Bindings type accepts anything
-    assert!(type_matches(&MettaValue::Long(42), &TypeExpr::Bindings, &env));
-    assert!(type_matches(&MettaValue::SExpr(vec![]), &TypeExpr::Bindings, &env));
+    assert!(type_matches(
+        &MettaValue::Long(42),
+        &TypeExpr::Bindings,
+        &env
+    ));
+    assert!(type_matches(
+        &MettaValue::SExpr(vec![]),
+        &TypeExpr::Bindings,
+        &env
+    ));
 }
 
 #[test]
 fn test_type_matches_expr() {
     let env = Environment::new();
     // Expr type accepts anything
-    assert!(type_matches(&MettaValue::Atom("x".to_string()), &TypeExpr::Expr, &env));
+    assert!(type_matches(
+        &MettaValue::Atom("x".to_string()),
+        &TypeExpr::Expr,
+        &env
+    ));
     assert!(type_matches(&MettaValue::Long(1), &TypeExpr::Expr, &env));
 }
 
 #[test]
 fn test_type_mismatch_number_expects_string() {
     let env = Environment::new();
-    assert!(!type_matches(&MettaValue::Long(42), &TypeExpr::String, &env));
-    assert!(!type_matches(&MettaValue::Float(3.14), &TypeExpr::String, &env));
+    assert!(!type_matches(
+        &MettaValue::Long(42),
+        &TypeExpr::String,
+        &env
+    ));
+    assert!(!type_matches(
+        &MettaValue::Float(3.14),
+        &TypeExpr::String,
+        &env
+    ));
 }
 
 #[test]
 fn test_type_mismatch_string_expects_number() {
     let env = Environment::new();
-    assert!(!type_matches(&MettaValue::String("42".to_string()), &TypeExpr::Number, &env));
+    assert!(!type_matches(
+        &MettaValue::String("42".to_string()),
+        &TypeExpr::Number,
+        &env
+    ));
 }
 
 #[test]
 fn test_type_mismatch_bool_expects_number() {
     let env = Environment::new();
-    assert!(!type_matches(&MettaValue::Bool(true), &TypeExpr::Number, &env));
+    assert!(!type_matches(
+        &MettaValue::Bool(true),
+        &TypeExpr::Number,
+        &env
+    ));
 }
 
 #[test]
@@ -1008,7 +1132,7 @@ fn test_prefix_context_add_atom() {
 
     let expr = vec![
         MettaValue::Atom("add-atom".to_string()),
-        MettaValue::Atom("kb".to_string()),  // Should suggest &kb
+        MettaValue::Atom("kb".to_string()), // Should suggest &kb
         MettaValue::Atom("x".to_string()),
     ];
     let ctx = SuggestionContext::for_arg(&expr, 1, "add-atom", &env);
@@ -1041,7 +1165,10 @@ fn test_prefix_context_remove_atom() {
 
     let result = matcher.smart_suggest_with_context("myspace", 2, &ctx);
     assert!(result.is_some());
-    assert!(result.unwrap().suggestions.contains(&"&myspace".to_string()));
+    assert!(result
+        .unwrap()
+        .suggestions
+        .contains(&"&myspace".to_string()));
 }
 
 #[test]
@@ -1117,7 +1244,7 @@ fn test_prefix_no_suggestion_pattern_position() {
 
     let expr = vec![
         MettaValue::Atom("let".to_string()),
-        MettaValue::Atom("self".to_string()),  // Pattern position
+        MettaValue::Atom("self".to_string()), // Pattern position
         MettaValue::Long(1),
         MettaValue::Atom("x".to_string()),
     ];

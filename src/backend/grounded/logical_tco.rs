@@ -41,9 +41,7 @@ impl GroundedOperationTCO for AndOpTCO {
                 let a_results: Vec<_> = state
                     .get_arg(0)
                     .expect("arg 0 should be evaluated")
-                    .iter()
-                    .cloned()
-                    .collect();
+                    .to_vec();
                 if let Some(err) = find_error(&a_results) {
                     return GroundedWork::Done(vec![(err.clone(), None)]);
                 }
@@ -53,7 +51,9 @@ impl GroundedOperationTCO for AndOpTCO {
                     match a {
                         MettaValue::Bool(false) => {
                             // SHORT-CIRCUIT: False and _ = False
-                            state.accumulated_results.push((MettaValue::Bool(false), None));
+                            state
+                                .accumulated_results
+                                .push((MettaValue::Bool(false), None));
                         }
                         MettaValue::Bool(true) => {
                             // Need to evaluate second argument for this branch
@@ -86,15 +86,11 @@ impl GroundedOperationTCO for AndOpTCO {
                 let a_results: Vec<_> = state
                     .get_arg(0)
                     .expect("arg 0 should be evaluated")
-                    .iter()
-                    .cloned()
-                    .collect();
+                    .to_vec();
                 let b_results: Vec<_> = state
                     .get_arg(1)
                     .expect("arg 1 should be evaluated")
-                    .iter()
-                    .cloned()
-                    .collect();
+                    .to_vec();
 
                 if let Some(err) = find_error(&b_results) {
                     return GroundedWork::Done(vec![(err.clone(), None)]);
@@ -106,7 +102,9 @@ impl GroundedOperationTCO for AndOpTCO {
                         for b in &b_results {
                             match b {
                                 MettaValue::Bool(val) => {
-                                    state.accumulated_results.push((MettaValue::Bool(*val), None));
+                                    state
+                                        .accumulated_results
+                                        .push((MettaValue::Bool(*val), None));
                                 }
                                 _ => {
                                     return GroundedWork::Error(ExecError::Runtime(format!(
@@ -155,9 +153,7 @@ impl GroundedOperationTCO for OrOpTCO {
                 let a_results: Vec<_> = state
                     .get_arg(0)
                     .expect("arg 0 should be evaluated")
-                    .iter()
-                    .cloned()
-                    .collect();
+                    .to_vec();
                 if let Some(err) = find_error(&a_results) {
                     return GroundedWork::Done(vec![(err.clone(), None)]);
                 }
@@ -167,7 +163,9 @@ impl GroundedOperationTCO for OrOpTCO {
                     match a {
                         MettaValue::Bool(true) => {
                             // SHORT-CIRCUIT: True or _ = True
-                            state.accumulated_results.push((MettaValue::Bool(true), None));
+                            state
+                                .accumulated_results
+                                .push((MettaValue::Bool(true), None));
                         }
                         MettaValue::Bool(false) => {
                             // Need to evaluate second argument for this branch
@@ -198,15 +196,11 @@ impl GroundedOperationTCO for OrOpTCO {
                 let a_results: Vec<_> = state
                     .get_arg(0)
                     .expect("arg 0 should be evaluated")
-                    .iter()
-                    .cloned()
-                    .collect();
+                    .to_vec();
                 let b_results: Vec<_> = state
                     .get_arg(1)
                     .expect("arg 1 should be evaluated")
-                    .iter()
-                    .cloned()
-                    .collect();
+                    .to_vec();
 
                 if let Some(err) = find_error(&b_results) {
                     return GroundedWork::Done(vec![(err.clone(), None)]);
@@ -218,7 +212,9 @@ impl GroundedOperationTCO for OrOpTCO {
                         for b in &b_results {
                             match b {
                                 MettaValue::Bool(val) => {
-                                    state.accumulated_results.push((MettaValue::Bool(*val), None));
+                                    state
+                                        .accumulated_results
+                                        .push((MettaValue::Bool(*val), None));
                                 }
                                 _ => {
                                     return GroundedWork::Error(ExecError::Runtime(format!(

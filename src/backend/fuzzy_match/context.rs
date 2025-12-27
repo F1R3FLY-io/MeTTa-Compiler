@@ -1,7 +1,6 @@
 //! Context-aware suggestion methods for FuzzyMatcher.
 
 use crate::backend::builtin_signatures::{get_arg_types, get_signature, TypeExpr};
-use crate::backend::Environment;
 
 use super::helpers::{
     are_prefixes_compatible, compute_suggestion_confidence, is_likely_data_constructor,
@@ -181,9 +180,7 @@ impl FuzzyMatcher {
                         return Some(SmartSuggestion {
                             message: format!(
                                 "Did you mean: {}? ({} expects a space reference at position {})",
-                                suggested,
-                                parent,
-                                ctx.position
+                                suggested, parent, ctx.position
                             ),
                             confidence: SuggestionConfidence::High,
                             suggestions: vec![suggested],

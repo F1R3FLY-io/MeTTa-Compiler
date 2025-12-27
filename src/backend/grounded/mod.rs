@@ -28,9 +28,9 @@ mod comparison_tco;
 mod logical;
 mod logical_tco;
 mod state;
-mod traits;
 #[cfg(test)]
 mod tests;
+mod traits;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -43,7 +43,9 @@ use super::models::MettaValue;
 pub use arithmetic::{AddOp, DivOp, ModOp, MulOp, SubOp};
 pub use arithmetic_tco::{AddOpTCO, DivOpTCO, ModOpTCO, MulOpTCO, SubOpTCO};
 pub use comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
-pub use comparison_tco::{EqualOpTCO, GreaterEqOpTCO, GreaterOpTCO, LessEqOpTCO, LessOpTCO, NotEqualOpTCO};
+pub use comparison_tco::{
+    EqualOpTCO, GreaterEqOpTCO, GreaterOpTCO, LessEqOpTCO, LessOpTCO, NotEqualOpTCO,
+};
 pub use logical::{AndOp, NotOp, OrOp};
 pub use logical_tco::{AndOpTCO, NotOpTCO, OrOpTCO};
 pub use state::{GroundedState, GroundedWork};
@@ -89,7 +91,9 @@ impl std::error::Error for ExecError {}
 /// Check if any result is an error and return it if so
 /// Used for error propagation through grounded operations
 pub(crate) fn find_error(results: &[MettaValue]) -> Option<&MettaValue> {
-    results.iter().find(|v| matches!(v, MettaValue::Error(_, _)))
+    results
+        .iter()
+        .find(|v| matches!(v, MettaValue::Error(_, _)))
 }
 
 /// Helper function to get a friendly type name for error messages

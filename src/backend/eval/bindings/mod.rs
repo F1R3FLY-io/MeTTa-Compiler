@@ -14,5 +14,5 @@ mod unify;
 mod tests;
 
 // Re-export for use by parent eval module
-pub(crate) use let_forms::{eval_let, eval_let_star, eval_let_step, pattern_mismatch_suggestion};
+pub(crate) use let_forms::{eval_let, eval_let_star};
 pub(crate) use unify::{eval_atom_subst, eval_sealed, eval_unify};

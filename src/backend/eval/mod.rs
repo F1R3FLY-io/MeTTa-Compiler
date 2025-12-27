@@ -257,7 +257,7 @@ fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         value_expr,
                         body,
                         env,
-                        depth,
+                        depth: _,
                     } => {
                         // First, evaluate the value expression
                         let (value_results, value_env) = eval(value_expr, env);

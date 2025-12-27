@@ -1,6 +1,5 @@
 //! Tests for list operations.
 
-use super::basic::*;
 use super::helpers::substitute_variable;
 use super::higher_order::*;
 use crate::backend::environment::Environment;

@@ -37,15 +37,15 @@
 //! let results = executor.run(&chunk)?;
 //! ```
 
-mod constants;
-mod config;
-mod executor;
 mod backtracking;
+mod config;
+mod constants;
+mod executor;
 
 #[cfg(test)]
 mod tests;
 
 // Re-export public API
-pub use constants::*;
 pub use config::{HybridConfig, HybridStats};
+pub use constants::*;
 pub use executor::HybridExecutor;

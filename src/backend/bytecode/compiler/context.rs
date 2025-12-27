@@ -92,7 +92,7 @@ impl CompileContext {
 
     /// Declare a local variable, returns its slot index
     pub fn declare_local(&mut self, name: String) -> CompileResult<u16> {
-        if self.next_local >= u16::MAX {
+        if self.next_local == u16::MAX {
             return Err(CompileError::TooManyLocals);
         }
 

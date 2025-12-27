@@ -7,12 +7,11 @@
 //! - make_list - Create a proper Cons-based list
 //! - make_quote - Wrap a value in a quote expression
 
+use super::stack_ops::jit_runtime_load_constant;
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, PAYLOAD_MASK,
-    TAG_HEAP, TAG_MASK, TAG_NIL,
+    JitBailoutReason, JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_MASK, TAG_NIL,
 };
 use crate::backend::models::MettaValue;
-use super::stack_ops::jit_runtime_load_constant;
 
 // =============================================================================
 // Phase 2a: Value Creation Runtime (MakeSExpr, ConsAtom)
@@ -214,11 +213,7 @@ pub unsafe extern "C" fn jit_runtime_make_list(
         let elem = jit_val.to_metta();
 
         // Build (Cons elem list)
-        list = MettaValue::SExpr(vec![
-            MettaValue::Atom("Cons".to_string()),
-            elem,
-            list,
-        ]);
+        list = MettaValue::SExpr(vec![MettaValue::Atom("Cons".to_string()), elem, list]);
     }
 
     // Return as heap pointer
@@ -242,19 +237,12 @@ pub unsafe extern "C" fn jit_runtime_make_list(
 /// # Safety
 /// * val must be a valid NaN-boxed value
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_make_quote(
-    _ctx: *mut JitContext,
-    val: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_make_quote(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
     let inner = jit_val.to_metta();
 
     // Create (quote value)
-    let quoted = MettaValue::SExpr(vec![
-        MettaValue::Atom("quote".to_string()),
-        inner,
-    ]);
+    let quoted = MettaValue::SExpr(vec![MettaValue::Atom("quote".to_string()), inner]);
 
     let boxed = Box::new(quoted);
     let ptr = Box::into_raw(boxed);

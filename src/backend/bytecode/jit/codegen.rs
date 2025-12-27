@@ -3,11 +3,10 @@
 //! This module provides helper functions for generating Cranelift IR,
 //! abstracting common patterns like NaN-boxing, type guards, and stack operations.
 
-
 use cranelift::prelude::*;
 
 use super::types::{
-    JitError, JitResult, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_NIL, TAG_UNIT, PAYLOAD_MASK,
+    JitError, JitResult, PAYLOAD_MASK, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_NIL, TAG_UNIT,
 };
 
 /// Code generation context wrapping a Cranelift FunctionBuilder
@@ -35,7 +34,6 @@ pub struct CodegenContext<'a, 'b> {
     locals: Vec<Option<Value>>,
 }
 
-
 impl<'a, 'b> CodegenContext<'a, 'b> {
     /// Create a new codegen context
     pub fn new(builder: &'a mut FunctionBuilder<'b>, ctx_ptr: Value) -> Self {
@@ -60,9 +58,7 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
 
     /// Pop a value from the simulated stack
     pub fn pop(&mut self) -> JitResult<Value> {
-        self.value_stack
-            .pop()
-            .ok_or(JitError::StackUnderflow)
+        self.value_stack.pop().ok_or(JitError::StackUnderflow)
     }
 
     /// Peek at the top of the stack without removing
@@ -141,7 +137,7 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         if index >= self.locals.len() {
             return Err(JitError::InvalidLocalIndex(index));
         }
-        let val = self.peek()?;  // Keep on stack to match VM behavior
+        let val = self.peek()?; // Keep on stack to match VM behavior
         self.locals[index] = Some(val);
         Ok(())
     }
@@ -234,7 +230,9 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         let continue_block = self.builder.create_block();
         let bailout_block = self.builder.create_block();
 
-        self.builder.ins().brif(is_long, continue_block, &[], bailout_block, &[]);
+        self.builder
+            .ins()
+            .brif(is_long, continue_block, &[], bailout_block, &[]);
 
         // Bailout block: call runtime error handler
         self.builder.switch_to_block(bailout_block);
@@ -258,7 +256,9 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         let continue_block = self.builder.create_block();
         let bailout_block = self.builder.create_block();
 
-        self.builder.ins().brif(is_bool, continue_block, &[], bailout_block, &[]);
+        self.builder
+            .ins()
+            .brif(is_bool, continue_block, &[], bailout_block, &[]);
 
         self.builder.switch_to_block(bailout_block);
         self.builder.seal_block(bailout_block);
@@ -278,7 +278,9 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         let continue_block = self.builder.create_block();
         let bailout_block = self.builder.create_block();
 
-        self.builder.ins().brif(is_nonzero, continue_block, &[], bailout_block, &[]);
+        self.builder
+            .ins()
+            .brif(is_nonzero, continue_block, &[], bailout_block, &[]);
 
         self.builder.switch_to_block(bailout_block);
         self.builder.seal_block(bailout_block);
@@ -298,7 +300,9 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         let continue_block = self.builder.create_block();
         let bailout_block = self.builder.create_block();
 
-        self.builder.ins().brif(is_not_min, continue_block, &[], bailout_block, &[]);
+        self.builder
+            .ins()
+            .brif(is_not_min, continue_block, &[], bailout_block, &[]);
 
         self.builder.switch_to_block(bailout_block);
         self.builder.seal_block(bailout_block);

@@ -11,10 +11,10 @@
 //! - grounded_space_index - Get grounded space index from name
 //! - is_grounded_ref - Check if a name is a grounded reference
 
+use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
 use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::models::MettaValue;
-use super::helpers::metta_to_jit;
 
 // =============================================================================
 // Phase 1.5: Global/Space Access - LoadGlobal, StoreGlobal, LoadSpace
@@ -157,8 +157,8 @@ pub unsafe extern "C" fn jit_runtime_load_space(
     // Fallback: create a standalone space with the name (not shared)
     // This maintains backwards compatibility when no registry is available
     let space_id = {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         space_name.hash(&mut hasher);
         hasher.finish()

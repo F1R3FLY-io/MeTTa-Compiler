@@ -8,11 +8,11 @@
 //! - Alternative: An alternative in a choice point
 //! - VmConfig: VM configuration options
 
-use std::sync::Arc;
 use smallvec::SmallVec;
+use std::sync::Arc;
 
-use crate::backend::models::{Bindings, MettaValue};
 use crate::backend::bytecode::chunk::BytecodeChunk;
+use crate::backend::models::{Bindings, MettaValue};
 
 /// Result of VM execution
 pub type VmResult<T> = Result<T, VmError>;
@@ -31,7 +31,10 @@ pub enum VmError {
     /// Invalid binding name
     InvalidBinding(String),
     /// Type error in operation
-    TypeError { expected: &'static str, got: &'static str },
+    TypeError {
+        expected: &'static str,
+        got: &'static str,
+    },
     /// Division by zero
     DivisionByZero,
     /// Arithmetic overflow (e.g., i64::MIN % -1)
@@ -69,7 +72,11 @@ impl std::fmt::Display for VmError {
             Self::Halted => write!(f, "Execution halted"),
             Self::Runtime(msg) => write!(f, "Runtime error: {}", msg),
             Self::IndexOutOfBounds { index, len } => {
-                write!(f, "Index out of bounds: index {} but length is {}", index, len)
+                write!(
+                    f,
+                    "Index out of bounds: index {} but length is {}",
+                    index, len
+                )
             }
         }
     }
@@ -110,7 +117,8 @@ impl BindingFrame {
 
     /// Get a binding by name
     pub fn get(&self, name: &str) -> Option<&MettaValue> {
-        self.bindings.iter()
+        self.bindings
+            .iter()
             .find(|(n, _)| n == name)
             .map(|(_, v)| v)
     }

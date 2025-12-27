@@ -441,9 +441,11 @@ impl GroundedOperationTCO for ModOpTCO {
                             _ => {
                                 return GroundedWork::Error(ExecError::Runtime(format!(
                                     "Cannot perform '%': expected Number (integer), got {}",
-                                    friendly_type_name(
-                                        if !matches!(a, MettaValue::Long(_)) { a } else { b }
-                                    )
+                                    friendly_type_name(if !matches!(a, MettaValue::Long(_)) {
+                                        a
+                                    } else {
+                                        b
+                                    })
                                 )))
                             }
                         }

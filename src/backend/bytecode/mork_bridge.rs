@@ -26,8 +26,8 @@ use std::sync::{Arc, RwLock};
 use tracing::warn;
 
 use crate::backend::environment::Environment;
-use crate::backend::models::{Bindings, MettaValue};
 use crate::backend::eval::pattern_match;
+use crate::backend::models::{Bindings, MettaValue};
 
 use super::chunk::BytecodeChunk;
 use super::compiler::{compile, CompileError};
@@ -193,7 +193,12 @@ impl MorkBridge {
         for rule in matching_rules {
             if let Some(bindings) = pattern_match(&rule.lhs, expr) {
                 let specificity = pattern_specificity(&rule.lhs);
-                matches.push((Arc::clone(&rule.lhs), Arc::clone(&rule.rhs), bindings, specificity));
+                matches.push((
+                    Arc::clone(&rule.lhs),
+                    Arc::clone(&rule.rhs),
+                    bindings,
+                    specificity,
+                ));
             }
         }
 
@@ -257,12 +262,10 @@ impl MorkBridge {
 /// Extract head symbol from an expression
 fn get_head_symbol(expr: &MettaValue) -> Option<&str> {
     match expr {
-        MettaValue::SExpr(items) if !items.is_empty() => {
-            match &items[0] {
-                MettaValue::Atom(name) => Some(name.as_str()),
-                _ => None,
-            }
-        }
+        MettaValue::SExpr(items) if !items.is_empty() => match &items[0] {
+            MettaValue::Atom(name) => Some(name.as_str()),
+            _ => None,
+        },
         MettaValue::Atom(name) => Some(name.as_str()),
         _ => None,
     }
@@ -277,11 +280,12 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
     match pattern {
         MettaValue::Atom(name) if name == "_" => 1000, // Wildcard - least specific
         MettaValue::Atom(name) if name.starts_with('$') => 100, // Variable
-        MettaValue::Atom(_) => 0, // Concrete symbol
-        MettaValue::SExpr(items) => {
-            items.iter().map(pattern_specificity).sum()
-        }
-        MettaValue::Long(_) | MettaValue::Float(_) | MettaValue::Bool(_) | MettaValue::String(_) => 0,
+        MettaValue::Atom(_) => 0,                      // Concrete symbol
+        MettaValue::SExpr(items) => items.iter().map(pattern_specificity).sum(),
+        MettaValue::Long(_)
+        | MettaValue::Float(_)
+        | MettaValue::Bool(_)
+        | MettaValue::String(_) => 0,
         _ => 50, // Other types
     }
 }
@@ -343,9 +347,10 @@ mod tests {
 
         // Check bindings - pattern_match keeps the $ prefix in variable names
         let compiled = &rules[0];
-        assert!(compiled.bindings.iter().any(|(name, val)| {
-            name == "$x" && *val == MettaValue::Long(5)
-        }));
+        assert!(compiled
+            .bindings
+            .iter()
+            .any(|(name, val)| { name == "$x" && *val == MettaValue::Long(5) }));
     }
 
     #[test]
@@ -397,15 +402,21 @@ mod tests {
         assert_eq!(pattern_specificity(&MettaValue::Atom("foo".to_string())), 0);
 
         // Variable - less specific
-        assert_eq!(pattern_specificity(&MettaValue::Atom("$x".to_string())), 100);
+        assert_eq!(
+            pattern_specificity(&MettaValue::Atom("$x".to_string())),
+            100
+        );
 
         // Wildcard - least specific
-        assert_eq!(pattern_specificity(&MettaValue::Atom("_".to_string())), 1000);
+        assert_eq!(
+            pattern_specificity(&MettaValue::Atom("_".to_string())),
+            1000
+        );
 
         // S-expression adds up
         let sexpr = MettaValue::SExpr(vec![
-            MettaValue::Atom("foo".to_string()),  // 0
-            MettaValue::Atom("$x".to_string()),   // 100
+            MettaValue::Atom("foo".to_string()), // 0
+            MettaValue::Atom("$x".to_string()),  // 100
         ]);
         assert_eq!(pattern_specificity(&sexpr), 100);
     }

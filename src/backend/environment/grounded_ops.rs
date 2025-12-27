@@ -13,7 +13,11 @@ impl Environment {
         &self,
         name: &str,
     ) -> Option<Arc<dyn crate::backend::grounded::GroundedOperation>> {
-        self.shared.grounded_registry.read().expect("grounded_registry lock poisoned").get(name)
+        self.shared
+            .grounded_registry
+            .read()
+            .expect("grounded_registry lock poisoned")
+            .get(name)
     }
 
     /// Get a TCO-compatible grounded operation by name (e.g., "+", "-", "and")
@@ -23,6 +27,10 @@ impl Environment {
         &self,
         name: &str,
     ) -> Option<Arc<dyn crate::backend::grounded::GroundedOperationTCO>> {
-        self.shared.grounded_registry_tco.read().expect("grounded_registry_tco lock poisoned").get(name)
+        self.shared
+            .grounded_registry_tco
+            .read()
+            .expect("grounded_registry_tco lock poisoned")
+            .get(name)
     }
 }

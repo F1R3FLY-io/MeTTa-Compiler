@@ -105,6 +105,10 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
+        MettaValue::Unit => {
+            // Represent Unit as empty Par (similar to Nil)
+            Par::default()
+        }
     };
 
     trace!(target: "mettatron::rholang_integration::metta_value_to_par", ?par, "Par");

@@ -182,6 +182,12 @@ fn write_metta_value(
                 write_metta_value(goal, space, ctx, ez)?;
             }
         }
+
+        MettaValue::Unit => {
+            // Unit is represented as empty list (similar to Nil)
+            ez.write_arity(0);
+            ez.loc += 1;
+        }
     }
 
     Ok(())

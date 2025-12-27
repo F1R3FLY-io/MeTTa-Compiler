@@ -195,7 +195,7 @@ impl SpaceHandle {
                     }
                 }
             }
-            SpaceBacking::Module { mod_id, space } => {
+            SpaceBacking::Module { mod_id: _, space } => {
                 // Module spaces: for now, fork creates a snapshot (not live)
                 // This gives each branch its own isolated copy
                 let atoms = space.read().unwrap().get_all_atoms();
@@ -487,10 +487,9 @@ impl SpaceHandle {
                         _ => false,
                     }
             }
-            (
-                SpaceBacking::Module { mod_id: a, .. },
-                SpaceBacking::Module { mod_id: b, .. },
-            ) => a == b,
+            (SpaceBacking::Module { mod_id: a, .. }, SpaceBacking::Module { mod_id: b, .. }) => {
+                a == b
+            }
             _ => false,
         }
     }

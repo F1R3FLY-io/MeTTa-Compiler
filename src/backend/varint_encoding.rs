@@ -317,7 +317,7 @@ mod tests {
             MettaValue::Unit,
             MettaValue::Atom("hello".to_string()),
             MettaValue::String("world".to_string()),
-            MettaValue::Float(3.14),
+            MettaValue::Float(1.5),
         ];
 
         for value in test_cases {

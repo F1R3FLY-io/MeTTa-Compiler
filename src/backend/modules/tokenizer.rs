@@ -430,11 +430,11 @@ mod tests {
     fn test_register_token_with_constructor() {
         let mut tok = Tokenizer::new();
 
-        tok.register_token("PI", |_| MettaValue::Float(3.14159));
+        tok.register_token("PI", |_| MettaValue::Float(1.5));
 
         assert!(tok.has_token("PI"));
         if let Some(MettaValue::Float(f)) = tok.lookup("PI") {
-            assert!((f - 3.14159).abs() < 0.0001);
+            assert!((f - 1.5).abs() < 0.0001);
         } else {
             panic!("Expected Float");
         }
@@ -497,7 +497,7 @@ mod tests {
     fn test_patterns() {
         let mut tok = Tokenizer::new();
         tok.register_token_value("&kb", MettaValue::Long(1));
-        tok.register_token_value("PI", MettaValue::Float(3.14));
+        tok.register_token_value("PI", MettaValue::Float(1.5));
 
         let patterns = tok.patterns();
         assert!(patterns.contains(&"&kb"));

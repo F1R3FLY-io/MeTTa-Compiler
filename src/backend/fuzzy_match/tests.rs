@@ -465,7 +465,7 @@ fn test_type_matches_number() {
     let env = Environment::new();
     assert!(type_matches(&MettaValue::Long(42), &TypeExpr::Number, &env));
     assert!(type_matches(
-        &MettaValue::Float(3.14),
+        &MettaValue::Float(1.5),
         &TypeExpr::Number,
         &env
     ));
@@ -981,7 +981,7 @@ fn test_type_mismatch_number_expects_string() {
         &env
     ));
     assert!(!type_matches(
-        &MettaValue::Float(3.14),
+        &MettaValue::Float(1.5),
         &TypeExpr::String,
         &env
     ));

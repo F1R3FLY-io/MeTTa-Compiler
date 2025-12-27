@@ -278,8 +278,8 @@ mod tests {
         assert_eq!(h_nil1, h_nil2, "Nil hash should be stable");
 
         // Float hashing
-        let h_f1 = hash_metta_value(&MettaValue::Float(3.14));
-        let h_f2 = hash_metta_value(&MettaValue::Float(3.14));
+        let h_f1 = hash_metta_value(&MettaValue::Float(1.5));
+        let h_f2 = hash_metta_value(&MettaValue::Float(1.5));
         let h_f3 = hash_metta_value(&MettaValue::Float(2.71));
         assert_eq!(h_f1, h_f2, "Float hash should be stable");
         assert_ne!(h_f1, h_f3, "Different Floats should have different hashes");

@@ -154,9 +154,9 @@ fn extract_hash_key_value(expr: &SExpr) -> Option<(String, SExpr)> {
     if let SExpr::List(items, _) = expr {
         if items.len() >= 2 {
             if let SExpr::Atom(key, _) = &items[0] {
-                if key.starts_with('#') {
+                if let Some(key_name) = key.strip_prefix('#') {
                     // Strip the '#' prefix
-                    let key_name = key[1..].to_string();
+                    let key_name = key_name.to_string();
                     // If there's exactly one value, return it; otherwise wrap in a list
                     if items.len() == 2 {
                         return Some((key_name, items[1].clone()));

@@ -119,6 +119,9 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResul
 
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
+///
+/// IMPORTANT: This function propagates environment changes (including state mutations)
+/// through each iteration to ensure side effects like change-state! are visible.
 pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_chain", ?items);
     require_args_with_usage!("chain", items, 3, env, "(chain expr $var body)");
@@ -127,23 +130,25 @@ pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult
     let var = &items[2];
     let body = &items[3];
 
-    let (expr_results, expr_env) = eval(expr.clone(), env);
+    let (expr_results, mut current_env) = eval(expr.clone(), env);
     for result in &expr_results {
         if matches!(result, MettaValue::Error(_, _)) {
-            return (vec![result.clone()], expr_env);
+            return (vec![result.clone()], current_env);
         }
     }
 
     let mut all_results = Vec::new();
     for value in expr_results {
         if let Some(bindings) = pattern_match(var, &value) {
-            let instantiated_body = apply_bindings(body, &bindings);
-            let (body_results, _) = eval(instantiated_body, expr_env.clone());
+            let instantiated_body = apply_bindings(body, &bindings).into_owned();
+            // Propagate environment through iterations to preserve state changes
+            let (body_results, body_env) = eval(instantiated_body, current_env);
+            current_env = body_env;
             all_results.extend(body_results);
         }
     }
 
-    (all_results, expr_env)
+    (all_results, current_env)
 }
 
 #[cfg(test)]
@@ -217,11 +222,11 @@ mod tests {
 
         // Define factorial rule that only uses return for base case
         let factorial_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("factorial".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 // Condition: (== $n 0)
                 MettaValue::SExpr(vec![
@@ -241,19 +246,19 @@ mod tests {
                     MettaValue::Long(1),
                 ]),
             ]),
-        );
+    );
 
         // (= (factorial-helper $n $acc)
         //      (if (== $n 0)
         //          (return $acc)
         //          (factorial-helper (- $n 1) (* $n $acc))))
         let helper_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("factorial-helper".to_string()),
                 MettaValue::Atom("$n".to_string()),
                 MettaValue::Atom("$acc".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 // Condition: (== $n 0)
                 MettaValue::SExpr(vec![
@@ -281,7 +286,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-        );
+    );
 
         env.add_rule(factorial_rule);
         env.add_rule(helper_rule);
@@ -318,30 +323,30 @@ mod tests {
         // Use tail-recursive fibonacci with accumulator
         // (= (fib $n) (fib-helper $n 0 1))
         let fib_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("fib".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("fib-helper".to_string()),
                 MettaValue::Atom("$n".to_string()),
                 MettaValue::Long(0),
                 MettaValue::Long(1),
             ]),
-        );
+    );
 
         // (= (fib-helper $n $a $b)
         //    (if (== $n 0)
         //        (return $a)
         //        (fib-helper (- $n 1) $b (+ $a $b))))
         let fib_helper_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("fib-helper".to_string()),
                 MettaValue::Atom("$n".to_string()),
                 MettaValue::Atom("$a".to_string()),
                 MettaValue::Atom("$b".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 // Condition: (== $n 0)
                 MettaValue::SExpr(vec![
@@ -370,7 +375,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-        );
+    );
 
         env.add_rule(fib_rule);
         env.add_rule(fib_helper_rule);
@@ -407,31 +412,31 @@ mod tests {
         // Use tail-recursive power with accumulator
         // (= (power $base $exp) (power-helper $base $exp 1))
         let power_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("power".to_string()),
                 MettaValue::Atom("$base".to_string()),
                 MettaValue::Atom("$exp".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("power-helper".to_string()),
                 MettaValue::Atom("$base".to_string()),
                 MettaValue::Atom("$exp".to_string()),
                 MettaValue::Long(1),
             ]),
-        );
+    );
 
         // (= (power-helper $base $exp $acc)
         //    (if (== $exp 0)
         //        (return $acc)
         //        (power-helper $base (- $exp 1) (* $acc $base))))
         let power_helper_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("power-helper".to_string()),
                 MettaValue::Atom("$base".to_string()),
                 MettaValue::Atom("$exp".to_string()),
                 MettaValue::Atom("$acc".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 // Condition: (== $exp 0)
                 MettaValue::SExpr(vec![
@@ -460,7 +465,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-        );
+    );
 
         env.add_rule(power_rule);
         env.add_rule(power_helper_rule);
@@ -556,25 +561,25 @@ mod tests {
 
         // Define a simple increment rule: (= (inc $x) (+ $x 1))
         let inc_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("inc".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("+".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(1),
             ]),
-        );
+    );
         env.add_rule(inc_rule);
 
         // Define computation that uses chain: (= (compute $n) (chain (inc $n) $result (return $result)))
         let compute_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("compute".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("chain".to_string()),
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("inc".to_string()),
@@ -586,7 +591,7 @@ mod tests {
                     MettaValue::Atom("$result".to_string()),
                 ]),
             ]),
-        );
+    );
         env.add_rule(compute_rule);
 
         // Test: (function (compute 5)) should increment 5 to 6, bind to $result, then return 6
@@ -636,29 +641,29 @@ mod tests {
         // Define helper functions for computation pipeline
         // (= (double $x) (* $x 2))
         let double_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
-        );
+    );
 
         // (= (square $x) (* $x $x))
         let square_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("square".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("*".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-        );
+    );
 
         // Complex chained computation: (= (complex-calc $n)
         //   (chain (+ $n 3) $step1
@@ -666,11 +671,11 @@ mod tests {
         //       (chain (square $step2) $result
         //         (return $result)))))
         let complex_calc_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("complex-calc".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("chain".to_string()),
                 // Step 1: (+ $n 3)
                 MettaValue::SExpr(vec![
@@ -702,7 +707,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-        );
+    );
 
         env.add_rule(double_rule);
         env.add_rule(square_rule);
@@ -736,11 +741,11 @@ mod tests {
         //           (chain (+ $squared 1) $incremented
         //             (return $incremented))))))
         let process_rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("process-number".to_string()),
                 MettaValue::Atom("$n".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("chain".to_string()),
                 // Check if $n > 10
                 MettaValue::SExpr(vec![
@@ -783,7 +788,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-        );
+    );
 
         env.add_rule(process_rule);
 

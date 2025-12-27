@@ -1228,10 +1228,12 @@ mod tests {
         use crate::backend::compile::compile;
         use crate::backend::eval::eval;
 
-        // Test that g is applied to ALL expansions of f
+        // Test lazy/call-by-name semantics with nondeterministic functions
         // (f) -> [1, 2, 3]
         // (g $x) -> (* $x $x)
-        // (g (f)) should -> [1, 4, 9]
+        // With lazy evaluation: $x binds to (f) as an expression, not a value.
+        // (g (f)) → (* (f) (f)) → each (f) evaluates independently to [1,2,3]
+        // Result: 3×3 = 9 combinations (Cartesian product of both (f) evaluations)
         let input = r#"
             (= (f) 1)
             (= (f) 2)
@@ -1253,12 +1255,18 @@ mod tests {
         }
 
         if let Some(results) = result {
-            assert_eq!(results.len(), 3);
-            assert!(results.contains(&MettaValue::Long(1)));
-            assert!(results.contains(&MettaValue::Long(4)));
-            assert!(results.contains(&MettaValue::Long(9)));
+            // Lazy semantics: (f)*(f) gives 9 results (all combinations)
+            // 1*1, 1*2, 1*3, 2*1, 2*2, 2*3, 3*1, 3*2, 3*3
+            assert_eq!(results.len(), 9);
+            // All products of pairs from [1,2,3] × [1,2,3]
+            assert!(results.contains(&MettaValue::Long(1))); // 1*1
+            assert!(results.contains(&MettaValue::Long(2))); // 1*2, 2*1
+            assert!(results.contains(&MettaValue::Long(3))); // 1*3, 3*1
+            assert!(results.contains(&MettaValue::Long(4))); // 2*2
+            assert!(results.contains(&MettaValue::Long(6))); // 2*3, 3*2
+            assert!(results.contains(&MettaValue::Long(9))); // 3*3
         } else {
-            panic!("Expected [1, 4, 9] from nondeterministic nested application");
+            panic!("Expected 9 results from lazy nondeterministic evaluation");
         }
     }
 

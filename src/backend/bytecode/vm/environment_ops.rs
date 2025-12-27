@@ -147,7 +147,7 @@ impl BytecodeVM {
                 for (name, value) in &bindings {
                     bindings_map.insert(name.clone(), value.clone());
                 }
-                let instantiated_body = apply_bindings(&rule.rhs, &bindings_map);
+                let instantiated_body = apply_bindings(&rule.rhs, &bindings_map).into_owned();
                 matches.push((instantiated_body, bindings));
             }
         }

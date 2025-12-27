@@ -61,7 +61,7 @@ impl Environment {
                 // Try to match the pattern against this atom
                 if let Some(bindings) = pattern_match(pattern, &atom) {
                     // Apply bindings to the template
-                    let instantiated = apply_bindings(template, &bindings);
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
                     results.push(instantiated);
                 }
             }
@@ -75,7 +75,7 @@ impl Environment {
         if let Some(ref fallback) = *guard {
             for (_key, stored_value) in fallback.iter() {
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
-                    let instantiated = apply_bindings(template, &bindings);
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
                     results.push(instantiated);
                 }
             }
@@ -147,7 +147,7 @@ impl Environment {
 
             if let Ok(atom) = Self::mork_expr_to_metta_value(&expr, &space) {
                 if let Some(bindings) = pattern_match(pattern, &atom) {
-                    let instantiated = apply_bindings(template, &bindings);
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
                     return Some(instantiated); // EARLY EXIT - found first match!
                 }
             }
@@ -160,7 +160,7 @@ impl Environment {
         if let Some(ref fallback) = *guard {
             for (_key, stored_value) in fallback.iter() {
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
-                    let instantiated = apply_bindings(template, &bindings);
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
                     return Some(instantiated); // EARLY EXIT
                 }
             }

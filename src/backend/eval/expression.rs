@@ -50,17 +50,17 @@ pub(super) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> Eval
     let expr = &items[1];
 
     match expr {
-        MettaValue::SExpr(expr_items) => {
+        MettaValue::SExpr(expr_items) if !expr_items.is_empty() => {
             let result = MettaValue::SExpr(vec![
                 expr_items[0].clone(),
                 MettaValue::SExpr(expr_items[1..].to_vec()),
             ]);
             (vec![result], env)
         }
-        MettaValue::Nil => {
+        MettaValue::SExpr(_) | MettaValue::Nil => {
             let err = MettaValue::Error(
                 format!(
-                    "expected: (decons-atom (: <expr> Expression)), found: {}",
+                    "decons-atom expected non-empty Expression, found: {}",
                     super::friendly_value_repr(&MettaValue::SExpr(items.clone()))
                 ),
                 Arc::new(MettaValue::SExpr(items.clone())),
@@ -178,8 +178,10 @@ pub(super) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     let expr = &items[1];
 
     match expr {
-        MettaValue::SExpr(expr_items) => (vec![expr_items[0].clone()], env),
-        MettaValue::Nil => {
+        MettaValue::SExpr(expr_items) if !expr_items.is_empty() => {
+            (vec![expr_items[0].clone()], env)
+        }
+        MettaValue::SExpr(_) | MettaValue::Nil => {
             let err = MettaValue::Error(
                 format!(
                     "car-atom expects a non-empty expression as an argument, found: {}",
@@ -212,7 +214,7 @@ pub(super) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     let expr = &items[1];
 
     match expr {
-        MettaValue::SExpr(expr_items) => {
+        MettaValue::SExpr(expr_items) if !expr_items.is_empty() => {
             let tail = if expr_items.len() == 1 {
                 // Single element: return empty expression (Nil)
                 MettaValue::Nil
@@ -221,7 +223,7 @@ pub(super) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
             };
             (vec![tail], env)
         }
-        MettaValue::Nil => {
+        MettaValue::SExpr(_) | MettaValue::Nil => {
             let err = MettaValue::Error(
                 format!(
                     "cdr-atom expects a non-empty expression as an argument, found: {}",
@@ -255,7 +257,7 @@ pub(super) fn eval_min_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     let expr = &items[1];
 
     match expr {
-        MettaValue::SExpr(expr_items) => {
+        MettaValue::SExpr(expr_items) if !expr_items.is_empty() => {
             let numbers_with_values: Result<Vec<(f64, &MettaValue)>, MettaValue> = expr_items
                 .iter()
                 .map(|item| {
@@ -281,11 +283,11 @@ pub(super) fn eval_min_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
             let (_, min_value) = numbers_with_values
                 .iter()
                 .min_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap();
+                .expect("non-empty expr_items guarantees non-empty numbers_with_values");
 
             (vec![(*min_value).clone()], env)
         }
-        MettaValue::Nil => {
+        MettaValue::SExpr(_) | MettaValue::Nil => {
             let err = MettaValue::Error(
                 format!(
                     "min-atom expects a non-empty expression containing numbers, found: {}",
@@ -319,7 +321,7 @@ pub(super) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     let expr = &items[1];
 
     match expr {
-        MettaValue::SExpr(expr_items) => {
+        MettaValue::SExpr(expr_items) if !expr_items.is_empty() => {
             let numbers_with_values: Result<Vec<(f64, &MettaValue)>, MettaValue> = expr_items
                 .iter()
                 .map(|item| {
@@ -345,11 +347,11 @@ pub(super) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
             let (_, max_value) = numbers_with_values
                 .iter()
                 .max_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap();
+                .expect("non-empty expr_items guarantees non-empty numbers_with_values");
 
             (vec![(*max_value).clone()], env)
         }
-        MettaValue::Nil => {
+        MettaValue::SExpr(_) | MettaValue::Nil => {
             let err = MettaValue::Error(
                 format!(
                     "max-atom expects a non-empty expression containing numbers, found: {}",
@@ -548,25 +550,17 @@ mod tests {
     fn test_decons_atom_with_empty_expression() {
         let env = Environment::new();
 
-        // Test: (decons-atom ()) should produce an error
+        // Test: (decons-atom ()) should produce empty results (HE-compatible silent failure)
+        // In HE semantics, decons on empty expression is nondeterministic failure
         let source = "(decons-atom ())";
         let state = compile(source).unwrap();
         let (results, _) = eval(state.source[0].clone(), env);
 
-        assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
-                assert!(
-                    msg.contains("expected"),
-                    "Error should mention expected type"
-                );
-                assert!(
-                    msg.contains("Expression"),
-                    "Error should mention Expression type"
-                );
-            }
-            other => panic!("Expected Error, got {:?}", other),
-        }
+        assert_eq!(
+            results.len(),
+            0,
+            "decons-atom on empty expression should return empty (nondeterministic failure)"
+        );
     }
 
     #[test]
@@ -913,16 +907,17 @@ mod tests {
     fn test_cdr_atom_with_single_element() {
         let env = Environment::new();
 
-        // Test: (cdr-atom (a)) should produce () (Nil)
+        // Test: (cdr-atom (a)) should produce () - empty expression
         let source = "(cdr-atom (a))";
         let state = compile(source).unwrap();
         let (results, _) = eval(state.source[0].clone(), env);
 
         assert_eq!(results.len(), 1);
+        // HE returns () as empty SExpr, not Nil
         assert_eq!(
             results[0],
-            MettaValue::Nil,
-            "cdr-atom with single element should return empty expression (Nil)"
+            MettaValue::SExpr(vec![]),
+            "cdr-atom with single element should return empty expression ()"
         );
     }
 

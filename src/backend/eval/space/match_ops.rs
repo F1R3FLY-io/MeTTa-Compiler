@@ -60,14 +60,6 @@ pub(crate) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
                 let results = match_with_space_handle(handle, pattern, template, &env1);
                 (results, env1)
             }
-            // Handle &self as a special reference to the global "self" space
-            MettaValue::Atom(s) if s == "&self" => {
-                if debug {
-                    eprintln!("[DEBUG eval_match] &self atom - using env.match_space");
-                }
-                let results = env1.match_space(pattern, template);
-                (results, env1)
-            }
             other => {
                 let err = MettaValue::Error(
                     format!(
@@ -203,7 +195,7 @@ fn match_with_space_handle(
         // If only one match, no need for forking (optimization)
         if matching_bindings.len() == 1 {
             let bindings = &matching_bindings[0];
-            let instantiated = apply_bindings(template, bindings);
+            let instantiated = apply_bindings(template, bindings).into_owned();
             if debug {
                 eprintln!("[DEBUG match] Single match, instantiated={:?}", instantiated);
             }
@@ -217,7 +209,7 @@ fn match_with_space_handle(
         // Multiple matches - fork environment for each to isolate mutations
         let mut results = Vec::new();
         for bindings in &matching_bindings {
-            let instantiated = apply_bindings(template, bindings);
+            let instantiated = apply_bindings(template, bindings).into_owned();
             if debug {
                 eprintln!("[DEBUG match] Multi-match, instantiated={:?}", instantiated);
             }

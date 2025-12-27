@@ -55,7 +55,8 @@ pub use types::{
 pub use profile::{JitProfile, JitState, HOT_THRESHOLD};
 pub use codegen::CodegenContext;
 pub use compiler::JitCompiler;
-pub use tiered::{Tier, JitCache, TieredCompiler, TieredStats, ChunkId, STAGE2_THRESHOLD};
+pub use tiered::{Tier, JitCache, TieredCompiler, TieredStats, ChunkId, CacheEntry, STAGE2_THRESHOLD};
+pub use hybrid::{HybridExecutor, HybridConfig, HybridStats};
 
 /// JIT compilation is always enabled with tiered compilation
 pub const JIT_ENABLED: bool = true;

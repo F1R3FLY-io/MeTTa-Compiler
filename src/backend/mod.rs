@@ -6,6 +6,7 @@
 // - `run`: PathMap method to execute s-expressions (will be in Rholang)
 
 pub mod builtin_signatures;
+pub mod bytecode;
 pub mod compile;
 pub mod environment;
 pub mod eval;

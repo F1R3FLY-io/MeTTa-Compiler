@@ -27,11 +27,14 @@ pub mod mork_bridge;
 pub mod native_registry;
 pub mod opcodes;
 pub mod optimizer;
+pub mod space_registry;
 pub mod vm;
 
 pub use cache::{cache_sizes, clear_caches, get_stats as cache_stats, BytecodeCacheStats};
 pub use chunk::{BytecodeChunk, ChunkBuilder};
-pub use compiler::{CompileContext, CompileError, CompileResult, Compiler, Upvalue};
+pub use compiler::{
+    compile, compile_arc, CompileContext, CompileError, CompileResult, Compiler, Upvalue,
+};
 pub use external_registry::{
     ExternalContext, ExternalError, ExternalFn, ExternalRegistry, ExternalResult,
 };
@@ -45,3 +48,4 @@ pub use opcodes::Opcode;
 pub use optimizer::{
     optimize_bytecode_full, DeadCodeEliminator, OptimizationStats, PeepholeOptimizer,
 };
+pub use vm::{BytecodeVM, VmConfig, VmError, VmResult};

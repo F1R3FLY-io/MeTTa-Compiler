@@ -19,3 +19,10 @@ pub struct Rule {
     pub lhs: MettaValue,
     pub rhs: MettaValue,
 }
+
+impl Rule {
+    /// Create a new rule from LHS and RHS expressions
+    pub fn new(lhs: MettaValue, rhs: MettaValue) -> Self {
+        Rule { lhs, rhs }
+    }
+}

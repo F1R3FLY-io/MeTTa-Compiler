@@ -95,6 +95,9 @@ lru = "0.12"
 # DashMap - Concurrent HashMap for lock-free bytecode caching
 dashmap = "6.1"
 
+# GxHash - Fast, SIMD-accelerated hashing for bytecode cache keys
+gxhash = "3.4"
+
 # SmallVec - Stack-allocated vector for optimizing pattern matching bindings
 smallvec = "1.11"
 

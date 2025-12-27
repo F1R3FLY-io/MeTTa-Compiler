@@ -369,7 +369,10 @@ impl MettaValue {
             MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
             MettaValue::State(id) => format!(r#"{{"type":"state","id":{}}}"#, id),
             MettaValue::Memo(handle) => {
-                format!(r#"{{"type":"memo","name":"{}"}}"#, escape_json(&handle.name))
+                format!(
+                    r#"{{"type":"memo","name":"{}"}}"#,
+                    escape_json(&handle.name)
+                )
             }
             MettaValue::Empty => r#"{"type":"empty"}"#.to_string(),
         }

@@ -3,13 +3,13 @@
 //! This module contains the functions and types for performing single evaluation
 //! steps in the trampoline-based evaluator.
 
-mod types;
 mod grounded;
 mod sexpr_step;
+mod types;
 
-pub use types::{EvalStep, ProcessedSExpr};
 pub use grounded::evaluate_grounded_args;
 pub use sexpr_step::eval_sexpr_step;
+pub use types::{EvalStep, ProcessedSExpr};
 
 use std::sync::Arc;
 

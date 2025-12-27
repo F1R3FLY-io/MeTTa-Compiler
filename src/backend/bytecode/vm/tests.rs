@@ -4,14 +4,14 @@
 
 use std::sync::Arc;
 
-use crate::backend::models::{MettaValue, SpaceHandle};
-use crate::backend::environment::Environment;
-use crate::backend::bytecode::chunk::ChunkBuilder;
-use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::bytecode::mork_bridge::MorkBridge;
-use super::types::VmError;
 use super::pattern::{pattern_matches, unify};
+use super::types::VmError;
 use super::BytecodeVM;
+use crate::backend::bytecode::chunk::ChunkBuilder;
+use crate::backend::bytecode::mork_bridge::MorkBridge;
+use crate::backend::bytecode::opcodes::Opcode;
+use crate::backend::environment::Environment;
+use crate::backend::models::{MettaValue, SpaceHandle};
 
 #[test]
 fn test_vm_push_pop() {
@@ -1069,40 +1069,25 @@ fn test_pattern_wildcard() {
     ));
 
     assert!(pattern_matches(
-        &MettaValue::sexpr(vec![
-            MettaValue::sym("_"),
-            MettaValue::Long(2),
-        ]),
-        &MettaValue::sexpr(vec![
-            MettaValue::sym("anything"),
-            MettaValue::Long(2),
-        ])
+        &MettaValue::sexpr(vec![MettaValue::sym("_"), MettaValue::Long(2),]),
+        &MettaValue::sexpr(vec![MettaValue::sym("anything"), MettaValue::Long(2),])
     ));
 }
 
 #[test]
 fn test_unification_bidirectional() {
     // Unify var with value
-    let bindings = unify(
-        &MettaValue::var("x"),
-        &MettaValue::Long(42)
-    ).expect("Should unify");
+    let bindings = unify(&MettaValue::var("x"), &MettaValue::Long(42)).expect("Should unify");
     assert_eq!(bindings.len(), 1);
     assert_eq!(bindings[0], ("$x".to_string(), MettaValue::Long(42)));
 
     // Unify value with var (bidirectional)
-    let bindings = unify(
-        &MettaValue::Long(42),
-        &MettaValue::var("x")
-    ).expect("Should unify");
+    let bindings = unify(&MettaValue::Long(42), &MettaValue::var("x")).expect("Should unify");
     assert_eq!(bindings.len(), 1);
     assert_eq!(bindings[0], ("$x".to_string(), MettaValue::Long(42)));
 
     // Unify two vars
-    let bindings = unify(
-        &MettaValue::var("x"),
-        &MettaValue::var("y")
-    ).expect("Should unify");
+    let bindings = unify(&MettaValue::var("x"), &MettaValue::var("y")).expect("Should unify");
     assert_eq!(bindings.len(), 1);
 }
 
@@ -1118,8 +1103,9 @@ fn test_unification_sexpr() {
             MettaValue::sym("add"),
             MettaValue::Long(1),
             MettaValue::Long(2),
-        ])
-    ).expect("Should unify");
+        ]),
+    )
+    .expect("Should unify");
 
     assert_eq!(bindings.len(), 2);
     assert!(bindings.contains(&("$x".to_string(), MettaValue::Long(1))));
@@ -1129,16 +1115,14 @@ fn test_unification_sexpr() {
 #[test]
 fn test_unification_failure() {
     // Different atoms don't unify
-    assert!(unify(
-        &MettaValue::sym("foo"),
-        &MettaValue::sym("bar")
-    ).is_none());
+    assert!(unify(&MettaValue::sym("foo"), &MettaValue::sym("bar")).is_none());
 
     // Different arity S-expressions don't unify
     assert!(unify(
         &MettaValue::sexpr(vec![MettaValue::Long(1)]),
         &MettaValue::sexpr(vec![MettaValue::Long(1), MettaValue::Long(2)])
-    ).is_none());
+    )
+    .is_none());
 }
 
 // === Space Operation Tests ===
@@ -1404,10 +1388,7 @@ fn test_vm_call_simple_rule() {
     // Test Call opcode with a simple rule: (double $x) -> (+ $x $x)
     let mut env = Environment::new();
     let rule = Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::sym("double"),
-            MettaValue::sym("$x"),
-        ]),
+        MettaValue::SExpr(vec![MettaValue::sym("double"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("+"),
             MettaValue::sym("$x"),
@@ -1498,10 +1479,7 @@ fn test_vm_tail_call_simple_rule() {
     // Test TailCall opcode with a simple rule: (inc $x) -> (+ $x 1)
     let mut env = Environment::new();
     let rule = Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::sym("inc"),
-            MettaValue::sym("$x"),
-        ]),
+        MettaValue::SExpr(vec![MettaValue::sym("inc"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("+"),
             MettaValue::sym("$x"),
@@ -1625,9 +1603,21 @@ fn test_vm_call_multiple_rules_creates_choice_point() {
     // Results are returned directly as separate values when exhausted
     // Should get all three values: a, b, c
     assert_eq!(results.len(), 3, "Expected 3 results, got: {:?}", results);
-    assert!(results.contains(&MettaValue::sym("a")), "Missing 'a': {:?}", results);
-    assert!(results.contains(&MettaValue::sym("b")), "Missing 'b': {:?}", results);
-    assert!(results.contains(&MettaValue::sym("c")), "Missing 'c': {:?}", results);
+    assert!(
+        results.contains(&MettaValue::sym("a")),
+        "Missing 'a': {:?}",
+        results
+    );
+    assert!(
+        results.contains(&MettaValue::sym("b")),
+        "Missing 'b': {:?}",
+        results
+    );
+    assert!(
+        results.contains(&MettaValue::sym("c")),
+        "Missing 'c': {:?}",
+        results
+    );
 }
 
 #[test]
@@ -1637,10 +1627,7 @@ fn test_vm_call_single_rule_no_choice_point() {
     // Set up environment with a single rule
     let mut env = Environment::new();
     let rule = Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::sym("single"),
-            MettaValue::sym("$x"),
-        ]),
+        MettaValue::SExpr(vec![MettaValue::sym("single"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("+"),
             MettaValue::sym("$x"),
@@ -1756,9 +1743,12 @@ fn test_vm_fork_nested_choice_points() {
     // TODO: Full nested non-determinism requires additional work
     assert!(!results.is_empty(), "Should get at least one result");
     // First result should be x (first matching rule for inner)
-    assert!(results.contains(&MettaValue::sym("x")) ||
-            results.contains(&MettaValue::SExpr(vec![MettaValue::sym("inner")])),
-            "Should contain x or (inner): {:?}", results);
+    assert!(
+        results.contains(&MettaValue::sym("x"))
+            || results.contains(&MettaValue::SExpr(vec![MettaValue::sym("inner")])),
+        "Should contain x or (inner): {:?}",
+        results
+    );
 }
 
 #[test]
@@ -1770,10 +1760,7 @@ fn test_vm_alternative_rulematch() {
     // (= (pair $x) (dup $x))
     let mut env = Environment::new();
     env.add_rule(Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::sym("pair"),
-            MettaValue::sym("$x"),
-        ]),
+        MettaValue::SExpr(vec![MettaValue::sym("pair"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("cons"),
             MettaValue::sym("$x"),
@@ -1783,14 +1770,8 @@ fn test_vm_alternative_rulematch() {
 
     // Add second rule with same pattern
     env.add_rule(Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::sym("pair"),
-            MettaValue::sym("$x"),
-        ]),
-        MettaValue::SExpr(vec![
-            MettaValue::sym("dup"),
-            MettaValue::sym("$x"),
-        ]),
+        MettaValue::SExpr(vec![MettaValue::sym("pair"), MettaValue::sym("$x")]),
+        MettaValue::SExpr(vec![MettaValue::sym("dup"), MettaValue::sym("$x")]),
     ));
 
     let bridge = Arc::new(MorkBridge::from_env(env));
@@ -1823,10 +1804,11 @@ fn test_vm_alternative_rulematch() {
                 let head = &inner[0];
                 // Check various possible forms of results
                 assert!(
-                    *head == MettaValue::sym("cons") ||
-                    *head == MettaValue::sym("dup") ||
-                    *head == MettaValue::sym("pair"),
-                    "Unexpected result head: {:?}", head
+                    *head == MettaValue::sym("cons")
+                        || *head == MettaValue::sym("dup")
+                        || *head == MettaValue::sym("pair"),
+                    "Unexpected result head: {:?}",
+                    head
                 );
             }
         }
@@ -1861,7 +1843,7 @@ fn test_vm_guard_false() {
 
     // Set up two alternatives: first will fail guard, second will succeed
     let idx1 = builder.add_constant(MettaValue::Bool(false)); // first alt fails guard
-    let idx2 = builder.add_constant(MettaValue::Bool(true));  // second alt passes guard
+    let idx2 = builder.add_constant(MettaValue::Bool(true)); // second alt passes guard
 
     builder.emit(Opcode::BeginNondet);
 
@@ -2055,7 +2037,10 @@ fn test_vm_call_native_concat() {
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
 
-    assert_eq!(results, vec![MettaValue::String("Hello, World!".to_string())]);
+    assert_eq!(
+        results,
+        vec![MettaValue::String("Hello, World!".to_string())]
+    );
 }
 
 #[test]
@@ -2200,7 +2185,7 @@ fn test_vm_call_cached_different_args() {
 #[test]
 fn test_vm_call_external() {
     // Test CallExternal with a registered function
-    use crate::backend::bytecode::external_registry::{ExternalRegistry, ExternalError};
+    use crate::backend::bytecode::external_registry::{ExternalError, ExternalRegistry};
 
     let mut builder = ChunkBuilder::new("test_call_external");
 
@@ -2223,10 +2208,12 @@ fn test_vm_call_external() {
     registry.register("triple", |args, _ctx| {
         let n = match args.first() {
             Some(MettaValue::Long(n)) => *n,
-            _ => return Err(ExternalError::TypeError {
-                expected: "Long",
-                got: "other".to_string(),
-            }),
+            _ => {
+                return Err(ExternalError::TypeError {
+                    expected: "Long",
+                    got: "other".to_string(),
+                })
+            }
         };
         Ok(vec![MettaValue::Long(n * 3)])
     });
@@ -2280,8 +2267,15 @@ fn test_vm_call_external_multiple_args() {
 
     let mut registry = ExternalRegistry::new();
     registry.register("add3", |args, _ctx| {
-        let sum: i64 = args.iter()
-            .filter_map(|v| if let MettaValue::Long(n) = v { Some(*n) } else { None })
+        let sum: i64 = args
+            .iter()
+            .filter_map(|v| {
+                if let MettaValue::Long(n) = v {
+                    Some(*n)
+                } else {
+                    None
+                }
+            })
             .sum();
         Ok(vec![MettaValue::Long(sum)])
     });

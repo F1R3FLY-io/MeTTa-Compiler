@@ -310,9 +310,6 @@ mod tests {
 
         cache.insert("complex", &args, MettaValue::Bool(true));
 
-        assert_eq!(
-            cache.get("complex", &args),
-            Some(MettaValue::Bool(true))
-        );
+        assert_eq!(cache.get("complex", &args), Some(MettaValue::Bool(true)));
     }
 }

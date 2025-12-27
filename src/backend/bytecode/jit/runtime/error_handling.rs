@@ -10,7 +10,7 @@
 //! - `jit_runtime_stack_overflow` - Called when stack exceeds limit
 //! - `jit_runtime_stack_underflow` - Called when popping from empty stack
 
-use crate::backend::bytecode::jit::types::{JitContext, JitBailoutReason};
+use crate::backend::bytecode::jit::types::{JitBailoutReason, JitContext};
 
 // =============================================================================
 // Error Handling Runtime

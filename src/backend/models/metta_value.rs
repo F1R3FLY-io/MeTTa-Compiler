@@ -207,9 +207,7 @@ impl MettaValue {
         match (self, other) {
             // Variables match any other variable (names don't matter)
             // EXCEPT: space references like "&self" must match exactly
-            (MettaValue::Atom(a), MettaValue::Atom(b)) if is_variable(a) && is_variable(b) => {
-                true
-            }
+            (MettaValue::Atom(a), MettaValue::Atom(b)) if is_variable(a) && is_variable(b) => true,
 
             // Wildcards match wildcards
             (MettaValue::Atom(a), MettaValue::Atom(b)) if a == "_" && b == "_" => true,
@@ -1014,13 +1012,22 @@ mod tests {
     #[test]
     fn test_to_mork_string_space_references() {
         // Space references like &self are NOT variables - they should be preserved
-        assert_eq!(MettaValue::Atom("&self".to_string()).to_mork_string(), "&self");
+        assert_eq!(
+            MettaValue::Atom("&self".to_string()).to_mork_string(),
+            "&self"
+        );
         assert_eq!(MettaValue::Atom("&kb".to_string()).to_mork_string(), "&kb");
-        assert_eq!(MettaValue::Atom("&stack".to_string()).to_mork_string(), "&stack");
+        assert_eq!(
+            MettaValue::Atom("&stack".to_string()).to_mork_string(),
+            "&stack"
+        );
 
         // But regular &-prefixed atoms ARE variables and get converted
         assert_eq!(MettaValue::Atom("&x".to_string()).to_mork_string(), "$x");
-        assert_eq!(MettaValue::Atom("&foo".to_string()).to_mork_string(), "$foo");
+        assert_eq!(
+            MettaValue::Atom("&foo".to_string()).to_mork_string(),
+            "$foo"
+        );
     }
 
     #[test]

@@ -4,8 +4,8 @@
 //! These operations require executing nested bytecode, so they bailout to VM.
 
 use cranelift::prelude::*;
-use cranelift_module::{FuncId, Module};
 use cranelift_jit::JITModule;
+use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::JitResult;
@@ -40,7 +40,10 @@ pub fn compile_map_atom(
     let list = codegen.pop()?;
     let chunk_val = codegen.builder.ins().iconst(types::I64, chunk_idx);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, list, chunk_val, ip_val]);
+    let inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, list, chunk_val, ip_val]);
     let result = codegen.builder.inst_results(inst)[0];
     codegen.push(result)?;
 
@@ -68,7 +71,10 @@ pub fn compile_filter_atom(
     let list = codegen.pop()?;
     let chunk_val = codegen.builder.ins().iconst(types::I64, chunk_idx);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, list, chunk_val, ip_val]);
+    let inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, list, chunk_val, ip_val]);
     let result = codegen.builder.inst_results(inst)[0];
     codegen.push(result)?;
 
@@ -97,7 +103,10 @@ pub fn compile_foldl_atom(
     let list = codegen.pop()?;
     let chunk_val = codegen.builder.ins().iconst(types::I64, chunk_idx);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, list, init, chunk_val, ip_val]);
+    let inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, list, init, chunk_val, ip_val]);
     let result = codegen.builder.inst_results(inst)[0];
     codegen.push(result)?;
 

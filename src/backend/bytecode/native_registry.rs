@@ -169,12 +169,7 @@ impl NativeRegistry {
     }
 
     /// Call a native function by ID
-    pub fn call(
-        &self,
-        id: u16,
-        args: &[MettaValue],
-        ctx: &NativeContext,
-    ) -> NativeResult {
+    pub fn call(&self, id: u16, args: &[MettaValue], ctx: &NativeContext) -> NativeResult {
         let entry = self
             .functions
             .get(id as usize)
@@ -256,7 +251,8 @@ impl NativeRegistry {
                 .map(|d| d.as_nanos())
                 .unwrap_or(42) as u64;
 
-            let random_val = ((seed * 6364136223846793005 + 1442695040888963407) % (max as u64)) as i64;
+            let random_val =
+                ((seed * 6364136223846793005 + 1442695040888963407) % (max as u64)) as i64;
             Ok(vec![MettaValue::Long(random_val)])
         });
 
@@ -272,7 +268,10 @@ impl NativeRegistry {
             match &args[0] {
                 MettaValue::Bool(true) => Ok(vec![MettaValue::Unit]),
                 MettaValue::Bool(false) => {
-                    let msg = args.get(1).map(|v| format!("{:?}", v)).unwrap_or_else(|| "assertion failed".to_string());
+                    let msg = args
+                        .get(1)
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_else(|| "assertion failed".to_string());
                     Err(NativeError::RuntimeError(msg))
                 }
                 other => Err(NativeError::TypeError {
@@ -357,7 +356,7 @@ mod tests {
         let mut registry = NativeRegistry::new();
 
         let id = registry.register("add2", |args, _ctx| {
-            let a = match args.get(0) {
+            let a = match args.first() {
                 Some(MettaValue::Long(n)) => *n,
                 _ => 0,
             };
@@ -404,11 +403,16 @@ mod tests {
         let ctx = NativeContext::default();
 
         // Test concat
-        let concat_id = registry.get_id("concat").expect("concat should be registered");
+        let concat_id = registry
+            .get_id("concat")
+            .expect("concat should be registered");
         let result = registry
             .call(
                 concat_id,
-                &[MettaValue::String("hello".to_string()), MettaValue::String(" world".to_string())],
+                &[
+                    MettaValue::String("hello".to_string()),
+                    MettaValue::String(" world".to_string()),
+                ],
                 &ctx,
             )
             .expect("concat should succeed");
@@ -421,13 +425,11 @@ mod tests {
         let registry = NativeRegistry::with_stdlib();
         let ctx = NativeContext::default();
 
-        let range_id = registry.get_id("range").expect("range should be registered");
+        let range_id = registry
+            .get_id("range")
+            .expect("range should be registered");
         let result = registry
-            .call(
-                range_id,
-                &[MettaValue::Long(0), MettaValue::Long(5)],
-                &ctx,
-            )
+            .call(range_id, &[MettaValue::Long(0), MettaValue::Long(5)], &ctx)
             .expect("range should succeed");
 
         let expected = vec![MettaValue::SExpr(vec![

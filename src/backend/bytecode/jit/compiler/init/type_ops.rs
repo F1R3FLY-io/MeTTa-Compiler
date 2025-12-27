@@ -31,9 +31,18 @@ pub trait TypeOpsInit {
 
 impl<T> TypeOpsInit for T {
     fn register_type_ops_symbols(builder: &mut JITBuilder) {
-        builder.symbol("jit_runtime_get_type", runtime::jit_runtime_get_type as *const u8);
-        builder.symbol("jit_runtime_check_type", runtime::jit_runtime_check_type as *const u8);
-        builder.symbol("jit_runtime_assert_type", runtime::jit_runtime_assert_type as *const u8);
+        builder.symbol(
+            "jit_runtime_get_type",
+            runtime::jit_runtime_get_type as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_check_type",
+            runtime::jit_runtime_check_type as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_assert_type",
+            runtime::jit_runtime_assert_type as *const u8,
+        );
     }
 
     fn declare_type_ops_funcs<M: Module>(module: &mut M) -> JitResult<TypeOpsFuncIds> {
@@ -48,7 +57,9 @@ impl<T> TypeOpsInit for T {
 
         let get_type_func_id = module
             .declare_function("jit_runtime_get_type", Linkage::Import, &get_type_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_get_type: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_get_type: {}", e))
+            })?;
 
         // check_type: fn(ctx, value, expected_type, ip) -> bool
         let mut check_type_sig = module.make_signature();
@@ -60,7 +71,12 @@ impl<T> TypeOpsInit for T {
 
         let check_type_func_id = module
             .declare_function("jit_runtime_check_type", Linkage::Import, &check_type_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_check_type: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_check_type: {}",
+                    e
+                ))
+            })?;
 
         // assert_type: fn(ctx, value, expected_type, ip) -> value or error
         let mut assert_type_sig = module.make_signature();
@@ -72,7 +88,12 @@ impl<T> TypeOpsInit for T {
 
         let assert_type_func_id = module
             .declare_function("jit_runtime_assert_type", Linkage::Import, &assert_type_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_assert_type: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_assert_type: {}",
+                    e
+                ))
+            })?;
 
         Ok(TypeOpsFuncIds {
             get_type_func_id,

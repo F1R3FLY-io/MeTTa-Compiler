@@ -3,9 +3,9 @@
 //! This module contains methods for arithmetic operations
 //! like add, sub, mul, div, mod, neg, abs, pow, and extended math operations.
 
-use crate::backend::models::MettaValue;
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
+use crate::backend::models::MettaValue;
 
 impl BytecodeVM {
     // === Basic Arithmetic Operations ===
@@ -15,7 +15,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Long(x + y),
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -26,7 +31,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Long(x - y),
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -37,7 +47,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Long(x * y),
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -48,13 +63,16 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(_), MettaValue::Long(0)) => return Err(VmError::DivisionByZero),
-            (MettaValue::Long(x), MettaValue::Long(y)) => {
-                match x.checked_div(*y) {
-                    Some(r) => MettaValue::Long(r),
-                    None => return Err(VmError::ArithmeticOverflow),
-                }
+            (MettaValue::Long(x), MettaValue::Long(y)) => match x.checked_div(*y) {
+                Some(r) => MettaValue::Long(r),
+                None => return Err(VmError::ArithmeticOverflow),
+            },
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
             }
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
         };
         self.push(result);
         Ok(())
@@ -65,13 +83,16 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(_), MettaValue::Long(0)) => return Err(VmError::DivisionByZero),
-            (MettaValue::Long(x), MettaValue::Long(y)) => {
-                match x.checked_rem(*y) {
-                    Some(r) => MettaValue::Long(r),
-                    None => return Err(VmError::ArithmeticOverflow),
-                }
+            (MettaValue::Long(x), MettaValue::Long(y)) => match x.checked_rem(*y) {
+                Some(r) => MettaValue::Long(r),
+                None => return Err(VmError::ArithmeticOverflow),
+            },
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
             }
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
         };
         self.push(result);
         Ok(())
@@ -81,7 +102,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match a {
             MettaValue::Long(x) => MettaValue::Long(-x),
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -97,7 +123,12 @@ impl BytecodeVM {
                 }
                 MettaValue::Long(x.abs())
             }
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -109,7 +140,12 @@ impl BytecodeVM {
         let result = match (&a, &b) {
             (MettaValue::Long(_), MettaValue::Long(0)) => return Err(VmError::DivisionByZero),
             (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Long(x.div_euclid(*y)),
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -122,7 +158,12 @@ impl BytecodeVM {
             (MettaValue::Long(x), MettaValue::Long(y)) if *y >= 0 => {
                 MettaValue::Long(x.pow(*y as u32))
             }
-            _ => return Err(VmError::TypeError { expected: "Long with non-negative exponent", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long with non-negative exponent",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -135,7 +176,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Float(x.sqrt()),
             MettaValue::Long(x) => MettaValue::Float((x as f64).sqrt()),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -148,8 +194,15 @@ impl BytecodeVM {
             (MettaValue::Float(b), MettaValue::Float(v)) => MettaValue::Float(v.log(*b)),
             (MettaValue::Long(b), MettaValue::Float(v)) => MettaValue::Float(v.log(*b as f64)),
             (MettaValue::Float(b), MettaValue::Long(v)) => MettaValue::Float((*v as f64).log(*b)),
-            (MettaValue::Long(b), MettaValue::Long(v)) => MettaValue::Float((*v as f64).log(*b as f64)),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            (MettaValue::Long(b), MettaValue::Long(v)) => {
+                MettaValue::Float((*v as f64).log(*b as f64))
+            }
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -160,7 +213,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Long(x.trunc() as i64),
             MettaValue::Long(x) => MettaValue::Long(x),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -171,7 +229,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Long(x.ceil() as i64),
             MettaValue::Long(x) => MettaValue::Long(x),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -182,7 +245,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Long(x.floor() as i64),
             MettaValue::Long(x) => MettaValue::Long(x),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -193,7 +261,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Long(x.round() as i64),
             MettaValue::Long(x) => MettaValue::Long(x),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -206,7 +279,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Float(x.sin()),
             MettaValue::Long(x) => MettaValue::Float((x as f64).sin()),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -217,7 +295,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Float(x.cos()),
             MettaValue::Long(x) => MettaValue::Float((x as f64).cos()),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -228,7 +311,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Float(x.tan()),
             MettaValue::Long(x) => MettaValue::Float((x as f64).tan()),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -239,7 +327,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Float(x.asin()),
             MettaValue::Long(x) => MettaValue::Float((x as f64).asin()),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -250,7 +343,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Float(x.acos()),
             MettaValue::Long(x) => MettaValue::Float((x as f64).acos()),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -261,7 +359,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Float(x.atan()),
             MettaValue::Long(x) => MettaValue::Float((x as f64).atan()),
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -272,7 +375,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Bool(x.is_nan()),
             MettaValue::Long(_) => MettaValue::Bool(false), // integers are never NaN
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -283,7 +391,12 @@ impl BytecodeVM {
         let result = match a {
             MettaValue::Float(x) => MettaValue::Bool(x.is_infinite()),
             MettaValue::Long(_) => MettaValue::Bool(false), // integers are never infinite
-            _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Float or Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())

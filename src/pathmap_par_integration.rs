@@ -1032,16 +1032,16 @@ mod tests {
         // Create an environment with a rule
         let mut env = Environment::new();
         let rule = Rule::new(
-        MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-        MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("mul".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
-    );
+        );
         env.add_rule(rule);
 
         // Verify original environment
@@ -1464,12 +1464,12 @@ mod tests {
 
         // Add rule that uses match (the pattern that triggered the bug)
         let rule = Rule::new(
-        MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("is_connected".to_string()),
                 MettaValue::Atom("$from".to_string()),
                 MettaValue::Atom("$to".to_string()),
             ]),
-        MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("match".to_string()),
                 MettaValue::Atom("&".to_string()),
                 MettaValue::Atom("self".to_string()),
@@ -1480,7 +1480,7 @@ mod tests {
                 ]),
                 MettaValue::Bool(true),
             ]),
-    );
+        );
         env.add_rule(rule);
 
         // Serialize to Par (this is what happens when sending to Rholang)
@@ -1560,12 +1560,12 @@ mod tests {
 
         // Add a rule that uses match (pattern from robot_planning.rho)
         let rule = Rule::new(
-        MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("is_connected".to_string()), // 'o' = 111, 'n' = 110 (RESERVED!)
                 MettaValue::Atom("$from".to_string()),
                 MettaValue::Atom("$to".to_string()),
             ]),
-        MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("match".to_string()),
                 MettaValue::Atom("&".to_string()),
                 MettaValue::Atom("self".to_string()),
@@ -1576,7 +1576,7 @@ mod tests {
                 ]),
                 MettaValue::Bool(true),
             ]),
-    );
+        );
         env.add_rule(rule);
 
         let initial_count = env.iter_rules().count();
@@ -1665,8 +1665,7 @@ mod tests {
         let par = metta_state_to_pathmap_par(&state);
 
         // Deserialize back
-        let deserialized =
-            pathmap_par_to_metta_state(&par).expect("Failed to deserialize PathMap");
+        let deserialized = pathmap_par_to_metta_state(&par).expect("Failed to deserialize PathMap");
 
         // Verify source is preserved
         assert_eq!(

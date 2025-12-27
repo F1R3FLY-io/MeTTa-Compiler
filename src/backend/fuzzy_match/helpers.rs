@@ -78,7 +78,11 @@ pub fn are_prefixes_compatible(query: &str, suggestion: &str) -> bool {
         (Some('\''), Some('\'')) => true,
         (Some('%'), Some('%')) => true,
         // Both are regular identifiers (no special prefix)
-        (Some(q), Some(s)) if !matches!(q, '$' | '&' | '\'' | '%') && !matches!(s, '$' | '&' | '\'' | '%') => true,
+        (Some(q), Some(s))
+            if !matches!(q, '$' | '&' | '\'' | '%') && !matches!(s, '$' | '&' | '\'' | '%') =>
+        {
+            true
+        }
         _ => false,
     }
 }
@@ -157,7 +161,11 @@ pub fn is_type_name(s: &str) -> bool {
 ///
 /// For polymorphic types like `(if Bool $a $a) -> $a`, this ensures
 /// that arguments bound to the same type variable have compatible types.
-pub fn validate_type_vars(args: &[MettaValue], expected_types: &[TypeExpr], _env: &Environment) -> bool {
+pub fn validate_type_vars(
+    args: &[MettaValue],
+    expected_types: &[TypeExpr],
+    _env: &Environment,
+) -> bool {
     let mut var_bindings: HashMap<&str, &MettaValue> = HashMap::new();
 
     for (arg, expected) in args.iter().zip(expected_types.iter()) {

@@ -10,9 +10,17 @@ pub enum PeepholeAction {
     /// Remove bytes from `start` to `end` (exclusive)
     Remove { start: usize, end: usize },
     /// Replace bytes from `start` to `end` with a single opcode
-    ReplaceWithOpcode { start: usize, end: usize, opcode: Opcode },
+    ReplaceWithOpcode {
+        start: usize,
+        end: usize,
+        opcode: Opcode,
+    },
     /// Replace bytes from `start` to `end` with multiple bytes
-    ReplaceWithBytes { start: usize, end: usize, bytes: Vec<u8> },
+    ReplaceWithBytes {
+        start: usize,
+        end: usize,
+        bytes: Vec<u8>,
+    },
 }
 
 /// Statistics about optimizations performed

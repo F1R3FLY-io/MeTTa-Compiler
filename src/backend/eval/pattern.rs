@@ -113,9 +113,7 @@ pub(crate) fn pattern_match_impl(
         }
         (MettaValue::SExpr(p_items), MettaValue::Nil) if p_items.is_empty() => true,
         (MettaValue::SExpr(p_items), MettaValue::Unit) if p_items.is_empty() => true,
-        (MettaValue::SExpr(p_items), MettaValue::Atom(v))
-            if p_items.is_empty() && v == "Empty" =>
-        {
+        (MettaValue::SExpr(p_items), MettaValue::Atom(v)) if p_items.is_empty() && v == "Empty" => {
             true
         }
 

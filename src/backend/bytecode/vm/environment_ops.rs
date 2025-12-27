@@ -9,10 +9,10 @@
 use std::sync::Arc;
 use tracing::trace;
 
-use crate::backend::models::MettaValue;
-use super::types::{VmError, VmResult, ChoicePoint, Alternative};
 use super::pattern::pattern_match_bind;
+use super::types::{Alternative, ChoicePoint, VmError, VmResult};
 use super::BytecodeVM;
+use crate::backend::models::MettaValue;
 
 impl BytecodeVM {
     // === Environment Operations ===
@@ -33,7 +33,9 @@ impl BytecodeVM {
 
         // Environment is required for DefineRule
         let env = self.env.as_mut().ok_or_else(|| {
-            VmError::Runtime("DefineRule requires environment (use BytecodeVM::with_env)".to_string())
+            VmError::Runtime(
+                "DefineRule requires environment (use BytecodeVM::with_env)".to_string(),
+            )
         })?;
 
         // Create and add the rule
@@ -54,7 +56,9 @@ impl BytecodeVM {
     /// Stack: [] -> [value]
     pub(super) fn op_load_global(&mut self) -> VmResult<()> {
         let const_idx = self.read_u16()?;
-        let name = self.chunk.get_constant(const_idx)
+        let name = self
+            .chunk
+            .get_constant(const_idx)
             .ok_or(VmError::InvalidConstant(const_idx))?
             .clone();
 

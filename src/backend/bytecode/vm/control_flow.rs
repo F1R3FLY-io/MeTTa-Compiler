@@ -7,10 +7,10 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use tracing::trace;
 
-use crate::backend::models::{Bindings, MettaValue};
-use crate::backend::bytecode::chunk::BytecodeChunk;
-use super::types::{VmError, VmResult, CallFrame, ChoicePoint, Alternative, BindingFrame};
+use super::types::{Alternative, BindingFrame, CallFrame, ChoicePoint, VmError, VmResult};
 use super::BytecodeVM;
+use crate::backend::bytecode::chunk::BytecodeChunk;
+use crate::backend::models::{Bindings, MettaValue};
 
 impl BytecodeVM {
     // === Jump Operations ===
@@ -117,7 +117,10 @@ impl BytecodeVM {
         if self.value_stack.len() < arity {
             return Err(VmError::StackUnderflow);
         }
-        let args: Vec<MettaValue> = self.value_stack.drain(self.value_stack.len() - arity..).collect();
+        let args: Vec<MettaValue> = self
+            .value_stack
+            .drain(self.value_stack.len() - arity..)
+            .collect();
 
         // Build the call expression
         let mut items = Vec::with_capacity(arity + 1);
@@ -196,7 +199,10 @@ impl BytecodeVM {
         if self.value_stack.len() < arity {
             return Err(VmError::StackUnderflow);
         }
-        let args: Vec<MettaValue> = self.value_stack.drain(self.value_stack.len() - arity..).collect();
+        let args: Vec<MettaValue> = self
+            .value_stack
+            .drain(self.value_stack.len() - arity..)
+            .collect();
 
         // Build the call expression
         let mut items = Vec::with_capacity(arity + 1);
@@ -325,9 +331,7 @@ impl BytecodeVM {
 
     pub(super) fn op_return_multi(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
         // Return all values on stack above base_ptr
-        let base = self.call_stack.last()
-            .map(|f| f.base_ptr)
-            .unwrap_or(0);
+        let base = self.call_stack.last().map(|f| f.base_ptr).unwrap_or(0);
         let values: Vec<MettaValue> = self.value_stack.drain(base..).collect();
 
         if let Some(frame) = self.call_stack.pop() {

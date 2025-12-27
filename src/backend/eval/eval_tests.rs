@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use super::*;
 use super::cartesian::Combination;
+use super::*;
 use crate::backend::models::Rule;
 
 #[test]
@@ -312,16 +312,16 @@ fn test_eval_with_rule() {
 
     // Add rule: (= (double $x) (mul $x 2))
     let rule = Rule::new(
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("double".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]),
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("*".to_string()),
             MettaValue::Atom("$x".to_string()),
             MettaValue::Long(2),
         ]),
-);
+    );
     env.add_rule(rule);
 
     // Evaluate (double 5)
@@ -366,12 +366,12 @@ fn test_mvp_complete() {
 
     // Add a rule: (= (safe-div $x $y) (if (== $y 0) (error "division by zero" $y) (div $x $y)))
     let rule = Rule::new(
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("safe-div".to_string()),
             MettaValue::Atom("$x".to_string()),
             MettaValue::Atom("$y".to_string()),
         ]),
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("if".to_string()),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("==".to_string()),
@@ -389,7 +389,7 @@ fn test_mvp_complete() {
                 MettaValue::Atom("$y".to_string()),
             ]),
         ]),
-);
+    );
     env.add_rule(rule);
 
     // Test successful division: (safe-div 10 2) -> 5
@@ -497,11 +497,11 @@ fn test_factorial_recursive() {
     let mut env = Environment::new();
 
     let rule = Rule::new(
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("fact".to_string()),
             MettaValue::Atom("$n".to_string()),
         ]),
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("if".to_string()),
             // Condition: (> $n 0)
             MettaValue::SExpr(vec![
@@ -525,7 +525,7 @@ fn test_factorial_recursive() {
             // Else branch: 1
             MettaValue::Long(1),
         ]),
-);
+    );
     env.add_rule(rule);
 
     // Test (fact 3) = 6
@@ -601,13 +601,13 @@ fn test_function_definition_and_call() {
 
     // Define rule: (= (f) (+ 2 3))
     let rule = Rule::new(
-    MettaValue::SExpr(vec![MettaValue::Atom("f".to_string())]),
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![MettaValue::Atom("f".to_string())]),
+        MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Long(2),
             MettaValue::Long(3),
         ]),
-);
+    );
     env.add_rule(rule);
 
     // Evaluate (f)
@@ -623,13 +623,13 @@ fn test_multiple_pattern_variables() {
 
     // (= (add3 $a $b $c) (+ $a (+ $b $c)))
     let rule = Rule::new(
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("add3".to_string()),
             MettaValue::Atom("$a".to_string()),
             MettaValue::Atom("$b".to_string()),
             MettaValue::Atom("$c".to_string()),
         ]),
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Atom("$a".to_string()),
             MettaValue::SExpr(vec![
@@ -638,7 +638,7 @@ fn test_multiple_pattern_variables() {
                 MettaValue::Atom("$c".to_string()),
             ]),
         ]),
-);
+    );
     env.add_rule(rule);
 
     // (add3 10 20 30) = 60
@@ -659,7 +659,7 @@ fn test_nested_pattern_matching() {
 
     // (= (eval-pair (pair $x $y)) (+ $x $y))
     let rule = Rule::new(
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("eval-pair".to_string()),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("pair".to_string()),
@@ -667,12 +667,12 @@ fn test_nested_pattern_matching() {
                 MettaValue::Atom("$y".to_string()),
             ]),
         ]),
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Atom("$x".to_string()),
             MettaValue::Atom("$y".to_string()),
         ]),
-);
+    );
     env.add_rule(rule);
 
     // (eval-pair (pair 5 7)) = 12
@@ -734,11 +734,11 @@ fn test_conditional_with_pattern_matching() {
 
     // (= (abs $x) (if (< $x 0) (- 0 $x) $x))
     let rule = Rule::new(
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("abs".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]),
-    MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::Atom("if".to_string()),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("<".to_string()),
@@ -752,7 +752,7 @@ fn test_conditional_with_pattern_matching() {
             ]),
             MettaValue::Atom("$x".to_string()),
         ]),
-);
+    );
     env.add_rule(rule);
 
     // abs(-5) = 5
@@ -1428,10 +1428,22 @@ fn test_cartesian_product_iter_basic() {
     let combos: Vec<Combination> = iter.collect();
 
     assert_eq!(combos.len(), 4);
-    assert_eq!(combos[0].as_slice(), &[MettaValue::Long(1), MettaValue::Long(10)]);
-    assert_eq!(combos[1].as_slice(), &[MettaValue::Long(1), MettaValue::Long(20)]);
-    assert_eq!(combos[2].as_slice(), &[MettaValue::Long(2), MettaValue::Long(10)]);
-    assert_eq!(combos[3].as_slice(), &[MettaValue::Long(2), MettaValue::Long(20)]);
+    assert_eq!(
+        combos[0].as_slice(),
+        &[MettaValue::Long(1), MettaValue::Long(10)]
+    );
+    assert_eq!(
+        combos[1].as_slice(),
+        &[MettaValue::Long(1), MettaValue::Long(20)]
+    );
+    assert_eq!(
+        combos[2].as_slice(),
+        &[MettaValue::Long(2), MettaValue::Long(10)]
+    );
+    assert_eq!(
+        combos[3].as_slice(),
+        &[MettaValue::Long(2), MettaValue::Long(20)]
+    );
 }
 
 #[test]
@@ -1449,7 +1461,11 @@ fn test_cartesian_product_iter_single_element() {
     assert_eq!(combos.len(), 1);
     assert_eq!(
         combos[0].as_slice(),
-        &[MettaValue::Long(1), MettaValue::Long(2), MettaValue::Long(3)]
+        &[
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+            MettaValue::Long(3)
+        ]
     );
 }
 
@@ -1483,13 +1499,21 @@ fn test_cartesian_product_iter_empty_list() {
 fn test_cartesian_product_iter_3x3x3() {
     // Test 3x3x3 = 27 combinations
     let results = vec![
-        vec![MettaValue::Long(1), MettaValue::Long(2), MettaValue::Long(3)],
+        vec![
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+            MettaValue::Long(3),
+        ],
         vec![
             MettaValue::Atom("a".into()),
             MettaValue::Atom("b".into()),
             MettaValue::Atom("c".into()),
         ],
-        vec![MettaValue::Bool(true), MettaValue::Bool(false), MettaValue::Nil],
+        vec![
+            MettaValue::Bool(true),
+            MettaValue::Bool(false),
+            MettaValue::Nil,
+        ],
     ];
     let iter = CartesianProductIter::new(results).expect("Should create iterator");
 
@@ -1500,11 +1524,19 @@ fn test_cartesian_product_iter_3x3x3() {
     // Verify first and last combinations
     assert_eq!(
         combos[0].as_slice(),
-        &[MettaValue::Long(1), MettaValue::Atom("a".into()), MettaValue::Bool(true)]
+        &[
+            MettaValue::Long(1),
+            MettaValue::Atom("a".into()),
+            MettaValue::Bool(true)
+        ]
     );
     assert_eq!(
         combos[26].as_slice(),
-        &[MettaValue::Long(3), MettaValue::Atom("c".into()), MettaValue::Nil]
+        &[
+            MettaValue::Long(3),
+            MettaValue::Atom("c".into()),
+            MettaValue::Nil
+        ]
     );
 }
 
@@ -1513,7 +1545,11 @@ fn test_cartesian_product_lazy_count() {
     // Verify iterator is lazy by checking memory usage pattern
     let results = cartesian_product_lazy(vec![
         vec![MettaValue::Long(1), MettaValue::Long(2)],
-        vec![MettaValue::Long(10), MettaValue::Long(20), MettaValue::Long(30)],
+        vec![
+            MettaValue::Long(10),
+            MettaValue::Long(20),
+            MettaValue::Long(30),
+        ],
     ]);
 
     match results {
@@ -1529,14 +1565,15 @@ fn test_cartesian_product_lazy_count() {
 #[test]
 fn test_cartesian_product_lazy_single_returns_single() {
     // Fast path: single combination returns Single variant
-    let results = cartesian_product_lazy(vec![
-        vec![MettaValue::Long(1)],
-        vec![MettaValue::Long(2)],
-    ]);
+    let results =
+        cartesian_product_lazy(vec![vec![MettaValue::Long(1)], vec![MettaValue::Long(2)]]);
 
     match results {
         CartesianProductResult::Single(combo) => {
-            assert_eq!(combo.as_slice(), &[MettaValue::Long(1), MettaValue::Long(2)]);
+            assert_eq!(
+                combo.as_slice(),
+                &[MettaValue::Long(1), MettaValue::Long(2)]
+            );
         }
         _ => panic!("Expected Single variant for deterministic case"),
     }
@@ -1574,8 +1611,8 @@ fn test_cartesian_product_lazy_with_empty_list_returns_empty() {
 fn test_cartesian_product_ordering_preserved() {
     // Verify outer-product ordering is preserved (rightmost index varies fastest)
     let results = vec![
-        vec![MettaValue::Long(1), MettaValue::Long(2)],     // First dimension
-        vec![MettaValue::Long(10), MettaValue::Long(20)],   // Second dimension
+        vec![MettaValue::Long(1), MettaValue::Long(2)], // First dimension
+        vec![MettaValue::Long(10), MettaValue::Long(20)], // Second dimension
     ];
     let iter = CartesianProductIter::new(results).expect("Should create iterator");
 
@@ -1583,10 +1620,22 @@ fn test_cartesian_product_ordering_preserved() {
 
     // Ordering: (1,10), (1,20), (2,10), (2,20)
     // Rightmost index varies fastest
-    assert_eq!(combos[0].as_slice(), &[MettaValue::Long(1), MettaValue::Long(10)]);
-    assert_eq!(combos[1].as_slice(), &[MettaValue::Long(1), MettaValue::Long(20)]);
-    assert_eq!(combos[2].as_slice(), &[MettaValue::Long(2), MettaValue::Long(10)]);
-    assert_eq!(combos[3].as_slice(), &[MettaValue::Long(2), MettaValue::Long(20)]);
+    assert_eq!(
+        combos[0].as_slice(),
+        &[MettaValue::Long(1), MettaValue::Long(10)]
+    );
+    assert_eq!(
+        combos[1].as_slice(),
+        &[MettaValue::Long(1), MettaValue::Long(20)]
+    );
+    assert_eq!(
+        combos[2].as_slice(),
+        &[MettaValue::Long(2), MettaValue::Long(10)]
+    );
+    assert_eq!(
+        combos[3].as_slice(),
+        &[MettaValue::Long(2), MettaValue::Long(20)]
+    );
 }
 
 #[test]
@@ -1603,23 +1652,23 @@ fn test_nondeterministic_cartesian_product() {
 
     // Add rules for (a) -> 1 and (a) -> 2
     env.add_rule(Rule::new(
-    MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
-    MettaValue::Long(1),
-));
+        MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
+        MettaValue::Long(1),
+    ));
     env.add_rule(Rule::new(
-    MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
-    MettaValue::Long(2),
-));
+        MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
+        MettaValue::Long(2),
+    ));
 
     // Add rules for (b) -> 10 and (b) -> 20
     env.add_rule(Rule::new(
-    MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
-    MettaValue::Long(10),
-));
+        MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
+        MettaValue::Long(10),
+    ));
     env.add_rule(Rule::new(
-    MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
-    MettaValue::Long(20),
-));
+        MettaValue::SExpr(vec![MettaValue::Atom("b".to_string())]),
+        MettaValue::Long(20),
+    ));
 
     // Evaluate (+ (a) (b))
     let expr = MettaValue::SExpr(vec![

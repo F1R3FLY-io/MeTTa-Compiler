@@ -21,18 +21,17 @@
 //! - eval_lambda - Create closure
 //! - eval_apply - Apply closure to arguments
 
-use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, JitBindingEntry, JitAlternative,
-    JIT_SIGNAL_FAIL,
-};
-use crate::backend::models::MettaValue;
-use crate::backend::eval::pattern_match;
+use super::bindings::{jit_runtime_push_binding_frame, jit_runtime_store_binding};
 use super::helpers::{box_long, metta_to_jit};
-use super::bindings::{jit_runtime_store_binding, jit_runtime_push_binding_frame};
 use super::pattern_matching::jit_runtime_pattern_match;
+use super::rule_dispatch::{collect_bindings_from_ctx, hash_string};
 use super::value_creation::jit_runtime_make_quote;
-use super::rule_dispatch::{hash_string, collect_bindings_from_ctx};
 use super::MAX_ALTERNATIVES_INLINE;
+use crate::backend::bytecode::jit::types::{
+    JitAlternative, JitBailoutReason, JitBindingEntry, JitContext, JitValue, JIT_SIGNAL_FAIL,
+};
+use crate::backend::eval::pattern_match;
+use crate::backend::models::MettaValue;
 
 // =============================================================================
 // Phase E: Special Forms
@@ -111,10 +110,7 @@ pub unsafe extern "C" fn jit_runtime_eval_let(
 /// # Returns
 /// NaN-boxed Unit (bindings are handled sequentially by the compiler)
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_eval_let_star(
-    _ctx: *mut JitContext,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_eval_let_star(_ctx: *mut JitContext, _ip: u64) -> u64 {
     // Let* bindings are handled sequentially by the bytecode compiler
     // This runtime function is mainly a marker/placeholder
     JitValue::unit().to_bits()
@@ -263,11 +259,7 @@ pub unsafe extern "C" fn jit_runtime_eval_chain(
 /// # Returns
 /// NaN-boxed quoted expression
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_eval_quote(
-    ctx: *mut JitContext,
-    expr: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_eval_quote(ctx: *mut JitContext, expr: u64, _ip: u64) -> u64 {
     // Wrap expression in a quote - delegates to make_quote
     jit_runtime_make_quote(ctx, expr, _ip)
 }
@@ -322,11 +314,7 @@ pub unsafe extern "C" fn jit_runtime_eval_unquote(
 /// NaN-boxed result of evaluation
 /// Note: In full implementation, this would trigger rule dispatch
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_eval_eval(
-    _ctx: *mut JitContext,
-    expr: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_eval_eval(_ctx: *mut JitContext, expr: u64, _ip: u64) -> u64 {
     // In a full implementation, this would call the evaluator
     // For now, return expression unchanged (evaluation happens at bytecode level)
     expr
@@ -367,10 +355,7 @@ pub unsafe extern "C" fn jit_runtime_eval_bind(
 /// # Returns
 /// NaN-boxed space handle
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_eval_new(
-    ctx: *mut JitContext,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_eval_new(ctx: *mut JitContext, _ip: u64) -> u64 {
     use crate::backend::bytecode::space_registry::SpaceRegistry;
     use crate::backend::models::SpaceHandle;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -551,11 +536,7 @@ pub unsafe extern "C" fn jit_runtime_eval_superpose(
 /// # Returns
 /// NaN-boxed result (cached if previously evaluated)
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_eval_memo(
-    _ctx: *mut JitContext,
-    expr: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_eval_memo(_ctx: *mut JitContext, expr: u64, _ip: u64) -> u64 {
     // In full implementation, this would check a memo cache
     // For now, return expression unchanged (no caching)
     expr

@@ -2,7 +2,6 @@
 //!
 //! Handles: LoadBinding, StoreBinding, HasBinding, ClearBindings, PushBindingFrame, PopBindingFrame
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -46,7 +45,10 @@ pub fn compile_load_binding<'a, 'b>(
     let ctx_ptr = codegen.ctx_ptr();
     let name_idx_val = codegen.builder.ins().iconst(types::I64, name_idx as i64);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, name_idx_val, ip_val]);
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, name_idx_val, ip_val]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
     Ok(())
@@ -75,7 +77,10 @@ pub fn compile_store_binding<'a, 'b>(
     let ctx_ptr = codegen.ctx_ptr();
     let name_idx_val = codegen.builder.ins().iconst(types::I64, name_idx as i64);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let _call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, name_idx_val, value, ip_val]);
+    let _call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, name_idx_val, value, ip_val]);
     // Result is status code, ignored for now
     Ok(())
 }
@@ -100,7 +105,10 @@ pub fn compile_has_binding<'a, 'b>(
     // Call jit_runtime_has_binding(ctx, name_idx)
     let ctx_ptr = codegen.ctx_ptr();
     let name_idx_val = codegen.builder.ins().iconst(types::I64, name_idx as i64);
-    let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, name_idx_val]);
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, name_idx_val]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
     Ok(())

@@ -66,10 +66,14 @@ fn test_compile_large_int() {
 fn test_compile_string() {
     let chunk = compile("test", &MettaValue::String("hello".to_string())).unwrap();
     assert_eq!(chunk.read_opcode(0), Some(Opcode::PushString));
-    assert_eq!(chunk.get_constant(0), Some(&MettaValue::String("hello".to_string())));
+    assert_eq!(
+        chunk.get_constant(0),
+        Some(&MettaValue::String("hello".to_string()))
+    );
 }
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn test_compile_float() {
     let chunk = compile("test", &MettaValue::Float(3.14)).unwrap();
     assert_eq!(chunk.read_opcode(0), Some(Opcode::PushConstant));
@@ -84,14 +88,20 @@ fn test_compile_float() {
 fn test_compile_symbol() {
     let chunk = compile("test", &MettaValue::Atom("foo".to_string())).unwrap();
     assert_eq!(chunk.read_opcode(0), Some(Opcode::PushAtom));
-    assert_eq!(chunk.get_constant(0), Some(&MettaValue::Atom("foo".to_string())));
+    assert_eq!(
+        chunk.get_constant(0),
+        Some(&MettaValue::Atom("foo".to_string()))
+    );
 }
 
 #[test]
 fn test_compile_variable() {
     let chunk = compile("test", &MettaValue::Atom("$x".to_string())).unwrap();
     assert_eq!(chunk.read_opcode(0), Some(Opcode::PushVariable));
-    assert_eq!(chunk.get_constant(0), Some(&MettaValue::Atom("$x".to_string())));
+    assert_eq!(
+        chunk.get_constant(0),
+        Some(&MettaValue::Atom("$x".to_string()))
+    );
 }
 
 // ========================================================================
@@ -769,10 +779,7 @@ fn test_compile_cdr_atom() {
 fn test_compile_size_atom() {
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("size-atom".to_string()),
-        MettaValue::SExpr(vec![
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]),
+        MettaValue::SExpr(vec![MettaValue::Long(1), MettaValue::Long(2)]),
     ]);
     let chunk = compile("test", &expr).unwrap();
     assert!(chunk.disassemble().contains("get_arity"));
@@ -781,9 +788,7 @@ fn test_compile_size_atom() {
 #[test]
 fn test_compile_empty() {
     // MeTTa semantics: (empty) returns NO results, equivalent to Fail
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("empty".to_string()),
-    ]);
+    let expr = MettaValue::SExpr(vec![MettaValue::Atom("empty".to_string())]);
     let chunk = compile("test", &expr).unwrap();
     assert!(chunk.disassemble().contains("fail"));
 }
@@ -825,7 +830,7 @@ fn test_compile_nested_call() {
     let disasm = chunk.disassemble();
     // Inner call (bar 1) should be regular call, not tail_call
     assert!(disasm.contains("call")); // Will match both "call" and "tail_call"
-    // Count occurrences
+                                      // Count occurrences
     let call_count = disasm.matches("call").count();
     let tail_call_count = disasm.matches("tail_call").count();
     // Should have one regular call (bar) and one tail call (foo)
@@ -873,10 +878,7 @@ fn test_compile_catch() {
 
 #[test]
 fn test_compile_add_wrong_arity() {
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("+".to_string()),
-        MettaValue::Long(1),
-    ]);
+    let expr = MettaValue::SExpr(vec![MettaValue::Atom("+".to_string()), MettaValue::Long(1)]);
     let result = compile("test", &expr);
     assert!(matches!(result, Err(CompileError::InvalidArity { .. })));
 }

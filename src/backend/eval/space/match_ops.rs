@@ -107,7 +107,8 @@ pub(crate) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
                             ),
                         };
 
-                        let err = MettaValue::Error(msg, Arc::new(MettaValue::SExpr(args.to_vec())));
+                        let err =
+                            MettaValue::Error(msg, Arc::new(MettaValue::SExpr(args.to_vec())));
                         (vec![err], env)
                     }
                 }
@@ -157,7 +158,11 @@ fn match_with_space_handle(
     // Debug logging
     let debug = std::env::var("METTA_DEBUG_MATCH").is_ok();
     if debug {
-        eprintln!("[DEBUG match] handle.name={}, is_module_space={}", handle.name, handle.is_module_space());
+        eprintln!(
+            "[DEBUG match] handle.name={}, is_module_space={}",
+            handle.name,
+            handle.is_module_space()
+        );
         eprintln!("[DEBUG match] pattern={:?}", pattern);
         eprintln!("[DEBUG match] template={:?}", template);
     }
@@ -175,7 +180,10 @@ fn match_with_space_handle(
         // Owned space (from new-space) - match against atoms stored in SpaceHandle
         let atoms = handle.collapse();
         if debug {
-            eprintln!("[DEBUG match] Using owned space path, {} atoms", atoms.len());
+            eprintln!(
+                "[DEBUG match] Using owned space path, {} atoms",
+                atoms.len()
+            );
         }
 
         // Collect all matching atoms first (don't evaluate yet)
@@ -197,7 +205,10 @@ fn match_with_space_handle(
             let bindings = &matching_bindings[0];
             let instantiated = apply_bindings(template, bindings).into_owned();
             if debug {
-                eprintln!("[DEBUG match] Single match, instantiated={:?}", instantiated);
+                eprintln!(
+                    "[DEBUG match] Single match, instantiated={:?}",
+                    instantiated
+                );
             }
             let (eval_results, _) = eval(instantiated, env.clone());
             if debug {

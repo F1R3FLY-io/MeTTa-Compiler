@@ -3,8 +3,8 @@
 //! Provides methods for converting between MORK expressions and MettaValues.
 //! Handles the low-level byte encoding used by PathMap trie storage.
 
-use mork_expr::{maybe_byte_item, Expr, Tag};
 use mork::space::Space;
+use mork_expr::{maybe_byte_item, Expr, Tag};
 use std::slice::from_raw_parts;
 use tracing::{trace, warn};
 
@@ -174,9 +174,10 @@ impl super::Environment {
                             // With interning, symbols are ALWAYS stored as 8-byte i64 IDs
                             if symbol_bytes.len() == 8 {
                                 // Convert bytes to i64, then back to bytes for symbol table lookup
-                                let symbol_id =
-                                    i64::from_be_bytes(symbol_bytes.try_into().expect("8 bytes expected"))
-                                        .to_be_bytes();
+                                let symbol_id = i64::from_be_bytes(
+                                    symbol_bytes.try_into().expect("8 bytes expected"),
+                                )
+                                .to_be_bytes();
                                 if let Some(actual_bytes) = space.sm.get_bytes(symbol_id) {
                                     // Found in symbol table - use actual symbol string
                                     String::from_utf8_lossy(actual_bytes).to_string()
@@ -206,8 +207,12 @@ impl super::Environment {
                     // could plausibly start a number (digit or minus sign followed by digit)
                     let first_byte = symbol_str.as_bytes().first().copied().unwrap_or(0);
                     let could_be_number = first_byte.is_ascii_digit()
-                        || (first_byte == b'-' && symbol_str.len() > 1
-                            && symbol_str.as_bytes().get(1).is_some_and(|b| b.is_ascii_digit()));
+                        || (first_byte == b'-'
+                            && symbol_str.len() > 1
+                            && symbol_str
+                                .as_bytes()
+                                .get(1)
+                                .is_some_and(|b| b.is_ascii_digit()));
 
                     if could_be_number {
                         if let Ok(n) = symbol_str.parse::<i64>() {
@@ -248,7 +253,9 @@ impl super::Environment {
             // OPTIMIZATION: Use Option to make ownership transfer explicit and avoid clones
             let mut current_value = Some(value);
             'popping: loop {
-                let v = current_value.take().expect("value must be Some at start of popping loop");
+                let v = current_value
+                    .take()
+                    .expect("value must be Some at start of popping loop");
 
                 // Check if stack is empty - if so, return the value
                 if stack.is_empty() {
@@ -295,7 +302,8 @@ impl super::Environment {
             |s| {
                 #[cfg(feature = "interning")]
                 {
-                    let symbol = i64::from_be_bytes(s.try_into().expect("8 bytes expected")).to_be_bytes();
+                    let symbol =
+                        i64::from_be_bytes(s.try_into().expect("8 bytes expected")).to_be_bytes();
                     let mstr = space
                         .sm
                         .get_bytes(symbol)

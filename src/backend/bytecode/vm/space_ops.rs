@@ -9,10 +9,10 @@
 
 use std::hash::{Hash, Hasher};
 
-use crate::backend::models::{MettaValue, SpaceHandle};
-use super::types::{VmError, VmResult};
 use super::pattern::pattern_matches;
+use super::types::{VmError, VmResult};
 use super::BytecodeVM;
+use crate::backend::models::{MettaValue, SpaceHandle};
 
 impl BytecodeVM {
     // === Space Operations ===
@@ -113,7 +113,9 @@ impl BytecodeVM {
     /// Note: Currently limited - full implementation needs Environment access.
     pub(super) fn op_load_space(&mut self) -> VmResult<()> {
         let const_idx = self.read_u16()?;
-        let name = self.chunk.get_constant(const_idx)
+        let name = self
+            .chunk
+            .get_constant(const_idx)
             .ok_or(VmError::InvalidConstant(const_idx))?
             .clone();
 
@@ -124,7 +126,8 @@ impl BytecodeVM {
                 let handle = SpaceHandle::new(
                     std::hash::BuildHasher::build_hasher(
                         &std::collections::hash_map::RandomState::new(),
-                    ).finish(),
+                    )
+                    .finish(),
                     space_name,
                 );
                 self.push(MettaValue::Space(handle));

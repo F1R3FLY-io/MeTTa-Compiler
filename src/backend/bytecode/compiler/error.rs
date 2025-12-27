@@ -6,9 +6,18 @@ pub enum CompileError {
     /// Unknown operation encountered
     UnknownOperation(String),
     /// Invalid arity for operation
-    InvalidArity { op: String, expected: usize, got: usize },
+    InvalidArity {
+        op: String,
+        expected: usize,
+        got: usize,
+    },
     /// Invalid arity range for operation
-    InvalidArityRange { op: String, min: usize, max: usize, got: usize },
+    InvalidArityRange {
+        op: String,
+        min: usize,
+        max: usize,
+        got: usize,
+    },
     /// Too many constants in chunk
     TooManyConstants,
     /// Too many locals in scope
@@ -26,10 +35,18 @@ impl std::fmt::Display for CompileError {
         match self {
             Self::UnknownOperation(op) => write!(f, "Unknown operation: {}", op),
             Self::InvalidArity { op, expected, got } => {
-                write!(f, "Invalid arity for {}: expected {}, got {}", op, expected, got)
+                write!(
+                    f,
+                    "Invalid arity for {}: expected {}, got {}",
+                    op, expected, got
+                )
             }
             Self::InvalidArityRange { op, min, max, got } => {
-                write!(f, "Invalid arity for {}: expected {}-{}, got {}", op, min, max, got)
+                write!(
+                    f,
+                    "Invalid arity for {}: expected {}-{}, got {}",
+                    op, min, max, got
+                )
             }
             Self::TooManyConstants => write!(f, "Too many constants (max 65535)"),
             Self::TooManyLocals => write!(f, "Too many local variables (max 65535)"),

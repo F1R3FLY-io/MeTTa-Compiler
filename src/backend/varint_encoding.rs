@@ -249,7 +249,10 @@ pub fn varint_key_to_metta(bytes: &[u8]) -> Option<(MettaValue, usize)> {
             let (_id, consumed1) = decode_varint(&bytes[offset..])?;
             offset += consumed1;
             let (name, consumed2) = decode_string(&bytes[offset..])?;
-            Some((MettaValue::Atom(format!("memo:{}", name)), offset + consumed2))
+            Some((
+                MettaValue::Atom(format!("memo:{}", name)),
+                offset + consumed2,
+            ))
         }
         tags::EMPTY => Some((MettaValue::Empty, offset)),
         _ => None, // Unknown tag
@@ -304,6 +307,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_simple_values_roundtrip() {
         let test_cases = vec![
             MettaValue::Long(42),
@@ -342,7 +346,7 @@ mod tests {
     #[test]
     fn test_large_arity_sexpr() {
         // Create an S-expression with 100 children (exceeds MORK's 63 limit)
-        let items: Vec<MettaValue> = (0..100).map(|i| MettaValue::Long(i)).collect();
+        let items: Vec<MettaValue> = (0..100).map(MettaValue::Long).collect();
         let large_sexpr = MettaValue::SExpr(items);
 
         let key = metta_to_varint_key(&large_sexpr);
@@ -369,10 +373,7 @@ mod tests {
 
     #[test]
     fn test_error_value() {
-        let error = MettaValue::Error(
-            "test error".to_string(),
-            Arc::new(MettaValue::Long(42)),
-        );
+        let error = MettaValue::Error("test error".to_string(), Arc::new(MettaValue::Long(42)));
 
         let key = metta_to_varint_key(&error);
         let (decoded, consumed) = varint_key_to_metta(&key).unwrap();

@@ -109,7 +109,10 @@ impl DeadCodeEliminator {
                 }
 
                 // Conditional jumps - both target and fallthrough are block starts
-                Opcode::JumpIfFalse | Opcode::JumpIfTrue | Opcode::JumpIfNil | Opcode::JumpIfError => {
+                Opcode::JumpIfFalse
+                | Opcode::JumpIfTrue
+                | Opcode::JumpIfNil
+                | Opcode::JumpIfError => {
                     if let Some(target) = self.get_jump_target_i16(code, offset) {
                         if target < code.len() {
                             starts.insert(target);
@@ -195,9 +198,13 @@ impl DeadCodeEliminator {
             }
 
             // Terminating instructions end the block
-            if matches!(opcode,
-                Opcode::Jump | Opcode::JumpShort |
-                Opcode::Return | Opcode::ReturnMulti | Opcode::Halt
+            if matches!(
+                opcode,
+                Opcode::Jump
+                    | Opcode::JumpShort
+                    | Opcode::Return
+                    | Opcode::ReturnMulti
+                    | Opcode::Halt
             ) {
                 return next_ip;
             }
@@ -236,7 +243,10 @@ impl DeadCodeEliminator {
                             successors.push(target);
                         }
                     }
-                    Opcode::JumpIfFalse | Opcode::JumpIfTrue | Opcode::JumpIfNil | Opcode::JumpIfError => {
+                    Opcode::JumpIfFalse
+                    | Opcode::JumpIfTrue
+                    | Opcode::JumpIfNil
+                    | Opcode::JumpIfError => {
                         if let Some(target) = self.get_jump_target_i16(code, offset) {
                             successors.push(target);
                         }
@@ -358,15 +368,21 @@ impl DeadCodeEliminator {
 
             match opcode {
                 // 2-byte signed offset jumps
-                Opcode::Jump | Opcode::JumpIfFalse | Opcode::JumpIfTrue
-                | Opcode::JumpIfNil | Opcode::JumpIfError => {
+                Opcode::Jump
+                | Opcode::JumpIfFalse
+                | Opcode::JumpIfTrue
+                | Opcode::JumpIfNil
+                | Opcode::JumpIfError => {
                     if offset + 2 < code.len() {
-                        let old_jump_offset = i16::from_be_bytes([code[offset + 1], code[offset + 2]]);
+                        let old_jump_offset =
+                            i16::from_be_bytes([code[offset + 1], code[offset + 2]]);
 
                         // Find original position of this instruction
-                        let old_instr_pos = self.reverse_offset_dce(offset, offset_map, original_len);
+                        let old_instr_pos =
+                            self.reverse_offset_dce(offset, offset_map, original_len);
                         let old_jump_from = old_instr_pos + 3;
-                        let old_target = (old_jump_from as isize + old_jump_offset as isize) as usize;
+                        let old_target =
+                            (old_jump_from as isize + old_jump_offset as isize) as usize;
 
                         if old_target <= original_len {
                             // Calculate new positions
@@ -374,7 +390,8 @@ impl DeadCodeEliminator {
                             let target_delta = offset_map.get(old_target).copied().unwrap_or(0);
                             let new_target = (old_target as isize + target_delta) as usize;
 
-                            let new_jump_offset = (new_target as isize - new_jump_from as isize) as i16;
+                            let new_jump_offset =
+                                (new_target as isize - new_jump_from as isize) as i16;
                             let bytes = new_jump_offset.to_be_bytes();
                             code[offset + 1] = bytes[0];
                             code[offset + 2] = bytes[1];
@@ -388,16 +405,19 @@ impl DeadCodeEliminator {
                     if offset + 1 < code.len() {
                         let old_jump_offset = code[offset + 1] as i8;
 
-                        let old_instr_pos = self.reverse_offset_dce(offset, offset_map, original_len);
+                        let old_instr_pos =
+                            self.reverse_offset_dce(offset, offset_map, original_len);
                         let old_jump_from = old_instr_pos + 2;
-                        let old_target = (old_jump_from as isize + old_jump_offset as isize) as usize;
+                        let old_target =
+                            (old_jump_from as isize + old_jump_offset as isize) as usize;
 
                         if old_target <= original_len {
                             let new_jump_from = offset + 2;
                             let target_delta = offset_map.get(old_target).copied().unwrap_or(0);
                             let new_target = (old_target as isize + target_delta) as usize;
 
-                            let new_jump_offset = (new_target as isize - new_jump_from as isize) as i8;
+                            let new_jump_offset =
+                                (new_target as isize - new_jump_from as isize) as i8;
                             code[offset + 1] = new_jump_offset as u8;
                         }
                     }
@@ -412,7 +432,12 @@ impl DeadCodeEliminator {
     }
 
     /// Reverse lookup for DCE offset map
-    fn reverse_offset_dce(&self, new_offset: usize, offset_map: &[isize], original_len: usize) -> usize {
+    fn reverse_offset_dce(
+        &self,
+        new_offset: usize,
+        offset_map: &[isize],
+        original_len: usize,
+    ) -> usize {
         for old_pos in 0..=original_len {
             let delta = offset_map.get(old_pos).copied().unwrap_or(0);
             if (old_pos as isize + delta) as usize == new_offset {

@@ -710,9 +710,18 @@ mod tests {
         "#;
 
         let pkg = PackageInfo::parse_toml(content).expect("valid manifest");
-        assert_eq!(pkg.package.repository, Some("https://github.com/user/repo".to_string()));
-        assert_eq!(pkg.package.documentation, Some("https://docs.example.com".to_string()));
-        assert_eq!(pkg.package.homepage, Some("https://example.com".to_string()));
+        assert_eq!(
+            pkg.package.repository,
+            Some("https://github.com/user/repo".to_string())
+        );
+        assert_eq!(
+            pkg.package.documentation,
+            Some("https://docs.example.com".to_string())
+        );
+        assert_eq!(
+            pkg.package.homepage,
+            Some("https://example.com".to_string())
+        );
         assert_eq!(pkg.package.keywords, vec!["metta", "test"]);
         assert_eq!(pkg.package.categories, vec!["utilities"]);
     }
@@ -726,7 +735,10 @@ mod tests {
         assert!(is_valid("1.0.0-rc.1"));
 
         // Prerelease versions should be less than release
-        assert_eq!(compare("1.0.0-alpha", "1.0.0"), Some(std::cmp::Ordering::Less));
+        assert_eq!(
+            compare("1.0.0-alpha", "1.0.0"),
+            Some(std::cmp::Ordering::Less)
+        );
     }
 
     #[test]

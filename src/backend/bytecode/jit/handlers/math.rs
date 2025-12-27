@@ -2,7 +2,6 @@
 //!
 //! Handles: Sqrt, Log, Trunc, Ceil, FloorMath, Round, Sin, Cos, Tan, Asin, Acos, Atan, IsNan, IsInf
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -196,7 +195,10 @@ pub fn compile_extended_math_op<'a, 'b>(
             codegen.push(result)?;
         }
 
-        _ => unreachable!("compile_extended_math_op called with wrong opcode: {:?}", op),
+        _ => unreachable!(
+            "compile_extended_math_op called with wrong opcode: {:?}",
+            op
+        ),
     }
     Ok(())
 }

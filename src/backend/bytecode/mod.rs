@@ -16,6 +16,7 @@
 //! - `external_registry`: External function registry
 //! - `cache`: Bytecode compilation cache with LRU eviction
 //! - `mork_bridge`: Bridge to MORK for rule dispatch
+//! - `tiered_cache`: Tiered compilation cache with expression-level tracking
 
 pub mod cache;
 pub mod chunk;
@@ -28,6 +29,7 @@ pub mod native_registry;
 pub mod opcodes;
 pub mod optimizer;
 pub mod space_registry;
+pub mod tiered_cache;
 pub mod vm;
 
 pub use cache::{cache_sizes, clear_caches, get_stats as cache_stats, BytecodeCacheStats};

@@ -25,7 +25,7 @@
 //! - [`handlers`]: Opcode-specific IR generation handlers
 //! - [`tiered`]: Tiered compilation strategy and JIT cache management
 //! - [`runtime`]: Runtime support functions callable from JIT code
-//! - [`hybrid`]: Hybrid executor combining JIT with interpreter fallback (not yet available)
+//! - [`hybrid`]: Hybrid executor combining JIT with interpreter fallback
 
 pub mod profile;
 pub mod types;

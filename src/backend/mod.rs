@@ -11,10 +11,12 @@ pub mod compile;
 pub mod environment;
 pub mod eval;
 pub mod fuzzy_match;
+pub mod grounded;
 pub mod models;
 pub mod modules;
 pub mod mork_convert;
 pub mod symbol;
+pub mod varint_encoding;
 
 pub use builtin_signatures::{
     get_arg_types, get_return_type, get_signature, is_builtin, BuiltinSignature, TypeExpr,

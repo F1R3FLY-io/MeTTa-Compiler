@@ -66,7 +66,7 @@ impl std::fmt::Display for NativeError {
 impl std::error::Error for NativeError {}
 
 /// Context provided to native functions during execution
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct NativeContext {
     /// Current environment (for accessing bindings if needed)
     pub env: Environment,
@@ -76,13 +76,6 @@ impl NativeContext {
     /// Create a new native context
     pub fn new(env: Environment) -> Self {
         Self { env }
-    }
-
-    /// Create a default context with empty environment
-    pub fn default() -> Self {
-        Self {
-            env: Environment::new(),
-        }
     }
 }
 

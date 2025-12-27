@@ -68,7 +68,7 @@ impl std::fmt::Display for ExternalError {
 impl std::error::Error for ExternalError {}
 
 /// Context provided to external functions during execution
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ExternalContext {
     /// Current environment (for accessing bindings if needed)
     pub env: Environment,
@@ -78,13 +78,6 @@ impl ExternalContext {
     /// Create a new external context
     pub fn new(env: Environment) -> Self {
         Self { env }
-    }
-
-    /// Create a default context with empty environment
-    pub fn default() -> Self {
-        Self {
-            env: Environment::new(),
-        }
     }
 }
 

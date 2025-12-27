@@ -1,6 +1,7 @@
 //! Tests for bytecode optimization.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use crate::backend::bytecode::opcodes::Opcode;
     use crate::backend::bytecode::optimizer::{
@@ -86,11 +87,7 @@ mod tests {
         assert_eq!(stats.not_not_removed, 1);
         assert_eq!(
             optimized,
-            vec![
-                Opcode::LoadLocal.to_byte(),
-                0,
-                Opcode::Return.to_byte()
-            ]
+            vec![Opcode::LoadLocal.to_byte(), 0, Opcode::Return.to_byte()]
         );
     }
 
@@ -182,11 +179,7 @@ mod tests {
         // Should be: push 5, return
         assert_eq!(
             optimized,
-            vec![
-                Opcode::PushLongSmall.to_byte(),
-                5,
-                Opcode::Return.to_byte(),
-            ]
+            vec![Opcode::PushLongSmall.to_byte(), 5, Opcode::Return.to_byte(),]
         );
     }
 
@@ -230,11 +223,7 @@ mod tests {
         assert_eq!(stats.identity_ops_removed, 1);
         assert_eq!(
             optimized,
-            vec![
-                Opcode::PushLongSmall.to_byte(),
-                7,
-                Opcode::Return.to_byte(),
-            ]
+            vec![Opcode::PushLongSmall.to_byte(), 7, Opcode::Return.to_byte(),]
         );
     }
 
@@ -254,11 +243,7 @@ mod tests {
         assert_eq!(stats.identity_ops_removed, 1);
         assert_eq!(
             optimized,
-            vec![
-                Opcode::PushLongSmall.to_byte(),
-                8,
-                Opcode::Return.to_byte(),
-            ]
+            vec![Opcode::PushLongSmall.to_byte(), 8, Opcode::Return.to_byte(),]
         );
     }
 
@@ -314,19 +299,21 @@ mod tests {
         //  13: Return (was 14)
 
         let code = make_code(&[
-            Opcode::LoadLocal.to_byte(),      // 0
-            0,                                 // 1: slot 0
-            Opcode::JumpIfFalse.to_byte(),    // 2
-            0, 7,                              // 3-4: offset 7 to else branch at 12
-            Opcode::Nop.to_byte(),            // 5 - will be removed
-            Opcode::PushLongSmall.to_byte(),  // 6
-            1,                                 // 7
-            Opcode::Return.to_byte(),         // 8
-            Opcode::Jump.to_byte(),           // 9 (skip else)
-            0, 3,                              // 10-11: offset 3 to end at 15
-            Opcode::PushLongSmall.to_byte(),  // 12 - else branch
-            2,                                 // 13
-            Opcode::Return.to_byte(),         // 14
+            Opcode::LoadLocal.to_byte(),   // 0
+            0,                             // 1: slot 0
+            Opcode::JumpIfFalse.to_byte(), // 2
+            0,
+            7,                               // 3-4: offset 7 to else branch at 12
+            Opcode::Nop.to_byte(),           // 5 - will be removed
+            Opcode::PushLongSmall.to_byte(), // 6
+            1,                               // 7
+            Opcode::Return.to_byte(),        // 8
+            Opcode::Jump.to_byte(),          // 9 (skip else)
+            0,
+            3,                               // 10-11: offset 3 to end at 15
+            Opcode::PushLongSmall.to_byte(), // 12 - else branch
+            2,                               // 13
+            Opcode::Return.to_byte(),        // 14
         ]);
 
         let (optimized, stats) = optimize_bytecode(code);
@@ -437,8 +424,8 @@ mod tests {
     fn test_dce_no_dead_code() {
         // All code is reachable
         let code = make_code(&[
-            Opcode::PushTrue.to_byte(),  // 0
-            Opcode::Return.to_byte(),    // 1
+            Opcode::PushTrue.to_byte(), // 0
+            Opcode::Return.to_byte(),   // 1
         ]);
 
         let (optimized, stats) = eliminate_dead_code(code.clone());
@@ -458,13 +445,14 @@ mod tests {
         //   6: PushFalse        (1 byte)  - target of jump
         //   7: Return           (1 byte)
         let code = make_code(&[
-            Opcode::Jump.to_byte(),       // 0
-            0, 3,                          // 1-2: offset +3 -> target = 3+3 = 6
-            Opcode::PushTrue.to_byte(),   // 3 - DEAD
-            Opcode::Pop.to_byte(),        // 4 - DEAD
-            Opcode::Nop.to_byte(),        // 5 - DEAD (block boundary)
-            Opcode::PushFalse.to_byte(),  // 6 - jump target
-            Opcode::Return.to_byte(),     // 7
+            Opcode::Jump.to_byte(), // 0
+            0,
+            3,                           // 1-2: offset +3 -> target = 3+3 = 6
+            Opcode::PushTrue.to_byte(),  // 3 - DEAD
+            Opcode::Pop.to_byte(),       // 4 - DEAD
+            Opcode::Nop.to_byte(),       // 5 - DEAD (block boundary)
+            Opcode::PushFalse.to_byte(), // 6 - jump target
+            Opcode::Return.to_byte(),    // 7
         ]);
 
         let (optimized, stats) = eliminate_dead_code(code);
@@ -485,11 +473,11 @@ mod tests {
     fn test_dce_dead_code_after_return() {
         // Code after return is dead
         let code = make_code(&[
-            Opcode::PushTrue.to_byte(),   // 0
-            Opcode::Return.to_byte(),     // 1
-            Opcode::PushFalse.to_byte(),  // 2 - DEAD
-            Opcode::Pop.to_byte(),        // 3 - DEAD
-            Opcode::Return.to_byte(),     // 4 - DEAD
+            Opcode::PushTrue.to_byte(),  // 0
+            Opcode::Return.to_byte(),    // 1
+            Opcode::PushFalse.to_byte(), // 2 - DEAD
+            Opcode::Pop.to_byte(),       // 3 - DEAD
+            Opcode::Return.to_byte(),    // 4 - DEAD
         ]);
 
         let (optimized, stats) = eliminate_dead_code(code);
@@ -497,10 +485,7 @@ mod tests {
         assert!(stats.blocks_removed >= 1);
         assert_eq!(
             optimized,
-            vec![
-                Opcode::PushTrue.to_byte(),
-                Opcode::Return.to_byte(),
-            ]
+            vec![Opcode::PushTrue.to_byte(), Opcode::Return.to_byte(),]
         );
     }
 
@@ -514,15 +499,17 @@ mod tests {
         //   9: PushLongSmall 2           (2 bytes) - else branch
         //  11: Return                    (1 byte)
         let code = make_code(&[
-            Opcode::PushTrue.to_byte(),      // 0
-            Opcode::JumpIfFalse.to_byte(),   // 1
-            0, 4,                             // 2-3: offset +4 to offset 8
+            Opcode::PushTrue.to_byte(),    // 0
+            Opcode::JumpIfFalse.to_byte(), // 1
+            0,
+            4,                               // 2-3: offset +4 to offset 8
             Opcode::PushLongSmall.to_byte(), // 4
-            1,                                // 5
+            1,                               // 5
             Opcode::Jump.to_byte(),          // 6
-            0, 2,                             // 7-8: offset +2 to offset 11
+            0,
+            2,                               // 7-8: offset +2 to offset 11
             Opcode::PushLongSmall.to_byte(), // 9
-            2,                                // 10
+            2,                               // 10
             Opcode::Return.to_byte(),        // 11
         ]);
 
@@ -537,10 +524,10 @@ mod tests {
     fn test_dce_halt_terminates() {
         // Code after Halt is dead
         let code = make_code(&[
-            Opcode::PushTrue.to_byte(),   // 0
-            Opcode::Halt.to_byte(),       // 1
-            Opcode::PushFalse.to_byte(),  // 2 - DEAD
-            Opcode::Return.to_byte(),     // 3 - DEAD
+            Opcode::PushTrue.to_byte(),  // 0
+            Opcode::Halt.to_byte(),      // 1
+            Opcode::PushFalse.to_byte(), // 2 - DEAD
+            Opcode::Return.to_byte(),    // 3 - DEAD
         ]);
 
         let (optimized, stats) = eliminate_dead_code(code);
@@ -548,10 +535,7 @@ mod tests {
         assert!(stats.blocks_removed >= 1);
         assert_eq!(
             optimized,
-            vec![
-                Opcode::PushTrue.to_byte(),
-                Opcode::Halt.to_byte(),
-            ]
+            vec![Opcode::PushTrue.to_byte(), Opcode::Halt.to_byte(),]
         );
     }
 
@@ -563,11 +547,11 @@ mod tests {
         //   3: Nop                (1 byte)  - DEAD (but new block)
         //   4: Return             (1 byte)  - target
         let code = make_code(&[
-            Opcode::JumpShort.to_byte(),  // 0
-            2,                             // 1: offset +2 -> target = 4
-            Opcode::Nop.to_byte(),        // 2 - DEAD
-            Opcode::Nop.to_byte(),        // 3 - DEAD
-            Opcode::Return.to_byte(),     // 4 - jump target
+            Opcode::JumpShort.to_byte(), // 0
+            2,                           // 1: offset +2 -> target = 4
+            Opcode::Nop.to_byte(),       // 2 - DEAD
+            Opcode::Nop.to_byte(),       // 3 - DEAD
+            Opcode::Return.to_byte(),    // 4 - jump target
         ]);
 
         let (optimized, stats) = eliminate_dead_code(code);
@@ -594,10 +578,7 @@ mod tests {
         assert!(stats.blocks_removed >= 1);
         assert_eq!(
             optimized,
-            vec![
-                Opcode::PushTrue.to_byte(),
-                Opcode::ReturnMulti.to_byte(),
-            ]
+            vec![Opcode::PushTrue.to_byte(), Opcode::ReturnMulti.to_byte(),]
         );
     }
 
@@ -614,16 +595,17 @@ mod tests {
         //   9: PushFalse          (1 byte)  - jump target
         //  10: Return             (1 byte)
         let code = make_code(&[
-            Opcode::Jump.to_byte(),       // 0
-            0, 6,                          // 1-2: offset +6 -> target = 9
-            Opcode::PushTrue.to_byte(),   // 3 - DEAD
-            Opcode::Return.to_byte(),     // 4 - DEAD
-            Opcode::Nop.to_byte(),        // 5 - DEAD
-            Opcode::Nop.to_byte(),        // 6 - DEAD
-            Opcode::Nop.to_byte(),        // 7 - DEAD
-            Opcode::Nop.to_byte(),        // 8 - DEAD
-            Opcode::PushFalse.to_byte(),  // 9 - target
-            Opcode::Return.to_byte(),     // 10
+            Opcode::Jump.to_byte(), // 0
+            0,
+            6,                           // 1-2: offset +6 -> target = 9
+            Opcode::PushTrue.to_byte(),  // 3 - DEAD
+            Opcode::Return.to_byte(),    // 4 - DEAD
+            Opcode::Nop.to_byte(),       // 5 - DEAD
+            Opcode::Nop.to_byte(),       // 6 - DEAD
+            Opcode::Nop.to_byte(),       // 7 - DEAD
+            Opcode::Nop.to_byte(),       // 8 - DEAD
+            Opcode::PushFalse.to_byte(), // 9 - target
+            Opcode::Return.to_byte(),    // 10
         ]);
 
         let (optimized, stats) = eliminate_dead_code(code);
@@ -652,16 +634,18 @@ mod tests {
         //  10: PushLongSmall 2           (2 bytes) - DEAD (neither else nor then reaches here)
         //  12: Return                    (1 byte)
         let code = make_code(&[
-            Opcode::PushTrue.to_byte(),      // 0
-            Opcode::JumpIfTrue.to_byte(),    // 1
-            0, 3,                             // 2-3: offset +3 to 7
-            Opcode::Jump.to_byte(),          // 4 - else: unconditional jump
-            0, 5,                             // 5-6: offset +5 to 12
+            Opcode::PushTrue.to_byte(),   // 0
+            Opcode::JumpIfTrue.to_byte(), // 1
+            0,
+            3,                      // 2-3: offset +3 to 7
+            Opcode::Jump.to_byte(), // 4 - else: unconditional jump
+            0,
+            5,                               // 5-6: offset +5 to 12
             Opcode::PushLongSmall.to_byte(), // 7 - then branch
-            1,                                // 8
+            1,                               // 8
             Opcode::Return.to_byte(),        // 9 - then returns
             Opcode::PushLongSmall.to_byte(), // 10 - DEAD
-            2,                                // 11 - DEAD
+            2,                               // 11 - DEAD
             Opcode::Return.to_byte(),        // 12 - target of else's jump
         ]);
 
@@ -683,14 +667,15 @@ mod tests {
         //   7: Swap                (1 byte)  - will be optimized by peephole
         //   8: Return              (1 byte)
         let code = make_code(&[
-            Opcode::Jump.to_byte(),       // 0
-            0, 3,                          // 1-2: offset +3 to 6
-            Opcode::Nop.to_byte(),        // 3 - DEAD
-            Opcode::Nop.to_byte(),        // 4 - DEAD
-            Opcode::Nop.to_byte(),        // 5 - DEAD
-            Opcode::Swap.to_byte(),       // 6 - peephole target
-            Opcode::Swap.to_byte(),       // 7 - peephole target
-            Opcode::Return.to_byte(),     // 8
+            Opcode::Jump.to_byte(), // 0
+            0,
+            3,                        // 1-2: offset +3 to 6
+            Opcode::Nop.to_byte(),    // 3 - DEAD
+            Opcode::Nop.to_byte(),    // 4 - DEAD
+            Opcode::Nop.to_byte(),    // 5 - DEAD
+            Opcode::Swap.to_byte(),   // 6 - peephole target
+            Opcode::Swap.to_byte(),   // 7 - peephole target
+            Opcode::Return.to_byte(), // 8
         ]);
 
         let (optimized, peephole_stats, dce_stats) = optimize_bytecode_full(code);
@@ -714,11 +699,11 @@ mod tests {
     fn test_dce_stats() {
         // Test that stats are correctly tracked
         let code = make_code(&[
-            Opcode::PushTrue.to_byte(),   // 0
-            Opcode::Return.to_byte(),     // 1
-            Opcode::PushFalse.to_byte(),  // 2 - DEAD
-            Opcode::PushNil.to_byte(),    // 3 - DEAD
-            Opcode::Pop.to_byte(),        // 4 - DEAD
+            Opcode::PushTrue.to_byte(),  // 0
+            Opcode::Return.to_byte(),    // 1
+            Opcode::PushFalse.to_byte(), // 2 - DEAD
+            Opcode::PushNil.to_byte(),   // 3 - DEAD
+            Opcode::Pop.to_byte(),       // 4 - DEAD
         ]);
 
         let (optimized, stats) = eliminate_dead_code(code);
@@ -871,11 +856,7 @@ mod tests {
         assert_eq!(stats.neg_neg_removed, 1);
         assert_eq!(
             optimized,
-            vec![
-                Opcode::PushLongSmall.to_byte(),
-                5,
-                Opcode::Return.to_byte(),
-            ]
+            vec![Opcode::PushLongSmall.to_byte(), 5, Opcode::Return.to_byte(),]
         );
     }
 
@@ -899,11 +880,7 @@ mod tests {
         // Final: [Push 0, Return]
         assert_eq!(
             optimized,
-            vec![
-                Opcode::PushLongSmall.to_byte(),
-                0,
-                Opcode::Return.to_byte(),
-            ]
+            vec![Opcode::PushLongSmall.to_byte(), 0, Opcode::Return.to_byte(),]
         );
     }
 
@@ -927,11 +904,7 @@ mod tests {
         // Final: [Push 1, Return]
         assert_eq!(
             optimized,
-            vec![
-                Opcode::PushLongSmall.to_byte(),
-                1,
-                Opcode::Return.to_byte(),
-            ]
+            vec![Opcode::PushLongSmall.to_byte(), 1, Opcode::Return.to_byte(),]
         );
     }
 
@@ -953,11 +926,7 @@ mod tests {
         // Should remove PushLongSmall 1; Pow
         assert_eq!(
             optimized,
-            vec![
-                Opcode::PushLongSmall.to_byte(),
-                7,
-                Opcode::Return.to_byte(),
-            ]
+            vec![Opcode::PushLongSmall.to_byte(), 7, Opcode::Return.to_byte(),]
         );
     }
 
@@ -1048,13 +1017,14 @@ mod tests {
     fn test_const_branch_fold_push_true_jump_if_true() {
         // PushTrue; JumpIfTrue → Jump (always taken)
         let code = make_code(&[
-            Opcode::PushTrue.to_byte(),      // 0
-            Opcode::JumpIfTrue.to_byte(),    // 1
-            0, 3,                             // 2-3: offset +3 to target
-            Opcode::PushNil.to_byte(),       // 4 - skipped
-            Opcode::Return.to_byte(),        // 5
-            Opcode::PushFalse.to_byte(),     // 6 - target
-            Opcode::Return.to_byte(),        // 7
+            Opcode::PushTrue.to_byte(),   // 0
+            Opcode::JumpIfTrue.to_byte(), // 1
+            0,
+            3,                           // 2-3: offset +3 to target
+            Opcode::PushNil.to_byte(),   // 4 - skipped
+            Opcode::Return.to_byte(),    // 5
+            Opcode::PushFalse.to_byte(), // 6 - target
+            Opcode::Return.to_byte(),    // 7
         ]);
 
         let (optimized, stats) = optimize_bytecode(code);
@@ -1069,11 +1039,12 @@ mod tests {
     fn test_dead_branch_push_true_jump_if_false() {
         // PushTrue; JumpIfFalse → remove (never taken)
         let code = make_code(&[
-            Opcode::PushTrue.to_byte(),      // 0
-            Opcode::JumpIfFalse.to_byte(),   // 1
-            0, 2,                             // 2-3: offset +2 to target
-            Opcode::PushNil.to_byte(),       // 4 - fall through
-            Opcode::Return.to_byte(),        // 5
+            Opcode::PushTrue.to_byte(),    // 0
+            Opcode::JumpIfFalse.to_byte(), // 1
+            0,
+            2,                         // 2-3: offset +2 to target
+            Opcode::PushNil.to_byte(), // 4 - fall through
+            Opcode::Return.to_byte(),  // 5
         ]);
 
         let (optimized, stats) = optimize_bytecode(code);
@@ -1132,21 +1103,23 @@ mod tests {
     fn test_jump_threading() {
         // Jump L1; ... L1: Jump L2 → Jump L2
         let code = make_code(&[
-            Opcode::Jump.to_byte(),          // 0
-            0, 3,                             // 1-2: offset +3 → target = 6
-            Opcode::Nop.to_byte(),           // 3 (dead)
-            Opcode::Nop.to_byte(),           // 4 (dead)
-            Opcode::Nop.to_byte(),           // 5 (dead)
-            Opcode::Jump.to_byte(),          // 6 - L1: another jump
-            0, 3,                             // 7-8: offset +3 → target = 12
-            Opcode::Nop.to_byte(),           // 9 (dead)
-            Opcode::Nop.to_byte(),           // 10 (dead)
-            Opcode::Nop.to_byte(),           // 11 (dead)
-            Opcode::PushTrue.to_byte(),      // 12 - L2: final target
-            Opcode::Return.to_byte(),        // 13
+            Opcode::Jump.to_byte(), // 0
+            0,
+            3,                      // 1-2: offset +3 → target = 6
+            Opcode::Nop.to_byte(),  // 3 (dead)
+            Opcode::Nop.to_byte(),  // 4 (dead)
+            Opcode::Nop.to_byte(),  // 5 (dead)
+            Opcode::Jump.to_byte(), // 6 - L1: another jump
+            0,
+            3,                          // 7-8: offset +3 → target = 12
+            Opcode::Nop.to_byte(),      // 9 (dead)
+            Opcode::Nop.to_byte(),      // 10 (dead)
+            Opcode::Nop.to_byte(),      // 11 (dead)
+            Opcode::PushTrue.to_byte(), // 12 - L2: final target
+            Opcode::Return.to_byte(),   // 13
         ]);
 
-        let (optimized, stats) = optimize_bytecode(code);
+        let (_optimized, stats) = optimize_bytecode(code);
 
         // Jump at 0 should now point directly to L2 (offset 12)
         assert!(stats.jump_threaded >= 1);
@@ -1157,20 +1130,20 @@ mod tests {
     fn test_jump_threading_short() {
         // JumpShort L1; L1: JumpShort L2 → JumpShort L2
         let code = make_code(&[
-            Opcode::JumpShort.to_byte(),     // 0
-            2,                                // 1: offset +2 → target = 4
-            Opcode::Nop.to_byte(),           // 2 (dead)
-            Opcode::Nop.to_byte(),           // 3 (dead)
-            Opcode::JumpShort.to_byte(),     // 4 - L1: another short jump
-            3,                                // 5: offset +3 → target = 9
-            Opcode::Nop.to_byte(),           // 6 (dead)
-            Opcode::Nop.to_byte(),           // 7 (dead)
-            Opcode::Nop.to_byte(),           // 8 (dead)
-            Opcode::PushTrue.to_byte(),      // 9 - L2: final target
-            Opcode::Return.to_byte(),        // 10
+            Opcode::JumpShort.to_byte(), // 0
+            2,                           // 1: offset +2 → target = 4
+            Opcode::Nop.to_byte(),       // 2 (dead)
+            Opcode::Nop.to_byte(),       // 3 (dead)
+            Opcode::JumpShort.to_byte(), // 4 - L1: another short jump
+            3,                           // 5: offset +3 → target = 9
+            Opcode::Nop.to_byte(),       // 6 (dead)
+            Opcode::Nop.to_byte(),       // 7 (dead)
+            Opcode::Nop.to_byte(),       // 8 (dead)
+            Opcode::PushTrue.to_byte(),  // 9 - L2: final target
+            Opcode::Return.to_byte(),    // 10
         ]);
 
-        let (optimized, stats) = optimize_bytecode(code);
+        let (_optimized, stats) = optimize_bytecode(code);
 
         // Should thread the short jumps
         assert!(stats.jump_threaded >= 1 || stats.nops_removed > 0);

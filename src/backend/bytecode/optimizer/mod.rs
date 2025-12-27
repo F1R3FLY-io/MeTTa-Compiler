@@ -52,7 +52,6 @@ pub use peephole::{optimize_bytecode, PeepholeOptimizer};
 pub use types::{DceStats, OptimizationStats, PeepholeAction};
 
 // Re-export helpers for internal use
-pub(crate) use helpers::instruction_size;
 
 /// Full bytecode optimization: peephole + dead code elimination
 ///

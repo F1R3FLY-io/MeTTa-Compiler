@@ -5,9 +5,9 @@
 
 use tracing::trace;
 
-use crate::backend::models::MettaValue;
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
+use crate::backend::models::MettaValue;
 
 impl BytecodeVM {
     // === Stack Operations ===

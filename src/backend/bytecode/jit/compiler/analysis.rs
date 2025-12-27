@@ -3,7 +3,6 @@
 //! This module contains functions for analyzing bytecode chunks to determine
 //! compilability and extract control flow information.
 
-
 use std::collections::HashMap;
 
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
@@ -340,8 +339,11 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
         let next_ip = offset + instr_size; // IP after instruction
 
         match op {
-            Opcode::Jump | Opcode::JumpIfFalse | Opcode::JumpIfTrue
-            | Opcode::JumpIfNil | Opcode::JumpIfError => {
+            Opcode::Jump
+            | Opcode::JumpIfFalse
+            | Opcode::JumpIfTrue
+            | Opcode::JumpIfNil
+            | Opcode::JumpIfError => {
                 // 2-byte signed offset, relative to next_ip
                 let rel_offset = chunk.read_i16(offset + 1).unwrap_or(0);
                 let target = (next_ip as isize + rel_offset as isize) as usize;
@@ -371,7 +373,12 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
                         add_target(target, code.len(), &mut targets, &mut predecessor_count);
                     }
                     // Add default target
-                    add_target(jump_table.default_offset, code.len(), &mut targets, &mut predecessor_count);
+                    add_target(
+                        jump_table.default_offset,
+                        code.len(),
+                        &mut targets,
+                        &mut predecessor_count,
+                    );
                 }
             }
             Opcode::Return => {

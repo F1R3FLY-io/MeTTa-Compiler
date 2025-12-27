@@ -157,9 +157,11 @@ impl Compiler {
         // Get bindings list
         let bindings = match &args[0] {
             MettaValue::SExpr(items) => items,
-            _ => return Err(CompileError::InvalidExpression(
-                "let* bindings must be a list".to_string()
-            )),
+            _ => {
+                return Err(CompileError::InvalidExpression(
+                    "let* bindings must be a list".to_string(),
+                ))
+            }
         };
 
         // Begin scope
@@ -173,9 +175,11 @@ impl Compiler {
         for binding in bindings {
             let (pattern, value) = match binding {
                 MettaValue::SExpr(pair) if pair.len() == 2 => (&pair[0], &pair[1]),
-                _ => return Err(CompileError::InvalidExpression(
-                    "let* binding must be (pattern value)".to_string()
-                )),
+                _ => {
+                    return Err(CompileError::InvalidExpression(
+                        "let* binding must be (pattern value)".to_string(),
+                    ))
+                }
             };
 
             // Compile value (not in tail position)
@@ -257,7 +261,8 @@ impl Compiler {
                 if items.len() <= 255 {
                     self.builder.emit_byte(Opcode::MakeSExpr, items.len() as u8);
                 } else {
-                    self.builder.emit_u16(Opcode::MakeSExprLarge, items.len() as u16);
+                    self.builder
+                        .emit_u16(Opcode::MakeSExprLarge, items.len() as u16);
                 }
             }
             // Other values can be compiled normally (they're already values)

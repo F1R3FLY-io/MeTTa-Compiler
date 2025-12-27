@@ -209,7 +209,10 @@ pub(crate) fn eval_guard(items: Vec<MettaValue>, env: Environment) -> EvalResult
         }
         Some(MettaValue::Error(msg, details)) => {
             // Error propagates
-            (vec![MettaValue::Error(msg.clone(), details.clone())], env_after)
+            (
+                vec![MettaValue::Error(msg.clone(), details.clone())],
+                env_after,
+            )
         }
         Some(other) => {
             // Type error - guard requires a boolean
@@ -260,7 +263,7 @@ pub(crate) fn eval_commit(items: Vec<MettaValue>, env: Environment) -> EvalResul
 /// ```
 pub(crate) fn eval_backtrack(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let _ = items; // Suppress unused warning
-    // Return empty to signal nondeterministic failure
+                   // Return empty to signal nondeterministic failure
     (vec![], env)
 }
 

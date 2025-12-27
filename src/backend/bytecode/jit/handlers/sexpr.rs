@@ -2,7 +2,6 @@
 //!
 //! Handles: GetHead, GetTail, GetArity, GetElement, MakeSExpr, MakeSExprLarge, ConsAtom, MakeList, MakeQuote
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -47,7 +46,10 @@ pub fn compile_sexpr_access_op<'a, 'b>(
             // Call jit_runtime_get_head(ctx, val, ip)
             let ctx_ptr = codegen.ctx_ptr();
             let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, ip_val]);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, val, ip_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }
@@ -62,7 +64,10 @@ pub fn compile_sexpr_access_op<'a, 'b>(
             // Call jit_runtime_get_tail(ctx, val, ip)
             let ctx_ptr = codegen.ctx_ptr();
             let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, ip_val]);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, val, ip_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }
@@ -77,7 +82,10 @@ pub fn compile_sexpr_access_op<'a, 'b>(
             // Call jit_runtime_get_arity(ctx, val, ip)
             let ctx_ptr = codegen.ctx_ptr();
             let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, ip_val]);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, val, ip_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }
@@ -94,7 +102,10 @@ pub fn compile_sexpr_access_op<'a, 'b>(
             let ctx_ptr = codegen.ctx_ptr();
             let index_val = codegen.builder.ins().iconst(types::I64, index);
             let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, index_val, ip_val]);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, val, index_val, ip_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }
@@ -151,7 +162,10 @@ pub fn compile_sexpr_create_op<'a, 'b>(
             let ctx_ptr = codegen.ctx_ptr();
             let count_val = codegen.builder.ins().iconst(types::I64, arity as i64);
             let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, values_ptr, count_val, ip_val]);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, values_ptr, count_val, ip_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }
@@ -193,7 +207,10 @@ pub fn compile_sexpr_create_op<'a, 'b>(
             let ctx_ptr = codegen.ctx_ptr();
             let count_val = codegen.builder.ins().iconst(types::I64, arity as i64);
             let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, values_ptr, count_val, ip_val]);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, values_ptr, count_val, ip_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }
@@ -211,7 +228,10 @@ pub fn compile_sexpr_create_op<'a, 'b>(
             // Call jit_runtime_cons_atom(ctx, head, tail, ip)
             let ctx_ptr = codegen.ctx_ptr();
             let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, head, tail, ip_val]);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, head, tail, ip_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }
@@ -253,7 +273,10 @@ pub fn compile_sexpr_create_op<'a, 'b>(
             let ctx_ptr = codegen.ctx_ptr();
             let count_val = codegen.builder.ins().iconst(types::I64, arity as i64);
             let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, values_ptr, count_val, ip_val]);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, values_ptr, count_val, ip_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }
@@ -270,7 +293,10 @@ pub fn compile_sexpr_create_op<'a, 'b>(
             // Call jit_runtime_make_quote(ctx, val, ip)
             let ctx_ptr = codegen.ctx_ptr();
             let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-            let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, ip_val]);
+            let call_inst = codegen
+                .builder
+                .ins()
+                .call(func_ref, &[ctx_ptr, val, ip_val]);
             let result = codegen.builder.inst_results(call_inst)[0];
             codegen.push(result)?;
         }

@@ -1261,6 +1261,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_type_name_number() {
         assert_eq!(MettaValue::Long(42).type_name(), "Number");
         assert_eq!(MettaValue::Float(3.14).type_name(), "Number");
@@ -1268,7 +1269,10 @@ mod tests {
 
     #[test]
     fn test_type_name_string() {
-        assert_eq!(MettaValue::String("hello".to_string()).type_name(), "String");
+        assert_eq!(
+            MettaValue::String("hello".to_string()).type_name(),
+            "String"
+        );
     }
 
     #[test]

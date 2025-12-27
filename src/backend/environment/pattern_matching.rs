@@ -6,8 +6,8 @@
 use mork_expr::Expr;
 use tracing::trace;
 
-use crate::backend::eval::{apply_bindings, pattern_match};
 use super::{Environment, MettaValue};
+use crate::backend::eval::{apply_bindings, pattern_match};
 
 impl Environment {
     /// Match pattern against all atoms in the Space (optimized for match operation)
@@ -71,7 +71,11 @@ impl Environment {
 
         // 2. Also check large expression fallback PathMap (if allocated)
         // These are expressions with arity >= 64 that couldn't fit in MORK
-        let guard = self.shared.large_expr_pathmap.read().expect("large_expr_pathmap lock poisoned");
+        let guard = self
+            .shared
+            .large_expr_pathmap
+            .read()
+            .expect("large_expr_pathmap lock poisoned");
         if let Some(ref fallback) = *guard {
             for (_key, stored_value) in fallback.iter() {
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
@@ -156,7 +160,11 @@ impl Environment {
         drop(space);
 
         // 2. Check large expression fallback PathMap
-        let guard = self.shared.large_expr_pathmap.read().expect("large_expr_pathmap lock poisoned");
+        let guard = self
+            .shared
+            .large_expr_pathmap
+            .read()
+            .expect("large_expr_pathmap lock poisoned");
         if let Some(ref fallback) = *guard {
             for (_key, stored_value) in fallback.iter() {
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
@@ -233,7 +241,11 @@ impl Environment {
         drop(space);
 
         // Check large expression fallback PathMap
-        let guard = self.shared.large_expr_pathmap.read().expect("large_expr_pathmap lock poisoned");
+        let guard = self
+            .shared
+            .large_expr_pathmap
+            .read()
+            .expect("large_expr_pathmap lock poisoned");
         if let Some(ref fallback) = *guard {
             for (_key, stored_value) in fallback.iter() {
                 if pattern_match(pattern, stored_value).is_some() {

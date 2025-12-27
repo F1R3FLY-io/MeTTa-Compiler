@@ -269,7 +269,11 @@ mod tests {
         ]);
 
         let (results, _) = eval(match_query, env);
-        assert!(results.len() >= 2, "Expected >= 2 results, got {:?}", results); // Should return both alice and bob
+        assert!(
+            results.len() >= 2,
+            "Expected >= 2 results, got {:?}",
+            results
+        ); // Should return both alice and bob
         assert!(results.contains(&MettaValue::Atom("alice".to_string())));
         assert!(results.contains(&MettaValue::Atom("bob".to_string())));
     }
@@ -834,7 +838,10 @@ mod tests {
         ]);
 
         let (results, _) = eval(guard_expr, env);
-        assert!(results.is_empty(), "Guard with false should return no results");
+        assert!(
+            results.is_empty(),
+            "Guard with false should return no results"
+        );
     }
 
     #[test]
@@ -881,10 +888,7 @@ mod tests {
         let backtrack_expr = MettaValue::SExpr(vec![MettaValue::Atom("backtrack".to_string())]);
 
         let (results, _) = eval(backtrack_expr, env);
-        assert!(
-            results.is_empty(),
-            "Backtrack should return no results"
-        );
+        assert!(results.is_empty(), "Backtrack should return no results");
     }
 
     #[test]

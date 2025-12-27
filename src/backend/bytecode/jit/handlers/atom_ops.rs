@@ -3,8 +3,8 @@
 //! Handles DeconAtom and Repr opcodes.
 
 use cranelift::prelude::*;
-use cranelift_module::{FuncId, Module};
 use cranelift_jit::JITModule;
+use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::JitResult;
@@ -30,7 +30,10 @@ pub fn compile_decon_atom(
     let ctx_ptr = codegen.ctx_ptr();
     let value = codegen.pop()?;
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, value, ip_val]);
+    let inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, value, ip_val]);
     let result = codegen.builder.inst_results(inst)[0];
     codegen.push(result)?;
 
@@ -51,7 +54,10 @@ pub fn compile_repr(
     let ctx_ptr = codegen.ctx_ptr();
     let value = codegen.pop()?;
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, value, ip_val]);
+    let inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, value, ip_val]);
     let result = codegen.builder.inst_results(inst)[0];
     codegen.push(result)?;
 

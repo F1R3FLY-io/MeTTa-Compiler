@@ -158,7 +158,11 @@ impl Environment {
         if is_ground {
             // Check cache first for ground patterns (read-only access)
             {
-                let mut cache = self.shared.pattern_cache.write().expect("pattern_cache lock poisoned");
+                let mut cache = self
+                    .shared
+                    .pattern_cache
+                    .write()
+                    .expect("pattern_cache lock poisoned");
                 if let Some(bytes) = cache.get(value) {
                     trace!(target: "mettatron::environment::metta_to_mork_bytes_cached", "Cache hit");
                     return Ok(bytes.clone());
@@ -173,7 +177,11 @@ impl Environment {
 
         if is_ground {
             // Store ground patterns in cache for future use (write access)
-            let mut cache = self.shared.pattern_cache.write().expect("pattern_cache lock poisoned");
+            let mut cache = self
+                .shared
+                .pattern_cache
+                .write()
+                .expect("pattern_cache lock poisoned");
             cache.put(value.clone(), bytes.clone());
         }
 
@@ -317,15 +325,16 @@ impl Environment {
                 // Lazy allocation: only create PathMap on first use
                 let key = metta_to_varint_key(value);
                 self.make_owned(); // CoW: ensure we own data before modifying
-                let mut guard = self.shared.large_expr_pathmap.write().expect("large_expr_pathmap lock poisoned");
+                let mut guard = self
+                    .shared
+                    .large_expr_pathmap
+                    .write()
+                    .expect("large_expr_pathmap lock poisoned");
                 let fallback = guard.get_or_insert_with(PathMap::new);
                 fallback.insert(&key, value.clone());
 
                 #[cfg(debug_assertions)]
-                eprintln!(
-                    "Info: large expression stored in fallback PathMap: {}",
-                    _e
-                );
+                eprintln!("Info: large expression stored in fallback PathMap: {}", _e);
             }
         }
     }
@@ -371,7 +380,11 @@ impl Environment {
             Err(_) => {
                 // Remove from fallback PathMap (if it exists)
                 let key = metta_to_varint_key(value);
-                let mut guard = self.shared.large_expr_pathmap.write().expect("large_expr_pathmap lock poisoned");
+                let mut guard = self
+                    .shared
+                    .large_expr_pathmap
+                    .write()
+                    .expect("large_expr_pathmap lock poisoned");
                 if let Some(ref mut fallback) = *guard {
                     fallback.remove(&key);
                 }
@@ -426,7 +439,11 @@ impl Environment {
         let mut rz = space.btm.read_zipper();
 
         // Clear existing bloom filter
-        self.shared.head_arity_bloom.write().expect("head_arity_bloom lock poisoned").clear();
+        self.shared
+            .head_arity_bloom
+            .write()
+            .expect("head_arity_bloom lock poisoned")
+            .clear();
 
         // Iterate through all values in the trie
         while rz.to_next_val() {
@@ -512,7 +529,11 @@ impl Environment {
 
         // Invalidate type index if any facts were type assertions
         // Conservative: Assume any bulk insert might contain types
-        *self.shared.type_index_dirty.write().expect("type_index_dirty lock poisoned") = true;
+        *self
+            .shared
+            .type_index_dirty
+            .write()
+            .expect("type_index_dirty lock poisoned") = true;
 
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
         Ok(())
@@ -526,7 +547,10 @@ impl Environment {
     pub fn get_large_expr_pathmap(
         &self,
     ) -> std::sync::RwLockReadGuard<'_, Option<PathMap<MettaValue>>> {
-        self.shared.large_expr_pathmap.read().expect("large_expr_pathmap lock poisoned")
+        self.shared
+            .large_expr_pathmap
+            .read()
+            .expect("large_expr_pathmap lock poisoned")
     }
 
     /// Insert a value into the large expressions fallback PathMap
@@ -535,7 +559,11 @@ impl Environment {
     pub fn insert_large_expr(&self, value: MettaValue) {
         use crate::backend::varint_encoding::metta_to_varint_key;
         let key = metta_to_varint_key(&value);
-        let mut guard = self.shared.large_expr_pathmap.write().expect("large_expr_pathmap lock poisoned");
+        let mut guard = self
+            .shared
+            .large_expr_pathmap
+            .write()
+            .expect("large_expr_pathmap lock poisoned");
         let fallback = guard.get_or_insert_with(PathMap::new);
         fallback.insert(&key, value);
     }

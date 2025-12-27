@@ -9,8 +9,7 @@
 //! - fork/restore_bindings - Nondeterministic backtracking support
 
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, JitBindingEntry, JitBindingFrame,
-    TAG_BOOL, TAG_NIL,
+    JitBailoutReason, JitBindingEntry, JitBindingFrame, JitContext, JitValue, TAG_BOOL, TAG_NIL,
 };
 
 // =============================================================================
@@ -124,7 +123,11 @@ pub unsafe extern "C" fn jit_runtime_store_binding(
     // Ensure capacity
     if frame.entries.is_null() || frame.entries_count >= frame.entries_cap {
         // Need to grow or allocate
-        let new_cap = if frame.entries_cap == 0 { 8 } else { frame.entries_cap * 2 };
+        let new_cap = if frame.entries_cap == 0 {
+            8
+        } else {
+            frame.entries_cap * 2
+        };
         let layout = std::alloc::Layout::array::<JitBindingEntry>(new_cap)
             .expect("Layout calculation failed");
         let new_entries = std::alloc::alloc(layout) as *mut JitBindingEntry;
@@ -167,10 +170,7 @@ pub unsafe extern "C" fn jit_runtime_store_binding(
 /// # Safety
 /// The context pointer must be valid.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_has_binding(
-    ctx: *const JitContext,
-    name_idx: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_has_binding(ctx: *const JitContext, name_idx: u64) -> u64 {
     let ctx_ref = match ctx.as_ref() {
         Some(c) => c,
         None => return TAG_BOOL, // false
@@ -234,7 +234,9 @@ pub unsafe extern "C" fn jit_runtime_push_binding_frame(ctx: *mut JitContext) ->
         None => return -2,
     };
 
-    if ctx_ref.binding_frames.is_null() || ctx_ref.binding_frames_count >= ctx_ref.binding_frames_cap {
+    if ctx_ref.binding_frames.is_null()
+        || ctx_ref.binding_frames_count >= ctx_ref.binding_frames_cap
+    {
         return -1; // No capacity or overflow
     }
 
@@ -347,7 +349,9 @@ impl Default for JitSavedBindings {
 /// # Safety
 /// The context pointer must be valid.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_fork_bindings(ctx: *const JitContext) -> *mut JitSavedBindings {
+pub unsafe extern "C" fn jit_runtime_fork_bindings(
+    ctx: *const JitContext,
+) -> *mut JitSavedBindings {
     let ctx_ref = match ctx.as_ref() {
         Some(c) => c,
         None => return std::ptr::null_mut(),
@@ -383,16 +387,18 @@ pub unsafe extern "C" fn jit_runtime_fork_bindings(ctx: *const JitContext) -> *m
             dst_frame.entries_cap = 0;
         } else {
             // Allocate and copy entries
-            let entries_layout = std::alloc::Layout::array::<JitBindingEntry>(src_frame.entries_count)
-                .expect("Layout calculation failed");
+            let entries_layout =
+                std::alloc::Layout::array::<JitBindingEntry>(src_frame.entries_count)
+                    .expect("Layout calculation failed");
             let entries = std::alloc::alloc(entries_layout) as *mut JitBindingEntry;
             if entries.is_null() {
                 // Cleanup already allocated frames on failure
                 for j in 0..i {
                     let cleanup_frame = &*frames.add(j);
                     if !cleanup_frame.entries.is_null() && cleanup_frame.entries_cap > 0 {
-                        let cleanup_layout = std::alloc::Layout::array::<JitBindingEntry>(cleanup_frame.entries_cap)
-                            .expect("Layout calculation failed");
+                        let cleanup_layout =
+                            std::alloc::Layout::array::<JitBindingEntry>(cleanup_frame.entries_cap)
+                                .expect("Layout calculation failed");
                         std::alloc::dealloc(cleanup_frame.entries as *mut u8, cleanup_layout);
                     }
                 }
@@ -496,8 +502,9 @@ pub unsafe extern "C" fn jit_runtime_restore_bindings(
             dst_frame.entries_cap = 0;
         } else {
             // Allocate and copy entries
-            let entries_layout = std::alloc::Layout::array::<JitBindingEntry>(src_frame.entries_count)
-                .expect("Layout calculation failed");
+            let entries_layout =
+                std::alloc::Layout::array::<JitBindingEntry>(src_frame.entries_count)
+                    .expect("Layout calculation failed");
             let entries = std::alloc::alloc(entries_layout) as *mut JitBindingEntry;
             if entries.is_null() {
                 ctx_ref.binding_frames_count = i;

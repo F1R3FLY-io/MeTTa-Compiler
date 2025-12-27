@@ -29,9 +29,9 @@ mod scope;
 mod scope_ops;
 mod suggestions;
 mod symbol_bindings;
-mod type_system;
 #[cfg(test)]
 mod tests;
+mod type_system;
 
 pub(crate) use bloom::HeadArityBloomFilter;
 pub use scope::ScopeTracker;
@@ -174,7 +174,9 @@ impl Environment {
             wildcard_rules: RwLock::new(Vec::new()),
             has_wildcard_rules: AtomicBool::new(false),
             multiplicities: RwLock::new(HashMap::new()),
-            pattern_cache: RwLock::new(LruCache::new(NonZeroUsize::new(1000).expect("1000 is non-zero"))),
+            pattern_cache: RwLock::new(LruCache::new(
+                NonZeroUsize::new(1000).expect("1000 is non-zero"),
+            )),
             type_index: RwLock::new(None),
             type_index_dirty: RwLock::new(true),
             named_spaces: RwLock::new(HashMap::new()),
@@ -201,7 +203,6 @@ impl Environment {
         }
     }
 
-
     /// CoW: Make this environment own its data (deep copy if sharing)
     /// Called automatically on first mutation of a cloned environment
     /// No-op if already owns data (owns_data == true)
@@ -216,26 +217,142 @@ impl Environment {
         // Clone the data first to avoid borrowing issues
         let new_shared = Arc::new(EnvironmentShared {
             btm: RwLock::new(self.shared.btm.read().expect("btm lock poisoned").clone()),
-            rule_index: RwLock::new(self.shared.rule_index.read().expect("rule_index lock poisoned").clone()),
-            wildcard_rules: RwLock::new(self.shared.wildcard_rules.read().expect("wildcard_rules lock poisoned").clone()),
-            has_wildcard_rules: AtomicBool::new(self.shared.has_wildcard_rules.load(Ordering::Acquire)),
-            multiplicities: RwLock::new(self.shared.multiplicities.read().expect("multiplicities lock poisoned").clone()),
-            pattern_cache: RwLock::new(self.shared.pattern_cache.read().expect("pattern_cache lock poisoned").clone()),
-            type_index: RwLock::new(self.shared.type_index.read().expect("type_index lock poisoned").clone()),
-            type_index_dirty: RwLock::new(*self.shared.type_index_dirty.read().expect("type_index_dirty lock poisoned")),
-            named_spaces: RwLock::new(self.shared.named_spaces.read().expect("named_spaces lock poisoned").clone()),
-            next_space_id: RwLock::new(*self.shared.next_space_id.read().expect("next_space_id lock poisoned")),
-            states: RwLock::new(self.shared.states.read().expect("states lock poisoned").clone()),
-            next_state_id: RwLock::new(*self.shared.next_state_id.read().expect("next_state_id lock poisoned")),
-            bindings: RwLock::new(self.shared.bindings.read().expect("bindings lock poisoned").clone()),
-            module_registry: RwLock::new(self.shared.module_registry.read().expect("module_registry lock poisoned").clone()),
-            tokenizer: RwLock::new(self.shared.tokenizer.read().expect("tokenizer lock poisoned").clone()),
-            grounded_registry: RwLock::new(self.shared.grounded_registry.read().expect("grounded_registry lock poisoned").clone()),
-            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().expect("grounded_registry_tco lock poisoned").clone()),
-            large_expr_pathmap: RwLock::new(self.shared.large_expr_pathmap.read().expect("large_expr_pathmap lock poisoned").clone()),
-            fuzzy_matcher: RwLock::new(self.shared.fuzzy_matcher.read().expect("fuzzy_matcher lock poisoned").clone()),
-            scope_tracker: RwLock::new(self.shared.scope_tracker.read().expect("scope_tracker lock poisoned").clone()),
-            head_arity_bloom: RwLock::new(self.shared.head_arity_bloom.read().expect("head_arity_bloom lock poisoned").clone()),
+            rule_index: RwLock::new(
+                self.shared
+                    .rule_index
+                    .read()
+                    .expect("rule_index lock poisoned")
+                    .clone(),
+            ),
+            wildcard_rules: RwLock::new(
+                self.shared
+                    .wildcard_rules
+                    .read()
+                    .expect("wildcard_rules lock poisoned")
+                    .clone(),
+            ),
+            has_wildcard_rules: AtomicBool::new(
+                self.shared.has_wildcard_rules.load(Ordering::Acquire),
+            ),
+            multiplicities: RwLock::new(
+                self.shared
+                    .multiplicities
+                    .read()
+                    .expect("multiplicities lock poisoned")
+                    .clone(),
+            ),
+            pattern_cache: RwLock::new(
+                self.shared
+                    .pattern_cache
+                    .read()
+                    .expect("pattern_cache lock poisoned")
+                    .clone(),
+            ),
+            type_index: RwLock::new(
+                self.shared
+                    .type_index
+                    .read()
+                    .expect("type_index lock poisoned")
+                    .clone(),
+            ),
+            type_index_dirty: RwLock::new(
+                *self
+                    .shared
+                    .type_index_dirty
+                    .read()
+                    .expect("type_index_dirty lock poisoned"),
+            ),
+            named_spaces: RwLock::new(
+                self.shared
+                    .named_spaces
+                    .read()
+                    .expect("named_spaces lock poisoned")
+                    .clone(),
+            ),
+            next_space_id: RwLock::new(
+                *self
+                    .shared
+                    .next_space_id
+                    .read()
+                    .expect("next_space_id lock poisoned"),
+            ),
+            states: RwLock::new(
+                self.shared
+                    .states
+                    .read()
+                    .expect("states lock poisoned")
+                    .clone(),
+            ),
+            next_state_id: RwLock::new(
+                *self
+                    .shared
+                    .next_state_id
+                    .read()
+                    .expect("next_state_id lock poisoned"),
+            ),
+            bindings: RwLock::new(
+                self.shared
+                    .bindings
+                    .read()
+                    .expect("bindings lock poisoned")
+                    .clone(),
+            ),
+            module_registry: RwLock::new(
+                self.shared
+                    .module_registry
+                    .read()
+                    .expect("module_registry lock poisoned")
+                    .clone(),
+            ),
+            tokenizer: RwLock::new(
+                self.shared
+                    .tokenizer
+                    .read()
+                    .expect("tokenizer lock poisoned")
+                    .clone(),
+            ),
+            grounded_registry: RwLock::new(
+                self.shared
+                    .grounded_registry
+                    .read()
+                    .expect("grounded_registry lock poisoned")
+                    .clone(),
+            ),
+            grounded_registry_tco: RwLock::new(
+                self.shared
+                    .grounded_registry_tco
+                    .read()
+                    .expect("grounded_registry_tco lock poisoned")
+                    .clone(),
+            ),
+            large_expr_pathmap: RwLock::new(
+                self.shared
+                    .large_expr_pathmap
+                    .read()
+                    .expect("large_expr_pathmap lock poisoned")
+                    .clone(),
+            ),
+            fuzzy_matcher: RwLock::new(
+                self.shared
+                    .fuzzy_matcher
+                    .read()
+                    .expect("fuzzy_matcher lock poisoned")
+                    .clone(),
+            ),
+            scope_tracker: RwLock::new(
+                self.shared
+                    .scope_tracker
+                    .read()
+                    .expect("scope_tracker lock poisoned")
+                    .clone(),
+            ),
+            head_arity_bloom: RwLock::new(
+                self.shared
+                    .head_arity_bloom
+                    .read()
+                    .expect("head_arity_bloom lock poisoned")
+                    .clone(),
+            ),
         });
 
         self.shared = new_shared;
@@ -244,7 +361,6 @@ impl Environment {
         self.owns_data = true;
         self.modified.store(true, Ordering::Release);
     }
-
 
     /// Create a forked environment for nondeterministic branch isolation.
     ///
@@ -267,7 +383,11 @@ impl Environment {
         forked.make_owned(); // Ensure we have our own copy of state
 
         // Fork all SpaceHandles in bindings
-        let mut forked_bindings = forked.shared.bindings.write().expect("bindings lock poisoned");
+        let mut forked_bindings = forked
+            .shared
+            .bindings
+            .write()
+            .expect("bindings lock poisoned");
         for (_name, value) in forked_bindings.iter_mut() {
             Self::fork_spaces_in_value(value);
         }
@@ -275,7 +395,6 @@ impl Environment {
 
         forked
     }
-
 
     /// Recursively fork all SpaceHandles in a MettaValue.
     fn fork_spaces_in_value(value: &mut MettaValue) {
@@ -314,7 +433,6 @@ impl Environment {
         }
     }
 
-
     /// Create a thread-local Space for operations
     /// Following the Rholang LSP pattern: cheap clone via structural sharing
     ///
@@ -328,7 +446,6 @@ impl Environment {
             mmaps: HashMap::new(),
         }
     }
-
 
     /// Update PathMap and shared mapping after Space modifications (write operations)
     /// This updates both the PathMap (btm) and the SharedMappingHandle (sm)
@@ -355,7 +472,6 @@ impl Environment {
             current_module_path: self.current_module_path.clone(),
         }
     }
-
 }
 
 /// CoW: Manual Clone implementation
@@ -373,14 +489,12 @@ impl Clone for Environment {
             current_module_path: self.current_module_path.clone(),
         }
     }
-
 }
 
 impl Default for Environment {
     fn default() -> Self {
         Self::new()
     }
-
 }
 
 impl std::fmt::Debug for Environment {
@@ -389,5 +503,4 @@ impl std::fmt::Debug for Environment {
             .field("space", &"<MORK Space>")
             .finish()
     }
-
 }

@@ -9,9 +9,7 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 
 use super::super::step::ProcessedSExpr;
-use super::super::{
-    cartesian_product_lazy, CartesianProductResult,
-};
+use super::super::{cartesian_product_lazy, CartesianProductResult};
 use super::combination::process_single_combination;
 
 /// Process collected S-expression evaluation results.

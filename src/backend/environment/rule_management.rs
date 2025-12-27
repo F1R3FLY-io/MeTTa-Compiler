@@ -11,8 +11,8 @@ use mork_expr::Expr;
 use pathmap::PathMap;
 use tracing::trace;
 
-use crate::backend::symbol::Symbol;
 use super::{Environment, MettaValue, Rule};
+use crate::backend::symbol::Symbol;
 
 impl Environment {
     /// Get the number of rules in the environment
@@ -29,7 +29,12 @@ impl Environment {
             .sum();
 
         // Count wildcard rules
-        let wildcard_count = self.shared.wildcard_rules.read().expect("wildcard_rules lock poisoned").len();
+        let wildcard_count = self
+            .shared
+            .wildcard_rules
+            .read()
+            .expect("wildcard_rules lock poisoned")
+            .len();
 
         index_count + wildcard_count
     }
@@ -49,7 +54,11 @@ impl Environment {
     /// - Rule statistics and introspection
     /// - Pattern matching optimization hints
     pub fn iter_rule_heads(&self) -> Vec<(String, usize, usize)> {
-        let index = self.shared.rule_index.read().expect("rule_index lock poisoned");
+        let index = self
+            .shared
+            .rule_index
+            .read()
+            .expect("rule_index lock poisoned");
         index
             .iter()
             .map(|((head, arity), rules)| (head.to_string(), *arity, rules.len()))
@@ -82,10 +91,7 @@ impl Environment {
                     if items.len() == 3 {
                         if let MettaValue::Atom(op) = &items[0] {
                             if op == "=" {
-                                rules.push(Rule::new(
-                                    items[1].clone(),
-                                    items[2].clone(),
-                                ));
+                                rules.push(Rule::new(items[1].clone(), items[2].clone()));
                             }
                         }
                     }
@@ -105,32 +111,56 @@ impl Environment {
 
         // Clear existing indices
         {
-            let mut index = self.shared.rule_index.write().expect("rule_index lock poisoned");
+            let mut index = self
+                .shared
+                .rule_index
+                .write()
+                .expect("rule_index lock poisoned");
             index.clear();
         }
         {
-            let mut wildcards = self.shared.wildcard_rules.write().expect("wildcard_rules lock poisoned");
+            let mut wildcards = self
+                .shared
+                .wildcard_rules
+                .write()
+                .expect("wildcard_rules lock poisoned");
             wildcards.clear();
         }
         // Reset wildcard flag - will be set again if wildcards are added
-        self.shared.has_wildcard_rules.store(false, Ordering::Release);
+        self.shared
+            .has_wildcard_rules
+            .store(false, Ordering::Release);
 
         // Rebuild from MORK Space
         for rule in self.iter_rules() {
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
                 // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-                self.shared.fuzzy_matcher.write().expect("fuzzy_matcher lock poisoned").insert(head);
+                self.shared
+                    .fuzzy_matcher
+                    .write()
+                    .expect("fuzzy_matcher lock poisoned")
+                    .insert(head);
                 // Use Symbol for O(1) comparison when symbol-interning is enabled
                 let head_sym = Symbol::new(head);
-                let mut index = self.shared.rule_index.write().expect("rule_index lock poisoned");
+                let mut index = self
+                    .shared
+                    .rule_index
+                    .write()
+                    .expect("rule_index lock poisoned");
                 index.entry((head_sym, arity)).or_default().push(rule);
             } else {
                 // Rules without head symbol (wildcards, variables) go to wildcard list
-                let mut wildcards = self.shared.wildcard_rules.write().expect("wildcard_rules lock poisoned");
+                let mut wildcards = self
+                    .shared
+                    .wildcard_rules
+                    .write()
+                    .expect("wildcard_rules lock poisoned");
                 wildcards.push(rule);
                 // Mark that we have wildcard rules
-                self.shared.has_wildcard_rules.store(true, Ordering::Release);
+                self.shared
+                    .has_wildcard_rules
+                    .store(true, Ordering::Release);
             }
         }
 
@@ -159,7 +189,11 @@ impl Environment {
 
         // Increment the count for this rule
         {
-            let mut counts = self.shared.multiplicities.write().expect("multiplicities lock poisoned");
+            let mut counts = self
+                .shared
+                .multiplicities
+                .write()
+                .expect("multiplicities lock poisoned");
             let new_count = *counts.entry(rule_key.clone()).or_insert(0) + 1;
             counts.insert(rule_key.clone(), new_count);
         } // Drop the RefMut borrow before add_to_space
@@ -170,17 +204,31 @@ impl Environment {
         if let Some(head) = rule.lhs.get_head_symbol() {
             let arity = rule.lhs.get_arity();
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-            self.shared.fuzzy_matcher.write().expect("fuzzy_matcher lock poisoned").insert(head);
+            self.shared
+                .fuzzy_matcher
+                .write()
+                .expect("fuzzy_matcher lock poisoned")
+                .insert(head);
             // Use Symbol for O(1) comparison when symbol-interning is enabled
             let head_sym = Symbol::new(head);
-            let mut index = self.shared.rule_index.write().expect("rule_index lock poisoned");
+            let mut index = self
+                .shared
+                .rule_index
+                .write()
+                .expect("rule_index lock poisoned");
             index.entry((head_sym, arity)).or_default().push(rule); // Move instead of clone
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
-            let mut wildcards = self.shared.wildcard_rules.write().expect("wildcard_rules lock poisoned");
+            let mut wildcards = self
+                .shared
+                .wildcard_rules
+                .write()
+                .expect("wildcard_rules lock poisoned");
             wildcards.push(rule); // Move instead of clone
-            // Mark that we have wildcard rules (for fast-path in get_matching_rules)
-            self.shared.has_wildcard_rules.store(true, Ordering::Release);
+                                  // Mark that we have wildcard rules (for fast-path in get_matching_rules)
+            self.shared
+                .has_wildcard_rules
+                .store(true, Ordering::Release);
         }
 
         // Add to MORK Space (only once - PathMap will deduplicate)
@@ -231,7 +279,11 @@ impl Environment {
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
                 // Track symbol for fuzzy matching
-                self.shared.fuzzy_matcher.write().expect("fuzzy_matcher lock poisoned").insert(head);
+                self.shared
+                    .fuzzy_matcher
+                    .write()
+                    .expect("fuzzy_matcher lock poisoned")
+                    .insert(head);
                 // Use Symbol for O(1) comparison when symbol-interning is enabled
                 let head_sym = Symbol::new(head);
                 rule_index_updates
@@ -265,7 +317,11 @@ impl Environment {
 
         // Update multiplicities
         {
-            let mut counts = self.shared.multiplicities.write().expect("multiplicities lock poisoned");
+            let mut counts = self
+                .shared
+                .multiplicities
+                .write()
+                .expect("multiplicities lock poisoned");
             for (key, delta) in multiplicity_updates {
                 *counts.entry(key).or_insert(0) += delta;
             }
@@ -273,7 +329,11 @@ impl Environment {
 
         // Update rule index
         {
-            let mut index = self.shared.rule_index.write().expect("rule_index lock poisoned");
+            let mut index = self
+                .shared
+                .rule_index
+                .write()
+                .expect("rule_index lock poisoned");
             for ((head, arity), mut rules) in rule_index_updates {
                 index.entry((head, arity)).or_default().append(&mut rules);
             }
@@ -282,11 +342,17 @@ impl Environment {
         // Update wildcard rules
         let has_new_wildcards = !wildcard_updates.is_empty();
         {
-            let mut wildcards = self.shared.wildcard_rules.write().expect("wildcard_rules lock poisoned");
+            let mut wildcards = self
+                .shared
+                .wildcard_rules
+                .write()
+                .expect("wildcard_rules lock poisoned");
             wildcards.extend(wildcard_updates);
         }
         if has_new_wildcards {
-            self.shared.has_wildcard_rules.store(true, Ordering::Release);
+            self.shared
+                .has_wildcard_rules
+                .store(true, Ordering::Release);
         }
 
         // Single PathMap union (minimal critical section)
@@ -309,19 +375,31 @@ impl Environment {
         ]);
         let rule_key = rule_sexpr.to_mork_string();
 
-        let counts = self.shared.multiplicities.read().expect("multiplicities lock poisoned");
+        let counts = self
+            .shared
+            .multiplicities
+            .read()
+            .expect("multiplicities lock poisoned");
         *counts.get(&rule_key).unwrap_or(&1)
     }
 
     /// Get the multiplicities (for serialization)
     pub fn get_multiplicities(&self) -> HashMap<String, usize> {
-        self.shared.multiplicities.read().expect("multiplicities lock poisoned").clone()
+        self.shared
+            .multiplicities
+            .read()
+            .expect("multiplicities lock poisoned")
+            .clone()
     }
 
     /// Set the multiplicities (used for deserialization)
     pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
         self.make_owned(); // CoW: ensure we own data before modifying
-        *self.shared.multiplicities.write().expect("multiplicities lock poisoned") = counts;
+        *self
+            .shared
+            .multiplicities
+            .write()
+            .expect("multiplicities lock poisoned") = counts;
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
@@ -338,7 +416,11 @@ impl Environment {
         let has_wildcards = self.shared.has_wildcard_rules.load(Ordering::Acquire);
 
         // Get indexed rules first
-        let index = self.shared.rule_index.read().expect("rule_index lock poisoned");
+        let index = self
+            .shared
+            .rule_index
+            .read()
+            .expect("rule_index lock poisoned");
         let indexed_rules = index.get(&key);
         let indexed_len = indexed_rules.map_or(0, |r| r.len());
 
@@ -353,7 +435,11 @@ impl Environment {
         }
 
         // Have wildcard rules - need to acquire lock
-        let wildcards = self.shared.wildcard_rules.read().expect("wildcard_rules lock poisoned");
+        let wildcards = self
+            .shared
+            .wildcard_rules
+            .read()
+            .expect("wildcard_rules lock poisoned");
         let wildcard_len = wildcards.len();
 
         // OPTIMIZATION: Preallocate capacity to avoid reallocation

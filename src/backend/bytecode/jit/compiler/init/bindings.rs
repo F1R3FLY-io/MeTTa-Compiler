@@ -37,12 +37,30 @@ pub trait BindingsInit {
 
 impl<T> BindingsInit for T {
     fn register_bindings_symbols(builder: &mut JITBuilder) {
-        builder.symbol("jit_runtime_load_binding", runtime::jit_runtime_load_binding as *const u8);
-        builder.symbol("jit_runtime_store_binding", runtime::jit_runtime_store_binding as *const u8);
-        builder.symbol("jit_runtime_has_binding", runtime::jit_runtime_has_binding as *const u8);
-        builder.symbol("jit_runtime_clear_bindings", runtime::jit_runtime_clear_bindings as *const u8);
-        builder.symbol("jit_runtime_push_binding_frame", runtime::jit_runtime_push_binding_frame as *const u8);
-        builder.symbol("jit_runtime_pop_binding_frame", runtime::jit_runtime_pop_binding_frame as *const u8);
+        builder.symbol(
+            "jit_runtime_load_binding",
+            runtime::jit_runtime_load_binding as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_store_binding",
+            runtime::jit_runtime_store_binding as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_has_binding",
+            runtime::jit_runtime_has_binding as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_clear_bindings",
+            runtime::jit_runtime_clear_bindings as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_push_binding_frame",
+            runtime::jit_runtime_push_binding_frame as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_pop_binding_frame",
+            runtime::jit_runtime_pop_binding_frame as *const u8,
+        );
     }
 
     fn declare_bindings_funcs<M: Module>(module: &mut M) -> JitResult<BindingFuncIds> {
@@ -57,7 +75,12 @@ impl<T> BindingsInit for T {
 
         let load_binding_func_id = module
             .declare_function("jit_runtime_load_binding", Linkage::Import, &load_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_load_binding: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_load_binding: {}",
+                    e
+                ))
+            })?;
 
         // store_binding: fn(ctx, var_hash, value, ip) -> ()
         let mut store_sig = module.make_signature();
@@ -68,7 +91,12 @@ impl<T> BindingsInit for T {
 
         let store_binding_func_id = module
             .declare_function("jit_runtime_store_binding", Linkage::Import, &store_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_store_binding: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_store_binding: {}",
+                    e
+                ))
+            })?;
 
         // has_binding: fn(ctx, name_idx) -> bool
         let mut has_sig = module.make_signature();
@@ -78,7 +106,12 @@ impl<T> BindingsInit for T {
 
         let has_binding_func_id = module
             .declare_function("jit_runtime_has_binding", Linkage::Import, &has_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_has_binding: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_has_binding: {}",
+                    e
+                ))
+            })?;
 
         // clear_bindings: fn(ctx) -> ()
         let mut clear_sig = module.make_signature();
@@ -86,7 +119,12 @@ impl<T> BindingsInit for T {
 
         let clear_bindings_func_id = module
             .declare_function("jit_runtime_clear_bindings", Linkage::Import, &clear_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_clear_bindings: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_clear_bindings: {}",
+                    e
+                ))
+            })?;
 
         // push_binding_frame: fn(ctx) -> ()
         let mut push_sig = module.make_signature();
@@ -94,7 +132,12 @@ impl<T> BindingsInit for T {
 
         let push_binding_frame_func_id = module
             .declare_function("jit_runtime_push_binding_frame", Linkage::Import, &push_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_push_binding_frame: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_push_binding_frame: {}",
+                    e
+                ))
+            })?;
 
         // pop_binding_frame: fn(ctx) -> ()
         let mut pop_sig = module.make_signature();
@@ -102,7 +145,12 @@ impl<T> BindingsInit for T {
 
         let pop_binding_frame_func_id = module
             .declare_function("jit_runtime_pop_binding_frame", Linkage::Import, &pop_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_pop_binding_frame: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_pop_binding_frame: {}",
+                    e
+                ))
+            })?;
 
         Ok(BindingFuncIds {
             load_binding_func_id,

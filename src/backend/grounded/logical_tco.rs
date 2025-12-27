@@ -53,7 +53,9 @@ impl GroundedOperationTCO for AndOpTCO {
                     match a {
                         MettaValue::Bool(false) => {
                             // SHORT-CIRCUIT: False and _ = False
-                            state.accumulated_results.push((MettaValue::Bool(false), None));
+                            state
+                                .accumulated_results
+                                .push((MettaValue::Bool(false), None));
                         }
                         MettaValue::Bool(true) => {
                             // Need to evaluate second argument for this branch
@@ -106,7 +108,9 @@ impl GroundedOperationTCO for AndOpTCO {
                         for b in &b_results {
                             match b {
                                 MettaValue::Bool(val) => {
-                                    state.accumulated_results.push((MettaValue::Bool(*val), None));
+                                    state
+                                        .accumulated_results
+                                        .push((MettaValue::Bool(*val), None));
                                 }
                                 _ => {
                                     return GroundedWork::Error(ExecError::Runtime(format!(
@@ -167,7 +171,9 @@ impl GroundedOperationTCO for OrOpTCO {
                     match a {
                         MettaValue::Bool(true) => {
                             // SHORT-CIRCUIT: True or _ = True
-                            state.accumulated_results.push((MettaValue::Bool(true), None));
+                            state
+                                .accumulated_results
+                                .push((MettaValue::Bool(true), None));
                         }
                         MettaValue::Bool(false) => {
                             // Need to evaluate second argument for this branch
@@ -218,7 +224,9 @@ impl GroundedOperationTCO for OrOpTCO {
                         for b in &b_results {
                             match b {
                                 MettaValue::Bool(val) => {
-                                    state.accumulated_results.push((MettaValue::Bool(*val), None));
+                                    state
+                                        .accumulated_results
+                                        .push((MettaValue::Bool(*val), None));
                                 }
                                 _ => {
                                     return GroundedWork::Error(ExecError::Runtime(format!(

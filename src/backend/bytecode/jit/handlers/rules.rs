@@ -2,7 +2,6 @@
 //!
 //! Handles: DispatchRules, TryRule, NextRule, CommitRule, FailRule, LookupRules, ApplySubst, DefineRule
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;

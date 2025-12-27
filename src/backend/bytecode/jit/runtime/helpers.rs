@@ -6,7 +6,7 @@
 //! - Error creation helpers (make_jit_error, make_jit_error_with_details)
 
 use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue, TAG_LONG, TAG_HEAP, PAYLOAD_MASK,
+    JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_LONG,
 };
 use crate::backend::models::MettaValue;
 use std::sync::Arc;
@@ -69,10 +69,7 @@ pub fn metta_to_jit(val: &MettaValue) -> JitValue {
 ///
 /// # Safety
 /// - `ctx` must be a valid pointer to a JitContext (or null to disable tracking)
-pub unsafe fn metta_to_jit_tracked(
-    val: &MettaValue,
-    ctx: *mut JitContext,
-) -> JitValue {
+pub unsafe fn metta_to_jit_tracked(val: &MettaValue, ctx: *mut JitContext) -> JitValue {
     match val {
         MettaValue::Long(n) => JitValue::from_long(*n),
         MettaValue::Bool(b) => JitValue::from_bool(*b),
@@ -99,10 +96,7 @@ pub unsafe fn metta_to_jit_tracked(
 ///
 /// Creates a heap-allocated Error value and returns it as a NaN-boxed pointer.
 pub fn make_jit_error(msg: &str) -> u64 {
-    let error_val = MettaValue::Error(
-        msg.to_string(),
-        Arc::new(MettaValue::Nil),
-    );
+    let error_val = MettaValue::Error(msg.to_string(), Arc::new(MettaValue::Nil));
     let boxed = Box::new(error_val);
     let ptr = Box::into_raw(boxed);
     ((TAG_HEAP as u64) << 48) | (ptr as u64 & PAYLOAD_MASK)

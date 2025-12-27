@@ -265,7 +265,6 @@ impl ModuleRegistry {
     pub fn iter(&self) -> impl Iterator<Item = &MettaMod> {
         self.modules.iter()
     }
-
 }
 
 impl Default for ModuleRegistry {

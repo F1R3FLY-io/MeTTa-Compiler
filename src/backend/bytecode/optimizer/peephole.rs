@@ -104,10 +104,8 @@ impl PeepholeOptimizer {
                             // Check if target is also an unconditional jump
                             if target < code.len() && code[target] == Opcode::Jump.to_byte() {
                                 if target + 2 < code.len() {
-                                    let target_offset = i16::from_be_bytes([
-                                        code[target + 1],
-                                        code[target + 2],
-                                    ]);
+                                    let target_offset =
+                                        i16::from_be_bytes([code[target + 1], code[target + 2]]);
                                     let target_from = target + 3;
                                     let final_target =
                                         (target_from as isize + target_offset as isize) as usize;
@@ -146,10 +144,8 @@ impl PeepholeOptimizer {
                             if target < code.len() {
                                 if code[target] == Opcode::Jump.to_byte() && target + 2 < code.len()
                                 {
-                                    let target_offset = i16::from_be_bytes([
-                                        code[target + 1],
-                                        code[target + 2],
-                                    ]);
+                                    let target_offset =
+                                        i16::from_be_bytes([code[target + 1], code[target + 2]]);
                                     let target_from = target + 3;
                                     let final_target =
                                         (target_from as isize + target_offset as isize) as usize;
@@ -291,7 +287,11 @@ impl PeepholeOptimizer {
                             continue;
                         }
                     }
-                    PeepholeAction::ReplaceWithBytes { start, end, ref bytes } => {
+                    PeepholeAction::ReplaceWithBytes {
+                        start,
+                        end,
+                        ref bytes,
+                    } => {
                         if src_offset == start {
                             result.extend_from_slice(bytes);
                             let original_len = end - start;
@@ -565,11 +565,7 @@ impl PeepholeOptimizer {
                 return PeepholeAction::ReplaceWithBytes {
                     start: offset,
                     end: offset + 3,
-                    bytes: vec![
-                        Opcode::Pop.to_byte(),
-                        Opcode::PushLongSmall.to_byte(),
-                        0,
-                    ],
+                    bytes: vec![Opcode::Pop.to_byte(), Opcode::PushLongSmall.to_byte(), 0],
                 };
             }
 
@@ -583,11 +579,7 @@ impl PeepholeOptimizer {
                 return PeepholeAction::ReplaceWithBytes {
                     start: offset,
                     end: offset + 3,
-                    bytes: vec![
-                        Opcode::Pop.to_byte(),
-                        Opcode::PushLongSmall.to_byte(),
-                        1,
-                    ],
+                    bytes: vec![Opcode::Pop.to_byte(), Opcode::PushLongSmall.to_byte(), 1],
                 };
             }
 
@@ -628,8 +620,7 @@ impl PeepholeOptimizer {
             }
 
             // Constant branch folding: PushTrue; JumpIfTrue → Jump (always taken)
-            if op == Opcode::PushTrue.to_byte()
-                && code[offset + 1] == Opcode::JumpIfTrue.to_byte()
+            if op == Opcode::PushTrue.to_byte() && code[offset + 1] == Opcode::JumpIfTrue.to_byte()
             {
                 self.stats.const_branch_folded += 1;
                 return PeepholeAction::ReplaceWithBytes {
@@ -651,17 +642,12 @@ impl PeepholeOptimizer {
                 return PeepholeAction::ReplaceWithBytes {
                     start: offset,
                     end: offset + 4,
-                    bytes: vec![
-                        Opcode::Jump.to_byte(),
-                        code[offset + 2],
-                        code[offset + 3],
-                    ],
+                    bytes: vec![Opcode::Jump.to_byte(), code[offset + 2], code[offset + 3]],
                 };
             }
 
             // Dead branch: PushTrue; JumpIfFalse → remove all (never taken, fall through)
-            if op == Opcode::PushTrue.to_byte()
-                && code[offset + 1] == Opcode::JumpIfFalse.to_byte()
+            if op == Opcode::PushTrue.to_byte() && code[offset + 1] == Opcode::JumpIfFalse.to_byte()
             {
                 self.stats.dead_branch_removed += 1;
                 return PeepholeAction::Remove {
@@ -671,8 +657,7 @@ impl PeepholeOptimizer {
             }
 
             // Dead branch: PushFalse; JumpIfTrue → remove all (never taken, fall through)
-            if op == Opcode::PushFalse.to_byte()
-                && code[offset + 1] == Opcode::JumpIfTrue.to_byte()
+            if op == Opcode::PushFalse.to_byte() && code[offset + 1] == Opcode::JumpIfTrue.to_byte()
             {
                 self.stats.dead_branch_removed += 1;
                 return PeepholeAction::Remove {
@@ -684,7 +669,8 @@ impl PeepholeOptimizer {
             // Load deduplication: LoadLocal X; LoadLocal X → LoadLocal X; Dup
             if op == Opcode::LoadLocal.to_byte()
                 && code[offset + 2] == Opcode::LoadLocal.to_byte()
-                && code[offset + 1] == code[offset + 3] // Same slot
+                && code[offset + 1] == code[offset + 3]
+            // Same slot
             {
                 self.stats.load_deduplicated += 1;
                 return PeepholeAction::ReplaceWithBytes {
@@ -714,15 +700,20 @@ impl PeepholeOptimizer {
 
             match opcode {
                 // 2-byte signed offset jumps
-                Opcode::Jump | Opcode::JumpIfFalse | Opcode::JumpIfTrue
-                | Opcode::JumpIfNil | Opcode::JumpIfError => {
+                Opcode::Jump
+                | Opcode::JumpIfFalse
+                | Opcode::JumpIfTrue
+                | Opcode::JumpIfNil
+                | Opcode::JumpIfError => {
                     if offset + 2 < code.len() {
-                        let old_jump_offset = i16::from_be_bytes([code[offset + 1], code[offset + 2]]);
+                        let old_jump_offset =
+                            i16::from_be_bytes([code[offset + 1], code[offset + 2]]);
 
                         // Find the original position of this jump instruction
                         let old_instr_pos = self.reverse_offset(offset, offset_map, original_len);
                         let old_jump_from = old_instr_pos + 3; // After the 3-byte instruction
-                        let old_target = (old_jump_from as isize + old_jump_offset as isize) as usize;
+                        let old_target =
+                            (old_jump_from as isize + old_jump_offset as isize) as usize;
 
                         // Calculate new positions
                         let new_jump_from = offset + 3;
@@ -733,7 +724,8 @@ impl PeepholeOptimizer {
                             let new_target = (old_target as isize + target_delta) as usize;
 
                             // Calculate new offset
-                            let new_jump_offset = (new_target as isize - new_jump_from as isize) as i16;
+                            let new_jump_offset =
+                                (new_target as isize - new_jump_from as isize) as i16;
                             let bytes = new_jump_offset.to_be_bytes();
                             code[offset + 1] = bytes[0];
                             code[offset + 2] = bytes[1];
@@ -750,7 +742,8 @@ impl PeepholeOptimizer {
                         // Find the original position of this jump instruction
                         let old_instr_pos = self.reverse_offset(offset, offset_map, original_len);
                         let old_jump_from = old_instr_pos + 2; // After the 2-byte instruction
-                        let old_target = (old_jump_from as isize + old_jump_offset as isize) as usize;
+                        let old_target =
+                            (old_jump_from as isize + old_jump_offset as isize) as usize;
 
                         // Calculate new positions
                         let new_jump_from = offset + 2;
@@ -761,7 +754,8 @@ impl PeepholeOptimizer {
                             let new_target = (old_target as isize + target_delta) as usize;
 
                             // Calculate new offset
-                            let new_jump_offset = (new_target as isize - new_jump_from as isize) as i8;
+                            let new_jump_offset =
+                                (new_target as isize - new_jump_from as isize) as i8;
                             code[offset + 1] = new_jump_offset as u8;
                         }
                     }
@@ -776,7 +770,12 @@ impl PeepholeOptimizer {
     }
 
     /// Reverse lookup: given a new offset, find the original offset
-    fn reverse_offset(&self, new_offset: usize, offset_map: &[isize], original_len: usize) -> usize {
+    fn reverse_offset(
+        &self,
+        new_offset: usize,
+        offset_map: &[isize],
+        original_len: usize,
+    ) -> usize {
         for old_pos in 0..=original_len {
             let delta = offset_map.get(old_pos).copied().unwrap_or(0);
             if (old_pos as isize + delta) as usize == new_offset {

@@ -89,7 +89,9 @@ pub fn hash_metta_value(expr: &MettaValue) -> u64 {
     match expr {
         MettaValue::Long(n) => {
             // FxHash-style mixing with type-specific seed
-            let x = (*n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+            let x = (*n as u64)
+                .wrapping_add(LONG_SEED)
+                .wrapping_mul(GOLDEN_RATIO);
             x ^ (x >> 32)
         }
         MettaValue::Bool(b) => {
@@ -120,14 +122,18 @@ pub fn hash_metta_value(expr: &MettaValue) -> u64 {
 #[inline]
 pub fn get_cached_can_compile(hash: u64) -> Option<bool> {
     // Use peek() + read lock for faster lookups (doesn't update LRU order)
-    let cache = CAN_COMPILE_CACHE.read().expect("can_compile cache lock poisoned");
+    let cache = CAN_COMPILE_CACHE
+        .read()
+        .expect("can_compile cache lock poisoned");
     cache.peek(&hash).copied()
 }
 
 /// Store can_compile result in cache
 #[inline]
 pub fn cache_can_compile(hash: u64, compilable: bool) {
-    let mut cache = CAN_COMPILE_CACHE.write().expect("can_compile cache lock poisoned");
+    let mut cache = CAN_COMPILE_CACHE
+        .write()
+        .expect("can_compile cache lock poisoned");
     cache.put(hash, compilable);
 }
 
@@ -142,16 +148,15 @@ pub fn get_cached_bytecode(hash: u64) -> Option<Arc<BytecodeChunk>> {
 /// Store compiled bytecode chunk in cache
 #[inline]
 pub fn cache_bytecode(hash: u64, chunk: Arc<BytecodeChunk>) {
-    let mut cache = BYTECODE_CACHE.write().expect("bytecode cache lock poisoned");
+    let mut cache = BYTECODE_CACHE
+        .write()
+        .expect("bytecode cache lock poisoned");
     cache.put(hash, chunk);
 }
 
 /// Get current cache statistics
 pub fn get_stats() -> BytecodeCacheStats {
-    CACHE_STATS
-        .read()
-        .expect("stats lock poisoned")
-        .clone()
+    CACHE_STATS.read().expect("stats lock poisoned").clone()
 }
 
 /// Clear all caches (mainly for testing)
@@ -169,14 +174,8 @@ pub fn clear_caches() {
 
 /// Get current cache sizes (for diagnostics)
 pub fn cache_sizes() -> (usize, usize) {
-    let can_compile_size = CAN_COMPILE_CACHE
-        .read()
-        .map(|c| c.len())
-        .unwrap_or(0);
-    let bytecode_size = BYTECODE_CACHE
-        .read()
-        .map(|c| c.len())
-        .unwrap_or(0);
+    let can_compile_size = CAN_COMPILE_CACHE.read().map(|c| c.len()).unwrap_or(0);
+    let bytecode_size = BYTECODE_CACHE.read().map(|c| c.len()).unwrap_or(0);
     (can_compile_size, bytecode_size)
 }
 
@@ -257,6 +256,7 @@ mod tests {
     // Stats can be re-enabled with a debug feature flag if needed.
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_fast_hash_primitives() {
         // Long hashing
         let h1 = hash_metta_value(&MettaValue::Long(42));
@@ -295,7 +295,7 @@ mod tests {
         let h_float = hash_metta_value(&MettaValue::Float(0.0));
 
         // All should be distinct
-        let hashes = vec![h_long, h_false, h_nil, h_float];
+        let hashes = [h_long, h_false, h_nil, h_float];
         for i in 0..hashes.len() {
             for j in i + 1..hashes.len() {
                 assert_ne!(

@@ -35,10 +35,22 @@ pub trait HigherOrderInit {
 
 impl<T> HigherOrderInit for T {
     fn register_higher_order_symbols(builder: &mut JITBuilder) {
-        builder.symbol("jit_runtime_map_atom", runtime::jit_runtime_map_atom as *const u8);
-        builder.symbol("jit_runtime_filter_atom", runtime::jit_runtime_filter_atom as *const u8);
-        builder.symbol("jit_runtime_foldl_atom", runtime::jit_runtime_foldl_atom as *const u8);
-        builder.symbol("jit_runtime_decon_atom", runtime::jit_runtime_decon_atom as *const u8);
+        builder.symbol(
+            "jit_runtime_map_atom",
+            runtime::jit_runtime_map_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_filter_atom",
+            runtime::jit_runtime_filter_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_foldl_atom",
+            runtime::jit_runtime_foldl_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_decon_atom",
+            runtime::jit_runtime_decon_atom as *const u8,
+        );
         builder.symbol("jit_runtime_repr", runtime::jit_runtime_repr as *const u8);
     }
 
@@ -55,7 +67,9 @@ impl<T> HigherOrderInit for T {
 
         let map_atom_func_id = module
             .declare_function("jit_runtime_map_atom", Linkage::Import, &map_atom_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_map_atom: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_map_atom: {}", e))
+            })?;
 
         // filter_atom: fn(ctx, list, predicate_chunk, ip) -> result
         let mut filter_atom_sig = module.make_signature();
@@ -67,7 +81,12 @@ impl<T> HigherOrderInit for T {
 
         let filter_atom_func_id = module
             .declare_function("jit_runtime_filter_atom", Linkage::Import, &filter_atom_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_filter_atom: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_filter_atom: {}",
+                    e
+                ))
+            })?;
 
         // foldl_atom: fn(ctx, list, init, func_chunk, ip) -> result
         let mut foldl_atom_sig = module.make_signature();
@@ -80,7 +99,12 @@ impl<T> HigherOrderInit for T {
 
         let foldl_atom_func_id = module
             .declare_function("jit_runtime_foldl_atom", Linkage::Import, &foldl_atom_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_foldl_atom: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_foldl_atom: {}",
+                    e
+                ))
+            })?;
 
         // decon_atom: fn(ctx, value, ip) -> (head, tail) pair
         let mut decon_atom_sig = module.make_signature();
@@ -91,7 +115,12 @@ impl<T> HigherOrderInit for T {
 
         let decon_atom_func_id = module
             .declare_function("jit_runtime_decon_atom", Linkage::Import, &decon_atom_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_decon_atom: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_decon_atom: {}",
+                    e
+                ))
+            })?;
 
         // repr: fn(ctx, value, ip) -> string
         let mut repr_sig = module.make_signature();
@@ -102,7 +131,9 @@ impl<T> HigherOrderInit for T {
 
         let repr_func_id = module
             .declare_function("jit_runtime_repr", Linkage::Import, &repr_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_repr: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_repr: {}", e))
+            })?;
 
         Ok(HigherOrderFuncIds {
             map_atom_func_id,

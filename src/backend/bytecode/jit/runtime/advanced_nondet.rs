@@ -11,8 +11,8 @@
 //! - begin_nondet - Begin nondeterministic section
 //! - end_nondet - End nondeterministic section
 
-use tracing::warn;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue, JIT_SIGNAL_FAIL};
+use tracing::warn;
 
 // =============================================================================
 // Phase G: Advanced Nondeterminism
@@ -119,11 +119,7 @@ pub unsafe extern "C" fn jit_runtime_exit_cut_scope(ctx: *mut JitContext) -> i64
 /// # Returns
 /// 1 if guard passes (proceed), 0 if guard fails (backtrack)
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_guard(
-    _ctx: *mut JitContext,
-    condition: u64,
-    _ip: u64,
-) -> i64 {
+pub unsafe extern "C" fn jit_runtime_guard(_ctx: *mut JitContext, condition: u64, _ip: u64) -> i64 {
     use crate::backend::bytecode::jit::types::TAG_BOOL;
 
     // True is TAG_BOOL | 1
@@ -149,11 +145,7 @@ pub unsafe extern "C" fn jit_runtime_guard(
 /// # Returns
 /// NaN-boxed first alternative value
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_amb(
-    ctx: *mut JitContext,
-    alt_count: u64,
-    ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_amb(ctx: *mut JitContext, alt_count: u64, ip: u64) -> u64 {
     if ctx.is_null() {
         return JitValue::nil().to_bits();
     }
@@ -211,11 +203,7 @@ pub unsafe extern "C" fn jit_runtime_amb(
 /// # Returns
 /// NaN-boxed Unit
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_commit(
-    ctx: *mut JitContext,
-    count: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_commit(ctx: *mut JitContext, count: u64, _ip: u64) -> u64 {
     if ctx.is_null() {
         return JitValue::unit().to_bits();
     }
@@ -242,10 +230,7 @@ pub unsafe extern "C" fn jit_runtime_commit(
 /// # Returns
 /// JIT signal for backtracking (-3 = FAIL signal)
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_backtrack(
-    _ctx: *mut JitContext,
-    _ip: u64,
-) -> i64 {
+pub unsafe extern "C" fn jit_runtime_backtrack(_ctx: *mut JitContext, _ip: u64) -> i64 {
     // Return FAIL signal to trigger backtracking in the JIT dispatcher
     JIT_SIGNAL_FAIL
 }

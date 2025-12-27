@@ -41,14 +41,38 @@ pub trait RulesInit {
 
 impl<T> RulesInit for T {
     fn register_rules_symbols(builder: &mut JITBuilder) {
-        builder.symbol("jit_runtime_dispatch_rules", runtime::jit_runtime_dispatch_rules as *const u8);
-        builder.symbol("jit_runtime_try_rule", runtime::jit_runtime_try_rule as *const u8);
-        builder.symbol("jit_runtime_next_rule", runtime::jit_runtime_next_rule as *const u8);
-        builder.symbol("jit_runtime_commit_rule", runtime::jit_runtime_commit_rule as *const u8);
-        builder.symbol("jit_runtime_fail_rule", runtime::jit_runtime_fail_rule as *const u8);
-        builder.symbol("jit_runtime_lookup_rules", runtime::jit_runtime_lookup_rules as *const u8);
-        builder.symbol("jit_runtime_apply_subst", runtime::jit_runtime_apply_subst as *const u8);
-        builder.symbol("jit_runtime_define_rule", runtime::jit_runtime_define_rule as *const u8);
+        builder.symbol(
+            "jit_runtime_dispatch_rules",
+            runtime::jit_runtime_dispatch_rules as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_try_rule",
+            runtime::jit_runtime_try_rule as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_next_rule",
+            runtime::jit_runtime_next_rule as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_commit_rule",
+            runtime::jit_runtime_commit_rule as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_fail_rule",
+            runtime::jit_runtime_fail_rule as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_lookup_rules",
+            runtime::jit_runtime_lookup_rules as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_apply_subst",
+            runtime::jit_runtime_apply_subst as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_define_rule",
+            runtime::jit_runtime_define_rule as *const u8,
+        );
     }
 
     fn declare_rules_funcs<M: Module>(module: &mut M) -> JitResult<RulesFuncIds> {
@@ -62,8 +86,17 @@ impl<T> RulesInit for T {
         dispatch_rules_sig.returns.push(AbiParam::new(types::I64)); // count
 
         let dispatch_rules_func_id = module
-            .declare_function("jit_runtime_dispatch_rules", Linkage::Import, &dispatch_rules_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_dispatch_rules: {}", e)))?;
+            .declare_function(
+                "jit_runtime_dispatch_rules",
+                Linkage::Import,
+                &dispatch_rules_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_dispatch_rules: {}",
+                    e
+                ))
+            })?;
 
         // try_rule: fn(ctx, rule_idx, ip) -> result
         let mut try_rule_sig = module.make_signature();
@@ -74,7 +107,9 @@ impl<T> RulesInit for T {
 
         let try_rule_func_id = module
             .declare_function("jit_runtime_try_rule", Linkage::Import, &try_rule_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_try_rule: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_try_rule: {}", e))
+            })?;
 
         // next_rule: fn(ctx, ip) -> status
         let mut next_rule_sig = module.make_signature();
@@ -84,7 +119,12 @@ impl<T> RulesInit for T {
 
         let next_rule_func_id = module
             .declare_function("jit_runtime_next_rule", Linkage::Import, &next_rule_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_next_rule: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_next_rule: {}",
+                    e
+                ))
+            })?;
 
         // commit_rule: fn(ctx, ip) -> status
         let mut commit_rule_sig = module.make_signature();
@@ -94,7 +134,12 @@ impl<T> RulesInit for T {
 
         let commit_rule_func_id = module
             .declare_function("jit_runtime_commit_rule", Linkage::Import, &commit_rule_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_commit_rule: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_commit_rule: {}",
+                    e
+                ))
+            })?;
 
         // fail_rule: fn(ctx, ip) -> signal
         let mut fail_rule_sig = module.make_signature();
@@ -104,7 +149,12 @@ impl<T> RulesInit for T {
 
         let fail_rule_func_id = module
             .declare_function("jit_runtime_fail_rule", Linkage::Import, &fail_rule_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_fail_rule: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_fail_rule: {}",
+                    e
+                ))
+            })?;
 
         // lookup_rules: fn(ctx, head_idx, ip) -> count
         let mut lookup_rules_sig = module.make_signature();
@@ -114,8 +164,17 @@ impl<T> RulesInit for T {
         lookup_rules_sig.returns.push(AbiParam::new(types::I64)); // count
 
         let lookup_rules_func_id = module
-            .declare_function("jit_runtime_lookup_rules", Linkage::Import, &lookup_rules_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_lookup_rules: {}", e)))?;
+            .declare_function(
+                "jit_runtime_lookup_rules",
+                Linkage::Import,
+                &lookup_rules_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_lookup_rules: {}",
+                    e
+                ))
+            })?;
 
         // apply_subst: fn(ctx, expr, ip) -> result
         let mut apply_subst_sig = module.make_signature();
@@ -126,7 +185,12 @@ impl<T> RulesInit for T {
 
         let apply_subst_func_id = module
             .declare_function("jit_runtime_apply_subst", Linkage::Import, &apply_subst_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_apply_subst: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_apply_subst: {}",
+                    e
+                ))
+            })?;
 
         // define_rule: fn(ctx, pattern_idx, ip) -> Unit
         let mut define_rule_sig = module.make_signature();
@@ -137,7 +201,12 @@ impl<T> RulesInit for T {
 
         let define_rule_func_id = module
             .declare_function("jit_runtime_define_rule", Linkage::Import, &define_rule_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_define_rule: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_define_rule: {}",
+                    e
+                ))
+            })?;
 
         Ok(RulesFuncIds {
             dispatch_rules_func_id,

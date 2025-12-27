@@ -2,7 +2,6 @@
 //!
 //! Handles: Trace, Breakpoint
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;

@@ -6,8 +6,8 @@
 //! - is_nil - Check if value is nil
 //! - get_tag - Get the type tag as an integer
 
-use crate::backend::bytecode::jit::types::{TAG_LONG, TAG_MASK, TAG_BOOL, TAG_NIL};
 use super::helpers::box_long;
+use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_LONG, TAG_MASK, TAG_NIL};
 
 // =============================================================================
 // Type Checking Runtime

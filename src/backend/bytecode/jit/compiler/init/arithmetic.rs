@@ -64,7 +64,10 @@ impl<T> ArithmeticInit for T {
         builder.symbol("jit_runtime_log", runtime::jit_runtime_log as *const u8);
         builder.symbol("jit_runtime_trunc", runtime::jit_runtime_trunc as *const u8);
         builder.symbol("jit_runtime_ceil", runtime::jit_runtime_ceil as *const u8);
-        builder.symbol("jit_runtime_floor_math", runtime::jit_runtime_floor_math as *const u8);
+        builder.symbol(
+            "jit_runtime_floor_math",
+            runtime::jit_runtime_floor_math as *const u8,
+        );
         builder.symbol("jit_runtime_round", runtime::jit_runtime_round as *const u8);
 
         // Trigonometric functions
@@ -97,66 +100,99 @@ impl<T> ArithmeticInit for T {
         // Declare pow (binary)
         let pow_func_id = module
             .declare_function("jit_runtime_pow", Linkage::Import, &binary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_pow: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_pow: {}", e))
+            })?;
 
         // Declare unary math functions
         let sqrt_func_id = module
             .declare_function("jit_runtime_sqrt", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_sqrt: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_sqrt: {}", e))
+            })?;
 
         let log_func_id = module
             .declare_function("jit_runtime_log", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_log: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_log: {}", e))
+            })?;
 
         let trunc_func_id = module
             .declare_function("jit_runtime_trunc", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_trunc: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_trunc: {}", e))
+            })?;
 
         let ceil_func_id = module
             .declare_function("jit_runtime_ceil", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_ceil: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_ceil: {}", e))
+            })?;
 
         let floor_math_func_id = module
             .declare_function("jit_runtime_floor_math", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_floor_math: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_floor_math: {}",
+                    e
+                ))
+            })?;
 
         let round_func_id = module
             .declare_function("jit_runtime_round", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_round: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_round: {}", e))
+            })?;
 
         // Declare trigonometric functions
         let sin_func_id = module
             .declare_function("jit_runtime_sin", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_sin: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_sin: {}", e))
+            })?;
 
         let cos_func_id = module
             .declare_function("jit_runtime_cos", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_cos: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_cos: {}", e))
+            })?;
 
         let tan_func_id = module
             .declare_function("jit_runtime_tan", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_tan: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_tan: {}", e))
+            })?;
 
         let asin_func_id = module
             .declare_function("jit_runtime_asin", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_asin: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_asin: {}", e))
+            })?;
 
         let acos_func_id = module
             .declare_function("jit_runtime_acos", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_acos: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_acos: {}", e))
+            })?;
 
         let atan_func_id = module
             .declare_function("jit_runtime_atan", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_atan: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_atan: {}", e))
+            })?;
 
         // Declare float predicate functions
         let isnan_func_id = module
             .declare_function("jit_runtime_isnan", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_isnan: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_isnan: {}", e))
+            })?;
 
         let isinf_func_id = module
             .declare_function("jit_runtime_isinf", Linkage::Import, &unary_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_isinf: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_isinf: {}", e))
+            })?;
 
         Ok(ArithmeticFuncIds {
             pow_func_id,

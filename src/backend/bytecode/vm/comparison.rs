@@ -3,9 +3,9 @@
 //! This module contains methods for comparison operations (lt, le, gt, ge, eq, ne)
 //! and boolean operations (and, or, not, xor).
 
-use crate::backend::models::MettaValue;
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
+use crate::backend::models::MettaValue;
 
 impl BytecodeVM {
     // === Comparison Operations ===
@@ -15,7 +15,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Bool(x < y),
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -26,7 +31,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Bool(x <= y),
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -37,7 +47,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Bool(x > y),
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -48,7 +63,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Bool(x >= y),
-            _ => return Err(VmError::TypeError { expected: "Long", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -83,7 +103,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Bool(x), MettaValue::Bool(y)) => MettaValue::Bool(*x && *y),
-            _ => return Err(VmError::TypeError { expected: "Bool", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Bool",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -94,7 +119,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Bool(x), MettaValue::Bool(y)) => MettaValue::Bool(*x || *y),
-            _ => return Err(VmError::TypeError { expected: "Bool", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Bool",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -104,7 +134,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match a {
             MettaValue::Bool(x) => MettaValue::Bool(!x),
-            _ => return Err(VmError::TypeError { expected: "Bool", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Bool",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -115,7 +150,12 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (&a, &b) {
             (MettaValue::Bool(x), MettaValue::Bool(y)) => MettaValue::Bool(*x ^ *y),
-            _ => return Err(VmError::TypeError { expected: "Bool", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Bool",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -135,7 +175,12 @@ impl BytecodeVM {
         let value = self.pop()?;
         let expected = match &type_val {
             MettaValue::Atom(s) => s.as_str(),
-            _ => return Err(VmError::TypeError { expected: "type symbol", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "type symbol",
+                    got: "other",
+                })
+            }
         };
         // Type variables match anything (consistent with tree-visitor)
         let matches = if expected.starts_with('$') {
@@ -157,12 +202,17 @@ impl BytecodeVM {
         let value = self.peek()?;
         let expected = match &type_val {
             MettaValue::Atom(s) => s.as_str(),
-            _ => return Err(VmError::TypeError { expected: "type symbol", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "type symbol",
+                    got: "other",
+                })
+            }
         };
         if value.type_name() != expected {
             return Err(VmError::TypeError {
                 expected: "matching type",
-                got: value.type_name()
+                got: value.type_name(),
             });
         }
         Ok(())

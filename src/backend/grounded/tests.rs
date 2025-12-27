@@ -54,7 +54,10 @@ fn test_logical_and_short_circuit() {
     let env = Environment::new();
 
     // false AND <anything> should return false without evaluating second arg
-    let args = vec![MettaValue::Bool(false), MettaValue::Atom("error".to_string())];
+    let args = vec![
+        MettaValue::Bool(false),
+        MettaValue::Atom("error".to_string()),
+    ];
     let result = and.execute_raw(&args, &env, &mock_eval).unwrap();
 
     assert_eq!(result.len(), 1);

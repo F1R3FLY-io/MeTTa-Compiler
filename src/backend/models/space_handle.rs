@@ -487,10 +487,9 @@ impl SpaceHandle {
                         _ => false,
                     }
             }
-            (
-                SpaceBacking::Module { mod_id: a, .. },
-                SpaceBacking::Module { mod_id: b, .. },
-            ) => a == b,
+            (SpaceBacking::Module { mod_id: a, .. }, SpaceBacking::Module { mod_id: b, .. }) => {
+                a == b
+            }
             _ => false,
         }
     }

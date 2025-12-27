@@ -284,10 +284,7 @@ mod tests {
     fn test_repr_bool() {
         let env = Environment::new();
 
-        let items = vec![
-            MettaValue::Atom("repr".to_string()),
-            MettaValue::Bool(true),
-        ];
+        let items = vec![MettaValue::Atom("repr".to_string()), MettaValue::Bool(true)];
         let (results, _) = eval_repr(items, env);
 
         assert_eq!(results.len(), 1);

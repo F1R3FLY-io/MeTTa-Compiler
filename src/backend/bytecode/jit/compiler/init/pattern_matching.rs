@@ -32,20 +32,39 @@ pub trait PatternMatchingInit {
     fn register_pattern_matching_symbols(builder: &mut JITBuilder);
 
     /// Declare pattern matching functions and return their FuncIds
-    fn declare_pattern_matching_funcs<M: Module>(module: &mut M) -> JitResult<PatternMatchingFuncIds>;
+    fn declare_pattern_matching_funcs<M: Module>(
+        module: &mut M,
+    ) -> JitResult<PatternMatchingFuncIds>;
 }
 
 impl<T> PatternMatchingInit for T {
     fn register_pattern_matching_symbols(builder: &mut JITBuilder) {
-        builder.symbol("jit_runtime_pattern_match", runtime::jit_runtime_pattern_match as *const u8);
-        builder.symbol("jit_runtime_pattern_match_bind", runtime::jit_runtime_pattern_match_bind as *const u8);
-        builder.symbol("jit_runtime_match_head", runtime::jit_runtime_match_head as *const u8);
-        builder.symbol("jit_runtime_match_arity", runtime::jit_runtime_match_arity as *const u8);
+        builder.symbol(
+            "jit_runtime_pattern_match",
+            runtime::jit_runtime_pattern_match as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_pattern_match_bind",
+            runtime::jit_runtime_pattern_match_bind as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_match_head",
+            runtime::jit_runtime_match_head as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_match_arity",
+            runtime::jit_runtime_match_arity as *const u8,
+        );
         builder.symbol("jit_runtime_unify", runtime::jit_runtime_unify as *const u8);
-        builder.symbol("jit_runtime_unify_bind", runtime::jit_runtime_unify_bind as *const u8);
+        builder.symbol(
+            "jit_runtime_unify_bind",
+            runtime::jit_runtime_unify_bind as *const u8,
+        );
     }
 
-    fn declare_pattern_matching_funcs<M: Module>(module: &mut M) -> JitResult<PatternMatchingFuncIds> {
+    fn declare_pattern_matching_funcs<M: Module>(
+        module: &mut M,
+    ) -> JitResult<PatternMatchingFuncIds> {
         use crate::backend::bytecode::jit::types::JitError;
 
         // pattern_match: fn(ctx, value, pattern, ip) -> bool
@@ -57,13 +76,31 @@ impl<T> PatternMatchingInit for T {
         pattern_match_sig.returns.push(AbiParam::new(types::I64)); // bool
 
         let pattern_match_func_id = module
-            .declare_function("jit_runtime_pattern_match", Linkage::Import, &pattern_match_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_pattern_match: {}", e)))?;
+            .declare_function(
+                "jit_runtime_pattern_match",
+                Linkage::Import,
+                &pattern_match_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_pattern_match: {}",
+                    e
+                ))
+            })?;
 
         // pattern_match_bind: fn(ctx, value, pattern, ip) -> bool
         let pattern_match_bind_func_id = module
-            .declare_function("jit_runtime_pattern_match_bind", Linkage::Import, &pattern_match_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_pattern_match_bind: {}", e)))?;
+            .declare_function(
+                "jit_runtime_pattern_match_bind",
+                Linkage::Import,
+                &pattern_match_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_pattern_match_bind: {}",
+                    e
+                ))
+            })?;
 
         // match_head: fn(ctx, value, head_idx, ip) -> bool
         let mut match_head_sig = module.make_signature();
@@ -75,7 +112,12 @@ impl<T> PatternMatchingInit for T {
 
         let match_head_func_id = module
             .declare_function("jit_runtime_match_head", Linkage::Import, &match_head_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_match_head: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_match_head: {}",
+                    e
+                ))
+            })?;
 
         // match_arity: fn(ctx, value, arity, ip) -> bool
         let mut match_arity_sig = module.make_signature();
@@ -87,7 +129,12 @@ impl<T> PatternMatchingInit for T {
 
         let match_arity_func_id = module
             .declare_function("jit_runtime_match_arity", Linkage::Import, &match_arity_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_match_arity: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_match_arity: {}",
+                    e
+                ))
+            })?;
 
         // unify: fn(ctx, a, b, ip) -> bool
         let mut unify_sig = module.make_signature();
@@ -99,12 +146,19 @@ impl<T> PatternMatchingInit for T {
 
         let unify_func_id = module
             .declare_function("jit_runtime_unify", Linkage::Import, &unify_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_unify: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_unify: {}", e))
+            })?;
 
         // unify_bind: fn(ctx, a, b, ip) -> bool
         let unify_bind_func_id = module
             .declare_function("jit_runtime_unify_bind", Linkage::Import, &unify_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_unify_bind: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_unify_bind: {}",
+                    e
+                ))
+            })?;
 
         Ok(PatternMatchingFuncIds {
             pattern_match_func_id,

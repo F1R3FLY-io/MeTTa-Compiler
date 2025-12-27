@@ -8,15 +8,15 @@
 //!
 //! Also includes the grounded function fast path optimization.
 
-use std::sync::Arc;
+use super::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, JitAlternative,
-    TAG_HEAP, TAG_NIL, PAYLOAD_MASK, MAX_ALTERNATIVES_INLINE,
+    JitAlternative, JitBailoutReason, JitContext, JitValue, MAX_ALTERNATIVES_INLINE, PAYLOAD_MASK,
+    TAG_HEAP, TAG_NIL,
 };
-use crate::backend::models::MettaValue;
 use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::bytecode::vm::BytecodeVM;
-use super::metta_to_jit;
+use crate::backend::models::MettaValue;
+use std::sync::Arc;
 
 // =============================================================================
 // Phase 3: Call/TailCall Support

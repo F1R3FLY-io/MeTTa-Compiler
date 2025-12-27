@@ -77,24 +77,22 @@ pub(super) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
             }
         }
         // Old format: (match & self pattern template) - 4 args (backward compatibility)
-        4 => {
-            match (&args[0], &args[1]) {
-                (MettaValue::Atom(amp), MettaValue::Atom(name)) if amp == "&" => {
-                    (name.clone(), &args[2], &args[3])
-                }
-                _ => {
-                    let err = MettaValue::Error(
-                        format!(
-                            "match requires (& space) or (&space), got: {} {}",
-                            super::friendly_value_repr(&args[0]),
-                            super::friendly_value_repr(&args[1])
-                        ),
-                        Arc::new(MettaValue::SExpr(args.to_vec())),
-                    );
-                    return (vec![err], env);
-                }
+        4 => match (&args[0], &args[1]) {
+            (MettaValue::Atom(amp), MettaValue::Atom(name)) if amp == "&" => {
+                (name.clone(), &args[2], &args[3])
             }
-        }
+            _ => {
+                let err = MettaValue::Error(
+                    format!(
+                        "match requires (& space) or (&space), got: {} {}",
+                        super::friendly_value_repr(&args[0]),
+                        super::friendly_value_repr(&args[1])
+                    ),
+                    Arc::new(MettaValue::SExpr(args.to_vec())),
+                );
+                return (vec![err], env);
+            }
+        },
         _ => {
             let got = args.len();
             debug!(

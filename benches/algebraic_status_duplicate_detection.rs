@@ -44,13 +44,13 @@ fn create_test_facts(n: usize) -> Vec<MettaValue> {
 fn create_test_rules(n: usize) -> Vec<Rule> {
     let mut rules = Vec::new();
     for i in 0..n {
-        rules.push(Rule {
-            lhs: MettaValue::SExpr(vec![
+        rules.push(Rule::new(
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("pattern".to_string()),
                 MettaValue::Long(i as i64),
             ]),
-            rhs: MettaValue::Atom(format!("result-{}", i)),
-        });
+            MettaValue::Atom(format!("result-{}", i)),
+        ));
     }
     rules
 }

@@ -26,7 +26,7 @@ impl HeadArityBloomFilter {
     /// Uses 10 bits per entry for ~1% false positive rate.
     pub fn new(expected_entries: usize) -> Self {
         let num_bits = (expected_entries * 10).max(1024);
-        let num_words = (num_bits + 63) / 64;
+        let num_words = num_bits.div_ceil(64);
         Self {
             bits: vec![0; num_words],
             num_bits,

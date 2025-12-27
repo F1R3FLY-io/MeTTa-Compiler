@@ -17,10 +17,10 @@ use std::sync::Arc as StdArc;
 
 /// Create a test rule for benchmarking
 fn make_test_rule(pattern: &str, body: &str) -> Rule {
-    Rule {
-        lhs: MettaValue::Atom(pattern.to_string()),
-        rhs: MettaValue::Atom(body.to_string()),
-    }
+    Rule::new(
+        MettaValue::Atom(pattern.to_string()),
+        MettaValue::Atom(body.to_string()),
+    )
 }
 
 /// Populate environment with n rules

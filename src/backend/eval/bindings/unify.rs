@@ -126,13 +126,13 @@ pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
                             if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
                                 eprintln!("[DEBUG unify] MATCH (module): atom={:?}, bindings={:?}", matched_atom, bindings);
                             }
-                            let instantiated = apply_bindings(success_body, &bindings);
+                            let instantiated = apply_bindings(success_body, &bindings).into_owned();
                             let (body_results, body_env) = eval(instantiated, final_env.clone());
                             final_env = body_env;
                             all_results.extend(body_results);
                         } else if let Some(bindings) = pattern_match(&matched_atom, &pattern) {
                             // Try reverse direction
-                            let instantiated = apply_bindings(success_body, &bindings);
+                            let instantiated = apply_bindings(success_body, &bindings).into_owned();
                             let (body_results, body_env) = eval(instantiated, final_env.clone());
                             final_env = body_env;
                             all_results.extend(body_results);
@@ -157,7 +157,7 @@ pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
                         eprintln!("[DEBUG unify] MATCH: atom={:?}, bindings={:?}", atom, bindings);
                     }
                     // Apply bindings and evaluate success body
-                    let instantiated = apply_bindings(success_body, &bindings);
+                    let instantiated = apply_bindings(success_body, &bindings).into_owned();
                     let (body_results, body_env) = eval(instantiated, final_env.clone());
                     final_env = body_env;
                     all_results.extend(body_results);
@@ -167,7 +167,7 @@ pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
                     if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
                         eprintln!("[DEBUG unify] MATCH (reverse): atom={:?}, bindings={:?}", atom, bindings);
                     }
-                    let instantiated = apply_bindings(success_body, &bindings);
+                    let instantiated = apply_bindings(success_body, &bindings).into_owned();
                     let (body_results, body_env) = eval(instantiated, final_env.clone());
                     final_env = body_env;
                     all_results.extend(body_results);
@@ -202,13 +202,13 @@ pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
                 // First try pattern_match in one direction
                 if let Some(bindings) = pattern_match(&val1, &val2) {
                     // Apply bindings and evaluate success body
-                    let instantiated = apply_bindings(success_body, &bindings);
+                    let instantiated = apply_bindings(success_body, &bindings).into_owned();
                     let (body_results, body_env) = eval(instantiated, env2.clone());
                     final_env = body_env;
                     all_results.extend(body_results);
                 } else if let Some(bindings) = pattern_match(&val2, &val1) {
                     // Try the other direction
-                    let instantiated = apply_bindings(success_body, &bindings);
+                    let instantiated = apply_bindings(success_body, &bindings).into_owned();
                     let (body_results, body_env) = eval(instantiated, env2.clone());
                     final_env = body_env;
                     all_results.extend(body_results);
@@ -346,7 +346,7 @@ pub(crate) fn eval_atom_subst(items: Vec<MettaValue>, env: Environment) -> EvalR
 
     // Use pattern matching semantics: bind value to var, apply to template
     if let Some(bindings) = pattern_match(var, value) {
-        let instantiated = apply_bindings(template, &bindings);
+        let instantiated = apply_bindings(template, &bindings).into_owned();
         (vec![instantiated], env)
     } else {
         // Pattern didn't match - return empty (nondeterministic failure)

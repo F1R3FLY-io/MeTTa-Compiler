@@ -191,7 +191,7 @@ pub(crate) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
         if let Some(bindings) = pattern_match(pattern, &value) {
             // Apply bindings to the body and evaluate it
             // Propagate environment through iterations to preserve state changes
-            let instantiated_body = apply_bindings(body, &bindings);
+            let instantiated_body = apply_bindings(body, &bindings).into_owned();
             let (body_results, body_env) = eval(instantiated_body, current_env);
             current_env = body_env;
             all_results.extend(body_results);

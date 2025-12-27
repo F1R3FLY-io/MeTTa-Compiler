@@ -216,7 +216,7 @@ pub(crate) fn eval_guard(items: Vec<MettaValue>, env: Environment) -> EvalResult
             let err = MettaValue::Error(
                 format!(
                     "guard: condition must evaluate to Bool, got {}",
-                    other.friendly_type_name()
+                    super::super::friendly_type_name(other)
                 ),
                 Arc::new(other.clone()),
             );

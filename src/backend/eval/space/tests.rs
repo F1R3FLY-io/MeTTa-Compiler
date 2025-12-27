@@ -376,8 +376,8 @@ mod tests {
         let env = Environment::new();
 
         // Test match with insufficient arguments
-        // (match & self) has 2 args after "match": ["&", "self"]
-        // This is missing the pattern and template arguments
+        // Note: `& self` is preprocessed into `&self`, so (match & self) becomes (match &self)
+        // which has only 1 argument after "match"
         let match_insufficient = MettaValue::SExpr(vec![
             MettaValue::Atom("match".to_string()),
             MettaValue::Atom("&".to_string()),
@@ -393,8 +393,8 @@ mod tests {
                     "Expected '3 or 4 arguments' in: {}",
                     msg
                 );
-                // We have 2 args: ["&", "self"]
-                assert!(msg.contains("got 2"), "Expected 'got 2' in: {}", msg);
+                // After preprocessing `& self` -> `&self`, we have 1 arg
+                assert!(msg.contains("got 1"), "Expected 'got 1' in: {}", msg);
                 assert!(msg.contains("Usage:"), "Expected 'Usage:' in: {}", msg);
             }
             _ => panic!("Expected error for insufficient arguments"),

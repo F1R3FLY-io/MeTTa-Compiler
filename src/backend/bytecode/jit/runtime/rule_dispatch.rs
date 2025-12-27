@@ -310,7 +310,7 @@ pub unsafe extern "C" fn jit_runtime_apply_subst(
     let result = apply_bindings(&expr_metta, &bindings);
 
     // Convert result back to JitValue
-    metta_to_jit(&result).to_bits()
+    metta_to_jit(&result.into_owned()).to_bits()
 }
 
 /// Collect all bindings from the JIT context's binding frames

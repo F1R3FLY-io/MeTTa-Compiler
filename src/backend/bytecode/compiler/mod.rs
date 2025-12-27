@@ -120,26 +120,22 @@ impl Compiler {
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
 
-            // State cell reference
-            MettaValue::State(id) => {
-                let idx = self.builder.add_constant(MettaValue::State(*id));
+            // Space and State are runtime values, compile as constants
+            MettaValue::Space(handle) => {
+                let idx = self.builder.add_constant(MettaValue::Space(handle.clone()));
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
-
-            // Memo handle
+            MettaValue::State(handle) => {
+                let idx = self.builder.add_constant(MettaValue::State(handle.clone()));
+                self.builder.emit_u16(Opcode::PushConstant, idx);
+            }
             MettaValue::Memo(handle) => {
                 let idx = self.builder.add_constant(MettaValue::Memo(handle.clone()));
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
-
-            // Empty - used in nondeterministic evaluation
             MettaValue::Empty => {
-                self.builder.emit(Opcode::PushNil); // Empty is similar to Nil
-            }
-
-            // Space handle
-            MettaValue::Space(handle) => {
-                let idx = self.builder.add_constant(MettaValue::Space(handle.clone()));
+                // Empty sentinel - push as constant (should be filtered before this, but handle gracefully)
+                let idx = self.builder.add_constant(MettaValue::Empty);
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
         }

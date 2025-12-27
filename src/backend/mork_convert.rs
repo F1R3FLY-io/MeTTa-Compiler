@@ -60,7 +60,9 @@ pub fn metta_to_mork_bytes(
         ?value, "Converting MettaValue to MORK bytes"
     );
 
-    let mut buffer = vec![0u8; 4096];
+    // 256KB buffer for complex expressions (mmverify can have large nested structures)
+    const BUFFER_SIZE: usize = 262144;
+    let mut buffer = vec![0u8; BUFFER_SIZE];
     let expr = Expr {
         ptr: buffer.as_mut_ptr(),
     };
@@ -73,6 +75,14 @@ pub fn metta_to_mork_bytes(
         );
         e
     })?;
+
+    // Safety check: ensure we didn't overflow the buffer
+    if ez.loc > BUFFER_SIZE {
+        return Err(format!(
+            "Expression too large for MORK conversion: {} bytes (max {})",
+            ez.loc, BUFFER_SIZE
+        ));
+    }
 
     Ok(buffer[..ez.loc].to_vec())
 }
@@ -88,9 +98,11 @@ fn write_metta_value(
         MettaValue::Atom(name) => {
             // Check if it's a variable
             // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            if (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
-                && name != "&"
-            {
+            // EXCEPT: "&self", "&kb", "&stack" are space references, not variables
+            if name == "&" || name == "&self" || name == "&kb" || name == "&stack" {
+                // Space references and standalone & are NOT variables - write as symbols
+                write_symbol(name.as_bytes(), space, ez)?;
+            } else if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
                 // Variable - use De Bruijn encoding
                 let var_id = &name[1..]; // Remove prefix
                 match ctx.get_or_create_var(var_id)? {
@@ -110,7 +122,7 @@ fn write_metta_value(
                 ez.write_new_var();
                 ez.loc += 1;
             } else {
-                // Regular atom - write as symbol (including standalone "&")
+                // Regular atom - write as symbol
                 write_symbol(name.as_bytes(), space, ez)?;
             }
         }
@@ -143,6 +155,13 @@ fn write_metta_value(
         }
 
         MettaValue::SExpr(items) => {
+            // MORK arity is limited to 6 bits (0-63)
+            if items.len() >= 64 {
+                return Err(format!(
+                    "Expression has too many children ({}) - MORK arity limit is 63",
+                    items.len()
+                ));
+            }
             // Write arity tag
             let arity = items.len() as u8;
             ez.write_arity(arity);
@@ -169,9 +188,17 @@ fn write_metta_value(
         }
 
         MettaValue::Conjunction(goals) => {
-            // Conjunctions are written as (,)with comma as first symbol and goals as children
-            let arity = (goals.len() + 1) as u8; // +1 for the comma symbol
-            ez.write_arity(arity);
+            // MORK arity is limited to 6 bits (0-63)
+            // +1 for the comma symbol
+            let total_arity = goals.len() + 1;
+            if total_arity >= 64 {
+                return Err(format!(
+                    "Conjunction has too many goals ({}) - MORK arity limit is 63",
+                    goals.len()
+                ));
+            }
+            // Conjunctions are written as (, goal1 goal2 ...) with comma as first symbol
+            ez.write_arity(total_arity as u8);
             ez.loc += 1;
 
             // Write the comma symbol as first child
@@ -183,41 +210,42 @@ fn write_metta_value(
             }
         }
 
-        MettaValue::Unit => {
-            // Unit is represented as empty list (similar to Nil)
-            ez.write_arity(0);
-            ez.loc += 1;
-        }
-
-        MettaValue::State(id) => {
-            // State cells: (state <id>)
-            ez.write_arity(2);
-            ez.loc += 1;
-            write_symbol(b"state", space, ez)?;
-            write_symbol(id.to_string().as_bytes(), space, ez)?;
-        }
-
-        MettaValue::Memo(handle) => {
-            // Memo handles: (memo <name>)
-            ez.write_arity(2);
-            ez.loc += 1;
-            write_symbol(b"memo", space, ez)?;
-            write_symbol(handle.name.as_bytes(), space, ez)?;
-        }
-
-        MettaValue::Empty => {
-            // Empty is represented similarly to Nil
-            ez.write_arity(0);
-            ez.loc += 1;
-        }
-
+        // Space references are written as (Space id name)
         MettaValue::Space(handle) => {
-            // Space handles: (Space <id> <name>)
             ez.write_arity(3);
             ez.loc += 1;
             write_symbol(b"Space", space, ez)?;
             write_symbol(handle.id.to_string().as_bytes(), space, ez)?;
             write_symbol(format!("\"{}\"", handle.name).as_bytes(), space, ez)?;
+        }
+
+        // State references are written as (State id)
+        MettaValue::State(id) => {
+            ez.write_arity(2);
+            ez.loc += 1;
+            write_symbol(b"State", space, ez)?;
+            write_symbol(id.to_string().as_bytes(), space, ez)?;
+        }
+
+        // Unit is written as ()
+        MettaValue::Unit => {
+            ez.write_arity(0);
+            ez.loc += 1;
+        }
+
+        // Memo tables are runtime-only and cannot be stored in MORK
+        MettaValue::Memo(handle) => {
+            return Err(format!(
+                "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
+                handle.name, handle.id
+            ));
+        }
+
+        // Empty sentinel is runtime-only and should be filtered out before MORK conversion
+        MettaValue::Empty => {
+            return Err(
+                "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
+            );
         }
     }
 

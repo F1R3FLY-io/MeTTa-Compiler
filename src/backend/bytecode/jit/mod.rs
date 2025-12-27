@@ -20,21 +20,19 @@
 //!
 //! - [`types`]: JitValue (NaN-boxed), JitContext, JitResult
 //! - [`profile`]: Hotness tracking and compilation triggering
-//! - [`codegen`]: Cranelift IR generation helpers
 //! - [`compiler`]: Bytecode-to-Cranelift IR translation
-//! - [`handlers`]: Opcode-specific IR generation handlers
-//! - [`tiered`]: Tiered compilation strategy and JIT cache management
+//! - [`codegen`]: Cranelift IR generation helpers
 //! - [`runtime`]: Runtime support functions callable from JIT code
-//! - [`hybrid`]: Hybrid executor combining JIT with interpreter fallback
+//! - [`tiered`]: Tiered compilation strategy and JIT cache management
 
 pub mod types;
 pub mod profile;
-pub mod codegen;
 pub mod compiler;
-pub mod handlers;
+pub mod codegen;
 pub mod runtime;
 pub mod tiered;
 pub mod hybrid;
+pub mod handlers;
 
 // Re-export main types
 pub use types::{
@@ -42,8 +40,6 @@ pub use types::{
     JitChoicePoint, JitAlternative, JitAlternativeTag,
     // Binding/Environment support (Phase A)
     JitBindingEntry, JitBindingFrame,
-    // Lambda closure support
-    JitClosure,
     // Stage 2 JIT signal constants
     JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, JIT_SIGNAL_FAIL, JIT_SIGNAL_ERROR, JIT_SIGNAL_HALT,
     JIT_SIGNAL_BAILOUT,
@@ -52,10 +48,11 @@ pub use types::{
     // Optimization 5.3: Variable index cache
     VAR_INDEX_CACHE_SIZE,
 };
+// Space Ops Phase 4: Binding forking for nondeterminism
+pub use runtime::JitSavedBindings;
 pub use profile::{JitProfile, JitState, HOT_THRESHOLD};
-pub use codegen::CodegenContext;
 pub use compiler::JitCompiler;
-pub use tiered::{Tier, JitCache, TieredCompiler, TieredStats, ChunkId, CacheEntry, STAGE2_THRESHOLD};
+pub use tiered::{Tier, TieredCompiler, TieredStats, JitCache, ChunkId, CacheEntry, STAGE2_THRESHOLD};
 pub use hybrid::{HybridExecutor, HybridConfig, HybridStats};
 
 /// JIT compilation is always enabled with tiered compilation

@@ -13,6 +13,15 @@ pub struct SyntaxError {
     pub line: usize,
     pub column: usize,
     pub text: String,
+    pub file_path: Option<String>,
+}
+
+impl SyntaxError {
+    /// Set the file path for this error, consuming and returning self for chaining
+    pub fn with_file_path(mut self, path: impl Into<String>) -> Self {
+        self.file_path = Some(path.into());
+        self
+    }
 }
 
 /// Categorized syntax error kinds for pattern matching
@@ -38,11 +47,11 @@ pub enum SyntaxErrorKind {
 
 impl std::fmt::Display for SyntaxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Syntax error at line {}, column {}: ",
-            self.line, self.column
-        )?;
+        // Format: [file:]line:column: Syntax error: message
+        if let Some(ref path) = self.file_path {
+            write!(f, "{}:", path)?;
+        }
+        write!(f, "{}:{}: Syntax error: ", self.line, self.column)?;
         match &self.kind {
             SyntaxErrorKind::UnexpectedToken => write!(f, "unexpected '{}'", self.text),
             SyntaxErrorKind::UnclosedDelimiter(c) => write!(f, "unclosed '{}'", c),
@@ -121,6 +130,7 @@ impl TreeSitterMettaParser {
             line: 1,
             column: 1,
             text: "Failed to parse source".into(),
+            file_path: None,
         })?;
 
         let root = tree.root_node();
@@ -136,6 +146,7 @@ impl TreeSitterMettaParser {
                 line: 1,
                 column: 1,
                 text: e,
+                file_path: None,
             })
     }
 
@@ -271,7 +282,7 @@ impl TreeSitterMettaParser {
             // Special type symbols: %Undefined%, %Irreducible%, etc.
             "special_type_symbol" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
-            // Space references: &self, &kb, etc.
+            // Space references: &self, &kb, etc. (HE-compatible single token)
             "space_reference" => Ok(vec![SExpr::Atom(text, Some(span))]),
 
             // All operator types (already decomposed by grammar)
@@ -332,6 +343,7 @@ impl TreeSitterMettaParser {
                 line: start.row + 1,
                 column: start.column + 1,
                 text: error_text,
+                file_path: None,
             }
         } else {
             SyntaxError {
@@ -339,6 +351,7 @@ impl TreeSitterMettaParser {
                 line: 1,
                 column: 1,
                 text: String::new(),
+                file_path: None,
             }
         }
     }
@@ -720,12 +733,22 @@ mod tests {
         let result = strip_spans_vec(&parser.parse("-2.5").unwrap());
         assert_eq!(result, vec![SExpr::Float(-2.5, None)]);
 
-        // Scientific notation
+        // Scientific notation with decimal
         let result = strip_spans_vec(&parser.parse("1.0e10").unwrap());
         assert_eq!(result, vec![SExpr::Float(1.0e10, None)]);
 
         let result = strip_spans_vec(&parser.parse("-1.5e-3").unwrap());
         assert_eq!(result, vec![SExpr::Float(-1.5e-3, None)]);
+
+        // Scientific notation without decimal (MeTTa HE compatible)
+        let result = strip_spans_vec(&parser.parse("1e10").unwrap());
+        assert_eq!(result, vec![SExpr::Float(1e10, None)]);
+
+        let result = strip_spans_vec(&parser.parse("-2E+5").unwrap());
+        assert_eq!(result, vec![SExpr::Float(-2e5, None)]);
+
+        let result = strip_spans_vec(&parser.parse("5e-3").unwrap());
+        assert_eq!(result, vec![SExpr::Float(5e-3, None)]);
 
         // In expressions
         let result = strip_spans_vec(&parser.parse("(+ 3.15 2.71)").unwrap());
@@ -1014,6 +1037,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_parse_comment_at_file_start() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // No leading whitespace - comment starts at byte 0
+        let result = strip_spans_vec(&parser.parse("; comment\n(+ 1 2)").unwrap());
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            SExpr::List(
+                vec![
+                    SExpr::Atom("+".to_string(), None),
+                    SExpr::Integer(1, None),
+                    SExpr::Integer(2, None),
+                ],
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_only_comments() {
+        let mut parser = TreeSitterMettaParser::new().unwrap();
+
+        // File with only comments - should produce empty result
+        let result = parser.parse("; This is just a comment\n; Another comment").unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
     // ========================================================================
     // Structured SyntaxError Tests (from main)
     // ========================================================================
@@ -1116,10 +1169,11 @@ mod tests {
             line: 1,
             column: 7,
             text: String::new(),
+            file_path: None,
         };
         let msg = error.to_string();
-        assert!(msg.contains("line 1"));
-        assert!(msg.contains("column 7"));
+        // New format: 1:7: Syntax error: unclosed '('
+        assert!(msg.contains("1:7:"));
         assert!(msg.contains("unclosed '('"));
     }
 
@@ -1133,6 +1187,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: "foo".to_string(),
+                    file_path: None,
                 },
                 "unexpected 'foo'",
             ),
@@ -1142,6 +1197,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: String::new(),
+                    file_path: None,
                 },
                 "unclosed '('",
             ),
@@ -1151,6 +1207,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: String::new(),
+                    file_path: None,
                 },
                 "unexpected closing ')'",
             ),
@@ -1160,6 +1217,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: String::new(),
+                    file_path: None,
                 },
                 "unclosed string",
             ),
@@ -1169,6 +1227,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: String::new(),
+                    file_path: None,
                 },
                 "invalid escape sequence 'z'",
             ),
@@ -1178,6 +1237,7 @@ mod tests {
                     line: 0,
                     column: 0,
                     text: String::new(),
+                    file_path: None,
                 },
                 "parser initialization failed",
             ),
@@ -1187,6 +1247,7 @@ mod tests {
                     line: 1,
                     column: 1,
                     text: String::new(),
+                    file_path: None,
                 },
                 "invalid syntax",
             ),

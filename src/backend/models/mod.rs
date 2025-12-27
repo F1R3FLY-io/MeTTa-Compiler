@@ -7,7 +7,7 @@ pub mod space_handle;
 pub use bindings::SmartBindings as Bindings;
 pub use memo_handle::MemoHandle;
 pub use metta_state::MettaState;
-pub use metta_value::MettaValue;
+pub use metta_value::{ArcValue, MettaValue};
 pub use space_handle::SpaceHandle;
 
 use crate::backend::environment::Environment;
@@ -17,7 +17,8 @@ use std::sync::Arc;
 pub type EvalResult = (Vec<MettaValue>, Environment);
 
 /// Represents a pattern matching rule: (= lhs rhs)
-/// Uses Arc for efficient sharing and COW semantics
+/// Uses Arc for O(1) cloning - rules are frequently matched and their
+/// RHS is cloned for substitution.
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub lhs: Arc<MettaValue>,

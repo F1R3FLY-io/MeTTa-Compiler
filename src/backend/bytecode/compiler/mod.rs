@@ -20,9 +20,9 @@ mod tests;
 
 use std::sync::Arc;
 
-use crate::backend::models::MettaValue;
 use super::chunk::{BytecodeChunk, ChunkBuilder};
 use super::opcodes::Opcode;
+use crate::backend::models::MettaValue;
 
 pub use context::{CompileContext, Upvalue};
 pub use error::{CompileError, CompileResult};
@@ -116,19 +116,19 @@ impl Compiler {
 
             // Error
             MettaValue::Error(msg, details) => {
-                let idx = self.builder.add_constant(MettaValue::Error(msg.clone(), details.clone()));
+                let idx = self
+                    .builder
+                    .add_constant(MettaValue::Error(msg.clone(), details.clone()));
                 self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-
-            // Note: Space, State, Memo, Empty variants are handled when those MettaValue
-            // variants are added. For now, they don't exist in this branch.
+            } // Note: Space, State, Memo, Empty variants are handled when those MettaValue
+              // variants are added. For now, they don't exist in this branch.
         }
         Ok(())
     }
 
     /// Compile a long integer
     fn compile_long(&mut self, n: i64) -> CompileResult<()> {
-        if n >= -128 && n <= 127 {
+        if (-128..=127).contains(&n) {
             self.builder.emit_byte(Opcode::PushLongSmall, n as u8);
         } else {
             let idx = self.builder.add_constant(MettaValue::Long(n));
@@ -165,11 +165,15 @@ impl Compiler {
             }
 
             // Variable not bound - push as symbol to be resolved at runtime
-            let idx = self.builder.add_constant(MettaValue::Atom(name.to_string()));
+            let idx = self
+                .builder
+                .add_constant(MettaValue::Atom(name.to_string()));
             self.builder.emit_u16(Opcode::PushVariable, idx);
         } else {
             // Regular symbol
-            let idx = self.builder.add_constant(MettaValue::Atom(name.to_string()));
+            let idx = self
+                .builder
+                .add_constant(MettaValue::Atom(name.to_string()));
             self.builder.emit_u16(Opcode::PushAtom, idx);
         }
         Ok(())
@@ -183,18 +187,16 @@ impl Compiler {
         }
 
         // Check if the head is a known operation
-        if let Some(head) = items.first() {
-            if let MettaValue::Atom(op_name) = head {
-                // Try to compile as built-in operation
-                if let Some(()) = self.try_compile_builtin(op_name, &items[1..])? {
-                    return Ok(());
-                }
+        if let Some(MettaValue::Atom(op_name)) = items.first() {
+            // Try to compile as built-in operation
+            if let Some(()) = self.try_compile_builtin(op_name, &items[1..])? {
+                return Ok(());
+            }
 
-                // Not a builtin - check if it's a potential function call
-                // Function calls are atoms that don't start with $ (variable) or & (grounded ref)
-                if !op_name.starts_with('$') && !op_name.starts_with('&') {
-                    return self.compile_call(op_name, &items[1..]);
-                }
+            // Not a builtin - check if it's a potential function call
+            // Function calls are atoms that don't start with $ (variable) or & (grounded ref)
+            if !op_name.starts_with('$') && !op_name.starts_with('&') {
+                return self.compile_call(op_name, &items[1..]);
             }
         }
 
@@ -230,7 +232,9 @@ impl Compiler {
         self.in_tail_position = saved_tail;
 
         // Add head symbol to constant pool
-        let head_index = self.builder.add_constant(MettaValue::Atom(head.to_string()));
+        let head_index = self
+            .builder
+            .add_constant(MettaValue::Atom(head.to_string()));
 
         // Emit Call or TailCall based on position
         // Note: arity must fit in u8 (255 max)
@@ -284,7 +288,9 @@ impl Compiler {
                     return self.compile(&folded).map(Some);
                 }
                 // Special case: x * 0 = 0, 0 * x = 0 (even if x is not constant)
-                if matches!(&args[0], MettaValue::Long(0)) || matches!(&args[1], MettaValue::Long(0)) {
+                if matches!(&args[0], MettaValue::Long(0))
+                    || matches!(&args[1], MettaValue::Long(0))
+                {
                     self.builder.emit_byte(Opcode::PushLongSmall, 0);
                     return Ok(Some(()));
                 }
@@ -363,9 +369,7 @@ impl Compiler {
             }
             "floor-div" => {
                 self.check_arity("floor-div", args.len(), 2)?;
-                if let Some(folded) =
-                    self.try_fold_binary_arith("floor-div", &args[0], &args[1])
-                {
+                if let Some(folded) = self.try_fold_binary_arith("floor-div", &args[0], &args[1]) {
                     return self.compile(&folded).map(Some);
                 }
                 self.compile(&args[0])?;
@@ -482,14 +486,12 @@ impl Compiler {
                 // Check for constant condition (with recursive evaluation)
                 if args.len() >= 3 {
                     // Try to evaluate the condition to a constant
-                    if let Some(cond_val) = self.try_eval_constant(&args[0]) {
-                        if let MettaValue::Bool(cond) = cond_val {
-                            // Compile only the appropriate branch (recursively evaluate)
-                            if cond {
-                                return self.compile(&args[1]).map(Some);
-                            } else {
-                                return self.compile(&args[2]).map(Some);
-                            }
+                    if let Some(MettaValue::Bool(cond)) = self.try_eval_constant(&args[0]) {
+                        // Compile only the appropriate branch (recursively evaluate)
+                        if cond {
+                            return self.compile(&args[1]).map(Some);
+                        } else {
+                            return self.compile(&args[2]).map(Some);
                         }
                     }
                 }
@@ -570,9 +572,9 @@ impl Compiler {
             }
             "cons-atom" => {
                 self.check_arity("cons-atom", args.len(), 2)?;
-                self.compile(&args[0])?;  // head
-                self.compile(&args[1])?;  // tail
-                // Prepend head to tail S-expression (matches tree-visitor semantics)
+                self.compile(&args[0])?; // head
+                self.compile(&args[1])?; // tail
+                                         // Prepend head to tail S-expression (matches tree-visitor semantics)
                 self.builder.emit(Opcode::ConsAtom);
                 Ok(Some(()))
             }
@@ -746,7 +748,9 @@ impl Compiler {
                 self.check_arity("println!", args.len(), 1)?;
                 self.compile(&args[0])?;
                 // For now, compile as S-expression to be handled by VM
-                let idx = self.builder.add_constant(MettaValue::Atom("println!".to_string()));
+                let idx = self
+                    .builder
+                    .add_constant(MettaValue::Atom("println!".to_string()));
                 self.builder.emit_u16(Opcode::PushAtom, idx);
                 self.builder.emit(Opcode::Swap);
                 self.builder.emit_byte(Opcode::MakeSExpr, 2);
@@ -775,8 +779,8 @@ impl Compiler {
             }
             "log-math" => {
                 self.check_arity("log-math", args.len(), 2)?;
-                self.compile(&args[0])?;  // base
-                self.compile(&args[1])?;  // value
+                self.compile(&args[0])?; // base
+                self.compile(&args[1])?; // value
                 self.builder.emit(Opcode::Log);
                 Ok(Some(()))
             }
@@ -856,8 +860,8 @@ impl Compiler {
             // Expression manipulation operations (PR #63)
             "index-atom" => {
                 self.check_arity("index-atom", args.len(), 2)?;
-                self.compile(&args[0])?;  // expression
-                self.compile(&args[1])?;  // index
+                self.compile(&args[0])?; // expression
+                self.compile(&args[1])?; // index
                 self.builder.emit(Opcode::IndexAtom);
                 Ok(Some(()))
             }
@@ -893,7 +897,13 @@ impl Compiler {
     }
 
     /// Check arity range of an operation
-    pub(crate) fn check_arity_range(&self, op: &str, got: usize, min: usize, max: usize) -> CompileResult<()> {
+    pub(crate) fn check_arity_range(
+        &self,
+        op: &str,
+        got: usize,
+        min: usize,
+        max: usize,
+    ) -> CompileResult<()> {
         if got < min || got > max {
             Err(CompileError::InvalidArityRange {
                 op: op.to_string(),
@@ -916,7 +926,12 @@ impl Compiler {
     }
 
     /// Try to fold a binary arithmetic operation at compile time
-    fn try_fold_binary_arith(&self, op: &str, a: &MettaValue, b: &MettaValue) -> Option<MettaValue> {
+    fn try_fold_binary_arith(
+        &self,
+        op: &str,
+        a: &MettaValue,
+        b: &MettaValue,
+    ) -> Option<MettaValue> {
         folding::try_fold_binary_arith(op, a, b)
     }
 

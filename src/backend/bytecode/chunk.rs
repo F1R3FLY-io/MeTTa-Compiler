@@ -3,12 +3,12 @@
 //! A BytecodeChunk contains compiled bytecode along with its constant pool,
 //! source location mapping, and metadata needed for execution and debugging.
 
-use std::sync::Arc;
 use smallvec::SmallVec;
+use std::sync::Arc;
 
-use crate::backend::models::MettaValue;
 use super::opcodes::Opcode;
 use super::optimizer::PeepholeOptimizer;
+use crate::backend::models::MettaValue;
 
 use super::jit::JitProfile;
 
@@ -146,7 +146,10 @@ impl BytecodeChunk {
     #[inline]
     pub fn read_u16(&self, offset: usize) -> Option<u16> {
         if offset + 1 < self.code.len() {
-            Some(u16::from_be_bytes([self.code[offset], self.code[offset + 1]]))
+            Some(u16::from_be_bytes([
+                self.code[offset],
+                self.code[offset + 1],
+            ]))
         } else {
             None
         }
@@ -262,7 +265,9 @@ impl BytecodeChunk {
 
         let mut offset = 0;
         while offset < self.code.len() {
-            let line = self.get_line(offset).map_or(String::new(), |l| format!("{:4} ", l));
+            let line = self
+                .get_line(offset)
+                .map_or(String::new(), |l| format!("{:4} ", l));
             let (disasm, next_offset) = self.disassemble_instruction(offset);
             output.push_str(&format!("{:04x} {} {}\n", offset, line, disasm));
             offset = next_offset;
@@ -274,7 +279,10 @@ impl BytecodeChunk {
     /// Disassemble a single instruction, returns (string, next_offset)
     pub fn disassemble_instruction(&self, offset: usize) -> (String, usize) {
         let Some(opcode) = self.read_opcode(offset) else {
-            return (format!("??? (0x{:02x})", self.code.get(offset).unwrap_or(&0)), offset + 1);
+            return (
+                format!("??? (0x{:02x})", self.code.get(offset).unwrap_or(&0)),
+                offset + 1,
+            );
         };
 
         // Fork has variable-length encoding, handle it specially
@@ -284,7 +292,9 @@ impl BytecodeChunk {
             let mut pos = offset + 3;
             for _ in 0..count {
                 if let Some(idx) = self.read_u16(pos) {
-                    let const_str = self.constants.get(idx as usize)
+                    let const_str = self
+                        .constants
+                        .get(idx as usize)
                         .map(|c| format!("{:?}", c))
                         .unwrap_or_else(|| "???".to_string());
                     const_indices.push(format!("#{} ({})", idx, const_str));
@@ -294,7 +304,10 @@ impl BytecodeChunk {
                 pos += 2;
             }
             let next_offset = offset + 3 + count * 2;
-            return (format!("fork count={} [{}]", count, const_indices.join(", ")), next_offset);
+            return (
+                format!("fork count={} [{}]", count, const_indices.join(", ")),
+                next_offset,
+            );
         }
 
         let mnemonic = opcode.mnemonic();
@@ -317,14 +330,23 @@ impl BytecodeChunk {
             2 => {
                 let value = self.read_u16(offset + 1).unwrap_or(0);
                 match opcode {
-                    Opcode::Jump | Opcode::JumpIfFalse | Opcode::JumpIfTrue
-                    | Opcode::JumpIfNil | Opcode::JumpIfError => {
+                    Opcode::Jump
+                    | Opcode::JumpIfFalse
+                    | Opcode::JumpIfTrue
+                    | Opcode::JumpIfNil
+                    | Opcode::JumpIfError => {
                         let target = (offset as isize + 3 + (value as i16) as isize) as usize;
                         format!(" -> {:04x}", target)
                     }
-                    Opcode::PushLong | Opcode::PushAtom | Opcode::PushString
-                    | Opcode::PushUri | Opcode::PushConstant | Opcode::PushVariable => {
-                        let const_str = self.constants.get(value as usize)
+                    Opcode::PushLong
+                    | Opcode::PushAtom
+                    | Opcode::PushString
+                    | Opcode::PushUri
+                    | Opcode::PushConstant
+                    | Opcode::PushVariable => {
+                        let const_str = self
+                            .constants
+                            .get(value as usize)
                             .map(|c| format!("{:?}", c))
                             .unwrap_or_else(|| "???".to_string());
                         format!(" #{} ({})", value, const_str)
@@ -336,7 +358,9 @@ impl BytecodeChunk {
                 // Call and TailCall: 2-byte head_index + 1-byte arity
                 let head_index = self.read_u16(offset + 1).unwrap_or(0);
                 let arity = self.code.get(offset + 3).copied().unwrap_or(0);
-                let head_str = self.constants.get(head_index as usize)
+                let head_str = self
+                    .constants
+                    .get(head_index as usize)
                     .map(|c| format!("{:?}", c))
                     .unwrap_or_else(|| "???".to_string());
                 format!(" #{} ({}) arity={}", head_index, head_str, arity)
@@ -588,7 +612,9 @@ impl ChunkBuilder {
     fn emit_line_info(&mut self) {
         let offset = self.code.len();
         // Only add if line changed from previous entry
-        if self.line_info.is_empty() || self.line_info.last().map(|&(_, l)| l) != Some(self.current_line) {
+        if self.line_info.is_empty()
+            || self.line_info.last().map(|&(_, l)| l) != Some(self.current_line)
+        {
             self.line_info.push((offset, self.current_line));
         }
     }
@@ -681,6 +707,7 @@ pub struct JumpLabelShort {
 
 /// Compiled pattern for fast matching
 #[derive(Debug, Clone)]
+#[allow(clippy::type_complexity)]
 pub struct CompiledPattern {
     /// Head symbol if known
     pub head: Option<Arc<str>>,
@@ -828,7 +855,10 @@ mod tests {
         builder.emit_u16(Opcode::Fork, 2);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "Fork should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "Fork should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -837,7 +867,10 @@ mod tests {
         builder.emit(Opcode::Yield);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "Yield should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "Yield should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -846,7 +879,10 @@ mod tests {
         builder.emit(Opcode::Collect);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "Collect should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "Collect should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -855,7 +891,10 @@ mod tests {
         builder.emit_byte(Opcode::CollectN, 5);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "CollectN should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "CollectN should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -865,7 +904,10 @@ mod tests {
         builder.emit(Opcode::EndNondet);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "BeginNondet should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "BeginNondet should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -874,7 +916,10 @@ mod tests {
         builder.emit(Opcode::Cut);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "Cut should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "Cut should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -882,7 +927,10 @@ mod tests {
         let mut builder = ChunkBuilder::new("test_fail");
         builder.emit(Opcode::Fail);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "Fail should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "Fail should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -891,7 +939,10 @@ mod tests {
         builder.emit_byte(Opcode::Amb, 3);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "Amb should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "Amb should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -900,7 +951,10 @@ mod tests {
         builder.emit(Opcode::Guard);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "Guard should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "Guard should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -908,7 +962,10 @@ mod tests {
         let mut builder = ChunkBuilder::new("test_backtrack");
         builder.emit(Opcode::Backtrack);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "Backtrack should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "Backtrack should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -917,7 +974,10 @@ mod tests {
         builder.emit(Opcode::Commit);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(chunk.has_nondeterminism(), "Commit should be detected as nondeterminism");
+        assert!(
+            chunk.has_nondeterminism(),
+            "Commit should be detected as nondeterminism"
+        );
     }
 
     #[test]
@@ -928,7 +988,10 @@ mod tests {
         builder.emit(Opcode::Add);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(!chunk.has_nondeterminism(), "Arithmetic chunk should not have nondeterminism");
+        assert!(
+            !chunk.has_nondeterminism(),
+            "Arithmetic chunk should not have nondeterminism"
+        );
     }
 
     #[test]
@@ -943,7 +1006,10 @@ mod tests {
         builder.patch_jump(end_jump);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(!chunk.has_nondeterminism(), "Control flow chunk should not have nondeterminism");
+        assert!(
+            !chunk.has_nondeterminism(),
+            "Control flow chunk should not have nondeterminism"
+        );
     }
 
     #[test]
@@ -953,7 +1019,10 @@ mod tests {
         builder.emit_u16(Opcode::LoadBinding, 0);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
-        assert!(!chunk.has_nondeterminism(), "Pattern matching without Fork should not have nondeterminism");
+        assert!(
+            !chunk.has_nondeterminism(),
+            "Pattern matching without Fork should not have nondeterminism"
+        );
     }
 
     #[test]
@@ -963,7 +1032,10 @@ mod tests {
         builder.emit(Opcode::Return);
         let chunk = builder.build();
         assert!(chunk.has_nondeterminism());
-        assert!(!chunk.can_jit_compile(), "Fork chunk should not be JIT compilable");
+        assert!(
+            !chunk.can_jit_compile(),
+            "Fork chunk should not be JIT compilable"
+        );
     }
 
     #[test]
@@ -977,6 +1049,9 @@ mod tests {
         assert!(!chunk.has_nondeterminism());
         // Note: can_jit_compile returns false until JitCompiler is available
         // This test will be updated when JitCompiler is introduced
-        assert!(!chunk.can_jit_compile(), "JIT compilation not yet available");
+        assert!(
+            !chunk.can_jit_compile(),
+            "JIT compilation not yet available"
+        );
     }
 }

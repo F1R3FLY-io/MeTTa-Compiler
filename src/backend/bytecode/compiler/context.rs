@@ -91,6 +91,7 @@ impl CompileContext {
     }
 
     /// Declare a local variable, returns its slot index
+    #[allow(clippy::absurd_extreme_comparisons)]
     pub fn declare_local(&mut self, name: String) -> CompileResult<u16> {
         if self.next_local >= u16::MAX {
             return Err(CompileError::TooManyLocals);

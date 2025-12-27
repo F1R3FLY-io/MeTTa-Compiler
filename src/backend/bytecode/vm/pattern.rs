@@ -7,12 +7,14 @@ use crate::backend::models::MettaValue;
 
 /// Check if a value is a variable (atom starting with $)
 #[inline]
+#[allow(dead_code)]
 pub fn is_variable(value: &MettaValue) -> bool {
     matches!(value, MettaValue::Atom(s) if s.starts_with('$'))
 }
 
 /// Get the variable name from a variable atom (strips the $ prefix)
 #[inline]
+#[allow(dead_code)]
 pub fn get_variable_name(value: &MettaValue) -> Option<&str> {
     match value {
         MettaValue::Atom(s) if s.starts_with('$') => Some(&s[1..]),
@@ -44,7 +46,10 @@ pub fn pattern_matches(pattern: &MettaValue, value: &MettaValue) -> bool {
 }
 
 /// Pattern match with variable binding
-pub fn pattern_match_bind(pattern: &MettaValue, value: &MettaValue) -> Option<Vec<(String, MettaValue)>> {
+pub fn pattern_match_bind(
+    pattern: &MettaValue,
+    value: &MettaValue,
+) -> Option<Vec<(String, MettaValue)>> {
     let mut bindings = Vec::new();
     if pattern_match_bind_impl(pattern, value, &mut bindings) {
         Some(bindings)
@@ -76,8 +81,11 @@ fn pattern_match_bind_impl(
         (MettaValue::Unit, MettaValue::Unit) => true,
         // S-expression matching
         (MettaValue::SExpr(ps), MettaValue::SExpr(vs)) => {
-            ps.len() == vs.len() && ps.iter().zip(vs.iter())
-                .all(|(p, v)| pattern_match_bind_impl(p, v, bindings))
+            ps.len() == vs.len()
+                && ps
+                    .iter()
+                    .zip(vs.iter())
+                    .all(|(p, v)| pattern_match_bind_impl(p, v, bindings))
         }
         _ => false,
     }
@@ -93,11 +101,7 @@ pub fn unify(a: &MettaValue, b: &MettaValue) -> Option<Vec<(String, MettaValue)>
     }
 }
 
-fn unify_impl(
-    a: &MettaValue,
-    b: &MettaValue,
-    bindings: &mut Vec<(String, MettaValue)>,
-) -> bool {
+fn unify_impl(a: &MettaValue, b: &MettaValue, bindings: &mut Vec<(String, MettaValue)>) -> bool {
     match (a, b) {
         // Variables unify with anything (Atom starting with $)
         (MettaValue::Atom(name), val) if name.starts_with('$') => {
@@ -116,8 +120,11 @@ fn unify_impl(
         (MettaValue::Nil, MettaValue::Nil) => true,
         (MettaValue::Unit, MettaValue::Unit) => true,
         (MettaValue::SExpr(xs), MettaValue::SExpr(ys)) => {
-            xs.len() == ys.len() && xs.iter().zip(ys.iter())
-                .all(|(x, y)| unify_impl(x, y, bindings))
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .zip(ys.iter())
+                    .all(|(x, y)| unify_impl(x, y, bindings))
         }
         _ => false,
     }

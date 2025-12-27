@@ -5,9 +5,9 @@
 //! - GetState: Get the current value from a state cell
 //! - ChangeState: Change the value in a state cell
 
-use crate::backend::models::MettaValue;
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
+use crate::backend::models::MettaValue;
 
 impl BytecodeVM {
     // === State Operations ===
@@ -17,9 +17,10 @@ impl BytecodeVM {
     pub(super) fn op_new_state(&mut self) -> VmResult<()> {
         let initial_value = self.pop()?;
 
-        let env = self.env.as_mut().ok_or_else(|| {
-            VmError::Runtime("new-state requires environment".to_string())
-        })?;
+        let env = self
+            .env
+            .as_mut()
+            .ok_or_else(|| VmError::Runtime("new-state requires environment".to_string()))?;
 
         let state_id = env.create_state(initial_value);
         self.push(MettaValue::State(state_id));
@@ -41,7 +42,10 @@ impl BytecodeVM {
                     self.push(value);
                     Ok(())
                 } else {
-                    Err(VmError::Runtime(format!("get-state: state {} not found", state_id)))
+                    Err(VmError::Runtime(format!(
+                        "get-state: state {} not found",
+                        state_id
+                    )))
                 }
             }
             other => Err(VmError::TypeError {
@@ -69,7 +73,10 @@ impl BytecodeVM {
                     self.push(MettaValue::State(state_id));
                     Ok(())
                 } else {
-                    Err(VmError::Runtime(format!("change-state!: state {} not found", state_id)))
+                    Err(VmError::Runtime(format!(
+                        "change-state!: state {} not found",
+                        state_id
+                    )))
                 }
             }
             other => Err(VmError::TypeError {

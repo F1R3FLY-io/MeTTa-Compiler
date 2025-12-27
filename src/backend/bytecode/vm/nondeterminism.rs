@@ -7,9 +7,9 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use tracing::trace;
 
-use crate::backend::models::MettaValue;
-use super::types::{VmError, VmResult, ChoicePoint, Alternative};
+use super::types::{Alternative, ChoicePoint, VmError, VmResult};
 use super::BytecodeVM;
+use crate::backend::models::MettaValue;
 
 impl BytecodeVM {
     // === Nondeterminism Operations ===
@@ -25,7 +25,9 @@ impl BytecodeVM {
         let mut alternatives = Vec::with_capacity(count);
         for _ in 0..count {
             let const_idx = self.read_u16()?;
-            let value = self.chunk.get_constant(const_idx)
+            let value = self
+                .chunk
+                .get_constant(const_idx)
                 .ok_or(VmError::InvalidConstant(const_idx))?
                 .clone();
             alternatives.push(Alternative::Value(value));
@@ -237,11 +239,8 @@ impl BytecodeVM {
 
         // Create choice point with alternatives 1..N (skipping first)
         // Wrap remaining alternatives in Alternative::Value
-        let alternatives: Vec<Alternative> = alts[1..]
-            .iter()
-            .cloned()
-            .map(Alternative::Value)
-            .collect();
+        let alternatives: Vec<Alternative> =
+            alts[1..].iter().cloned().map(Alternative::Value).collect();
 
         self.choice_points.push(ChoicePoint {
             ip: self.ip, // Resume at current IP for alternatives

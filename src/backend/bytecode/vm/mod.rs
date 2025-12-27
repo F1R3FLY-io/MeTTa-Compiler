@@ -21,44 +21,43 @@
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
-use tracing::{debug, trace, warn};
+use tracing::trace;
 
-use crate::backend::models::MettaValue;
-use crate::backend::Environment;
-use super::opcodes::Opcode;
 use super::chunk::BytecodeChunk;
+use super::external_registry::ExternalRegistry;
+#[cfg(test)]
+use super::memo_cache::CacheStats;
+use super::memo_cache::MemoCache;
 use super::mork_bridge::MorkBridge;
 use super::native_registry::NativeRegistry;
-use super::memo_cache::{MemoCache, CacheStats};
-use super::external_registry::ExternalRegistry;
+use super::opcodes::Opcode;
+use crate::backend::models::MettaValue;
+use crate::backend::Environment;
 
 // === Submodules ===
 
-mod types;
-mod pattern;
-mod stack;
+mod advanced_calls;
 mod arithmetic;
 mod comparison;
-mod value_ops;
 mod control_flow;
-mod nondeterminism;
-mod expression_ops;
-mod advanced_calls;
-mod environment_ops;
-mod space_ops;
-mod state_ops;
 mod debug_ops;
+mod environment_ops;
+mod expression_ops;
+mod nondeterminism;
+mod pattern;
+mod space_ops;
+mod stack;
+mod state_ops;
+mod types;
+mod value_ops;
 
 #[cfg(test)]
 mod tests;
 
 // === Re-exports ===
 
-pub use types::{
-    VmError, VmResult, VmConfig,
-    CallFrame, BindingFrame, ChoicePoint, Alternative,
-};
-pub use pattern::{pattern_matches, pattern_match_bind, unify};
+pub use pattern::{pattern_match_bind, pattern_matches, unify};
+pub use types::{Alternative, BindingFrame, CallFrame, ChoicePoint, VmConfig, VmError, VmResult};
 
 // === BytecodeVM Struct ===
 
@@ -295,7 +294,7 @@ impl BytecodeVM {
         }
 
         // JIT execution path
-        
+
         if let Some(result) = self.try_jit_execute()? {
             return Ok(result);
         }
@@ -347,10 +346,11 @@ impl BytecodeVM {
         }
 
         // Read opcode
-        let opcode_byte = self.chunk.read_byte(self.ip)
+        let opcode_byte = self
+            .chunk
+            .read_byte(self.ip)
             .ok_or(VmError::IpOutOfBounds)?;
-        let opcode = Opcode::from_byte(opcode_byte)
-            .ok_or(VmError::InvalidOpcode(opcode_byte))?;
+        let opcode = Opcode::from_byte(opcode_byte).ok_or(VmError::InvalidOpcode(opcode_byte))?;
 
         // Trace if enabled
         if self.config.trace {
@@ -365,7 +365,9 @@ impl BytecodeVM {
         match opcode {
             // Stack operations
             Opcode::Nop => {}
-            Opcode::Pop => { self.pop()?; }
+            Opcode::Pop => {
+                self.pop()?;
+            }
             Opcode::Dup => self.op_dup()?,
             Opcode::Swap => self.op_swap()?,
             Opcode::Rot3 => self.op_rot3()?,
@@ -567,7 +569,7 @@ impl BytecodeVM {
         } else {
             // End of top-level
             if !self.value_stack.is_empty() {
-                self.results.extend(self.value_stack.drain(..));
+                self.results.append(&mut self.value_stack);
             }
             Ok(ControlFlow::Break(std::mem::take(&mut self.results)))
         }
@@ -577,7 +579,9 @@ impl BytecodeVM {
 
     #[inline]
     pub(super) fn read_u8(&mut self) -> VmResult<u8> {
-        let byte = self.chunk.read_byte(self.ip)
+        let byte = self
+            .chunk
+            .read_byte(self.ip)
             .ok_or(VmError::IpOutOfBounds)?;
         self.ip += 1;
         Ok(byte)
@@ -590,8 +594,7 @@ impl BytecodeVM {
 
     #[inline]
     pub(super) fn read_u16(&mut self) -> VmResult<u16> {
-        let value = self.chunk.read_u16(self.ip)
-            .ok_or(VmError::IpOutOfBounds)?;
+        let value = self.chunk.read_u16(self.ip).ok_or(VmError::IpOutOfBounds)?;
         self.ip += 2;
         Ok(value)
     }

@@ -25,35 +25,50 @@
 //! - [`runtime`]: Runtime support functions callable from JIT code
 //! - [`tiered`]: Tiered compilation strategy and JIT cache management
 
-pub mod types;
-pub mod profile;
-pub mod compiler;
 pub mod codegen;
+pub mod compiler;
+pub mod handlers;
+pub mod hybrid;
+pub mod profile;
 pub mod runtime;
 pub mod tiered;
-pub mod hybrid;
-pub mod handlers;
+pub mod types;
 
 // Re-export main types
 pub use types::{
-    JitValue, JitContext, JitResult, JitError, JitBailoutReason,
-    JitChoicePoint, JitAlternative, JitAlternativeTag,
+    JitAlternative,
+    JitAlternativeTag,
+    JitBailoutReason,
     // Binding/Environment support (Phase A)
-    JitBindingEntry, JitBindingFrame,
-    // Stage 2 JIT signal constants
-    JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, JIT_SIGNAL_FAIL, JIT_SIGNAL_ERROR, JIT_SIGNAL_HALT,
+    JitBindingEntry,
+    JitBindingFrame,
+    JitChoicePoint,
+    JitContext,
+    JitError,
+    JitResult,
+    JitValue,
     JIT_SIGNAL_BAILOUT,
+    JIT_SIGNAL_ERROR,
+    JIT_SIGNAL_FAIL,
+    JIT_SIGNAL_HALT,
+    // Stage 2 JIT signal constants
+    JIT_SIGNAL_OK,
+    JIT_SIGNAL_YIELD,
     // Optimization 5.2: Pre-allocation constants
-    MAX_ALTERNATIVES_INLINE, STACK_SAVE_POOL_SIZE, MAX_STACK_SAVE_VALUES,
+    MAX_ALTERNATIVES_INLINE,
+    MAX_STACK_SAVE_VALUES,
+    STACK_SAVE_POOL_SIZE,
     // Optimization 5.3: Variable index cache
     VAR_INDEX_CACHE_SIZE,
 };
 // Space Ops Phase 4: Binding forking for nondeterminism
-pub use runtime::JitSavedBindings;
-pub use profile::{JitProfile, JitState, HOT_THRESHOLD};
 pub use compiler::JitCompiler;
-pub use tiered::{Tier, TieredCompiler, TieredStats, JitCache, ChunkId, CacheEntry, STAGE2_THRESHOLD};
-pub use hybrid::{HybridExecutor, HybridConfig, HybridStats};
+pub use hybrid::{HybridConfig, HybridExecutor, HybridStats};
+pub use profile::{JitProfile, JitState, HOT_THRESHOLD};
+pub use runtime::JitSavedBindings;
+pub use tiered::{
+    CacheEntry, ChunkId, JitCache, Tier, TieredCompiler, TieredStats, STAGE2_THRESHOLD,
+};
 
 /// JIT compilation is always enabled with tiered compilation
 pub const JIT_ENABLED: bool = true;

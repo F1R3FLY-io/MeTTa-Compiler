@@ -82,10 +82,8 @@ const GROUNDED_OPS: &[&str] = &[
     // Arithmetic operations
     "+", "-", "*", "/", "%", "pow", "abs", "floor", "ceil", "round", "sqrt",
     // Comparison operations
-    "<", "<=", ">", ">=", "==", "!=",
-    // Boolean operations
-    "not", "and", "or",
-    // Type operations that return concrete values
+    "<", "<=", ">", ">=", "==", "!=", // Boolean operations
+    "not", "and", "or", // Type operations that return concrete values
     "get-type",
 ];
 
@@ -181,7 +179,6 @@ pub fn suggest_special_form_with_context(
 pub fn is_grounded_op(name: &str) -> bool {
     GROUNDED_OPS.contains(&name)
 }
-
 
 /// Resolve registered tokens (like &stack → Space) at the top level only.
 /// This is a "shallow resolution" for lazy evaluation:
@@ -403,7 +400,6 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
         _ => Cow::Borrowed(value),
     }
 }
-
 
 /// Delegate to builtin module for built-in operations
 pub fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaValue> {

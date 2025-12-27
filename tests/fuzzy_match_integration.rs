@@ -3,10 +3,10 @@
 //! These tests verify the fuzzy matching system works correctly with
 //! the MeTTa evaluation pipeline.
 
-use mettatron::backend::{compile, eval, Environment, FuzzyMatcher};
-use mettatron::backend::builtin_signatures::{get_signature, is_builtin, builtin_names, TypeExpr};
+use mettatron::backend::builtin_signatures::{builtin_names, get_signature, is_builtin, TypeExpr};
+use mettatron::backend::fuzzy_match::{SuggestionConfidence, SuggestionContext};
 use mettatron::backend::models::MettaValue;
-use mettatron::backend::fuzzy_match::{SuggestionContext, SuggestionConfidence};
+use mettatron::backend::{compile, eval, Environment, FuzzyMatcher};
 
 // ============================================================================
 // Test Helpers
@@ -62,29 +62,37 @@ fn would_suggest_with_context(typo: &str, target: &str, args: &[MettaValue]) -> 
 fn test_issue_51_lit_no_suggest_let() {
     // The core bug from issue #51: (lit p) should NOT suggest `let`
     // because `let` requires arity 3, but `lit` has arity 1
-    assert!(!would_suggest_for_arity("lit", "let", 1),
-        "lit with arity 1 should NOT suggest let (requires arity 3)");
+    assert!(
+        !would_suggest_for_arity("lit", "let", 1),
+        "lit with arity 1 should NOT suggest let (requires arity 3)"
+    );
 }
 
 #[test]
 fn test_issue_51_lett_suggests_let() {
     // (lett x 1 x) has arity 3, matching let's requirements
-    assert!(would_suggest_for_arity("lett", "let", 3),
-        "lett with arity 3 should suggest let");
+    assert!(
+        would_suggest_for_arity("lett", "let", 3),
+        "lett with arity 3 should suggest let"
+    );
 }
 
 #[test]
 fn test_issue_51_cach_no_suggest_catch() {
     // (cach expr) with arity 1 should not suggest catch (requires arity 2)
-    assert!(!would_suggest_for_arity("cach", "catch", 1),
-        "cach with arity 1 should NOT suggest catch (requires arity 2)");
+    assert!(
+        !would_suggest_for_arity("cach", "catch", 1),
+        "cach with arity 1 should NOT suggest catch (requires arity 2)"
+    );
 }
 
 #[test]
 fn test_issue_51_cach_suggests_catch() {
     // (cach expr default) with arity 2 should suggest catch
-    assert!(would_suggest_for_arity("cach", "catch", 2),
-        "cach with arity 2 should suggest catch");
+    assert!(
+        would_suggest_for_arity("cach", "catch", 2),
+        "cach with arity 2 should suggest catch"
+    );
 }
 
 // ============================================================================
@@ -98,35 +106,49 @@ fn test_arity_if_typo() {
     // With arity 3, "if" should be suggested for "iff" (arity matches)
     // Note: The raw suggest + arity check doesn't apply confidence filtering,
     // so short words like "iff" do get matched here.
-    assert!(would_suggest_for_arity("iff", "if", 3),
-        "iff→if with arity 3 should be suggested (arity matches)");
+    assert!(
+        would_suggest_for_arity("iff", "if", 3),
+        "iff→if with arity 3 should be suggested (arity matches)"
+    );
 
     // With arity 1, "if" should NOT be suggested (arity too low)
-    assert!(!would_suggest_for_arity("iff", "if", 1),
-        "iff→if with arity 1 should NOT be suggested (needs 3)");
+    assert!(
+        !would_suggest_for_arity("iff", "if", 1),
+        "iff→if with arity 1 should NOT be suggested (needs 3)"
+    );
 
     // With arity 4, "if" should NOT be suggested (arity too high)
-    assert!(!would_suggest_for_arity("iff", "if", 4),
-        "iff→if with arity 4 should NOT be suggested (max is 3)");
+    assert!(
+        !would_suggest_for_arity("iff", "if", 4),
+        "iff→if with arity 4 should NOT be suggested (max is 3)"
+    );
 }
 
 #[test]
 fn test_arity_match_typo() {
     // (metch space pattern body) has arity 3, matches match (min 3, max 4)
-    assert!(would_suggest_for_arity("metch", "match", 3),
-        "metch→match with arity 3 should be suggested");
+    assert!(
+        would_suggest_for_arity("metch", "match", 3),
+        "metch→match with arity 3 should be suggested"
+    );
 
     // (metch space pattern body default) has arity 4, also valid for match
-    assert!(would_suggest_for_arity("metch", "match", 4),
-        "metch→match with arity 4 should be suggested");
+    assert!(
+        would_suggest_for_arity("metch", "match", 4),
+        "metch→match with arity 4 should be suggested"
+    );
 
     // (metch space) has arity 1, doesn't match (below min_arity 3)
-    assert!(!would_suggest_for_arity("metch", "match", 1),
-        "metch→match with arity 1 should NOT be suggested");
+    assert!(
+        !would_suggest_for_arity("metch", "match", 1),
+        "metch→match with arity 1 should NOT be suggested"
+    );
 
     // Arity 5 exceeds max_arity 4
-    assert!(!would_suggest_for_arity("metch", "match", 5),
-        "metch→match with arity 5 should NOT be suggested");
+    assert!(
+        !would_suggest_for_arity("metch", "match", 5),
+        "metch→match with arity 5 should NOT be suggested"
+    );
 }
 
 #[test]
@@ -179,7 +201,12 @@ fn test_type_signature_space_first_arg() {
         let sig = get_signature(op).expect(&format!("Should have signature for {}", op));
         if let TypeExpr::Arrow(args, _) = &sig.type_sig {
             assert!(!args.is_empty(), "{} should have at least one arg", op);
-            assert_eq!(args[0], TypeExpr::Space, "{} should expect Space as first arg", op);
+            assert_eq!(
+                args[0],
+                TypeExpr::Space,
+                "{} should expect Space as first arg",
+                op
+            );
         } else {
             panic!("{} should have Arrow signature", op);
         }
@@ -195,7 +222,10 @@ fn test_fuzzy_matcher_initialization() {
     let matcher = FuzzyMatcher::new();
 
     // Should start empty
-    assert!(matcher.suggest("let", 5).is_empty(), "New matcher should be empty");
+    assert!(
+        matcher.suggest("let", 5).is_empty(),
+        "New matcher should be empty"
+    );
     assert!(matcher.is_empty());
 }
 
@@ -211,8 +241,10 @@ fn test_fuzzy_matcher_insert_and_suggest() {
 
     // Should find suggestions
     let suggestions = matcher.suggest("lett", 2);
-    assert!(suggestions.iter().any(|(word, _)| word == "let"),
-        "Should suggest 'let' for 'lett'");
+    assert!(
+        suggestions.iter().any(|(word, _)| word == "let"),
+        "Should suggest 'let' for 'lett'"
+    );
 }
 
 #[test]
@@ -220,16 +252,24 @@ fn test_fuzzy_matcher_with_all_builtins() {
     let matcher = matcher_with_builtins();
 
     // Should have at least 40 built-ins
-    assert!(matcher.len() >= 40, "Should have at least 40 built-ins, got {}", matcher.len());
+    assert!(
+        matcher.len() >= 40,
+        "Should have at least 40 built-ins, got {}",
+        matcher.len()
+    );
 
     // Should find common typos
     let suggestions = matcher.suggest("lett", 2);
-    assert!(suggestions.iter().any(|(word, _)| word == "let"),
-        "Should suggest 'let' for 'lett'");
+    assert!(
+        suggestions.iter().any(|(word, _)| word == "let"),
+        "Should suggest 'let' for 'lett'"
+    );
 
     let suggestions = matcher.suggest("iff", 2);
-    assert!(suggestions.iter().any(|(word, _)| word == "if"),
-        "Should suggest 'if' for 'iff'");
+    assert!(
+        suggestions.iter().any(|(word, _)| word == "if"),
+        "Should suggest 'if' for 'iff'"
+    );
 }
 
 #[test]
@@ -259,7 +299,10 @@ fn test_suggestion_context_for_head() {
     let ctx = SuggestionContext::for_head(&args, &env);
     assert_eq!(ctx.arity(), 2, "arity should be number of args after head");
     assert_eq!(ctx.position, 0, "head position should be 0");
-    assert!(ctx.parent_head.is_none(), "head position has no parent head");
+    assert!(
+        ctx.parent_head.is_none(),
+        "head position has no parent head"
+    );
 }
 
 #[test]
@@ -315,7 +358,9 @@ fn test_smart_suggest_respects_arity() {
     let ctx = SuggestionContext::for_head(&args, &env);
     let result = matcher.smart_suggest_with_context("lett", 3, &ctx);
     assert!(
-        result.map(|r| r.suggestions.contains(&"let".to_string())).unwrap_or(false),
+        result
+            .map(|r| r.suggestions.contains(&"let".to_string()))
+            .unwrap_or(false),
         "lett with arity 3 should suggest let"
     );
 
@@ -326,7 +371,9 @@ fn test_smart_suggest_respects_arity() {
     ];
     let ctx = SuggestionContext::for_head(&args, &env);
     let result = matcher.smart_suggest_with_context("lit", 3, &ctx);
-    let suggests_let = result.map(|r| r.suggestions.contains(&"let".to_string())).unwrap_or(false);
+    let suggests_let = result
+        .map(|r| r.suggestions.contains(&"let".to_string()))
+        .unwrap_or(false);
     assert!(!suggests_let, "lit with arity 1 should NOT suggest let");
 }
 
@@ -350,8 +397,10 @@ fn test_smart_suggest_confidence_levels() {
     // Should find a suggestion with some confidence
     if let Some(suggestion) = result {
         if !suggestion.suggestions.is_empty() {
-            assert!(suggestion.confidence != SuggestionConfidence::None,
-                "Should have some confidence for near-match");
+            assert!(
+                suggestion.confidence != SuggestionConfidence::None,
+                "Should have some confidence for near-match"
+            );
         }
     }
 }
@@ -367,7 +416,11 @@ fn test_all_special_forms_have_consistent_signatures() {
     // Arithmetic: all binary, return Number
     for op in ["+", "-", "*", "/", "%"] {
         let sig = get_signature(op).unwrap();
-        assert_eq!(sig.min_arity, sig.max_arity, "{} should have fixed arity", op);
+        assert_eq!(
+            sig.min_arity, sig.max_arity,
+            "{} should have fixed arity",
+            op
+        );
         assert_eq!(sig.min_arity, 2, "{} should be binary", op);
     }
 
@@ -385,7 +438,11 @@ fn test_all_special_forms_have_consistent_signatures() {
 fn test_signature_count() {
     // Should have at least 40 built-in signatures
     let count = builtin_names().count();
-    assert!(count >= 40, "Should have at least 40 built-in signatures, found {}", count);
+    assert!(
+        count >= 40,
+        "Should have at least 40 built-in signatures, found {}",
+        count
+    );
 }
 
 #[test]
@@ -394,9 +451,13 @@ fn test_all_builtins_have_valid_signatures() {
         let sig = get_signature(name);
         assert!(sig.is_some(), "Builtin '{}' should have a signature", name);
         let sig = sig.unwrap();
-        assert!(sig.min_arity <= sig.max_arity,
+        assert!(
+            sig.min_arity <= sig.max_arity,
             "Builtin '{}' has invalid arity range: {} > {}",
-            name, sig.min_arity, sig.max_arity);
+            name,
+            sig.min_arity,
+            sig.max_arity
+        );
     }
 }
 
@@ -410,7 +471,10 @@ fn test_compile_basic_expression() {
     assert!(result.is_ok(), "Should compile basic expression");
 
     let state = result.unwrap();
-    assert!(!state.source.is_empty(), "Should have at least one expression");
+    assert!(
+        !state.source.is_empty(),
+        "Should have at least one expression"
+    );
 }
 
 #[test]
@@ -532,8 +596,10 @@ fn test_full_context_match_with_space() {
         MettaValue::Atom("body".to_string()),
     ];
 
-    assert!(would_suggest_with_context("metch", "match", &args),
-        "metch→match should be suggested with proper space argument");
+    assert!(
+        would_suggest_with_context("metch", "match", &args),
+        "metch→match should be suggested with proper space argument"
+    );
 }
 
 #[test]
@@ -547,8 +613,10 @@ fn test_full_context_match_without_space() {
         MettaValue::Atom("body".to_string()),
     ];
 
-    assert!(!would_suggest_with_context("metch", "match", &args),
-        "metch→match should NOT be suggested without proper space argument");
+    assert!(
+        !would_suggest_with_context("metch", "match", &args),
+        "metch→match should NOT be suggested without proper space argument"
+    );
 }
 
 #[test]
@@ -561,8 +629,10 @@ fn test_full_context_let_with_proper_types() {
         MettaValue::Atom("x".to_string()),
     ];
 
-    assert!(would_suggest_with_context("lett", "let", &args),
-        "lett→let should be suggested with proper types");
+    assert!(
+        would_suggest_with_context("lett", "let", &args),
+        "lett→let should be suggested with proper types"
+    );
 }
 
 #[test]
@@ -576,8 +646,10 @@ fn test_full_context_arithmetic_correct_types() {
     ];
 
     // Short typo is filtered out
-    assert!(!would_suggest_with_context("++", "+", &args),
-        "++→+ should be filtered due to short query length");
+    assert!(
+        !would_suggest_with_context("++", "+", &args),
+        "++→+ should be filtered due to short query length"
+    );
 }
 
 #[test]
@@ -589,8 +661,10 @@ fn test_full_context_catch_with_proper_types() {
         MettaValue::Atom("default".to_string()),
     ];
 
-    assert!(would_suggest_with_context("catsh", "catch", &args),
-        "catsh→catch should be suggested with proper types");
+    assert!(
+        would_suggest_with_context("catsh", "catch", &args),
+        "catsh→catch should be suggested with proper types"
+    );
 }
 
 #[test]
@@ -602,8 +676,10 @@ fn test_full_context_catch_wrong_arity() {
     ];
 
     // This fails arity check (needs 2 args, has 1)
-    assert!(!would_suggest_with_context("catsh", "catch", &args),
-        "catsh→catch should NOT be suggested with wrong arity");
+    assert!(
+        !would_suggest_with_context("catsh", "catch", &args),
+        "catsh→catch should NOT be suggested with wrong arity"
+    );
 }
 
 #[test]
@@ -616,8 +692,10 @@ fn test_full_context_arithmetic_wrong_types() {
         MettaValue::String("b".to_string()),
     ];
 
-    assert!(!would_suggest_with_context("++", "+", &args),
-        "++→+ should NOT be suggested with string arguments");
+    assert!(
+        !would_suggest_with_context("++", "+", &args),
+        "++→+ should NOT be suggested with string arguments"
+    );
 }
 
 // ============================================================================
@@ -637,5 +715,8 @@ fn test_fuzzy_no_suggestion_for_very_different() {
 
     // Very different strings shouldn't match
     let suggestions = matcher.suggest("xyz123", 2);
-    assert!(suggestions.is_empty(), "Very different string shouldn't match any builtin");
+    assert!(
+        suggestions.is_empty(),
+        "Very different string shouldn't match any builtin"
+    );
 }

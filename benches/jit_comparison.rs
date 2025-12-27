@@ -40,7 +40,9 @@ fn eval_bytecode(expr: &MettaValue) -> Vec<MettaValue> {
 }
 
 /// Evaluate pre-compiled bytecode chunk (no compilation overhead)
-fn eval_bytecode_precompiled(chunk: &Arc<mettatron::backend::bytecode::BytecodeChunk>) -> Vec<MettaValue> {
+fn eval_bytecode_precompiled(
+    chunk: &Arc<mettatron::backend::bytecode::BytecodeChunk>,
+) -> Vec<MettaValue> {
     let mut vm = BytecodeVM::new(Arc::clone(chunk));
     vm.run().expect("VM execution failed")
 }
@@ -49,15 +51,9 @@ fn eval_bytecode_precompiled(chunk: &Arc<mettatron::backend::bytecode::BytecodeC
 #[cfg(feature = "jit")]
 unsafe fn exec_jit_code(code_ptr: *const (), constants: &[MettaValue]) -> i64 {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = JitContext::new(
-        stack.as_mut_ptr(),
-        64,
-        constants.as_ptr(),
-        constants.len(),
-    );
+    let mut ctx = JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len());
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
-        std::mem::transmute(code_ptr);
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = std::mem::transmute(code_ptr);
     native_fn(&mut ctx as *mut JitContext)
 }
 
@@ -93,14 +89,18 @@ fn bench_jit_arithmetic(c: &mut Criterion) {
         });
 
         // Bytecode VM (compile + execute)
-        group.bench_with_input(BenchmarkId::new("bytecode-full", depth), &expr, |b, expr| {
-            b.iter(|| eval_bytecode(black_box(expr)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-full", depth),
+            &expr,
+            |b, expr| b.iter(|| eval_bytecode(black_box(expr))),
+        );
 
         // Bytecode VM (execute only, pre-compiled)
-        group.bench_with_input(BenchmarkId::new("bytecode-exec", depth), &chunk, |b, chunk| {
-            b.iter(|| eval_bytecode_precompiled(black_box(chunk)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-exec", depth),
+            &chunk,
+            |b, chunk| b.iter(|| eval_bytecode_precompiled(black_box(chunk))),
+        );
 
         // JIT compiled execution
         #[cfg(feature = "jit")]
@@ -152,13 +152,17 @@ fn bench_jit_boolean(c: &mut Criterion) {
             b.iter(|| eval_tree_walker(black_box(expr)))
         });
 
-        group.bench_with_input(BenchmarkId::new("bytecode-full", depth), &expr, |b, expr| {
-            b.iter(|| eval_bytecode(black_box(expr)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-full", depth),
+            &expr,
+            |b, expr| b.iter(|| eval_bytecode(black_box(expr))),
+        );
 
-        group.bench_with_input(BenchmarkId::new("bytecode-exec", depth), &chunk, |b, chunk| {
-            b.iter(|| eval_bytecode_precompiled(black_box(chunk)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-exec", depth),
+            &chunk,
+            |b, chunk| b.iter(|| eval_bytecode_precompiled(black_box(chunk))),
+        );
 
         #[cfg(feature = "jit")]
         {
@@ -213,13 +217,17 @@ fn bench_jit_mixed(c: &mut Criterion) {
             b.iter(|| eval_tree_walker(black_box(expr)))
         });
 
-        group.bench_with_input(BenchmarkId::new("bytecode-full", depth), &expr, |b, expr| {
-            b.iter(|| eval_bytecode(black_box(expr)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-full", depth),
+            &expr,
+            |b, expr| b.iter(|| eval_bytecode(black_box(expr))),
+        );
 
-        group.bench_with_input(BenchmarkId::new("bytecode-exec", depth), &chunk, |b, chunk| {
-            b.iter(|| eval_bytecode_precompiled(black_box(chunk)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-exec", depth),
+            &chunk,
+            |b, chunk| b.iter(|| eval_bytecode_precompiled(black_box(chunk))),
+        );
 
         #[cfg(feature = "jit")]
         {
@@ -271,13 +279,17 @@ fn bench_jit_pow(c: &mut Criterion) {
             b.iter(|| eval_tree_walker(black_box(expr)))
         });
 
-        group.bench_with_input(BenchmarkId::new("bytecode-full", depth), &expr, |b, expr| {
-            b.iter(|| eval_bytecode(black_box(expr)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-full", depth),
+            &expr,
+            |b, expr| b.iter(|| eval_bytecode(black_box(expr))),
+        );
 
-        group.bench_with_input(BenchmarkId::new("bytecode-exec", depth), &chunk, |b, chunk| {
-            b.iter(|| eval_bytecode_precompiled(black_box(chunk)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-exec", depth),
+            &chunk,
+            |b, chunk| b.iter(|| eval_bytecode_precompiled(black_box(chunk))),
+        );
 
         #[cfg(feature = "jit")]
         {
@@ -318,9 +330,7 @@ fn bench_jit_compilation_overhead(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("bytecode-compile", depth),
             &expr,
-            |b, expr| {
-                b.iter(|| compile("bench", black_box(expr)))
-            },
+            |b, expr| b.iter(|| compile("bench", black_box(expr))),
         );
 
         // JIT compilation only (from bytecode)
@@ -455,13 +465,17 @@ fn bench_jit_if_chain(c: &mut Criterion) {
             b.iter(|| eval_tree_walker(black_box(expr)))
         });
 
-        group.bench_with_input(BenchmarkId::new("bytecode-full", depth), &expr, |b, expr| {
-            b.iter(|| eval_bytecode(black_box(expr)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-full", depth),
+            &expr,
+            |b, expr| b.iter(|| eval_bytecode(black_box(expr))),
+        );
 
-        group.bench_with_input(BenchmarkId::new("bytecode-exec", depth), &chunk, |b, chunk| {
-            b.iter(|| eval_bytecode_precompiled(black_box(chunk)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-exec", depth),
+            &chunk,
+            |b, chunk| b.iter(|| eval_bytecode_precompiled(black_box(chunk))),
+        );
 
         #[cfg(feature = "jit")]
         {
@@ -493,7 +507,7 @@ fn build_jit_let_chain(depth: usize) -> MettaValue {
 
     for i in (0..depth).rev() {
         let var_name = format!("$v{}", i);
-        let var = atom(&var_name);  // Variables are atoms with $ prefix
+        let var = atom(&var_name); // Variables are atoms with $ prefix
 
         // Each let binds a fresh value
         counter += 1;
@@ -520,13 +534,17 @@ fn bench_jit_let_chain(c: &mut Criterion) {
             b.iter(|| eval_tree_walker(black_box(expr)))
         });
 
-        group.bench_with_input(BenchmarkId::new("bytecode-full", depth), &expr, |b, expr| {
-            b.iter(|| eval_bytecode(black_box(expr)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-full", depth),
+            &expr,
+            |b, expr| b.iter(|| eval_bytecode(black_box(expr))),
+        );
 
-        group.bench_with_input(BenchmarkId::new("bytecode-exec", depth), &chunk, |b, chunk| {
-            b.iter(|| eval_bytecode_precompiled(black_box(chunk)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-exec", depth),
+            &chunk,
+            |b, chunk| b.iter(|| eval_bytecode_precompiled(black_box(chunk))),
+        );
 
         #[cfg(feature = "jit")]
         {
@@ -565,7 +583,7 @@ fn build_jit_hybrid_workload(depth: usize) -> MettaValue {
     for i in 0..depth {
         let val = (i % 10) as i64;
         let var_name = format!("$h{}", i);
-        let var = atom(&var_name);  // Variables are atoms with $ prefix
+        let var = atom(&var_name); // Variables are atoms with $ prefix
 
         match i % 3 {
             0 => {
@@ -601,13 +619,17 @@ fn bench_jit_hybrid_workload(c: &mut Criterion) {
             b.iter(|| eval_tree_walker(black_box(expr)))
         });
 
-        group.bench_with_input(BenchmarkId::new("bytecode-full", depth), &expr, |b, expr| {
-            b.iter(|| eval_bytecode(black_box(expr)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-full", depth),
+            &expr,
+            |b, expr| b.iter(|| eval_bytecode(black_box(expr))),
+        );
 
-        group.bench_with_input(BenchmarkId::new("bytecode-exec", depth), &chunk, |b, chunk| {
-            b.iter(|| eval_bytecode_precompiled(black_box(chunk)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bytecode-exec", depth),
+            &chunk,
+            |b, chunk| b.iter(|| eval_bytecode_precompiled(black_box(chunk))),
+        );
 
         #[cfg(feature = "jit")]
         {

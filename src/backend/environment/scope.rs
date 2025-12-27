@@ -270,7 +270,10 @@ mod tests {
         // Push scope and add "x" again (shadowing)
         tracker.push_scope();
         tracker.add_symbol("x".to_string());
-        assert!(tracker.is_visible("x"), "x should still be visible (shadowed)");
+        assert!(
+            tracker.is_visible("x"),
+            "x should still be visible (shadowed)"
+        );
 
         // Count occurrences - should be 2
         let count = tracker.visible_symbols().filter(|s| *s == "x").count();

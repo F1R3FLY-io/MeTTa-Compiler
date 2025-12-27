@@ -618,9 +618,9 @@ mod tests {
 
         // First define a rule that returns empty: (= (empty-result) ())
         let empty_rule = Rule::new(
-        MettaValue::SExpr(vec![MettaValue::Atom("empty-result".to_string())]),
-        MettaValue::SExpr(vec![]),
-    );
+            MettaValue::SExpr(vec![MettaValue::Atom("empty-result".to_string())]),
+            MettaValue::SExpr(vec![]),
+        );
         env.add_rule(empty_rule);
 
         // (case (empty-result) ((Empty "was empty") (42 "was forty-two")))
@@ -837,11 +837,11 @@ mod tests {
 
         // Define a rule that can return Empty: (= (maybe-empty $x) (if (== $x 0) () $x))
         let maybe_empty_rule = Rule::new(
-        MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("maybe-empty".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-        MettaValue::SExpr(vec![
+            MettaValue::SExpr(vec![
                 MettaValue::Atom("if".to_string()),
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("==".to_string()),
@@ -851,7 +851,7 @@ mod tests {
                 MettaValue::SExpr(vec![]), // Empty s-expression
                 MettaValue::Atom("$x".to_string()),
             ]),
-    );
+        );
         env.add_rule(maybe_empty_rule);
 
         // Test switch: does NOT evaluate first argument

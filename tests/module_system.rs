@@ -217,7 +217,11 @@ fn test_load_pkg_info_metta_complete() {
 
     // Load from fixtures directory which contains _pkg-info.metta
     let result = load_pkg_info_metta(&fixtures_dir());
-    assert!(result.is_ok(), "Should parse without errors: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Should parse without errors: {:?}",
+        result.err()
+    );
 
     let pkg = result.unwrap();
     assert!(pkg.is_some(), "_pkg-info.metta should exist in fixtures");
@@ -468,7 +472,10 @@ version = "2.0.0"
     fs::write(temp_dir.join("metta.toml"), toml_content).expect("Should write toml");
 
     let pkg = PackageInfo::load(&temp_dir);
-    assert!(pkg.is_some(), "Should load metta.toml when _pkg-info.metta is absent");
+    assert!(
+        pkg.is_some(),
+        "Should load metta.toml when _pkg-info.metta is absent"
+    );
 
     let pkg = pkg.unwrap();
     assert_eq!(pkg.name(), "toml-only-pkg");
@@ -511,7 +518,8 @@ fn test_unified_loader_prefers_pkg_info_even_with_parse_error() {
             ; Missing name and version
         )
     "#;
-    fs::write(temp_dir.join("_pkg-info.metta"), invalid_pkg_info).expect("Should write invalid pkg-info");
+    fs::write(temp_dir.join("_pkg-info.metta"), invalid_pkg_info)
+        .expect("Should write invalid pkg-info");
 
     // Valid metta.toml
     let valid_toml = r#"
@@ -523,7 +531,10 @@ version = "1.0.0"
 
     // Should fall back to TOML when _pkg-info.metta has parse errors
     let pkg = PackageInfo::load(&temp_dir);
-    assert!(pkg.is_some(), "Should fall back to metta.toml on parse error");
+    assert!(
+        pkg.is_some(),
+        "Should fall back to metta.toml on parse error"
+    );
 
     let pkg = pkg.unwrap();
     assert_eq!(pkg.name(), "fallback-pkg");

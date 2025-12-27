@@ -91,7 +91,8 @@ impl P2MedianEstimator {
             self.count += 1;
             if self.count == 5 {
                 // Sort initial observations to establish markers
-                self.heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+                self.heights
+                    .sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
             }
             return;
         }
@@ -865,7 +866,11 @@ mod tests {
 
         // Should have a reasonable median
         let median = estimator.median();
-        assert!(median > 0.0 && median < 1000.0, "Median {} out of range", median);
+        assert!(
+            median > 0.0 && median < 1000.0,
+            "Median {} out of range",
+            median
+        );
     }
 
     #[test]

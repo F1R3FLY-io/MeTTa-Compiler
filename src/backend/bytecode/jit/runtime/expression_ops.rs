@@ -5,9 +5,9 @@
 //! - min_atom - Get minimum numeric value
 //! - max_atom - Get maximum numeric value
 
-use crate::backend::bytecode::jit::types::{JitContext, JitValue, JitBailoutReason};
-use crate::backend::models::MettaValue;
 use super::helpers::metta_to_jit;
+use crate::backend::bytecode::jit::types::{JitBailoutReason, JitContext, JitValue};
+use crate::backend::models::MettaValue;
 
 // =============================================================================
 // Expression Manipulation Operations
@@ -70,11 +70,7 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
 /// # Safety
 /// The context and inputs must be valid.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_min_atom(
-    ctx: *mut JitContext,
-    expr: u64,
-    ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, ip: u64) -> u64 {
     let expr_jv = JitValue::from_raw(expr);
     let expr_mv = expr_jv.to_metta();
 
@@ -131,11 +127,7 @@ pub unsafe extern "C" fn jit_runtime_min_atom(
 /// # Safety
 /// The context and inputs must be valid.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_max_atom(
-    ctx: *mut JitContext,
-    expr: u64,
-    ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, ip: u64) -> u64 {
     let expr_jv = JitValue::from_raw(expr);
     let expr_mv = expr_jv.to_metta();
 

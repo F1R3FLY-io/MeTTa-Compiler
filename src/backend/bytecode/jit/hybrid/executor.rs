@@ -6,15 +6,12 @@
 use std::sync::Arc;
 use tracing::{debug, trace, warn};
 
-use crate::backend::bytecode::{
-    BytecodeChunk, BytecodeVM, MorkBridge, VmResult,
-};
+use crate::backend::bytecode::{BytecodeChunk, BytecodeVM, MorkBridge, VmResult};
 use crate::backend::models::MettaValue;
 
 use super::super::{
-    JitCompiler, JitContext, JitValue, JitChoicePoint, JitBindingFrame,
-    JitCache, TieredCompiler, ChunkId, Tier,
-    STAGE2_THRESHOLD,
+    ChunkId, JitBindingFrame, JitCache, JitChoicePoint, JitCompiler, JitContext, JitValue, Tier,
+    TieredCompiler, STAGE2_THRESHOLD,
 };
 use super::config::{HybridConfig, HybridStats};
 
@@ -87,7 +84,8 @@ impl HybridExecutor {
     pub fn with_config(config: HybridConfig) -> Self {
         // Optimization 5.2: Pre-allocate stack save pool
         // Pool size = STACK_SAVE_POOL_SIZE slots × MAX_STACK_SAVE_VALUES values per slot
-        let pool_capacity = super::super::STACK_SAVE_POOL_SIZE * super::super::MAX_STACK_SAVE_VALUES;
+        let pool_capacity =
+            super::super::STACK_SAVE_POOL_SIZE * super::super::MAX_STACK_SAVE_VALUES;
 
         Self {
             jit_cache: Arc::new(JitCache::new()),
@@ -116,7 +114,8 @@ impl HybridExecutor {
     pub fn with_shared_cache(cache: Arc<JitCache>, compiler: Arc<TieredCompiler>) -> Self {
         let config = HybridConfig::default();
         // Optimization 5.2: Pre-allocate stack save pool
-        let pool_capacity = super::super::STACK_SAVE_POOL_SIZE * super::super::MAX_STACK_SAVE_VALUES;
+        let pool_capacity =
+            super::super::STACK_SAVE_POOL_SIZE * super::super::MAX_STACK_SAVE_VALUES;
 
         Self {
             jit_cache: cache,
@@ -251,7 +250,10 @@ impl HybridExecutor {
     /// Note: This requires the JIT code to support re-entry at resume_ip for
     /// full backtracking support. For simple Fork patterns at the beginning
     /// of execution, this works correctly.
-    pub fn run_with_backtracking(&mut self, chunk: &Arc<BytecodeChunk>) -> VmResult<Vec<MettaValue>> {
+    pub fn run_with_backtracking(
+        &mut self,
+        chunk: &Arc<BytecodeChunk>,
+    ) -> VmResult<Vec<MettaValue>> {
         self.stats.total_runs += 1;
 
         if !self.config.jit_enabled {
@@ -458,18 +460,14 @@ impl HybridExecutor {
             self.config.jit_choice_point_capacity,
             JitChoicePoint::default(),
         );
-        self.jit_results.resize(
-            self.config.jit_results_capacity,
-            JitValue::nil(),
-        );
+        self.jit_results
+            .resize(self.config.jit_results_capacity, JitValue::nil());
         self.jit_binding_frames.resize(
             self.config.jit_binding_frames_capacity,
             JitBindingFrame::default(),
         );
-        self.jit_cut_markers.resize(
-            self.config.jit_cut_markers_capacity,
-            0,
-        );
+        self.jit_cut_markers
+            .resize(self.config.jit_cut_markers_capacity, 0);
 
         let constants = chunk.constants();
 
@@ -534,7 +532,10 @@ impl HybridExecutor {
 
         // Set up template results buffer (Space Ops - Phase 2)
         unsafe {
-            ctx.set_template_results(self.template_results.as_mut_ptr(), self.template_results.capacity());
+            ctx.set_template_results(
+                self.template_results.as_mut_ptr(),
+                self.template_results.capacity(),
+            );
         }
 
         // Set up stack save pool (Optimization 5.2)
@@ -643,7 +644,11 @@ impl HybridExecutor {
     ///
     /// This method handles the fact that JIT-compiled functions return the result
     /// directly as the function return value (NaN-boxed i64).
-    pub(super) fn collect_jit_results_with_return(&self, ctx: &JitContext, jit_result: i64) -> Vec<MettaValue> {
+    pub(super) fn collect_jit_results_with_return(
+        &self,
+        ctx: &JitContext,
+        jit_result: i64,
+    ) -> Vec<MettaValue> {
         // If there are collected results (from nondeterminism), use those
         if ctx.results_count > 0 {
             let mut results = Vec::with_capacity(ctx.results_count);

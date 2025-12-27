@@ -51,10 +51,7 @@ pub fn handle_no_rule_match(
             // This allows the expression to continue evaluating in ADD mode
             match suggestion.confidence {
                 SuggestionConfidence::High => {
-                    eprintln!(
-                        "Warning: '{}' is not defined. {}",
-                        head, suggestion.message
-                    );
+                    eprintln!("Warning: '{}' is not defined. {}", head, suggestion.message);
                 }
                 SuggestionConfidence::Low => {
                     eprintln!("Note: '{}' is not defined. {}", head, suggestion.message);

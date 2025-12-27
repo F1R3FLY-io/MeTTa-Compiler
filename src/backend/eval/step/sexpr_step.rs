@@ -11,13 +11,13 @@ use crate::backend::environment::Environment;
 use crate::backend::grounded::{ExecError, GroundedState};
 use crate::backend::models::MettaValue;
 
-use super::types::EvalStep;
-use super::grounded::evaluate_grounded_args;
 use super::super::{
-    bindings, control_flow, errors, evaluation, expression, io, list_ops, modules,
+    bindings, control_flow, errors, eval, evaluation, expression, io, list_ops, modules,
     mork_forms, preprocess_space_refs, quoting, resolve_tokens_shallow, space, strings,
-    try_match_all_rules, types, utilities, eval,
+    try_match_all_rules, types, utilities,
 };
+use super::grounded::evaluate_grounded_args;
+use super::types::EvalStep;
 
 /// Evaluate an S-expression step - handles special forms and delegates to iterative collection
 pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
@@ -145,9 +145,9 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
         // These call eval() internally and may overflow the Rust stack on deep recursion
         if let Some(grounded_op) = env.get_grounded_operation(op) {
             // Create an eval function closure for grounded operations to use
-            let eval_fn = |value: MettaValue, env_inner: Environment| -> (Vec<MettaValue>, Environment) {
-                eval(value, env_inner)
-            };
+            let eval_fn = |value: MettaValue,
+                           env_inner: Environment|
+             -> (Vec<MettaValue>, Environment) { eval(value, env_inner) };
 
             match grounded_op.execute_raw(&items[1..], &env, &eval_fn) {
                 Ok(results) => {
@@ -219,5 +219,9 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
     // Step 4: No lazy rules matched - expression is irreducible (data constructor).
     // In HE semantics, if no rule matches the unevaluated expression, it's a data constructor.
     // We still evaluate arguments (for grounded operations within them) but don't retry rule matching.
-    EvalStep::EvalSExpr { items: items_with_grounded_evaluated, env, depth }
+    EvalStep::EvalSExpr {
+        items: items_with_grounded_evaluated,
+        env,
+        depth,
+    }
 }

@@ -1063,7 +1063,9 @@ mod tests {
         let mut parser = TreeSitterMettaParser::new().unwrap();
 
         // File with only comments - should produce empty result
-        let result = parser.parse("; This is just a comment\n; Another comment").unwrap();
+        let result = parser
+            .parse("; This is just a comment\n; Another comment")
+            .unwrap();
         assert_eq!(result.len(), 0);
     }
 

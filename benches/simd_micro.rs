@@ -59,23 +59,17 @@ fn bench_variable_prefix_detection(c: &mut Criterion) {
         ("long_var", LONG_VAR),
         ("ground_atom", GROUND_ATOM),
     ] {
-        group.bench_with_input(
-            BenchmarkId::new("starts_with", name),
-            &test_str,
-            |b, s| b.iter(|| black_box(is_variable_starts_with(black_box(s)))),
-        );
+        group.bench_with_input(BenchmarkId::new("starts_with", name), &test_str, |b, s| {
+            b.iter(|| black_box(is_variable_starts_with(black_box(s))))
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("byte_check", name),
-            &test_str,
-            |b, s| b.iter(|| black_box(is_variable_byte_check(black_box(s)))),
-        );
+        group.bench_with_input(BenchmarkId::new("byte_check", name), &test_str, |b, s| {
+            b.iter(|| black_box(is_variable_byte_check(black_box(s))))
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("lookup_table", name),
-            &test_str,
-            |b, s| b.iter(|| black_box(is_variable_lookup_table(black_box(s)))),
-        );
+        group.bench_with_input(BenchmarkId::new("lookup_table", name), &test_str, |b, s| {
+            b.iter(|| black_box(is_variable_lookup_table(black_box(s))))
+        });
     }
 
     group.finish();
@@ -89,12 +83,20 @@ fn bench_variable_prefix_detection(c: &mut Criterion) {
 fn generate_test_strings() -> Vec<(String, String)> {
     vec![
         ("short".to_string(), "short".to_string()),
-        ("medium_length_string".to_string(), "medium_length_string".to_string()),
-        ("this_is_a_longer_string_for_testing_purposes".to_string(),
-         "this_is_a_longer_string_for_testing_purposes".to_string()),
+        (
+            "medium_length_string".to_string(),
+            "medium_length_string".to_string(),
+        ),
+        (
+            "this_is_a_longer_string_for_testing_purposes".to_string(),
+            "this_is_a_longer_string_for_testing_purposes".to_string(),
+        ),
         // Also test mismatches
         ("mismatch_early".to_string(), "xismatch_early".to_string()),
-        ("mismatch_late_in_string".to_string(), "mismatch_late_in_striXg".to_string()),
+        (
+            "mismatch_late_in_string".to_string(),
+            "mismatch_late_in_striXg".to_string(),
+        ),
     ]
 }
 
@@ -110,7 +112,9 @@ fn bench_string_equality(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("std_eq", &name),
             &(a, b),
-            |bench, (a, b)| bench.iter(|| black_box(black_box(a.as_str()) == black_box(b.as_str()))),
+            |bench, (a, b)| {
+                bench.iter(|| black_box(black_box(a.as_str()) == black_box(b.as_str())))
+            },
         );
 
         // Direct bytes comparison

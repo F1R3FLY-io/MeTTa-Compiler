@@ -5,8 +5,8 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use mettatron::backend::bytecode::{compile, BytecodeVM};
-use mettatron::backend::{Environment, MettaValue};
 use mettatron::backend::eval::eval;
+use mettatron::backend::{Environment, MettaValue};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -119,7 +119,11 @@ fn build_if_chain(depth: usize) -> MettaValue {
     for i in (0..depth).rev() {
         expr = sexpr(vec![
             atom("if"),
-            sexpr(vec![atom("<"), MettaValue::Long(i as i64), MettaValue::Long(5)]),
+            sexpr(vec![
+                atom("<"),
+                MettaValue::Long(i as i64),
+                MettaValue::Long(5),
+            ]),
             MettaValue::Long(i as i64),
             expr,
         ]);

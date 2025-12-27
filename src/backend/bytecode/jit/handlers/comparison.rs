@@ -3,7 +3,6 @@
 //! Boolean ops: And, Or, Not, Xor
 //! Comparison ops: Lt, Le, Gt, Ge, Eq, Ne, StructEq
 
-
 use cranelift::prelude::*;
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
@@ -93,7 +92,10 @@ pub fn compile_comparison_op<'a, 'b>(
 
             let a_val = codegen.extract_long(a);
             let b_val = codegen.extract_long(b);
-            let cmp = codegen.builder.ins().icmp(IntCC::SignedLessThan, a_val, b_val);
+            let cmp = codegen
+                .builder
+                .ins()
+                .icmp(IntCC::SignedLessThan, a_val, b_val);
 
             // Convert i8 comparison result to i64
             let result = codegen.builder.ins().uextend(types::I64, cmp);
@@ -128,7 +130,10 @@ pub fn compile_comparison_op<'a, 'b>(
 
             let a_val = codegen.extract_long(a);
             let b_val = codegen.extract_long(b);
-            let cmp = codegen.builder.ins().icmp(IntCC::SignedGreaterThan, a_val, b_val);
+            let cmp = codegen
+                .builder
+                .ins()
+                .icmp(IntCC::SignedGreaterThan, a_val, b_val);
             let result = codegen.builder.ins().uextend(types::I64, cmp);
             let boxed = codegen.box_bool(result);
             codegen.push(boxed)?;

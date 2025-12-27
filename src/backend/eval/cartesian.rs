@@ -45,8 +45,7 @@ impl CartesianProductIter {
         let indices = smallvec::smallvec![0; results.len()];
 
         // Wrap each result list in Arc for O(1) cloning
-        let arc_results: Vec<Arc<Vec<MettaValue>>> =
-            results.into_iter().map(Arc::new).collect();
+        let arc_results: Vec<Arc<Vec<MettaValue>>> = results.into_iter().map(Arc::new).collect();
 
         Some(CartesianProductIter {
             indices,

@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 use std::sync::RwLock;
 
-use crate::backend::modules::{LoadOptions, ModId};
 use super::Environment;
+use crate::backend::modules::{LoadOptions, ModId};
 
 impl Environment {
     /// Get the current module path (directory of the executing module)

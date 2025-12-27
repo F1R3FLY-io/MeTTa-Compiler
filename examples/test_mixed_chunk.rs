@@ -2,8 +2,8 @@
 use std::sync::Arc;
 
 fn main() {
-    use mettatron::backend::bytecode::{BytecodeChunk, ChunkBuilder, Opcode};
     use mettatron::backend::bytecode::vm::{BytecodeVM, VmConfig};
+    use mettatron::backend::bytecode::{BytecodeChunk, ChunkBuilder, Opcode};
     use mettatron::backend::Environment;
 
     let ops = 10;
@@ -42,7 +42,7 @@ fn main() {
         VmConfig::default(),
         Environment::new(),
     );
-    
+
     match vm.run() {
         Ok(result) => println!("Result: {:?}", result),
         Err(e) => println!("Error: {:?}", e),

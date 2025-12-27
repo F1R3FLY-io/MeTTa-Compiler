@@ -1,8 +1,8 @@
 //! Memory test that mimics the benchmark pattern
 //! Run with: valgrind --tool=massif ./target/release/examples/bench_memory_test
 
-use mettatron::backend::bytecode::{BytecodeChunk, ChunkBuilder, Opcode};
 use mettatron::backend::bytecode::vm::BytecodeVM;
+use mettatron::backend::bytecode::{BytecodeChunk, ChunkBuilder, Opcode};
 use mettatron::backend::MettaValue;
 use std::sync::Arc;
 
@@ -65,7 +65,10 @@ fn run_jit_benchmark(_iterations: usize) {
 }
 
 fn run_multi_compile(num_compilers: usize) {
-    println!("Creating {} JIT compilers to test memory growth...", num_compilers);
+    println!(
+        "Creating {} JIT compilers to test memory growth...",
+        num_compilers
+    );
 
     #[cfg(feature = "jit")]
     {

@@ -8,12 +8,12 @@
 use std::sync::Arc;
 use tracing::trace;
 
-use crate::backend::models::MettaValue;
-use crate::backend::Environment;
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
-use crate::backend::bytecode::native_registry::NativeContext;
 use crate::backend::bytecode::external_registry::ExternalContext;
+use crate::backend::bytecode::native_registry::NativeContext;
+use crate::backend::models::MettaValue;
+use crate::backend::Environment;
 
 impl BytecodeVM {
     // === Advanced Calls ===
@@ -36,7 +36,9 @@ impl BytecodeVM {
         let ctx = NativeContext::new(Environment::new());
 
         // Call through registry
-        let result = self.native_registry.call(func_id, &args, &ctx)
+        let result = self
+            .native_registry
+            .call(func_id, &args, &ctx)
             .map_err(|e| VmError::Runtime(e.to_string()))?;
 
         // Push result(s)
@@ -60,7 +62,9 @@ impl BytecodeVM {
         let arity = self.read_u8()? as usize;
 
         // Clone the function name to release the borrow before popping args
-        let func_name = self.chunk.get_constant(symbol_idx)
+        let func_name = self
+            .chunk
+            .get_constant(symbol_idx)
             .and_then(|v| {
                 if let MettaValue::Atom(s) = v {
                     Some(s.clone())
@@ -113,7 +117,9 @@ impl BytecodeVM {
         let head_idx = self.read_u16()?;
         let arity = self.read_u8()? as usize;
 
-        let head = self.chunk.get_constant(head_idx)
+        let head = self
+            .chunk
+            .get_constant(head_idx)
             .cloned()
             .ok_or_else(|| VmError::InvalidConstant(head_idx))?;
 

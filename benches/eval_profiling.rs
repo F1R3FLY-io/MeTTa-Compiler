@@ -118,13 +118,9 @@ fn bench_tco_recursion(c: &mut Criterion) {
         let program = generate_countdown(*depth);
 
         group.throughput(Throughput::Elements(*depth as u64));
-        group.bench_with_input(
-            BenchmarkId::new("countdown_depth", depth),
-            depth,
-            |b, _| {
-                b.iter(|| run_program(&program));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("countdown_depth", depth), depth, |b, _| {
+            b.iter(|| run_program(&program));
+        });
     }
 
     group.finish();
@@ -165,13 +161,9 @@ fn bench_cartesian_product(c: &mut Criterion) {
         let combos = 2_u64.pow(*depth as u32);
 
         group.throughput(Throughput::Elements(combos));
-        group.bench_with_input(
-            BenchmarkId::new("binary_depth", depth),
-            depth,
-            |b, _| {
-                b.iter(|| run_program(&program));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("binary_depth", depth), depth, |b, _| {
+            b.iter(|| run_program(&program));
+        });
     }
 
     group.finish();

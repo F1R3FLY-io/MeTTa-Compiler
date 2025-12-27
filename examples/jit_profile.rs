@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 #[cfg(feature = "jit")]
-use mettatron::backend::bytecode::jit::{JitCompiler, JitContext, JitValue, JitBailoutReason};
+use mettatron::backend::bytecode::jit::{JitBailoutReason, JitCompiler, JitContext, JitValue};
 
 fn atom(name: &str) -> MettaValue {
     MettaValue::Atom(name.to_string())
@@ -60,7 +60,10 @@ fn main() {
         println!("Result: {:?}", result);
         println!("Total time: {:?}", elapsed);
         println!("Per iteration: {:.2} ns", ns_per_iter);
-        println!("Throughput: {:.2} Melem/s", (depth as f64 * iterations as f64) / elapsed.as_secs_f64() / 1e6);
+        println!(
+            "Throughput: {:.2} Melem/s",
+            (depth as f64 * iterations as f64) / elapsed.as_secs_f64() / 1e6
+        );
     } else {
         if !JitCompiler::can_compile_stage1(&chunk) {
             eprintln!("Chunk is not JIT-compilable!");
@@ -86,22 +89,19 @@ fn main() {
         println!("Result: {}", result);
         println!("Total time: {:?}", elapsed);
         println!("Per iteration: {:.2} ns", ns_per_iter);
-        println!("Throughput: {:.2} Gelem/s", (depth as f64 * iterations as f64) / elapsed.as_secs_f64() / 1e9);
+        println!(
+            "Throughput: {:.2} Gelem/s",
+            (depth as f64 * iterations as f64) / elapsed.as_secs_f64() / 1e9
+        );
     }
 }
 
 #[cfg(feature = "jit")]
 unsafe fn exec_jit_code(code_ptr: *const (), constants: &[MettaValue]) -> i64 {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = JitContext::new(
-        stack.as_mut_ptr(),
-        64,
-        constants.as_ptr(),
-        constants.len(),
-    );
+    let mut ctx = JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len());
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
-        std::mem::transmute(code_ptr);
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = std::mem::transmute(code_ptr);
     native_fn(&mut ctx as *mut JitContext)
 }
 

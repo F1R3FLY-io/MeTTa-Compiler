@@ -283,14 +283,18 @@ fn bench_call_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("jit_tier1_call");
 
     for arity in [0, 1, 2, 4, 8].iter() {
-        group.bench_with_input(BenchmarkId::new("call_bytecode", arity), arity, |b, &arity| {
-            let chunk = Arc::new(create_call_chunk(arity));
-            b.iter(|| {
-                let mut vm =
-                    mettatron::backend::bytecode::vm::BytecodeVM::new(Arc::clone(&chunk));
-                black_box(vm.run())
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("call_bytecode", arity),
+            arity,
+            |b, &arity| {
+                let chunk = Arc::new(create_call_chunk(arity));
+                b.iter(|| {
+                    let mut vm =
+                        mettatron::backend::bytecode::vm::BytecodeVM::new(Arc::clone(&chunk));
+                    black_box(vm.run())
+                })
+            },
+        );
 
         group.bench_with_input(BenchmarkId::new("call_jit", arity), arity, |b, &arity| {
             let chunk = create_call_chunk(arity);
@@ -338,25 +342,34 @@ fn bench_hot_paths_if_chain(c: &mut Criterion) {
             },
         );
 
-        group.bench_with_input(BenchmarkId::new("if_chain_jit", depth), depth, |b, &depth| {
-            let chunk = create_if_chain_chunk(depth);
-            let mut compiler = JitCompiler::new().expect("Failed to create compiler");
-            let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
+        group.bench_with_input(
+            BenchmarkId::new("if_chain_jit", depth),
+            depth,
+            |b, &depth| {
+                let chunk = create_if_chain_chunk(depth);
+                let mut compiler = JitCompiler::new().expect("Failed to create compiler");
+                let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
-            let constants = chunk.constants();
-            let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
+                let constants = chunk.constants();
+                let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
 
-            b.iter(|| {
-                let mut ctx = unsafe {
-                    JitContext::new(stack.as_mut_ptr(), 256, constants.as_ptr(), constants.len())
-                };
+                b.iter(|| {
+                    let mut ctx = unsafe {
+                        JitContext::new(
+                            stack.as_mut_ptr(),
+                            256,
+                            constants.as_ptr(),
+                            constants.len(),
+                        )
+                    };
 
-                let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
-                    unsafe { std::mem::transmute(code_ptr) };
-                let result = unsafe { native_fn(&mut ctx as *mut JitContext) };
-                black_box(result)
-            })
-        });
+                    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+                        unsafe { std::mem::transmute(code_ptr) };
+                    let result = unsafe { native_fn(&mut ctx as *mut JitContext) };
+                    black_box(result)
+                })
+            },
+        );
     }
 
     group.finish();
@@ -450,9 +463,7 @@ criterion_group!(
 // Placeholder benchmark when JIT is not enabled
 #[cfg(not(feature = "jit"))]
 fn bench_no_jit_placeholder(c: &mut Criterion) {
-    c.bench_function("no_jit_placeholder", |b| {
-        b.iter(|| black_box(42))
-    });
+    c.bench_function("no_jit_placeholder", |b| b.iter(|| black_box(42)));
 }
 
 #[cfg(not(feature = "jit"))]

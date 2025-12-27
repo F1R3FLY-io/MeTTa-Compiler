@@ -181,9 +181,7 @@ impl FuzzyMatcher {
                         return Some(SmartSuggestion {
                             message: format!(
                                 "Did you mean: {}? ({} expects a space reference at position {})",
-                                suggested,
-                                parent,
-                                ctx.position
+                                suggested, parent, ctx.position
                             ),
                             confidence: SuggestionConfidence::High,
                             suggestions: vec![suggested],

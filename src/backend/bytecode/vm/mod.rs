@@ -329,12 +329,96 @@ impl BytecodeVM {
     /// - `Ok(Some(results))` if JIT execution completed successfully
     /// - `Ok(None)` if JIT is not available or bailed out (fall back to interpreter)
     /// - `Err(_)` if an error occurred
-    ///
-    /// Note: JIT compilation is not yet implemented in this PR. This function
-    /// always returns Ok(None) to fall back to the interpreter.
-    #[allow(dead_code)]
+    
     fn try_jit_execute(&mut self) -> VmResult<Option<Vec<MettaValue>>> {
-        // JIT compiler not yet available - always use interpreter
+        use super::jit::{JitCompiler, JitContext, JitValue, JitBailoutReason};
+
+        // Record execution for profiling
+        let should_compile = self.chunk.record_jit_execution();
+
+        // Try to compile if hot
+        if should_compile && self.chunk.can_jit_compile() {
+            if self.chunk.jit_profile().try_start_compiling() {
+                // We won the race to compile
+                match JitCompiler::new() {
+                    Ok(mut compiler) => {
+                        match compiler.compile(&self.chunk) {
+                            Ok(code_ptr) => {
+                                unsafe {
+                                    // Code size is not tracked separately for now
+                                    self.chunk.jit_profile().set_compiled(code_ptr, 0);
+                                }
+                            }
+                            Err(_e) => {
+                                // Compilation failed - mark as failed so we don't try again
+                                self.chunk.jit_profile().set_failed();
+                            }
+                        }
+                    }
+                    Err(_e) => {
+                        // Could not create compiler - mark as failed
+                        self.chunk.jit_profile().set_failed();
+                    }
+                }
+            }
+        }
+
+        // Execute JIT code if available
+        if !self.chunk.has_jit_code() {
+            return Ok(None);
+        }
+
+        // Set up JIT context with appropriately sized stack
+        // Use the bytecode length as a conservative upper bound for stack depth
+        // (each push adds at most 1, and typical ops consume before producing)
+        let required_stack = self.chunk.code().len().max(64).min(4096);
+        let constants = self.chunk.constants();
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); required_stack];
+
+        // SAFETY: stack is valid for the lifetime of this function call
+        let mut ctx = unsafe {
+            JitContext::new(
+                stack.as_mut_ptr(),
+                required_stack,
+                constants.as_ptr(),
+                constants.len(),
+            )
+        };
+
+        // Get and execute native code
+        if let Some(native_fn) = unsafe { self.chunk.jit_profile().get_native_fn() } {
+            unsafe {
+                native_fn(&mut ctx as *mut JitContext);
+            }
+
+            // Check for bailout
+            if ctx.bailout {
+                // JIT execution bailed out - set interpreter IP to bailout point
+                self.ip = ctx.bailout_ip;
+                // Transfer any values from JIT stack to interpreter stack
+                for i in 0..ctx.sp {
+                    let jit_val = unsafe { *ctx.value_stack.add(i) };
+                    let metta_val = unsafe { jit_val.to_metta() };
+                    self.push(metta_val);
+                }
+                return Ok(None); // Fall back to interpreter
+            }
+
+            // JIT execution completed - collect results
+            let mut results = Vec::with_capacity(ctx.sp);
+            for i in 0..ctx.sp {
+                let jit_val = unsafe { *ctx.value_stack.add(i) };
+                let metta_val = unsafe { jit_val.to_metta() };
+                results.push(metta_val);
+            }
+
+            if results.is_empty() {
+                results.push(MettaValue::Unit);
+            }
+
+            return Ok(Some(results));
+        }
+
         Ok(None)
     }
 

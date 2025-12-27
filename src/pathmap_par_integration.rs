@@ -27,6 +27,7 @@ fn create_int_par(n: i64) -> Par {
 // These identify byte arrays as MeTTa-specific data for the pretty-printer
 const METTA_MULTIPLICITIES_MAGIC: &[u8] = b"MTTM"; // MeTTa Multiplicities
 const METTA_SPACE_MAGIC: &[u8] = b"MTTS"; // MeTTa Space
+const METTA_LARGE_EXPRS_MAGIC: &[u8] = b"MTTL"; // MeTTa Large Expressions (arity >= 64)
 
 /// Convert a MettaValue to a Rholang Par object
 pub fn metta_value_to_par(value: &MettaValue) -> Par {
@@ -105,49 +106,70 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValue::Unit => {
-            // Represent Unit as empty Par (similar to Nil)
-            Par::default()
-        }
-        MettaValue::State(id) => {
-            // Represent state as tagged tuple: ("state", id)
-            let tag_par = create_string_par("state".to_string());
-            let id_par = create_int_par(*id as i64);
+        MettaValue::Space(handle) => {
+            // Represent spaces as tagged tuples: ("space", id, name)
+            let ps = vec![
+                create_string_par("space".to_string()),
+                create_int_par(handle.id as i64),
+                create_string_par(handle.name.clone()),
+            ];
 
             Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-                    ps: vec![tag_par, id_par],
+                    ps,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
+        MettaValue::State(id) => {
+            // Represent states as tagged tuples: ("state", id)
+            let ps = vec![
+                create_string_par("state".to_string()),
+                create_int_par(*id as i64),
+            ];
+
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
+        MettaValue::Unit => {
+            // Represent unit as empty tuple
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps: vec![],
                     locally_free: Vec::new(),
                     connective_used: false,
                 })),
             }])
         }
         MettaValue::Memo(handle) => {
-            // Represent memo as tagged tuple: ("memo", name)
-            let tag_par = create_string_par("memo".to_string());
-            let name_par = create_string_par(handle.name.clone());
+            // Represent memos as tagged tuples: ("memo", id, name)
+            let ps = vec![
+                create_string_par("memo".to_string()),
+                create_int_par(handle.id as i64),
+                create_string_par(handle.name.clone()),
+            ];
 
             Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-                    ps: vec![tag_par, name_par],
+                    ps,
                     locally_free: Vec::new(),
                     connective_used: false,
                 })),
             }])
         }
         MettaValue::Empty => {
-            // Represent Empty as empty Par (similar to Nil/Unit)
-            Par::default()
-        }
-        MettaValue::Space(handle) => {
-            // Represent space as tagged tuple: ("space", id, name)
-            let tag_par = create_string_par("space".to_string());
-            let id_par = create_int_par(handle.id as i64);
-            let name_par = create_string_par(handle.name.clone());
+            // Empty sentinel - represent as tagged tuple: ("empty",)
+            let ps = vec![create_string_par("empty".to_string())];
 
             Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-                    ps: vec![tag_par, id_par, name_par],
+                    ps,
                     locally_free: Vec::new(),
                     connective_used: false,
                 })),
@@ -267,6 +289,49 @@ pub fn environment_to_par(env: &Environment) -> Par {
     // The space is now a single GByteArray with raw path bytes
     let space_epathmap = space_bytes_par;
 
+    // Serialize large expressions (arity >= 64) from fallback PathMap
+    // Format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes]...
+    // Uses varint encoding (not MORK) for expressions that exceed 63-arity limit
+    let mut large_exprs_bytes = Vec::new();
+    large_exprs_bytes.extend_from_slice(METTA_LARGE_EXPRS_MAGIC);
+
+    let guard = env.get_large_expr_pathmap();
+    let large_expr_count;
+    if let Some(ref fallback) = *guard {
+        // Reserve space for count
+        let count_offset = large_exprs_bytes.len();
+        large_exprs_bytes.extend_from_slice(&[0u8; 8]);
+
+        let mut count = 0u64;
+        for (_key, metta_value) in fallback.iter() {
+            // Serialize each value using varint encoding
+            use crate::backend::varint_encoding::metta_to_varint_key;
+            let value_bytes = metta_to_varint_key(metta_value);
+            // Write length (4 bytes, big-endian)
+            let len = value_bytes.len() as u32;
+            large_exprs_bytes.extend_from_slice(&len.to_be_bytes());
+            // Write value bytes
+            large_exprs_bytes.extend_from_slice(&value_bytes);
+            count += 1;
+        }
+
+        // Write actual count
+        large_exprs_bytes[count_offset..count_offset + 8].copy_from_slice(&count.to_be_bytes());
+        large_expr_count = count;
+    } else {
+        // No large expressions - write count = 0
+        large_exprs_bytes.extend_from_slice(&0u64.to_be_bytes());
+        large_expr_count = 0;
+    }
+    drop(guard);
+
+    let large_exprs_par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(large_exprs_bytes)),
+    }]);
+
+    // Only include large_exprs tuple if there are any
+    let _has_large_exprs = large_expr_count > 0;
+
     // Serialize multiplicities as a byte array for efficiency and consistency
     // Format: [magic: 4 bytes "MTTM"][count: 8 bytes][key1_len: 4 bytes][key1_bytes][value1: 8 bytes]...
     let multiplicities_map = env.get_multiplicities();
@@ -299,10 +364,21 @@ pub fn environment_to_par(env: &Environment) -> Par {
         expr_instance: Some(ExprInstance::GByteArray(multiplicities_bytes)),
     }]);
 
-    // Build ETuple with named fields: (("space", ...), ("multiplicities", ...))
+    // Build ETuple with named fields: (("space", ...), ("large_exprs", ...), ("multiplicities", ...))
     let space_tuple = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::ETupleBody(ETuple {
             ps: vec![create_string_par("space".to_string()), space_epathmap],
+            locally_free: Vec::new(),
+            connective_used: false,
+        })),
+    }]);
+
+    let large_exprs_tuple = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            ps: vec![
+                create_string_par("large_exprs".to_string()),
+                large_exprs_par,
+            ],
             locally_free: Vec::new(),
             connective_used: false,
         })),
@@ -319,10 +395,11 @@ pub fn environment_to_par(env: &Environment) -> Par {
         })),
     }]);
 
-    // Return ETuple with 2 named field tuples
+    // Return ETuple with 2 or 3 named field tuples (3 if large_exprs present)
+    // Order: [space, multiplicities, large_exprs] for backwards compatibility
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-            ps: vec![space_tuple, multiplicities_tuple],
+            ps: vec![space_tuple, multiplicities_tuple, large_exprs_tuple],
             locally_free: Vec::new(),
             connective_used: false,
         })),
@@ -516,21 +593,22 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
 /// Deserializes the Space's PathMap and multiplicities from byte arrays
 /// Expects an ETuple with named fields:
 ///   (("space", GByteArray), ("multiplicities", GByteArray))
+///   or (("space", GByteArray), ("multiplicities", GByteArray), ("large_exprs", GByteArray))
 /// Note: Type assertions are stored within the space, not separately
 pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
     use std::collections::HashMap;
     trace!(target: "mettatron::rholang_integration::par_to_environment", par_exprs_count = par.exprs.len());
 
-    // The par should be an ETuple with 2 named field tuples
+    // The par should be an ETuple with 2 or 3 named field tuples (3 if large_exprs present)
     if let Some(expr) = par.exprs.first() {
         if let Some(ExprInstance::ETupleBody(tuple)) = &expr.expr_instance {
-            if tuple.ps.len() != 2 {
+            if tuple.ps.len() < 2 || tuple.ps.len() > 3 {
                 debug!(
                     target: "mettatron::rholang_integration::par_to_environment",
-                    expected = 2, got = tuple.ps.len(), "invalid environment tuple size"
+                    expected = "2-3", got = tuple.ps.len(), "invalid environment tuple size"
                 );
                 return Err(format!(
-                    "Expected 2 elements in environment tuple, got {}",
+                    "Expected 2 or 3 elements in environment tuple, got {}",
                     tuple.ps.len()
                 ));
             }
@@ -749,6 +827,76 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
                 }
                 // Update shared PathMap with modified Space
                 env.update_pathmap(space);
+
+                // Rebuild bloom filter from restored space
+                // The bloom filter is not serialized, so we need to rebuild it
+                // by iterating through all entries and extracting (head, arity) pairs
+                env.rebuild_bloom_filter_from_space();
+            }
+
+            // Extract and restore large expressions (element 2) if present
+            // These are expressions with arity >= 64 that exceed MORK's 63-arity limit
+            if tuple.ps.len() >= 3 {
+                let large_exprs_par = extract_tuple_value(&tuple.ps[2])?;
+                if let Some(expr) = large_exprs_par.exprs.first() {
+                    if let Some(ExprInstance::GByteArray(large_bytes)) = &expr.expr_instance {
+                        // Read format: [magic: 4 bytes "MTTL"][count: 8 bytes][expr1_len: 4 bytes][expr1_bytes]...
+                        if large_bytes.len() >= 12 {
+                            let mut offset = 0;
+
+                            // Check and skip magic number if present
+                            if large_bytes.len() >= 4
+                                && &large_bytes[0..4] == METTA_LARGE_EXPRS_MAGIC
+                            {
+                                offset += 4;
+                            }
+
+                            // Read count
+                            if offset + 8 <= large_bytes.len() {
+                                let count = u64::from_be_bytes([
+                                    large_bytes[offset],
+                                    large_bytes[offset + 1],
+                                    large_bytes[offset + 2],
+                                    large_bytes[offset + 3],
+                                    large_bytes[offset + 4],
+                                    large_bytes[offset + 5],
+                                    large_bytes[offset + 6],
+                                    large_bytes[offset + 7],
+                                ]);
+                                offset += 8;
+
+                                // Read and restore each large expression
+                                use crate::backend::varint_encoding::varint_key_to_metta;
+                                for _ in 0..count {
+                                    if offset + 4 > large_bytes.len() {
+                                        break;
+                                    }
+
+                                    // Read expression length
+                                    let len = u32::from_be_bytes([
+                                        large_bytes[offset],
+                                        large_bytes[offset + 1],
+                                        large_bytes[offset + 2],
+                                        large_bytes[offset + 3],
+                                    ]) as usize;
+                                    offset += 4;
+
+                                    if offset + len > large_bytes.len() {
+                                        break;
+                                    }
+
+                                    // Decode varint-encoded expression and insert
+                                    let expr_bytes = &large_bytes[offset..offset + len];
+                                    if let Some((metta_value, _)) = varint_key_to_metta(expr_bytes)
+                                    {
+                                        env.insert_large_expr(metta_value);
+                                    }
+                                    offset += len;
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Rebuild the rule index from the restored MORK Space
@@ -884,16 +1032,16 @@ mod tests {
         // Create an environment with a rule
         let mut env = Environment::new();
         let rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("mul".to_string()),
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
-        );
+    );
         env.add_rule(rule);
 
         // Verify original environment
@@ -904,13 +1052,13 @@ mod tests {
         let par = environment_to_par(&env);
         println!("Serialized to Par");
 
-        // Check that the serialized Par is an ETuple with 2 named field tuples
+        // Check that the serialized Par is an ETuple with 2 or 3 named field tuples
+        // (3 if large_exprs are present)
         assert_eq!(par.exprs.len(), 1);
         if let Some(ExprInstance::ETupleBody(env_tuple)) = par.exprs[0].expr_instance.as_ref() {
-            assert_eq!(
-                env_tuple.ps.len(),
-                2,
-                "Expected ETuple with 2 fields (space, multiplicities), got {}",
+            assert!(
+                env_tuple.ps.len() == 2 || env_tuple.ps.len() == 3,
+                "Expected ETuple with 2 or 3 fields, got {}",
                 env_tuple.ps.len()
             );
 
@@ -1316,12 +1464,12 @@ mod tests {
 
         // Add rule that uses match (the pattern that triggered the bug)
         let rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("is_connected".to_string()),
                 MettaValue::Atom("$from".to_string()),
                 MettaValue::Atom("$to".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("match".to_string()),
                 MettaValue::Atom("&".to_string()),
                 MettaValue::Atom("self".to_string()),
@@ -1332,7 +1480,7 @@ mod tests {
                 ]),
                 MettaValue::Bool(true),
             ]),
-        );
+    );
         env.add_rule(rule);
 
         // Serialize to Par (this is what happens when sending to Rholang)
@@ -1412,12 +1560,12 @@ mod tests {
 
         // Add a rule that uses match (pattern from robot_planning.rho)
         let rule = Rule::new(
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("is_connected".to_string()), // 'o' = 111, 'n' = 110 (RESERVED!)
                 MettaValue::Atom("$from".to_string()),
                 MettaValue::Atom("$to".to_string()),
             ]),
-            MettaValue::SExpr(vec![
+        MettaValue::SExpr(vec![
                 MettaValue::Atom("match".to_string()),
                 MettaValue::Atom("&".to_string()),
                 MettaValue::Atom("self".to_string()),
@@ -1428,7 +1576,7 @@ mod tests {
                 ]),
                 MettaValue::Bool(true),
             ]),
-        );
+    );
         env.add_rule(rule);
 
         let initial_count = env.iter_rules().count();
@@ -1490,5 +1638,54 @@ mod tests {
         assert!(!results.is_empty(), "Should find the connected fact");
 
         println!("✓ Deserialized Environment can be used for evaluation!");
+    }
+
+    #[test]
+    fn test_source_field_roundtrip_with_eval_expr() {
+        // Test that source field with ! expression survives roundtrip
+        use crate::backend::compile::compile;
+
+        // Compile a query with ! expression
+        let query = "!(get_neighbors room_a)";
+        let state = compile(query).expect("Failed to compile");
+
+        // Verify source is populated after compile
+        assert_eq!(state.source.len(), 1, "Source should have 1 expression");
+        assert!(
+            state.source[0].is_eval_expr(),
+            "Source[0] should be an eval expression (starts with !)"
+        );
+        println!(
+            "After compile: source = {:?}, is_eval_expr = {}",
+            state.source[0],
+            state.source[0].is_eval_expr()
+        );
+
+        // Serialize to PathMap Par
+        let par = metta_state_to_pathmap_par(&state);
+
+        // Deserialize back
+        let deserialized =
+            pathmap_par_to_metta_state(&par).expect("Failed to deserialize PathMap");
+
+        // Verify source is preserved
+        assert_eq!(
+            deserialized.source.len(),
+            1,
+            "Deserialized source should have 1 expression"
+        );
+        println!(
+            "After deserialize: source = {:?}, is_eval_expr = {}",
+            deserialized.source[0],
+            deserialized.source[0].is_eval_expr()
+        );
+
+        // Critical: Check that is_eval_expr() still returns true
+        assert!(
+            deserialized.source[0].is_eval_expr(),
+            "Deserialized source[0] should still be an eval expression"
+        );
+
+        println!("✓ Source field with ! expression survives roundtrip");
     }
 }

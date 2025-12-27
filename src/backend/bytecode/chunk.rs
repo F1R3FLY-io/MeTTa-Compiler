@@ -10,7 +10,7 @@ use crate::backend::models::MettaValue;
 use super::opcodes::Opcode;
 use super::optimizer::PeepholeOptimizer;
 
-use super::jit::JitProfile;
+use super::jit::{JitProfile, JitCompiler};
 
 /// A compiled bytecode chunk
 ///
@@ -352,11 +352,8 @@ impl BytecodeChunk {
     // =========================================================================
 
     /// Check if this chunk can be JIT compiled (Stage 1)
-    ///
-    /// Note: Returns false until JitCompiler is available.
     pub fn can_jit_compile(&self) -> bool {
-        // TODO: Delegate to JitCompiler::can_compile_stage1(self) when available
-        false
+        JitCompiler::can_compile_stage1(self)
     }
 
     /// Get the JIT profile for this chunk
@@ -975,8 +972,6 @@ mod tests {
         builder.emit(Opcode::Return);
         let chunk = builder.build();
         assert!(!chunk.has_nondeterminism());
-        // Note: can_jit_compile returns false until JitCompiler is available
-        // This test will be updated when JitCompiler is introduced
-        assert!(!chunk.can_jit_compile(), "JIT compilation not yet available");
+        assert!(chunk.can_jit_compile(), "Arithmetic chunk should be JIT compilable");
     }
 }

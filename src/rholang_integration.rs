@@ -191,6 +191,109 @@ fn matching_open(close: char) -> char {
     }
 }
 
+/// Convert MettaValue to a JSON-like string representation
+/// Used for debugging and human-readable output
+fn metta_value_to_json_string(value: &MettaValue) -> String {
+    match value {
+        MettaValue::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
+        MettaValue::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
+        MettaValue::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
+        MettaValue::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
+        MettaValue::String(s) => format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s)),
+        MettaValue::Nil => r#"{"type":"nil"}"#.to_string(),
+        MettaValue::SExpr(items) => {
+            let items_json: Vec<String> = items.iter().map(metta_value_to_json_string).collect();
+            format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
+        }
+        MettaValue::Error(msg, details) => {
+            format!(
+                r#"{{"type":"error","message":"{}","details":{}}}"#,
+                escape_json(msg),
+                metta_value_to_json_string(details)
+            )
+        }
+        MettaValue::Type(t) => {
+            format!(
+                r#"{{"type":"metatype","value":{}}}"#,
+                metta_value_to_json_string(t)
+            )
+        }
+        MettaValue::Conjunction(goals) => {
+            let goals_json: Vec<String> = goals.iter().map(metta_value_to_json_string).collect();
+            format!(
+                r#"{{"type":"conjunction","goals":[{}]}}"#,
+                goals_json.join(",")
+            )
+        }
+        MettaValue::Space(handle) => {
+            format!(
+                r#"{{"type":"space","id":{},"name":"{}"}}"#,
+                handle.id,
+                escape_json(&handle.name)
+            )
+        }
+        MettaValue::State(id) => {
+            format!(r#"{{"type":"state","id":{}}}"#, id)
+        }
+        MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
+        MettaValue::Memo(handle) => {
+            format!(
+                r#"{{"type":"memo","id":{},"name":"{}"}}"#,
+                handle.id,
+                escape_json(&handle.name)
+            )
+        }
+        MettaValue::Empty => r#"{"type":"empty"}"#.to_string(),
+    }
+}
+
+/// Escape JSON special characters
+fn escape_json(s: &str) -> String {
+    s.replace('\\', r"\\")
+        .replace('"', r#"\""#)
+        .replace('\n', r"\n")
+        .replace('\r', r"\r")
+        .replace('\t', r"\t")
+}
+
+/// Convert MettaState to JSON representation for debugging
+///
+/// Returns a JSON string with the format:
+/// ```json
+/// {
+///   "source": [...],
+///   "environment": {"facts_count": N},
+///   "output": [...]
+/// }
+/// ```
+///
+/// **Use Case**: Debugging, logging, inspection
+/// **Not Recommended**: Rholang integration (use PathMap Par instead)
+pub fn metta_state_to_json(state: &MettaState) -> String {
+    let source_json: Vec<String> = state
+        .source
+        .iter()
+        .map(metta_value_to_json_string)
+        .collect();
+
+    let outputs_json: Vec<String> = state
+        .output
+        .iter()
+        .map(metta_value_to_json_string)
+        .collect();
+
+    // For environment, we'll serialize facts count as a placeholder
+    // Full serialization of MORK Space would require more complex handling
+    let env_json = format!(r#"{{"facts_count":{}}}"#, state.environment.rule_count());
+
+    format!(
+        r#"{{"source":[{}],"environment":{},"output":[{}]}}"#,
+        source_json.join(","),
+        env_json,
+        outputs_json.join(",")
+    )
+}
+
 /// Run compiled state against accumulated state
 ///
 /// This is the core evaluation function for REPL-style interaction.
@@ -311,6 +414,7 @@ pub async fn run_state_async(
 
     // Batch expressions into parallelizable groups
     let mut current_batch: Vec<(usize, MettaValue, bool)> = Vec::new();
+
     let exprs: Vec<_> = compiled_state.source.into_iter().enumerate().collect();
 
     for (idx, expr) in exprs {
@@ -366,46 +470,90 @@ pub async fn run_state_async(
 
 /// Helper function to evaluate a batch of expressions in parallel
 /// Returns results in original order with their indices
-#[cfg(feature = "async")]
+///
+/// Uses Rayon by default for compatibility with Rholang's shared scheduler.
+/// When `hybrid-p2-priority-scheduler` feature is enabled, uses the P2 priority
+/// scheduler with P² runtime estimation for intelligent task scheduling.
+#[cfg(all(feature = "async", feature = "hybrid-p2-priority-scheduler"))]
 async fn evaluate_batch_parallel(
     batch: Vec<(usize, MettaValue, bool)>,
     env: crate::backend::environment::Environment,
 ) -> Vec<(usize, Vec<MettaValue>, bool)> {
     use crate::backend::eval::eval;
-    use tokio::task;
+    use crate::backend::priority_scheduler::global_priority_eval_pool;
 
     debug!(
         batch = ?batch,
-        "Evaluate batch parallel"
+        "Evaluate batch parallel (P2 scheduler)"
     );
 
-    // Spawn parallel evaluation tasks
-    let tasks: Vec<_> = batch
+    let pool = global_priority_eval_pool();
+
+    // Spawn parallel evaluation tasks with NORMAL priority (P² runtime estimation)
+    let receivers: Vec<_> = batch
         .into_iter()
         .map(|(idx, expr, should_output)| {
             let env = env.clone(); // Arc clone is cheap
-            task::spawn_blocking(move || {
+            pool.spawn(move || {
                 let (results, _new_env) = eval(expr, env);
                 (idx, results, should_output)
             })
         })
         .collect();
 
-    trace!(?tasks, "Tasks to handle");
+    trace!(num_tasks = receivers.len(), "Tasks spawned on priority pool");
 
-    // Collect results
-    let mut results = Vec::new();
-    for task_handle in tasks {
-        match task_handle.await {
+    // Collect results from receivers
+    let mut results = Vec::with_capacity(receivers.len());
+    for receiver in receivers {
+        match receiver.recv() {
             Ok(result) => results.push(result),
             Err(e) => {
                 error!(
                     text = %e,
-                    "Parallel evaluation task panicked"
+                    "Parallel evaluation task failed"
                 );
             }
         }
     }
+
+    // Sort results by original index to preserve order
+    results.sort_by_key(|(idx, _, _)| *idx);
+
+    debug!(
+        results = ?results,
+        "Batch evaluated with results"
+    );
+
+    results
+}
+
+/// Helper function to evaluate a batch of expressions in parallel
+/// Returns results in original order with their indices
+///
+/// Uses Rayon's work-stealing thread pool for parallel evaluation.
+/// This is the default implementation for compatibility with Rholang's shared schedulers.
+#[cfg(all(feature = "async", not(feature = "hybrid-p2-priority-scheduler")))]
+async fn evaluate_batch_parallel(
+    batch: Vec<(usize, MettaValue, bool)>,
+    env: crate::backend::environment::Environment,
+) -> Vec<(usize, Vec<MettaValue>, bool)> {
+    use crate::backend::eval::eval;
+    use rayon::prelude::*;
+
+    debug!(
+        batch = ?batch,
+        "Evaluate batch parallel (Rayon)"
+    );
+
+    // Use Rayon's parallel iterator for work-stealing parallelism
+    let mut results: Vec<_> = batch
+        .into_par_iter()
+        .map(|(idx, expr, should_output)| {
+            let (results, _new_env) = eval(expr, env.clone());
+            (idx, results, should_output)
+        })
+        .collect();
 
     // Sort results by original index to preserve order
     results.sort_by_key(|(idx, _, _)| *idx);
@@ -1198,6 +1346,7 @@ mod tests {
             line: 1,
             column: 7,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1213,6 +1362,7 @@ mod tests {
             line: 1,
             column: 8,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1228,6 +1378,7 @@ mod tests {
             line: 1,
             column: 10,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1243,6 +1394,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1258,6 +1410,7 @@ mod tests {
             line: 1,
             column: 1,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         // Generic errors now have a helpful hint
@@ -1278,6 +1431,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1293,6 +1447,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"));
@@ -1309,6 +1464,7 @@ mod tests {
             line: 1,
             column: 1,
             text: "quota".to_string(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(
@@ -1329,6 +1485,7 @@ mod tests {
             line: 1,
             column: 1,
             text: "iff".to_string(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(
@@ -1349,6 +1506,7 @@ mod tests {
             line: 1,
             column: 1,
             text: "xyzzy".to_string(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         // Should not contain "Did you mean" when no similar keyword
@@ -1369,6 +1527,7 @@ mod tests {
             line: 1,
             column: 1,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(
@@ -1387,6 +1546,7 @@ mod tests {
             line: 1,
             column: 5,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);
@@ -1411,6 +1571,7 @@ mod tests {
             line: 0,
             column: 0,
             text: String::new(),
+            file_path: None,
         };
         let msg = improve_error_message(&error);
         assert!(msg.contains("Hint"), "Expected 'Hint' in: {}", msg);

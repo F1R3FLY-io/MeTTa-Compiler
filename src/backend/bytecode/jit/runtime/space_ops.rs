@@ -9,18 +9,18 @@
 //! - resume_space_match - Resume backtracking for space match
 //! - free_space_match_alternatives - Cleanup space match alternatives
 
-use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, JitChoicePoint, JitAlternative, JitAlternativeTag,
-    JitBindingEntry, TAG_NIL,
-};
-use crate::backend::models::MettaValue;
-use super::helpers::metta_to_jit;
-use super::pattern_matching::pattern_matches_impl;
 use super::bindings::{
-    jit_runtime_fork_bindings, jit_runtime_restore_bindings, jit_runtime_free_saved_bindings,
+    jit_runtime_fork_bindings, jit_runtime_free_saved_bindings, jit_runtime_restore_bindings,
     JitSavedBindings,
 };
+use super::helpers::metta_to_jit;
+use super::pattern_matching::pattern_matches_impl;
 use super::MAX_ALTERNATIVES_INLINE;
+use crate::backend::bytecode::jit::types::{
+    JitAlternative, JitAlternativeTag, JitBailoutReason, JitBindingEntry, JitChoicePoint,
+    JitContext, JitValue, TAG_NIL,
+};
+use crate::backend::models::MettaValue;
 
 // =============================================================================
 // Phase D: Space Operations
@@ -38,6 +38,9 @@ use super::MAX_ALTERNATIVES_INLINE;
 ///
 /// # Returns
 /// NaN-boxed Unit value
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_space_add(
     _ctx: *mut JitContext,
@@ -75,6 +78,9 @@ pub unsafe extern "C" fn jit_runtime_space_add(
 ///
 /// # Returns
 /// NaN-boxed Bool - true if atom was found and removed, false otherwise
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_space_remove(
     _ctx: *mut JitContext,
@@ -111,6 +117,9 @@ pub unsafe extern "C" fn jit_runtime_space_remove(
 ///
 /// # Returns
 /// NaN-boxed SExpr containing all atoms in the space
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_space_get_atoms(
     _ctx: *mut JitContext,
@@ -145,6 +154,9 @@ pub unsafe extern "C" fn jit_runtime_space_get_atoms(
 ///
 /// # Returns
 /// NaN-boxed SExpr containing matching atoms
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_space_match(
     _ctx: *mut JitContext,
@@ -344,8 +356,8 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
         // Optimization 5.2: Store alternative inline
         cp.alternatives_inline[idx] = JitAlternative {
             tag: JitAlternativeTag::SpaceMatch,
-            payload: alt_jit.to_bits(),    // Pre-computed result
-            payload2: 0,                    // Unused (bindings already applied)
+            payload: alt_jit.to_bits(), // Pre-computed result
+            payload2: 0,                // Unused (bindings already applied)
             payload3: saved_bindings as u64,
         };
     }
@@ -359,10 +371,7 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
 ///
 /// This stores the bindings from a match operation into the saved frames
 /// so they're available when the alternative is taken during backtracking.
-unsafe fn apply_bindings_to_saved(
-    saved: *mut JitSavedBindings,
-    bindings: &[(String, MettaValue)],
-) {
+unsafe fn apply_bindings_to_saved(saved: *mut JitSavedBindings, bindings: &[(String, MettaValue)]) {
     let saved_ref = match saved.as_mut() {
         Some(s) => s,
         None => return,
@@ -485,22 +494,20 @@ fn instantiate_template_impl(
         }
 
         // S-expression - recurse
-        MettaValue::SExpr(items) => {
-            MettaValue::SExpr(
-                items.iter()
-                    .map(|item| instantiate_template_impl(item, bindings))
-                    .collect()
-            )
-        }
+        MettaValue::SExpr(items) => MettaValue::SExpr(
+            items
+                .iter()
+                .map(|item| instantiate_template_impl(item, bindings))
+                .collect(),
+        ),
 
         // Conjunction - recurse
-        MettaValue::Conjunction(items) => {
-            MettaValue::Conjunction(
-                items.iter()
-                    .map(|item| instantiate_template_impl(item, bindings))
-                    .collect()
-            )
-        }
+        MettaValue::Conjunction(items) => MettaValue::Conjunction(
+            items
+                .iter()
+                .map(|item| instantiate_template_impl(item, bindings))
+                .collect(),
+        ),
 
         // All other values pass through unchanged
         _ => template.clone(),
@@ -552,9 +559,7 @@ pub unsafe extern "C" fn jit_runtime_resume_space_match(
 /// # Safety
 /// The choice point pointer must be valid.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_free_space_match_alternatives(
-    cp: *mut JitChoicePoint,
-) {
+pub unsafe extern "C" fn jit_runtime_free_space_match_alternatives(cp: *mut JitChoicePoint) {
     let cp_ref = match cp.as_ref() {
         Some(c) => c,
         None => return,

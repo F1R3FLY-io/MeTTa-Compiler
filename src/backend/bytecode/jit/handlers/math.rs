@@ -2,7 +2,6 @@
 //!
 //! Handles: Sqrt, Log, Trunc, Ceil, FloorMath, Round, Sin, Cos, Tan, Asin, Acos, Atan, IsNan, IsInf
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -14,7 +13,6 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::Opcode;
 
 /// Context for extended math handlers that need runtime function access
-
 pub struct MathHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub sqrt_func_id: FuncId,
@@ -34,7 +32,6 @@ pub struct MathHandlerContext<'m> {
 }
 
 /// Compile extended math opcodes via runtime calls
-
 pub fn compile_extended_math_op<'a, 'b>(
     ctx: &mut MathHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -196,7 +193,10 @@ pub fn compile_extended_math_op<'a, 'b>(
             codegen.push(result)?;
         }
 
-        _ => unreachable!("compile_extended_math_op called with wrong opcode: {:?}", op),
+        _ => unreachable!(
+            "compile_extended_math_op called with wrong opcode: {:?}",
+            op
+        ),
     }
     Ok(())
 }

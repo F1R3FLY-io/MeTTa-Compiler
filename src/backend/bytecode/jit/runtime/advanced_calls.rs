@@ -5,15 +5,14 @@
 //! - call_external - Call an external function by name index
 //! - call_cached - Call a function with memoization
 
+use super::helpers::metta_to_jit;
+use crate::backend::bytecode::external_registry::{ExternalContext, ExternalRegistry};
+use crate::backend::bytecode::jit::types::{JitContext, JitValue};
+use crate::backend::bytecode::mork_bridge::MorkBridge;
+use crate::backend::bytecode::vm::BytecodeVM;
+use crate::backend::models::MettaValue;
 use std::sync::Arc;
 use tracing::warn;
-use crate::backend::bytecode::jit::types::{JitContext, JitValue};
-use crate::backend::models::MettaValue;
-use crate::backend::bytecode::mork_bridge::MorkBridge;
-use crate::backend::bytecode::chunk::BytecodeChunk;
-use crate::backend::bytecode::vm::BytecodeVM;
-use crate::backend::bytecode::external_registry::{ExternalRegistry, ExternalContext};
-use super::helpers::metta_to_jit;
 
 // =============================================================================
 // Phase F: Advanced Calls
@@ -31,6 +30,9 @@ use super::helpers::metta_to_jit;
 ///
 /// # Returns
 /// NaN-boxed result from the native function
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext` with valid stack.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_call_native(
     ctx: *mut JitContext,
@@ -96,6 +98,9 @@ pub unsafe extern "C" fn jit_runtime_call_native(
 ///
 /// # Returns
 /// NaN-boxed result from the external function
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext` with valid stack and constants.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_call_external(
     ctx: *mut JitContext,
@@ -212,6 +217,9 @@ pub unsafe extern "C" fn jit_runtime_call_external(
 ///
 /// # Returns
 /// NaN-boxed result (cached if available)
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext` with valid stack and constants.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_call_cached(
     ctx: *mut JitContext,

@@ -2,7 +2,6 @@
 //!
 //! Handles: LoadBinding, StoreBinding, HasBinding, ClearBindings, PushBindingFrame, PopBindingFrame
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -14,7 +13,6 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for binding handlers that need runtime function access
-
 pub struct BindingHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub load_binding_func_id: FuncId,
@@ -29,7 +27,6 @@ pub struct BindingHandlerContext<'m> {
 ///
 /// Load binding by name index via runtime call
 /// Stack: [] -> [value]
-
 pub fn compile_load_binding<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -46,7 +43,10 @@ pub fn compile_load_binding<'a, 'b>(
     let ctx_ptr = codegen.ctx_ptr();
     let name_idx_val = codegen.builder.ins().iconst(types::I64, name_idx as i64);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, name_idx_val, ip_val]);
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, name_idx_val, ip_val]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
     Ok(())
@@ -56,7 +56,6 @@ pub fn compile_load_binding<'a, 'b>(
 ///
 /// Store binding by name index via runtime call
 /// Stack: [value] -> []
-
 pub fn compile_store_binding<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -75,7 +74,10 @@ pub fn compile_store_binding<'a, 'b>(
     let ctx_ptr = codegen.ctx_ptr();
     let name_idx_val = codegen.builder.ins().iconst(types::I64, name_idx as i64);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let _call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, name_idx_val, value, ip_val]);
+    let _call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, name_idx_val, value, ip_val]);
     // Result is status code, ignored for now
     Ok(())
 }
@@ -84,7 +86,6 @@ pub fn compile_store_binding<'a, 'b>(
 ///
 /// Check if binding exists by name index via runtime call
 /// Stack: [] -> [bool]
-
 pub fn compile_has_binding<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -100,7 +101,10 @@ pub fn compile_has_binding<'a, 'b>(
     // Call jit_runtime_has_binding(ctx, name_idx)
     let ctx_ptr = codegen.ctx_ptr();
     let name_idx_val = codegen.builder.ins().iconst(types::I64, name_idx as i64);
-    let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, name_idx_val]);
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, name_idx_val]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
     Ok(())
@@ -110,7 +114,6 @@ pub fn compile_has_binding<'a, 'b>(
 ///
 /// Clear all bindings via runtime call
 /// Stack: [] -> []
-
 pub fn compile_clear_bindings<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -129,7 +132,6 @@ pub fn compile_clear_bindings<'a, 'b>(
 ///
 /// Push new binding frame via runtime call
 /// Stack: [] -> []
-
 pub fn compile_push_binding_frame<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -149,7 +151,6 @@ pub fn compile_push_binding_frame<'a, 'b>(
 ///
 /// Pop binding frame via runtime call
 /// Stack: [] -> []
-
 pub fn compile_pop_binding_frame<'a, 'b>(
     ctx: &mut BindingHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

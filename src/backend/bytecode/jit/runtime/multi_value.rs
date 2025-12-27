@@ -5,9 +5,7 @@
 //! - collect_n - Collect up to N nondeterministic results
 
 use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue,
-    JIT_SIGNAL_YIELD, JIT_SIGNAL_FAIL,
-    TAG_HEAP, PAYLOAD_MASK,
+    JitContext, JIT_SIGNAL_FAIL, JIT_SIGNAL_YIELD, PAYLOAD_MASK, TAG_HEAP,
 };
 use crate::backend::models::MettaValue;
 

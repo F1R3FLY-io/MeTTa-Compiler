@@ -5,7 +5,6 @@
 //!          EvalSuperpose, EvalMemo, EvalMemoFirst, EvalPragma, EvalFunction,
 //!          EvalLambda, EvalApply
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -17,7 +16,6 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for special forms handlers that need runtime function access
-
 pub struct SpecialFormsHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub store_binding_func_id: FuncId,
@@ -43,10 +41,7 @@ pub struct SpecialFormsHandlerContext<'m> {
 /// Semantics: Only TAG_BOOL_FALSE and TAG_NIL are falsy.
 /// Everything else (including TAG_BOOL_TRUE, integers, heap values) is truthy.
 /// Stack: [condition, then_val, else_val] -> [result]
-
-pub fn compile_eval_if<'a, 'b>(
-    codegen: &mut CodegenContext<'a, 'b>,
-) -> JitResult<()> {
+pub fn compile_eval_if<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
     let else_val = codegen.pop()?;
     let then_val = codegen.pop()?;
     let condition = codegen.pop()?;
@@ -62,19 +57,13 @@ pub fn compile_eval_if<'a, 'b>(
         .icmp(IntCC::Equal, condition, tag_bool_false);
 
     // is_nil = (condition == TAG_NIL)
-    let is_nil = codegen
-        .builder
-        .ins()
-        .icmp(IntCC::Equal, condition, tag_nil);
+    let is_nil = codegen.builder.ins().icmp(IntCC::Equal, condition, tag_nil);
 
     // is_falsy = is_false || is_nil
     let is_falsy = codegen.builder.ins().bor(is_false, is_nil);
 
     // result = is_falsy ? else_val : then_val
-    let result = codegen
-        .builder
-        .ins()
-        .select(is_falsy, else_val, then_val);
+    let result = codegen.builder.ins().select(is_falsy, else_val, then_val);
     codegen.push(result)?;
     Ok(())
 }
@@ -83,7 +72,6 @@ pub fn compile_eval_if<'a, 'b>(
 ///
 /// Native implementation: call store_binding directly and return Unit inline.
 /// Stack: [value] -> [Unit], name_idx from operand
-
 pub fn compile_eval_let<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -119,10 +107,7 @@ pub fn compile_eval_let<'a, 'b>(
 /// Let* bindings are handled sequentially by the bytecode compiler.
 /// This opcode is a marker/placeholder that just returns Unit.
 /// Stack: [] -> [Unit]
-
-pub fn compile_eval_let_star<'a, 'b>(
-    codegen: &mut CodegenContext<'a, 'b>,
-) -> JitResult<()> {
+pub fn compile_eval_let_star<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
     let unit_val = codegen.const_unit();
     codegen.push(unit_val)?;
     Ok(())
@@ -132,7 +117,6 @@ pub fn compile_eval_let_star<'a, 'b>(
 ///
 /// Native implementation: call pattern_match directly instead of wrapper.
 /// Stack: [value, pattern] -> [bool]
-
 pub fn compile_eval_match<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -162,7 +146,6 @@ pub fn compile_eval_match<'a, 'b>(
 /// Stack: [value] -> [case_index], case_count from operand
 /// Case dispatch is complex (loops over patterns, installs bindings),
 /// so we keep it as a runtime call.
-
 pub fn compile_eval_case<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -193,10 +176,7 @@ pub fn compile_eval_case<'a, 'b>(
 /// Native implementation: Just discard first, keep second.
 /// Chain (;) evaluates both but only returns the second result.
 /// Stack: [first, second] -> [second]
-
-pub fn compile_eval_chain<'a, 'b>(
-    codegen: &mut CodegenContext<'a, 'b>,
-) -> JitResult<()> {
+pub fn compile_eval_chain<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
     let second = codegen.pop()?;
     let _first = codegen.pop()?; // Discard first value
     codegen.push(second)?;
@@ -206,7 +186,6 @@ pub fn compile_eval_chain<'a, 'b>(
 /// Compile EvalQuote opcode
 ///
 /// Stack: [expr] -> [quoted]
-
 pub fn compile_eval_quote<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -232,7 +211,6 @@ pub fn compile_eval_quote<'a, 'b>(
 /// Compile EvalUnquote opcode
 ///
 /// Stack: [quoted] -> [result]
-
 pub fn compile_eval_unquote<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -258,7 +236,6 @@ pub fn compile_eval_unquote<'a, 'b>(
 /// Compile EvalEval opcode
 ///
 /// Stack: [expr] -> [result]
-
 pub fn compile_eval_eval<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -286,7 +263,6 @@ pub fn compile_eval_eval<'a, 'b>(
 /// Native implementation: call store_binding directly and return Unit inline.
 /// Same optimization as EvalLet - avoid the wrapper function.
 /// Stack: [value] -> [Unit], name_idx from operand
-
 pub fn compile_eval_bind<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -320,7 +296,6 @@ pub fn compile_eval_bind<'a, 'b>(
 /// Compile EvalNew opcode
 ///
 /// Stack: [] -> [space]
-
 pub fn compile_eval_new<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -341,7 +316,6 @@ pub fn compile_eval_new<'a, 'b>(
 /// Compile EvalCollapse opcode
 ///
 /// Stack: [expr] -> [list]
-
 pub fn compile_eval_collapse<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -367,7 +341,6 @@ pub fn compile_eval_collapse<'a, 'b>(
 /// Compile EvalSuperpose opcode
 ///
 /// Stack: [list] -> [choice]
-
 pub fn compile_eval_superpose<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -393,7 +366,6 @@ pub fn compile_eval_superpose<'a, 'b>(
 /// Compile EvalMemo opcode
 ///
 /// Stack: [expr] -> [result]
-
 pub fn compile_eval_memo<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -419,7 +391,6 @@ pub fn compile_eval_memo<'a, 'b>(
 /// Compile EvalMemoFirst opcode
 ///
 /// Stack: [expr] -> [result]
-
 pub fn compile_eval_memo_first<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -445,7 +416,6 @@ pub fn compile_eval_memo_first<'a, 'b>(
 /// Compile EvalPragma opcode
 ///
 /// Stack: [directive] -> [Unit]
-
 pub fn compile_eval_pragma<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -471,7 +441,6 @@ pub fn compile_eval_pragma<'a, 'b>(
 /// Compile EvalFunction opcode
 ///
 /// Stack: [] -> [Unit], name_idx and param_count from operands
-
 pub fn compile_eval_function<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -489,10 +458,10 @@ pub fn compile_eval_function<'a, 'b>(
     let name_idx_val = codegen.builder.ins().iconst(types::I64, name_idx);
     let param_count_val = codegen.builder.ins().iconst(types::I64, param_count);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let call_inst = codegen.builder.ins().call(
-        func_ref,
-        &[ctx_ptr, name_idx_val, param_count_val, ip_val],
-    );
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, name_idx_val, param_count_val, ip_val]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
     Ok(())
@@ -501,7 +470,6 @@ pub fn compile_eval_function<'a, 'b>(
 /// Compile EvalLambda opcode
 ///
 /// Stack: [] -> [closure], param_count from operand
-
 pub fn compile_eval_lambda<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -529,7 +497,6 @@ pub fn compile_eval_lambda<'a, 'b>(
 /// Compile EvalApply opcode
 ///
 /// Stack: [closure] -> [result], arg_count from operand
-
 pub fn compile_eval_apply<'a, 'b>(
     ctx: &mut SpecialFormsHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

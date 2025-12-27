@@ -6,13 +6,12 @@
 //! - get_metatype - Get meta-level type of a value
 //! - bloom_check - Fast bloom filter check before MORK lookup
 
-use tracing::{debug, trace};
+use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue,
-    TAG_HEAP, TAG_LONG, TAG_ATOM, TAG_VAR, TAG_BOOL, TAG_NIL, TAG_UNIT,
+    JitContext, JitValue, TAG_ATOM, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_NIL, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::MettaValue;
-use super::helpers::metta_to_jit;
+use tracing::{debug, trace};
 
 // =============================================================================
 // Phase I: Debug/Meta
@@ -25,6 +24,9 @@ use super::helpers::metta_to_jit;
 /// * `msg_idx` - Index of message in constant pool
 /// * `value` - NaN-boxed value to trace
 /// * `ip` - Instruction pointer
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_trace(
     _ctx: *mut JitContext,
@@ -49,12 +51,11 @@ pub unsafe extern "C" fn jit_runtime_trace(
 ///
 /// # Returns
 /// -1 to pause execution, 0 to continue
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_breakpoint(
-    _ctx: *mut JitContext,
-    bp_id: u64,
-    ip: u64,
-) -> i64 {
+pub unsafe extern "C" fn jit_runtime_breakpoint(_ctx: *mut JitContext, bp_id: u64, ip: u64) -> i64 {
     // Log breakpoint hit
     debug!(target: "mettatron::jit::runtime::breakpoint", bp_id, ip, "Breakpoint hit");
 

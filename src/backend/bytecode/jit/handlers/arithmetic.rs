@@ -2,7 +2,6 @@
 //!
 //! Handles: Add, Sub, Mul, Div, Mod, Neg, Abs, FloorDiv, Pow
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -14,14 +13,12 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::Opcode;
 
 /// Context for arithmetic handlers that need runtime function access
-
 pub struct ArithmeticHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub pow_func_id: FuncId,
 }
 
 /// Compile simple arithmetic opcodes (no runtime calls needed)
-
 pub fn compile_simple_arithmetic_op<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     op: Opcode,
@@ -132,7 +129,10 @@ pub fn compile_simple_arithmetic_op<'a, 'b>(
 
             // abs(x) = x < 0 ? -x : x
             let zero = codegen.builder.ins().iconst(types::I64, 0);
-            let is_neg = codegen.builder.ins().icmp(IntCC::SignedLessThan, a_val, zero);
+            let is_neg = codegen
+                .builder
+                .ins()
+                .icmp(IntCC::SignedLessThan, a_val, zero);
             let negated = codegen.builder.ins().ineg(a_val);
             let result = codegen.builder.ins().select(is_neg, negated, a_val);
 
@@ -158,13 +158,15 @@ pub fn compile_simple_arithmetic_op<'a, 'b>(
             codegen.push(boxed)?;
         }
 
-        _ => unreachable!("compile_simple_arithmetic_op called with wrong opcode: {:?}", op),
+        _ => unreachable!(
+            "compile_simple_arithmetic_op called with wrong opcode: {:?}",
+            op
+        ),
     }
     Ok(())
 }
 
 /// Compile Pow opcode via runtime call
-
 pub fn compile_pow<'a, 'b>(
     ctx: &mut ArithmeticHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

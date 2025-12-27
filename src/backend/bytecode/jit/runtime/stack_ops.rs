@@ -6,7 +6,7 @@
 //! - load_constant - Constant pool access
 //! - debug_print, debug_stack - Debugging utilities
 
-use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_NIL, TAG_HEAP, PAYLOAD_MASK};
+use crate::backend::bytecode::jit::types::{JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_NIL};
 use crate::backend::models::MettaValue;
 use tracing::trace;
 
@@ -53,6 +53,9 @@ pub unsafe extern "C" fn jit_runtime_pop(ctx: *mut JitContext) -> u64 {
 }
 
 /// Get stack pointer
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_sp(ctx: *const JitContext) -> u64 {
     if let Some(ctx) = ctx.as_ref() {
@@ -63,6 +66,9 @@ pub unsafe extern "C" fn jit_runtime_get_sp(ctx: *const JitContext) -> u64 {
 }
 
 /// Set stack pointer
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_set_sp(ctx: *mut JitContext, sp: u64) {
     if let Some(ctx) = ctx.as_mut() {
@@ -117,6 +123,9 @@ pub extern "C" fn jit_runtime_debug_print(val: u64) {
 }
 
 /// Print the current stack for debugging
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext` with valid stack.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_debug_stack(ctx: *const JitContext) {
     if let Some(ctx) = ctx.as_ref() {

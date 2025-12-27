@@ -11,8 +11,8 @@
 //! - begin_nondet - Begin nondeterministic section
 //! - end_nondet - End nondeterministic section
 
-use tracing::warn;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue, JIT_SIGNAL_FAIL};
+use tracing::warn;
 
 // =============================================================================
 // Phase G: Advanced Nondeterminism
@@ -29,6 +29,9 @@ use crate::backend::bytecode::jit::types::{JitContext, JitValue, JIT_SIGNAL_FAIL
 ///
 /// # Returns
 /// NaN-boxed Unit
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_cut(ctx: *mut JitContext, _ip: u64) -> u64 {
     if ctx.is_null() {
@@ -65,6 +68,9 @@ pub unsafe extern "C" fn jit_runtime_cut(ctx: *mut JitContext, _ip: u64) -> u64 
 ///
 /// # Returns
 /// 1 on success, 0 on failure (no room for marker)
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_enter_cut_scope(ctx: *mut JitContext) -> i64 {
     if ctx.is_null() {
@@ -93,6 +99,9 @@ pub unsafe extern "C" fn jit_runtime_enter_cut_scope(ctx: *mut JitContext) -> i6
 ///
 /// # Returns
 /// 1 on success, 0 on failure (no markers to pop)
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_exit_cut_scope(ctx: *mut JitContext) -> i64 {
     if ctx.is_null() {
@@ -118,12 +127,11 @@ pub unsafe extern "C" fn jit_runtime_exit_cut_scope(ctx: *mut JitContext) -> i64
 ///
 /// # Returns
 /// 1 if guard passes (proceed), 0 if guard fails (backtrack)
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_guard(
-    _ctx: *mut JitContext,
-    condition: u64,
-    _ip: u64,
-) -> i64 {
+pub unsafe extern "C" fn jit_runtime_guard(_ctx: *mut JitContext, condition: u64, _ip: u64) -> i64 {
     use crate::backend::bytecode::jit::types::TAG_BOOL;
 
     // True is TAG_BOOL | 1
@@ -148,12 +156,11 @@ pub unsafe extern "C" fn jit_runtime_guard(
 ///
 /// # Returns
 /// NaN-boxed first alternative value
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext` with valid stack.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_amb(
-    ctx: *mut JitContext,
-    alt_count: u64,
-    ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_amb(ctx: *mut JitContext, alt_count: u64, ip: u64) -> u64 {
     if ctx.is_null() {
         return JitValue::nil().to_bits();
     }
@@ -186,7 +193,7 @@ pub unsafe extern "C" fn jit_runtime_amb(
     if ctx_ref.choice_point_count < ctx_ref.choice_point_cap {
         let cp = &mut *ctx_ref.choice_points.add(ctx_ref.choice_point_count);
         cp.saved_sp = ctx_ref.sp as u64;
-        cp.alt_count = (alt_count - 1) as u64;
+        cp.alt_count = alt_count - 1;
         cp.current_index = 0;
         cp.saved_ip = ip;
 
@@ -210,12 +217,11 @@ pub unsafe extern "C" fn jit_runtime_amb(
 ///
 /// # Returns
 /// NaN-boxed Unit
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_commit(
-    ctx: *mut JitContext,
-    count: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_commit(ctx: *mut JitContext, count: u64, _ip: u64) -> u64 {
     if ctx.is_null() {
         return JitValue::unit().to_bits();
     }
@@ -241,11 +247,11 @@ pub unsafe extern "C" fn jit_runtime_commit(
 ///
 /// # Returns
 /// JIT signal for backtracking (-3 = FAIL signal)
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_backtrack(
-    _ctx: *mut JitContext,
-    _ip: u64,
-) -> i64 {
+pub unsafe extern "C" fn jit_runtime_backtrack(_ctx: *mut JitContext, _ip: u64) -> i64 {
     // Return FAIL signal to trigger backtracking in the JIT dispatcher
     JIT_SIGNAL_FAIL
 }
@@ -263,6 +269,9 @@ pub unsafe extern "C" fn jit_runtime_backtrack(
 /// # Arguments
 /// * `ctx` - JIT context
 /// * `_ip` - Instruction pointer
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_begin_nondet(ctx: *mut JitContext, _ip: u64) {
     let ctx_ref = &mut *ctx;
@@ -277,6 +286,9 @@ pub unsafe extern "C" fn jit_runtime_begin_nondet(ctx: *mut JitContext, _ip: u64
 /// # Arguments
 /// * `ctx` - JIT context
 /// * `_ip` - Instruction pointer
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_end_nondet(ctx: *mut JitContext, _ip: u64) {
     let ctx_ref = &mut *ctx;

@@ -3,7 +3,6 @@
 //! Handles: Return, Jump, JumpIfFalse, JumpIfTrue, JumpShort, JumpIfFalseShort,
 //! JumpIfTrueShort, JumpIfNil, JumpIfError, JumpTable, Halt
 
-
 use cranelift::prelude::*;
 
 use cranelift::codegen::ir::BlockArg;
@@ -16,35 +15,34 @@ use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::{JitError, JitResult};
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
-
 use crate::backend::bytecode::jit::types::TAG_NIL;
 
 use crate::backend::bytecode::jit::types::TAG_ERROR;
 
 /// Compile Return opcode
-
 pub fn compile_return<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
     // Return top of stack or 0
-    let result = codegen.pop().unwrap_or_else(|_| {
-        codegen.builder.ins().iconst(types::I64, 0)
-    });
+    let result = codegen
+        .pop()
+        .unwrap_or_else(|_| codegen.builder.ins().iconst(types::I64, 0));
     codegen.builder.ins().return_(&[result]);
     codegen.mark_terminated();
     Ok(())
 }
 
 /// Compile Halt opcode
-
 pub fn compile_halt<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<()> {
     // Stack: [] -> signal - halt execution
-    let signal = codegen.builder.ins().iconst(types::I64, super::super::JIT_SIGNAL_HALT);
+    let signal = codegen
+        .builder
+        .ins()
+        .iconst(types::I64, super::super::JIT_SIGNAL_HALT);
     codegen.builder.ins().return_(&[signal]);
     codegen.mark_terminated();
     Ok(())
 }
 
 /// Compile Jump opcode (unconditional)
-
 pub fn compile_jump<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -62,10 +60,13 @@ pub fn compile_jump<'a, 'b>(
     if let Some(&target_block) = offset_to_block.get(&target) {
         // For merge blocks, pass the stack top as argument
         if merge_blocks.contains_key(&target) {
-            let stack_top = codegen.peek().unwrap_or_else(|_| {
-                codegen.builder.ins().iconst(types::I64, 0)
-            });
-            codegen.builder.ins().jump(target_block, &[BlockArg::Value(stack_top)]);
+            let stack_top = codegen
+                .peek()
+                .unwrap_or_else(|_| codegen.builder.ins().iconst(types::I64, 0));
+            codegen
+                .builder
+                .ins()
+                .jump(target_block, &[BlockArg::Value(stack_top)]);
         } else {
             codegen.builder.ins().jump(target_block, &[]);
         }
@@ -80,7 +81,6 @@ pub fn compile_jump<'a, 'b>(
 }
 
 /// Compile JumpShort opcode (unconditional, 1-byte offset)
-
 pub fn compile_jump_short<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -98,10 +98,13 @@ pub fn compile_jump_short<'a, 'b>(
     if let Some(&target_block) = offset_to_block.get(&target) {
         // For merge blocks, pass the stack top as argument
         if merge_blocks.contains_key(&target) {
-            let stack_top = codegen.peek().unwrap_or_else(|_| {
-                codegen.builder.ins().iconst(types::I64, 0)
-            });
-            codegen.builder.ins().jump(target_block, &[BlockArg::Value(stack_top)]);
+            let stack_top = codegen
+                .peek()
+                .unwrap_or_else(|_| codegen.builder.ins().iconst(types::I64, 0));
+            codegen
+                .builder
+                .ins()
+                .jump(target_block, &[BlockArg::Value(stack_top)]);
         } else {
             codegen.builder.ins().jump(target_block, &[]);
         }
@@ -116,7 +119,6 @@ pub fn compile_jump_short<'a, 'b>(
 }
 
 /// Compile JumpIfFalse opcode
-
 pub fn compile_jump_if_false<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -137,9 +139,9 @@ pub fn compile_jump_if_false<'a, 'b>(
     let cond_i8 = codegen.builder.ins().ireduce(types::I8, cond_val);
 
     // Get stack value for merge blocks
-    let stack_top = codegen.peek().unwrap_or_else(|_| {
-        codegen.builder.ins().iconst(types::I64, 0)
-    });
+    let stack_top = codegen
+        .peek()
+        .unwrap_or_else(|_| codegen.builder.ins().iconst(types::I64, 0));
 
     // Prepare arguments for each branch based on whether target is a merge block
     let target_is_merge = merge_blocks.contains_key(&target);
@@ -160,7 +162,13 @@ pub fn compile_jump_if_false<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, fallthrough_block, fallthrough_args, target_block, target_args);
+        codegen.builder.ins().brif(
+            cond_i8,
+            fallthrough_block,
+            fallthrough_args,
+            target_block,
+            target_args,
+        );
         codegen.mark_terminated();
         Ok(())
     } else if let Some(&target_block) = offset_to_block.get(&target) {
@@ -171,7 +179,10 @@ pub fn compile_jump_if_false<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, cont_block, &[], target_block, target_args);
+        codegen
+            .builder
+            .ins()
+            .brif(cond_i8, cont_block, &[], target_block, target_args);
         codegen.builder.switch_to_block(cont_block);
         codegen.builder.seal_block(cont_block);
         Ok(())
@@ -184,7 +195,6 @@ pub fn compile_jump_if_false<'a, 'b>(
 }
 
 /// Compile JumpIfFalseShort opcode
-
 pub fn compile_jump_if_false_short<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -204,9 +214,9 @@ pub fn compile_jump_if_false_short<'a, 'b>(
     let cond_i8 = codegen.builder.ins().ireduce(types::I8, cond_val);
 
     // Get stack value for merge blocks
-    let stack_top = codegen.peek().unwrap_or_else(|_| {
-        codegen.builder.ins().iconst(types::I64, 0)
-    });
+    let stack_top = codegen
+        .peek()
+        .unwrap_or_else(|_| codegen.builder.ins().iconst(types::I64, 0));
 
     // Prepare arguments for each branch based on whether target is a merge block
     let target_is_merge = merge_blocks.contains_key(&target);
@@ -225,7 +235,13 @@ pub fn compile_jump_if_false_short<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, fallthrough_block, fallthrough_args, target_block, target_args);
+        codegen.builder.ins().brif(
+            cond_i8,
+            fallthrough_block,
+            fallthrough_args,
+            target_block,
+            target_args,
+        );
         codegen.mark_terminated();
         Ok(())
     } else if let Some(&target_block) = offset_to_block.get(&target) {
@@ -235,7 +251,10 @@ pub fn compile_jump_if_false_short<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, cont_block, &[], target_block, target_args);
+        codegen
+            .builder
+            .ins()
+            .brif(cond_i8, cont_block, &[], target_block, target_args);
         codegen.builder.switch_to_block(cont_block);
         codegen.builder.seal_block(cont_block);
         Ok(())
@@ -248,7 +267,6 @@ pub fn compile_jump_if_false_short<'a, 'b>(
 }
 
 /// Compile JumpIfTrue opcode
-
 pub fn compile_jump_if_true<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -268,9 +286,9 @@ pub fn compile_jump_if_true<'a, 'b>(
     let cond_i8 = codegen.builder.ins().ireduce(types::I8, cond_val);
 
     // Get stack value for merge blocks
-    let stack_top = codegen.peek().unwrap_or_else(|_| {
-        codegen.builder.ins().iconst(types::I64, 0)
-    });
+    let stack_top = codegen
+        .peek()
+        .unwrap_or_else(|_| codegen.builder.ins().iconst(types::I64, 0));
 
     // Prepare arguments for each branch based on whether target is a merge block
     let target_is_merge = merge_blocks.contains_key(&target);
@@ -290,7 +308,13 @@ pub fn compile_jump_if_true<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, target_block, target_args, fallthrough_block, fallthrough_args);
+        codegen.builder.ins().brif(
+            cond_i8,
+            target_block,
+            target_args,
+            fallthrough_block,
+            fallthrough_args,
+        );
         codegen.mark_terminated();
         Ok(())
     } else if let Some(&target_block) = offset_to_block.get(&target) {
@@ -300,7 +324,10 @@ pub fn compile_jump_if_true<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, target_block, target_args, cont_block, &[]);
+        codegen
+            .builder
+            .ins()
+            .brif(cond_i8, target_block, target_args, cont_block, &[]);
         codegen.builder.switch_to_block(cont_block);
         codegen.builder.seal_block(cont_block);
         Ok(())
@@ -313,7 +340,6 @@ pub fn compile_jump_if_true<'a, 'b>(
 }
 
 /// Compile JumpIfTrueShort opcode
-
 pub fn compile_jump_if_true_short<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -333,9 +359,9 @@ pub fn compile_jump_if_true_short<'a, 'b>(
     let cond_i8 = codegen.builder.ins().ireduce(types::I8, cond_val);
 
     // Get stack value for merge blocks
-    let stack_top = codegen.peek().unwrap_or_else(|_| {
-        codegen.builder.ins().iconst(types::I64, 0)
-    });
+    let stack_top = codegen
+        .peek()
+        .unwrap_or_else(|_| codegen.builder.ins().iconst(types::I64, 0));
 
     // Prepare arguments for each branch based on whether target is a merge block
     let target_is_merge = merge_blocks.contains_key(&target);
@@ -354,7 +380,13 @@ pub fn compile_jump_if_true_short<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, target_block, target_args, fallthrough_block, fallthrough_args);
+        codegen.builder.ins().brif(
+            cond_i8,
+            target_block,
+            target_args,
+            fallthrough_block,
+            fallthrough_args,
+        );
         codegen.mark_terminated();
         Ok(())
     } else if let Some(&target_block) = offset_to_block.get(&target) {
@@ -364,7 +396,10 @@ pub fn compile_jump_if_true_short<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, target_block, target_args, cont_block, &[]);
+        codegen
+            .builder
+            .ins()
+            .brif(cond_i8, target_block, target_args, cont_block, &[]);
         codegen.builder.switch_to_block(cont_block);
         codegen.builder.seal_block(cont_block);
         Ok(())
@@ -377,7 +412,6 @@ pub fn compile_jump_if_true_short<'a, 'b>(
 }
 
 /// Compile JumpIfNil opcode
-
 pub fn compile_jump_if_nil<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -400,9 +434,9 @@ pub fn compile_jump_if_nil<'a, 'b>(
     let cond_i8 = codegen.builder.ins().icmp(IntCC::Equal, tag, nil_tag);
 
     // Get stack value for merge blocks (use previous stack top since we popped)
-    let stack_top = codegen.peek().unwrap_or_else(|_| {
-        codegen.builder.ins().iconst(types::I64, 0)
-    });
+    let stack_top = codegen
+        .peek()
+        .unwrap_or_else(|_| codegen.builder.ins().iconst(types::I64, 0));
 
     // Prepare arguments for each branch based on whether target is a merge block
     let target_is_merge = merge_blocks.contains_key(&target);
@@ -422,7 +456,13 @@ pub fn compile_jump_if_nil<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, target_block, target_args, fallthrough_block, fallthrough_args);
+        codegen.builder.ins().brif(
+            cond_i8,
+            target_block,
+            target_args,
+            fallthrough_block,
+            fallthrough_args,
+        );
         codegen.mark_terminated();
         Ok(())
     } else if let Some(&target_block) = offset_to_block.get(&target) {
@@ -432,7 +472,10 @@ pub fn compile_jump_if_nil<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, target_block, target_args, cont_block, &[]);
+        codegen
+            .builder
+            .ins()
+            .brif(cond_i8, target_block, target_args, cont_block, &[]);
         codegen.builder.switch_to_block(cont_block);
         codegen.builder.seal_block(cont_block);
         Ok(())
@@ -445,7 +488,6 @@ pub fn compile_jump_if_nil<'a, 'b>(
 }
 
 /// Compile JumpIfError opcode
-
 pub fn compile_jump_if_error<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -488,7 +530,13 @@ pub fn compile_jump_if_error<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, target_block, target_args, fallthrough_block, fallthrough_args);
+        codegen.builder.ins().brif(
+            cond_i8,
+            target_block,
+            target_args,
+            fallthrough_block,
+            fallthrough_args,
+        );
         codegen.mark_terminated();
         Ok(())
     } else if let Some(&target_block) = offset_to_block.get(&target) {
@@ -498,7 +546,10 @@ pub fn compile_jump_if_error<'a, 'b>(
         } else {
             &[]
         };
-        codegen.builder.ins().brif(cond_i8, target_block, target_args, cont_block, &[]);
+        codegen
+            .builder
+            .ins()
+            .brif(cond_i8, target_block, target_args, cont_block, &[]);
         codegen.builder.switch_to_block(cont_block);
         codegen.builder.seal_block(cont_block);
         Ok(())
@@ -511,7 +562,6 @@ pub fn compile_jump_if_error<'a, 'b>(
 }
 
 /// Compile JumpTable opcode (multi-way branch / switch)
-
 pub fn compile_jump_table<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
@@ -528,7 +578,10 @@ pub fn compile_jump_table<'a, 'b>(
         None => {
             // No table found - bail to VM
             let _selector = codegen.pop()?;
-            let signal = codegen.builder.ins().iconst(types::I64, super::super::JIT_SIGNAL_BAILOUT);
+            let signal = codegen
+                .builder
+                .ins()
+                .iconst(types::I64, super::super::JIT_SIGNAL_BAILOUT);
             codegen.builder.ins().return_(&[signal]);
             codegen.mark_terminated();
             return Ok(());
@@ -543,7 +596,10 @@ pub fn compile_jump_table<'a, 'b>(
         Some(&block) => block,
         None => {
             // Default not found - bail
-            let signal = codegen.builder.ins().iconst(types::I64, super::super::JIT_SIGNAL_BAILOUT);
+            let signal = codegen
+                .builder
+                .ins()
+                .iconst(types::I64, super::super::JIT_SIGNAL_BAILOUT);
             codegen.builder.ins().return_(&[signal]);
             codegen.mark_terminated();
             return Ok(());

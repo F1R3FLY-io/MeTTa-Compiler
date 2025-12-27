@@ -10,14 +10,13 @@
 //! - apply_subst - Apply substitution to an expression
 //! - define_rule - Define a new rule
 
-use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, JitBindingEntry,
-    JIT_SIGNAL_FAIL,
-};
-use crate::backend::models::{MettaValue, Bindings};
-use crate::backend::bytecode::mork_bridge::{MorkBridge, CompiledRule};
-use crate::backend::eval::apply_bindings;
 use super::helpers::{box_long, metta_to_jit};
+use crate::backend::bytecode::jit::types::{
+    JitBailoutReason, JitBindingEntry, JitContext, JitValue, JIT_SIGNAL_FAIL,
+};
+use crate::backend::bytecode::mork_bridge::{CompiledRule, MorkBridge};
+use crate::backend::eval::apply_bindings;
+use crate::backend::models::Bindings;
 
 // =============================================================================
 // Phase C: Rule Dispatch Operations
@@ -34,6 +33,9 @@ use super::helpers::{box_long, metta_to_jit};
 ///
 /// # Returns
 /// NaN-boxed Long - number of matching rules (0 if no match)
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_dispatch_rules(
     ctx: *mut JitContext,
@@ -87,12 +89,11 @@ pub unsafe extern "C" fn jit_runtime_dispatch_rules(
 ///
 /// # Returns
 /// NaN-boxed result value, or nil if rule doesn't match/doesn't exist
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_try_rule(
-    ctx: *mut JitContext,
-    rule_idx: u64,
-    ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_try_rule(ctx: *mut JitContext, rule_idx: u64, ip: u64) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
         // No context - return nil as a valid "no match" result
@@ -118,7 +119,9 @@ pub unsafe extern "C" fn jit_runtime_try_rule(
 
     // Install bindings from the pattern match into the JIT context
     // We need to push a new binding frame and populate it with the rule's bindings
-    if ctx_ref.binding_frames_count < ctx_ref.binding_frames_cap && !ctx_ref.binding_frames.is_null() {
+    if ctx_ref.binding_frames_count < ctx_ref.binding_frames_cap
+        && !ctx_ref.binding_frames.is_null()
+    {
         // Push a new binding frame for this rule
         let frame_ptr = ctx_ref.binding_frames.add(ctx_ref.binding_frames_count);
         let frame = &mut *frame_ptr;
@@ -187,6 +190,9 @@ pub(crate) fn hash_string(s: &str) -> u64 {
 ///
 /// # Returns
 /// 0 if advanced successfully, -1 if no more rules
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_next_rule(_ctx: *mut JitContext, _ip: u64) -> i64 {
     // Currently returns -1 (no more rules)
@@ -204,6 +210,9 @@ pub unsafe extern "C" fn jit_runtime_next_rule(_ctx: *mut JitContext, _ip: u64) 
 ///
 /// # Returns
 /// 0 on success
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_commit_rule(_ctx: *mut JitContext, _ip: u64) -> i64 {
     // Currently a no-op
@@ -221,6 +230,9 @@ pub unsafe extern "C" fn jit_runtime_commit_rule(_ctx: *mut JitContext, _ip: u64
 ///
 /// # Returns
 /// JIT_SIGNAL_FAIL to trigger backtracking
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_fail_rule(_ctx: *mut JitContext, _ip: u64) -> i64 {
     JIT_SIGNAL_FAIL
@@ -237,6 +249,9 @@ pub unsafe extern "C" fn jit_runtime_fail_rule(_ctx: *mut JitContext, _ip: u64) 
 ///
 /// # Returns
 /// NaN-boxed Long - number of matching rules
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_lookup_rules(
     ctx: *mut JitContext,
@@ -294,12 +309,11 @@ pub unsafe extern "C" fn jit_runtime_lookup_rules(
 ///
 /// # Returns
 /// NaN-boxed result with variables substituted
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_apply_subst(
-    ctx: *mut JitContext,
-    expr: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_apply_subst(ctx: *mut JitContext, expr: u64, _ip: u64) -> u64 {
     let expr_val = JitValue::from_raw(expr);
     let expr_metta = expr_val.to_metta();
 
@@ -400,6 +414,9 @@ unsafe fn find_binding_name_by_hash(ctx: *mut JitContext, name_hash: u64) -> Opt
 ///
 /// # Returns
 /// NaN-boxed Unit on success
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_define_rule(
     _ctx: *mut JitContext,

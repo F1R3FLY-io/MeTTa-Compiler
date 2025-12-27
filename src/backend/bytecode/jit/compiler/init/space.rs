@@ -39,13 +39,34 @@ pub trait SpaceInit {
 
 impl<T> SpaceInit for T {
     fn register_space_symbols(builder: &mut JITBuilder) {
-        builder.symbol("jit_runtime_space_add", runtime::jit_runtime_space_add as *const u8);
-        builder.symbol("jit_runtime_space_remove", runtime::jit_runtime_space_remove as *const u8);
-        builder.symbol("jit_runtime_space_get_atoms", runtime::jit_runtime_space_get_atoms as *const u8);
-        builder.symbol("jit_runtime_space_match_nondet", runtime::jit_runtime_space_match_nondet as *const u8);
-        builder.symbol("jit_runtime_new_state", runtime::jit_runtime_new_state as *const u8);
-        builder.symbol("jit_runtime_get_state", runtime::jit_runtime_get_state as *const u8);
-        builder.symbol("jit_runtime_change_state", runtime::jit_runtime_change_state as *const u8);
+        builder.symbol(
+            "jit_runtime_space_add",
+            runtime::jit_runtime_space_add as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_space_remove",
+            runtime::jit_runtime_space_remove as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_space_get_atoms",
+            runtime::jit_runtime_space_get_atoms as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_space_match_nondet",
+            runtime::jit_runtime_space_match_nondet as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_new_state",
+            runtime::jit_runtime_new_state as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_get_state",
+            runtime::jit_runtime_get_state as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_change_state",
+            runtime::jit_runtime_change_state as *const u8,
+        );
     }
 
     fn declare_space_funcs<M: Module>(module: &mut M) -> JitResult<SpaceFuncIds> {
@@ -61,7 +82,12 @@ impl<T> SpaceInit for T {
 
         let space_add_func_id = module
             .declare_function("jit_runtime_space_add", Linkage::Import, &space_add_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_space_add: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_space_add: {}",
+                    e
+                ))
+            })?;
 
         // space_remove: fn(ctx, space, atom, ip) -> u64 (Bool)
         let mut space_remove_sig = module.make_signature();
@@ -72,8 +98,17 @@ impl<T> SpaceInit for T {
         space_remove_sig.returns.push(AbiParam::new(types::I64)); // result
 
         let space_remove_func_id = module
-            .declare_function("jit_runtime_space_remove", Linkage::Import, &space_remove_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_space_remove: {}", e)))?;
+            .declare_function(
+                "jit_runtime_space_remove",
+                Linkage::Import,
+                &space_remove_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_space_remove: {}",
+                    e
+                ))
+            })?;
 
         // space_get_atoms: fn(ctx, space, ip) -> u64 (SExpr)
         let mut space_get_atoms_sig = module.make_signature();
@@ -83,8 +118,17 @@ impl<T> SpaceInit for T {
         space_get_atoms_sig.returns.push(AbiParam::new(types::I64)); // result
 
         let space_get_atoms_func_id = module
-            .declare_function("jit_runtime_space_get_atoms", Linkage::Import, &space_get_atoms_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_space_get_atoms: {}", e)))?;
+            .declare_function(
+                "jit_runtime_space_get_atoms",
+                Linkage::Import,
+                &space_get_atoms_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_space_get_atoms: {}",
+                    e
+                ))
+            })?;
 
         // space_match_nondet: fn(ctx, space, pattern, template, ip) -> u64 (SExpr)
         let mut space_match_sig = module.make_signature();
@@ -96,8 +140,17 @@ impl<T> SpaceInit for T {
         space_match_sig.returns.push(AbiParam::new(types::I64)); // result
 
         let space_match_func_id = module
-            .declare_function("jit_runtime_space_match_nondet", Linkage::Import, &space_match_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_space_match_nondet: {}", e)))?;
+            .declare_function(
+                "jit_runtime_space_match_nondet",
+                Linkage::Import,
+                &space_match_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_space_match_nondet: {}",
+                    e
+                ))
+            })?;
 
         // new_state: fn(ctx, initial_value, ip) -> state_handle
         let mut new_state_sig = module.make_signature();
@@ -108,7 +161,12 @@ impl<T> SpaceInit for T {
 
         let new_state_func_id = module
             .declare_function("jit_runtime_new_state", Linkage::Import, &new_state_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_new_state: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_new_state: {}",
+                    e
+                ))
+            })?;
 
         // get_state: fn(ctx, state_handle, ip) -> value
         let mut get_state_sig = module.make_signature();
@@ -119,7 +177,12 @@ impl<T> SpaceInit for T {
 
         let get_state_func_id = module
             .declare_function("jit_runtime_get_state", Linkage::Import, &get_state_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_get_state: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_get_state: {}",
+                    e
+                ))
+            })?;
 
         // change_state: fn(ctx, state_handle, new_value, ip) -> state_handle
         let mut change_state_sig = module.make_signature();
@@ -130,8 +193,17 @@ impl<T> SpaceInit for T {
         change_state_sig.returns.push(AbiParam::new(types::I64)); // state_handle
 
         let change_state_func_id = module
-            .declare_function("jit_runtime_change_state", Linkage::Import, &change_state_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_change_state: {}", e)))?;
+            .declare_function(
+                "jit_runtime_change_state",
+                Linkage::Import,
+                &change_state_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_change_state: {}",
+                    e
+                ))
+            })?;
 
         Ok(SpaceFuncIds {
             space_add_func_id,

@@ -1,8 +1,8 @@
 //! Configuration and statistics for hybrid JIT/VM execution.
 
-use crate::backend::bytecode::VmConfig;
 use super::super::TieredStats;
 use super::constants::*;
+use crate::backend::bytecode::VmConfig;
 
 /// Hybrid executor configuration
 #[derive(Debug, Clone)]

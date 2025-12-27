@@ -9,37 +9,30 @@
 //! 4. Return function pointer for direct execution
 
 // Submodules
-pub mod init;
 mod analysis;
+pub mod init;
 
-use cranelift::prelude::*;
 use cranelift::codegen::ir::BlockArg;
-use cranelift_frontend::Switch;
+use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use super::codegen::CodegenContext;
 use super::handlers;
-use super::types::{JitError, JitResult, TAG_NIL, TAG_ERROR, TAG_ATOM, TAG_VAR, TAG_HEAP, TAG_BOOL};
+use super::types::{JitError, JitResult};
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 use std::collections::HashMap;
+
+#[cfg(test)]
 use tracing::trace;
 
 // Import initialization traits for zero-cost static dispatch
 use init::{
-    ArithmeticFuncIds, ArithmeticInit,
-    BindingFuncIds, BindingsInit,
-    CallFuncIds, CallsInit,
-    NondetFuncIds, NondetInit,
-    PatternMatchingFuncIds, PatternMatchingInit,
-    RulesFuncIds, RulesInit,
-    SpaceFuncIds, SpaceInit,
-    SpecialFormsFuncIds, SpecialFormsInit,
-    TypeOpsFuncIds, TypeOpsInit,
-    SExprFuncIds, SExprInit,
-    HigherOrderFuncIds, HigherOrderInit,
-    GlobalsFuncIds, GlobalsInit,
-    DebugFuncIds, DebugInit,
+    ArithmeticFuncIds, ArithmeticInit, BindingFuncIds, BindingsInit, CallFuncIds, CallsInit,
+    DebugFuncIds, DebugInit, GlobalsFuncIds, GlobalsInit, HigherOrderFuncIds, HigherOrderInit,
+    NondetFuncIds, NondetInit, PatternMatchingFuncIds, PatternMatchingInit, RulesFuncIds,
+    RulesInit, SExprFuncIds, SExprInit, SpaceFuncIds, SpaceInit, SpecialFormsFuncIds,
+    SpecialFormsInit, TypeOpsFuncIds, TypeOpsInit,
 };
 
 /// JIT Compiler for bytecode chunks
@@ -65,7 +58,7 @@ use init::{
 /// - `globals`: load_global, store_global, load_space (4 ops)
 /// - `debug`: trace, breakpoint, bloom_check, etc. (6 ops)
 pub struct JitCompiler {
-        module: JITModule,
+    module: JITModule,
 
     /// Counter for generating unique function names
     func_counter: u64,
@@ -73,70 +66,68 @@ pub struct JitCompiler {
     // =========================================================================
     // Grouped FuncIds - organized by trait-based initialization
     // =========================================================================
-
     /// Arithmetic operations (pow, sqrt, log, trig, rounding)
-        pub(crate) arithmetic: ArithmeticFuncIds,
+    pub(crate) arithmetic: ArithmeticFuncIds,
 
     /// Variable binding operations
-        pub(crate) bindings: BindingFuncIds,
+    pub(crate) bindings: BindingFuncIds,
 
     /// Function call operations
-        pub(crate) calls: CallFuncIds,
+    pub(crate) calls: CallFuncIds,
 
     /// Nondeterminism operations (fork, yield, collect, cut)
-        pub(crate) nondet: NondetFuncIds,
+    pub(crate) nondet: NondetFuncIds,
 
     /// Pattern matching operations
-        pub(crate) pattern_matching: PatternMatchingFuncIds,
+    pub(crate) pattern_matching: PatternMatchingFuncIds,
 
     /// Rule dispatch operations
-        pub(crate) rules: RulesFuncIds,
+    pub(crate) rules: RulesFuncIds,
 
     /// Space operations (add, remove, match, state)
-        pub(crate) space: SpaceFuncIds,
+    pub(crate) space: SpaceFuncIds,
 
     /// Special form operations (if, let, match, quote)
-        pub(crate) special_forms: SpecialFormsFuncIds,
+    pub(crate) special_forms: SpecialFormsFuncIds,
 
     /// Type operations (get_type, check_type, assert_type)
-        pub(crate) type_ops: TypeOpsFuncIds,
+    pub(crate) type_ops: TypeOpsFuncIds,
 
     /// S-expression operations (head, tail, cons, make)
-        pub(crate) sexpr: SExprFuncIds,
+    pub(crate) sexpr: SExprFuncIds,
 
     /// Higher-order operations (map, filter, fold)
-        pub(crate) higher_order: HigherOrderFuncIds,
+    pub(crate) higher_order: HigherOrderFuncIds,
 
     /// Global/space access operations
-        pub(crate) globals: GlobalsFuncIds,
+    pub(crate) globals: GlobalsFuncIds,
 
     /// Debug and meta operations
-        pub(crate) debug: DebugFuncIds,
+    pub(crate) debug: DebugFuncIds,
 
     // =========================================================================
     // Miscellaneous FuncIds - not yet grouped
     // =========================================================================
-
     /// Load constant from constant pool
-        load_const_func_id: FuncId,
+    load_const_func_id: FuncId,
 
     /// Push URI from constant pool
-        push_uri_func_id: FuncId,
+    push_uri_func_id: FuncId,
 
     /// Index into expression
-        index_atom_func_id: FuncId,
+    index_atom_func_id: FuncId,
 
     /// Get minimum element
-        min_atom_func_id: FuncId,
+    min_atom_func_id: FuncId,
 
     /// Get maximum element
-        max_atom_func_id: FuncId,
+    max_atom_func_id: FuncId,
 
     // MORK Bridge operations (to be grouped later)
-        mork_lookup_func_id: FuncId,
-        mork_match_func_id: FuncId,
-        mork_insert_func_id: FuncId,
-        mork_delete_func_id: FuncId,
+    mork_lookup_func_id: FuncId,
+    mork_match_func_id: FuncId,
+    mork_insert_func_id: FuncId,
+    mork_delete_func_id: FuncId,
 }
 
 /// Block info for JIT compilation - tracks jump targets and predecessor counts
@@ -152,14 +143,12 @@ impl JitCompiler {
     ///
     /// This method uses trait-based initialization for grouped FuncIds,
     /// providing zero-cost abstraction through static dispatch.
-        pub fn new() -> JitResult<Self> {
-        use super::runtime;
-
+    pub fn new() -> JitResult<Self> {
         let mut flag_builder = settings::builder();
         // Enable optimizations
-        flag_builder.set("opt_level", "speed").map_err(|e| {
-            JitError::CompilationError(format!("Failed to set opt_level: {}", e))
-        })?;
+        flag_builder
+            .set("opt_level", "speed")
+            .map_err(|e| JitError::CompilationError(format!("Failed to set opt_level: {}", e)))?;
 
         let isa_builder = cranelift_native::builder().map_err(|e| {
             JitError::CompilationError(format!("Failed to create ISA builder: {}", e))
@@ -198,8 +187,17 @@ impl JitCompiler {
         load_const_sig.params.push(AbiParam::new(types::I64));
         load_const_sig.returns.push(AbiParam::new(types::I64));
         let load_const_func_id = module
-            .declare_function("jit_runtime_load_constant", Linkage::Import, &load_const_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_load_constant: {}", e)))?;
+            .declare_function(
+                "jit_runtime_load_constant",
+                Linkage::Import,
+                &load_const_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_load_constant: {}",
+                    e
+                ))
+            })?;
 
         // push_uri: fn(ctx, uri_idx) -> value
         let mut push_uri_sig = module.make_signature();
@@ -208,7 +206,9 @@ impl JitCompiler {
         push_uri_sig.returns.push(AbiParam::new(types::I64));
         let push_uri_func_id = module
             .declare_function("jit_runtime_push_uri", Linkage::Import, &push_uri_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_push_uri: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_push_uri: {}", e))
+            })?;
 
         // Expression manipulation: index_atom, min_atom, max_atom
         // index_atom: fn(ctx, expr, index, ip) -> value
@@ -220,7 +220,12 @@ impl JitCompiler {
         index_sig.returns.push(AbiParam::new(types::I64));
         let index_atom_func_id = module
             .declare_function("jit_runtime_index_atom", Linkage::Import, &index_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_index_atom: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_index_atom: {}",
+                    e
+                ))
+            })?;
 
         // min_atom/max_atom: fn(ctx, expr, ip) -> value
         let mut minmax_sig = module.make_signature();
@@ -231,11 +236,15 @@ impl JitCompiler {
 
         let min_atom_func_id = module
             .declare_function("jit_runtime_min_atom", Linkage::Import, &minmax_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_min_atom: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_min_atom: {}", e))
+            })?;
 
         let max_atom_func_id = module
             .declare_function("jit_runtime_max_atom", Linkage::Import, &minmax_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_max_atom: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_max_atom: {}", e))
+            })?;
 
         // MORK bridge functions: fn(ctx, pattern/key, ip) -> result
         let mut mork_sig = module.make_signature();
@@ -246,11 +255,21 @@ impl JitCompiler {
 
         let mork_lookup_func_id = module
             .declare_function("jit_runtime_mork_lookup", Linkage::Import, &mork_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_mork_lookup: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_mork_lookup: {}",
+                    e
+                ))
+            })?;
 
         let mork_match_func_id = module
             .declare_function("jit_runtime_mork_match", Linkage::Import, &mork_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_mork_match: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_mork_match: {}",
+                    e
+                ))
+            })?;
 
         // MORK insert/delete: fn(ctx, key, value, ip) -> result
         let mut mork_mut_sig = module.make_signature();
@@ -262,11 +281,21 @@ impl JitCompiler {
 
         let mork_insert_func_id = module
             .declare_function("jit_runtime_mork_insert", Linkage::Import, &mork_mut_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_mork_insert: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_mork_insert: {}",
+                    e
+                ))
+            })?;
 
         let mork_delete_func_id = module
             .declare_function("jit_runtime_mork_delete", Linkage::Import, &mork_mut_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_mork_delete: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_mork_delete: {}",
+                    e
+                ))
+            })?;
 
         Ok(JitCompiler {
             module,
@@ -302,7 +331,7 @@ impl JitCompiler {
     ///
     /// Uses trait-based initialization for grouped symbols with zero-cost
     /// static dispatch. Miscellaneous symbols are registered directly.
-        fn register_runtime_symbols(builder: &mut JITBuilder) {
+    fn register_runtime_symbols(builder: &mut JITBuilder) {
         use super::runtime;
 
         // Register grouped symbols using trait methods
@@ -321,36 +350,90 @@ impl JitCompiler {
         Self::register_debug_symbols(builder);
 
         // Register error handling symbols (used for bailout)
-        builder.symbol("jit_runtime_type_error", runtime::jit_runtime_type_error as *const u8);
-        builder.symbol("jit_runtime_div_by_zero", runtime::jit_runtime_div_by_zero as *const u8);
-        builder.symbol("jit_runtime_stack_overflow", runtime::jit_runtime_stack_overflow as *const u8);
+        builder.symbol(
+            "jit_runtime_type_error",
+            runtime::jit_runtime_type_error as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_div_by_zero",
+            runtime::jit_runtime_div_by_zero as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_stack_overflow",
+            runtime::jit_runtime_stack_overflow as *const u8,
+        );
 
         // Register miscellaneous symbols
-        builder.symbol("jit_runtime_load_constant", runtime::jit_runtime_load_constant as *const u8);
-        builder.symbol("jit_runtime_push_uri", runtime::jit_runtime_push_uri as *const u8);
+        builder.symbol(
+            "jit_runtime_load_constant",
+            runtime::jit_runtime_load_constant as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_push_uri",
+            runtime::jit_runtime_push_uri as *const u8,
+        );
 
         // Expression manipulation operations
-        builder.symbol("jit_runtime_index_atom", runtime::jit_runtime_index_atom as *const u8);
-        builder.symbol("jit_runtime_min_atom", runtime::jit_runtime_min_atom as *const u8);
-        builder.symbol("jit_runtime_max_atom", runtime::jit_runtime_max_atom as *const u8);
+        builder.symbol(
+            "jit_runtime_index_atom",
+            runtime::jit_runtime_index_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_min_atom",
+            runtime::jit_runtime_min_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_max_atom",
+            runtime::jit_runtime_max_atom as *const u8,
+        );
 
         // MORK bridge operations
-        builder.symbol("jit_runtime_mork_lookup", runtime::jit_runtime_mork_lookup as *const u8);
-        builder.symbol("jit_runtime_mork_match", runtime::jit_runtime_mork_match as *const u8);
-        builder.symbol("jit_runtime_mork_insert", runtime::jit_runtime_mork_insert as *const u8);
-        builder.symbol("jit_runtime_mork_delete", runtime::jit_runtime_mork_delete as *const u8);
+        builder.symbol(
+            "jit_runtime_mork_lookup",
+            runtime::jit_runtime_mork_lookup as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_mork_match",
+            runtime::jit_runtime_mork_match as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_mork_insert",
+            runtime::jit_runtime_mork_insert as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_mork_delete",
+            runtime::jit_runtime_mork_delete as *const u8,
+        );
 
         // Legacy nondeterminism helpers (used internally by runtime)
-        builder.symbol("jit_runtime_save_stack", runtime::jit_runtime_save_stack as *const u8);
-        builder.symbol("jit_runtime_restore_stack", runtime::jit_runtime_restore_stack as *const u8);
-        builder.symbol("jit_runtime_fail_native", runtime::jit_runtime_fail_native as *const u8);
-        builder.symbol("jit_runtime_has_alternatives", runtime::jit_runtime_has_alternatives as *const u8);
-        builder.symbol("jit_runtime_get_resume_ip", runtime::jit_runtime_get_resume_ip as *const u8);
+        builder.symbol(
+            "jit_runtime_save_stack",
+            runtime::jit_runtime_save_stack as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_restore_stack",
+            runtime::jit_runtime_restore_stack as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_fail_native",
+            runtime::jit_runtime_fail_native as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_has_alternatives",
+            runtime::jit_runtime_has_alternatives as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_get_resume_ip",
+            runtime::jit_runtime_get_resume_ip as *const u8,
+        );
 
         // Legacy fork/yield/collect (non-native versions for backward compatibility)
         builder.symbol("jit_runtime_fork", runtime::jit_runtime_fork as *const u8);
         builder.symbol("jit_runtime_yield", runtime::jit_runtime_yield as *const u8);
-        builder.symbol("jit_runtime_collect", runtime::jit_runtime_collect as *const u8);
+        builder.symbol(
+            "jit_runtime_collect",
+            runtime::jit_runtime_collect as *const u8,
+        );
     }
 
     /// Check if a bytecode chunk can be JIT compiled (Stage 1-5 + Phase A-I)
@@ -365,7 +448,7 @@ impl JitCompiler {
     /// Pre-scan bytecode to find all jump targets and their predecessor counts
     ///
     /// Delegates to `analysis::find_block_info` for the actual implementation.
-        #[inline]
+    #[inline]
     fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
         analysis::find_block_info(chunk)
     }
@@ -373,7 +456,7 @@ impl JitCompiler {
     /// Compile a bytecode chunk to native code
     ///
     /// Returns a function pointer that can be called with a JitContext
-        pub fn compile(&mut self, chunk: &BytecodeChunk) -> JitResult<*const ()> {
+    pub fn compile(&mut self, chunk: &BytecodeChunk) -> JitResult<*const ()> {
         if !Self::can_compile_stage1(chunk) {
             return Err(JitError::NotCompilable(
                 "Chunk contains non-Stage-1 opcodes".to_string(),
@@ -393,7 +476,9 @@ impl JitCompiler {
         let func_id = self
             .module
             .declare_function(&func_name, Linkage::Local, &sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare function: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare function: {}", e))
+            })?;
 
         // Create function builder context
         let mut ctx = self.module.make_context();
@@ -421,7 +506,7 @@ impl JitCompiler {
     }
 
     /// Build the Cranelift IR for a bytecode chunk
-        fn build_function(
+    fn build_function(
         &mut self,
         ctx: &mut codegen::Context,
         chunk: &BytecodeChunk,
@@ -444,7 +529,11 @@ impl JitCompiler {
         for &target in &block_info.targets {
             if target != 0 && !offset_to_block.contains_key(&target) {
                 let block = builder.create_block();
-                let pred_count = block_info.predecessor_count.get(&target).copied().unwrap_or(0);
+                let pred_count = block_info
+                    .predecessor_count
+                    .get(&target)
+                    .copied()
+                    .unwrap_or(0);
                 if pred_count > 1 {
                     // This is a merge point - add a parameter for the stack value
                     builder.append_block_param(block, types::I64);
@@ -483,7 +572,10 @@ impl JitCompiler {
                                 let stack_top = codegen.peek().unwrap_or_else(|_| {
                                     codegen.builder.ins().iconst(types::I64, 0)
                                 });
-                                codegen.builder.ins().jump(block, &[BlockArg::Value(stack_top)]);
+                                codegen
+                                    .builder
+                                    .ins()
+                                    .jump(block, &[BlockArg::Value(stack_top)]);
                             } else {
                                 codegen.builder.ins().jump(block, &[]);
                             }
@@ -506,7 +598,14 @@ impl JitCompiler {
                     return Err(JitError::InvalidOpcode(code[offset]));
                 };
 
-                self.translate_opcode(&mut codegen, chunk, op, offset, &offset_to_block, &merge_blocks)?;
+                self.translate_opcode(
+                    &mut codegen,
+                    chunk,
+                    op,
+                    offset,
+                    &offset_to_block,
+                    &merge_blocks,
+                )?;
 
                 // Advance to next instruction
                 offset += 1 + op.immediate_size();
@@ -526,7 +625,7 @@ impl JitCompiler {
     }
 
     /// Translate a single opcode to Cranelift IR
-        fn translate_opcode<'a, 'b>(
+    fn translate_opcode<'a, 'b>(
         &mut self,
         codegen: &mut CodegenContext<'a, 'b>,
         chunk: &BytecodeChunk,
@@ -539,31 +638,43 @@ impl JitCompiler {
             // =====================================================================
             // Stack Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::Nop | Opcode::Pop | Opcode::Dup | Opcode::Swap |
-            Opcode::Rot3 | Opcode::Over | Opcode::DupN | Opcode::PopN => {
-                return handlers::compile_stack_op(codegen, chunk, op, offset);
-            }
+            Opcode::Nop
+            | Opcode::Pop
+            | Opcode::Dup
+            | Opcode::Swap
+            | Opcode::Rot3
+            | Opcode::Over
+            | Opcode::DupN
+            | Opcode::PopN => handlers::compile_stack_op(codegen, chunk, op, offset),
 
             // =====================================================================
             // Value Creation - Simple (delegated to handlers module)
             // =====================================================================
-            Opcode::PushNil | Opcode::PushTrue | Opcode::PushFalse |
-            Opcode::PushUnit | Opcode::PushLongSmall => {
-                return handlers::compile_simple_value_op(codegen, chunk, op, offset);
+            Opcode::PushNil
+            | Opcode::PushTrue
+            | Opcode::PushFalse
+            | Opcode::PushUnit
+            | Opcode::PushLongSmall => {
+                handlers::compile_simple_value_op(codegen, chunk, op, offset)
             }
 
             // =====================================================================
             // Value Creation - Runtime calls (delegated to handlers module)
             // =====================================================================
-            Opcode::PushLong | Opcode::PushConstant | Opcode::PushEmpty |
-            Opcode::PushAtom | Opcode::PushString | Opcode::PushVariable | Opcode::PushUri => {
+            Opcode::PushLong
+            | Opcode::PushConstant
+            | Opcode::PushEmpty
+            | Opcode::PushAtom
+            | Opcode::PushString
+            | Opcode::PushVariable
+            | Opcode::PushUri => {
                 let mut ctx = handlers::ValueHandlerContext {
                     module: &mut self.module,
                     load_const_func_id: self.load_const_func_id,
                     push_empty_func_id: self.sexpr.push_empty_func_id,
                     push_uri_func_id: self.push_uri_func_id,
                 };
-                return handlers::compile_runtime_value_op(&mut ctx, codegen, chunk, op, offset);
+                handlers::compile_runtime_value_op(&mut ctx, codegen, chunk, op, offset)
             }
 
             // =====================================================================
@@ -581,7 +692,7 @@ impl JitCompiler {
                     make_list_func_id: self.sexpr.make_list_func_id,
                     make_quote_func_id: self.sexpr.make_quote_func_id,
                 };
-                return handlers::compile_sexpr_access_op(&mut ctx, codegen, chunk, op, offset);
+                handlers::compile_sexpr_access_op(&mut ctx, codegen, chunk, op, offset)
             }
 
             // =====================================================================
@@ -594,7 +705,7 @@ impl JitCompiler {
                     check_type_func_id: self.type_ops.check_type_func_id,
                     assert_type_func_id: self.type_ops.assert_type_func_id,
                 };
-                return handlers::compile_get_type(&mut ctx, codegen, offset);
+                handlers::compile_get_type(&mut ctx, codegen, offset)
             }
 
             Opcode::CheckType | Opcode::IsType => {
@@ -604,7 +715,7 @@ impl JitCompiler {
                     check_type_func_id: self.type_ops.check_type_func_id,
                     assert_type_func_id: self.type_ops.assert_type_func_id,
                 };
-                return handlers::compile_check_type(&mut ctx, codegen, offset);
+                handlers::compile_check_type(&mut ctx, codegen, offset)
             }
 
             Opcode::AssertType => {
@@ -614,13 +725,12 @@ impl JitCompiler {
                     check_type_func_id: self.type_ops.check_type_func_id,
                     assert_type_func_id: self.type_ops.assert_type_func_id,
                 };
-                return handlers::compile_assert_type(&mut ctx, codegen, offset);
+                handlers::compile_assert_type(&mut ctx, codegen, offset)
             }
 
             // =====================================================================
             // Phase 2a: S-Expression Creation Operations (delegated to handlers module)
             // =====================================================================
-
             Opcode::MakeSExpr
             | Opcode::MakeSExprLarge
             | Opcode::ConsAtom
@@ -637,13 +747,12 @@ impl JitCompiler {
                     make_list_func_id: self.sexpr.make_list_func_id,
                     make_quote_func_id: self.sexpr.make_quote_func_id,
                 };
-                return handlers::compile_sexpr_create_op(&mut ctx, codegen, chunk, op, offset);
+                handlers::compile_sexpr_create_op(&mut ctx, codegen, chunk, op, offset)
             }
 
             // =====================================================================
             // Phase 3: Call/TailCall Operations (delegated to handlers module)
             // =====================================================================
-
             Opcode::Call => {
                 let mut call_ctx = handlers::CallHandlerContext {
                     module: &mut self.module,
@@ -655,7 +764,7 @@ impl JitCompiler {
                     call_external_func_id: self.calls.call_external_func_id,
                     call_cached_func_id: self.calls.call_cached_func_id,
                 };
-                return handlers::compile_call(&mut call_ctx, codegen, chunk, offset);
+                handlers::compile_call(&mut call_ctx, codegen, chunk, offset)
             }
 
             Opcode::TailCall => {
@@ -669,7 +778,7 @@ impl JitCompiler {
                     call_external_func_id: self.calls.call_external_func_id,
                     call_cached_func_id: self.calls.call_cached_func_id,
                 };
-                return handlers::compile_tail_call(&mut call_ctx, codegen, chunk, offset);
+                handlers::compile_tail_call(&mut call_ctx, codegen, chunk, offset)
             }
 
             Opcode::CallN => {
@@ -683,7 +792,7 @@ impl JitCompiler {
                     call_external_func_id: self.calls.call_external_func_id,
                     call_cached_func_id: self.calls.call_cached_func_id,
                 };
-                return handlers::compile_call_n(&mut call_ctx, codegen, chunk, offset);
+                handlers::compile_call_n(&mut call_ctx, codegen, chunk, offset)
             }
 
             Opcode::TailCallN => {
@@ -697,13 +806,12 @@ impl JitCompiler {
                     call_external_func_id: self.calls.call_external_func_id,
                     call_cached_func_id: self.calls.call_cached_func_id,
                 };
-                return handlers::compile_tail_call_n(&mut call_ctx, codegen, chunk, offset);
+                handlers::compile_tail_call_n(&mut call_ctx, codegen, chunk, offset)
             }
 
             // =====================================================================
             // Phase 4: Fork/Yield/Collect Operations (delegated to handlers module)
             // =====================================================================
-
             Opcode::Fork => {
                 let mut nondet_ctx = handlers::NondetHandlerContext {
                     module: &mut self.module,
@@ -718,7 +826,7 @@ impl JitCompiler {
                     begin_nondet_func_id: self.nondet.begin_nondet_func_id,
                     end_nondet_func_id: self.nondet.end_nondet_func_id,
                 };
-                return handlers::compile_fork(&mut nondet_ctx, codegen, chunk, offset);
+                handlers::compile_fork(&mut nondet_ctx, codegen, chunk, offset)
             }
 
             Opcode::Yield => {
@@ -735,7 +843,7 @@ impl JitCompiler {
                     begin_nondet_func_id: self.nondet.begin_nondet_func_id,
                     end_nondet_func_id: self.nondet.end_nondet_func_id,
                 };
-                return handlers::compile_yield(&mut nondet_ctx, codegen, offset);
+                handlers::compile_yield(&mut nondet_ctx, codegen, offset)
             }
 
             Opcode::Collect => {
@@ -752,29 +860,32 @@ impl JitCompiler {
                     begin_nondet_func_id: self.nondet.begin_nondet_func_id,
                     end_nondet_func_id: self.nondet.end_nondet_func_id,
                 };
-                return handlers::compile_collect(&mut nondet_ctx, codegen, chunk, offset);
+                handlers::compile_collect(&mut nondet_ctx, codegen, chunk, offset)
             }
 
             // =====================================================================
             // Arithmetic Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div |
-            Opcode::Mod | Opcode::Neg | Opcode::Abs | Opcode::FloorDiv => {
-                return handlers::compile_simple_arithmetic_op(codegen, op, offset);
-            }
+            Opcode::Add
+            | Opcode::Sub
+            | Opcode::Mul
+            | Opcode::Div
+            | Opcode::Mod
+            | Opcode::Neg
+            | Opcode::Abs
+            | Opcode::FloorDiv => handlers::compile_simple_arithmetic_op(codegen, op, offset),
 
             Opcode::Pow => {
                 let mut ctx = handlers::ArithmeticHandlerContext {
                     module: &mut self.module,
                     pow_func_id: self.arithmetic.pow_func_id,
                 };
-                return handlers::compile_pow(&mut ctx, codegen);
+                handlers::compile_pow(&mut ctx, codegen)
             }
 
             // =====================================================================
             // Extended Math Operations (delegated to handlers module)
             // =====================================================================
-
             Opcode::Sqrt
             | Opcode::Log
             | Opcode::Trunc
@@ -806,13 +917,12 @@ impl JitCompiler {
                     isnan_func_id: self.arithmetic.isnan_func_id,
                     isinf_func_id: self.arithmetic.isinf_func_id,
                 };
-                return handlers::compile_extended_math_op(&mut ctx, codegen, op);
+                handlers::compile_extended_math_op(&mut ctx, codegen, op)
             }
 
             // =====================================================================
             // Expression Manipulation Operations (delegated to handlers module)
             // =====================================================================
-
             Opcode::IndexAtom | Opcode::MinAtom | Opcode::MaxAtom => {
                 let mut ctx = handlers::ExprHandlerContext {
                     module: &mut self.module,
@@ -820,76 +930,112 @@ impl JitCompiler {
                     min_atom_func_id: self.min_atom_func_id,
                     max_atom_func_id: self.max_atom_func_id,
                 };
-                return handlers::compile_expr_op(&mut ctx, codegen, op, offset);
+                handlers::compile_expr_op(&mut ctx, codegen, op, offset)
             }
 
             // =====================================================================
             // Boolean Operations (delegated to handlers module)
             // =====================================================================
             Opcode::And | Opcode::Or | Opcode::Not | Opcode::Xor => {
-                return handlers::compile_boolean_op(codegen, op, offset);
+                handlers::compile_boolean_op(codegen, op, offset)
             }
 
             // =====================================================================
             // Comparison Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge |
-            Opcode::Eq | Opcode::Ne | Opcode::StructEq => {
-                return handlers::compile_comparison_op(codegen, op, offset);
-            }
+            Opcode::Lt
+            | Opcode::Le
+            | Opcode::Gt
+            | Opcode::Ge
+            | Opcode::Eq
+            | Opcode::Ne
+            | Opcode::StructEq => handlers::compile_comparison_op(codegen, op, offset),
 
             // =====================================================================
             // Control Flow (delegated to handlers module)
             // =====================================================================
-            Opcode::Return => {
-                return handlers::compile_return(codegen);
-            }
+            Opcode::Return => handlers::compile_return(codegen),
 
             Opcode::Jump => {
-                return handlers::compile_jump(codegen, chunk, op, offset, offset_to_block, merge_blocks);
+                handlers::compile_jump(codegen, chunk, op, offset, offset_to_block, merge_blocks)
             }
 
-            Opcode::JumpIfFalse => {
-                return handlers::compile_jump_if_false(codegen, chunk, op, offset, offset_to_block, merge_blocks);
-            }
+            Opcode::JumpIfFalse => handlers::compile_jump_if_false(
+                codegen,
+                chunk,
+                op,
+                offset,
+                offset_to_block,
+                merge_blocks,
+            ),
 
-            Opcode::JumpIfTrue => {
-                return handlers::compile_jump_if_true(codegen, chunk, op, offset, offset_to_block, merge_blocks);
-            }
+            Opcode::JumpIfTrue => handlers::compile_jump_if_true(
+                codegen,
+                chunk,
+                op,
+                offset,
+                offset_to_block,
+                merge_blocks,
+            ),
 
-            Opcode::JumpShort => {
-                return handlers::compile_jump_short(codegen, chunk, op, offset, offset_to_block, merge_blocks);
-            }
+            Opcode::JumpShort => handlers::compile_jump_short(
+                codegen,
+                chunk,
+                op,
+                offset,
+                offset_to_block,
+                merge_blocks,
+            ),
 
-            Opcode::JumpIfFalseShort => {
-                return handlers::compile_jump_if_false_short(codegen, chunk, op, offset, offset_to_block, merge_blocks);
-            }
+            Opcode::JumpIfFalseShort => handlers::compile_jump_if_false_short(
+                codegen,
+                chunk,
+                op,
+                offset,
+                offset_to_block,
+                merge_blocks,
+            ),
 
-            Opcode::JumpIfTrueShort => {
-                return handlers::compile_jump_if_true_short(codegen, chunk, op, offset, offset_to_block, merge_blocks);
-            }
+            Opcode::JumpIfTrueShort => handlers::compile_jump_if_true_short(
+                codegen,
+                chunk,
+                op,
+                offset,
+                offset_to_block,
+                merge_blocks,
+            ),
 
-            Opcode::JumpIfNil => {
-                return handlers::compile_jump_if_nil(codegen, chunk, op, offset, offset_to_block, merge_blocks);
-            }
+            Opcode::JumpIfNil => handlers::compile_jump_if_nil(
+                codegen,
+                chunk,
+                op,
+                offset,
+                offset_to_block,
+                merge_blocks,
+            ),
 
-            Opcode::JumpIfError => {
-                return handlers::compile_jump_if_error(codegen, chunk, op, offset, offset_to_block, merge_blocks);
-            }
+            Opcode::JumpIfError => handlers::compile_jump_if_error(
+                codegen,
+                chunk,
+                op,
+                offset,
+                offset_to_block,
+                merge_blocks,
+            ),
 
             // =====================================================================
             // Stage 4: Local Variables (delegated to handlers module)
             // =====================================================================
-            Opcode::LoadLocal | Opcode::StoreLocal |
-            Opcode::LoadLocalWide | Opcode::StoreLocalWide => {
-                return handlers::compile_local_op(codegen, chunk, op, offset);
-            }
+            Opcode::LoadLocal
+            | Opcode::StoreLocal
+            | Opcode::LoadLocalWide
+            | Opcode::StoreLocalWide => handlers::compile_local_op(codegen, chunk, op, offset),
 
             // =====================================================================
             // Stage 6: Type Predicates (delegated to handlers module)
             // =====================================================================
             Opcode::IsVariable | Opcode::IsSExpr | Opcode::IsSymbol => {
-                return handlers::compile_type_predicate_op(codegen, op);
+                handlers::compile_type_predicate_op(codegen, op)
             }
 
             // =====================================================================
@@ -905,7 +1051,7 @@ impl JitCompiler {
                     push_binding_frame_func_id: self.bindings.push_binding_frame_func_id,
                     pop_binding_frame_func_id: self.bindings.pop_binding_frame_func_id,
                 };
-                return handlers::compile_load_binding(&mut binding_ctx, codegen, chunk, offset);
+                handlers::compile_load_binding(&mut binding_ctx, codegen, chunk, offset)
             }
 
             Opcode::StoreBinding => {
@@ -918,7 +1064,7 @@ impl JitCompiler {
                     push_binding_frame_func_id: self.bindings.push_binding_frame_func_id,
                     pop_binding_frame_func_id: self.bindings.pop_binding_frame_func_id,
                 };
-                return handlers::compile_store_binding(&mut binding_ctx, codegen, chunk, offset);
+                handlers::compile_store_binding(&mut binding_ctx, codegen, chunk, offset)
             }
 
             Opcode::HasBinding => {
@@ -931,7 +1077,7 @@ impl JitCompiler {
                     push_binding_frame_func_id: self.bindings.push_binding_frame_func_id,
                     pop_binding_frame_func_id: self.bindings.pop_binding_frame_func_id,
                 };
-                return handlers::compile_has_binding(&mut binding_ctx, codegen, chunk, offset);
+                handlers::compile_has_binding(&mut binding_ctx, codegen, chunk, offset)
             }
 
             Opcode::ClearBindings => {
@@ -944,7 +1090,7 @@ impl JitCompiler {
                     push_binding_frame_func_id: self.bindings.push_binding_frame_func_id,
                     pop_binding_frame_func_id: self.bindings.pop_binding_frame_func_id,
                 };
-                return handlers::compile_clear_bindings(&mut binding_ctx, codegen);
+                handlers::compile_clear_bindings(&mut binding_ctx, codegen)
             }
 
             Opcode::PushBindingFrame => {
@@ -957,7 +1103,7 @@ impl JitCompiler {
                     push_binding_frame_func_id: self.bindings.push_binding_frame_func_id,
                     pop_binding_frame_func_id: self.bindings.pop_binding_frame_func_id,
                 };
-                return handlers::compile_push_binding_frame(&mut binding_ctx, codegen);
+                handlers::compile_push_binding_frame(&mut binding_ctx, codegen)
             }
 
             Opcode::PopBindingFrame => {
@@ -970,7 +1116,7 @@ impl JitCompiler {
                     push_binding_frame_func_id: self.bindings.push_binding_frame_func_id,
                     pop_binding_frame_func_id: self.bindings.pop_binding_frame_func_id,
                 };
-                return handlers::compile_pop_binding_frame(&mut binding_ctx, codegen);
+                handlers::compile_pop_binding_frame(&mut binding_ctx, codegen)
             }
 
             // =====================================================================
@@ -986,7 +1132,7 @@ impl JitCompiler {
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
                 };
-                return handlers::compile_match(&mut pm_ctx, codegen, offset);
+                handlers::compile_match(&mut pm_ctx, codegen, offset)
             }
 
             Opcode::MatchBind => {
@@ -999,7 +1145,7 @@ impl JitCompiler {
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
                 };
-                return handlers::compile_match_bind(&mut pm_ctx, codegen, offset);
+                handlers::compile_match_bind(&mut pm_ctx, codegen, offset)
             }
 
             Opcode::MatchHead => {
@@ -1012,7 +1158,7 @@ impl JitCompiler {
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
                 };
-                return handlers::compile_match_head(&mut pm_ctx, codegen, chunk, offset);
+                handlers::compile_match_head(&mut pm_ctx, codegen, chunk, offset)
             }
 
             Opcode::MatchArity => {
@@ -1025,7 +1171,7 @@ impl JitCompiler {
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
                 };
-                return handlers::compile_match_arity(&mut pm_ctx, codegen, chunk, offset);
+                handlers::compile_match_arity(&mut pm_ctx, codegen, chunk, offset)
             }
 
             Opcode::MatchGuard => {
@@ -1038,7 +1184,7 @@ impl JitCompiler {
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
                 };
-                return handlers::compile_match_guard(&mut pm_ctx, codegen, chunk, offset);
+                handlers::compile_match_guard(&mut pm_ctx, codegen, chunk, offset)
             }
 
             Opcode::Unify => {
@@ -1051,7 +1197,7 @@ impl JitCompiler {
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
                 };
-                return handlers::compile_unify(&mut pm_ctx, codegen, offset);
+                handlers::compile_unify(&mut pm_ctx, codegen, offset)
             }
 
             Opcode::UnifyBind => {
@@ -1064,13 +1210,12 @@ impl JitCompiler {
                     unify_func_id: self.pattern_matching.unify_func_id,
                     unify_bind_func_id: self.pattern_matching.unify_bind_func_id,
                 };
-                return handlers::compile_unify_bind(&mut pm_ctx, codegen, offset);
+                handlers::compile_unify_bind(&mut pm_ctx, codegen, offset)
             }
 
             // =================================================================
             // Phase D: Space Operations (delegated to handlers module)
             // =================================================================
-
             Opcode::SpaceAdd => {
                 let mut space_ctx = handlers::SpaceHandlerContext {
                     module: &mut self.module,
@@ -1082,7 +1227,7 @@ impl JitCompiler {
                     get_state_func_id: self.space.get_state_func_id,
                     change_state_func_id: self.space.change_state_func_id,
                 };
-                return handlers::compile_space_add(&mut space_ctx, codegen, offset);
+                handlers::compile_space_add(&mut space_ctx, codegen, offset)
             }
 
             Opcode::SpaceRemove => {
@@ -1096,7 +1241,7 @@ impl JitCompiler {
                     get_state_func_id: self.space.get_state_func_id,
                     change_state_func_id: self.space.change_state_func_id,
                 };
-                return handlers::compile_space_remove(&mut space_ctx, codegen, offset);
+                handlers::compile_space_remove(&mut space_ctx, codegen, offset)
             }
 
             Opcode::SpaceGetAtoms => {
@@ -1110,7 +1255,7 @@ impl JitCompiler {
                     get_state_func_id: self.space.get_state_func_id,
                     change_state_func_id: self.space.change_state_func_id,
                 };
-                return handlers::compile_space_get_atoms(&mut space_ctx, codegen, offset);
+                handlers::compile_space_get_atoms(&mut space_ctx, codegen, offset)
             }
 
             Opcode::SpaceMatch => {
@@ -1124,13 +1269,12 @@ impl JitCompiler {
                     get_state_func_id: self.space.get_state_func_id,
                     change_state_func_id: self.space.change_state_func_id,
                 };
-                return handlers::compile_space_match(&mut space_ctx, codegen, offset);
+                handlers::compile_space_match(&mut space_ctx, codegen, offset)
             }
 
             // =================================================================
             // Phase D.1: State Operations (delegated to handlers module)
             // =================================================================
-
             Opcode::NewState => {
                 let mut space_ctx = handlers::SpaceHandlerContext {
                     module: &mut self.module,
@@ -1142,7 +1286,7 @@ impl JitCompiler {
                     get_state_func_id: self.space.get_state_func_id,
                     change_state_func_id: self.space.change_state_func_id,
                 };
-                return handlers::compile_new_state(&mut space_ctx, codegen, offset);
+                handlers::compile_new_state(&mut space_ctx, codegen, offset)
             }
 
             Opcode::GetState => {
@@ -1156,7 +1300,7 @@ impl JitCompiler {
                     get_state_func_id: self.space.get_state_func_id,
                     change_state_func_id: self.space.change_state_func_id,
                 };
-                return handlers::compile_get_state(&mut space_ctx, codegen, offset);
+                handlers::compile_get_state(&mut space_ctx, codegen, offset)
             }
 
             Opcode::ChangeState => {
@@ -1170,13 +1314,12 @@ impl JitCompiler {
                     get_state_func_id: self.space.get_state_func_id,
                     change_state_func_id: self.space.change_state_func_id,
                 };
-                return handlers::compile_change_state(&mut space_ctx, codegen, offset);
+                handlers::compile_change_state(&mut space_ctx, codegen, offset)
             }
 
             // =================================================================
             // Phase C: Rule Dispatch Operations (delegated to handlers module)
             // =================================================================
-
             Opcode::DispatchRules => {
                 let mut rules_ctx = handlers::RulesHandlerContext {
                     module: &mut self.module,
@@ -1189,7 +1332,7 @@ impl JitCompiler {
                     apply_subst_func_id: self.rules.apply_subst_func_id,
                     define_rule_func_id: self.rules.define_rule_func_id,
                 };
-                return handlers::compile_dispatch_rules(&mut rules_ctx, codegen, offset);
+                handlers::compile_dispatch_rules(&mut rules_ctx, codegen, offset)
             }
 
             Opcode::TryRule => {
@@ -1204,7 +1347,7 @@ impl JitCompiler {
                     apply_subst_func_id: self.rules.apply_subst_func_id,
                     define_rule_func_id: self.rules.define_rule_func_id,
                 };
-                return handlers::compile_try_rule(&mut rules_ctx, codegen, chunk, offset);
+                handlers::compile_try_rule(&mut rules_ctx, codegen, chunk, offset)
             }
 
             Opcode::NextRule => {
@@ -1219,7 +1362,7 @@ impl JitCompiler {
                     apply_subst_func_id: self.rules.apply_subst_func_id,
                     define_rule_func_id: self.rules.define_rule_func_id,
                 };
-                return handlers::compile_next_rule(&mut rules_ctx, codegen, offset);
+                handlers::compile_next_rule(&mut rules_ctx, codegen, offset)
             }
 
             Opcode::CommitRule => {
@@ -1234,7 +1377,7 @@ impl JitCompiler {
                     apply_subst_func_id: self.rules.apply_subst_func_id,
                     define_rule_func_id: self.rules.define_rule_func_id,
                 };
-                return handlers::compile_commit_rule(&mut rules_ctx, codegen, offset);
+                handlers::compile_commit_rule(&mut rules_ctx, codegen, offset)
             }
 
             Opcode::FailRule => {
@@ -1249,7 +1392,7 @@ impl JitCompiler {
                     apply_subst_func_id: self.rules.apply_subst_func_id,
                     define_rule_func_id: self.rules.define_rule_func_id,
                 };
-                return handlers::compile_fail_rule(&mut rules_ctx, codegen, offset);
+                handlers::compile_fail_rule(&mut rules_ctx, codegen, offset)
             }
 
             Opcode::LookupRules => {
@@ -1264,7 +1407,7 @@ impl JitCompiler {
                     apply_subst_func_id: self.rules.apply_subst_func_id,
                     define_rule_func_id: self.rules.define_rule_func_id,
                 };
-                return handlers::compile_lookup_rules(&mut rules_ctx, codegen, chunk, offset);
+                handlers::compile_lookup_rules(&mut rules_ctx, codegen, chunk, offset)
             }
 
             Opcode::ApplySubst => {
@@ -1279,7 +1422,7 @@ impl JitCompiler {
                     apply_subst_func_id: self.rules.apply_subst_func_id,
                     define_rule_func_id: self.rules.define_rule_func_id,
                 };
-                return handlers::compile_apply_subst(&mut rules_ctx, codegen, offset);
+                handlers::compile_apply_subst(&mut rules_ctx, codegen, offset)
             }
 
             Opcode::DefineRule => {
@@ -1294,16 +1437,13 @@ impl JitCompiler {
                     apply_subst_func_id: self.rules.apply_subst_func_id,
                     define_rule_func_id: self.rules.define_rule_func_id,
                 };
-                return handlers::compile_define_rule(&mut rules_ctx, codegen, chunk, offset);
+                handlers::compile_define_rule(&mut rules_ctx, codegen, chunk, offset)
             }
 
             // =================================================================
             // Phase E: Special Forms (delegated to handlers module)
             // =================================================================
-
-            Opcode::EvalIf => {
-                return handlers::compile_eval_if(codegen);
-            }
+            Opcode::EvalIf => handlers::compile_eval_if(codegen),
 
             Opcode::EvalLet => {
                 let mut special_ctx = handlers::SpecialFormsHandlerContext {
@@ -1324,12 +1464,10 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_let(&mut special_ctx, codegen, chunk, offset);
+                handlers::compile_eval_let(&mut special_ctx, codegen, chunk, offset)
             }
 
-            Opcode::EvalLetStar => {
-                return handlers::compile_eval_let_star(codegen);
-            }
+            Opcode::EvalLetStar => handlers::compile_eval_let_star(codegen),
 
             Opcode::EvalMatch => {
                 let mut special_ctx = handlers::SpecialFormsHandlerContext {
@@ -1350,7 +1488,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_match(&mut special_ctx, codegen, offset);
+                handlers::compile_eval_match(&mut special_ctx, codegen, offset)
             }
 
             Opcode::EvalCase => {
@@ -1372,12 +1510,10 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_case(&mut special_ctx, codegen, chunk, offset);
+                handlers::compile_eval_case(&mut special_ctx, codegen, chunk, offset)
             }
 
-            Opcode::EvalChain => {
-                return handlers::compile_eval_chain(codegen);
-            }
+            Opcode::EvalChain => handlers::compile_eval_chain(codegen),
 
             Opcode::EvalQuote => {
                 let mut special_ctx = handlers::SpecialFormsHandlerContext {
@@ -1398,7 +1534,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_quote(&mut special_ctx, codegen, offset);
+                handlers::compile_eval_quote(&mut special_ctx, codegen, offset)
             }
 
             Opcode::EvalUnquote => {
@@ -1420,7 +1556,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_unquote(&mut special_ctx, codegen, offset);
+                handlers::compile_eval_unquote(&mut special_ctx, codegen, offset)
             }
 
             Opcode::EvalEval => {
@@ -1442,7 +1578,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_eval(&mut special_ctx, codegen, offset);
+                handlers::compile_eval_eval(&mut special_ctx, codegen, offset)
             }
 
             Opcode::EvalBind => {
@@ -1464,7 +1600,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_bind(&mut special_ctx, codegen, chunk, offset);
+                handlers::compile_eval_bind(&mut special_ctx, codegen, chunk, offset)
             }
 
             Opcode::EvalNew => {
@@ -1486,7 +1622,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_new(&mut special_ctx, codegen, offset);
+                handlers::compile_eval_new(&mut special_ctx, codegen, offset)
             }
 
             Opcode::EvalCollapse => {
@@ -1508,7 +1644,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_collapse(&mut special_ctx, codegen, offset);
+                handlers::compile_eval_collapse(&mut special_ctx, codegen, offset)
             }
 
             Opcode::EvalSuperpose => {
@@ -1530,7 +1666,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_superpose(&mut special_ctx, codegen, offset);
+                handlers::compile_eval_superpose(&mut special_ctx, codegen, offset)
             }
 
             Opcode::EvalMemo => {
@@ -1552,7 +1688,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_memo(&mut special_ctx, codegen, offset);
+                handlers::compile_eval_memo(&mut special_ctx, codegen, offset)
             }
 
             Opcode::EvalMemoFirst => {
@@ -1574,7 +1710,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_memo_first(&mut special_ctx, codegen, offset);
+                handlers::compile_eval_memo_first(&mut special_ctx, codegen, offset)
             }
 
             Opcode::EvalPragma => {
@@ -1596,7 +1732,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_pragma(&mut special_ctx, codegen, offset);
+                handlers::compile_eval_pragma(&mut special_ctx, codegen, offset)
             }
 
             Opcode::EvalFunction => {
@@ -1618,7 +1754,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_function(&mut special_ctx, codegen, chunk, offset);
+                handlers::compile_eval_function(&mut special_ctx, codegen, chunk, offset)
             }
 
             Opcode::EvalLambda => {
@@ -1640,7 +1776,7 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_lambda(&mut special_ctx, codegen, chunk, offset);
+                handlers::compile_eval_lambda(&mut special_ctx, codegen, chunk, offset)
             }
 
             Opcode::EvalApply => {
@@ -1662,13 +1798,12 @@ impl JitCompiler {
                     eval_lambda_func_id: self.special_forms.eval_lambda_func_id,
                     eval_apply_func_id: self.special_forms.eval_apply_func_id,
                 };
-                return handlers::compile_eval_apply(&mut special_ctx, codegen, chunk, offset);
+                handlers::compile_eval_apply(&mut special_ctx, codegen, chunk, offset)
             }
 
             // =====================================================================
             // Phase G: Advanced Nondeterminism (delegated to handlers module)
             // =====================================================================
-
             Opcode::Cut => {
                 let mut nondet_ctx = handlers::NondetHandlerContext {
                     module: &mut self.module,
@@ -1683,7 +1818,7 @@ impl JitCompiler {
                     begin_nondet_func_id: self.nondet.begin_nondet_func_id,
                     end_nondet_func_id: self.nondet.end_nondet_func_id,
                 };
-                return handlers::compile_cut(&mut nondet_ctx, codegen, offset);
+                handlers::compile_cut(&mut nondet_ctx, codegen, offset)
             }
 
             Opcode::Guard => {
@@ -1700,7 +1835,7 @@ impl JitCompiler {
                     begin_nondet_func_id: self.nondet.begin_nondet_func_id,
                     end_nondet_func_id: self.nondet.end_nondet_func_id,
                 };
-                return handlers::compile_guard(&mut nondet_ctx, codegen, offset);
+                handlers::compile_guard(&mut nondet_ctx, codegen, offset)
             }
 
             Opcode::Amb => {
@@ -1717,7 +1852,7 @@ impl JitCompiler {
                     begin_nondet_func_id: self.nondet.begin_nondet_func_id,
                     end_nondet_func_id: self.nondet.end_nondet_func_id,
                 };
-                return handlers::compile_amb(&mut nondet_ctx, codegen, chunk, offset);
+                handlers::compile_amb(&mut nondet_ctx, codegen, chunk, offset)
             }
 
             Opcode::Commit => {
@@ -1734,7 +1869,7 @@ impl JitCompiler {
                     begin_nondet_func_id: self.nondet.begin_nondet_func_id,
                     end_nondet_func_id: self.nondet.end_nondet_func_id,
                 };
-                return handlers::compile_commit(&mut nondet_ctx, codegen, chunk, offset);
+                handlers::compile_commit(&mut nondet_ctx, codegen, chunk, offset)
             }
 
             Opcode::Backtrack => {
@@ -1751,13 +1886,12 @@ impl JitCompiler {
                     begin_nondet_func_id: self.nondet.begin_nondet_func_id,
                     end_nondet_func_id: self.nondet.end_nondet_func_id,
                 };
-                return handlers::compile_backtrack(&mut nondet_ctx, codegen, offset);
+                handlers::compile_backtrack(&mut nondet_ctx, codegen, offset)
             }
 
             // =====================================================================
             // Phase F: Advanced Calls (delegated to handlers module)
             // =====================================================================
-
             Opcode::CallNative => {
                 let mut call_ctx = handlers::CallHandlerContext {
                     module: &mut self.module,
@@ -1769,7 +1903,7 @@ impl JitCompiler {
                     call_external_func_id: self.calls.call_external_func_id,
                     call_cached_func_id: self.calls.call_cached_func_id,
                 };
-                return handlers::compile_call_native(&mut call_ctx, codegen, chunk, offset);
+                handlers::compile_call_native(&mut call_ctx, codegen, chunk, offset)
             }
 
             Opcode::CallExternal => {
@@ -1783,7 +1917,7 @@ impl JitCompiler {
                     call_external_func_id: self.calls.call_external_func_id,
                     call_cached_func_id: self.calls.call_cached_func_id,
                 };
-                return handlers::compile_call_external(&mut call_ctx, codegen, chunk, offset);
+                handlers::compile_call_external(&mut call_ctx, codegen, chunk, offset)
             }
 
             Opcode::CallCached => {
@@ -1797,13 +1931,12 @@ impl JitCompiler {
                     call_external_func_id: self.calls.call_external_func_id,
                     call_cached_func_id: self.calls.call_cached_func_id,
                 };
-                return handlers::compile_call_cached(&mut call_ctx, codegen, chunk, offset);
+                handlers::compile_call_cached(&mut call_ctx, codegen, chunk, offset)
             }
 
             // =====================================================================
             // Phase H: MORK Bridge (via runtime calls)
             // =====================================================================
-
             Opcode::MorkLookup => {
                 let mut mork_ctx = handlers::MorkHandlerContext {
                     module: &mut self.module,
@@ -1812,7 +1945,7 @@ impl JitCompiler {
                     mork_insert_func_id: self.mork_insert_func_id,
                     mork_delete_func_id: self.mork_delete_func_id,
                 };
-                return handlers::compile_mork_lookup(&mut mork_ctx, codegen, offset);
+                handlers::compile_mork_lookup(&mut mork_ctx, codegen, offset)
             }
 
             Opcode::MorkMatch => {
@@ -1823,7 +1956,7 @@ impl JitCompiler {
                     mork_insert_func_id: self.mork_insert_func_id,
                     mork_delete_func_id: self.mork_delete_func_id,
                 };
-                return handlers::compile_mork_match(&mut mork_ctx, codegen, offset);
+                handlers::compile_mork_match(&mut mork_ctx, codegen, offset)
             }
 
             Opcode::MorkInsert => {
@@ -1834,7 +1967,7 @@ impl JitCompiler {
                     mork_insert_func_id: self.mork_insert_func_id,
                     mork_delete_func_id: self.mork_delete_func_id,
                 };
-                return handlers::compile_mork_insert(&mut mork_ctx, codegen, offset);
+                handlers::compile_mork_insert(&mut mork_ctx, codegen, offset)
             }
 
             Opcode::MorkDelete => {
@@ -1845,20 +1978,19 @@ impl JitCompiler {
                     mork_insert_func_id: self.mork_insert_func_id,
                     mork_delete_func_id: self.mork_delete_func_id,
                 };
-                return handlers::compile_mork_delete(&mut mork_ctx, codegen, offset);
+                handlers::compile_mork_delete(&mut mork_ctx, codegen, offset)
             }
 
             // =====================================================================
             // Phase I: Debug/Meta (delegated to handlers module)
             // =====================================================================
-
             Opcode::Trace => {
                 let mut debug_ctx = handlers::DebugHandlerContext {
                     module: &mut self.module,
                     trace_func_id: self.debug.trace_func_id,
                     breakpoint_func_id: self.debug.breakpoint_func_id,
                 };
-                return handlers::compile_trace(&mut debug_ctx, codegen, chunk, offset);
+                handlers::compile_trace(&mut debug_ctx, codegen, chunk, offset)
             }
 
             Opcode::Breakpoint => {
@@ -1867,16 +1999,13 @@ impl JitCompiler {
                     trace_func_id: self.debug.trace_func_id,
                     breakpoint_func_id: self.debug.breakpoint_func_id,
                 };
-                return handlers::compile_breakpoint(&mut debug_ctx, codegen, chunk, offset);
+                handlers::compile_breakpoint(&mut debug_ctx, codegen, chunk, offset)
             }
 
             // =====================================================================
             // Phase 1.1: Core Nondeterminism Markers (delegated to handlers module)
             // =====================================================================
-
-            Opcode::Fail => {
-                return handlers::compile_fail(codegen);
-            }
+            Opcode::Fail => handlers::compile_fail(codegen),
 
             Opcode::BeginNondet => {
                 let mut nondet_ctx = handlers::NondetHandlerContext {
@@ -1892,7 +2021,7 @@ impl JitCompiler {
                     begin_nondet_func_id: self.nondet.begin_nondet_func_id,
                     end_nondet_func_id: self.nondet.end_nondet_func_id,
                 };
-                return handlers::compile_begin_nondet(&mut nondet_ctx, codegen, offset);
+                handlers::compile_begin_nondet(&mut nondet_ctx, codegen, offset)
             }
 
             Opcode::EndNondet => {
@@ -1909,20 +2038,19 @@ impl JitCompiler {
                     begin_nondet_func_id: self.nondet.begin_nondet_func_id,
                     end_nondet_func_id: self.nondet.end_nondet_func_id,
                 };
-                return handlers::compile_end_nondet(&mut nondet_ctx, codegen, offset);
+                handlers::compile_end_nondet(&mut nondet_ctx, codegen, offset)
             }
 
             // =====================================================================
             // Phase 1.3: Multi-value Return (delegated to handlers module)
             // =====================================================================
-
             Opcode::ReturnMulti => {
                 let mut ctx = handlers::MultiReturnHandlerContext {
                     module: &mut self.module,
                     return_multi_func_id: self.debug.return_multi_func_id,
                     collect_n_func_id: self.debug.collect_n_func_id,
                 };
-                return handlers::compile_return_multi(&mut ctx, codegen, offset);
+                handlers::compile_return_multi(&mut ctx, codegen, offset)
             }
 
             Opcode::CollectN => {
@@ -1931,21 +2059,19 @@ impl JitCompiler {
                     return_multi_func_id: self.debug.return_multi_func_id,
                     collect_n_func_id: self.debug.collect_n_func_id,
                 };
-                return handlers::compile_collect_n(&mut ctx, codegen, chunk, offset);
+                handlers::compile_collect_n(&mut ctx, codegen, chunk, offset)
             }
 
             // =====================================================================
             // Phase 1.4: Multi-way Branch (JumpTable) - Native Switch (delegated to handlers)
             // =====================================================================
-
             Opcode::JumpTable => {
-                return handlers::compile_jump_table(codegen, chunk, offset, offset_to_block);
+                handlers::compile_jump_table(codegen, chunk, offset, offset_to_block)
             }
 
             // =====================================================================
             // Phase 1.5: Global/Space Access (delegated to handlers module)
             // =====================================================================
-
             Opcode::LoadGlobal => {
                 let mut ctx = handlers::GlobalsHandlerContext {
                     module: &mut self.module,
@@ -1954,7 +2080,7 @@ impl JitCompiler {
                     load_space_func_id: self.globals.load_space_func_id,
                     load_upvalue_func_id: self.globals.load_upvalue_func_id,
                 };
-                return handlers::compile_load_global(&mut ctx, codegen, chunk, offset);
+                handlers::compile_load_global(&mut ctx, codegen, chunk, offset)
             }
 
             Opcode::StoreGlobal => {
@@ -1965,7 +2091,7 @@ impl JitCompiler {
                     load_space_func_id: self.globals.load_space_func_id,
                     load_upvalue_func_id: self.globals.load_upvalue_func_id,
                 };
-                return handlers::compile_store_global(&mut ctx, codegen, chunk, offset);
+                handlers::compile_store_global(&mut ctx, codegen, chunk, offset)
             }
 
             Opcode::LoadSpace => {
@@ -1976,13 +2102,12 @@ impl JitCompiler {
                     load_space_func_id: self.globals.load_space_func_id,
                     load_upvalue_func_id: self.globals.load_upvalue_func_id,
                 };
-                return handlers::compile_load_space(&mut ctx, codegen, chunk, offset);
+                handlers::compile_load_space(&mut ctx, codegen, chunk, offset)
             }
 
             // =====================================================================
             // Phase 1.6: Closure Support (delegated to handlers module)
             // =====================================================================
-
             Opcode::LoadUpvalue => {
                 let mut ctx = handlers::GlobalsHandlerContext {
                     module: &mut self.module,
@@ -1991,20 +2116,19 @@ impl JitCompiler {
                     load_space_func_id: self.globals.load_space_func_id,
                     load_upvalue_func_id: self.globals.load_upvalue_func_id,
                 };
-                return handlers::compile_load_upvalue(&mut ctx, codegen, chunk, offset);
+                handlers::compile_load_upvalue(&mut ctx, codegen, chunk, offset)
             }
 
             // =====================================================================
             // Phase 1.7: Atom Operations (delegated to handlers module)
             // =====================================================================
-
             Opcode::DeconAtom => {
                 let mut ctx = handlers::AtomOpsHandlerContext {
                     module: &mut self.module,
                     decon_atom_func_id: self.higher_order.decon_atom_func_id,
                     repr_func_id: self.higher_order.repr_func_id,
                 };
-                return handlers::compile_decon_atom(&mut ctx, codegen, offset);
+                handlers::compile_decon_atom(&mut ctx, codegen, offset)
             }
 
             Opcode::Repr => {
@@ -2013,13 +2137,12 @@ impl JitCompiler {
                     decon_atom_func_id: self.higher_order.decon_atom_func_id,
                     repr_func_id: self.higher_order.repr_func_id,
                 };
-                return handlers::compile_repr(&mut ctx, codegen, offset);
+                handlers::compile_repr(&mut ctx, codegen, offset)
             }
 
             // =====================================================================
             // Phase 1.8: Higher-Order Operations (delegated to handlers module)
             // =====================================================================
-
             Opcode::MapAtom => {
                 let mut ctx = handlers::HigherOrderOpsHandlerContext {
                     module: &mut self.module,
@@ -2027,7 +2150,7 @@ impl JitCompiler {
                     filter_atom_func_id: self.higher_order.filter_atom_func_id,
                     foldl_atom_func_id: self.higher_order.foldl_atom_func_id,
                 };
-                return handlers::compile_map_atom(&mut ctx, codegen, chunk, offset);
+                handlers::compile_map_atom(&mut ctx, codegen, chunk, offset)
             }
 
             Opcode::FilterAtom => {
@@ -2037,7 +2160,7 @@ impl JitCompiler {
                     filter_atom_func_id: self.higher_order.filter_atom_func_id,
                     foldl_atom_func_id: self.higher_order.foldl_atom_func_id,
                 };
-                return handlers::compile_filter_atom(&mut ctx, codegen, chunk, offset);
+                handlers::compile_filter_atom(&mut ctx, codegen, chunk, offset)
             }
 
             Opcode::FoldlAtom => {
@@ -2047,48 +2170,35 @@ impl JitCompiler {
                     filter_atom_func_id: self.higher_order.filter_atom_func_id,
                     foldl_atom_func_id: self.higher_order.foldl_atom_func_id,
                 };
-                return handlers::compile_foldl_atom(&mut ctx, codegen, chunk, offset);
+                handlers::compile_foldl_atom(&mut ctx, codegen, chunk, offset)
             }
 
             // =====================================================================
             // Phase 1.9: Meta-Type Operations (delegated to handlers module)
             // =====================================================================
-
             Opcode::GetMetaType => {
                 let mut ctx = handlers::MetaOpsHandlerContext {
                     module: &mut self.module,
                     get_metatype_func_id: self.debug.get_metatype_func_id,
                     bloom_check_func_id: self.debug.bloom_check_func_id,
                 };
-                return handlers::compile_get_metatype(&mut ctx, codegen, offset);
+                handlers::compile_get_metatype(&mut ctx, codegen, offset)
             }
 
             // =====================================================================
             // Phase 1.10: MORK and Debug (delegated to handlers module)
             // =====================================================================
-
             Opcode::BloomCheck => {
                 let mut ctx = handlers::MetaOpsHandlerContext {
                     module: &mut self.module,
                     get_metatype_func_id: self.debug.get_metatype_func_id,
                     bloom_check_func_id: self.debug.bloom_check_func_id,
                 };
-                return handlers::compile_bloom_check(&mut ctx, codegen, offset);
+                handlers::compile_bloom_check(&mut ctx, codegen, offset)
             }
 
-            Opcode::Halt => {
-                return handlers::compile_halt(codegen);
-            }
-
-            // =====================================================================
-            // Not Stage 1-8 + Phase A-I + Phase 1.1-1.10 compilable - should not reach here
-            // =====================================================================
-            _ => {
-                return Err(JitError::InvalidOpcode(op.to_byte()));
-            }
+            Opcode::Halt => handlers::compile_halt(codegen),
         }
-
-        Ok(())
     }
 
     /// Get code size statistics

@@ -28,7 +28,7 @@
 //! until the next tier becomes Ready.
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 // Thread-local sampling counter to avoid atomic contention on the global counter
@@ -405,6 +405,7 @@ pub struct TieredCompilationCache {
 
     // Warm-up period to skip tracking overhead for small workloads
     /// Threshold for warm-up period - no tracking until this many total evaluations
+    #[allow(dead_code)]
     warmup_threshold: u64,
     /// Flag indicating warm-up period is complete (set once, never reverts)
     warmup_complete: AtomicBool,
@@ -547,13 +548,11 @@ impl TieredCompilationCache {
 
         // Slow path: create new entry
         let state = Arc::new(ExprCompilationState::new(hash));
-        self.entries
-            .entry(hash)
-            .or_insert_with(|| {
-                // Update stats atomically (lock-free)
-                self.expressions_tracked.fetch_add(1, Ordering::Relaxed);
-                Arc::clone(&state)
-            });
+        self.entries.entry(hash).or_insert_with(|| {
+            // Update stats atomically (lock-free)
+            self.expressions_tracked.fetch_add(1, Ordering::Relaxed);
+            Arc::clone(&state)
+        });
 
         // Return the entry (could be ours or another thread's)
         self.entries
@@ -613,21 +612,20 @@ impl TieredCompilationCache {
         }
 
         // Update stats atomically (lock-free)
-        self.bytecode_compilations_triggered.fetch_add(1, Ordering::Relaxed);
+        self.bytecode_compilations_triggered
+            .fetch_add(1, Ordering::Relaxed);
 
         // Clone what we need for the background task
         let expr_clone = expr.clone();
         let state_clone = Arc::clone(state);
 
         // Compilation closure
-        let compile_task = move || {
-            match compile_arc("tiered", &expr_clone) {
-                Ok(chunk) => {
-                    state_clone.set_bytecode_ready(chunk);
-                }
-                Err(_) => {
-                    state_clone.set_bytecode_failed();
-                }
+        let compile_task = move || match compile_arc("tiered", &expr_clone) {
+            Ok(chunk) => {
+                state_clone.set_bytecode_ready(chunk);
+            }
+            Err(_) => {
+                state_clone.set_bytecode_failed();
             }
         };
 
@@ -676,7 +674,8 @@ impl TieredCompilationCache {
         }
 
         // Update stats atomically (lock-free)
-        self.jit1_compilations_triggered.fetch_add(1, Ordering::Relaxed);
+        self.jit1_compilations_triggered
+            .fetch_add(1, Ordering::Relaxed);
 
         // Get the bytecode chunk
         let chunk = match state.bytecode_chunk() {
@@ -764,7 +763,8 @@ impl TieredCompilationCache {
         }
 
         // Update stats atomically (lock-free)
-        self.jit2_compilations_triggered.fetch_add(1, Ordering::Relaxed);
+        self.jit2_compilations_triggered
+            .fetch_add(1, Ordering::Relaxed);
 
         // Get the bytecode chunk
         let chunk = match state.bytecode_chunk() {
@@ -866,8 +866,12 @@ impl TieredCompilationCache {
         TieredCacheStats {
             expressions_tracked: self.expressions_tracked.load(Ordering::Relaxed),
             total_executions: self.total_executions.load(Ordering::Relaxed),
-            bytecode_compilations_triggered: self.bytecode_compilations_triggered.load(Ordering::Relaxed),
-            bytecode_compilations_completed: self.bytecode_compilations_completed.load(Ordering::Relaxed),
+            bytecode_compilations_triggered: self
+                .bytecode_compilations_triggered
+                .load(Ordering::Relaxed),
+            bytecode_compilations_completed: self
+                .bytecode_compilations_completed
+                .load(Ordering::Relaxed),
             bytecode_compilations_failed: self.bytecode_compilations_failed.load(Ordering::Relaxed),
             jit1_compilations_triggered: self.jit1_compilations_triggered.load(Ordering::Relaxed),
             jit1_compilations_completed: self.jit1_compilations_completed.load(Ordering::Relaxed),
@@ -886,9 +890,12 @@ impl TieredCompilationCache {
     pub fn reset_stats(&self) {
         self.expressions_tracked.store(0, Ordering::Relaxed);
         self.total_executions.store(0, Ordering::Relaxed);
-        self.bytecode_compilations_triggered.store(0, Ordering::Relaxed);
-        self.bytecode_compilations_completed.store(0, Ordering::Relaxed);
-        self.bytecode_compilations_failed.store(0, Ordering::Relaxed);
+        self.bytecode_compilations_triggered
+            .store(0, Ordering::Relaxed);
+        self.bytecode_compilations_completed
+            .store(0, Ordering::Relaxed);
+        self.bytecode_compilations_failed
+            .store(0, Ordering::Relaxed);
         self.jit1_compilations_triggered.store(0, Ordering::Relaxed);
         self.jit1_compilations_completed.store(0, Ordering::Relaxed);
         self.jit1_compilations_failed.store(0, Ordering::Relaxed);

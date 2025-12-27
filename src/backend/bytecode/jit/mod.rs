@@ -27,11 +27,19 @@
 //! - [`runtime`]: Runtime support functions callable from JIT code
 //! - [`hybrid`]: Hybrid executor combining JIT with interpreter fallback
 
+pub mod codegen;
+pub mod compiler;
+pub mod handlers;
+pub mod hybrid;
 pub mod profile;
+pub mod runtime;
+pub mod tiered;
 pub mod types;
 
 // Re-export main types
+pub use compiler::JitCompiler;
 pub use profile::{JitProfile, JitState, HOT_THRESHOLD};
+pub use tiered::{ChunkId, JitCache, Tier, TieredCompiler, TieredStats, STAGE2_THRESHOLD};
 pub use types::{
     JitAlternative,
     JitAlternativeTag,

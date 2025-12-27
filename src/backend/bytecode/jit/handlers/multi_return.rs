@@ -3,8 +3,8 @@
 //! Handles ReturnMulti and CollectN opcodes.
 
 use cranelift::prelude::*;
-use cranelift_module::{FuncId, Module};
 use cranelift_jit::JITModule;
+use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::JitResult;
@@ -31,7 +31,10 @@ pub fn compile_return_multi(
     let ctx_ptr = codegen.ctx_ptr();
     let count = codegen.builder.ins().iconst(types::I64, 0); // 0 = return all
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, count, ip_val]);
+    let inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, count, ip_val]);
     let signal = codegen.builder.inst_results(inst)[0];
     codegen.builder.ins().return_(&[signal]);
 
@@ -55,7 +58,10 @@ pub fn compile_collect_n(
     let ctx_ptr = codegen.ctx_ptr();
     let max_val = codegen.builder.ins().iconst(types::I64, max_count);
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, max_val, ip_val]);
+    let inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, max_val, ip_val]);
     let result = codegen.builder.inst_results(inst)[0];
     codegen.push(result)?;
 

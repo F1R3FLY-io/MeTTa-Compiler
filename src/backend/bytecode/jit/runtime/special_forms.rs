@@ -21,18 +21,17 @@
 //! - eval_lambda - Create closure
 //! - eval_apply - Apply closure to arguments
 
-use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, JitBindingEntry, JitAlternative,
-    JIT_SIGNAL_FAIL,
-};
-use crate::backend::models::MettaValue;
-use crate::backend::eval::pattern_match;
+use super::bindings::{jit_runtime_push_binding_frame, jit_runtime_store_binding};
 use super::helpers::{box_long, metta_to_jit};
-use super::bindings::{jit_runtime_store_binding, jit_runtime_push_binding_frame};
 use super::pattern_matching::jit_runtime_pattern_match;
+use super::rule_dispatch::{collect_bindings_from_ctx, hash_string};
 use super::value_creation::jit_runtime_make_quote;
-use super::rule_dispatch::{hash_string, collect_bindings_from_ctx};
 use super::MAX_ALTERNATIVES_INLINE;
+use crate::backend::bytecode::jit::types::{
+    JitAlternative, JitBailoutReason, JitBindingEntry, JitContext, JitValue, JIT_SIGNAL_FAIL,
+};
+use crate::backend::eval::pattern_match;
+use crate::backend::models::MettaValue;
 
 // =============================================================================
 // Phase E: Special Forms
@@ -51,6 +50,9 @@ use super::MAX_ALTERNATIVES_INLINE;
 ///
 /// # Returns
 /// NaN-boxed result (then_val if condition is true, else_val otherwise)
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_if(
     _ctx: *mut JitContext,
@@ -88,6 +90,9 @@ pub unsafe extern "C" fn jit_runtime_eval_if(
 ///
 /// # Returns
 /// NaN-boxed Unit (binding stored in context)
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_let(
     ctx: *mut JitContext,
@@ -110,11 +115,11 @@ pub unsafe extern "C" fn jit_runtime_eval_let(
 ///
 /// # Returns
 /// NaN-boxed Unit (bindings are handled sequentially by the compiler)
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_eval_let_star(
-    _ctx: *mut JitContext,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_eval_let_star(_ctx: *mut JitContext, _ip: u64) -> u64 {
     // Let* bindings are handled sequentially by the bytecode compiler
     // This runtime function is mainly a marker/placeholder
     JitValue::unit().to_bits()
@@ -132,6 +137,9 @@ pub unsafe extern "C" fn jit_runtime_eval_let_star(
 ///
 /// # Returns
 /// NaN-boxed Bool indicating match success
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_match(
     ctx: *mut JitContext,
@@ -155,6 +163,9 @@ pub unsafe extern "C" fn jit_runtime_eval_match(
 ///
 /// # Returns
 /// NaN-boxed Long - index of matching case (0 = first case, -1 = no match)
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_case(
     ctx: *mut JitContext,
@@ -240,6 +251,9 @@ pub unsafe extern "C" fn jit_runtime_eval_case(
 ///
 /// # Returns
 /// The second expression result
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_chain(
     _ctx: *mut JitContext,
@@ -262,12 +276,11 @@ pub unsafe extern "C" fn jit_runtime_eval_chain(
 ///
 /// # Returns
 /// NaN-boxed quoted expression
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_eval_quote(
-    ctx: *mut JitContext,
-    expr: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_eval_quote(ctx: *mut JitContext, expr: u64, _ip: u64) -> u64 {
     // Wrap expression in a quote - delegates to make_quote
     jit_runtime_make_quote(ctx, expr, _ip)
 }
@@ -283,6 +296,9 @@ pub unsafe extern "C" fn jit_runtime_eval_quote(
 ///
 /// # Returns
 /// NaN-boxed result of evaluating the unquoted expression
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_unquote(
     _ctx: *mut JitContext,
@@ -321,12 +337,11 @@ pub unsafe extern "C" fn jit_runtime_eval_unquote(
 /// # Returns
 /// NaN-boxed result of evaluation
 /// Note: In full implementation, this would trigger rule dispatch
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_eval_eval(
-    _ctx: *mut JitContext,
-    expr: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_eval_eval(_ctx: *mut JitContext, expr: u64, _ip: u64) -> u64 {
     // In a full implementation, this would call the evaluator
     // For now, return expression unchanged (evaluation happens at bytecode level)
     expr
@@ -344,6 +359,9 @@ pub unsafe extern "C" fn jit_runtime_eval_eval(
 ///
 /// # Returns
 /// NaN-boxed Unit
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_bind(
     ctx: *mut JitContext,
@@ -366,11 +384,11 @@ pub unsafe extern "C" fn jit_runtime_eval_bind(
 ///
 /// # Returns
 /// NaN-boxed space handle
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_eval_new(
-    ctx: *mut JitContext,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_eval_new(ctx: *mut JitContext, _ip: u64) -> u64 {
     use crate::backend::bytecode::space_registry::SpaceRegistry;
     use crate::backend::models::SpaceHandle;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -409,6 +427,9 @@ pub unsafe extern "C" fn jit_runtime_eval_new(
 /// Note: Full nondeterministic collapse requires the dispatcher loop.
 /// This implementation collects results from the context's result buffer
 /// when in nondeterminism mode, or wraps a single value in a list.
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_collapse(
     ctx: *mut JitContext,
@@ -475,6 +496,9 @@ pub unsafe extern "C" fn jit_runtime_eval_collapse(
 ///
 /// # Returns
 /// NaN-boxed first alternative (creates choice point for remaining alternatives)
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_superpose(
     ctx: *mut JitContext,
@@ -550,12 +574,11 @@ pub unsafe extern "C" fn jit_runtime_eval_superpose(
 ///
 /// # Returns
 /// NaN-boxed result (cached if previously evaluated)
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_eval_memo(
-    _ctx: *mut JitContext,
-    expr: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_eval_memo(_ctx: *mut JitContext, expr: u64, _ip: u64) -> u64 {
     // In full implementation, this would check a memo cache
     // For now, return expression unchanged (no caching)
     expr
@@ -572,6 +595,9 @@ pub unsafe extern "C" fn jit_runtime_eval_memo(
 ///
 /// # Returns
 /// NaN-boxed first result (cached)
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_memo_first(
     _ctx: *mut JitContext,
@@ -594,6 +620,9 @@ pub unsafe extern "C" fn jit_runtime_eval_memo_first(
 ///
 /// # Returns
 /// NaN-boxed Unit
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_pragma(
     _ctx: *mut JitContext,
@@ -616,6 +645,9 @@ pub unsafe extern "C" fn jit_runtime_eval_pragma(
 ///
 /// # Returns
 /// NaN-boxed Unit
+///
+/// # Safety
+/// The caller must ensure `_ctx` points to a valid `JitContext` if not null.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_function(
     _ctx: *mut JitContext,
@@ -643,6 +675,9 @@ pub unsafe extern "C" fn jit_runtime_eval_function(
 /// # Returns
 /// NaN-boxed closure represented as a heap-allocated MettaValue::SExpr.
 /// The closure is encoded as: `(lambda param_count (captured_env...))`
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_lambda(
     ctx: *mut JitContext,
@@ -712,6 +747,9 @@ pub unsafe extern "C" fn jit_runtime_eval_lambda(
 /// # Returns
 /// NaN-boxed result of application. For full closure evaluation,
 /// triggers bailout so the bytecode VM can execute the body.
+///
+/// # Safety
+/// The caller must ensure `ctx` points to a valid `JitContext`.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_eval_apply(
     ctx: *mut JitContext,
@@ -768,11 +806,7 @@ pub unsafe extern "C" fn jit_runtime_eval_apply(
                         if binding.len() >= 2 {
                             if let MettaValue::Atom(ref name) = binding[0] {
                                 // Variables start with $ - strip it for binding name
-                                let binding_name = if name.starts_with('$') {
-                                    &name[1..]
-                                } else {
-                                    name.as_str()
-                                };
+                                let binding_name = name.strip_prefix('$').unwrap_or(name.as_str());
                                 let name_hash = hash_string(binding_name);
                                 let value_bits = metta_to_jit(&binding[1]).to_bits();
                                 jit_runtime_store_binding(ctx, name_hash, value_bits, ip);

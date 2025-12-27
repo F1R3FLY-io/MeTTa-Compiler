@@ -738,12 +738,52 @@ mod tests {
     fn test_all_special_forms_have_signatures() {
         // All forms from SPECIAL_FORMS in eval/mod.rs should have signatures
         let special_forms = [
-            "=", "!", "quote", "if", "error", "is-error", "catch", "eval", "function", "return",
-            "chain", "match", "case", "switch", "let", ":", "get-type", "check-type", "map-atom",
-            "filter-atom", "foldl-atom", "car-atom", "cdr-atom", "cons-atom", "decons-atom",
-            "size-atom", "max-atom", "let*", "unify", "new-space", "add-atom", "remove-atom",
-            "collapse", "get-atoms", "new-state", "get-state", "change-state!", "bind!",
-            "println!", "trace!", "nop", "repr", "format-args", "empty", "get-metatype", "include",
+            "=",
+            "!",
+            "quote",
+            "if",
+            "error",
+            "is-error",
+            "catch",
+            "eval",
+            "function",
+            "return",
+            "chain",
+            "match",
+            "case",
+            "switch",
+            "let",
+            ":",
+            "get-type",
+            "check-type",
+            "map-atom",
+            "filter-atom",
+            "foldl-atom",
+            "car-atom",
+            "cdr-atom",
+            "cons-atom",
+            "decons-atom",
+            "size-atom",
+            "max-atom",
+            "let*",
+            "unify",
+            "new-space",
+            "add-atom",
+            "remove-atom",
+            "collapse",
+            "get-atoms",
+            "new-state",
+            "get-state",
+            "change-state!",
+            "bind!",
+            "println!",
+            "trace!",
+            "nop",
+            "repr",
+            "format-args",
+            "empty",
+            "get-metatype",
+            "include",
         ];
 
         for form in special_forms {
@@ -783,9 +823,21 @@ mod tests {
 
     #[test]
     fn test_list_operations_have_signatures() {
-        for op in ["car-atom", "cdr-atom", "cons-atom", "decons-atom", "size-atom", "max-atom", "empty"] {
+        for op in [
+            "car-atom",
+            "cdr-atom",
+            "cons-atom",
+            "decons-atom",
+            "size-atom",
+            "max-atom",
+            "empty",
+        ] {
             let sig = get_signature(op);
-            assert!(sig.is_some(), "List operation '{}' should have a signature", op);
+            assert!(
+                sig.is_some(),
+                "List operation '{}' should have a signature",
+                op
+            );
         }
     }
 
@@ -793,7 +845,11 @@ mod tests {
     fn test_state_operations_have_signatures() {
         for op in ["new-state", "get-state", "change-state!"] {
             let sig = get_signature(op);
-            assert!(sig.is_some(), "State operation '{}' should have a signature", op);
+            assert!(
+                sig.is_some(),
+                "State operation '{}' should have a signature",
+                op
+            );
         }
     }
 
@@ -801,7 +857,11 @@ mod tests {
     fn test_io_operations_have_signatures() {
         for op in ["println!", "trace!", "repr", "format-args"] {
             let sig = get_signature(op);
-            assert!(sig.is_some(), "I/O operation '{}' should have a signature", op);
+            assert!(
+                sig.is_some(),
+                "I/O operation '{}' should have a signature",
+                op
+            );
         }
     }
 
@@ -809,7 +869,11 @@ mod tests {
     fn test_module_operations_have_signatures() {
         for op in ["bind!", "include"] {
             let sig = get_signature(op);
-            assert!(sig.is_some(), "Module operation '{}' should have a signature", op);
+            assert!(
+                sig.is_some(),
+                "Module operation '{}' should have a signature",
+                op
+            );
         }
     }
 
@@ -817,7 +881,11 @@ mod tests {
     fn test_type_operations_have_signatures() {
         for op in [":", "get-type", "check-type", "get-metatype"] {
             let sig = get_signature(op);
-            assert!(sig.is_some(), "Type operation '{}' should have a signature", op);
+            assert!(
+                sig.is_some(),
+                "Type operation '{}' should have a signature",
+                op
+            );
         }
     }
 
@@ -825,7 +893,11 @@ mod tests {
     fn test_error_operations_have_signatures() {
         for op in ["error", "is-error", "catch"] {
             let sig = get_signature(op);
-            assert!(sig.is_some(), "Error operation '{}' should have a signature", op);
+            assert!(
+                sig.is_some(),
+                "Error operation '{}' should have a signature",
+                op
+            );
         }
     }
 
@@ -833,7 +905,11 @@ mod tests {
     fn test_evaluation_operations_have_signatures() {
         for op in ["!", "eval", "quote", "nop"] {
             let sig = get_signature(op);
-            assert!(sig.is_some(), "Evaluation operation '{}' should have a signature", op);
+            assert!(
+                sig.is_some(),
+                "Evaluation operation '{}' should have a signature",
+                op
+            );
         }
     }
 
@@ -841,7 +917,11 @@ mod tests {
     fn test_binding_operations_have_signatures() {
         for op in ["let", "let*", "unify", "function", "return", "chain"] {
             let sig = get_signature(op);
-            assert!(sig.is_some(), "Binding operation '{}' should have a signature", op);
+            assert!(
+                sig.is_some(),
+                "Binding operation '{}' should have a signature",
+                op
+            );
         }
     }
 
@@ -849,7 +929,11 @@ mod tests {
     fn test_higher_order_list_operations_have_signatures() {
         for op in ["map-atom", "filter-atom", "foldl-atom"] {
             let sig = get_signature(op);
-            assert!(sig.is_some(), "Higher-order list operation '{}' should have a signature", op);
+            assert!(
+                sig.is_some(),
+                "Higher-order list operation '{}' should have a signature",
+                op
+            );
         }
     }
 
@@ -862,7 +946,12 @@ mod tests {
         for op in ["+", "-", "*", "/", "%"] {
             let sig = get_signature(op).unwrap();
             let ret = get_return_type(&sig.type_sig).unwrap();
-            assert_eq!(*ret, TypeExpr::Number, "Arithmetic op '{}' should return Number", op);
+            assert_eq!(
+                *ret,
+                TypeExpr::Number,
+                "Arithmetic op '{}' should return Number",
+                op
+            );
         }
     }
 
@@ -871,7 +960,12 @@ mod tests {
         for op in ["<", "<=", ">", ">=", "==", "!="] {
             let sig = get_signature(op).unwrap();
             let ret = get_return_type(&sig.type_sig).unwrap();
-            assert_eq!(*ret, TypeExpr::Bool, "Comparison op '{}' should return Bool", op);
+            assert_eq!(
+                *ret,
+                TypeExpr::Bool,
+                "Comparison op '{}' should return Bool",
+                op
+            );
         }
     }
 
@@ -949,7 +1043,10 @@ mod tests {
 
     #[test]
     fn test_type_expr_clone() {
-        let original = TypeExpr::Arrow(vec![TypeExpr::Number, TypeExpr::Number], Box::new(TypeExpr::Number));
+        let original = TypeExpr::Arrow(
+            vec![TypeExpr::Number, TypeExpr::Number],
+            Box::new(TypeExpr::Number),
+        );
         let cloned = original.clone();
         assert_eq!(original, cloned);
     }
@@ -966,8 +1063,14 @@ mod tests {
 
     #[test]
     fn test_type_expr_arrow_equality() {
-        let arrow1 = TypeExpr::Arrow(vec![TypeExpr::Bool, TypeExpr::Var("a"), TypeExpr::Var("a")], Box::new(TypeExpr::Var("a")));
-        let arrow2 = TypeExpr::Arrow(vec![TypeExpr::Bool, TypeExpr::Var("a"), TypeExpr::Var("a")], Box::new(TypeExpr::Var("a")));
+        let arrow1 = TypeExpr::Arrow(
+            vec![TypeExpr::Bool, TypeExpr::Var("a"), TypeExpr::Var("a")],
+            Box::new(TypeExpr::Var("a")),
+        );
+        let arrow2 = TypeExpr::Arrow(
+            vec![TypeExpr::Bool, TypeExpr::Var("a"), TypeExpr::Var("a")],
+            Box::new(TypeExpr::Var("a")),
+        );
         let arrow3 = TypeExpr::Arrow(vec![TypeExpr::Bool], Box::new(TypeExpr::Bool));
 
         assert_eq!(arrow1, arrow2);
@@ -1066,7 +1169,18 @@ mod tests {
 
     #[test]
     fn test_single_arity_operations() {
-        let single_arity_ops = ["!", "quote", "eval", "get-atoms", "get-type", "is-error", "new-state", "get-state", "println!", "repr"];
+        let single_arity_ops = [
+            "!",
+            "quote",
+            "eval",
+            "get-atoms",
+            "get-type",
+            "is-error",
+            "new-state",
+            "get-state",
+            "println!",
+            "repr",
+        ];
         for op in single_arity_ops {
             let sig = get_signature(op).unwrap();
             assert_eq!(sig.min_arity, 1, "Op '{}' should have min_arity 1", op);
@@ -1076,7 +1190,29 @@ mod tests {
 
     #[test]
     fn test_binary_operations() {
-        let binary_ops = ["+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "add-atom", "remove-atom", "cons-atom", "bind!", "catch", "let*", ":", "check-type", "error", "change-state!"];
+        let binary_ops = [
+            "+",
+            "-",
+            "*",
+            "/",
+            "%",
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "==",
+            "!=",
+            "add-atom",
+            "remove-atom",
+            "cons-atom",
+            "bind!",
+            "catch",
+            "let*",
+            ":",
+            "check-type",
+            "error",
+            "change-state!",
+        ];
         for op in binary_ops {
             let sig = get_signature(op).unwrap();
             assert_eq!(sig.min_arity, 2, "Op '{}' should have min_arity 2", op);
@@ -1108,7 +1244,10 @@ mod tests {
     fn test_match_arity_with_optional_default() {
         let sig = get_signature("match").unwrap();
         assert_eq!(sig.min_arity, 3, "match should have min_arity 3");
-        assert_eq!(sig.max_arity, 4, "match should have max_arity 4 (optional default)");
+        assert_eq!(
+            sig.max_arity, 4,
+            "match should have max_arity 4 (optional default)"
+        );
     }
 
     // ========================================================================
@@ -1154,7 +1293,11 @@ mod tests {
         assert_eq!(*t0, TypeExpr::Space, "add-atom position 0 should be Space");
 
         let t1 = get_expected_type_at_position(sig, 1).unwrap();
-        assert_eq!(*t1, TypeExpr::Var("a"), "add-atom position 1 should be Var(a)");
+        assert_eq!(
+            *t1,
+            TypeExpr::Var("a"),
+            "add-atom position 1 should be Var(a)"
+        );
     }
 
     #[test]
@@ -1163,10 +1306,17 @@ mod tests {
 
         // (cons-atom elem list)
         let t0 = get_expected_type_at_position(sig, 0).unwrap();
-        assert_eq!(*t0, TypeExpr::Var("a"), "cons-atom position 0 should be Var(a)");
+        assert_eq!(
+            *t0,
+            TypeExpr::Var("a"),
+            "cons-atom position 0 should be Var(a)"
+        );
 
         let t1 = get_expected_type_at_position(sig, 1).unwrap();
-        assert!(matches!(t1, TypeExpr::List(_)), "cons-atom position 1 should be List");
+        assert!(
+            matches!(t1, TypeExpr::List(_)),
+            "cons-atom position 1 should be List"
+        );
     }
 
     #[test]
@@ -1175,8 +1325,14 @@ mod tests {
 
         assert!(get_expected_type_at_position(sig, 0).is_some());
         assert!(get_expected_type_at_position(sig, 1).is_some());
-        assert!(get_expected_type_at_position(sig, 2).is_none(), "Position 2 should be out of bounds for +");
-        assert!(get_expected_type_at_position(sig, 100).is_none(), "Position 100 should be out of bounds");
+        assert!(
+            get_expected_type_at_position(sig, 2).is_none(),
+            "Position 2 should be out of bounds for +"
+        );
+        assert!(
+            get_expected_type_at_position(sig, 100).is_none(),
+            "Position 100 should be out of bounds"
+        );
     }
 
     // ========================================================================
@@ -1186,7 +1342,10 @@ mod tests {
     #[test]
     fn test_type_expr_debug_format() {
         // Ensure Debug is implemented and produces reasonable output
-        let t = TypeExpr::Arrow(vec![TypeExpr::Number, TypeExpr::Number], Box::new(TypeExpr::Number));
+        let t = TypeExpr::Arrow(
+            vec![TypeExpr::Number, TypeExpr::Number],
+            Box::new(TypeExpr::Number),
+        );
         let debug_str = format!("{:?}", t);
         assert!(debug_str.contains("Arrow"));
         assert!(debug_str.contains("Number"));

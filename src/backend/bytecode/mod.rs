@@ -10,18 +10,29 @@
 //! - `jit`: Just-in-time compilation infrastructure
 //! - `chunk`: Compiled bytecode container
 //! - `compiler`: MeTTa to bytecode compiler
+//! - `memo_cache`: Thread-safe memoization cache
+//! - `native_registry`: Native function registry
+//! - `external_registry`: External function registry
 
 pub mod chunk;
 pub mod compiler;
+pub mod external_registry;
 pub mod jit;
+pub mod memo_cache;
+pub mod native_registry;
 pub mod opcodes;
 pub mod optimizer;
 
 pub use chunk::{BytecodeChunk, ChunkBuilder};
 pub use compiler::{CompileContext, CompileError, CompileResult, Compiler, Upvalue};
+pub use external_registry::{
+    ExternalContext, ExternalError, ExternalFn, ExternalRegistry, ExternalResult,
+};
 pub use jit::{
     JitBindingEntry, JitBindingFrame, JitClosure, JitContext, JitError, JitResult, JitValue,
 };
+pub use memo_cache::{CacheStats, MemoCache};
+pub use native_registry::{NativeContext, NativeError, NativeFn, NativeRegistry, NativeResult};
 pub use opcodes::Opcode;
 pub use optimizer::{
     optimize_bytecode_full, DeadCodeEliminator, OptimizationStats, PeepholeOptimizer,

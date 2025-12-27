@@ -25,26 +25,39 @@
 //! - [`runtime`]: Runtime support functions callable from JIT code (not yet available)
 //! - [`tiered`]: Tiered compilation strategy and JIT cache management (not yet available)
 
-pub mod types;
 pub mod profile;
+pub mod types;
 
 // Re-export main types
+pub use profile::{JitProfile, JitState, HOT_THRESHOLD};
 pub use types::{
-    JitValue, JitContext, JitResult, JitError, JitBailoutReason,
-    JitChoicePoint, JitAlternative, JitAlternativeTag,
+    JitAlternative,
+    JitAlternativeTag,
+    JitBailoutReason,
     // Binding/Environment support (Phase A)
-    JitBindingEntry, JitBindingFrame,
+    JitBindingEntry,
+    JitBindingFrame,
+    JitChoicePoint,
     // Lambda closure support
     JitClosure,
-    // Stage 2 JIT signal constants
-    JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, JIT_SIGNAL_FAIL, JIT_SIGNAL_ERROR, JIT_SIGNAL_HALT,
+    JitContext,
+    JitError,
+    JitResult,
+    JitValue,
     JIT_SIGNAL_BAILOUT,
+    JIT_SIGNAL_ERROR,
+    JIT_SIGNAL_FAIL,
+    JIT_SIGNAL_HALT,
+    // Stage 2 JIT signal constants
+    JIT_SIGNAL_OK,
+    JIT_SIGNAL_YIELD,
     // Optimization 5.2: Pre-allocation constants
-    MAX_ALTERNATIVES_INLINE, STACK_SAVE_POOL_SIZE, MAX_STACK_SAVE_VALUES,
+    MAX_ALTERNATIVES_INLINE,
+    MAX_STACK_SAVE_VALUES,
+    STACK_SAVE_POOL_SIZE,
     // Optimization 5.3: Variable index cache
     VAR_INDEX_CACHE_SIZE,
 };
-pub use profile::{JitProfile, JitState, HOT_THRESHOLD};
 
 /// JIT compilation is always enabled with tiered compilation
 pub const JIT_ENABLED: bool = true;

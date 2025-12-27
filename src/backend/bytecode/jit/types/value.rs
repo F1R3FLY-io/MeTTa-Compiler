@@ -5,11 +5,11 @@
 
 use std::fmt;
 
-use crate::backend::models::MettaValue;
 use super::constants::{
-    PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK,
-    TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_NIL, TAG_UNIT, TAG_VAR,
+    PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG,
+    TAG_MASK, TAG_NIL, TAG_UNIT, TAG_VAR,
 };
+use crate::backend::models::MettaValue;
 
 // =============================================================================
 // JitValue - NaN-Boxed Value

@@ -25,7 +25,7 @@
 pub(super) const QNAN: u64 = 0x7FF8_0000_0000_0000;
 
 /// Tag for 48-bit signed integers (most i64 values fit)
-pub const TAG_LONG: u64 = QNAN | (0 << 48); // 0x7FF8_0000_0000_0000
+pub const TAG_LONG: u64 = QNAN; // 0x7FF8_0000_0000_0000
 
 /// Tag for boolean values (payload: 0 = false, 1 = true)
 pub const TAG_BOOL: u64 = QNAN | (1 << 48); // 0x7FF9_0000_0000_0000

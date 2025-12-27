@@ -5,7 +5,6 @@
 
 use std::fmt;
 
-use crate::backend::models::MettaValue;
 use super::binding::JitBindingFrame;
 use super::constants::{
     MAX_STACK_SAVE_VALUES, STACK_SAVE_POOL_SIZE, STATE_CACHE_MASK, STATE_CACHE_SIZE,
@@ -13,6 +12,7 @@ use super::constants::{
 };
 use super::nondet::{JitBailoutReason, JitChoicePoint};
 use super::value::JitValue;
+use crate::backend::models::MettaValue;
 
 // =============================================================================
 // JitContext - Runtime Context
@@ -58,7 +58,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Non-determinism support (choice points and results)
     // -------------------------------------------------------------------------
-
     /// Pointer to choice point stack base
     pub choice_points: *mut JitChoicePoint,
 
@@ -80,7 +79,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Call/TailCall support (Phase 3)
     // -------------------------------------------------------------------------
-
     /// Pointer to MorkBridge for rule dispatch (may be null)
     pub bridge_ptr: *const (),
 
@@ -90,7 +88,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Rule Dispatch support (Phase C)
     // -------------------------------------------------------------------------
-
     /// Pointer to Vec<CompiledRule> from last dispatch_rules call
     /// Owned by JitContext - must be freed when context is dropped
     pub current_rules: *mut (),
@@ -101,7 +98,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Native nondeterminism support (Stage 2 JIT)
     // -------------------------------------------------------------------------
-
     /// IP to resume at when re-entering JIT after backtracking
     pub resume_ip: usize,
 
@@ -123,7 +119,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Binding/Environment support (Phase A)
     // -------------------------------------------------------------------------
-
     /// Pointer to binding frames stack base
     pub binding_frames: *mut JitBindingFrame,
 
@@ -136,7 +131,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Registry/Cache support (Phase A - Full JIT)
     // -------------------------------------------------------------------------
-
     /// Pointer to ExternalRegistry for external function calls
     pub external_registry: *const (),
 
@@ -149,7 +143,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Grounded Space support (Space Ops - Phase 1)
     // -------------------------------------------------------------------------
-
     /// Pre-resolved grounded space handles [&self, &kb, &stack]
     /// These are resolved at JIT entry and stored here for O(1) access.
     /// Points to an array of SpaceHandle pointers (or equivalent).
@@ -168,7 +161,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Cut scope support (Phase A - Full JIT)
     // -------------------------------------------------------------------------
-
     /// Pointer to cut marker stack (records choice_point_count at cut scope entry)
     pub cut_markers: *mut usize,
 
@@ -181,7 +173,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Heap allocation tracking (for cleanup)
     // -------------------------------------------------------------------------
-
     /// Pointer to Vec of heap allocations to be freed on cleanup.
     /// These are raw pointers to Box<MettaValue> that were allocated during JIT execution.
     /// Set to null if heap tracking is disabled.
@@ -190,7 +181,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // State operations support (Phase D.1)
     // -------------------------------------------------------------------------
-
     /// Pointer to Environment for state operations (new-state, get-state, change-state!)
     /// Required for mmverify which uses &sp state extensively.
     pub env_ptr: *mut (),
@@ -198,7 +188,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // State operations cache (Optimization 5.1)
     // -------------------------------------------------------------------------
-
     /// Direct-mapped cache for recently accessed state values.
     /// Avoids RwLock acquisition and HashMap lookup for hot state accesses.
     /// Cache slot = state_id % STATE_CACHE_SIZE
@@ -212,7 +201,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Stack save pool (Optimization 5.2)
     // -------------------------------------------------------------------------
-
     /// Pool of pre-allocated stack save buffers for Fork operations.
     /// Each buffer can hold up to MAX_STACK_SAVE_VALUES JitValues.
     /// This is a ring buffer - `stack_save_pool_next` points to next available slot.
@@ -229,7 +217,6 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Variable name index cache (Optimization 5.3)
     // -------------------------------------------------------------------------
-
     /// Direct-mapped cache for variable name → constant index lookups.
     /// Avoids O(n) constant array scan for repeated variable bindings.
     /// Entry format: (name_hash, constant_index)
@@ -325,6 +312,7 @@ impl JitContext {
     /// - `constants` points to valid memory for the lifetime of execution
     /// - `choice_points` has at least `choice_point_cap` elements allocated
     /// - `results` has at least `results_cap` elements allocated
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn with_nondet(
         stack: *mut JitValue,
         stack_cap: usize,
@@ -646,11 +634,7 @@ impl JitContext {
     /// # Safety
     /// The pointer must point to valid memory for `cap` JitBindingFrame entries
     #[inline]
-    pub unsafe fn set_binding_frames(
-        &mut self,
-        frames: *mut JitBindingFrame,
-        cap: usize,
-    ) {
+    pub unsafe fn set_binding_frames(&mut self, frames: *mut JitBindingFrame, cap: usize) {
         self.binding_frames = frames;
         self.binding_frames_cap = cap;
         self.binding_frames_count = 0;
@@ -703,7 +687,10 @@ impl JitContext {
     /// The index must be within bounds and grounded_spaces must be valid
     #[inline]
     pub unsafe fn get_grounded_space(&self, index: usize) -> *const () {
-        debug_assert!(index < self.grounded_spaces_count, "Grounded space index out of bounds");
+        debug_assert!(
+            index < self.grounded_spaces_count,
+            "Grounded space index out of bounds"
+        );
         *self.grounded_spaces.add(index)
     }
 
@@ -779,6 +766,11 @@ impl JitContext {
     }
 
     /// Get the number of tracked heap allocations
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `self.heap_tracker` points to valid memory
+    /// if it is not null.
     #[inline]
     pub unsafe fn heap_allocation_count(&self) -> usize {
         if self.heap_tracker.is_null() {

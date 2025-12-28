@@ -2,7 +2,6 @@
 //!
 //! Handles: SpaceAdd, SpaceRemove, SpaceGetAtoms, SpaceMatch, NewState, GetState, ChangeState
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -13,7 +12,6 @@ use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::JitResult;
 
 /// Context for space handlers that need runtime function access
-
 pub struct SpaceHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub space_add_func_id: FuncId,
@@ -29,7 +27,6 @@ pub struct SpaceHandlerContext<'m> {
 ///
 /// Add atom to space
 /// Stack: [space, atom] -> [bool]
-
 pub fn compile_space_add<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -58,7 +55,6 @@ pub fn compile_space_add<'a, 'b>(
 ///
 /// Remove atom from space
 /// Stack: [space, atom] -> [bool]
-
 pub fn compile_space_remove<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -87,7 +83,6 @@ pub fn compile_space_remove<'a, 'b>(
 ///
 /// Get all atoms from space
 /// Stack: [space] -> [list]
-
 pub fn compile_space_get_atoms<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -115,7 +110,6 @@ pub fn compile_space_get_atoms<'a, 'b>(
 ///
 /// Match pattern in space
 /// Stack: [space, pattern, template] -> [results]
-
 pub fn compile_space_match<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -146,7 +140,6 @@ pub fn compile_space_match<'a, 'b>(
 ///
 /// Create a new mutable state cell
 /// Stack: [initial_value] -> [state_handle]
-
 pub fn compile_new_state<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -174,7 +167,6 @@ pub fn compile_new_state<'a, 'b>(
 ///
 /// Get current value from a state cell
 /// Stack: [state_handle] -> [value]
-
 pub fn compile_get_state<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -202,7 +194,6 @@ pub fn compile_get_state<'a, 'b>(
 ///
 /// Change value of a state cell
 /// Stack: [state_handle, new_value] -> [state_handle]
-
 pub fn compile_change_state<'a, 'b>(
     ctx: &mut SpaceHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

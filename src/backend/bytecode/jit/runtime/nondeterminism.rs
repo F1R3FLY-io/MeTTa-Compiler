@@ -7,10 +7,9 @@
 //! - Dispatcher loop for nondeterministic execution
 
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, JitChoicePoint, JitAlternative, JitAlternativeTag,
-    TAG_HEAP, TAG_NIL, PAYLOAD_MASK,
-    JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, JIT_SIGNAL_FAIL, JIT_SIGNAL_ERROR,
-    MAX_ALTERNATIVES_INLINE, MAX_STACK_SAVE_VALUES,
+    JitAlternative, JitAlternativeTag, JitBailoutReason, JitContext, JitValue, JIT_SIGNAL_ERROR,
+    JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, MAX_ALTERNATIVES_INLINE,
+    MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, TAG_HEAP, TAG_NIL,
 };
 use crate::backend::models::MettaValue;
 
@@ -274,11 +273,7 @@ pub unsafe extern "C" fn jit_runtime_fork(
 /// # Safety
 /// The context pointer must be valid.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_yield(
-    ctx: *mut JitContext,
-    value: u64,
-    ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_yield(ctx: *mut JitContext, value: u64, ip: u64) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
         None => return TAG_NIL,
@@ -645,10 +640,7 @@ pub unsafe extern "C" fn jit_runtime_fail_native(ctx: *mut JitContext) -> u64 {
 
         // Optimization 5.2: Restore stack from pool instead of leaked pointer
         if cp.saved_stack_pool_idx >= 0 && cp.saved_stack_count > 0 {
-            ctx_ref.stack_restore_from_pool(
-                cp.saved_stack_pool_idx as usize,
-                cp.saved_stack_count,
-            );
+            ctx_ref.stack_restore_from_pool(cp.saved_stack_pool_idx as usize, cp.saved_stack_count);
         }
 
         // Restore stack pointer
@@ -927,14 +919,8 @@ pub unsafe fn collect_results(ctx: *mut JitContext) -> Vec<MettaValue> {
 ///
 /// # Safety
 /// The context pointer must be valid.
-pub unsafe fn execute_once(
-    ctx: *mut JitContext,
-    jit_fn: JitNativeFn,
-) -> Option<MettaValue> {
-    let ctx_ref = match ctx.as_mut() {
-        Some(c) => c,
-        None => return None,
-    };
+pub unsafe fn execute_once(ctx: *mut JitContext, jit_fn: JitNativeFn) -> Option<MettaValue> {
+    let ctx_ref = ctx.as_mut()?;
 
     let signal = jit_fn(ctx);
 

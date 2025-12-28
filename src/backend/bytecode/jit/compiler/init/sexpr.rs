@@ -43,15 +43,42 @@ pub trait SExprInit {
 
 impl<T> SExprInit for T {
     fn register_sexpr_symbols(builder: &mut JITBuilder) {
-        builder.symbol("jit_runtime_push_empty", runtime::jit_runtime_push_empty as *const u8);
-        builder.symbol("jit_runtime_get_head", runtime::jit_runtime_get_head as *const u8);
-        builder.symbol("jit_runtime_get_tail", runtime::jit_runtime_get_tail as *const u8);
-        builder.symbol("jit_runtime_get_arity", runtime::jit_runtime_get_arity as *const u8);
-        builder.symbol("jit_runtime_get_element", runtime::jit_runtime_get_element as *const u8);
-        builder.symbol("jit_runtime_make_sexpr", runtime::jit_runtime_make_sexpr as *const u8);
-        builder.symbol("jit_runtime_cons_atom", runtime::jit_runtime_cons_atom as *const u8);
-        builder.symbol("jit_runtime_make_list", runtime::jit_runtime_make_list as *const u8);
-        builder.symbol("jit_runtime_make_quote", runtime::jit_runtime_make_quote as *const u8);
+        builder.symbol(
+            "jit_runtime_push_empty",
+            runtime::jit_runtime_push_empty as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_get_head",
+            runtime::jit_runtime_get_head as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_get_tail",
+            runtime::jit_runtime_get_tail as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_get_arity",
+            runtime::jit_runtime_get_arity as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_get_element",
+            runtime::jit_runtime_get_element as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_make_sexpr",
+            runtime::jit_runtime_make_sexpr as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_cons_atom",
+            runtime::jit_runtime_cons_atom as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_make_list",
+            runtime::jit_runtime_make_list as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_make_quote",
+            runtime::jit_runtime_make_quote as *const u8,
+        );
     }
 
     fn declare_sexpr_funcs<M: Module>(module: &mut M) -> JitResult<SExprFuncIds> {
@@ -63,7 +90,12 @@ impl<T> SExprInit for T {
 
         let push_empty_func_id = module
             .declare_function("jit_runtime_push_empty", Linkage::Import, &push_empty_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_push_empty: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_push_empty: {}",
+                    e
+                ))
+            })?;
 
         // get_head: fn(ctx, sexpr, ip) -> head
         let mut get_head_sig = module.make_signature();
@@ -74,7 +106,9 @@ impl<T> SExprInit for T {
 
         let get_head_func_id = module
             .declare_function("jit_runtime_get_head", Linkage::Import, &get_head_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_get_head: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_get_head: {}", e))
+            })?;
 
         // get_tail: fn(ctx, sexpr, ip) -> tail
         let mut get_tail_sig = module.make_signature();
@@ -85,7 +119,9 @@ impl<T> SExprInit for T {
 
         let get_tail_func_id = module
             .declare_function("jit_runtime_get_tail", Linkage::Import, &get_tail_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_get_tail: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_get_tail: {}", e))
+            })?;
 
         // get_arity: fn(ctx, sexpr, ip) -> arity
         let mut get_arity_sig = module.make_signature();
@@ -96,7 +132,12 @@ impl<T> SExprInit for T {
 
         let get_arity_func_id = module
             .declare_function("jit_runtime_get_arity", Linkage::Import, &get_arity_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_get_arity: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_get_arity: {}",
+                    e
+                ))
+            })?;
 
         // get_element: fn(ctx, sexpr, index, ip) -> element
         let mut get_element_sig = module.make_signature();
@@ -108,7 +149,12 @@ impl<T> SExprInit for T {
 
         let get_element_func_id = module
             .declare_function("jit_runtime_get_element", Linkage::Import, &get_element_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_get_element: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_get_element: {}",
+                    e
+                ))
+            })?;
 
         // make_sexpr: fn(ctx, values_ptr, count, ip) -> sexpr
         let mut make_sexpr_sig = module.make_signature();
@@ -120,7 +166,12 @@ impl<T> SExprInit for T {
 
         let make_sexpr_func_id = module
             .declare_function("jit_runtime_make_sexpr", Linkage::Import, &make_sexpr_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_make_sexpr: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_make_sexpr: {}",
+                    e
+                ))
+            })?;
 
         // cons_atom: fn(ctx, head, tail, ip) -> sexpr
         let mut cons_atom_sig = module.make_signature();
@@ -132,7 +183,12 @@ impl<T> SExprInit for T {
 
         let cons_atom_func_id = module
             .declare_function("jit_runtime_cons_atom", Linkage::Import, &cons_atom_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_cons_atom: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_cons_atom: {}",
+                    e
+                ))
+            })?;
 
         // make_list: fn(ctx, values_ptr, count, ip) -> list
         let mut make_list_sig = module.make_signature();
@@ -144,7 +200,12 @@ impl<T> SExprInit for T {
 
         let make_list_func_id = module
             .declare_function("jit_runtime_make_list", Linkage::Import, &make_list_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_make_list: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_make_list: {}",
+                    e
+                ))
+            })?;
 
         // make_quote: fn(ctx, expr, ip) -> quoted
         let mut make_quote_sig = module.make_signature();
@@ -155,7 +216,12 @@ impl<T> SExprInit for T {
 
         let make_quote_func_id = module
             .declare_function("jit_runtime_make_quote", Linkage::Import, &make_quote_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_make_quote: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_make_quote: {}",
+                    e
+                ))
+            })?;
 
         Ok(SExprFuncIds {
             push_empty_func_id,

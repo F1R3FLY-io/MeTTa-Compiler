@@ -7,9 +7,7 @@
 //! - get_arity - Get the number of elements
 //! - get_element - Get element at a specific index
 
-use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_NIL,
-};
+use crate::backend::bytecode::jit::types::{JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_NIL};
 use crate::backend::models::MettaValue;
 
 // =============================================================================
@@ -48,11 +46,7 @@ pub unsafe extern "C" fn jit_runtime_push_empty() -> u64 {
 /// # Safety
 /// The heap pointer must be valid if val is TAG_HEAP.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_get_head(
-    _ctx: *mut JitContext,
-    val: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
 
     // Check if it's a heap pointer
@@ -103,11 +97,7 @@ pub unsafe extern "C" fn jit_runtime_get_head(
 /// # Safety
 /// The heap pointer must be valid if val is TAG_HEAP.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_get_tail(
-    _ctx: *mut JitContext,
-    val: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
 
     // Check if it's a heap pointer
@@ -166,11 +156,7 @@ pub unsafe extern "C" fn jit_runtime_get_tail(
 /// # Safety
 /// The heap pointer must be valid if val is TAG_HEAP.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_get_arity(
-    _ctx: *mut JitContext,
-    val: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_get_arity(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
 
     // Check if it's a heap pointer
@@ -185,9 +171,7 @@ pub unsafe extern "C" fn jit_runtime_get_arity(
 
     let metta_val = &*metta_ptr;
     match metta_val {
-        MettaValue::SExpr(items) => {
-            JitValue::from_long(items.len() as i64).to_bits()
-        }
+        MettaValue::SExpr(items) => JitValue::from_long(items.len() as i64).to_bits(),
         _ => JitValue::from_long(0).to_bits(),
     }
 }

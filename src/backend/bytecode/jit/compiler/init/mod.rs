@@ -9,7 +9,6 @@
 //! All traits use static dispatch - they're implemented directly on JitCompiler
 //! and the compiler inlines everything at compile time. No `dyn Trait` is used.
 
-
 use cranelift_module::FuncId;
 
 // Re-export all initialization traits
@@ -73,7 +72,6 @@ pub use debug::{DebugFuncIds, DebugInit};
 // =============================================================================
 
 /// All function ID groups collected together for JitCompiler
-
 pub struct FuncIdGroups {
     pub arithmetic: ArithmeticFuncIds,
     pub bindings: BindingFuncIds,
@@ -95,7 +93,6 @@ pub struct FuncIdGroups {
 // =============================================================================
 
 /// Function IDs that don't fit neatly into groups or are used standalone
-
 pub struct MiscFuncIds {
     /// Load constant from constant pool
     pub load_const_func_id: FuncId,

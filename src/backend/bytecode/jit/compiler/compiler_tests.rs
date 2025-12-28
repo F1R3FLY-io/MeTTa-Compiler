@@ -48,9 +48,11 @@ fn test_can_compile_fork_with_bailout() {
     let chunk = builder.build();
 
     // Fork is NOT compilable - static nondeterminism detection routes to bytecode
-    assert!(!JitCompiler::can_compile_stage1(&chunk), "Fork chunks should not be JIT compilable (Phase 9 optimization)");
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "Fork chunks should not be JIT compilable (Phase 9 optimization)"
+    );
 }
-
 
 #[test]
 fn test_compile_simple_addition() {
@@ -71,10 +73,9 @@ fn test_compile_simple_addition() {
 // End-to-End JIT Execution Tests
 // =========================================================================
 
-
 #[test]
 fn test_jit_execute_addition() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -93,19 +94,12 @@ fn test_jit_execute_addition() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     // Execute native code - returns NaN-boxed result directly
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     // Verify result
@@ -117,10 +111,9 @@ fn test_jit_execute_addition() {
     assert_eq!(result.as_long(), 30, "Expected 10 + 20 = 30");
 }
 
-
 #[test]
 fn test_jit_execute_arithmetic_chain() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -128,11 +121,11 @@ fn test_jit_execute_arithmetic_chain() {
     let mut builder = ChunkBuilder::new("e2e_chain");
     builder.emit_byte(Opcode::PushLongSmall, 10);
     builder.emit_byte(Opcode::PushLongSmall, 20);
-    builder.emit(Opcode::Add);           // 30
+    builder.emit(Opcode::Add); // 30
     builder.emit_byte(Opcode::PushLongSmall, 3);
-    builder.emit(Opcode::Mul);           // 90
+    builder.emit(Opcode::Mul); // 90
     builder.emit_byte(Opcode::PushLongSmall, 5);
-    builder.emit(Opcode::Sub);           // 85
+    builder.emit(Opcode::Sub); // 85
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -141,18 +134,11 @@ fn test_jit_execute_arithmetic_chain() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout);
@@ -161,10 +147,9 @@ fn test_jit_execute_arithmetic_chain() {
     assert_eq!(result.as_long(), 85);
 }
 
-
 #[test]
 fn test_jit_execute_boolean_logic() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -172,10 +157,10 @@ fn test_jit_execute_boolean_logic() {
     let mut builder = ChunkBuilder::new("e2e_bool");
     builder.emit(Opcode::PushTrue);
     builder.emit(Opcode::PushFalse);
-    builder.emit(Opcode::Or);            // True
+    builder.emit(Opcode::Or); // True
     builder.emit(Opcode::PushFalse);
-    builder.emit(Opcode::Not);           // True
-    builder.emit(Opcode::And);           // True
+    builder.emit(Opcode::Not); // True
+    builder.emit(Opcode::And); // True
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -184,18 +169,11 @@ fn test_jit_execute_boolean_logic() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout);
@@ -205,10 +183,9 @@ fn test_jit_execute_boolean_logic() {
     assert!(result.as_bool(), "Expected True");
 }
 
-
 #[test]
 fn test_jit_execute_comparison() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -225,18 +202,11 @@ fn test_jit_execute_comparison() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout);
@@ -246,10 +216,9 @@ fn test_jit_execute_comparison() {
     assert!(result.as_bool(), "Expected 5 < 10 = True");
 }
 
-
 #[test]
 fn test_jit_execute_division() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -266,18 +235,11 @@ fn test_jit_execute_division() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout);
@@ -287,10 +249,9 @@ fn test_jit_execute_division() {
     assert_eq!(result.as_long(), 25, "Expected 100 / 4 = 25");
 }
 
-
 #[test]
 fn test_jit_execute_modulo() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -307,18 +268,11 @@ fn test_jit_execute_modulo() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout);
@@ -332,7 +286,6 @@ fn test_jit_execute_modulo() {
 // Stage 2: Pow (Runtime Call) Tests
 // =========================================================================
 
-
 #[test]
 fn test_can_compile_pow() {
     // Test that Pow is now compilable (Stage 2)
@@ -343,13 +296,15 @@ fn test_can_compile_pow() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "Pow should now be Stage 2 compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "Pow should now be Stage 2 compilable"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_pow() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -361,25 +316,21 @@ fn test_jit_execute_pow() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "Pow should be compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "Pow should be compilable"
+    );
 
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -389,10 +340,9 @@ fn test_jit_execute_pow() {
     assert_eq!(result.as_long(), 1024, "Expected 2^10 = 1024");
 }
 
-
 #[test]
 fn test_jit_execute_pow_zero_exponent() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -409,18 +359,11 @@ fn test_jit_execute_pow_zero_exponent() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout);
@@ -434,7 +377,6 @@ fn test_jit_execute_pow_zero_exponent() {
 // Stage 2: PushConstant (Runtime Call) Tests
 // =========================================================================
 
-
 #[test]
 fn test_can_compile_push_constant() {
     use crate::backend::MettaValue;
@@ -446,13 +388,15 @@ fn test_can_compile_push_constant() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "PushConstant should now be Stage 2 compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "PushConstant should now be Stage 2 compilable"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_push_constant() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
     use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -471,18 +415,11 @@ fn test_jit_execute_push_constant() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -492,10 +429,9 @@ fn test_jit_execute_push_constant() {
     assert_eq!(result.as_long(), 1_000_000, "Expected constant 1_000_000");
 }
 
-
 #[test]
 fn test_jit_execute_push_constant_arithmetic() {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
     use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -515,25 +451,22 @@ fn test_jit_execute_push_constant_arithmetic() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout);
 
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_long(), "Expected Long result");
-    assert_eq!(result.as_long(), 1_500_000, "Expected 1_000_000 + 500_000 = 1_500_000");
+    assert_eq!(
+        result.as_long(),
+        1_500_000,
+        "Expected 1_000_000 + 500_000 = 1_500_000"
+    );
 }
 
 // =========================================================================
@@ -541,29 +474,23 @@ fn test_jit_execute_push_constant_arithmetic() {
 // =========================================================================
 
 /// Helper to execute JIT code and return the result
-
-fn exec_jit(code_ptr: *const (), constants: &[crate::backend::MettaValue]) -> crate::backend::bytecode::jit::JitValue {
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitBailoutReason};
+fn exec_jit(
+    code_ptr: *const (),
+    constants: &[crate::backend::MettaValue],
+) -> crate::backend::bytecode::jit::JitValue {
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution bailed out unexpectedly");
     JitValue::from_raw(result_bits as u64)
 }
-
 
 #[test]
 fn test_jit_integration_simple_arithmetic() {
@@ -591,7 +518,6 @@ fn test_jit_integration_simple_arithmetic() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 30, "Expected (+ 10 20) = 30");
 }
-
 
 #[test]
 fn test_jit_integration_nested_arithmetic() {
@@ -627,7 +553,6 @@ fn test_jit_integration_nested_arithmetic() {
     assert_eq!(result.as_long(), 65, "Expected (+ (- 100 50) (* 5 3)) = 65");
 }
 
-
 #[test]
 fn test_jit_integration_comparison_chain() {
     use crate::backend::bytecode::compile;
@@ -658,7 +583,6 @@ fn test_jit_integration_comparison_chain() {
     assert!(result.as_bool(), "Expected (< (+ 5 5) 20) = True");
 }
 
-
 #[test]
 fn test_jit_integration_pow() {
     use crate::backend::bytecode::compile;
@@ -688,7 +612,6 @@ fn test_jit_integration_pow() {
 // =========================================================================
 // JIT vs VM Equivalence Tests
 // =========================================================================
-
 
 #[test]
 fn test_jit_vm_equivalence_arithmetic() {
@@ -728,21 +651,34 @@ fn test_jit_vm_equivalence_arithmetic() {
             let code_ptr = compiler.compile(&chunk).expect("JIT compilation failed");
             let jit_result = exec_jit(code_ptr, chunk.constants());
 
-            assert!(jit_result.is_long(), "JIT: Expected Long for ({} {} {})", op, a, b);
+            assert!(
+                jit_result.is_long(),
+                "JIT: Expected Long for ({} {} {})",
+                op,
+                a,
+                b
+            );
             let jit_val = jit_result.as_long();
 
             // Compare with VM
             assert_eq!(vm_results.len(), 1, "VM should return single value");
             if let MettaValue::Long(vm_val) = &vm_results[0] {
-                assert_eq!(jit_val, *vm_val, "JIT vs VM mismatch for ({} {} {})", op, a, b);
-                assert_eq!(jit_val, expected, "Expected {} for ({} {} {})", expected, op, a, b);
+                assert_eq!(
+                    jit_val, *vm_val,
+                    "JIT vs VM mismatch for ({} {} {})",
+                    op, a, b
+                );
+                assert_eq!(
+                    jit_val, expected,
+                    "Expected {} for ({} {} {})",
+                    expected, op, a, b
+                );
             } else {
                 panic!("VM returned non-Long value");
             }
         }
     }
 }
-
 
 #[test]
 fn test_jit_vm_equivalence_comparisons() {
@@ -783,13 +719,27 @@ fn test_jit_vm_equivalence_comparisons() {
             let code_ptr = compiler.compile(&chunk).expect("JIT compilation failed");
             let jit_result = exec_jit(code_ptr, chunk.constants());
 
-            assert!(jit_result.is_bool(), "JIT: Expected Bool for ({} {} {})", op, a, b);
+            assert!(
+                jit_result.is_bool(),
+                "JIT: Expected Bool for ({} {} {})",
+                op,
+                a,
+                b
+            );
             let jit_val = jit_result.as_bool();
 
             assert_eq!(vm_results.len(), 1);
             if let MettaValue::Bool(vm_val) = &vm_results[0] {
-                assert_eq!(jit_val, *vm_val, "JIT vs VM mismatch for ({} {} {})", op, a, b);
-                assert_eq!(jit_val, expected, "Expected {} for ({} {} {})", expected, op, a, b);
+                assert_eq!(
+                    jit_val, *vm_val,
+                    "JIT vs VM mismatch for ({} {} {})",
+                    op, a, b
+                );
+                assert_eq!(
+                    jit_val, expected,
+                    "Expected {} for ({} {} {})",
+                    expected, op, a, b
+                );
             } else {
                 panic!("VM returned non-Bool value");
             }
@@ -800,7 +750,6 @@ fn test_jit_vm_equivalence_comparisons() {
 // =========================================================================
 // Edge Cases and Boundary Tests
 // =========================================================================
-
 
 #[test]
 fn test_jit_execute_negative_numbers() {
@@ -821,7 +770,6 @@ fn test_jit_execute_negative_numbers() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), -5, "Expected -10 + 5 = -5");
 }
-
 
 #[test]
 fn test_jit_execute_all_comparisons() {
@@ -854,10 +802,17 @@ fn test_jit_execute_all_comparisons() {
         let result = exec_jit(code_ptr, chunk.constants());
 
         assert!(result.is_bool(), "Expected Bool for {:?}({}, {})", op, a, b);
-        assert_eq!(result.as_bool(), expected, "{:?}({}, {}) should be {}", op, a, b, expected);
+        assert_eq!(
+            result.as_bool(),
+            expected,
+            "{:?}({}, {}) should be {}",
+            op,
+            a,
+            b,
+            expected
+        );
     }
 }
-
 
 #[test]
 fn test_jit_execute_stack_operations() {
@@ -867,7 +822,7 @@ fn test_jit_execute_stack_operations() {
         let mut builder = ChunkBuilder::new("dup_test");
         builder.emit_byte(Opcode::PushLongSmall, 42);
         builder.emit(Opcode::Dup);
-        builder.emit(Opcode::Add);  // 42 + 42 = 84
+        builder.emit(Opcode::Add); // 42 + 42 = 84
         builder.emit(Opcode::Return);
         let chunk = builder.build();
 
@@ -880,10 +835,10 @@ fn test_jit_execute_stack_operations() {
     {
         let mut compiler = JitCompiler::new().expect("Failed to create compiler");
         let mut builder = ChunkBuilder::new("swap_test");
-        builder.emit_byte(Opcode::PushLongSmall, 10);  // bottom
-        builder.emit_byte(Opcode::PushLongSmall, 3);   // top
+        builder.emit_byte(Opcode::PushLongSmall, 10); // bottom
+        builder.emit_byte(Opcode::PushLongSmall, 3); // top
         builder.emit(Opcode::Swap);
-        builder.emit(Opcode::Sub);  // 3 - 10 = -7
+        builder.emit(Opcode::Sub); // 3 - 10 = -7
         builder.emit(Opcode::Return);
         let chunk = builder.build();
 
@@ -896,11 +851,11 @@ fn test_jit_execute_stack_operations() {
     {
         let mut compiler = JitCompiler::new().expect("Failed to create compiler");
         let mut builder = ChunkBuilder::new("over_test");
-        builder.emit_byte(Opcode::PushLongSmall, 5);   // bottom
-        builder.emit_byte(Opcode::PushLongSmall, 10);  // top
-        builder.emit(Opcode::Over);  // copies 5 to top: [5, 10, 5]
-        builder.emit(Opcode::Add);   // 10 + 5 = 15: [5, 15]
-        builder.emit(Opcode::Add);   // 5 + 15 = 20: [20]
+        builder.emit_byte(Opcode::PushLongSmall, 5); // bottom
+        builder.emit_byte(Opcode::PushLongSmall, 10); // top
+        builder.emit(Opcode::Over); // copies 5 to top: [5, 10, 5]
+        builder.emit(Opcode::Add); // 10 + 5 = 15: [5, 15]
+        builder.emit(Opcode::Add); // 5 + 15 = 20: [20]
         builder.emit(Opcode::Return);
         let chunk = builder.build();
 
@@ -909,7 +864,6 @@ fn test_jit_execute_stack_operations() {
         assert_eq!(result.as_long(), 20, "Over: 5 + (10 + 5) = 20");
     }
 }
-
 
 #[test]
 fn test_jit_execute_special_values() {
@@ -945,7 +899,7 @@ fn test_jit_execute_special_values() {
         let mut builder = ChunkBuilder::new("bool_test");
         builder.emit(Opcode::PushTrue);
         builder.emit(Opcode::PushFalse);
-        builder.emit(Opcode::And);  // True and False = False
+        builder.emit(Opcode::And); // True and False = False
         builder.emit(Opcode::Return);
         let chunk = builder.build();
 
@@ -955,7 +909,6 @@ fn test_jit_execute_special_values() {
         assert!(!result.as_bool(), "True and False = False");
     }
 }
-
 
 #[test]
 fn test_jit_execute_floor_div() {
@@ -975,7 +928,6 @@ fn test_jit_execute_floor_div() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 3, "Expected 17 // 5 = 3");
 }
-
 
 #[test]
 fn test_jit_execute_neg_and_abs() {
@@ -1022,7 +974,6 @@ fn test_jit_execute_neg_and_abs() {
     }
 }
 
-
 #[test]
 fn test_jit_execute_pow_chain() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -1031,9 +982,9 @@ fn test_jit_execute_pow_chain() {
     let mut builder = ChunkBuilder::new("pow_chain_test");
     builder.emit_byte(Opcode::PushLongSmall, 2);
     builder.emit_byte(Opcode::PushLongSmall, 3);
-    builder.emit(Opcode::Pow);  // 2^3 = 8
+    builder.emit(Opcode::Pow); // 2^3 = 8
     builder.emit_byte(Opcode::PushLongSmall, 2);
-    builder.emit(Opcode::Pow);  // 8^2 = 64
+    builder.emit(Opcode::Pow); // 8^2 = 64
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -1043,7 +994,6 @@ fn test_jit_execute_pow_chain() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 64, "Expected pow(pow(2,3),2) = 64");
 }
-
 
 #[test]
 fn test_jit_execute_deep_expression() {
@@ -1063,7 +1013,7 @@ fn test_jit_execute_deep_expression() {
         expr
     }
 
-    let expr = build_nested_add(5);  // 1 + 2 + 3 + 4 + 5 = 15
+    let expr = build_nested_add(5); // 1 + 2 + 3 + 4 + 5 = 15
     let chunk = compile("deep", &expr).expect("Compilation failed");
 
     if !JitCompiler::can_compile_stage1(&chunk) {
@@ -1077,7 +1027,6 @@ fn test_jit_execute_deep_expression() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 15, "Expected 1+2+3+4+5 = 15");
 }
-
 
 #[test]
 fn test_jit_execute_large_constant_arithmetic() {
@@ -1115,7 +1064,10 @@ fn test_can_compile_fail() {
     let chunk = builder.build();
 
     // Fail is NOT compilable - static nondeterminism detection routes to bytecode
-    assert!(!JitCompiler::can_compile_stage1(&chunk), "Fail chunks should not be JIT compilable (Phase 9 optimization)");
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "Fail chunks should not be JIT compilable (Phase 9 optimization)"
+    );
 }
 
 #[test]
@@ -1127,7 +1079,10 @@ fn test_can_compile_cut() {
     let chunk = builder.build();
 
     // Cut is NOT compilable - static nondeterminism detection routes to bytecode
-    assert!(!JitCompiler::can_compile_stage1(&chunk), "Cut chunks should not be JIT compilable (Phase 9 optimization)");
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "Cut chunks should not be JIT compilable (Phase 9 optimization)"
+    );
 }
 
 #[test]
@@ -1139,7 +1094,10 @@ fn test_can_compile_collect_with_bailout() {
     let chunk = builder.build();
 
     // Collect is NOT compilable - static nondeterminism detection routes to bytecode
-    assert!(!JitCompiler::can_compile_stage1(&chunk), "Collect chunks should not be JIT compilable (Phase 9 optimization)");
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "Collect chunks should not be JIT compilable (Phase 9 optimization)"
+    );
 }
 
 #[test]
@@ -1151,7 +1109,10 @@ fn test_can_compile_collect_n() {
     let chunk = builder.build();
 
     // CollectN is NOT compilable - static nondeterminism detection routes to bytecode
-    assert!(!JitCompiler::can_compile_stage1(&chunk), "CollectN chunks should not be JIT compilable (Phase 9 optimization)");
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "CollectN chunks should not be JIT compilable (Phase 9 optimization)"
+    );
 }
 
 #[test]
@@ -1164,7 +1125,10 @@ fn test_can_compile_yield_with_bailout() {
     let chunk = builder.build();
 
     // Yield is NOT compilable - static nondeterminism detection routes to bytecode
-    assert!(!JitCompiler::can_compile_stage1(&chunk), "Yield chunks should not be JIT compilable (Phase 9 optimization)");
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "Yield chunks should not be JIT compilable (Phase 9 optimization)"
+    );
 }
 
 #[test]
@@ -1178,7 +1142,10 @@ fn test_can_compile_begin_nondet() {
     let chunk = builder.build();
 
     // BeginNondet is NOT compilable - static nondeterminism detection routes to bytecode
-    assert!(!JitCompiler::can_compile_stage1(&chunk), "BeginNondet chunks should not be JIT compilable (Phase 9 optimization)");
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "BeginNondet chunks should not be JIT compilable (Phase 9 optimization)"
+    );
 }
 
 #[test]
@@ -1190,7 +1157,10 @@ fn test_can_compile_end_nondet() {
     let chunk = builder.build();
 
     // EndNondet is NOT compilable - static nondeterminism detection routes to bytecode
-    assert!(!JitCompiler::can_compile_stage1(&chunk), "EndNondet chunks should not be JIT compilable (Phase 9 optimization)");
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "EndNondet chunks should not be JIT compilable (Phase 9 optimization)"
+    );
 }
 
 #[test]
@@ -1199,11 +1169,14 @@ fn test_can_compile_call_n() {
     let mut builder = ChunkBuilder::new("test_call_n");
     builder.emit_u16(Opcode::PushConstant, 0); // Push head
     builder.emit_u16(Opcode::PushConstant, 1); // Push arg
-    builder.emit_byte(Opcode::CallN, 1);       // CallN with arity = 1
+    builder.emit_byte(Opcode::CallN, 1); // CallN with arity = 1
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "CallN opcode should be JIT compilable (Phase 1.2)");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "CallN opcode should be JIT compilable (Phase 1.2)"
+    );
 }
 
 #[test]
@@ -1213,11 +1186,14 @@ fn test_can_compile_tail_call_n() {
     builder.emit_u16(Opcode::PushConstant, 0); // Push head
     builder.emit_u16(Opcode::PushConstant, 1); // Push arg1
     builder.emit_u16(Opcode::PushConstant, 2); // Push arg2
-    builder.emit_byte(Opcode::TailCallN, 2);   // TailCallN with arity = 2
+    builder.emit_byte(Opcode::TailCallN, 2); // TailCallN with arity = 2
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "TailCallN opcode should be JIT compilable (Phase 1.2)");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "TailCallN opcode should be JIT compilable (Phase 1.2)"
+    );
 }
 
 #[test]
@@ -1225,11 +1201,14 @@ fn test_can_compile_call_n_zero_arity() {
     // Phase 1.2: CallN with zero arity (just head, no args)
     let mut builder = ChunkBuilder::new("test_call_n_zero_arity");
     builder.emit_u16(Opcode::PushConstant, 0); // Push head
-    builder.emit_byte(Opcode::CallN, 0);       // CallN with arity = 0
+    builder.emit_byte(Opcode::CallN, 0); // CallN with arity = 0
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "CallN with arity 0 should be JIT compilable (Phase 1.2)");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "CallN with arity 0 should be JIT compilable (Phase 1.2)"
+    );
 }
 
 #[test]
@@ -1239,12 +1218,15 @@ fn test_can_compile_fork_in_middle_with_bailout() {
     builder.emit_byte(Opcode::PushLongSmall, 10);
     builder.emit_byte(Opcode::PushLongSmall, 20);
     builder.emit(Opcode::Add);
-    builder.emit_byte(Opcode::Fork, 2);  // Fork in the middle
+    builder.emit_byte(Opcode::Fork, 2); // Fork in the middle
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
     // Fork anywhere triggers nondeterminism detection - routes to bytecode tier
-    assert!(!JitCompiler::can_compile_stage1(&chunk), "Fork in chunk should not be JIT compilable (Phase 9 optimization)");
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "Fork in chunk should not be JIT compilable (Phase 9 optimization)"
+    );
 }
 
 #[test]
@@ -1261,15 +1243,26 @@ fn test_jit_bailout_reason_phase4_values() {
     // Verify Phase 4 bailout reasons have correct discriminant values
     use crate::backend::bytecode::jit::JitBailoutReason;
 
-    assert_eq!(JitBailoutReason::Fork as u8, 11, "Fork should have discriminant 11");
-    assert_eq!(JitBailoutReason::Yield as u8, 12, "Yield should have discriminant 12");
-    assert_eq!(JitBailoutReason::Collect as u8, 13, "Collect should have discriminant 13");
+    assert_eq!(
+        JitBailoutReason::Fork as u8,
+        11,
+        "Fork should have discriminant 11"
+    );
+    assert_eq!(
+        JitBailoutReason::Yield as u8,
+        12,
+        "Yield should have discriminant 12"
+    );
+    assert_eq!(
+        JitBailoutReason::Collect as u8,
+        13,
+        "Collect should have discriminant 13"
+    );
 }
 
 // =========================================================================
 // Phase 4: Fork/Yield/Collect Execution Tests (Native Semantics)
 // =========================================================================
-
 
 #[test]
 fn test_jit_fork_creates_choice_points_native() {
@@ -1289,20 +1282,24 @@ fn test_jit_fork_creates_choice_points_native() {
     let chunk = builder.build();
 
     // Verify nondeterminism is detected
-    assert!(chunk.has_nondeterminism(), "Fork should be detected as nondeterminism");
+    assert!(
+        chunk.has_nondeterminism(),
+        "Fork should be detected as nondeterminism"
+    );
 
     // Verify JIT compilation is rejected
-    assert!(!JitCompiler::can_compile_stage1(&chunk),
-        "Fork chunks should not be JIT compilable (Phase 9: static nondeterminism routing)");
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "Fork chunks should not be JIT compilable (Phase 9: static nondeterminism routing)"
+    );
 }
-
 
 #[test]
 fn test_jit_yield_signals_bailout() {
     // Stage 2 JIT: Yield now returns JIT_SIGNAL_YIELD to dispatcher instead of bailout
     // Note: This test verifies that Yield stores result and returns signal
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitChoicePoint, JIT_SIGNAL_YIELD};
     use crate::backend::bytecode::jit::runtime::jit_runtime_yield_native;
+    use crate::backend::bytecode::jit::{JitChoicePoint, JitContext, JitValue, JIT_SIGNAL_YIELD};
 
     // Test the runtime function directly instead of JIT code generation
     // (JIT code gen for Yield returns immediately, which breaks block filling)
@@ -1327,7 +1324,10 @@ fn test_jit_yield_signals_bailout() {
     let signal = unsafe { jit_runtime_yield_native(&mut ctx, value, 0) };
 
     // Stage 2: Yield stores result and returns JIT_SIGNAL_YIELD
-    assert_eq!(signal, JIT_SIGNAL_YIELD, "Yield should return JIT_SIGNAL_YIELD");
+    assert_eq!(
+        signal, JIT_SIGNAL_YIELD,
+        "Yield should return JIT_SIGNAL_YIELD"
+    );
     assert_eq!(ctx.results_count, 1, "Yield should have stored one result");
 
     // Verify the stored result
@@ -1335,13 +1335,12 @@ fn test_jit_yield_signals_bailout() {
     assert_eq!(stored_result.as_long(), 42, "Yield should have stored 42");
 }
 
-
 #[test]
 fn test_jit_collect_signals_bailout() {
     // Stage 2 JIT: Collect now uses native function and pushes result to stack
     // Note: The return value is the NaN-boxed SExpr result, not a signal
-    use crate::backend::bytecode::jit::{JitContext, JitValue, JitChoicePoint};
     use crate::backend::bytecode::jit::runtime::jit_runtime_collect_native;
+    use crate::backend::bytecode::jit::{JitChoicePoint, JitContext, JitValue};
 
     // Test the runtime function directly
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
@@ -1400,7 +1399,10 @@ fn test_can_compile_jump() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "Jump should be Stage 3 compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "Jump should be Stage 3 compilable"
+    );
 }
 
 #[test]
@@ -1413,7 +1415,10 @@ fn test_can_compile_jump_if_false() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "JumpIfFalse should be Stage 3 compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "JumpIfFalse should be Stage 3 compilable"
+    );
 }
 
 #[test]
@@ -1426,7 +1431,10 @@ fn test_can_compile_jump_if_true() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "JumpIfTrue should be Stage 3 compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "JumpIfTrue should be Stage 3 compilable"
+    );
 }
 
 #[test]
@@ -1439,9 +1447,11 @@ fn test_can_compile_jump_short() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "JumpShort should be Stage 3 compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "JumpShort should be Stage 3 compilable"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_conditional_jump_true_path() {
@@ -1459,12 +1469,12 @@ fn test_jit_execute_conditional_jump_true_path() {
     // 11: Return (1 byte)
 
     let mut builder = ChunkBuilder::new("e2e_cond_true");
-    builder.emit(Opcode::PushTrue);                    // offset 0
-    builder.emit_u16(Opcode::JumpIfFalse, 5);          // offset 1, jumps to 9 if false
-    builder.emit_byte(Opcode::PushLongSmall, 42);      // offset 4, then branch
-    builder.emit_u16(Opcode::Jump, 2);                 // offset 6, skip else -> target 11
-    builder.emit_byte(Opcode::PushLongSmall, 0);       // offset 9, else branch
-    builder.emit(Opcode::Return);                       // offset 11
+    builder.emit(Opcode::PushTrue); // offset 0
+    builder.emit_u16(Opcode::JumpIfFalse, 5); // offset 1, jumps to 9 if false
+    builder.emit_byte(Opcode::PushLongSmall, 42); // offset 4, then branch
+    builder.emit_u16(Opcode::Jump, 2); // offset 6, skip else -> target 11
+    builder.emit_byte(Opcode::PushLongSmall, 0); // offset 9, else branch
+    builder.emit(Opcode::Return); // offset 11
     let chunk = builder.build();
 
     assert!(JitCompiler::can_compile_stage1(&chunk));
@@ -1475,7 +1485,6 @@ fn test_jit_execute_conditional_jump_true_path() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 42, "Expected true branch result 42");
 }
-
 
 #[test]
 fn test_jit_execute_conditional_jump_false_path() {
@@ -1492,12 +1501,12 @@ fn test_jit_execute_conditional_jump_false_path() {
     // 11: Return (1 byte)
 
     let mut builder = ChunkBuilder::new("e2e_cond_false");
-    builder.emit(Opcode::PushFalse);                   // offset 0
-    builder.emit_u16(Opcode::JumpIfFalse, 5);          // offset 1, jumps to 9 if false
-    builder.emit_byte(Opcode::PushLongSmall, 42);      // offset 4, then branch (skipped)
-    builder.emit_u16(Opcode::Jump, 2);                 // offset 6, skip else (skipped)
-    builder.emit_byte(Opcode::PushLongSmall, 99);      // offset 9, else branch
-    builder.emit(Opcode::Return);                       // offset 11
+    builder.emit(Opcode::PushFalse); // offset 0
+    builder.emit_u16(Opcode::JumpIfFalse, 5); // offset 1, jumps to 9 if false
+    builder.emit_byte(Opcode::PushLongSmall, 42); // offset 4, then branch (skipped)
+    builder.emit_u16(Opcode::Jump, 2); // offset 6, skip else (skipped)
+    builder.emit_byte(Opcode::PushLongSmall, 99); // offset 9, else branch
+    builder.emit(Opcode::Return); // offset 11
     let chunk = builder.build();
 
     assert!(JitCompiler::can_compile_stage1(&chunk));
@@ -1508,7 +1517,6 @@ fn test_jit_execute_conditional_jump_false_path() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 99, "Expected false branch result 99");
 }
-
 
 #[test]
 fn test_jit_execute_comparison_with_jump() {
@@ -1526,14 +1534,14 @@ fn test_jit_execute_comparison_with_jump() {
     // 15: Return (1 byte)
 
     let mut builder = ChunkBuilder::new("e2e_cmp_jump");
-    builder.emit_byte(Opcode::PushLongSmall, 10);      // offset 0
-    builder.emit_byte(Opcode::PushLongSmall, 20);      // offset 2
-    builder.emit(Opcode::Lt);                           // offset 4, stack: [true]
-    builder.emit_u16(Opcode::JumpIfFalse, 5);          // offset 5, jump to 13 if false
-    builder.emit_byte(Opcode::PushLongSmall, 1);       // offset 8, then branch
-    builder.emit_u16(Opcode::Jump, 2);                 // offset 10, skip else -> target 15
-    builder.emit_byte(Opcode::PushLongSmall, 0);       // offset 13, else branch
-    builder.emit(Opcode::Return);                       // offset 15
+    builder.emit_byte(Opcode::PushLongSmall, 10); // offset 0
+    builder.emit_byte(Opcode::PushLongSmall, 20); // offset 2
+    builder.emit(Opcode::Lt); // offset 4, stack: [true]
+    builder.emit_u16(Opcode::JumpIfFalse, 5); // offset 5, jump to 13 if false
+    builder.emit_byte(Opcode::PushLongSmall, 1); // offset 8, then branch
+    builder.emit_u16(Opcode::Jump, 2); // offset 10, skip else -> target 15
+    builder.emit_byte(Opcode::PushLongSmall, 0); // offset 13, else branch
+    builder.emit(Opcode::Return); // offset 15
     let chunk = builder.build();
 
     assert!(JitCompiler::can_compile_stage1(&chunk));
@@ -1544,7 +1552,6 @@ fn test_jit_execute_comparison_with_jump() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 1, "Expected 10 < 20 = true, result 1");
 }
-
 
 #[test]
 fn test_jit_execute_jump_if_true() {
@@ -1563,12 +1570,12 @@ fn test_jit_execute_jump_if_true() {
     // When false: pop 99, push 0, stack=[0], return 0
 
     let mut builder = ChunkBuilder::new("e2e_jump_if_true");
-    builder.emit_byte(Opcode::PushLongSmall, 99);     // offset 0, push result first
-    builder.emit(Opcode::PushTrue);                   // offset 2
-    builder.emit_u16(Opcode::JumpIfTrue, 3);          // offset 3, jumps to 9 if true
-    builder.emit(Opcode::Pop);                         // offset 6, pop 99 (not executed)
-    builder.emit_byte(Opcode::PushLongSmall, 0);      // offset 7, push 0 (not executed)
-    builder.emit(Opcode::Return);                      // offset 9
+    builder.emit_byte(Opcode::PushLongSmall, 99); // offset 0, push result first
+    builder.emit(Opcode::PushTrue); // offset 2
+    builder.emit_u16(Opcode::JumpIfTrue, 3); // offset 3, jumps to 9 if true
+    builder.emit(Opcode::Pop); // offset 6, pop 99 (not executed)
+    builder.emit_byte(Opcode::PushLongSmall, 0); // offset 7, push 0 (not executed)
+    builder.emit(Opcode::Return); // offset 9
     let chunk = builder.build();
 
     assert!(JitCompiler::can_compile_stage1(&chunk));
@@ -1589,12 +1596,12 @@ fn test_can_compile_stage4_local_variables() {
     let mut builder = ChunkBuilder::new("test_locals");
     builder.set_local_count(2);
     builder.emit_byte(Opcode::PushLongSmall, 42);
-    builder.emit_byte(Opcode::StoreLocal, 0);  // Store 42 in local 0
+    builder.emit_byte(Opcode::StoreLocal, 0); // Store 42 in local 0
     builder.emit_byte(Opcode::PushLongSmall, 10);
-    builder.emit_byte(Opcode::StoreLocal, 1);  // Store 10 in local 1
-    builder.emit_byte(Opcode::LoadLocal, 0);   // Load local 0 (42)
-    builder.emit_byte(Opcode::LoadLocal, 1);   // Load local 1 (10)
-    builder.emit(Opcode::Add);                 // 42 + 10 = 52
+    builder.emit_byte(Opcode::StoreLocal, 1); // Store 10 in local 1
+    builder.emit_byte(Opcode::LoadLocal, 0); // Load local 0 (42)
+    builder.emit_byte(Opcode::LoadLocal, 1); // Load local 1 (10)
+    builder.emit(Opcode::Add); // 42 + 10 = 52
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -1610,7 +1617,10 @@ fn test_can_compile_halt_opcode() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "Halt opcode should be JIT compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "Halt opcode should be JIT compilable"
+    );
 }
 
 // =====================================================================
@@ -1731,7 +1741,6 @@ fn test_can_compile_phase_i_breakpoint() {
     );
 }
 
-
 #[test]
 fn test_jit_execute_local_store_load() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -1753,7 +1762,6 @@ fn test_jit_execute_local_store_load() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 42, "Expected local variable value 42");
 }
-
 
 #[test]
 fn test_jit_execute_local_arithmetic() {
@@ -1781,7 +1789,6 @@ fn test_jit_execute_local_arithmetic() {
     assert_eq!(result.as_long(), 42, "Expected 100 - 58 = 42");
 }
 
-
 #[test]
 fn test_jit_execute_local_overwrite() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -1793,7 +1800,7 @@ fn test_jit_execute_local_overwrite() {
     builder.emit_byte(Opcode::PushLongSmall, 10);
     builder.emit_byte(Opcode::StoreLocal, 0);
     builder.emit_byte(Opcode::PushLongSmall, 99);
-    builder.emit_byte(Opcode::StoreLocal, 0);  // Overwrite
+    builder.emit_byte(Opcode::StoreLocal, 0); // Overwrite
     builder.emit_byte(Opcode::LoadLocal, 0);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -1804,7 +1811,6 @@ fn test_jit_execute_local_overwrite() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 99, "Expected overwritten value 99");
 }
-
 
 #[test]
 fn test_jit_execute_local_with_control_flow() {
@@ -1829,14 +1835,14 @@ fn test_jit_execute_local_with_control_flow() {
 
     let mut builder = ChunkBuilder::new("e2e_locals_control");
     builder.set_local_count(1);
-    builder.emit_byte(Opcode::PushLongSmall, 77);   // offset 0-1
-    builder.emit_byte(Opcode::StoreLocal, 0);       // offset 2-3
-    builder.emit(Opcode::PushTrue);                 // offset 4
-    builder.emit_u16(Opcode::JumpIfFalse, 3);       // offset 5-7, jump to offset 11 (8+3)
-    builder.emit_byte(Opcode::LoadLocal, 0);        // offset 8-9, true: load 77
-    builder.emit(Opcode::Return);                    // offset 10, true: return 77
-    builder.emit_byte(Opcode::PushLongSmall, 0);    // offset 11-12, false: push 0
-    builder.emit(Opcode::Return);                    // offset 13, false: return 0
+    builder.emit_byte(Opcode::PushLongSmall, 77); // offset 0-1
+    builder.emit_byte(Opcode::StoreLocal, 0); // offset 2-3
+    builder.emit(Opcode::PushTrue); // offset 4
+    builder.emit_u16(Opcode::JumpIfFalse, 3); // offset 5-7, jump to offset 11 (8+3)
+    builder.emit_byte(Opcode::LoadLocal, 0); // offset 8-9, true: load 77
+    builder.emit(Opcode::Return); // offset 10, true: return 77
+    builder.emit_byte(Opcode::PushLongSmall, 0); // offset 11-12, false: push 0
+    builder.emit(Opcode::Return); // offset 13, false: return 0
     let chunk = builder.build();
 
     assert!(JitCompiler::can_compile_stage1(&chunk));
@@ -1845,9 +1851,12 @@ fn test_jit_execute_local_with_control_flow() {
     let result = exec_jit(code_ptr, chunk.constants());
 
     assert!(result.is_long(), "Expected Long result");
-    assert_eq!(result.as_long(), 77, "Expected local value from true branch");
+    assert_eq!(
+        result.as_long(),
+        77,
+        "Expected local value from true branch"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_many_locals() {
@@ -1883,32 +1892,29 @@ fn test_jit_execute_many_locals() {
 // Stage 5: JumpIfNil and JumpIfError Tests
 // =========================================================================
 
-
 #[test]
 fn test_jit_can_compile_jump_if_nil() {
     // JumpIfNil should be compilable in Stage 5
     let mut builder = ChunkBuilder::new("can_compile_jump_if_nil");
     builder.emit(Opcode::PushNil);
-    builder.emit_u16(Opcode::JumpIfNil, 2);  // Jump forward 2 bytes
+    builder.emit_u16(Opcode::JumpIfNil, 2); // Jump forward 2 bytes
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
     assert!(JitCompiler::can_compile_stage1(&chunk));
 }
-
 
 #[test]
 fn test_jit_can_compile_jump_if_error() {
     // JumpIfError should be compilable in Stage 5
     let mut builder = ChunkBuilder::new("can_compile_jump_if_error");
-    builder.emit(Opcode::PushNil);  // Use nil as placeholder (no PushError opcode)
-    builder.emit_u16(Opcode::JumpIfError, 2);  // Jump forward 2 bytes
+    builder.emit(Opcode::PushNil); // Use nil as placeholder (no PushError opcode)
+    builder.emit_u16(Opcode::JumpIfError, 2); // Jump forward 2 bytes
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
     assert!(JitCompiler::can_compile_stage1(&chunk));
 }
-
 
 #[test]
 fn test_jit_execute_jump_if_nil_takes_jump() {
@@ -1923,12 +1929,12 @@ fn test_jit_execute_jump_if_nil_takes_jump() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("e2e_jump_if_nil_takes");
-    builder.emit(Opcode::PushNil);                    // offset 0
-    builder.emit_u16(Opcode::JumpIfNil, 5);           // offset 1-3, jump to 9 if nil
-    builder.emit_byte(Opcode::PushLongSmall, 42);     // offset 4-5, not nil path (skipped)
-    builder.emit_u16(Opcode::Jump, 2);                // offset 6-8, skip else
-    builder.emit_byte(Opcode::PushLongSmall, 99);     // offset 9-10, nil path
-    builder.emit(Opcode::Return);                     // offset 11
+    builder.emit(Opcode::PushNil); // offset 0
+    builder.emit_u16(Opcode::JumpIfNil, 5); // offset 1-3, jump to 9 if nil
+    builder.emit_byte(Opcode::PushLongSmall, 42); // offset 4-5, not nil path (skipped)
+    builder.emit_u16(Opcode::Jump, 2); // offset 6-8, skip else
+    builder.emit_byte(Opcode::PushLongSmall, 99); // offset 9-10, nil path
+    builder.emit(Opcode::Return); // offset 11
     let chunk = builder.build();
 
     assert!(JitCompiler::can_compile_stage1(&chunk));
@@ -1940,7 +1946,6 @@ fn test_jit_execute_jump_if_nil_takes_jump() {
     assert_eq!(result.as_long(), 99, "Expected nil branch result 99");
 }
 
-
 #[test]
 fn test_jit_execute_jump_if_nil_fallthrough() {
     // When value is not nil, JumpIfNil should NOT jump (fallthrough)
@@ -1948,12 +1953,12 @@ fn test_jit_execute_jump_if_nil_fallthrough() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("e2e_jump_if_nil_fallthrough");
-    builder.emit_byte(Opcode::PushLongSmall, 1);      // offset 0-1, not nil
-    builder.emit_u16(Opcode::JumpIfNil, 5);           // offset 2-4, jump to 10 if nil
-    builder.emit_byte(Opcode::PushLongSmall, 42);     // offset 5-6, not nil path
-    builder.emit_u16(Opcode::Jump, 2);                // offset 7-9, skip else
-    builder.emit_byte(Opcode::PushLongSmall, 99);     // offset 10-11, nil path (skipped)
-    builder.emit(Opcode::Return);                     // offset 12
+    builder.emit_byte(Opcode::PushLongSmall, 1); // offset 0-1, not nil
+    builder.emit_u16(Opcode::JumpIfNil, 5); // offset 2-4, jump to 10 if nil
+    builder.emit_byte(Opcode::PushLongSmall, 42); // offset 5-6, not nil path
+    builder.emit_u16(Opcode::Jump, 2); // offset 7-9, skip else
+    builder.emit_byte(Opcode::PushLongSmall, 99); // offset 10-11, nil path (skipped)
+    builder.emit(Opcode::Return); // offset 12
     let chunk = builder.build();
 
     assert!(JitCompiler::can_compile_stage1(&chunk));
@@ -1965,28 +1970,30 @@ fn test_jit_execute_jump_if_nil_fallthrough() {
     assert_eq!(result.as_long(), 42, "Expected non-nil branch result 42");
 }
 
-
 #[test]
 fn test_jit_execute_jump_if_nil_with_bool_false() {
     // False is NOT nil, so should fallthrough
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("e2e_jump_if_nil_bool_false");
-    builder.emit(Opcode::PushFalse);                  // offset 0, False (not nil)
-    builder.emit_u16(Opcode::JumpIfNil, 5);           // offset 1-3, jump to 9 if nil
-    builder.emit_byte(Opcode::PushLongSmall, 42);     // offset 4-5, not nil path
-    builder.emit_u16(Opcode::Jump, 2);                // offset 6-8, skip else
-    builder.emit_byte(Opcode::PushLongSmall, 99);     // offset 9-10, nil path (skipped)
-    builder.emit(Opcode::Return);                     // offset 11
+    builder.emit(Opcode::PushFalse); // offset 0, False (not nil)
+    builder.emit_u16(Opcode::JumpIfNil, 5); // offset 1-3, jump to 9 if nil
+    builder.emit_byte(Opcode::PushLongSmall, 42); // offset 4-5, not nil path
+    builder.emit_u16(Opcode::Jump, 2); // offset 6-8, skip else
+    builder.emit_byte(Opcode::PushLongSmall, 99); // offset 9-10, nil path (skipped)
+    builder.emit(Opcode::Return); // offset 11
     let chunk = builder.build();
 
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
 
     assert!(result.is_long(), "Expected Long result");
-    assert_eq!(result.as_long(), 42, "False is not nil, expected fallthrough to 42");
+    assert_eq!(
+        result.as_long(),
+        42,
+        "False is not nil, expected fallthrough to 42"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_jump_if_error_no_error() {
@@ -1996,10 +2003,10 @@ fn test_jit_execute_jump_if_error_no_error() {
 
     // Simple test: push non-error, JumpIfError peeks and continues (value stays on stack)
     let mut builder = ChunkBuilder::new("e2e_jump_if_error_no_error");
-    builder.emit_byte(Opcode::PushLongSmall, 42);     // offset 0-1, not an error
-    builder.emit_u16(Opcode::JumpIfError, 1);         // offset 2-4, peek: stack still has 42
-    builder.emit(Opcode::Return);                     // offset 5
-    builder.emit(Opcode::Return);                     // offset 6 (jump target, should not reach)
+    builder.emit_byte(Opcode::PushLongSmall, 42); // offset 0-1, not an error
+    builder.emit_u16(Opcode::JumpIfError, 1); // offset 2-4, peek: stack still has 42
+    builder.emit(Opcode::Return); // offset 5
+    builder.emit(Opcode::Return); // offset 6 (jump target, should not reach)
     let chunk = builder.build();
 
     assert!(JitCompiler::can_compile_stage1(&chunk));
@@ -2009,9 +2016,12 @@ fn test_jit_execute_jump_if_error_no_error() {
 
     // The value should still be on stack (peek doesn't pop)
     assert!(result.is_long(), "Expected Long result");
-    assert_eq!(result.as_long(), 42, "JumpIfError should peek, not pop; stack should have 42");
+    assert_eq!(
+        result.as_long(),
+        42,
+        "JumpIfError should peek, not pop; stack should have 42"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_jump_if_nil_pops_value() {
@@ -2026,11 +2036,11 @@ fn test_jit_execute_jump_if_nil_pops_value() {
     // 6-7: PushLongSmall 99 (2 bytes) - not reached since nil
     // 8: Return (1 byte) -> returns 42 (nil was popped, 42 stays on stack)
     let mut builder = ChunkBuilder::new("e2e_jump_if_nil_pops");
-    builder.emit_byte(Opcode::PushLongSmall, 42);     // offset 0-1
-    builder.emit(Opcode::PushNil);                    // offset 2
-    builder.emit_u16(Opcode::JumpIfNil, 2);           // offset 3-5, pops nil, jumps to 8
-    builder.emit_byte(Opcode::PushLongSmall, 99);     // offset 6-7, not-nil path (skipped)
-    builder.emit(Opcode::Return);                     // offset 8
+    builder.emit_byte(Opcode::PushLongSmall, 42); // offset 0-1
+    builder.emit(Opcode::PushNil); // offset 2
+    builder.emit_u16(Opcode::JumpIfNil, 2); // offset 3-5, pops nil, jumps to 8
+    builder.emit_byte(Opcode::PushLongSmall, 99); // offset 6-7, not-nil path (skipped)
+    builder.emit(Opcode::Return); // offset 8
     let chunk = builder.build();
 
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
@@ -2038,7 +2048,11 @@ fn test_jit_execute_jump_if_nil_pops_value() {
 
     // Stack should be: [42] after nil is popped by JumpIfNil
     assert!(result.is_long(), "Expected Long result");
-    assert_eq!(result.as_long(), 42, "JumpIfNil should pop; result should be 42");
+    assert_eq!(
+        result.as_long(),
+        42,
+        "JumpIfNil should pop; result should be 42"
+    );
 }
 
 // =========================================================================
@@ -2087,7 +2101,6 @@ fn test_jit_can_compile_is_symbol() {
     );
 }
 
-
 #[test]
 fn test_jit_execute_is_variable_false_for_long() {
     // IsVariable(42) should return false
@@ -2105,7 +2118,6 @@ fn test_jit_execute_is_variable_false_for_long() {
     assert!(result.is_bool(), "Expected Bool result, got: {:?}", result);
     assert!(!result.as_bool(), "IsVariable(Long) should return false");
 }
-
 
 #[test]
 fn test_jit_execute_is_sexpr_false_for_long() {
@@ -2125,7 +2137,6 @@ fn test_jit_execute_is_sexpr_false_for_long() {
     assert!(!result.as_bool(), "IsSExpr(Long) should return false");
 }
 
-
 #[test]
 fn test_jit_execute_is_symbol_false_for_long() {
     // IsSymbol(42) should return false
@@ -2143,7 +2154,6 @@ fn test_jit_execute_is_symbol_false_for_long() {
     assert!(result.is_bool(), "Expected Bool result, got: {:?}", result);
     assert!(!result.as_bool(), "IsSymbol(Long) should return false");
 }
-
 
 #[test]
 fn test_jit_execute_is_variable_false_for_bool() {
@@ -2163,7 +2173,6 @@ fn test_jit_execute_is_variable_false_for_bool() {
     assert!(!result.as_bool(), "IsVariable(Bool) should return false");
 }
 
-
 #[test]
 fn test_jit_execute_is_sexpr_false_for_nil() {
     // IsSExpr(nil) should return false
@@ -2181,7 +2190,6 @@ fn test_jit_execute_is_sexpr_false_for_nil() {
     assert!(result.is_bool(), "Expected Bool result, got: {:?}", result);
     assert!(!result.as_bool(), "IsSExpr(Nil) should return false");
 }
-
 
 #[test]
 fn test_jit_execute_is_symbol_false_for_unit() {
@@ -2296,7 +2304,6 @@ fn test_jit_can_compile_pop_n() {
     );
 }
 
-
 #[test]
 fn test_jit_execute_pop() {
     // Push 42, push 10, pop -> result should be 42
@@ -2316,7 +2323,6 @@ fn test_jit_execute_pop() {
     assert_eq!(result.as_long(), 42, "Pop should discard 10, leaving 42");
 }
 
-
 #[test]
 fn test_jit_execute_dup() {
     // Push 21, dup, add -> result should be 42
@@ -2333,9 +2339,12 @@ fn test_jit_execute_dup() {
     let result = exec_jit(code_ptr, chunk.constants());
 
     assert!(result.is_long(), "Expected Long result");
-    assert_eq!(result.as_long(), 42, "Dup should duplicate 21, then add: 21+21=42");
+    assert_eq!(
+        result.as_long(),
+        42,
+        "Dup should duplicate 21, then add: 21+21=42"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_swap() {
@@ -2360,7 +2369,6 @@ fn test_jit_execute_swap() {
     assert_eq!(result.as_long(), -5, "Swap should swap, then sub: 5-10=-5");
 }
 
-
 #[test]
 fn test_jit_execute_neg_positive() {
     // Neg(42) = -42
@@ -2378,7 +2386,6 @@ fn test_jit_execute_neg_positive() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), -42, "Neg(42) should be -42");
 }
-
 
 #[test]
 fn test_jit_execute_neg_negative() {
@@ -2401,7 +2408,6 @@ fn test_jit_execute_neg_negative() {
     assert_eq!(result.as_long(), 10, "Neg(-10) should be 10");
 }
 
-
 #[test]
 fn test_jit_execute_dup_n() {
     // Push 1, push 2, DupN 2 -> [1, 2, 1, 2], add (2+1=3), add (3+2=5), add (5+1=6)
@@ -2421,9 +2427,12 @@ fn test_jit_execute_dup_n() {
     let result = exec_jit(code_ptr, chunk.constants());
 
     assert!(result.is_long(), "Expected Long result");
-    assert_eq!(result.as_long(), 7, "DupN should duplicate top 2, then add: 3+4=7");
+    assert_eq!(
+        result.as_long(),
+        7,
+        "DupN should duplicate top 2, then add: 3+4=7"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_pop_n() {
@@ -2445,7 +2454,6 @@ fn test_jit_execute_pop_n() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 100, "PopN 3 should leave 100");
 }
-
 
 #[test]
 fn test_jit_execute_neg_zero() {
@@ -2544,7 +2552,6 @@ fn test_jit_can_compile_over() {
     );
 }
 
-
 #[test]
 fn test_jit_execute_abs_positive() {
     // Abs(42) = 42
@@ -2562,7 +2569,6 @@ fn test_jit_execute_abs_positive() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 42, "Abs(42) should be 42");
 }
-
 
 #[test]
 fn test_jit_execute_abs_negative() {
@@ -2585,7 +2591,6 @@ fn test_jit_execute_abs_negative() {
     assert_eq!(result.as_long(), 10, "Abs(-10) should be 10");
 }
 
-
 #[test]
 fn test_jit_execute_mod() {
     // 17 % 5 = 2
@@ -2605,7 +2610,6 @@ fn test_jit_execute_mod() {
     assert_eq!(result.as_long(), 2, "17 % 5 should be 2");
 }
 
-
 #[test]
 fn test_jit_execute_floor_div_stage8() {
     // 17 / 5 = 3 (floor)
@@ -2624,7 +2628,6 @@ fn test_jit_execute_floor_div_stage8() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 3, "17 / 5 (floor) should be 3");
 }
-
 
 #[test]
 fn test_jit_execute_rot3() {
@@ -2646,7 +2649,6 @@ fn test_jit_execute_rot3() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 2, "Rot3([1,2,3]) top should be 2");
 }
-
 
 #[test]
 fn test_jit_execute_rot3_verify_order() {
@@ -2673,7 +2675,6 @@ fn test_jit_execute_rot3_verify_order() {
     assert_eq!(result.as_long(), -10, "Rot3 should make a-b = 10-20 = -10");
 }
 
-
 #[test]
 fn test_jit_execute_over() {
     // Stack: [1, 2] -> Over -> [1, 2, 1]
@@ -2695,7 +2696,6 @@ fn test_jit_execute_over() {
     assert_eq!(result.as_long(), 3, "Over should copy 1, then add: 2+1=3");
 }
 
-
 #[test]
 fn test_jit_execute_abs_zero() {
     // Abs(0) = 0
@@ -2713,7 +2713,6 @@ fn test_jit_execute_abs_zero() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 0, "Abs(0) should be 0");
 }
-
 
 #[test]
 fn test_jit_execute_mod_exact() {
@@ -2746,7 +2745,10 @@ fn test_jit_can_compile_boolean_ops_stage9() {
     builder.emit(Opcode::PushFalse);
     builder.emit(Opcode::And);
     builder.emit(Opcode::Return);
-    assert!(JitCompiler::can_compile_stage1(&builder.build()), "And should be compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&builder.build()),
+        "And should be compilable"
+    );
 
     // Or
     let mut builder = ChunkBuilder::new("bool_or");
@@ -2754,14 +2756,20 @@ fn test_jit_can_compile_boolean_ops_stage9() {
     builder.emit(Opcode::PushFalse);
     builder.emit(Opcode::Or);
     builder.emit(Opcode::Return);
-    assert!(JitCompiler::can_compile_stage1(&builder.build()), "Or should be compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&builder.build()),
+        "Or should be compilable"
+    );
 
     // Not
     let mut builder = ChunkBuilder::new("bool_not");
     builder.emit(Opcode::PushTrue);
     builder.emit(Opcode::Not);
     builder.emit(Opcode::Return);
-    assert!(JitCompiler::can_compile_stage1(&builder.build()), "Not should be compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&builder.build()),
+        "Not should be compilable"
+    );
 
     // Xor
     let mut builder = ChunkBuilder::new("bool_xor");
@@ -2769,9 +2777,11 @@ fn test_jit_can_compile_boolean_ops_stage9() {
     builder.emit(Opcode::PushTrue);
     builder.emit(Opcode::Xor);
     builder.emit(Opcode::Return);
-    assert!(JitCompiler::can_compile_stage1(&builder.build()), "Xor should be compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&builder.build()),
+        "Xor should be compilable"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_and() {
@@ -2787,7 +2797,7 @@ fn test_jit_execute_and() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), true, "True AND True should be True");
+    assert!(result.as_bool(), "True AND True should be True");
 
     // True AND False = False
     let mut builder = ChunkBuilder::new("and_tf");
@@ -2799,7 +2809,7 @@ fn test_jit_execute_and() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), false, "True AND False should be False");
+    assert!(!result.as_bool(), "True AND False should be False");
 
     // False AND False = False
     let mut builder = ChunkBuilder::new("and_ff");
@@ -2811,9 +2821,8 @@ fn test_jit_execute_and() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), false, "False AND False should be False");
+    assert!(!result.as_bool(), "False AND False should be False");
 }
-
 
 #[test]
 fn test_jit_execute_or() {
@@ -2829,7 +2838,7 @@ fn test_jit_execute_or() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), true, "True OR False should be True");
+    assert!(result.as_bool(), "True OR False should be True");
 
     // False OR False = False
     let mut builder = ChunkBuilder::new("or_ff");
@@ -2841,9 +2850,8 @@ fn test_jit_execute_or() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), false, "False OR False should be False");
+    assert!(!result.as_bool(), "False OR False should be False");
 }
-
 
 #[test]
 fn test_jit_execute_not() {
@@ -2858,7 +2866,7 @@ fn test_jit_execute_not() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), false, "NOT True should be False");
+    assert!(!result.as_bool(), "NOT True should be False");
 
     // NOT False = True
     let mut builder = ChunkBuilder::new("not_f");
@@ -2869,9 +2877,8 @@ fn test_jit_execute_not() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), true, "NOT False should be True");
+    assert!(result.as_bool(), "NOT False should be True");
 }
-
 
 #[test]
 fn test_jit_execute_xor() {
@@ -2887,7 +2894,7 @@ fn test_jit_execute_xor() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), false, "True XOR True should be False");
+    assert!(!result.as_bool(), "True XOR True should be False");
 
     // True XOR False = True
     let mut builder = ChunkBuilder::new("xor_tf");
@@ -2899,7 +2906,7 @@ fn test_jit_execute_xor() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), true, "True XOR False should be True");
+    assert!(result.as_bool(), "True XOR False should be True");
 
     // False XOR False = False
     let mut builder = ChunkBuilder::new("xor_ff");
@@ -2911,9 +2918,8 @@ fn test_jit_execute_xor() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), false, "False XOR False should be False");
+    assert!(!result.as_bool(), "False XOR False should be False");
 }
-
 
 #[test]
 fn test_jit_execute_boolean_chain() {
@@ -2923,10 +2929,10 @@ fn test_jit_execute_boolean_chain() {
     let mut builder = ChunkBuilder::new("bool_chain");
     builder.emit(Opcode::PushTrue);
     builder.emit(Opcode::PushFalse);
-    builder.emit(Opcode::And);     // False
+    builder.emit(Opcode::And); // False
     builder.emit(Opcode::PushFalse);
-    builder.emit(Opcode::Not);     // True
-    builder.emit(Opcode::Or);      // False OR True = True
+    builder.emit(Opcode::Not); // True
+    builder.emit(Opcode::Or); // False OR True = True
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -2934,7 +2940,7 @@ fn test_jit_execute_boolean_chain() {
     let result = exec_jit(code_ptr, chunk.constants());
 
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), true, "(T AND F) OR (NOT F) should be True");
+    assert!(result.as_bool(), "(T AND F) OR (NOT F) should be True");
 }
 
 // =========================================================================
@@ -2948,9 +2954,11 @@ fn test_jit_can_compile_struct_eq() {
     builder.emit_byte(Opcode::PushLongSmall, 42);
     builder.emit(Opcode::StructEq);
     builder.emit(Opcode::Return);
-    assert!(JitCompiler::can_compile_stage1(&builder.build()), "StructEq should be compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&builder.build()),
+        "StructEq should be compilable"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_struct_eq_equal_longs() {
@@ -2968,9 +2976,8 @@ fn test_jit_execute_struct_eq_equal_longs() {
     let result = exec_jit(code_ptr, chunk.constants());
 
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), true, "42 == 42 should be true");
+    assert!(result.as_bool(), "42 == 42 should be true");
 }
-
 
 #[test]
 fn test_jit_execute_struct_eq_different_longs() {
@@ -2988,9 +2995,8 @@ fn test_jit_execute_struct_eq_different_longs() {
     let result = exec_jit(code_ptr, chunk.constants());
 
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), false, "42 == 43 should be false");
+    assert!(!result.as_bool(), "42 == 43 should be false");
 }
-
 
 #[test]
 fn test_jit_execute_struct_eq_bools() {
@@ -3006,7 +3012,7 @@ fn test_jit_execute_struct_eq_bools() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), true, "True == True should be true");
+    assert!(result.as_bool(), "True == True should be true");
 
     // True == False
     let mut builder = ChunkBuilder::new("struct_eq_tf");
@@ -3018,9 +3024,8 @@ fn test_jit_execute_struct_eq_bools() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
     let result = exec_jit(code_ptr, chunk.constants());
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), false, "True == False should be false");
+    assert!(!result.as_bool(), "True == False should be false");
 }
-
 
 #[test]
 fn test_jit_execute_struct_eq_nil() {
@@ -3038,9 +3043,8 @@ fn test_jit_execute_struct_eq_nil() {
     let result = exec_jit(code_ptr, chunk.constants());
 
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), true, "Nil == Nil should be true");
+    assert!(result.as_bool(), "Nil == Nil should be true");
 }
-
 
 #[test]
 fn test_jit_execute_struct_eq_different_types() {
@@ -3058,13 +3062,12 @@ fn test_jit_execute_struct_eq_different_types() {
     let result = exec_jit(code_ptr, chunk.constants());
 
     assert!(result.is_bool(), "Expected Bool result");
-    assert_eq!(result.as_bool(), false, "Long(1) == Bool(True) should be false");
+    assert!(!result.as_bool(), "Long(1) == Bool(True) should be false");
 }
 
 // =========================================================================
 // Stage 10: More Pow Tests (extend existing tests)
 // =========================================================================
-
 
 #[test]
 fn test_jit_execute_pow_zero_exp() {
@@ -3085,7 +3088,6 @@ fn test_jit_execute_pow_zero_exp() {
     assert_eq!(result.as_long(), 1, "5^0 should be 1");
 }
 
-
 #[test]
 fn test_jit_execute_pow_one_exp() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3104,7 +3106,6 @@ fn test_jit_execute_pow_one_exp() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 7, "7^1 should be 7");
 }
-
 
 #[test]
 fn test_jit_execute_pow_small() {
@@ -3190,7 +3191,6 @@ fn test_jit_can_compile_push_variable() {
     );
 }
 
-
 #[test]
 fn test_jit_execute_push_empty() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3207,22 +3207,23 @@ fn test_jit_execute_push_empty() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
 
     // PushEmpty returns a heap pointer (TAG_HEAP) to an empty S-expression
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_heap(), "Expected Heap result for empty S-expr, got: {:?}", result);
+    assert!(
+        result.is_heap(),
+        "Expected Heap result for empty S-expr, got: {:?}",
+        result
+    );
 }
-
 
 #[test]
 fn test_jit_execute_push_atom() {
@@ -3242,22 +3243,23 @@ fn test_jit_execute_push_atom() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
 
     // PushAtom returns a heap pointer to the Atom
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_heap(), "Expected Heap result for atom, got: {:?}", result);
+    assert!(
+        result.is_heap(),
+        "Expected Heap result for atom, got: {:?}",
+        result
+    );
 }
-
 
 #[test]
 fn test_jit_execute_push_string() {
@@ -3277,22 +3279,23 @@ fn test_jit_execute_push_string() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
 
     // PushString returns a heap pointer to the String
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_heap(), "Expected Heap result for string, got: {:?}", result);
+    assert!(
+        result.is_heap(),
+        "Expected Heap result for string, got: {:?}",
+        result
+    );
 }
-
 
 #[test]
 fn test_jit_execute_push_variable() {
@@ -3312,20 +3315,22 @@ fn test_jit_execute_push_variable() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
 
     // PushVariable returns a heap pointer to the Variable (which is an Atom starting with $)
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_heap(), "Expected Heap result for variable, got: {:?}", result);
+    assert!(
+        result.is_heap(),
+        "Expected Heap result for variable, got: {:?}",
+        result
+    );
 }
 
 // =========================================================================
@@ -3335,7 +3340,7 @@ fn test_jit_execute_push_variable() {
 #[test]
 fn test_jit_can_compile_get_head() {
     let mut builder = ChunkBuilder::new("get_head");
-    builder.emit(Opcode::PushEmpty);  // Dummy S-expr - real test needs heap value
+    builder.emit(Opcode::PushEmpty); // Dummy S-expr - real test needs heap value
     builder.emit(Opcode::GetHead);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -3374,7 +3379,6 @@ fn test_jit_can_compile_get_arity() {
     );
 }
 
-
 #[test]
 fn test_jit_execute_get_arity_empty() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -3393,23 +3397,24 @@ fn test_jit_execute_get_arity_empty() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
 
     // GetArity on empty S-expr should return 0
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_long(), "Expected Long result for arity, got: {:?}", result);
+    assert!(
+        result.is_long(),
+        "Expected Long result for arity, got: {:?}",
+        result
+    );
     assert_eq!(result.as_long(), 0, "Arity of empty S-expr should be 0");
 }
-
 
 #[test]
 fn test_jit_execute_get_arity_nonempty() {
@@ -3436,23 +3441,24 @@ fn test_jit_execute_get_arity_nonempty() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
 
     // GetArity on 3-element S-expr should return 3
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_long(), "Expected Long result for arity, got: {:?}", result);
+    assert!(
+        result.is_long(),
+        "Expected Long result for arity, got: {:?}",
+        result
+    );
     assert_eq!(result.as_long(), 3, "Arity of (1 2 3) should be 3");
 }
-
 
 #[test]
 fn test_jit_execute_get_head() {
@@ -3479,23 +3485,24 @@ fn test_jit_execute_get_head() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
 
     // GetHead on (42 2 3) should return 42
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_long(), "Expected Long result for head, got: {:?}", result);
+    assert!(
+        result.is_long(),
+        "Expected Long result for head, got: {:?}",
+        result
+    );
     assert_eq!(result.as_long(), 42, "Head of (42 2 3) should be 42");
 }
-
 
 #[test]
 fn test_jit_execute_get_tail() {
@@ -3514,7 +3521,7 @@ fn test_jit_execute_get_tail() {
     let idx = builder.add_constant(sexpr);
     builder.emit_u16(Opcode::PushConstant, idx);
     builder.emit(Opcode::GetTail);
-    builder.emit(Opcode::GetArity);  // Get arity of tail to verify it's (2 3) = length 2
+    builder.emit(Opcode::GetArity); // Get arity of tail to verify it's (2 3) = length 2
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -3523,23 +3530,24 @@ fn test_jit_execute_get_tail() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
 
     // GetTail on (1 2 3) gives (2 3) which has arity 2
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_long(), "Expected Long result for arity of tail, got: {:?}", result);
+    assert!(
+        result.is_long(),
+        "Expected Long result for arity of tail, got: {:?}",
+        result
+    );
     assert_eq!(result.as_long(), 2, "Arity of tail of (1 2 3) should be 2");
 }
-
 
 #[test]
 fn test_jit_execute_get_tail_get_head() {
@@ -3557,8 +3565,8 @@ fn test_jit_execute_get_tail_get_head() {
     ]);
     let idx = builder.add_constant(sexpr);
     builder.emit_u16(Opcode::PushConstant, idx);
-    builder.emit(Opcode::GetTail);    // (2 3)
-    builder.emit(Opcode::GetHead);    // 2
+    builder.emit(Opcode::GetTail); // (2 3)
+    builder.emit(Opcode::GetHead); // 2
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -3567,13 +3575,11 @@ fn test_jit_execute_get_tail_get_head() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -3587,7 +3593,6 @@ fn test_jit_execute_get_tail_get_head() {
 // =========================================================================
 // Stage 14b: GetElement Tests
 // =========================================================================
-
 
 #[test]
 fn test_jit_can_compile_get_element() {
@@ -3610,7 +3615,6 @@ fn test_jit_can_compile_get_element() {
         "GetElement should be compilable"
     );
 }
-
 
 #[test]
 fn test_jit_execute_get_element_first() {
@@ -3637,13 +3641,11 @@ fn test_jit_execute_get_element_first() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -3651,9 +3653,12 @@ fn test_jit_execute_get_element_first() {
     // Element at index 0 of (10 20 30) should be 10
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_long(), "Expected Long result, got: {:?}", result);
-    assert_eq!(result.as_long(), 10, "Element at index 0 of (10 20 30) should be 10");
+    assert_eq!(
+        result.as_long(),
+        10,
+        "Element at index 0 of (10 20 30) should be 10"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_get_element_middle() {
@@ -3680,13 +3685,11 @@ fn test_jit_execute_get_element_middle() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -3694,9 +3697,12 @@ fn test_jit_execute_get_element_middle() {
     // Element at index 1 of (10 20 30) should be 20
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_long(), "Expected Long result, got: {:?}", result);
-    assert_eq!(result.as_long(), 20, "Element at index 1 of (10 20 30) should be 20");
+    assert_eq!(
+        result.as_long(),
+        20,
+        "Element at index 1 of (10 20 30) should be 20"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_get_element_last() {
@@ -3723,13 +3729,11 @@ fn test_jit_execute_get_element_last() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -3737,9 +3741,12 @@ fn test_jit_execute_get_element_last() {
     // Element at index 2 of (10 20 30) should be 30
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_long(), "Expected Long result, got: {:?}", result);
-    assert_eq!(result.as_long(), 30, "Element at index 2 of (10 20 30) should be 30");
+    assert_eq!(
+        result.as_long(),
+        30,
+        "Element at index 2 of (10 20 30) should be 30"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_get_element_combined() {
@@ -3770,13 +3777,11 @@ fn test_jit_execute_get_element_combined() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -3784,13 +3789,16 @@ fn test_jit_execute_get_element_combined() {
     // Element[1] + Element[2] of (10 20 30) should be 20 + 30 = 50
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_long(), "Expected Long result, got: {:?}", result);
-    assert_eq!(result.as_long(), 50, "Element[1] + Element[2] of (10 20 30) should be 50");
+    assert_eq!(
+        result.as_long(),
+        50,
+        "Element[1] + Element[2] of (10 20 30) should be 50"
+    );
 }
 
 // =========================================================================
 // Phase 1: Type Operations Tests (GetType, CheckType, IsType)
 // =========================================================================
-
 
 #[test]
 fn test_jit_execute_get_type_long() {
@@ -3811,13 +3819,11 @@ fn test_jit_execute_get_type_long() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -3830,7 +3836,6 @@ fn test_jit_execute_get_type_long() {
         other => panic!("Expected Atom('Number'), got: {:?}", other),
     }
 }
-
 
 #[test]
 fn test_jit_execute_get_type_bool() {
@@ -3851,13 +3856,11 @@ fn test_jit_execute_get_type_bool() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -3870,7 +3873,6 @@ fn test_jit_execute_get_type_bool() {
         other => panic!("Expected Atom('Bool'), got: {:?}", other),
     }
 }
-
 
 #[test]
 fn test_jit_execute_get_type_sexpr() {
@@ -3897,13 +3899,11 @@ fn test_jit_execute_get_type_sexpr() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -3912,11 +3912,12 @@ fn test_jit_execute_get_type_sexpr() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta_val = unsafe { result.to_metta() };
     match metta_val {
-        MettaValue::Atom(s) => assert_eq!(s, "Expression", "GetType(SExpr) should return 'Expression'"),
+        MettaValue::Atom(s) => {
+            assert_eq!(s, "Expression", "GetType(SExpr) should return 'Expression'")
+        }
         other => panic!("Expected Atom('Expression'), got: {:?}", other),
     }
 }
-
 
 #[test]
 fn test_jit_execute_check_type_match() {
@@ -3940,13 +3941,11 @@ fn test_jit_execute_check_type_match() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -3954,9 +3953,11 @@ fn test_jit_execute_check_type_match() {
     // CheckType(42, "Number") should return True
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_bool(), "Expected Bool result, got: {:?}", result);
-    assert_eq!(result.as_bool(), true, "CheckType(Long, 'Number') should return true");
+    assert!(
+        result.as_bool(),
+        "CheckType(Long, 'Number') should return true"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_check_type_mismatch() {
@@ -3980,13 +3981,11 @@ fn test_jit_execute_check_type_mismatch() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -3994,9 +3993,11 @@ fn test_jit_execute_check_type_mismatch() {
     // CheckType(42, "Bool") should return False
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_bool(), "Expected Bool result, got: {:?}", result);
-    assert_eq!(result.as_bool(), false, "CheckType(Long, 'Bool') should return false");
+    assert!(
+        !result.as_bool(),
+        "CheckType(Long, 'Bool') should return false"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_is_type_match() {
@@ -4020,13 +4021,11 @@ fn test_jit_execute_is_type_match() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4034,9 +4033,8 @@ fn test_jit_execute_is_type_match() {
     // IsType(True, "Bool") should return True
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_bool(), "Expected Bool result, got: {:?}", result);
-    assert_eq!(result.as_bool(), true, "IsType(Bool, 'Bool') should return true");
+    assert!(result.as_bool(), "IsType(Bool, 'Bool') should return true");
 }
-
 
 #[test]
 fn test_jit_execute_check_type_variable_matches_any() {
@@ -4061,13 +4059,11 @@ fn test_jit_execute_check_type_variable_matches_any() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4075,13 +4071,15 @@ fn test_jit_execute_check_type_variable_matches_any() {
     // CheckType(42, $T) should return True (type variables are polymorphic)
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_bool(), "Expected Bool result, got: {:?}", result);
-    assert_eq!(result.as_bool(), true, "CheckType with type variable should return true");
+    assert!(
+        result.as_bool(),
+        "CheckType with type variable should return true"
+    );
 }
 
 // =========================================================================
 // Phase J: AssertType Tests
 // =========================================================================
-
 
 #[test]
 fn test_jit_execute_assert_type_match() {
@@ -4105,23 +4103,27 @@ fn test_jit_execute_assert_type_match() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
-    assert!(!ctx.bailout, "JIT execution should not bailout on type match");
+    assert!(
+        !ctx.bailout,
+        "JIT execution should not bailout on type match"
+    );
 
     // AssertType(42, "Number") should return 42 (value unchanged)
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_long(), "Expected Long result, got: {:?}", result);
-    assert_eq!(result.as_long(), 42, "AssertType should return the original value");
+    assert_eq!(
+        result.as_long(),
+        42,
+        "AssertType should return the original value"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_assert_type_mismatch() {
@@ -4145,19 +4147,16 @@ fn test_jit_execute_assert_type_mismatch() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let _result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     // AssertType(42, "Bool") should signal bailout due to type mismatch
     assert!(ctx.bailout, "JIT execution should bailout on type mismatch");
 }
-
 
 #[test]
 fn test_jit_execute_assert_type_variable_matches_any() {
@@ -4181,21 +4180,26 @@ fn test_jit_execute_assert_type_variable_matches_any() {
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
-    assert!(!ctx.bailout, "JIT execution should not bailout with type variable");
+    assert!(
+        !ctx.bailout,
+        "JIT execution should not bailout with type variable"
+    );
 
     // AssertType(42, $T) should return 42 (type variables are polymorphic)
     let result = JitValue::from_raw(result_bits as u64);
     assert!(result.is_long(), "Expected Long result, got: {:?}", result);
-    assert_eq!(result.as_long(), 42, "AssertType with type variable should return the value");
+    assert_eq!(
+        result.as_long(),
+        42,
+        "AssertType with type variable should return the value"
+    );
 }
 
 #[test]
@@ -4251,7 +4255,6 @@ fn test_jit_can_compile_cons_atom() {
     );
 }
 
-
 #[test]
 fn test_jit_execute_make_sexpr_empty() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4269,13 +4272,11 @@ fn test_jit_execute_make_sexpr_empty() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4285,12 +4286,15 @@ fn test_jit_execute_make_sexpr_empty() {
 
     match &metta {
         MettaValue::SExpr(items) => {
-            assert!(items.is_empty(), "Expected empty S-expression, got {:?}", metta);
+            assert!(
+                items.is_empty(),
+                "Expected empty S-expression, got {:?}",
+                metta
+            );
         }
         _ => panic!("Expected SExpr, got: {:?}", metta),
     }
 }
-
 
 #[test]
 fn test_jit_execute_make_sexpr_single() {
@@ -4310,13 +4314,11 @@ fn test_jit_execute_make_sexpr_single() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4335,7 +4337,6 @@ fn test_jit_execute_make_sexpr_single() {
         _ => panic!("Expected SExpr, got: {:?}", metta),
     }
 }
-
 
 #[test]
 fn test_jit_execute_make_sexpr_multiple() {
@@ -4357,13 +4358,11 @@ fn test_jit_execute_make_sexpr_multiple() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4385,7 +4384,6 @@ fn test_jit_execute_make_sexpr_multiple() {
     }
 }
 
-
 #[test]
 fn test_jit_execute_cons_atom_to_nil() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4405,13 +4403,11 @@ fn test_jit_execute_cons_atom_to_nil() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4430,7 +4426,6 @@ fn test_jit_execute_cons_atom_to_nil() {
         _ => panic!("Expected SExpr, got: {:?}", metta),
     }
 }
-
 
 #[test]
 fn test_jit_execute_cons_atom_to_sexpr() {
@@ -4456,13 +4451,11 @@ fn test_jit_execute_cons_atom_to_sexpr() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4483,7 +4476,6 @@ fn test_jit_execute_cons_atom_to_sexpr() {
         _ => panic!("Expected SExpr, got: {:?}", metta),
     }
 }
-
 
 #[test]
 fn test_jit_execute_make_sexpr_nested() {
@@ -4511,13 +4503,11 @@ fn test_jit_execute_make_sexpr_nested() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4563,7 +4553,6 @@ fn test_jit_execute_make_sexpr_nested() {
 // Phase 2b: PushUri, MakeList, MakeQuote Tests
 // =========================================================================
 
-
 #[test]
 fn test_jit_can_compile_push_uri() {
     use crate::backend::MettaValue;
@@ -4575,9 +4564,11 @@ fn test_jit_can_compile_push_uri() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "PushUri should be compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "PushUri should be compilable"
+    );
 }
-
 
 #[test]
 fn test_jit_can_compile_make_list() {
@@ -4589,9 +4580,11 @@ fn test_jit_can_compile_make_list() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "MakeList should be compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "MakeList should be compilable"
+    );
 }
-
 
 #[test]
 fn test_jit_can_compile_make_quote() {
@@ -4602,9 +4595,11 @@ fn test_jit_can_compile_make_quote() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "MakeQuote should be compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "MakeQuote should be compilable"
+    );
 }
-
 
 #[test]
 fn test_jit_execute_push_uri() {
@@ -4623,13 +4618,11 @@ fn test_jit_execute_push_uri() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4642,7 +4635,6 @@ fn test_jit_execute_push_uri() {
         _ => panic!("Expected Atom, got: {:?}", metta),
     }
 }
-
 
 #[test]
 fn test_jit_execute_make_list_empty() {
@@ -4660,13 +4652,11 @@ fn test_jit_execute_make_list_empty() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4675,9 +4665,12 @@ fn test_jit_execute_make_list_empty() {
     let metta = unsafe { result.to_metta() };
 
     // Empty list is Nil
-    assert!(matches!(metta, MettaValue::Nil), "Expected Nil, got: {:?}", metta);
+    assert!(
+        matches!(metta, MettaValue::Nil),
+        "Expected Nil, got: {:?}",
+        metta
+    );
 }
-
 
 #[test]
 fn test_jit_execute_make_list_single() {
@@ -4696,13 +4689,11 @@ fn test_jit_execute_make_list_single() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4726,7 +4717,6 @@ fn test_jit_execute_make_list_single() {
     }
 }
 
-
 #[test]
 fn test_jit_execute_make_list_multiple() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4746,13 +4736,11 @@ fn test_jit_execute_make_list_multiple() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4778,7 +4766,6 @@ fn test_jit_execute_make_list_multiple() {
     }
 }
 
-
 #[test]
 fn test_jit_execute_make_quote() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4796,13 +4783,11 @@ fn test_jit_execute_make_quote() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4826,7 +4811,6 @@ fn test_jit_execute_make_quote() {
     }
 }
 
-
 #[test]
 fn test_jit_execute_make_quote_nested() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
@@ -4847,13 +4831,11 @@ fn test_jit_execute_make_quote_nested() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
@@ -4890,7 +4872,6 @@ fn test_jit_execute_make_quote_nested() {
 // Phase 3: Call/TailCall Tests
 // =====================================================================
 
-
 #[test]
 fn test_jit_can_compile_call() {
     use crate::backend::MettaValue;
@@ -4910,7 +4891,6 @@ fn test_jit_can_compile_call() {
     );
 }
 
-
 #[test]
 fn test_jit_can_compile_tail_call() {
     use crate::backend::MettaValue;
@@ -4928,7 +4908,6 @@ fn test_jit_can_compile_tail_call() {
         "TailCall should be compilable in Stage 1"
     );
 }
-
 
 #[test]
 fn test_jit_execute_call_with_bailout() {
@@ -4950,9 +4929,8 @@ fn test_jit_execute_call_with_bailout() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
         unsafe { std::mem::transmute(code_ptr) };
@@ -4969,7 +4947,6 @@ fn test_jit_execute_call_with_bailout() {
     // The result should be a heap pointer to the call expression
     // For bailout, the VM will dispatch this expression
 }
-
 
 #[test]
 fn test_jit_execute_call_no_args() {
@@ -4989,9 +4966,8 @@ fn test_jit_execute_call_no_args() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
         unsafe { std::mem::transmute(code_ptr) };
@@ -5004,7 +4980,6 @@ fn test_jit_execute_call_no_args() {
         "Bailout reason should be Call"
     );
 }
-
 
 #[test]
 fn test_jit_execute_tail_call_with_bailout() {
@@ -5025,9 +5000,8 @@ fn test_jit_execute_tail_call_with_bailout() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
         unsafe { std::mem::transmute(code_ptr) };
@@ -5040,7 +5014,6 @@ fn test_jit_execute_tail_call_with_bailout() {
         "Bailout reason should be TailCall"
     );
 }
-
 
 #[test]
 fn test_jit_call_builds_correct_expression() {
@@ -5062,9 +5035,8 @@ fn test_jit_call_builds_correct_expression() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
         unsafe { std::mem::transmute(code_ptr) };
@@ -5103,7 +5075,6 @@ fn test_jit_call_builds_correct_expression() {
 // for rule dispatch integration with the VM.
 // =========================================================================
 
-
 #[test]
 fn test_jit_call_with_mixed_argument_types() {
     // Test Call with mixed argument types: atom, long, bool, nested sexpr
@@ -5136,9 +5107,8 @@ fn test_jit_call_with_mixed_argument_types() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
         unsafe { std::mem::transmute(code_ptr) };
@@ -5158,7 +5128,11 @@ fn test_jit_call_with_mixed_argument_types() {
 
     match &metta {
         MettaValue::SExpr(items) => {
-            assert_eq!(items.len(), 5, "Expected (process atom-arg 42 True (nested 1 2))");
+            assert_eq!(
+                items.len(),
+                5,
+                "Expected (process atom-arg 42 True (nested 1 2))"
+            );
 
             // Head: process
             match &items[0] {
@@ -5208,7 +5182,6 @@ fn test_jit_call_with_mixed_argument_types() {
     }
 }
 
-
 #[test]
 fn test_jit_call_expression_valid_for_rule_pattern() {
     // Test that JIT-constructed expressions match expected rule patterns
@@ -5230,9 +5203,8 @@ fn test_jit_call_expression_valid_for_rule_pattern() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
         unsafe { std::mem::transmute(code_ptr) };
@@ -5271,7 +5243,6 @@ fn test_jit_call_expression_valid_for_rule_pattern() {
     }
 }
 
-
 #[test]
 fn test_jit_tail_call_preserves_tco_flag() {
     // Test that TailCall sets the correct bailout reason for TCO
@@ -5293,9 +5264,8 @@ fn test_jit_tail_call_preserves_tco_flag() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
         unsafe { std::mem::transmute(code_ptr) };
@@ -5333,7 +5303,6 @@ fn test_jit_tail_call_preserves_tco_flag() {
     }
 }
 
-
 #[test]
 fn test_jit_call_with_zero_args_returns_head_only() {
     // Test Call with no arguments returns just the head in an SExpr
@@ -5353,9 +5322,8 @@ fn test_jit_call_with_zero_args_returns_head_only() {
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
         unsafe { std::mem::transmute(code_ptr) };
@@ -5386,16 +5354,18 @@ fn test_can_compile_binding_opcodes() {
     let mut builder = ChunkBuilder::new("test_bindings");
     builder.emit(Opcode::PushBindingFrame);
     builder.emit_u16(Opcode::StoreBinding, 0); // Store to binding 0
-    builder.emit_u16(Opcode::LoadBinding, 0);  // Load from binding 0
-    builder.emit_u16(Opcode::HasBinding, 0);   // Check binding 0
+    builder.emit_u16(Opcode::LoadBinding, 0); // Load from binding 0
+    builder.emit_u16(Opcode::HasBinding, 0); // Check binding 0
     builder.emit(Opcode::PopBindingFrame);
     builder.emit(Opcode::ClearBindings);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    assert!(JitCompiler::can_compile_stage1(&chunk), "Binding opcodes should be compilable");
+    assert!(
+        JitCompiler::can_compile_stage1(&chunk),
+        "Binding opcodes should be compilable"
+    );
 }
-
 
 #[test]
 fn test_jit_binding_frame_operations() {
@@ -5406,11 +5376,11 @@ fn test_jit_binding_frame_operations() {
 
     // Build bytecode: Push frame, store 42, load it, return
     let mut builder = ChunkBuilder::new("test_binding_frame");
-    builder.emit(Opcode::PushBindingFrame);       // Create new frame
+    builder.emit(Opcode::PushBindingFrame); // Create new frame
     builder.emit_byte(Opcode::PushLongSmall, 42); // Push 42
-    builder.emit_u16(Opcode::StoreBinding, 0);    // Store to binding index 0
-    builder.emit_u16(Opcode::LoadBinding, 0);     // Load from binding index 0
-    builder.emit(Opcode::PopBindingFrame);        // Pop frame
+    builder.emit_u16(Opcode::StoreBinding, 0); // Store to binding index 0
+    builder.emit_u16(Opcode::LoadBinding, 0); // Load from binding index 0
+    builder.emit(Opcode::PopBindingFrame); // Pop frame
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -5424,14 +5394,8 @@ fn test_jit_binding_frame_operations() {
     // Allocate binding frames array (capacity 16)
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     // Set up binding frames pointer and capacity
     ctx.binding_frames = binding_frames.as_mut_ptr();
@@ -5455,7 +5419,6 @@ fn test_jit_binding_frame_operations() {
     }
 }
 
-
 #[test]
 fn test_jit_has_binding() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5465,11 +5428,11 @@ fn test_jit_has_binding() {
 
     // Build bytecode: Push frame, check binding (should be false), store, check again (should be true)
     let mut builder = ChunkBuilder::new("test_has_binding");
-    builder.emit(Opcode::PushBindingFrame);       // Create new frame
+    builder.emit(Opcode::PushBindingFrame); // Create new frame
     builder.emit_byte(Opcode::PushLongSmall, 99); // Push 99
-    builder.emit_u16(Opcode::StoreBinding, 5);    // Store to binding index 5
-    builder.emit_u16(Opcode::HasBinding, 5);      // Check binding 5 exists
-    builder.emit(Opcode::PopBindingFrame);        // Pop frame
+    builder.emit_u16(Opcode::StoreBinding, 5); // Store to binding index 5
+    builder.emit_u16(Opcode::HasBinding, 5); // Check binding 5 exists
+    builder.emit(Opcode::PopBindingFrame); // Pop frame
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -5483,14 +5446,8 @@ fn test_jit_has_binding() {
     // Allocate binding frames array (capacity 16)
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     // Set up binding frames pointer and capacity
     ctx.binding_frames = binding_frames.as_mut_ptr();
@@ -5514,7 +5471,6 @@ fn test_jit_has_binding() {
     }
 }
 
-
 #[test]
 fn test_jit_clear_bindings() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5524,12 +5480,12 @@ fn test_jit_clear_bindings() {
 
     // Build bytecode: Store binding, clear, check (should be false)
     let mut builder = ChunkBuilder::new("test_clear_bindings");
-    builder.emit(Opcode::PushBindingFrame);       // Create new frame
+    builder.emit(Opcode::PushBindingFrame); // Create new frame
     builder.emit_byte(Opcode::PushLongSmall, 77); // Push 77
-    builder.emit_u16(Opcode::StoreBinding, 3);    // Store to binding index 3
-    builder.emit(Opcode::ClearBindings);          // Clear all bindings
-    builder.emit_u16(Opcode::HasBinding, 3);      // Check binding 3 exists
-    builder.emit(Opcode::PopBindingFrame);        // Pop frame
+    builder.emit_u16(Opcode::StoreBinding, 3); // Store to binding index 3
+    builder.emit(Opcode::ClearBindings); // Clear all bindings
+    builder.emit_u16(Opcode::HasBinding, 3); // Check binding 3 exists
+    builder.emit(Opcode::PopBindingFrame); // Pop frame
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -5543,14 +5499,8 @@ fn test_jit_clear_bindings() {
     // Allocate binding frames array (capacity 16)
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
     // Set up binding frames pointer and capacity
     ctx.binding_frames = binding_frames.as_mut_ptr();
@@ -5620,7 +5570,6 @@ fn test_can_compile_pattern_matching_opcodes() {
     );
 }
 
-
 #[test]
 fn test_jit_pattern_match_simple() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
@@ -5642,9 +5591,8 @@ fn test_jit_pattern_match_simple() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -5661,7 +5609,6 @@ fn test_jit_pattern_match_simple() {
         other => panic!("Expected Bool(true), got: {:?}", other),
     }
 }
-
 
 #[test]
 fn test_jit_pattern_match_mismatch() {
@@ -5684,9 +5631,8 @@ fn test_jit_pattern_match_mismatch() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -5703,7 +5649,6 @@ fn test_jit_pattern_match_mismatch() {
         other => panic!("Expected Bool(false), got: {:?}", other),
     }
 }
-
 
 #[test]
 fn test_jit_unify_simple() {
@@ -5726,9 +5671,8 @@ fn test_jit_unify_simple() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -5745,7 +5689,6 @@ fn test_jit_unify_simple() {
         other => panic!("Expected Bool(true), got: {:?}", other),
     }
 }
-
 
 #[test]
 fn test_jit_match_arity() {
@@ -5777,9 +5720,8 @@ fn test_jit_match_arity() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -5796,7 +5738,6 @@ fn test_jit_match_arity() {
         other => panic!("Expected Bool(true), got: {:?}", other),
     }
 }
-
 
 #[test]
 fn test_jit_match_head() {
@@ -5829,9 +5770,8 @@ fn test_jit_match_head() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -5848,7 +5788,6 @@ fn test_jit_match_head() {
         other => panic!("Expected Bool(true), got: {:?}", other),
     }
 }
-
 
 #[test]
 fn test_jit_match_bind_variable_extraction() {
@@ -5872,10 +5811,7 @@ fn test_jit_match_bind_variable_extraction() {
     let pattern_idx = builder.add_constant(pattern_sexpr);
 
     // Create value S-expression: (1 2)
-    let value_sexpr = MettaValue::SExpr(vec![
-        MettaValue::Long(1),
-        MettaValue::Long(2),
-    ]);
+    let value_sexpr = MettaValue::SExpr(vec![MettaValue::Long(1), MettaValue::Long(2)]);
     let value_idx = builder.add_constant(value_sexpr);
 
     // Bytecode:
@@ -5902,9 +5838,8 @@ fn test_jit_match_bind_variable_extraction() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -5963,7 +5898,6 @@ fn test_can_compile_space_opcodes() {
     );
 }
 
-
 #[test]
 fn test_jit_space_add_returns_result() {
     // Test that SpaceAdd JIT compilation produces valid code
@@ -5985,9 +5919,8 @@ fn test_jit_space_add_returns_result() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -5999,10 +5932,11 @@ fn test_jit_space_add_returns_result() {
     // With nil space, we expect unit (success) or error
     let result = JitValue::from_raw(result_bits as u64);
     // Just verify we got a valid JIT value back (no crash)
-    assert!(result.is_bool() || result.is_unit() || result.is_nil() || result.is_error(),
-        "SpaceAdd should return bool, unit, nil, or error");
+    assert!(
+        result.is_bool() || result.is_unit() || result.is_nil() || result.is_error(),
+        "SpaceAdd should return bool, unit, nil, or error"
+    );
 }
-
 
 #[test]
 fn test_jit_space_remove_returns_result() {
@@ -6024,9 +5958,8 @@ fn test_jit_space_remove_returns_result() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -6036,10 +5969,11 @@ fn test_jit_space_remove_returns_result() {
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_bool() || result.is_unit() || result.is_nil() || result.is_error(),
-        "SpaceRemove should return bool, unit, nil, or error");
+    assert!(
+        result.is_bool() || result.is_unit() || result.is_nil() || result.is_error(),
+        "SpaceRemove should return bool, unit, nil, or error"
+    );
 }
-
 
 #[test]
 fn test_jit_space_get_atoms_returns_result() {
@@ -6060,9 +5994,8 @@ fn test_jit_space_get_atoms_returns_result() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -6073,10 +6006,11 @@ fn test_jit_space_get_atoms_returns_result() {
 
     let result = JitValue::from_raw(result_bits as u64);
     // Nil space returns nil, empty list, or unit
-    assert!(result.is_nil() || result.is_unit() || result.is_heap() || result.is_error(),
-        "SpaceGetAtoms should return list, nil, unit, or error");
+    assert!(
+        result.is_nil() || result.is_unit() || result.is_heap() || result.is_error(),
+        "SpaceGetAtoms should return list, nil, unit, or error"
+    );
 }
-
 
 #[test]
 fn test_jit_space_match_returns_result() {
@@ -6099,9 +6033,8 @@ fn test_jit_space_match_returns_result() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -6112,8 +6045,10 @@ fn test_jit_space_match_returns_result() {
 
     let result = JitValue::from_raw(result_bits as u64);
     // Nil space returns nil, empty results, or unit
-    assert!(result.is_nil() || result.is_unit() || result.is_heap() || result.is_error(),
-        "SpaceMatch should return results list, nil, unit, or error");
+    assert!(
+        result.is_nil() || result.is_unit() || result.is_heap() || result.is_error(),
+        "SpaceMatch should return results list, nil, unit, or error"
+    );
 }
 
 // =========================================================================
@@ -6166,7 +6101,6 @@ fn test_can_compile_rule_dispatch_opcodes() {
     );
 }
 
-
 #[test]
 fn test_jit_dispatch_rules_returns_result() {
     // Test that DispatchRules JIT compilation produces valid code
@@ -6186,9 +6120,8 @@ fn test_jit_dispatch_rules_returns_result() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -6199,10 +6132,11 @@ fn test_jit_dispatch_rules_returns_result() {
 
     // DispatchRules returns the count of matching rules (as Long)
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_long() || result.is_nil() || result.is_unit() || result.is_error(),
-        "DispatchRules should return count (Long), nil, unit, or error");
+    assert!(
+        result.is_long() || result.is_nil() || result.is_unit() || result.is_error(),
+        "DispatchRules should return count (Long), nil, unit, or error"
+    );
 }
-
 
 #[test]
 fn test_jit_try_rule_returns_result() {
@@ -6222,9 +6156,8 @@ fn test_jit_try_rule_returns_result() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -6235,10 +6168,11 @@ fn test_jit_try_rule_returns_result() {
 
     // TryRule returns the result of applying the rule
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_unit() || result.is_nil() || result.is_heap() || result.is_error(),
-        "TryRule should return unit, nil, heap, or error");
+    assert!(
+        result.is_unit() || result.is_nil() || result.is_heap() || result.is_error(),
+        "TryRule should return unit, nil, heap, or error"
+    );
 }
-
 
 #[test]
 fn test_jit_lookup_rules_returns_result() {
@@ -6258,9 +6192,8 @@ fn test_jit_lookup_rules_returns_result() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -6271,10 +6204,11 @@ fn test_jit_lookup_rules_returns_result() {
 
     // LookupRules returns the count of matching rules (as Long)
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_long() || result.is_nil() || result.is_unit() || result.is_error(),
-        "LookupRules should return count (Long), nil, unit, or error");
+    assert!(
+        result.is_long() || result.is_nil() || result.is_unit() || result.is_error(),
+        "LookupRules should return count (Long), nil, unit, or error"
+    );
 }
-
 
 #[test]
 fn test_jit_apply_subst_returns_result() {
@@ -6295,9 +6229,8 @@ fn test_jit_apply_subst_returns_result() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -6308,10 +6241,11 @@ fn test_jit_apply_subst_returns_result() {
 
     // ApplySubst returns the substituted expression
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_nil() || result.is_unit() || result.is_heap() || result.is_error(),
-        "ApplySubst should return substituted expr, nil, unit, or error");
+    assert!(
+        result.is_nil() || result.is_unit() || result.is_heap() || result.is_error(),
+        "ApplySubst should return substituted expr, nil, unit, or error"
+    );
 }
-
 
 #[test]
 fn test_jit_define_rule_returns_result() {
@@ -6333,9 +6267,8 @@ fn test_jit_define_rule_returns_result() {
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
-    let mut ctx = unsafe {
-        JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len())
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
     ctx.binding_frames = binding_frames.as_mut_ptr();
     ctx.binding_frames_cap = 16;
     unsafe { ctx.init_root_binding_frame() };
@@ -6346,14 +6279,15 @@ fn test_jit_define_rule_returns_result() {
 
     // DefineRule returns unit on success
     let result = JitValue::from_raw(result_bits as u64);
-    assert!(result.is_unit() || result.is_nil() || result.is_error(),
-        "DefineRule should return unit, nil, or error");
+    assert!(
+        result.is_unit() || result.is_nil() || result.is_error(),
+        "DefineRule should return unit, nil, or error"
+    );
 }
 
 // =========================================================================
 // Let Binding Scope Cleanup Tests (StackUnderflow fix)
 // =========================================================================
-
 
 #[test]
 fn test_jit_let_binding_scope_cleanup() {
@@ -6370,35 +6304,30 @@ fn test_jit_let_binding_scope_cleanup() {
     // Pattern: Push value, StoreLocal, Push body result, Swap (no-op), Pop (no-op), Return
     let mut builder = ChunkBuilder::new("test_let_scope_cleanup");
     builder.set_local_count(1);
-    builder.emit_byte(Opcode::PushLongSmall, 1);   // Push value for binding
-    builder.emit_byte(Opcode::StoreLocal, 0);      // Store to local (removes from stack)
-    builder.emit_byte(Opcode::PushLongSmall, 0);   // Push body result
-    builder.emit(Opcode::Swap);                     // Scope cleanup - should be no-op
-    builder.emit(Opcode::Pop);                      // Scope cleanup - should be no-op
+    builder.emit_byte(Opcode::PushLongSmall, 1); // Push value for binding
+    builder.emit_byte(Opcode::StoreLocal, 0); // Store to local (removes from stack)
+    builder.emit_byte(Opcode::PushLongSmall, 0); // Push body result
+    builder.emit(Opcode::Swap); // Scope cleanup - should be no-op
+    builder.emit(Opcode::Pop); // Scope cleanup - should be no-op
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
     // Verify it can compile (was failing before fix)
     assert!(JitCompiler::can_compile_stage1(&chunk));
 
-    let code_ptr = compiler.compile(&chunk).expect("JIT compilation should succeed");
+    let code_ptr = compiler
+        .compile(&chunk)
+        .expect("JIT compilation should succeed");
 
     // Execute and verify result
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bail out");
@@ -6407,7 +6336,6 @@ fn test_jit_let_binding_scope_cleanup() {
     assert!(result.is_long(), "Expected Long result");
     assert_eq!(result.as_long(), 0, "Body result should be 0");
 }
-
 
 #[test]
 fn test_jit_nested_let_bindings() {
@@ -6442,23 +6370,18 @@ fn test_jit_nested_let_bindings() {
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    let code_ptr = compiler.compile(&chunk).expect("JIT compilation should succeed");
+    let code_ptr = compiler
+        .compile(&chunk)
+        .expect("JIT compilation should succeed");
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "JIT execution should not bail out");
@@ -6468,7 +6391,6 @@ fn test_jit_nested_let_bindings() {
     assert_eq!(result.as_long(), 2, "Should return $y = 2");
 }
 
-
 #[test]
 fn test_jit_pop_empty_stack_is_noop() {
     // Test that Pop on empty stack is a no-op (not an error)
@@ -6477,28 +6399,23 @@ fn test_jit_pop_empty_stack_is_noop() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("test_pop_empty");
-    builder.emit(Opcode::Pop);  // Should be no-op on empty stack
+    builder.emit(Opcode::Pop); // Should be no-op on empty stack
     builder.emit_byte(Opcode::PushLongSmall, 42);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    let code_ptr = compiler.compile(&chunk).expect("JIT compilation should succeed");
+    let code_ptr = compiler
+        .compile(&chunk)
+        .expect("JIT compilation should succeed");
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "Pop on empty stack should not bail out");
@@ -6506,7 +6423,6 @@ fn test_jit_pop_empty_stack_is_noop() {
     let result = JitValue::from_raw(result_bits as u64);
     assert_eq!(result.as_long(), 42, "Should return 42");
 }
-
 
 #[test]
 fn test_jit_swap_single_value_is_noop() {
@@ -6517,27 +6433,22 @@ fn test_jit_swap_single_value_is_noop() {
 
     let mut builder = ChunkBuilder::new("test_swap_single");
     builder.emit_byte(Opcode::PushLongSmall, 99);
-    builder.emit(Opcode::Swap);  // Should be no-op with only one value
+    builder.emit(Opcode::Swap); // Should be no-op with only one value
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
-    let code_ptr = compiler.compile(&chunk).expect("JIT compilation should succeed");
+    let code_ptr = compiler
+        .compile(&chunk)
+        .expect("JIT compilation should succeed");
 
     let constants = chunk.constants();
     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
 
-    let mut ctx = unsafe {
-        JitContext::new(
-            stack.as_mut_ptr(),
-            64,
-            constants.as_ptr(),
-            constants.len(),
-        )
-    };
+    let mut ctx =
+        unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
-    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = unsafe {
-        std::mem::transmute(code_ptr)
-    };
+    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+        unsafe { std::mem::transmute(code_ptr) };
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     assert!(!ctx.bailout, "Swap with single value should not bail out");

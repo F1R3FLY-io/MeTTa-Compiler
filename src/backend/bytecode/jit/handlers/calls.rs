@@ -2,7 +2,6 @@
 //!
 //! Handles: Call, TailCall, CallN, TailCallN, CallNative, CallExternal, CallCached
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -14,7 +13,6 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::BytecodeChunk;
 
 /// Context for call handlers that need runtime function access
-
 pub struct CallHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub call_func_id: FuncId,
@@ -30,7 +28,6 @@ pub struct CallHandlerContext<'m> {
 ///
 /// Call: head_index:u16 arity:u8
 /// Stack: [arg1, arg2, ..., argN] -> [result]
-
 pub fn compile_call<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -61,7 +58,10 @@ pub fn compile_call<'a, 'b>(
         for i in (0..arity).rev() {
             let arg = codegen.pop()?;
             let slot_offset = (i * 8) as i32;
-            codegen.builder.ins().stack_store(arg, args_slot, slot_offset);
+            codegen
+                .builder
+                .ins()
+                .stack_store(arg, args_slot, slot_offset);
         }
 
         // Get pointer to arguments array
@@ -95,7 +95,6 @@ pub fn compile_call<'a, 'b>(
 ///
 /// TailCall: head_index:u16 arity:u8
 /// Same as Call but signals TCO to VM
-
 pub fn compile_tail_call<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -124,7 +123,10 @@ pub fn compile_tail_call<'a, 'b>(
         for i in (0..arity).rev() {
             let arg = codegen.pop()?;
             let slot_offset = (i * 8) as i32;
-            codegen.builder.ins().stack_store(arg, args_slot, slot_offset);
+            codegen
+                .builder
+                .ins()
+                .stack_store(arg, args_slot, slot_offset);
         }
 
         let args_ptr = codegen.builder.ins().stack_addr(types::I64, args_slot, 0);
@@ -151,7 +153,6 @@ pub fn compile_tail_call<'a, 'b>(
 /// CallN: arity:u8
 /// Stack: [head, arg1, arg2, ..., argN] -> [result]
 /// Unlike Call, head is on stack not in constant pool
-
 pub fn compile_call_n<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -180,7 +181,10 @@ pub fn compile_call_n<'a, 'b>(
         for i in (0..arity).rev() {
             let arg = codegen.pop()?;
             let slot_offset = (i * 8) as i32;
-            codegen.builder.ins().stack_store(arg, args_slot, slot_offset);
+            codegen
+                .builder
+                .ins()
+                .stack_store(arg, args_slot, slot_offset);
         }
 
         // Pop head value (it's below the args on stack)
@@ -190,20 +194,20 @@ pub fn compile_call_n<'a, 'b>(
         let args_ptr = codegen.builder.ins().stack_addr(types::I64, args_slot, 0);
 
         // Call jit_runtime_call_n(ctx, head_val, args_ptr, arity, ip)
-        let call_inst = codegen.builder.ins().call(
-            func_ref,
-            &[ctx_ptr, head_val, args_ptr, arity_val, ip_val],
-        );
+        let call_inst = codegen
+            .builder
+            .ins()
+            .call(func_ref, &[ctx_ptr, head_val, args_ptr, arity_val, ip_val]);
         let result = codegen.builder.inst_results(call_inst)[0];
         codegen.push(result)?;
     } else {
         // No args - just pop head
         let head_val = codegen.pop()?;
         let null_ptr = codegen.builder.ins().iconst(types::I64, 0);
-        let call_inst = codegen.builder.ins().call(
-            func_ref,
-            &[ctx_ptr, head_val, null_ptr, arity_val, ip_val],
-        );
+        let call_inst = codegen
+            .builder
+            .ins()
+            .call(func_ref, &[ctx_ptr, head_val, null_ptr, arity_val, ip_val]);
         let result = codegen.builder.inst_results(call_inst)[0];
         codegen.push(result)?;
     }
@@ -215,7 +219,6 @@ pub fn compile_call_n<'a, 'b>(
 /// TailCallN: arity:u8
 /// Stack: [head, arg1, arg2, ..., argN] -> [result]
 /// Same as CallN but signals TCO to VM
-
 pub fn compile_tail_call_n<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -242,26 +245,29 @@ pub fn compile_tail_call_n<'a, 'b>(
         for i in (0..arity).rev() {
             let arg = codegen.pop()?;
             let slot_offset = (i * 8) as i32;
-            codegen.builder.ins().stack_store(arg, args_slot, slot_offset);
+            codegen
+                .builder
+                .ins()
+                .stack_store(arg, args_slot, slot_offset);
         }
 
         // Pop head value
         let head_val = codegen.pop()?;
 
         let args_ptr = codegen.builder.ins().stack_addr(types::I64, args_slot, 0);
-        let call_inst = codegen.builder.ins().call(
-            func_ref,
-            &[ctx_ptr, head_val, args_ptr, arity_val, ip_val],
-        );
+        let call_inst = codegen
+            .builder
+            .ins()
+            .call(func_ref, &[ctx_ptr, head_val, args_ptr, arity_val, ip_val]);
         let result = codegen.builder.inst_results(call_inst)[0];
         codegen.push(result)?;
     } else {
         let head_val = codegen.pop()?;
         let null_ptr = codegen.builder.ins().iconst(types::I64, 0);
-        let call_inst = codegen.builder.ins().call(
-            func_ref,
-            &[ctx_ptr, head_val, null_ptr, arity_val, ip_val],
-        );
+        let call_inst = codegen
+            .builder
+            .ins()
+            .call(func_ref, &[ctx_ptr, head_val, null_ptr, arity_val, ip_val]);
         let result = codegen.builder.inst_results(call_inst)[0];
         codegen.push(result)?;
     }
@@ -272,7 +278,6 @@ pub fn compile_tail_call_n<'a, 'b>(
 ///
 /// Stack: [args...] -> [result]
 /// func_id: u16, arity: u8
-
 pub fn compile_call_native<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -303,7 +308,6 @@ pub fn compile_call_native<'a, 'b>(
 ///
 /// Stack: [args...] -> [result]
 /// name_idx: u16, arity: u8
-
 pub fn compile_call_external<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -334,7 +338,6 @@ pub fn compile_call_external<'a, 'b>(
 ///
 /// Stack: [args...] -> [result]
 /// head_idx: u16, arity: u8
-
 pub fn compile_call_cached<'a, 'b>(
     ctx: &mut CallHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,

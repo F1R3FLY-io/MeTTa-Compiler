@@ -38,11 +38,26 @@ pub trait DebugInit {
 impl<T> DebugInit for T {
     fn register_debug_symbols(builder: &mut JITBuilder) {
         builder.symbol("jit_runtime_trace", runtime::jit_runtime_trace as *const u8);
-        builder.symbol("jit_runtime_breakpoint", runtime::jit_runtime_breakpoint as *const u8);
-        builder.symbol("jit_runtime_get_metatype", runtime::jit_runtime_get_metatype as *const u8);
-        builder.symbol("jit_runtime_bloom_check", runtime::jit_runtime_bloom_check as *const u8);
-        builder.symbol("jit_runtime_return_multi", runtime::jit_runtime_return_multi as *const u8);
-        builder.symbol("jit_runtime_collect_n", runtime::jit_runtime_collect_n as *const u8);
+        builder.symbol(
+            "jit_runtime_breakpoint",
+            runtime::jit_runtime_breakpoint as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_get_metatype",
+            runtime::jit_runtime_get_metatype as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_bloom_check",
+            runtime::jit_runtime_bloom_check as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_return_multi",
+            runtime::jit_runtime_return_multi as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_collect_n",
+            runtime::jit_runtime_collect_n as *const u8,
+        );
     }
 
     fn declare_debug_funcs<M: Module>(module: &mut M) -> JitResult<DebugFuncIds> {
@@ -54,11 +69,13 @@ impl<T> DebugInit for T {
         trace_sig.params.push(AbiParam::new(types::I64)); // msg_idx
         trace_sig.params.push(AbiParam::new(types::I64)); // value
         trace_sig.params.push(AbiParam::new(types::I64)); // ip
-        // No return value for trace
+                                                          // No return value for trace
 
         let trace_func_id = module
             .declare_function("jit_runtime_trace", Linkage::Import, &trace_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_trace: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_trace: {}", e))
+            })?;
 
         // breakpoint: fn(ctx, bp_id, ip) -> signal
         let mut breakpoint_sig = module.make_signature();
@@ -69,7 +86,12 @@ impl<T> DebugInit for T {
 
         let breakpoint_func_id = module
             .declare_function("jit_runtime_breakpoint", Linkage::Import, &breakpoint_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_breakpoint: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_breakpoint: {}",
+                    e
+                ))
+            })?;
 
         // get_metatype: fn(ctx, value, ip) -> metatype atom
         let mut get_metatype_sig = module.make_signature();
@@ -79,8 +101,17 @@ impl<T> DebugInit for T {
         get_metatype_sig.returns.push(AbiParam::new(types::I64)); // metatype
 
         let get_metatype_func_id = module
-            .declare_function("jit_runtime_get_metatype", Linkage::Import, &get_metatype_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_get_metatype: {}", e)))?;
+            .declare_function(
+                "jit_runtime_get_metatype",
+                Linkage::Import,
+                &get_metatype_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_get_metatype: {}",
+                    e
+                ))
+            })?;
 
         // bloom_check: fn(ctx, key, ip) -> bool
         let mut bloom_check_sig = module.make_signature();
@@ -91,7 +122,12 @@ impl<T> DebugInit for T {
 
         let bloom_check_func_id = module
             .declare_function("jit_runtime_bloom_check", Linkage::Import, &bloom_check_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_bloom_check: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_bloom_check: {}",
+                    e
+                ))
+            })?;
 
         // return_multi: fn(ctx, count, ip) -> signal
         let mut return_multi_sig = module.make_signature();
@@ -101,8 +137,17 @@ impl<T> DebugInit for T {
         return_multi_sig.returns.push(AbiParam::new(types::I64)); // signal
 
         let return_multi_func_id = module
-            .declare_function("jit_runtime_return_multi", Linkage::Import, &return_multi_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_return_multi: {}", e)))?;
+            .declare_function(
+                "jit_runtime_return_multi",
+                Linkage::Import,
+                &return_multi_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_return_multi: {}",
+                    e
+                ))
+            })?;
 
         // collect_n: fn(ctx, max_count, ip) -> SExpr
         let mut collect_n_sig = module.make_signature();
@@ -113,7 +158,12 @@ impl<T> DebugInit for T {
 
         let collect_n_func_id = module
             .declare_function("jit_runtime_collect_n", Linkage::Import, &collect_n_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_collect_n: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_collect_n: {}",
+                    e
+                ))
+            })?;
 
         Ok(DebugFuncIds {
             trace_func_id,

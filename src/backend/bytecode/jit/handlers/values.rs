@@ -3,7 +3,6 @@
 //! Handles: PushNil, PushTrue, PushFalse, PushUnit, PushLongSmall, PushLong,
 //!          PushConstant, PushEmpty, PushAtom, PushString, PushVariable
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -15,7 +14,6 @@ use crate::backend::bytecode::jit::types::JitResult;
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
 /// Context for value creation handlers that need runtime function access
-
 pub struct ValueHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub load_const_func_id: FuncId,
@@ -63,7 +61,6 @@ pub fn compile_simple_value_op<'a, 'b>(
 }
 
 /// Compile value creation opcodes that require runtime calls
-
 pub fn compile_runtime_value_op<'a, 'b>(
     ctx: &mut ValueHandlerContext<'_>,
     codegen: &mut CodegenContext<'a, 'b>,
@@ -146,7 +143,10 @@ pub fn compile_runtime_value_op<'a, 'b>(
             codegen.push(result)?;
         }
 
-        _ => unreachable!("compile_runtime_value_op called with wrong opcode: {:?}", op),
+        _ => unreachable!(
+            "compile_runtime_value_op called with wrong opcode: {:?}",
+            op
+        ),
     }
     Ok(())
 }

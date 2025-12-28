@@ -356,7 +356,7 @@ mod tests {
         let mut registry = NativeRegistry::new();
 
         let id = registry.register("add2", |args, _ctx| {
-            let a = match args.get(0) {
+            let a = match args.first() {
                 Some(MettaValue::Long(n)) => *n,
                 _ => 0,
             };

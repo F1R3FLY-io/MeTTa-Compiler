@@ -469,6 +469,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn test_fail_native_exhausts_alternatives() {
         let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];

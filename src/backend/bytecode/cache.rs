@@ -295,7 +295,7 @@ mod tests {
         let h_float = hash_metta_value(&MettaValue::Float(0.0));
 
         // All should be distinct
-        let hashes = vec![h_long, h_false, h_nil, h_float];
+        let hashes = [h_long, h_false, h_nil, h_float];
         for i in 0..hashes.len() {
             for j in i + 1..hashes.len() {
                 assert_ne!(

@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn test_large_arity_sexpr() {
         // Create an S-expression with 100 children (exceeds MORK's 63 limit)
-        let items: Vec<MettaValue> = (0..100).map(|i| MettaValue::Long(i)).collect();
+        let items: Vec<MettaValue> = (0..100).map(MettaValue::Long).collect();
         let large_sexpr = MettaValue::SExpr(items);
 
         let key = metta_to_varint_key(&large_sexpr);

@@ -3,8 +3,8 @@
 //! Handles GetType, CheckType, IsType, and AssertType opcodes.
 
 use cranelift::prelude::*;
-use cranelift_module::{FuncId, Module};
 use cranelift_jit::JITModule;
+use cranelift_module::{FuncId, Module};
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::JitResult;
@@ -33,7 +33,10 @@ pub fn compile_get_type(
     // Call jit_runtime_get_type(ctx, val, ip)
     let ctx_ptr = codegen.ctx_ptr();
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, ip_val]);
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, val, ip_val]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
 
@@ -57,7 +60,10 @@ pub fn compile_check_type(
     // Call jit_runtime_check_type(ctx, val, type_atom, ip)
     let ctx_ptr = codegen.ctx_ptr();
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, type_atom, ip_val]);
+    let call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, val, type_atom, ip_val]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;
 
@@ -83,7 +89,10 @@ pub fn compile_assert_type(
     // Returns the value unchanged (bailout signaled on mismatch)
     let ctx_ptr = codegen.ctx_ptr();
     let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
-    let _call_inst = codegen.builder.ins().call(func_ref, &[ctx_ptr, val, type_atom, ip_val]);
+    let _call_inst = codegen
+        .builder
+        .ins()
+        .call(func_ref, &[ctx_ptr, val, type_atom, ip_val]);
     // Note: We don't use the return value since peek already left value on stack
 
     Ok(())

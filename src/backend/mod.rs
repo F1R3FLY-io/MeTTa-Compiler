@@ -18,6 +18,12 @@ pub mod mork_convert;
 pub mod symbol;
 pub mod varint_encoding;
 
+// Priority scheduler (feature-gated)
+#[cfg(feature = "hybrid-p2-priority-scheduler")]
+pub mod priority_scheduler;
+#[cfg(feature = "hybrid-p2-priority-scheduler")]
+pub mod thread_pool;
+
 pub use builtin_signatures::{
     get_arg_types, get_return_type, get_signature, is_builtin, BuiltinSignature, TypeExpr,
 };

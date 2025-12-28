@@ -6,8 +6,8 @@
 //! - assert_type - Assert type match or signal error
 
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, PAYLOAD_MASK,
-    TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_NIL, TAG_UNIT, TAG_VAR,
+    JitBailoutReason, JitContext, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG,
+    TAG_MASK, TAG_NIL, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::MettaValue;
 

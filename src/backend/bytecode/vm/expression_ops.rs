@@ -7,11 +7,11 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use tracing::{debug, trace};
 
-use crate::backend::models::MettaValue;
-use crate::backend::bytecode::opcodes::Opcode;
-use super::pattern::{pattern_matches, pattern_match_bind, unify};
+use super::pattern::{pattern_match_bind, pattern_matches, unify};
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
+use crate::backend::bytecode::opcodes::Opcode;
+use crate::backend::models::MettaValue;
 
 impl BytecodeVM {
     // === Pattern Matching Operations ===
@@ -128,7 +128,12 @@ impl BytecodeVM {
             MettaValue::SExpr(items) if !items.is_empty() => {
                 self.push(items[0].clone());
             }
-            _ => return Err(VmError::TypeError { expected: "non-empty S-expression", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "non-empty S-expression",
+                    got: "other",
+                })
+            }
         }
         Ok(())
     }
@@ -139,7 +144,12 @@ impl BytecodeVM {
             MettaValue::SExpr(items) if !items.is_empty() => {
                 self.push(MettaValue::sexpr(items[1..].to_vec()));
             }
-            _ => return Err(VmError::TypeError { expected: "non-empty S-expression", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "non-empty S-expression",
+                    got: "other",
+                })
+            }
         }
         Ok(())
     }
@@ -150,7 +160,12 @@ impl BytecodeVM {
             MettaValue::SExpr(items) => {
                 self.push(MettaValue::Long(items.len() as i64));
             }
-            _ => return Err(VmError::TypeError { expected: "S-expression", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "S-expression",
+                    got: "other",
+                })
+            }
         }
         Ok(())
     }
@@ -162,7 +177,12 @@ impl BytecodeVM {
             MettaValue::SExpr(items) if index < items.len() => {
                 self.push(items[index].clone());
             }
-            _ => return Err(VmError::TypeError { expected: "S-expression with valid index", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "S-expression with valid index",
+                    got: "other",
+                })
+            }
         }
         Ok(())
     }
@@ -226,7 +246,13 @@ impl BytecodeVM {
         match value {
             MettaValue::Long(n) => n.to_string(),
             MettaValue::Float(f) => f.to_string(),
-            MettaValue::Bool(b) => if *b { "True".to_string() } else { "False".to_string() },
+            MettaValue::Bool(b) => {
+                if *b {
+                    "True".to_string()
+                } else {
+                    "False".to_string()
+                }
+            }
             MettaValue::String(s) => format!("\"{}\"", s),
             MettaValue::Atom(a) => a.clone(),
             MettaValue::SExpr(items) => {
@@ -280,10 +306,17 @@ impl BytecodeVM {
 
         let items = match list {
             MettaValue::SExpr(items) => items,
-            _ => return Err(VmError::TypeError { expected: "list/S-expression", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "list/S-expression",
+                    got: "other",
+                })
+            }
         };
 
-        let template_chunk = self.chunk.get_chunk_constant(chunk_idx)
+        let template_chunk = self
+            .chunk
+            .get_chunk_constant(chunk_idx)
             .ok_or(VmError::InvalidConstant(chunk_idx))?;
         let mut results = Vec::with_capacity(items.len());
 
@@ -302,15 +335,23 @@ impl BytecodeVM {
 
         let items = match list {
             MettaValue::SExpr(items) => items,
-            _ => return Err(VmError::TypeError { expected: "list/S-expression", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "list/S-expression",
+                    got: "other",
+                })
+            }
         };
 
-        let predicate_chunk = self.chunk.get_chunk_constant(chunk_idx)
+        let predicate_chunk = self
+            .chunk
+            .get_chunk_constant(chunk_idx)
             .ok_or(VmError::InvalidConstant(chunk_idx))?;
         let mut results = Vec::new();
 
         for item in items {
-            let result = self.execute_template_with_binding(Arc::clone(&predicate_chunk), item.clone())?;
+            let result =
+                self.execute_template_with_binding(Arc::clone(&predicate_chunk), item.clone())?;
             // Check if predicate returned true
             if matches!(result, MettaValue::Bool(true)) {
                 results.push(item);
@@ -328,10 +369,17 @@ impl BytecodeVM {
 
         let items = match list {
             MettaValue::SExpr(items) => items,
-            _ => return Err(VmError::TypeError { expected: "list/S-expression", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "list/S-expression",
+                    got: "other",
+                })
+            }
         };
 
-        let op_chunk = self.chunk.get_chunk_constant(chunk_idx)
+        let op_chunk = self
+            .chunk
+            .get_chunk_constant(chunk_idx)
             .ok_or(VmError::InvalidConstant(chunk_idx))?;
 
         let mut acc = init;
@@ -352,7 +400,12 @@ impl BytecodeVM {
 
         let idx = match index {
             MettaValue::Long(i) => i,
-            _ => return Err(VmError::TypeError { expected: "Long (index)", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "Long (index)",
+                    got: "other",
+                })
+            }
         };
 
         let result = match expr {
@@ -365,7 +418,12 @@ impl BytecodeVM {
                 }
                 items[idx as usize].clone()
             }
-            _ => return Err(VmError::TypeError { expected: "S-expression", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "S-expression",
+                    got: "other",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -375,11 +433,19 @@ impl BytecodeVM {
         let expr = self.pop()?;
         let items = match expr {
             MettaValue::SExpr(items) => items,
-            _ => return Err(VmError::TypeError { expected: "S-expression", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "S-expression",
+                    got: "other",
+                })
+            }
         };
 
         if items.is_empty() {
-            return Err(VmError::TypeError { expected: "non-empty S-expression", got: "empty expression" });
+            return Err(VmError::TypeError {
+                expected: "non-empty S-expression",
+                got: "empty expression",
+            });
         }
 
         // Find minimum among numeric values
@@ -401,7 +467,12 @@ impl BytecodeVM {
         let result = match min_val {
             Some(v) if min_is_long && v == (v as i64) as f64 => MettaValue::Long(v as i64),
             Some(v) => MettaValue::Float(v),
-            None => return Err(VmError::TypeError { expected: "numeric values in expression", got: "no numeric values" }),
+            None => {
+                return Err(VmError::TypeError {
+                    expected: "numeric values in expression",
+                    got: "no numeric values",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -411,11 +482,19 @@ impl BytecodeVM {
         let expr = self.pop()?;
         let items = match expr {
             MettaValue::SExpr(items) => items,
-            _ => return Err(VmError::TypeError { expected: "S-expression", got: "other" }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "S-expression",
+                    got: "other",
+                })
+            }
         };
 
         if items.is_empty() {
-            return Err(VmError::TypeError { expected: "non-empty S-expression", got: "empty expression" });
+            return Err(VmError::TypeError {
+                expected: "non-empty S-expression",
+                got: "empty expression",
+            });
         }
 
         // Find maximum among numeric values
@@ -437,7 +516,12 @@ impl BytecodeVM {
         let result = match max_val {
             Some(v) if max_is_long && v == (v as i64) as f64 => MettaValue::Long(v as i64),
             Some(v) => MettaValue::Float(v),
-            None => return Err(VmError::TypeError { expected: "numeric values in expression", got: "no numeric values" }),
+            None => {
+                return Err(VmError::TypeError {
+                    expected: "numeric values in expression",
+                    got: "no numeric values",
+                })
+            }
         };
         self.push(result);
         Ok(())
@@ -446,7 +530,11 @@ impl BytecodeVM {
     // === Template Execution Helpers ===
 
     /// Execute a template chunk with a single bound value (for map/filter)
-    pub(super) fn execute_template_with_binding(&mut self, chunk: Arc<crate::backend::bytecode::chunk::BytecodeChunk>, binding: MettaValue) -> VmResult<MettaValue> {
+    pub(super) fn execute_template_with_binding(
+        &mut self,
+        chunk: Arc<crate::backend::bytecode::chunk::BytecodeChunk>,
+        binding: MettaValue,
+    ) -> VmResult<MettaValue> {
         // Save state
         let saved_ip = self.ip;
         let saved_chunk = Arc::clone(&self.chunk);
@@ -462,10 +550,12 @@ impl BytecodeVM {
             if self.ip >= self.chunk.len() {
                 break;
             }
-            let opcode_byte = self.chunk.read_byte(self.ip)
+            let opcode_byte = self
+                .chunk
+                .read_byte(self.ip)
                 .ok_or(VmError::IpOutOfBounds)?;
-            let opcode = Opcode::from_byte(opcode_byte)
-                .ok_or(VmError::InvalidOpcode(opcode_byte))?;
+            let opcode =
+                Opcode::from_byte(opcode_byte).ok_or(VmError::InvalidOpcode(opcode_byte))?;
 
             if opcode == Opcode::Return {
                 break;
@@ -506,7 +596,12 @@ impl BytecodeVM {
     }
 
     /// Execute a foldl template chunk with accumulator and item bindings
-    pub(super) fn execute_foldl_template(&mut self, chunk: Arc<crate::backend::bytecode::chunk::BytecodeChunk>, acc: MettaValue, item: MettaValue) -> VmResult<MettaValue> {
+    pub(super) fn execute_foldl_template(
+        &mut self,
+        chunk: Arc<crate::backend::bytecode::chunk::BytecodeChunk>,
+        acc: MettaValue,
+        item: MettaValue,
+    ) -> VmResult<MettaValue> {
         // Save state
         let saved_ip = self.ip;
         let saved_chunk = Arc::clone(&self.chunk);
@@ -515,18 +610,20 @@ impl BytecodeVM {
         // Setup for template execution
         self.chunk = chunk;
         self.ip = 0;
-        self.push(acc);   // Local slot 0: accumulator
-        self.push(item);  // Local slot 1: item
+        self.push(acc); // Local slot 0: accumulator
+        self.push(item); // Local slot 1: item
 
         // Execute until Return or end of chunk
         loop {
             if self.ip >= self.chunk.len() {
                 break;
             }
-            let opcode_byte = self.chunk.read_byte(self.ip)
+            let opcode_byte = self
+                .chunk
+                .read_byte(self.ip)
                 .ok_or(VmError::IpOutOfBounds)?;
-            let opcode = Opcode::from_byte(opcode_byte)
-                .ok_or(VmError::InvalidOpcode(opcode_byte))?;
+            let opcode =
+                Opcode::from_byte(opcode_byte).ok_or(VmError::InvalidOpcode(opcode_byte))?;
 
             if opcode == Opcode::Return {
                 break;

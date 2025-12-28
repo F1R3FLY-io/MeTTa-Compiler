@@ -407,57 +407,184 @@ impl Opcode {
     pub fn immediate_size(self) -> usize {
         match self {
             // No immediate
-            Self::Nop | Self::Pop | Self::Dup | Self::Swap | Self::Rot3 | Self::Over
-            | Self::PushNil | Self::PushTrue | Self::PushFalse | Self::PushUnit | Self::PushEmpty
-            | Self::ClearBindings | Self::PushBindingFrame | Self::PopBindingFrame
-            | Self::Return | Self::Match | Self::MatchBind | Self::Unify | Self::UnifyBind
-            | Self::IsVariable | Self::IsSExpr | Self::IsSymbol | Self::GetHead | Self::GetTail
-            | Self::GetArity | Self::DeconAtom | Self::Repr | Self::GetMetaType
-            | Self::ApplySubst | Self::Add | Self::Sub | Self::Mul | Self::Div
-            | Self::Mod | Self::Neg | Self::Abs | Self::FloorDiv | Self::Pow
-            | Self::Sqrt | Self::Log | Self::Trunc | Self::Ceil | Self::FloorMath | Self::Round
-            | Self::Sin | Self::Cos | Self::Tan | Self::Asin | Self::Acos | Self::Atan
-            | Self::IsNan | Self::IsInf
-            | Self::IndexAtom | Self::MinAtom | Self::MaxAtom
-            | Self::Lt | Self::Le | Self::Gt | Self::Ge | Self::Eq | Self::Ne | Self::StructEq
-            | Self::And | Self::Or | Self::Not | Self::Xor
-            | Self::GetType | Self::CheckType | Self::IsType | Self::AssertType
-            | Self::Fail | Self::Cut | Self::Yield | Self::BeginNondet | Self::EndNondet
-            | Self::BloomCheck | Self::Breakpoint | Self::Trace | Self::Halt
-            | Self::DispatchRules | Self::NextRule | Self::CommitRule | Self::FailRule
-            | Self::SpaceAdd | Self::SpaceRemove | Self::SpaceMatch | Self::SpaceGetAtoms
-            | Self::NewState | Self::GetState | Self::ChangeState
-            | Self::ReturnMulti | Self::MakeQuote
-            | Self::EvalIf | Self::EvalLet | Self::EvalLetStar | Self::EvalMatch | Self::EvalCase
-            | Self::EvalChain | Self::EvalQuote | Self::EvalUnquote | Self::EvalEval
-            | Self::EvalBind | Self::EvalNew | Self::EvalCollapse | Self::EvalSuperpose
-            | Self::EvalMemo | Self::EvalMemoFirst | Self::EvalPragma | Self::EvalFunction
-            | Self::EvalLambda | Self::EvalApply
-            | Self::MorkLookup | Self::MorkMatch | Self::MorkInsert | Self::MorkDelete
+            Self::Nop
+            | Self::Pop
+            | Self::Dup
+            | Self::Swap
+            | Self::Rot3
+            | Self::Over
+            | Self::PushNil
+            | Self::PushTrue
+            | Self::PushFalse
+            | Self::PushUnit
+            | Self::PushEmpty
+            | Self::ClearBindings
+            | Self::PushBindingFrame
+            | Self::PopBindingFrame
+            | Self::Return
+            | Self::Match
+            | Self::MatchBind
+            | Self::Unify
+            | Self::UnifyBind
+            | Self::IsVariable
+            | Self::IsSExpr
+            | Self::IsSymbol
+            | Self::GetHead
+            | Self::GetTail
+            | Self::GetArity
+            | Self::DeconAtom
+            | Self::Repr
+            | Self::GetMetaType
+            | Self::ApplySubst
+            | Self::Add
+            | Self::Sub
+            | Self::Mul
+            | Self::Div
+            | Self::Mod
+            | Self::Neg
+            | Self::Abs
+            | Self::FloorDiv
+            | Self::Pow
+            | Self::Sqrt
+            | Self::Log
+            | Self::Trunc
+            | Self::Ceil
+            | Self::FloorMath
+            | Self::Round
+            | Self::Sin
+            | Self::Cos
+            | Self::Tan
+            | Self::Asin
+            | Self::Acos
+            | Self::Atan
+            | Self::IsNan
+            | Self::IsInf
+            | Self::IndexAtom
+            | Self::MinAtom
+            | Self::MaxAtom
+            | Self::Lt
+            | Self::Le
+            | Self::Gt
+            | Self::Ge
+            | Self::Eq
+            | Self::Ne
+            | Self::StructEq
+            | Self::And
+            | Self::Or
+            | Self::Not
+            | Self::Xor
+            | Self::GetType
+            | Self::CheckType
+            | Self::IsType
+            | Self::AssertType
+            | Self::Fail
+            | Self::Cut
+            | Self::Yield
+            | Self::BeginNondet
+            | Self::EndNondet
+            | Self::BloomCheck
+            | Self::Breakpoint
+            | Self::Trace
+            | Self::Halt
+            | Self::DispatchRules
+            | Self::NextRule
+            | Self::CommitRule
+            | Self::FailRule
+            | Self::SpaceAdd
+            | Self::SpaceRemove
+            | Self::SpaceMatch
+            | Self::SpaceGetAtoms
+            | Self::NewState
+            | Self::GetState
+            | Self::ChangeState
+            | Self::ReturnMulti
+            | Self::MakeQuote
+            | Self::EvalIf
+            | Self::EvalLet
+            | Self::EvalLetStar
+            | Self::EvalMatch
+            | Self::EvalCase
+            | Self::EvalChain
+            | Self::EvalQuote
+            | Self::EvalUnquote
+            | Self::EvalEval
+            | Self::EvalBind
+            | Self::EvalNew
+            | Self::EvalCollapse
+            | Self::EvalSuperpose
+            | Self::EvalMemo
+            | Self::EvalMemoFirst
+            | Self::EvalPragma
+            | Self::EvalFunction
+            | Self::EvalLambda
+            | Self::EvalApply
+            | Self::MorkLookup
+            | Self::MorkMatch
+            | Self::MorkInsert
+            | Self::MorkDelete
             | Self::ConsAtom
-            | Self::Guard | Self::Backtrack => 0,
+            | Self::Guard
+            | Self::Backtrack => 0,
 
             // 1-byte immediate
-            Self::PushLongSmall | Self::LoadLocal | Self::StoreLocal | Self::MakeSExpr
-            | Self::Amb | Self::Commit
-            | Self::MakeList | Self::DupN | Self::PopN | Self::CallN | Self::TailCallN
-            | Self::JumpShort | Self::JumpIfFalseShort | Self::JumpIfTrueShort
-            | Self::MatchHead | Self::MatchArity | Self::GetElement | Self::CollectN => 1,
+            Self::PushLongSmall
+            | Self::LoadLocal
+            | Self::StoreLocal
+            | Self::MakeSExpr
+            | Self::Amb
+            | Self::Commit
+            | Self::MakeList
+            | Self::DupN
+            | Self::PopN
+            | Self::CallN
+            | Self::TailCallN
+            | Self::JumpShort
+            | Self::JumpIfFalseShort
+            | Self::JumpIfTrueShort
+            | Self::MatchHead
+            | Self::MatchArity
+            | Self::GetElement
+            | Self::CollectN => 1,
 
             // 2-byte immediate
-            Self::PushLong | Self::PushAtom | Self::PushString | Self::PushUri | Self::PushConstant
-            | Self::PushVariable | Self::MakeSExprLarge
-            | Self::LoadLocalWide | Self::StoreLocalWide | Self::LoadBinding | Self::StoreBinding
-            | Self::LoadUpvalue | Self::HasBinding
-            | Self::LoadGlobal | Self::StoreGlobal | Self::DefineRule | Self::LoadSpace
-            | Self::Jump | Self::JumpIfFalse | Self::JumpIfTrue | Self::JumpIfNil | Self::JumpIfError
+            Self::PushLong
+            | Self::PushAtom
+            | Self::PushString
+            | Self::PushUri
+            | Self::PushConstant
+            | Self::PushVariable
+            | Self::MakeSExprLarge
+            | Self::LoadLocalWide
+            | Self::StoreLocalWide
+            | Self::LoadBinding
+            | Self::StoreBinding
+            | Self::LoadUpvalue
+            | Self::HasBinding
+            | Self::LoadGlobal
+            | Self::StoreGlobal
+            | Self::DefineRule
+            | Self::LoadSpace
+            | Self::Jump
+            | Self::JumpIfFalse
+            | Self::JumpIfTrue
+            | Self::JumpIfNil
+            | Self::JumpIfError
             | Self::JumpTable
-            | Self::MatchGuard | Self::TryRule | Self::LookupRules
-            | Self::MapAtom | Self::FilterAtom | Self::FoldlAtom
-            | Self::Fork | Self::Collect => 2,
+            | Self::MatchGuard
+            | Self::TryRule
+            | Self::LookupRules
+            | Self::MapAtom
+            | Self::FilterAtom
+            | Self::FoldlAtom
+            | Self::Fork
+            | Self::Collect => 2,
 
             // 3-byte immediate (2-byte head_index + 1-byte arity)
-            Self::Call | Self::TailCall | Self::CallNative | Self::CallExternal | Self::CallCached => 3,
+            Self::Call
+            | Self::TailCall
+            | Self::CallNative
+            | Self::CallExternal
+            | Self::CallCached => 3,
         }
     }
 
@@ -644,22 +771,34 @@ impl Opcode {
     pub fn is_jump(self) -> bool {
         matches!(
             self,
-            Self::Jump | Self::JumpIfFalse | Self::JumpIfTrue | Self::JumpIfNil
-            | Self::JumpIfError | Self::JumpTable | Self::JumpShort
-            | Self::JumpIfFalseShort | Self::JumpIfTrueShort
+            Self::Jump
+                | Self::JumpIfFalse
+                | Self::JumpIfTrue
+                | Self::JumpIfNil
+                | Self::JumpIfError
+                | Self::JumpTable
+                | Self::JumpShort
+                | Self::JumpIfFalseShort
+                | Self::JumpIfTrueShort
         )
     }
 
     /// Check if this opcode is a call instruction
     #[inline]
     pub fn is_call(self) -> bool {
-        matches!(self, Self::Call | Self::TailCall | Self::CallN | Self::TailCallN)
+        matches!(
+            self,
+            Self::Call | Self::TailCall | Self::CallN | Self::TailCallN
+        )
     }
 
     /// Check if this opcode can terminate execution
     #[inline]
     pub fn is_terminator(self) -> bool {
-        matches!(self, Self::Return | Self::ReturnMulti | Self::Halt | Self::Fail)
+        matches!(
+            self,
+            Self::Return | Self::ReturnMulti | Self::Halt | Self::Fail
+        )
     }
 
     /// Check if this opcode affects control flow
@@ -893,16 +1032,41 @@ mod tests {
     fn test_opcode_roundtrip() {
         // Test that all defined opcodes can be converted to bytes and back
         let opcodes = [
-            Opcode::Nop, Opcode::Pop, Opcode::Dup, Opcode::Swap,
-            Opcode::PushNil, Opcode::PushTrue, Opcode::PushFalse,
-            Opcode::PushLong, Opcode::PushAtom, Opcode::MakeSExpr,
-            Opcode::LoadLocal, Opcode::StoreLocal, Opcode::LoadBinding,
-            Opcode::Jump, Opcode::JumpIfFalse, Opcode::Call, Opcode::Return,
-            Opcode::Match, Opcode::MatchBind, Opcode::Unify,
-            Opcode::Add, Opcode::Sub, Opcode::Mul, Opcode::Div,
-            Opcode::Lt, Opcode::Le, Opcode::Gt, Opcode::Ge, Opcode::Eq,
-            Opcode::And, Opcode::Or, Opcode::Not,
-            Opcode::Fork, Opcode::Fail, Opcode::Yield,
+            Opcode::Nop,
+            Opcode::Pop,
+            Opcode::Dup,
+            Opcode::Swap,
+            Opcode::PushNil,
+            Opcode::PushTrue,
+            Opcode::PushFalse,
+            Opcode::PushLong,
+            Opcode::PushAtom,
+            Opcode::MakeSExpr,
+            Opcode::LoadLocal,
+            Opcode::StoreLocal,
+            Opcode::LoadBinding,
+            Opcode::Jump,
+            Opcode::JumpIfFalse,
+            Opcode::Call,
+            Opcode::Return,
+            Opcode::Match,
+            Opcode::MatchBind,
+            Opcode::Unify,
+            Opcode::Add,
+            Opcode::Sub,
+            Opcode::Mul,
+            Opcode::Div,
+            Opcode::Lt,
+            Opcode::Le,
+            Opcode::Gt,
+            Opcode::Ge,
+            Opcode::Eq,
+            Opcode::And,
+            Opcode::Or,
+            Opcode::Not,
+            Opcode::Fork,
+            Opcode::Fail,
+            Opcode::Yield,
             Opcode::Halt,
         ];
 

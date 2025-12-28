@@ -2,7 +2,6 @@
 //!
 //! Handles: MorkLookup, MorkMatch, MorkInsert, MorkDelete
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;

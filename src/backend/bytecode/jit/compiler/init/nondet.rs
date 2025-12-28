@@ -46,20 +46,41 @@ pub trait NondetInit {
 impl<T> NondetInit for T {
     fn register_nondet_symbols(builder: &mut JITBuilder) {
         // Native nondeterminism functions
-        builder.symbol("jit_runtime_fork_native", runtime::jit_runtime_fork_native as *const u8);
-        builder.symbol("jit_runtime_yield_native", runtime::jit_runtime_yield_native as *const u8);
-        builder.symbol("jit_runtime_collect_native", runtime::jit_runtime_collect_native as *const u8);
+        builder.symbol(
+            "jit_runtime_fork_native",
+            runtime::jit_runtime_fork_native as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_yield_native",
+            runtime::jit_runtime_yield_native as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_collect_native",
+            runtime::jit_runtime_collect_native as *const u8,
+        );
 
         // Advanced nondeterminism
         builder.symbol("jit_runtime_cut", runtime::jit_runtime_cut as *const u8);
         builder.symbol("jit_runtime_guard", runtime::jit_runtime_guard as *const u8);
         builder.symbol("jit_runtime_amb", runtime::jit_runtime_amb as *const u8);
-        builder.symbol("jit_runtime_commit", runtime::jit_runtime_commit as *const u8);
-        builder.symbol("jit_runtime_backtrack", runtime::jit_runtime_backtrack as *const u8);
+        builder.symbol(
+            "jit_runtime_commit",
+            runtime::jit_runtime_commit as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_backtrack",
+            runtime::jit_runtime_backtrack as *const u8,
+        );
 
         // Nondet block markers
-        builder.symbol("jit_runtime_begin_nondet", runtime::jit_runtime_begin_nondet as *const u8);
-        builder.symbol("jit_runtime_end_nondet", runtime::jit_runtime_end_nondet as *const u8);
+        builder.symbol(
+            "jit_runtime_begin_nondet",
+            runtime::jit_runtime_begin_nondet as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_end_nondet",
+            runtime::jit_runtime_end_nondet as *const u8,
+        );
     }
 
     fn declare_nondet_funcs<M: Module>(module: &mut M) -> JitResult<NondetFuncIds> {
@@ -75,7 +96,12 @@ impl<T> NondetInit for T {
 
         let fork_native_func_id = module
             .declare_function("jit_runtime_fork_native", Linkage::Import, &fork_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_fork_native: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_fork_native: {}",
+                    e
+                ))
+            })?;
 
         // yield_native: fn(ctx, value, ip) -> signal
         let mut yield_sig = module.make_signature();
@@ -86,7 +112,12 @@ impl<T> NondetInit for T {
 
         let yield_native_func_id = module
             .declare_function("jit_runtime_yield_native", Linkage::Import, &yield_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_yield_native: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_yield_native: {}",
+                    e
+                ))
+            })?;
 
         // collect_native: fn(ctx, ip) -> results
         let mut collect_sig = module.make_signature();
@@ -96,7 +127,12 @@ impl<T> NondetInit for T {
 
         let collect_native_func_id = module
             .declare_function("jit_runtime_collect_native", Linkage::Import, &collect_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_collect_native: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_collect_native: {}",
+                    e
+                ))
+            })?;
 
         // cut: fn(ctx, ip) -> ()
         let mut cut_sig = module.make_signature();
@@ -105,7 +141,9 @@ impl<T> NondetInit for T {
 
         let cut_func_id = module
             .declare_function("jit_runtime_cut", Linkage::Import, &cut_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_cut: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_cut: {}", e))
+            })?;
 
         // guard: fn(ctx, condition, ip) -> bool
         let mut guard_sig = module.make_signature();
@@ -116,7 +154,9 @@ impl<T> NondetInit for T {
 
         let guard_func_id = module
             .declare_function("jit_runtime_guard", Linkage::Import, &guard_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_guard: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_guard: {}", e))
+            })?;
 
         // amb: fn(ctx, choices, ip) -> result
         let mut amb_sig = module.make_signature();
@@ -127,7 +167,9 @@ impl<T> NondetInit for T {
 
         let amb_func_id = module
             .declare_function("jit_runtime_amb", Linkage::Import, &amb_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_amb: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_amb: {}", e))
+            })?;
 
         // commit: fn(ctx, ip) -> ()
         let mut commit_sig = module.make_signature();
@@ -136,7 +178,9 @@ impl<T> NondetInit for T {
 
         let commit_func_id = module
             .declare_function("jit_runtime_commit", Linkage::Import, &commit_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_commit: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_commit: {}", e))
+            })?;
 
         // backtrack: fn(ctx, ip) -> signal
         let mut backtrack_sig = module.make_signature();
@@ -146,7 +190,12 @@ impl<T> NondetInit for T {
 
         let backtrack_func_id = module
             .declare_function("jit_runtime_backtrack", Linkage::Import, &backtrack_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_backtrack: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_backtrack: {}",
+                    e
+                ))
+            })?;
 
         // begin_nondet: fn(ctx, ip) -> ()
         let mut begin_sig = module.make_signature();
@@ -155,7 +204,12 @@ impl<T> NondetInit for T {
 
         let begin_nondet_func_id = module
             .declare_function("jit_runtime_begin_nondet", Linkage::Import, &begin_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_begin_nondet: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_begin_nondet: {}",
+                    e
+                ))
+            })?;
 
         // end_nondet: fn(ctx, ip) -> ()
         let mut end_sig = module.make_signature();
@@ -164,7 +218,12 @@ impl<T> NondetInit for T {
 
         let end_nondet_func_id = module
             .declare_function("jit_runtime_end_nondet", Linkage::Import, &end_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_end_nondet: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_end_nondet: {}",
+                    e
+                ))
+            })?;
 
         Ok(NondetFuncIds {
             fork_native_func_id,

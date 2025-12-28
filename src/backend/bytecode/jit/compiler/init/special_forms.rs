@@ -63,25 +63,82 @@ pub trait SpecialFormsInit {
 
 impl<T> SpecialFormsInit for T {
     fn register_special_forms_symbols(builder: &mut JITBuilder) {
-        builder.symbol("jit_runtime_eval_if", runtime::jit_runtime_eval_if as *const u8);
-        builder.symbol("jit_runtime_eval_let", runtime::jit_runtime_eval_let as *const u8);
-        builder.symbol("jit_runtime_eval_let_star", runtime::jit_runtime_eval_let_star as *const u8);
-        builder.symbol("jit_runtime_eval_match", runtime::jit_runtime_eval_match as *const u8);
-        builder.symbol("jit_runtime_eval_case", runtime::jit_runtime_eval_case as *const u8);
-        builder.symbol("jit_runtime_eval_chain", runtime::jit_runtime_eval_chain as *const u8);
-        builder.symbol("jit_runtime_eval_quote", runtime::jit_runtime_eval_quote as *const u8);
-        builder.symbol("jit_runtime_eval_unquote", runtime::jit_runtime_eval_unquote as *const u8);
-        builder.symbol("jit_runtime_eval_eval", runtime::jit_runtime_eval_eval as *const u8);
-        builder.symbol("jit_runtime_eval_bind", runtime::jit_runtime_eval_bind as *const u8);
-        builder.symbol("jit_runtime_eval_new", runtime::jit_runtime_eval_new as *const u8);
-        builder.symbol("jit_runtime_eval_collapse", runtime::jit_runtime_eval_collapse as *const u8);
-        builder.symbol("jit_runtime_eval_superpose", runtime::jit_runtime_eval_superpose as *const u8);
-        builder.symbol("jit_runtime_eval_memo", runtime::jit_runtime_eval_memo as *const u8);
-        builder.symbol("jit_runtime_eval_memo_first", runtime::jit_runtime_eval_memo_first as *const u8);
-        builder.symbol("jit_runtime_eval_pragma", runtime::jit_runtime_eval_pragma as *const u8);
-        builder.symbol("jit_runtime_eval_function", runtime::jit_runtime_eval_function as *const u8);
-        builder.symbol("jit_runtime_eval_lambda", runtime::jit_runtime_eval_lambda as *const u8);
-        builder.symbol("jit_runtime_eval_apply", runtime::jit_runtime_eval_apply as *const u8);
+        builder.symbol(
+            "jit_runtime_eval_if",
+            runtime::jit_runtime_eval_if as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_let",
+            runtime::jit_runtime_eval_let as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_let_star",
+            runtime::jit_runtime_eval_let_star as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_match",
+            runtime::jit_runtime_eval_match as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_case",
+            runtime::jit_runtime_eval_case as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_chain",
+            runtime::jit_runtime_eval_chain as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_quote",
+            runtime::jit_runtime_eval_quote as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_unquote",
+            runtime::jit_runtime_eval_unquote as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_eval",
+            runtime::jit_runtime_eval_eval as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_bind",
+            runtime::jit_runtime_eval_bind as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_new",
+            runtime::jit_runtime_eval_new as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_collapse",
+            runtime::jit_runtime_eval_collapse as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_superpose",
+            runtime::jit_runtime_eval_superpose as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_memo",
+            runtime::jit_runtime_eval_memo as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_memo_first",
+            runtime::jit_runtime_eval_memo_first as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_pragma",
+            runtime::jit_runtime_eval_pragma as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_function",
+            runtime::jit_runtime_eval_function as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_lambda",
+            runtime::jit_runtime_eval_lambda as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_eval_apply",
+            runtime::jit_runtime_eval_apply as *const u8,
+        );
     }
 
     fn declare_special_forms_funcs<M: Module>(module: &mut M) -> JitResult<SpecialFormsFuncIds> {
@@ -98,7 +155,9 @@ impl<T> SpecialFormsInit for T {
 
         let eval_if_func_id = module
             .declare_function("jit_runtime_eval_if", Linkage::Import, &eval_if_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_if: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_eval_if: {}", e))
+            })?;
 
         // eval_let: fn(ctx, name_idx, value, ip) -> Unit
         let mut eval_let_sig = module.make_signature();
@@ -110,7 +169,9 @@ impl<T> SpecialFormsInit for T {
 
         let eval_let_func_id = module
             .declare_function("jit_runtime_eval_let", Linkage::Import, &eval_let_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_let: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_eval_let: {}", e))
+            })?;
 
         // eval_let_star: fn(ctx, ip) -> Unit
         let mut eval_let_star_sig = module.make_signature();
@@ -119,8 +180,17 @@ impl<T> SpecialFormsInit for T {
         eval_let_star_sig.returns.push(AbiParam::new(types::I64)); // result
 
         let eval_let_star_func_id = module
-            .declare_function("jit_runtime_eval_let_star", Linkage::Import, &eval_let_star_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_let_star: {}", e)))?;
+            .declare_function(
+                "jit_runtime_eval_let_star",
+                Linkage::Import,
+                &eval_let_star_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_let_star: {}",
+                    e
+                ))
+            })?;
 
         // eval_match: fn(ctx, value, pattern, ip) -> bool
         let mut eval_match_sig = module.make_signature();
@@ -132,7 +202,12 @@ impl<T> SpecialFormsInit for T {
 
         let eval_match_func_id = module
             .declare_function("jit_runtime_eval_match", Linkage::Import, &eval_match_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_match: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_match: {}",
+                    e
+                ))
+            })?;
 
         // eval_case: fn(ctx, value, case_count, ip) -> case_index
         let mut eval_case_sig = module.make_signature();
@@ -144,7 +219,12 @@ impl<T> SpecialFormsInit for T {
 
         let eval_case_func_id = module
             .declare_function("jit_runtime_eval_case", Linkage::Import, &eval_case_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_case: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_case: {}",
+                    e
+                ))
+            })?;
 
         // eval_chain: fn(ctx, first, second, ip) -> second
         let mut eval_chain_sig = module.make_signature();
@@ -156,7 +236,12 @@ impl<T> SpecialFormsInit for T {
 
         let eval_chain_func_id = module
             .declare_function("jit_runtime_eval_chain", Linkage::Import, &eval_chain_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_chain: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_chain: {}",
+                    e
+                ))
+            })?;
 
         // Common signature for expr, ip -> result
         let mut expr_ip_sig = module.make_signature();
@@ -167,20 +252,40 @@ impl<T> SpecialFormsInit for T {
 
         let eval_quote_func_id = module
             .declare_function("jit_runtime_eval_quote", Linkage::Import, &expr_ip_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_quote: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_quote: {}",
+                    e
+                ))
+            })?;
 
         let eval_unquote_func_id = module
             .declare_function("jit_runtime_eval_unquote", Linkage::Import, &expr_ip_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_unquote: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_unquote: {}",
+                    e
+                ))
+            })?;
 
         let eval_eval_func_id = module
             .declare_function("jit_runtime_eval_eval", Linkage::Import, &expr_ip_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_eval: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_eval: {}",
+                    e
+                ))
+            })?;
 
         // eval_bind: fn(ctx, name_idx, value, ip) -> Unit
         let eval_bind_func_id = module
             .declare_function("jit_runtime_eval_bind", Linkage::Import, &eval_let_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_bind: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_bind: {}",
+                    e
+                ))
+            })?;
 
         // eval_new: fn(ctx, ip) -> space
         let mut eval_new_sig = module.make_signature();
@@ -190,27 +295,54 @@ impl<T> SpecialFormsInit for T {
 
         let eval_new_func_id = module
             .declare_function("jit_runtime_eval_new", Linkage::Import, &eval_new_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_new: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_eval_new: {}", e))
+            })?;
 
         let eval_collapse_func_id = module
             .declare_function("jit_runtime_eval_collapse", Linkage::Import, &expr_ip_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_collapse: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_collapse: {}",
+                    e
+                ))
+            })?;
 
         let eval_superpose_func_id = module
             .declare_function("jit_runtime_eval_superpose", Linkage::Import, &expr_ip_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_superpose: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_superpose: {}",
+                    e
+                ))
+            })?;
 
         let eval_memo_func_id = module
             .declare_function("jit_runtime_eval_memo", Linkage::Import, &expr_ip_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_memo: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_memo: {}",
+                    e
+                ))
+            })?;
 
         let eval_memo_first_func_id = module
             .declare_function("jit_runtime_eval_memo_first", Linkage::Import, &expr_ip_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_memo_first: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_memo_first: {}",
+                    e
+                ))
+            })?;
 
         let eval_pragma_func_id = module
             .declare_function("jit_runtime_eval_pragma", Linkage::Import, &expr_ip_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_pragma: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_pragma: {}",
+                    e
+                ))
+            })?;
 
         // eval_function: fn(ctx, name_idx, param_count, ip) -> Unit
         let mut eval_function_sig = module.make_signature();
@@ -221,8 +353,17 @@ impl<T> SpecialFormsInit for T {
         eval_function_sig.returns.push(AbiParam::new(types::I64)); // result
 
         let eval_function_func_id = module
-            .declare_function("jit_runtime_eval_function", Linkage::Import, &eval_function_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_function: {}", e)))?;
+            .declare_function(
+                "jit_runtime_eval_function",
+                Linkage::Import,
+                &eval_function_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_function: {}",
+                    e
+                ))
+            })?;
 
         // eval_lambda: fn(ctx, param_count, ip) -> closure
         let mut eval_lambda_sig = module.make_signature();
@@ -233,7 +374,12 @@ impl<T> SpecialFormsInit for T {
 
         let eval_lambda_func_id = module
             .declare_function("jit_runtime_eval_lambda", Linkage::Import, &eval_lambda_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_lambda: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_lambda: {}",
+                    e
+                ))
+            })?;
 
         // eval_apply: fn(ctx, closure, arg_count, ip) -> result
         let mut eval_apply_sig = module.make_signature();
@@ -245,7 +391,12 @@ impl<T> SpecialFormsInit for T {
 
         let eval_apply_func_id = module
             .declare_function("jit_runtime_eval_apply", Linkage::Import, &eval_apply_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_eval_apply: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_eval_apply: {}",
+                    e
+                ))
+            })?;
 
         Ok(SpecialFormsFuncIds {
             eval_if_func_id,

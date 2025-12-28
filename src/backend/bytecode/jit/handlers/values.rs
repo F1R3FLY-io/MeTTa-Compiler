@@ -3,7 +3,6 @@
 //! Handles: PushNil, PushTrue, PushFalse, PushUnit, PushLongSmall, PushLong,
 //!          PushConstant, PushEmpty, PushAtom, PushString, PushVariable
 
-
 use cranelift::prelude::*;
 
 use cranelift_jit::JITModule;
@@ -146,7 +145,10 @@ pub fn compile_runtime_value_op<'a, 'b>(
             codegen.push(result)?;
         }
 
-        _ => unreachable!("compile_runtime_value_op called with wrong opcode: {:?}", op),
+        _ => unreachable!(
+            "compile_runtime_value_op called with wrong opcode: {:?}",
+            op
+        ),
     }
     Ok(())
 }

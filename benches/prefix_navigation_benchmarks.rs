@@ -23,7 +23,7 @@ fn generate_test_env(num_types: usize, num_rules: usize) -> Environment {
             MettaValue::Atom("$x".to_string()),
         ]);
         let rhs = MettaValue::Atom(format!("result{}", i));
-        env.add_rule(mettatron::backend::Rule { lhs, rhs });
+        env.add_rule(mettatron::backend::Rule::new(lhs, rhs));
     }
 
     env

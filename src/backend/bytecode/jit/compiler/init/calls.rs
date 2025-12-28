@@ -40,12 +40,30 @@ pub trait CallsInit {
 impl<T> CallsInit for T {
     fn register_calls_symbols(builder: &mut JITBuilder) {
         builder.symbol("jit_runtime_call", runtime::jit_runtime_call as *const u8);
-        builder.symbol("jit_runtime_tail_call", runtime::jit_runtime_tail_call as *const u8);
-        builder.symbol("jit_runtime_call_n", runtime::jit_runtime_call_n as *const u8);
-        builder.symbol("jit_runtime_tail_call_n", runtime::jit_runtime_tail_call_n as *const u8);
-        builder.symbol("jit_runtime_call_native", runtime::jit_runtime_call_native as *const u8);
-        builder.symbol("jit_runtime_call_external", runtime::jit_runtime_call_external as *const u8);
-        builder.symbol("jit_runtime_call_cached", runtime::jit_runtime_call_cached as *const u8);
+        builder.symbol(
+            "jit_runtime_tail_call",
+            runtime::jit_runtime_tail_call as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_call_n",
+            runtime::jit_runtime_call_n as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_tail_call_n",
+            runtime::jit_runtime_tail_call_n as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_call_native",
+            runtime::jit_runtime_call_native as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_call_external",
+            runtime::jit_runtime_call_external as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_call_cached",
+            runtime::jit_runtime_call_cached as *const u8,
+        );
     }
 
     fn declare_calls_funcs<M: Module>(module: &mut M) -> JitResult<CallFuncIds> {
@@ -62,11 +80,18 @@ impl<T> CallsInit for T {
 
         let call_func_id = module
             .declare_function("jit_runtime_call", Linkage::Import, &call_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_call: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_call: {}", e))
+            })?;
 
         let tail_call_func_id = module
             .declare_function("jit_runtime_tail_call", Linkage::Import, &call_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_tail_call: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_tail_call: {}",
+                    e
+                ))
+            })?;
 
         // call_n: fn(ctx, head_val, args_ptr, arity, ip) -> result (head passed as value)
         let mut call_n_sig = module.make_signature();
@@ -79,11 +104,18 @@ impl<T> CallsInit for T {
 
         let call_n_func_id = module
             .declare_function("jit_runtime_call_n", Linkage::Import, &call_n_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_call_n: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!("Failed to declare jit_runtime_call_n: {}", e))
+            })?;
 
         let tail_call_n_func_id = module
             .declare_function("jit_runtime_tail_call_n", Linkage::Import, &call_n_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_tail_call_n: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_tail_call_n: {}",
+                    e
+                ))
+            })?;
 
         // call_native: fn(ctx, func_ptr, arity, ip) -> result
         let mut call_native_sig = module.make_signature();
@@ -95,7 +127,12 @@ impl<T> CallsInit for T {
 
         let call_native_func_id = module
             .declare_function("jit_runtime_call_native", Linkage::Import, &call_native_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_call_native: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_call_native: {}",
+                    e
+                ))
+            })?;
 
         // call_external: fn(ctx, ext_idx, arity, ip) -> result
         let mut call_external_sig = module.make_signature();
@@ -106,8 +143,17 @@ impl<T> CallsInit for T {
         call_external_sig.returns.push(AbiParam::new(types::I64)); // result
 
         let call_external_func_id = module
-            .declare_function("jit_runtime_call_external", Linkage::Import, &call_external_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_call_external: {}", e)))?;
+            .declare_function(
+                "jit_runtime_call_external",
+                Linkage::Import,
+                &call_external_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_call_external: {}",
+                    e
+                ))
+            })?;
 
         // call_cached: fn(ctx, head_idx, arg_count, ip) -> result
         let mut call_cached_sig = module.make_signature();
@@ -119,7 +165,12 @@ impl<T> CallsInit for T {
 
         let call_cached_func_id = module
             .declare_function("jit_runtime_call_cached", Linkage::Import, &call_cached_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_call_cached: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_call_cached: {}",
+                    e
+                ))
+            })?;
 
         Ok(CallFuncIds {
             call_func_id,

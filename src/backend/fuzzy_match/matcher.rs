@@ -115,7 +115,11 @@ impl FuzzyMatcher {
         // Create DAWG with bloom filter enabled for fast negative lookup rejection
         // Use f32::INFINITY for auto_minimize_threshold to disable auto-minimization
         // (we only build once and don't modify after)
-        let bloom_capacity = if term_count > 0 { Some(term_count) } else { None };
+        let bloom_capacity = if term_count > 0 {
+            Some(term_count)
+        } else {
+            None
+        };
         let dawg = DynamicDawgChar::with_config(f32::INFINITY, bloom_capacity);
 
         // Insert all terms (bloom filter is automatically populated)

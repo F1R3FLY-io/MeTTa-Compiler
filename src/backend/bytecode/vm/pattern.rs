@@ -44,7 +44,10 @@ pub fn pattern_matches(pattern: &MettaValue, value: &MettaValue) -> bool {
 }
 
 /// Pattern match with variable binding
-pub fn pattern_match_bind(pattern: &MettaValue, value: &MettaValue) -> Option<Vec<(String, MettaValue)>> {
+pub fn pattern_match_bind(
+    pattern: &MettaValue,
+    value: &MettaValue,
+) -> Option<Vec<(String, MettaValue)>> {
     let mut bindings = Vec::new();
     if pattern_match_bind_impl(pattern, value, &mut bindings) {
         Some(bindings)
@@ -76,8 +79,11 @@ fn pattern_match_bind_impl(
         (MettaValue::Unit, MettaValue::Unit) => true,
         // S-expression matching
         (MettaValue::SExpr(ps), MettaValue::SExpr(vs)) => {
-            ps.len() == vs.len() && ps.iter().zip(vs.iter())
-                .all(|(p, v)| pattern_match_bind_impl(p, v, bindings))
+            ps.len() == vs.len()
+                && ps
+                    .iter()
+                    .zip(vs.iter())
+                    .all(|(p, v)| pattern_match_bind_impl(p, v, bindings))
         }
         _ => false,
     }
@@ -93,11 +99,7 @@ pub fn unify(a: &MettaValue, b: &MettaValue) -> Option<Vec<(String, MettaValue)>
     }
 }
 
-fn unify_impl(
-    a: &MettaValue,
-    b: &MettaValue,
-    bindings: &mut Vec<(String, MettaValue)>,
-) -> bool {
+fn unify_impl(a: &MettaValue, b: &MettaValue, bindings: &mut Vec<(String, MettaValue)>) -> bool {
     match (a, b) {
         // Variables unify with anything (Atom starting with $)
         (MettaValue::Atom(name), val) if name.starts_with('$') => {
@@ -116,8 +118,11 @@ fn unify_impl(
         (MettaValue::Nil, MettaValue::Nil) => true,
         (MettaValue::Unit, MettaValue::Unit) => true,
         (MettaValue::SExpr(xs), MettaValue::SExpr(ys)) => {
-            xs.len() == ys.len() && xs.iter().zip(ys.iter())
-                .all(|(x, y)| unify_impl(x, y, bindings))
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .zip(ys.iter())
+                    .all(|(x, y)| unify_impl(x, y, bindings))
         }
         _ => false,
     }

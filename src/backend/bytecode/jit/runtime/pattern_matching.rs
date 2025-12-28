@@ -8,13 +8,13 @@
 //! - unify - Bidirectional unification
 //! - unify_bind - Bidirectional unification with binding
 
+use super::bindings::jit_runtime_store_binding;
+use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue,
-    TAG_LONG, TAG_BOOL, TAG_NIL, TAG_UNIT, TAG_ATOM, PAYLOAD_MASK, VAR_INDEX_CACHE_SIZE,
+    JitContext, JitValue, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_LONG, TAG_NIL, TAG_UNIT,
+    VAR_INDEX_CACHE_SIZE,
 };
 use crate::backend::models::MettaValue;
-use super::helpers::metta_to_jit;
-use super::bindings::jit_runtime_store_binding;
 
 // =============================================================================
 // Phase B: Pattern Matching Runtime Functions
@@ -103,14 +103,8 @@ fn try_pattern_match_fast_path(pattern: u64, value: u64) -> Option<bool> {
 
     // Fast path 4: Type mismatch for ground values = no match
     // If pattern is a ground type and value is a different ground type, no match
-    let pattern_is_ground = matches!(
-        pattern_tag,
-        TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT
-    );
-    let value_is_ground = matches!(
-        value_tag,
-        TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT
-    );
+    let pattern_is_ground = matches!(pattern_tag, TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT);
+    let value_is_ground = matches!(value_tag, TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT);
 
     if pattern_is_ground && value_is_ground && pattern_tag != value_tag {
         return Some(false);
@@ -228,9 +222,9 @@ pub(crate) unsafe fn lookup_var_index_cached(
     }
 
     // Cache miss - linear search
-    let name_idx = constants.iter().position(|c| {
-        matches!(c, MettaValue::Atom(s) if s == name)
-    });
+    let name_idx = constants
+        .iter()
+        .position(|c| matches!(c, MettaValue::Atom(s) if s == name));
 
     // Update cache on successful lookup
     if let Some(idx) = name_idx {
@@ -268,7 +262,8 @@ unsafe fn try_pattern_match_bind_fast_path(
             // Find the variable name in constants to get its index (Optimization 5.3: cached lookup)
             let ctx_ref = ctx.as_ref()?;
             if ctx_ref.constants_len > 0 && !ctx_ref.constants.is_null() {
-                let constants = std::slice::from_raw_parts(ctx_ref.constants, ctx_ref.constants_len);
+                let constants =
+                    std::slice::from_raw_parts(ctx_ref.constants, ctx_ref.constants_len);
                 let name_idx = lookup_var_index_cached(ctx, var_name, constants);
 
                 if let Some(idx) = name_idx {
@@ -296,7 +291,8 @@ unsafe fn try_pattern_match_bind_fast_path(
             if pattern_str.starts_with('$') {
                 let ctx_ref = ctx.as_ref()?;
                 if ctx_ref.constants_len > 0 && !ctx_ref.constants.is_null() {
-                    let constants = std::slice::from_raw_parts(ctx_ref.constants, ctx_ref.constants_len);
+                    let constants =
+                        std::slice::from_raw_parts(ctx_ref.constants, ctx_ref.constants_len);
                     let name_idx = lookup_var_index_cached(ctx, pattern_str, constants);
 
                     if let Some(idx) = name_idx {
@@ -340,14 +336,8 @@ unsafe fn try_pattern_match_bind_fast_path(
     }
 
     // Fast path 4: Type mismatch for ground values = no match
-    let pattern_is_ground = matches!(
-        pattern_tag,
-        TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT
-    );
-    let value_is_ground = matches!(
-        value_tag,
-        TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT
-    );
+    let pattern_is_ground = matches!(pattern_tag, TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT);
+    let value_is_ground = matches!(value_tag, TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT);
 
     if pattern_is_ground && value_is_ground && pattern_tag != value_tag {
         return Some(false);
@@ -489,18 +479,15 @@ pub unsafe extern "C" fn jit_runtime_match_head(
     let val = JitValue::from_raw(value).to_metta();
 
     // Get the expected head from the constant pool
-    let expected_head = if !ctx_ref.constants.is_null()
-        && expected_head_idx < ctx_ref.constants_len as u64
-    {
-        &*ctx_ref.constants.add(expected_head_idx as usize)
-    } else {
-        return TAG_BOOL; // false - invalid index
-    };
+    let expected_head =
+        if !ctx_ref.constants.is_null() && expected_head_idx < ctx_ref.constants_len as u64 {
+            &*ctx_ref.constants.add(expected_head_idx as usize)
+        } else {
+            return TAG_BOOL; // false - invalid index
+        };
 
     let matches = match val {
-        MettaValue::SExpr(items) if !items.is_empty() => {
-            &items[0] == expected_head
-        }
+        MettaValue::SExpr(items) if !items.is_empty() => &items[0] == expected_head,
         _ => false,
     };
 
@@ -606,12 +593,8 @@ pub unsafe extern "C" fn jit_runtime_unify_bind(
 // Pattern Matching Helper Functions
 // =============================================================================
 
-
 /// Pattern match implementation (without binding)
-pub(crate) fn pattern_matches_impl(
-    pattern: &MettaValue,
-    value: &MettaValue,
-) -> bool {
+pub(crate) fn pattern_matches_impl(pattern: &MettaValue, value: &MettaValue) -> bool {
     match (pattern, value) {
         // Variable matches anything (Atom starting with $)
         (MettaValue::Atom(s), _) if s.starts_with('$') => true,
@@ -672,11 +655,7 @@ fn pattern_match_bind_impl(
 }
 
 /// Unification implementation (bidirectional)
-fn unify_impl(
-    a: &MettaValue,
-    b: &MettaValue,
-    bindings: &mut Vec<(String, MettaValue)>,
-) -> bool {
+fn unify_impl(a: &MettaValue, b: &MettaValue, bindings: &mut Vec<(String, MettaValue)>) -> bool {
     match (a, b) {
         // Variables unify with anything (Atom starting with $)
         (MettaValue::Atom(name), val) if name.starts_with('$') => {

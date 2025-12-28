@@ -33,10 +33,22 @@ pub trait GlobalsInit {
 
 impl<T> GlobalsInit for T {
     fn register_globals_symbols(builder: &mut JITBuilder) {
-        builder.symbol("jit_runtime_load_global", runtime::jit_runtime_load_global as *const u8);
-        builder.symbol("jit_runtime_store_global", runtime::jit_runtime_store_global as *const u8);
-        builder.symbol("jit_runtime_load_space", runtime::jit_runtime_load_space as *const u8);
-        builder.symbol("jit_runtime_load_upvalue", runtime::jit_runtime_load_upvalue as *const u8);
+        builder.symbol(
+            "jit_runtime_load_global",
+            runtime::jit_runtime_load_global as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_store_global",
+            runtime::jit_runtime_store_global as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_load_space",
+            runtime::jit_runtime_load_space as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_load_upvalue",
+            runtime::jit_runtime_load_upvalue as *const u8,
+        );
     }
 
     fn declare_globals_funcs<M: Module>(module: &mut M) -> JitResult<GlobalsFuncIds> {
@@ -51,7 +63,12 @@ impl<T> GlobalsInit for T {
 
         let load_global_func_id = module
             .declare_function("jit_runtime_load_global", Linkage::Import, &load_global_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_load_global: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_load_global: {}",
+                    e
+                ))
+            })?;
 
         // store_global: fn(ctx, symbol_idx, value, ip) -> unit
         let mut store_global_sig = module.make_signature();
@@ -62,8 +79,17 @@ impl<T> GlobalsInit for T {
         store_global_sig.returns.push(AbiParam::new(types::I64)); // unit
 
         let store_global_func_id = module
-            .declare_function("jit_runtime_store_global", Linkage::Import, &store_global_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_store_global: {}", e)))?;
+            .declare_function(
+                "jit_runtime_store_global",
+                Linkage::Import,
+                &store_global_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_store_global: {}",
+                    e
+                ))
+            })?;
 
         // load_space: fn(ctx, name_idx, ip) -> space_handle
         let mut load_space_sig = module.make_signature();
@@ -74,7 +100,12 @@ impl<T> GlobalsInit for T {
 
         let load_space_func_id = module
             .declare_function("jit_runtime_load_space", Linkage::Import, &load_space_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_load_space: {}", e)))?;
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_load_space: {}",
+                    e
+                ))
+            })?;
 
         // load_upvalue: fn(ctx, depth, index, ip) -> value
         let mut load_upvalue_sig = module.make_signature();
@@ -85,8 +116,17 @@ impl<T> GlobalsInit for T {
         load_upvalue_sig.returns.push(AbiParam::new(types::I64)); // value
 
         let load_upvalue_func_id = module
-            .declare_function("jit_runtime_load_upvalue", Linkage::Import, &load_upvalue_sig)
-            .map_err(|e| JitError::CompilationError(format!("Failed to declare jit_runtime_load_upvalue: {}", e)))?;
+            .declare_function(
+                "jit_runtime_load_upvalue",
+                Linkage::Import,
+                &load_upvalue_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_load_upvalue: {}",
+                    e
+                ))
+            })?;
 
         Ok(GlobalsFuncIds {
             load_global_func_id,

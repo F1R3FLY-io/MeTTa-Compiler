@@ -4,22 +4,22 @@
 
 #[cfg(test)]
 mod tests {
+    use super::super::advanced_nondet::jit_runtime_cut;
+    use super::super::arithmetic::{jit_runtime_abs, jit_runtime_pow, jit_runtime_signum};
+    use super::super::helpers::{box_long, extract_long_signed};
+    use super::super::nondeterminism::{
+        collect_results, execute_once, jit_runtime_collect_native, jit_runtime_fail,
+        jit_runtime_fail_native, jit_runtime_get_current_alternative, jit_runtime_has_alternatives,
+        jit_runtime_push_choice_point, jit_runtime_restore_stack, jit_runtime_save_stack,
+        jit_runtime_yield, jit_runtime_yield_native,
+    };
+    use super::super::type_predicates::jit_runtime_is_long;
     use crate::backend::bytecode::jit::types::{
-        JitContext, JitValue, JitChoicePoint, JitAlternative, JitAlternativeTag,
-        JitBailoutReason, TAG_MASK, TAG_HEAP, PAYLOAD_MASK,
-        JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, JIT_SIGNAL_FAIL, JIT_SIGNAL_ERROR,
+        JitAlternative, JitAlternativeTag, JitBailoutReason, JitChoicePoint, JitContext, JitValue,
+        JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, PAYLOAD_MASK, TAG_HEAP,
+        TAG_MASK,
     };
     use crate::backend::models::MettaValue;
-    use super::super::helpers::{extract_long_signed, box_long};
-    use super::super::arithmetic::{jit_runtime_pow, jit_runtime_abs, jit_runtime_signum};
-    use super::super::type_predicates::jit_runtime_is_long;
-    use super::super::nondeterminism::{
-        jit_runtime_push_choice_point, jit_runtime_fail, jit_runtime_get_current_alternative,
-        jit_runtime_yield, jit_runtime_save_stack, jit_runtime_restore_stack,
-        jit_runtime_yield_native, jit_runtime_fail_native, jit_runtime_collect_native,
-        jit_runtime_has_alternatives, collect_results, execute_once,
-    };
-    use super::super::advanced_nondet::jit_runtime_cut;
 
     #[test]
     fn test_pow_positive() {
@@ -152,13 +152,7 @@ mod tests {
 
         // Push a choice point
         let result = unsafe {
-            jit_runtime_push_choice_point(
-                &mut ctx,
-                3,
-                alts.as_ptr(),
-                100,
-                std::ptr::null(),
-            )
+            jit_runtime_push_choice_point(&mut ctx, 3, alts.as_ptr(), 100, std::ptr::null())
         };
 
         assert_eq!(result, 0); // Success
@@ -327,14 +321,7 @@ mod tests {
     fn test_context_has_nondet_support() {
         // Context without nondet support
         let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
-        let ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                std::ptr::null(),
-                0,
-            )
-        };
+        let ctx = unsafe { JitContext::new(stack.as_mut_ptr(), stack.len(), std::ptr::null(), 0) };
         assert!(!ctx.has_nondet_support());
 
         // Context with nondet support
@@ -919,8 +906,8 @@ mod tests {
         if let MettaValue::SExpr(items) = metta_val {
             assert_eq!(items.len(), 4, "Expected 4 collected results");
             // Results should be: 1 (A,1), 2 (A,2), 11 (B,1), 12 (B,2)
-            assert_eq!(items[0], MettaValue::Long(1));  // A*10 + 1 = 0*10 + 1 = 1
-            assert_eq!(items[1], MettaValue::Long(2));  // A*10 + 2 = 0*10 + 2 = 2
+            assert_eq!(items[0], MettaValue::Long(1)); // A*10 + 1 = 0*10 + 1 = 1
+            assert_eq!(items[1], MettaValue::Long(2)); // A*10 + 2 = 0*10 + 2 = 2
             assert_eq!(items[2], MettaValue::Long(11)); // B*10 + 1 = 1*10 + 1 = 11
             assert_eq!(items[3], MettaValue::Long(12)); // B*10 + 2 = 1*10 + 2 = 12
         } else {

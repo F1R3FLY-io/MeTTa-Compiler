@@ -163,15 +163,15 @@ new stdoutAck(`rho:io:stdoutAck`),
 
         ; Get all rooms connected to a given room
         (= (get_neighbors $room)
-           (match & self (connected $room $target) $target))
+           (match &self (connected $room $target) $target))
 
         ; Get all objects in the environment
         (= (get_all_objects)
-           (match & self (object_at $obj $_) $obj))
+           (match &self (object_at $obj $_) $obj))
 
         ; Find where an object is located
         (= (locate $obj)
-           (match & self (object_at $obj $room) $room))
+           (match &self (object_at $obj $room) $room))
 
         ; Safe locate with error handling
         (= (safe_locate $obj)
@@ -180,19 +180,19 @@ new stdoutAck(`rho:io:stdoutAck`),
 
         ; Get robot's current location
         (= (get_robot_location)
-           (match & self (robot_at $room) $room))
+           (match &self (robot_at $room) $room))
 
         ; Get what robot is carrying
         (= (get_robot_cargo)
-           (match & self (robot_carrying $item) $item))
+           (match &self (robot_carrying $item) $item))
 
         ; Check if two rooms are directly connected (returns True/False)
         (= (is_connected $from $to)
-           (match & self (connected $from $to) True))
+           (match &self (connected $from $to) True))
 
         ; Get connection if exists (returns target or empty)
         (= (directly_connected $from $to)
-           (match & self (connected $from $to) $to))
+           (match &self (connected $from $to) $to))
 
         ; ============================================================
         ; DYNAMIC PATH FINDING: Using if + match
@@ -337,7 +337,7 @@ new stdoutAck(`rho:io:stdoutAck`),
 
         ; Check if object exists at location (using if + match!)
         (= (object_exists_at $obj $room)
-           (if (match & self (object_at $obj $room) True)
+           (if (match &self (object_at $obj $room) True)
                verified
                not_found))
 

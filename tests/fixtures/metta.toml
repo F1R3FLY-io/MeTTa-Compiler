@@ -1,0 +1,8 @@
+[package]
+name = "test-fixtures"
+version = "1.0.0"
+description = "Test fixtures for integration tests"
+authors = ["MeTTaTron Test Suite"]
+
+[exports]
+public = ["test-add", "test-value", "public-fn"]

@@ -3,7 +3,7 @@ use pathmap::ring::{AlgebraicResult, DistributiveLattice, Lattice};
 use pathmap::{zipper::*, PathMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MultisetCount(pub u32);
+pub struct MultisetCount(pub u32);
 
 impl MultisetCount {
     pub fn increment(&mut self) {
@@ -36,7 +36,7 @@ impl DistributiveLattice for MultisetCount {
     }
 }
 
-pub(crate) fn metta_expr_to_pathmap_multiset(
+pub fn metta_expr_to_pathmap_multiset(
     value: &MettaValue,
 ) -> Result<PathMap<MultisetCount>, String> {
     match value {
@@ -64,7 +64,7 @@ pub(crate) fn metta_expr_to_pathmap_multiset(
     }
 }
 
-pub(crate) fn pathmap_multiset_to_metta_expr(
+pub fn pathmap_multiset_to_metta_expr(
     pm: PathMap<MultisetCount>,
 ) -> Result<MettaValue, String> {
     let mut rz = pm.read_zipper();
@@ -83,6 +83,69 @@ pub(crate) fn pathmap_multiset_to_metta_expr(
     }
 
     Ok(MettaValue::SExpr(res_items))
+}
+
+/// Split S-expression string respecting nested parens and quoted strings.
+/// Returns a vector of token slices.
+fn split_sexpr_tokens(s: &str) -> Result<Vec<&str>, String> {
+    let mut tokens = Vec::new();
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut start = 0;
+    let mut found_content = false;
+
+    for (i, c) in s.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        match c {
+            '\\' if in_string => escape = true,
+            '"' => {
+                in_string = !in_string;
+                found_content = true;
+            }
+            '(' if !in_string => {
+                depth += 1;
+                found_content = true;
+            }
+            ')' if !in_string => {
+                if depth == 0 {
+                    return Err(format!("Unbalanced parentheses in: {}", s));
+                }
+                depth -= 1;
+            }
+            ' ' | '\t' | '\n' if !in_string && depth == 0 => {
+                if found_content && i > start {
+                    tokens.push(&s[start..i]);
+                }
+                start = i + 1;
+                found_content = false;
+            }
+            _ if !in_string && depth == 0 => {
+                found_content = true;
+            }
+            _ => {}
+        }
+    }
+
+    // Handle trailing token
+    if found_content && start < s.len() {
+        let trailing = s[start..].trim_end();
+        if !trailing.is_empty() {
+            tokens.push(trailing);
+        }
+    }
+
+    if depth != 0 {
+        return Err(format!("Unclosed parentheses in: {}", s));
+    }
+    if in_string {
+        return Err(format!("Unclosed string in: {}", s));
+    }
+
+    Ok(tokens)
 }
 
 fn parse_pathmap_path(s: &str) -> Result<MettaValue, String> {
@@ -119,11 +182,38 @@ fn parse_pathmap_path(s: &str) -> Result<MettaValue, String> {
     }
 
     if s.starts_with('(') && s.ends_with(')') {
-        // FIXME:
-        todo!()
+        let inner = &s[1..s.len() - 1];
+        let trimmed = inner.trim();
+
+        // Handle empty parens: "()" already handled above as Nil
+        if trimmed.is_empty() {
+            return Ok(MettaValue::Nil);
+        }
+
+        // Handle conjunction: "(, a b c)"
+        if trimmed.starts_with(',') {
+            let rest = trimmed[1..].trim();
+            if rest.is_empty() {
+                return Ok(MettaValue::Conjunction(vec![]));
+            }
+            let parts = split_sexpr_tokens(rest)?;
+            let goals: Result<Vec<_>, _> = parts.iter().map(|p| parse_pathmap_path(p)).collect();
+            return Ok(MettaValue::Conjunction(goals?));
+        }
+
+        // Handle regular S-expression: "(a b c)"
+        let parts = split_sexpr_tokens(trimmed)?;
+        let items: Result<Vec<_>, _> = parts.iter().map(|p| parse_pathmap_path(p)).collect();
+        return Ok(MettaValue::SExpr(items?));
     }
 
     Ok(MettaValue::Atom(s.to_string()))
+}
+
+/// Public wrapper for `parse_pathmap_path` to allow usage from other modules.
+/// Parses a PathMap path string back into a MettaValue.
+pub fn parse_pathmap_path_public(s: &str) -> Result<MettaValue, String> {
+    parse_pathmap_path(s)
 }
 
 #[cfg(test)]
@@ -246,18 +336,49 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_pathmap_path_nested_sexpr_as_atom() {
-        // Nested s-expressions are parsed as atoms (flat parsing)
-        // When splitting "(a (b c) d)" by whitespace, we get: ["a", "(b", "c)", "d"]
+    fn test_parse_pathmap_path_nested_sexpr() {
+        // Nested s-expressions are parsed recursively
         let result = parse_pathmap_path("(a (b c) d)").unwrap();
         assert!(matches!(result, MettaValue::SExpr(_)));
         if let MettaValue::SExpr(items) = result {
-            assert_eq!(items.len(), 4);
+            assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Atom("a".to_string()));
-            // "(b" and "c)" are parsed as separate atoms due to flat parsing
-            assert_eq!(items[1], MettaValue::Atom("(b".to_string()));
-            assert_eq!(items[2], MettaValue::Atom("c)".to_string()));
-            assert_eq!(items[3], MettaValue::Atom("d".to_string()));
+            // Nested S-expression "(b c)" is parsed as SExpr
+            if let MettaValue::SExpr(inner) = &items[1] {
+                assert_eq!(inner.len(), 2);
+                assert_eq!(inner[0], MettaValue::Atom("b".to_string()));
+                assert_eq!(inner[1], MettaValue::Atom("c".to_string()));
+            } else {
+                panic!("Expected nested SExpr at position 1");
+            }
+            assert_eq!(items[2], MettaValue::Atom("d".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_parse_pathmap_path_deeply_nested_sexpr() {
+        // Test deeply nested S-expressions
+        let result = parse_pathmap_path("(a (b (c d)) e)").unwrap();
+        assert!(matches!(result, MettaValue::SExpr(_)));
+        if let MettaValue::SExpr(items) = result {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0], MettaValue::Atom("a".to_string()));
+            // Check (b (c d))
+            if let MettaValue::SExpr(level1) = &items[1] {
+                assert_eq!(level1.len(), 2);
+                assert_eq!(level1[0], MettaValue::Atom("b".to_string()));
+                // Check (c d)
+                if let MettaValue::SExpr(level2) = &level1[1] {
+                    assert_eq!(level2.len(), 2);
+                    assert_eq!(level2[0], MettaValue::Atom("c".to_string()));
+                    assert_eq!(level2[1], MettaValue::Atom("d".to_string()));
+                } else {
+                    panic!("Expected nested SExpr at level 2");
+                }
+            } else {
+                panic!("Expected nested SExpr at level 1");
+            }
+            assert_eq!(items[2], MettaValue::Atom("e".to_string()));
         }
     }
 

@@ -38,23 +38,6 @@ use std::sync::Arc;
 
 use tracing::trace;
 
-/// Extracts a `Vec<MettaValue>` from a list argument, with proper error handling.
-/// Returns `Ok(Vec)` for `SExpr`/`Nil`, or `Err` with appropriate error `MettaValue`.
-fn extract_list_arg(
-    op_name: &str,
-    arg: &MettaValue,
-    arg_position: &str,
-) -> Result<Vec<MettaValue>, MettaValue> {
-    match arg {
-        MettaValue::SExpr(vec) => Ok(vec.clone()),
-        MettaValue::Nil => Ok(Vec::new()),
-        _ => Err(MettaValue::Error(
-            format!("{}: {} argument must be a list", op_name, arg_position),
-            Arc::new(arg.clone()),
-        )),
-    }
-}
-
 /// Removes duplicate elements from a tuple.
 ///
 /// # Syntax
@@ -213,19 +196,16 @@ pub fn eval_intersection_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
     let left = &items[1];
     let right = &items[2];
 
-    // Validate and extract left argument
     let left_vec = match extract_list_arg("intersection-atom", left, "left") {
         Ok(vec) => vec,
         Err(err) => return (vec![err], env),
     };
 
-    // Validate and extract right argument
     let right_vec = match extract_list_arg("intersection-atom", right, "right") {
         Ok(vec) => vec,
         Err(err) => return (vec![err], env),
     };
 
-    // Build count map from right list
     let mut right_counts: HashMap<MettaValue, usize> = HashMap::with_capacity(right_vec.len());
     for item in right_vec {
         *right_counts.entry(item).or_default() += 1;
@@ -290,19 +270,16 @@ pub fn eval_subtraction_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
     let left = &items[1];
     let right = &items[2];
 
-    // Validate and extract left argument
     let left_vec = match extract_list_arg("subtraction-atom", left, "left") {
         Ok(vec) => vec,
         Err(err) => return (vec![err], env),
     };
 
-    // Validate and extract right argument
     let right_vec = match extract_list_arg("subtraction-atom", right, "right") {
         Ok(vec) => vec,
         Err(err) => return (vec![err], env),
     };
 
-    // Build count map from right list
     let mut right_counts: HashMap<MettaValue, usize> = HashMap::with_capacity(right_vec.len());
     for item in right_vec {
         *right_counts.entry(item).or_default() += 1;
@@ -322,6 +299,23 @@ pub fn eval_subtraction_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
     }
 
     (vec![MettaValue::SExpr(result)], env)
+}
+
+/// Extracts a `Vec<MettaValue>` from a list argument, with proper error handling.
+/// Returns `Ok(Vec)` for `SExpr`/`Nil`, or `Err` with appropriate error `MettaValue`.
+fn extract_list_arg(
+    op_name: &str,
+    arg: &MettaValue,
+    arg_position: &str,
+) -> Result<Vec<MettaValue>, MettaValue> {
+    match arg {
+        MettaValue::SExpr(vec) => Ok(vec.clone()),
+        MettaValue::Nil => Ok(Vec::new()),
+        _ => Err(MettaValue::Error(
+            format!("{}: {} argument must be a list", op_name, arg_position),
+            Arc::new(arg.clone()),
+        )),
+    }
 }
 
 #[cfg(test)]

@@ -11,8 +11,6 @@ pub mod eval;
 pub mod fuzzy_match;
 pub mod models;
 pub mod mork_convert;
-pub mod parallel_pathmap;
-pub mod pathmap_converter;
 
 pub use compile::compile;
 pub use environment::Environment;

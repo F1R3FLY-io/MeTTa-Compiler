@@ -10,6 +10,7 @@ This directory contains example code demonstrating various features of the MeTTa
 - **mvp_test.metta** - MVP feature demonstrations
 - **type_system_demo.metta** - Type system examples
 - **pathmap_demo.metta** - PathMap operations
+- **set_operations.metta** - Set operations with multiset semantics (unique, union, intersection, subtraction)
 
 ### Rust Backend Examples
 

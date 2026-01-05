@@ -185,6 +185,44 @@ impl MettaValue {
         }
     }
 
+    /// Compute the specificity of a pattern (lower is more specific)
+    /// More specific patterns have fewer variables
+    pub fn pattern_specificity(&self) -> usize {
+        match self {
+            // Variables are least specific
+            // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
+            MettaValue::Atom(s)
+                if (s.starts_with('$')
+                    || s.starts_with('&')
+                    || s.starts_with('\'')
+                    || s == "_")
+                    && s != "&" =>
+            {
+                1000 // Variables are least specific
+            }
+            MettaValue::Atom(_)
+            | MettaValue::Bool(_)
+            | MettaValue::Long(_)
+            | MettaValue::Float(_)
+            | MettaValue::String(_)
+            | MettaValue::Nil => {
+                0 // Literals are most specific (including standalone "&")
+            }
+            MettaValue::SExpr(items) => {
+                // Sum specificity of all items
+                items.iter().map(|item| item.pattern_specificity()).sum()
+            }
+            // Conjunctions: sum specificity of all goals
+            MettaValue::Conjunction(goals) => {
+                goals.iter().map(|goal| goal.pattern_specificity()).sum()
+            }
+            // Errors: use specificity of details
+            MettaValue::Error(_, details) => details.pattern_specificity(),
+            // Types: use specificity of inner type
+            MettaValue::Type(t) => t.pattern_specificity(),
+        }
+    }
+
     /// Get the arity (number of arguments) for an s-expression
     /// For (head arg1 arg2 arg3), arity is 3
     /// For bare atoms, arity is 0
@@ -231,6 +269,38 @@ impl MettaValue {
                 let inner = goals
                     .iter()
                     .map(|v| v.to_mork_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("(, {})", inner)
+            }
+        }
+    }
+
+    /// Similar to [`Self::to_mork_string`] but keeps Atom as is
+    pub fn to_path_map_string(&self) -> String {
+        match self {
+            MettaValue::Atom(s) => s.clone(),
+            MettaValue::Bool(b) => b.to_string(),
+            MettaValue::Long(n) => n.to_string(),
+            MettaValue::Float(f) => f.to_string(),
+            MettaValue::String(s) => format!("\"{}\"", s),
+            MettaValue::SExpr(items) => {
+                let inner = items
+                    .iter()
+                    .map(|v| v.to_path_map_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("({})", inner)
+            }
+            MettaValue::Nil => "()".to_string(),
+            MettaValue::Error(msg, details) => {
+                format!("(error \"{}\" {})", msg, details.to_mork_string())
+            }
+            MettaValue::Type(t) => t.to_mork_string(),
+            MettaValue::Conjunction(goals) => {
+                let inner = goals
+                    .iter()
+                    .map(|v| v.to_path_map_string())
                     .collect::<Vec<_>>()
                     .join(" ");
                 format!("(, {})", inner)
@@ -863,6 +933,132 @@ mod tests {
             None
         );
         assert_eq!(MettaValue::Nil.get_head_symbol(), None);
+    }
+
+    // Tests for pattern_specificity
+    #[test]
+    fn test_pattern_specificity_atom() {
+        assert_eq!(MettaValue::Atom("x".to_string()).pattern_specificity(), 0);
+        assert_eq!(
+            MettaValue::Atom("$x".to_string()).pattern_specificity(),
+            1000
+        );
+        assert_eq!(
+            MettaValue::Atom("&x".to_string()).pattern_specificity(),
+            1000
+        );
+        assert_eq!(
+            MettaValue::Atom("'x".to_string()).pattern_specificity(),
+            1000
+        );
+        assert_eq!(
+            MettaValue::Atom("_".to_string()).pattern_specificity(),
+            1000
+        );
+    }
+
+    #[test]
+    fn test_pattern_specificity_bool() {
+        assert_eq!(MettaValue::Bool(true).pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_long() {
+        assert_eq!(MettaValue::Long(42).pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_float() {
+        assert_eq!(MettaValue::Float(1.23).pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_string() {
+        assert_eq!(
+            MettaValue::String("hello".to_string()).pattern_specificity(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_pattern_specificity_nil() {
+        assert_eq!(MettaValue::Nil.pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_sexpr() {
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        assert_eq!(value.pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_conjunction() {
+        let value = MettaValue::Conjunction(vec![
+            MettaValue::Atom("P".to_string()),
+            MettaValue::Atom("Q".to_string()),
+        ]);
+        assert_eq!(value.pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_error() {
+        let value = MettaValue::Error("msg".to_string(), Arc::new(MettaValue::Long(1)));
+        assert_eq!(value.pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_type() {
+        let value = MettaValue::Type(Arc::new(MettaValue::Atom("Int".to_string())));
+        assert_eq!(value.pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_nested_sexpr() {
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+        ]);
+        assert_eq!(value.pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_nested_conjunction() {
+        let value = MettaValue::Conjunction(vec![
+            MettaValue::Atom("P".to_string()),
+            MettaValue::Conjunction(vec![
+                MettaValue::Atom("Q".to_string()),
+                MettaValue::Atom("R".to_string()),
+            ]),
+        ]);
+        assert_eq!(value.pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_nested_error() {
+        let value = MettaValue::Error(
+            "msg".to_string(),
+            Arc::new(MettaValue::Error(
+                "details".to_string(),
+                Arc::new(MettaValue::Long(1)),
+            )),
+        );
+        assert_eq!(value.pattern_specificity(), 0);
+    }
+
+    #[test]
+    fn test_pattern_specificity_nested_type() {
+        let value = MettaValue::Type(Arc::new(MettaValue::Type(Arc::new(MettaValue::Atom(
+            "Int".to_string(),
+        )))));
+        assert_eq!(value.pattern_specificity(), 0);
     }
 
     // Tests for to_mork_string

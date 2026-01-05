@@ -20,6 +20,7 @@ mod list_ops;
 mod mork_forms;
 pub mod priority;
 mod quoting;
+mod set;
 mod space;
 mod types;
 
@@ -518,6 +519,12 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),
             "lookup" => return EvalStep::Done(mork_forms::eval_lookup(items, env)),
             "rulify" => return EvalStep::Done(mork_forms::eval_rulify(items, env)),
+
+            // Set operations
+            "unique-atom" => return EvalStep::Done(set::eval_unique_atom(items, env)),
+            "union-atom" => return EvalStep::Done(set::eval_union_atom(items, env)),
+            "intersection-atom" => return EvalStep::Done(set::eval_intersection_atom(items, env)),
+            "subtraction-atom" => return EvalStep::Done(set::eval_subtraction_atom(items, env)),
             _ => {}
         }
     }
@@ -898,73 +905,6 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
     }
 }
 
-/// Extract the head symbol from a pattern for indexing
-/// Returns None if the pattern doesn't have a clear head symbol
-fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
-    let hs = match pattern {
-        // For s-expressions like (double $x), extract "double"
-        // EXCEPT: standalone "&" is allowed as a head symbol (used in match)
-        MettaValue::SExpr(items) if !items.is_empty() => match &items[0] {
-            MettaValue::Atom(head)
-                if !head.starts_with('$')
-                    && (!head.starts_with('&') || head == "&")
-                    && !head.starts_with('\'')
-                    && head != "_" =>
-            {
-                Some(head.as_str())
-            }
-            _ => None,
-        },
-        // For bare atoms like foo, use the atom itself
-        // EXCEPT: standalone "&" is allowed (used in match)
-        MettaValue::Atom(head)
-            if !head.starts_with('$')
-                && (!head.starts_with('&') || head == "&")
-                && !head.starts_with('\'')
-                && head != "_" =>
-        {
-            Some(head.as_str())
-        }
-        _ => None,
-    };
-
-    trace!(target: "mettatron::backend::eval::get_head_symbol", ?hs);
-    hs
-}
-
-/// Compute the specificity of a pattern (lower is more specific)
-/// More specific patterns have fewer variables
-fn pattern_specificity(pattern: &MettaValue) -> usize {
-    match pattern {
-        // Variables are least specific
-        // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-        MettaValue::Atom(s)
-            if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') || s == "_")
-                && s != "&" =>
-        {
-            1000 // Variables are least specific
-        }
-        MettaValue::Atom(_)
-        | MettaValue::Bool(_)
-        | MettaValue::Long(_)
-        | MettaValue::Float(_)
-        | MettaValue::String(_)
-        | MettaValue::Nil => {
-            0 // Literals are most specific (including standalone "&")
-        }
-        MettaValue::SExpr(items) => {
-            // Sum specificity of all items
-            items.iter().map(pattern_specificity).sum()
-        }
-        // Conjunctions: sum specificity of all goals
-        MettaValue::Conjunction(goals) => goals.iter().map(pattern_specificity).sum(),
-        // Errors: use specificity of details
-        MettaValue::Error(_, details) => pattern_specificity(details),
-        // Types: use specificity of inner type
-        MettaValue::Type(t) => pattern_specificity(t),
-    }
-}
-
 /// Find ALL rules in the environment that match the given expression
 /// Returns Vec<(rhs, bindings)> with all matching rules
 ///
@@ -1064,7 +1004,7 @@ fn try_match_all_rules_iterative(
     trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?expr);
 
     // Extract head symbol and arity for indexed lookup
-    let matching_rules = if let Some(head) = get_head_symbol(expr) {
+    let matching_rules = if let Some(head) = expr.get_head_symbol() {
         let arity = expr.get_arity();
         // O(1) indexed lookup instead of O(n) iteration
         env.get_matching_rules(head, arity)
@@ -1076,14 +1016,14 @@ fn try_match_all_rules_iterative(
 
     // Sort rules by specificity (more specific first)
     let mut sorted_rules = matching_rules;
-    sorted_rules.sort_by_key(|rule| pattern_specificity(&rule.lhs));
+    sorted_rules.sort_by_key(|rule| rule.lhs.pattern_specificity());
     trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?sorted_rules);
 
     // Collect ALL matching rules, tracking LHS specificity
     let mut matches: Vec<(MettaValue, Bindings, usize, Rule)> = Vec::new();
     for rule in sorted_rules {
         if let Some(bindings) = pattern_match(&rule.lhs, expr) {
-            let lhs_specificity = pattern_specificity(&rule.lhs);
+            let lhs_specificity = rule.lhs.pattern_specificity();
             matches.push((rule.rhs.clone(), bindings, lhs_specificity, rule));
         }
     }

@@ -1731,7 +1731,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e870924857dcca135e4fc7f24e16396051ef82b97007146a7aefb27cf604f7b6"
 dependencies = [
  "parking_lot",
- "pathmap 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "pathmap 0.2.2",
  "rustc-hash",
  "smallvec",
  "thiserror 2.0.17",
@@ -1893,7 +1893,7 @@ dependencies = [
  "mork-interning",
  "nom",
  "paste",
- "pathmap 0.2.2",
+ "pathmap 0.2.0-alpha0",
  "regex",
  "ropey",
  "rustyline",
@@ -1937,7 +1937,7 @@ dependencies = [
  "crypto",
  "hex",
  "itertools 0.12.1",
- "pathmap 0.2.2",
+ "pathmap 0.3.0",
  "proptest",
  "proptest-derive",
  "prost 0.14.1",
@@ -1972,7 +1972,7 @@ dependencies = [
  "mork-expr",
  "mork-frontend",
  "mork-interning",
- "pathmap 0.2.2",
+ "pathmap 0.2.0-alpha0",
  "rand 0.9.2",
  "serde",
 ]
@@ -1993,7 +1993,7 @@ version = "0.1.0"
 dependencies = [
  "memmap2",
  "mork-expr",
- "pathmap 0.2.2",
+ "pathmap 0.2.0-alpha0",
  "regex",
  "typed-arena",
 ]
@@ -2008,7 +2008,7 @@ dependencies = [
  "memmap2",
  "mork-expr",
  "mork-frontend",
- "pathmap 0.2.2",
+ "pathmap 0.2.0-alpha0",
  "rayon",
  "zip",
 ]
@@ -2236,7 +2236,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pathmap"
-version = "0.2.2"
+version = "0.2.0-alpha0"
 dependencies = [
  "arrayvec",
  "dyn-clone",
@@ -2247,7 +2247,7 @@ dependencies = [
  "maybe-dangling",
  "memmap2",
  "num-traits",
- "pathmap-derive 0.2.1",
+ "pathmap-derive 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "reusing-vec",
  "smallvec",
  "tikv-jemallocator",
@@ -2275,8 +2275,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "pathmap"
+version = "0.3.0"
+source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#2d6a23c7d9f7399bc099fe1216210f9b8c61a6c9"
+dependencies = [
+ "arrayvec",
+ "dyn-clone",
+ "fast-slice-utils",
+ "gxhash 3.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libz-ng-sys",
+ "local-or-heap",
+ "maybe-dangling",
+ "num-traits",
+ "pathmap-derive 0.2.1 (git+https://github.com/Adam-Vandervorst/PathMap?branch=master)",
+ "reusing-vec",
+ "smallvec",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "pathmap-derive"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "804da4fe149a69b8b63f3870dcfee222a2c6217daf944c8dd072e20aa96c178c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2286,8 +2307,7 @@ dependencies = [
 [[package]]
 name = "pathmap-derive"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "804da4fe149a69b8b63f3870dcfee222a2c6217daf944c8dd072e20aa96c178c"
+source = "git+https://github.com/Adam-Vandervorst/PathMap?branch=master#2d6a23c7d9f7399bc099fe1216210f9b8c61a6c9"
 dependencies = [
  "proc-macro2",
  "quote",

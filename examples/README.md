@@ -12,6 +12,7 @@ This directory contains example code demonstrating various features of the MeTTa
 - **pathmap_demo.metta** - PathMap operations
 - **expression_ops.metta** - Expression manipulation operations (cons-atom, decons-atom, car-atom, cdr-atom, size-atom, index-atom, min-atom, max-atom)
 - **list_ops.metta** - List operations (map-atom, filter-atom, foldl-atom)
+- **set_operations.metta** - Set operations with multiset semantics (unique, union, intersection, subtraction)
 
 ### Rust Backend Examples
 

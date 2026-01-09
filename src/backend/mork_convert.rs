@@ -64,7 +64,7 @@ pub fn metta_to_mork_bytes(
     let expr = Expr {
         ptr: buffer.as_mut_ptr(),
     };
-    let mut ez = ExprZipper::new(expr);
+    let mut ez: ExprZipper = ExprZipper::new(expr);
 
     write_metta_value(value, space, ctx, &mut ez).map_err(|e| {
         debug!(

@@ -21,25 +21,25 @@
 //!
 //! ```bash
 //! # Run with defaults (30s, knowledge_graph only)
-//! cargo bench --bench e2e_throughput
+//! cargo bench --bench e2e_throughput_configurable
 //!
 //! # Run for longer duration (recommended: hours for production analysis)
-//! cargo bench --bench e2e_throughput -- --duration 300
+//! cargo bench --bench e2e_throughput_configurable -- --duration 300
 //!
 //! # Run specific samples
-//! cargo bench --bench e2e_throughput -- --samples fib,pattern_matching_stress
+//! cargo bench --bench e2e_throughput_configurable -- --samples fib,pattern_matching_stress
 //!
 //! # Run multiple samples
-//! cargo bench --bench e2e_throughput -- --duration 60 --samples fib,pattern_matching_stress,metta_programming_stress
+//! cargo bench --bench e2e_throughput_configurable -- --duration 60 --samples fib,pattern_matching_stress,metta_programming_stress
 //!
 //! # Run samples for extended period
-//! cargo bench --bench e2e_throughput -- --duration 300 --samples fib,knowledge_graph
+//! cargo bench --bench e2e_throughput_configurable -- --duration 300 --samples fib,knowledge_graph
 //!
 //! # Run with samply
-//! samply record target/release/deps/e2e_throughput-* -- --duration 10 --samples knowledge_graph
+//! samply record target/release/deps/e2e_throughput_configurable-* -- --duration 10 --samples knowledge_graph
 //!
 //! # Show help
-//! cargo bench --bench e2e_throughput -- --help
+//! cargo bench --bench e2e_throughput_configurable -- --help
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,36 +53,36 @@ use mettatron::{compile, run_state, run_state_async, MettaState};
 
 // TODO -> need more comprehensive set of MeTTa programs
 const SAMPLES: &[(&str, &str)] = &[
-    ("fib", include_str!("metta_samples/fib.metta")),
+    ("fib", include_str!("../metta_samples/fib.metta")),
     (
         "knowledge_graph",
-        include_str!("metta_samples/knowledge_graph.metta"),
+        include_str!("../metta_samples/knowledge_graph.metta"),
     ),
     (
         "pattern_matching_stress",
-        include_str!("metta_samples/pattern_matching_stress.metta"),
+        include_str!("../metta_samples/pattern_matching_stress.metta"),
     ),
     (
         "concurrent_space_operations",
-        include_str!("metta_samples/concurrent_space_operations.metta"),
+        include_str!("../metta_samples/concurrent_space_operations.metta"),
     ),
     (
         "constraint_search_simple",
-        include_str!("metta_samples/constraint_search_simple.metta"),
+        include_str!("../metta_samples/constraint_search_simple.metta"),
     ),
     (
         "metta_programming_stress",
-        include_str!("metta_samples/metta_programming_stress.metta"),
+        include_str!("../metta_samples/metta_programming_stress.metta"),
     ),
     (
         "multi_space_reasoning",
-        include_str!("metta_samples/multi_space_reasoning.metta"),
+        include_str!("../metta_samples/multi_space_reasoning.metta"),
     ),
 ];
 
 // TODO -> should has configurable setup for running with samply
 #[derive(Parser, Debug)]
-#[command(name = "e2e_throughput")]
+#[command(name = "e2e_throughput_configurable")]
 #[command(about = "MeTTaTron throughput benchmarks", long_about = None)]
 #[command(disable_help_flag = false)]
 #[command(trailing_var_arg = true)]

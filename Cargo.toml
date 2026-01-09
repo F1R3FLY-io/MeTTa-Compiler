@@ -135,10 +135,17 @@ clap = { version = "4.5", features = ["derive"] }
 
 [[bench]]
 name = "e2e"
+path = "benches/e2e/e2e.rs"
+harness = false
+
+[[bench]]
+name = "e2e_throughput_configurable"
+path = "benches/e2e/e2e_throughput_configurable.rs"
 harness = false
 
 [[bench]]
 name = "e2e_throughput"
+path = "benches/e2e/e2e_throughput.rs"
 harness = false
 
 [[bench]]

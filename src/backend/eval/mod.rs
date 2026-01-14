@@ -22,6 +22,7 @@ pub mod priority;
 mod quoting;
 mod set;
 mod space;
+mod testing;
 mod types;
 
 use std::collections::VecDeque;
@@ -481,6 +482,14 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "quote" => return EvalStep::Done(quoting::eval_quote(items, env)),
             "if" => return EvalStep::Done(control_flow::eval_if(items, env)),
             "if-equal" => return EvalStep::Done(control_flow::eval_if_equal(items, env)),
+            "assertEqual" => return EvalStep::Done(testing::eval_assert_equal(items, env)),
+            "assertEqualMsg" => return EvalStep::Done(testing::eval_assert_equal_msg(items, env)),
+            "assertEqualToResult" => {
+                return EvalStep::Done(testing::eval_assert_equal_to_result(items, env))
+            }
+            "assertEqualToResultMsg" => {
+                return EvalStep::Done(testing::eval_assert_equal_to_result_msg(items, env))
+            }
             "error" => return EvalStep::Done(errors::eval_error(items, env)),
             "is-error" => return EvalStep::Done(errors::eval_if_error(items, env)),
             "catch" => return EvalStep::Done(errors::eval_catch(items, env)),

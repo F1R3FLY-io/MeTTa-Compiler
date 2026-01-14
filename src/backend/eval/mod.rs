@@ -480,6 +480,7 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "!" => return EvalStep::Done(evaluation::force_eval(items, env)),
             "quote" => return EvalStep::Done(quoting::eval_quote(items, env)),
             "if" => return EvalStep::Done(control_flow::eval_if(items, env)),
+            "if-equal" => return EvalStep::Done(control_flow::eval_if_equal(items, env)),
             "error" => return EvalStep::Done(errors::eval_error(items, env)),
             "is-error" => return EvalStep::Done(errors::eval_if_error(items, env)),
             "catch" => return EvalStep::Done(errors::eval_catch(items, env)),

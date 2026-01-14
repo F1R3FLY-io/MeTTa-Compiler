@@ -11,21 +11,13 @@ pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
     trace!(target: "mettatron::eval::eval_if", ?items, ?args);
 
-    if args.len() < 3 {
-        debug!(
-            target: "mettatron::eval::if_control",
-            got = args.len(), "Invalid argument count for if expression"
-        );
-        let got = args.len();
-        let err = MettaValue::Error(
-            format!(
-                "if requires exactly 3 arguments, got {}. Usage: (if condition then-branch else-branch)",
-                got
-            ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
-        );
-        return (vec![err], env);
-    }
+    require_args_with_usage!(
+        "if",
+        items,
+        3,
+        env,
+        "(if condition then-branch else-branch)"
+    );
 
     let condition = &args[0];
     let then_branch = &args[1];
@@ -58,6 +50,35 @@ pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     } else {
         // No result from condition - treat as false
         eval(else_branch.clone(), env_after_cond)
+    }
+}
+
+/// Checks if first two arguments are equal and evaluates third argument if equal, fourth argument otherwise.
+/// This provides structural equality comparison with lazy evaluation - only the chosen branch is evaluated.
+///
+/// Syntax:
+/// (if-equal predicate-1 predicate-2 then-branch else-branch)
+pub(super) fn eval_if_equal(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    let args = &items[1..];
+    trace!(target: "mettatron::eval::eval_if_equal", ?items, ?args);
+
+    require_args_with_usage!(
+        "eval_if_equal",
+        items,
+        4,
+        env,
+        "(if-equal predicate-1 predicate-2 then_branch else_branch)"
+    );
+
+    let predicate_1 = &args[0];
+    let predicate_2 = &args[1];
+    let then_branch = &args[2];
+    let else_branch = &args[3];
+
+    if predicate_1 == predicate_2 {
+        eval(then_branch.clone(), env)
+    } else {
+        eval(else_branch.clone(), env)
     }
 }
 
@@ -342,6 +363,98 @@ mod tests {
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Long(1)); // No error!
+    }
+
+    #[test]
+    fn test_if_equal_predicates_match() {
+        let env = Environment::new();
+
+        // (if-equal 5 5 "equal" "not-equal")
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("if-equal".to_string()),
+            MettaValue::Long(5),
+            MettaValue::Long(5),
+            MettaValue::String("equal".to_string()),
+            MettaValue::String("not-equal".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("equal".to_string()));
+    }
+
+    #[test]
+    fn test_if_equal_predicates_differ() {
+        let env = Environment::new();
+
+        // (if-equal 5 10 "equal" "not-equal")
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("if-equal".to_string()),
+            MettaValue::Long(5),
+            MettaValue::Long(10),
+            MettaValue::String("equal".to_string()),
+            MettaValue::String("not-equal".to_string()),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("not-equal".to_string()));
+    }
+
+    #[test]
+    fn test_if_equal_with_complex_expressions() {
+        let env = Environment::new();
+
+        // (if-equal (a b c) (a b c) (+ 1 2) (+ 3 4))
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("if-equal".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("a".to_string()),
+                MettaValue::Atom("b".to_string()),
+                MettaValue::Atom("c".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("a".to_string()),
+                MettaValue::Atom("b".to_string()),
+                MettaValue::Atom("c".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(3),
+                MettaValue::Long(4),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3)); // 1 + 2
+    }
+
+    #[test]
+    fn test_if_equal_only_evaluates_chosen_branch() {
+        let env = Environment::new();
+
+        // (if-equal "foo" "foo" "correct" (error "should not evaluate"))
+        // The error in the else branch should not be evaluated
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("if-equal".to_string()),
+            MettaValue::String("foo".to_string()),
+            MettaValue::String("foo".to_string()),
+            MettaValue::String("correct".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("error".to_string()),
+                MettaValue::String("should not evaluate".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::String("correct".to_string())); // No error!
     }
 
     #[test]

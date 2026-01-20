@@ -24,19 +24,17 @@ module.exports = grammar({
       ')'
     ),
 
-    // Prefixed expressions: !expr, ?expr, 'expr
+    // Prefixed expressions: !expr, ?expr
     prefixed_expression: $ => seq(
       field('prefix', choice(
         $.exclaim_prefix,
         $.question_prefix,
-        $.quote_prefix,
       )),
       field('argument', $.expression)
     ),
 
     exclaim_prefix: $ => '!',
     question_prefix: $ => '?',
-    quote_prefix: $ => '\'',
 
     // Atomic expressions (decomposed by semantic type)
     // Order matters: more specific patterns first
@@ -54,7 +52,6 @@ module.exports = grammar({
 
     // Variables: $var (for pattern variables)
     // Note: & is an operator (space reference), not a variable prefix
-    // Note: 'var is handled by quote_prefix in prefixed_expression
     variable: $ => token(
       seq('$', /[a-zA-Z0-9_'\-+*/&]*/)
     ),

@@ -34,7 +34,6 @@
 ; Prefixes (special forms)
 (exclaim_prefix) @keyword
 (question_prefix) @keyword
-(quote_prefix) @keyword
 
 ; Brackets
 "(" @punctuation.bracket

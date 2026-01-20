@@ -152,10 +152,6 @@
           {
             "type": "question_prefix",
             "named": true
-          },
-          {
-            "type": "quote_prefix",
-            "named": true
           }
         ]
       }
@@ -236,10 +232,6 @@
   },
   {
     "type": "question_prefix",
-    "named": true
-  },
-  {
-    "type": "quote_prefix",
     "named": true
   },
   {

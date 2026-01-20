@@ -62,10 +62,6 @@
               {
                 "type": "SYMBOL",
                 "name": "question_prefix"
-              },
-              {
-                "type": "SYMBOL",
-                "name": "quote_prefix"
               }
             ]
           }
@@ -87,10 +83,6 @@
     "question_prefix": {
       "type": "STRING",
       "value": "?"
-    },
-    "quote_prefix": {
-      "type": "STRING",
-      "value": "'"
     },
     "atom_expression": {
       "type": "CHOICE",

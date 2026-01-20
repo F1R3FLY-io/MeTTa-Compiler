@@ -147,6 +147,7 @@ pub(crate) fn friendly_value_repr(value: &MettaValue) -> String {
             let inner: Vec<String> = goals.iter().map(friendly_value_repr).collect();
             format!("(, {})", inner.join(" "))
         }
+        MettaValue::Quoted(inner) => format!("(quote {})", friendly_value_repr(inner)),
     }
 }
 
@@ -167,7 +168,6 @@ fn suggest_special_form(op: &str) -> Option<String> {
 /// This is the public entry point that uses iterative evaluation with an explicit work stack
 /// to prevent stack overflow for large expressions.
 pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
-    debug!(metta_val = ?value);
     eval_trampoline(value, env)
 }
 
@@ -459,6 +459,11 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         | MettaValue::Nil
         | MettaValue::Type(_) => EvalStep::Done((vec![value], env)),
 
+        // TODO -> what about variables binding etc
+        // Quoted expressions prevent evaluation - return as-is
+        // This is the core quote semantics: the inner value is NOT evaluated
+        MettaValue::Quoted(_) => EvalStep::Done((vec![value], env)),
+
         // S-expressions need special handling
         MettaValue::SExpr(items) => eval_sexpr_step(items, env, depth),
 
@@ -480,6 +485,7 @@ fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> Ev
             "=" => return EvalStep::Done(space::eval_add(items, env)),
             "!" => return EvalStep::Done(evaluation::force_eval(items, env)),
             "quote" => return EvalStep::Done(quoting::eval_quote(items, env)),
+            "unquote" => return EvalStep::Done(quoting::eval_unquote(items, env)),
             "if" => return EvalStep::Done(control_flow::eval_if(items, env)),
             "if-equal" => return EvalStep::Done(control_flow::eval_if_equal(items, env)),
             "=alpha" => return EvalStep::Done(testing::eval_alpha_eq(items, env)),
@@ -565,6 +571,8 @@ fn process_collected_sexpr(
 ) -> ProcessedSExpr {
     trace!(target: "mettatron::backend::eval::process_collected_sexpr", ?collected, depth);
 
+    // dbg!("🟡 process_collected_sexpr: {}", &collected);
+
     // Check for errors in sub-expression results
     for (results, new_env) in &collected {
         if let Some(first) = results.first() {
@@ -611,6 +619,8 @@ fn process_collected_sexpr(
         // Try to match against rules
         let sexpr = MettaValue::SExpr(evaled_items.clone());
         let all_matches = try_match_all_rules(&sexpr, &unified_env);
+
+        // dbg!(&all_matches);
 
         if !all_matches.is_empty() {
             // Collect rule matches for later evaluation
@@ -893,6 +903,8 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>
 ///
 /// This is made public to support optimized match operations in Environment
 pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaValue {
+    // dbg!(&value);
+
     trace!(target: "mettatron::backend::eval::apply_bindings", ?value, ?bindings);
     match value {
         // Apply bindings to variables (atoms starting with $, &, or ')
@@ -923,6 +935,11 @@ pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaVa
         MettaValue::Error(msg, details) => {
             let new_details = apply_bindings(details, bindings);
             MettaValue::Error(msg.clone(), Arc::new(new_details))
+        }
+        MettaValue::Quoted(inner) => {
+            // Apply bindings inside quoted expressions
+            let new_inner = apply_bindings(inner, bindings);
+            MettaValue::Quoted(Box::new(new_inner))
         }
         _ => value.clone(),
     }

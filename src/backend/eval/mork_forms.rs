@@ -311,6 +311,7 @@ fn has_variables(value: &MettaValue) -> bool {
         MettaValue::SExpr(items) => items.iter().any(has_variables),
         MettaValue::Conjunction(goals) => goals.iter().any(has_variables),
         MettaValue::Error(_, details) => has_variables(details),
+        MettaValue::Quoted(inner) => has_variables(inner),
         _ => false,
     }
 }

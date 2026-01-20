@@ -2,13 +2,37 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use tracing::trace;
 
-/// Quote: return argument unevaluated
+// TODO -> на каком этапе в tree-walk происходит биндинг переменных?
+
+// TODO -> what about unify, chain etc.
+
+// TODO -> run all tests (could be issues with eval_eval)
+
+/// Quote: return argument wrapped in Quoted to prevent evaluation
+/// Variables ARE substituted before wrapping (via normal evaluation flow)
 pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_quote", ?items);
     require_args_with_usage!("quote", items, 1, env, "(quote expr)");
-    (vec![items[1].clone()], env)
+
+    // Wrap the expression in Quoted to prevent further evaluation
+    // Variable substitution happens naturally through apply_bindings before this is called
+    (vec![MettaValue::Quoted(Box::new(items[1].clone()))], env)
 }
 
+/// Unquote: extract the inner value from a quoted expression
+/// This is the only operation that can unwrap a Quoted value
+pub(super) fn eval_unquote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_unquote", ?items);
+    require_args_with_usage!("unquote", items, 1, env, "(unquote expr)");
+
+    let expr = &items[1];
+
+    // TODO
+
+    todo!()
+}
+
+// TODO -> update tests
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,13 +75,16 @@ mod tests {
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
 
-        // Should be the unevaluated s-expression with "+" not evaluated to 3
+        // Should be the unevaluated s-expression wrapped in Quoted
         match &results[0] {
-            MettaValue::SExpr(items) => {
-                assert_eq!(items.len(), 3);
-                assert_eq!(items[0], MettaValue::Atom("+".to_string()));
-            }
-            _ => panic!("Expected SExpr"),
+            MettaValue::Quoted(inner) => match inner.as_ref() {
+                MettaValue::SExpr(items) => {
+                    assert_eq!(items.len(), 3);
+                    assert_eq!(items[0], MettaValue::Atom("+".to_string()));
+                }
+                _ => panic!("Expected SExpr inside Quoted"),
+            },
+            _ => panic!("Expected Quoted value"),
         }
     }
 
@@ -73,7 +100,10 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Atom("$x".to_string()));
+        assert_eq!(
+            results[0],
+            MettaValue::Quoted(Box::new(MettaValue::Atom("$x".to_string())))
+        );
     }
 
     #[test]
@@ -102,21 +132,24 @@ mod tests {
         let (results, _) = eval(nested_quote, env);
         assert_eq!(results.len(), 1);
 
-        // Should return the exact structure without evaluation
+        // Should return the exact structure without evaluation, wrapped in Quoted
         match &results[0] {
-            MettaValue::SExpr(items) => {
-                assert_eq!(items.len(), 3); // +, 1, and the nested expression
-                assert_eq!(items[0], MettaValue::Atom("+".to_string()));
-                assert_eq!(items[1], MettaValue::Long(1));
-                match &items[2] {
-                    MettaValue::SExpr(inner) => {
-                        assert_eq!(inner.len(), 3); // *, 2, and the inner nested expression
-                        assert_eq!(inner[0], MettaValue::Atom("*".to_string()));
+            MettaValue::Quoted(inner) => match inner.as_ref() {
+                MettaValue::SExpr(items) => {
+                    assert_eq!(items.len(), 3); // +, 1, and the nested expression
+                    assert_eq!(items[0], MettaValue::Atom("+".to_string()));
+                    assert_eq!(items[1], MettaValue::Long(1));
+                    match &items[2] {
+                        MettaValue::SExpr(inner_items) => {
+                            assert_eq!(inner_items.len(), 3); // *, 2, and the inner nested expression
+                            assert_eq!(inner_items[0], MettaValue::Atom("*".to_string()));
+                        }
+                        _ => panic!("Expected nested S-expression"),
                     }
-                    _ => panic!("Expected nested S-expression"),
                 }
-            }
-            _ => panic!("Expected S-expression"),
+                _ => panic!("Expected S-expression inside Quoted"),
+            },
+            _ => panic!("Expected Quoted value"),
         }
     }
 
@@ -148,7 +181,8 @@ mod tests {
             let quote_expr = MettaValue::SExpr(vec![MettaValue::Atom("quote".to_string()), input]);
             let (results, _) = eval(quote_expr, env.clone());
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0], expected);
+            // Now expect Quoted wrapper
+            assert_eq!(results[0], MettaValue::Quoted(Box::new(expected)));
         }
     }
 
@@ -174,7 +208,11 @@ mod tests {
             ]);
             let (results, _) = eval(quote_var, env.clone());
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0], MettaValue::Atom(var_name.to_string()));
+            // Now expect Quoted wrapper
+            assert_eq!(
+                results[0],
+                MettaValue::Quoted(Box::new(MettaValue::Atom(var_name.to_string())))
+            );
         }
     }
 
@@ -201,20 +239,23 @@ mod tests {
         let (results, _) = eval(quote_if, env.clone());
         assert_eq!(results.len(), 1);
         match &results[0] {
-            MettaValue::SExpr(items) => {
-                assert_eq!(items.len(), 4);
-                assert_eq!(items[0], MettaValue::Atom("if".to_string()));
-                // Should not be evaluated, so condition remains as-is
-                match &items[1] {
-                    MettaValue::SExpr(cond) => {
-                        assert_eq!(cond[0], MettaValue::Atom(">".to_string()));
-                        assert_eq!(cond[1], MettaValue::Long(5));
-                        assert_eq!(cond[2], MettaValue::Long(3));
+            MettaValue::Quoted(inner) => match inner.as_ref() {
+                MettaValue::SExpr(items) => {
+                    assert_eq!(items.len(), 4);
+                    assert_eq!(items[0], MettaValue::Atom("if".to_string()));
+                    // Should not be evaluated, so condition remains as-is
+                    match &items[1] {
+                        MettaValue::SExpr(cond) => {
+                            assert_eq!(cond[0], MettaValue::Atom(">".to_string()));
+                            assert_eq!(cond[1], MettaValue::Long(5));
+                            assert_eq!(cond[2], MettaValue::Long(3));
+                        }
+                        _ => panic!("Expected condition to remain as S-expression"),
                     }
-                    _ => panic!("Expected condition to remain as S-expression"),
                 }
-            }
-            _ => panic!("Expected S-expression"),
+                _ => panic!("Expected S-expression inside Quoted"),
+            },
+            _ => panic!("Expected Quoted value"),
         }
 
         // (quote (let $x 42 (+ $x 1)))
@@ -235,13 +276,16 @@ mod tests {
         let (results, _) = eval(quote_let, env);
         assert_eq!(results.len(), 1);
         match &results[0] {
-            MettaValue::SExpr(items) => {
-                assert_eq!(items.len(), 4);
-                assert_eq!(items[0], MettaValue::Atom("let".to_string()));
-                assert_eq!(items[1], MettaValue::Atom("$x".to_string()));
-                assert_eq!(items[2], MettaValue::Long(42));
-            }
-            _ => panic!("Expected S-expression"),
+            MettaValue::Quoted(inner) => match inner.as_ref() {
+                MettaValue::SExpr(items) => {
+                    assert_eq!(items.len(), 4);
+                    assert_eq!(items[0], MettaValue::Atom("let".to_string()));
+                    assert_eq!(items[1], MettaValue::Atom("$x".to_string()));
+                    assert_eq!(items[2], MettaValue::Long(42));
+                }
+                _ => panic!("Expected S-expression inside Quoted"),
+            },
+            _ => panic!("Expected Quoted value"),
         }
     }
 
@@ -263,13 +307,16 @@ mod tests {
         let (results, _) = eval(quote_error, env.clone());
         assert_eq!(results.len(), 1);
         match &results[0] {
-            MettaValue::SExpr(items) => {
-                assert_eq!(items.len(), 3);
-                assert_eq!(items[0], MettaValue::Atom("error".to_string()));
-                assert_eq!(items[1], MettaValue::String("test".to_string()));
-                assert_eq!(items[2], MettaValue::Long(42));
-            }
-            _ => panic!("Expected S-expression, not actual error"),
+            MettaValue::Quoted(inner) => match inner.as_ref() {
+                MettaValue::SExpr(items) => {
+                    assert_eq!(items.len(), 3);
+                    assert_eq!(items[0], MettaValue::Atom("error".to_string()));
+                    assert_eq!(items[1], MettaValue::String("test".to_string()));
+                    assert_eq!(items[2], MettaValue::Long(42));
+                }
+                _ => panic!("Expected S-expression inside Quoted, not actual error"),
+            },
+            _ => panic!("Expected Quoted value"),
         }
 
         // Test quoting an actual error value
@@ -281,7 +328,7 @@ mod tests {
 
         let (results, _) = eval(quote_actual_error, env);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], actual_error);
+        assert_eq!(results[0], MettaValue::Quoted(Box::new(actual_error)));
     }
 
     #[test]
@@ -297,7 +344,10 @@ mod tests {
 
         let (results, _) = eval(quote_empty, env);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::SExpr(vec![]));
+        assert_eq!(
+            results[0],
+            MettaValue::Quoted(Box::new(MettaValue::SExpr(vec![])))
+        );
     }
 
     #[test]
@@ -321,20 +371,23 @@ mod tests {
         let (results, _) = eval(nested_quotes, env);
         assert_eq!(results.len(), 1);
         match &results[0] {
-            MettaValue::SExpr(outer) => {
-                assert_eq!(outer.len(), 2);
-                assert_eq!(outer[0], MettaValue::Atom("quote".to_string()));
-                match &outer[1] {
-                    MettaValue::SExpr(inner) => {
-                        assert_eq!(inner.len(), 3);
-                        assert_eq!(inner[0], MettaValue::Atom("+".to_string()));
-                        assert_eq!(inner[1], MettaValue::Long(1));
-                        assert_eq!(inner[2], MettaValue::Long(2));
+            MettaValue::Quoted(quoted_outer) => match quoted_outer.as_ref() {
+                MettaValue::SExpr(outer) => {
+                    assert_eq!(outer.len(), 2);
+                    assert_eq!(outer[0], MettaValue::Atom("quote".to_string()));
+                    match &outer[1] {
+                        MettaValue::SExpr(inner) => {
+                            assert_eq!(inner.len(), 3);
+                            assert_eq!(inner[0], MettaValue::Atom("+".to_string()));
+                            assert_eq!(inner[1], MettaValue::Long(1));
+                            assert_eq!(inner[2], MettaValue::Long(2));
+                        }
+                        _ => panic!("Expected inner S-expression"),
                     }
-                    _ => panic!("Expected inner S-expression"),
                 }
-            }
-            _ => panic!("Expected outer S-expression"),
+                _ => panic!("Expected outer S-expression inside Quoted"),
+            },
+            _ => panic!("Expected Quoted value"),
         }
     }
 
@@ -356,13 +409,16 @@ mod tests {
         let (results, _) = eval(quote_function_call, env);
         assert_eq!(results.len(), 1);
         match &results[0] {
-            MettaValue::SExpr(items) => {
-                assert_eq!(items.len(), 3);
-                assert_eq!(items[0], MettaValue::Atom("foo".to_string()));
-                assert_eq!(items[1], MettaValue::Atom("bar".to_string()));
-                assert_eq!(items[2], MettaValue::Atom("baz".to_string()));
-            }
-            _ => panic!("Expected S-expression"),
+            MettaValue::Quoted(inner) => match inner.as_ref() {
+                MettaValue::SExpr(items) => {
+                    assert_eq!(items.len(), 3);
+                    assert_eq!(items[0], MettaValue::Atom("foo".to_string()));
+                    assert_eq!(items[1], MettaValue::Atom("bar".to_string()));
+                    assert_eq!(items[2], MettaValue::Atom("baz".to_string()));
+                }
+                _ => panic!("Expected S-expression inside Quoted"),
+            },
+            _ => panic!("Expected Quoted value"),
         }
     }
 
@@ -392,31 +448,34 @@ mod tests {
         let (results, _) = eval(quote_arithmetic, env);
         assert_eq!(results.len(), 1);
         match &results[0] {
-            MettaValue::SExpr(items) => {
-                assert_eq!(items.len(), 3);
-                assert_eq!(items[0], MettaValue::Atom("*".to_string()));
+            MettaValue::Quoted(quoted_inner) => match quoted_inner.as_ref() {
+                MettaValue::SExpr(items) => {
+                    assert_eq!(items.len(), 3);
+                    assert_eq!(items[0], MettaValue::Atom("*".to_string()));
 
-                // First sub-expression should remain unevaluated
-                match &items[1] {
-                    MettaValue::SExpr(add_expr) => {
-                        assert_eq!(add_expr[0], MettaValue::Atom("+".to_string()));
-                        assert_eq!(add_expr[1], MettaValue::Long(2));
-                        assert_eq!(add_expr[2], MettaValue::Long(3));
+                    // First sub-expression should remain unevaluated
+                    match &items[1] {
+                        MettaValue::SExpr(add_expr) => {
+                            assert_eq!(add_expr[0], MettaValue::Atom("+".to_string()));
+                            assert_eq!(add_expr[1], MettaValue::Long(2));
+                            assert_eq!(add_expr[2], MettaValue::Long(3));
+                        }
+                        _ => panic!("Expected unevaluated addition"),
                     }
-                    _ => panic!("Expected unevaluated addition"),
-                }
 
-                // Second sub-expression should remain unevaluated
-                match &items[2] {
-                    MettaValue::SExpr(sub_expr) => {
-                        assert_eq!(sub_expr[0], MettaValue::Atom("-".to_string()));
-                        assert_eq!(sub_expr[1], MettaValue::Long(10));
-                        assert_eq!(sub_expr[2], MettaValue::Long(4));
+                    // Second sub-expression should remain unevaluated
+                    match &items[2] {
+                        MettaValue::SExpr(sub_expr) => {
+                            assert_eq!(sub_expr[0], MettaValue::Atom("-".to_string()));
+                            assert_eq!(sub_expr[1], MettaValue::Long(10));
+                            assert_eq!(sub_expr[2], MettaValue::Long(4));
+                        }
+                        _ => panic!("Expected unevaluated subtraction"),
                     }
-                    _ => panic!("Expected unevaluated subtraction"),
                 }
-            }
-            _ => panic!("Expected S-expression"),
+                _ => panic!("Expected S-expression inside Quoted"),
+            },
+            _ => panic!("Expected Quoted value"),
         }
     }
 
@@ -446,12 +505,15 @@ mod tests {
         let (results, _) = eval(quote_comparison, env);
         assert_eq!(results.len(), 1);
         match &results[0] {
-            MettaValue::SExpr(items) => {
-                assert_eq!(items.len(), 3);
-                assert_eq!(items[0], MettaValue::Atom("<".to_string()));
-                // Both operands should remain unevaluated
-            }
-            _ => panic!("Expected S-expression"),
+            MettaValue::Quoted(inner) => match inner.as_ref() {
+                MettaValue::SExpr(items) => {
+                    assert_eq!(items.len(), 3);
+                    assert_eq!(items[0], MettaValue::Atom("<".to_string()));
+                    // Both operands should remain unevaluated
+                }
+                _ => panic!("Expected S-expression inside Quoted"),
+            },
+            _ => panic!("Expected Quoted value"),
         }
     }
 
@@ -492,7 +554,9 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0],
-            MettaValue::Type(Arc::new(MettaValue::Atom("Number".to_string())))
+            MettaValue::Quoted(Box::new(MettaValue::Type(Arc::new(MettaValue::Atom(
+                "Number".to_string()
+            )))))
         );
     }
 
@@ -526,12 +590,15 @@ mod tests {
         let (results, _) = eval(quote_in_if, env);
         assert_eq!(results.len(), 1);
         match &results[0] {
-            MettaValue::SExpr(items) => {
-                assert_eq!(items.len(), 3);
-                assert_eq!(items[0], MettaValue::Atom("+".to_string()));
-                assert_eq!(items[1], MettaValue::Long(1));
-                assert_eq!(items[2], MettaValue::Long(2));
-            }
+            MettaValue::Quoted(inner) => match inner.as_ref() {
+                MettaValue::SExpr(items) => {
+                    assert_eq!(items.len(), 3);
+                    assert_eq!(items[0], MettaValue::Atom("+".to_string()));
+                    assert_eq!(items[1], MettaValue::Long(1));
+                    assert_eq!(items[2], MettaValue::Long(2));
+                }
+                _ => panic!("Expected S-expression inside Quoted from then branch"),
+            },
             _ => panic!("Expected quoted expression from then branch"),
         }
     }
@@ -568,22 +635,27 @@ mod tests {
         let (results, _) = eval(deep_nested, env);
         assert_eq!(results.len(), 1);
 
-        // Verify the deep structure is preserved
-        let mut current = &results[0];
-        let expected_atoms = vec!["a", "b", "c", "d", "e", "f"];
+        // Verify the deep structure is preserved - first unwrap Quoted
+        match &results[0] {
+            MettaValue::Quoted(quoted_value) => {
+                let mut current = quoted_value.as_ref();
+                let expected_atoms = vec!["a", "b", "c", "d", "e", "f"];
 
-        for expected_atom in expected_atoms {
-            match current {
-                MettaValue::SExpr(items) => {
-                    assert_eq!(items.len(), 2);
-                    assert_eq!(items[0], MettaValue::Atom(expected_atom.to_string()));
-                    current = &items[1];
+                for expected_atom in expected_atoms {
+                    match current {
+                        MettaValue::SExpr(items) => {
+                            assert_eq!(items.len(), 2);
+                            assert_eq!(items[0], MettaValue::Atom(expected_atom.to_string()));
+                            current = &items[1];
+                        }
+                        _ => panic!("Expected S-expression at level {}", expected_atom),
+                    }
                 }
-                _ => panic!("Expected S-expression at level {}", expected_atom),
-            }
-        }
 
-        // At the deepest level, should find 42
-        assert_eq!(*current, MettaValue::Long(42));
+                // At the deepest level, should find 42
+                assert_eq!(*current, MettaValue::Long(42));
+            }
+            _ => panic!("Expected Quoted value"),
+        }
     }
 }

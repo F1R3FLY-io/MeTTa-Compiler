@@ -82,6 +82,12 @@ impl MettaValue {
         }
     }
 
+    /// Check if this value is Quoted (represents unevaluated data)
+    /// Operations receiving Quoted arguments should remain unevaluated
+    pub fn is_quoted(&self) -> bool {
+        matches!(self, MettaValue::Quoted(_))
+    }
+
     /// Check if this is an evaluation expression (starts with "!")
     /// Evaluation expressions like `!(+ 1 2)` should produce output
     pub fn is_eval_expr(&self) -> bool {

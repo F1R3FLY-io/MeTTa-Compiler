@@ -2,10 +2,6 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use tracing::trace;
 
-// TODO -> what about unify, chain etc.
-
-// TODO -> run all tests (could be issues with eval_eval)
-
 /// Quote: return argument wrapped in Quoted to prevent evaluation
 /// Variables ARE substituted before wrapping (via normal evaluation flow)
 pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
@@ -30,11 +26,10 @@ pub(super) fn eval_unquote(items: Vec<MettaValue>, env: Environment) -> EvalResu
     todo!()
 }
 
-// TODO -> update tests
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval;
+    use crate::backend::eval::eval;
     use std::sync::Arc;
 
     #[test]

@@ -27,7 +27,7 @@ mod types;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use tracing::{debug, trace, warn};
+use tracing::{trace, warn};
 
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, EvalResult, MettaValue, Rule};
@@ -606,15 +606,20 @@ fn process_collected_sexpr(
     let mut rule_matches_to_eval: Vec<(MettaValue, Bindings)> = Vec::new();
 
     for evaled_items in combinations {
-        // Check if this is a grounded operation
+        let has_quoted_args = evaled_items.iter().any(|arg| arg.is_quoted());
+
+        // QUOTED SEMANTICS: skip builtin, try rules or remain unevaluated
         if let Some(MettaValue::Atom(op)) = evaled_items.first() {
-            if let Some(result) = builtin::try_eval_builtin(op, &evaled_items[1..]) {
-                all_final_results.push(result);
-                continue;
+            if !has_quoted_args {
+                // Only try builtins if no Quoted args
+                if let Some(result) = builtin::try_eval_builtin(op, &evaled_items[1..]) {
+                    all_final_results.push(result);
+                    continue;
+                }
             }
         }
 
-        // Try to match against rules
+        // Rules can have Quoted patterns, so try matching even with Quoted args
         let sexpr = MettaValue::SExpr(evaled_items.clone());
         let all_matches = try_match_all_rules(&sexpr, &unified_env);
 
@@ -622,9 +627,17 @@ fn process_collected_sexpr(
             // Collect rule matches for later evaluation
             rule_matches_to_eval.extend(all_matches);
         } else {
-            // No rule matched - check for typos and handle ADD mode
-            let result = handle_no_rule_match(evaled_items, &sexpr, &mut unified_env);
-            all_final_results.push(result);
+            // No rule matched
+            if has_quoted_args {
+                // QUOTED SEMANTICS: If Quoted args and no rule matched, remain unevaluated
+                // This preserves the distinction between data (quoted) and code (evaluated)
+                // Example: (unknown-op (quote x) 3) → (unknown-op (quote x) 3)
+                all_final_results.push(sexpr);
+            } else {
+                // No Quoted args and no rule - check for typos and handle ADD mode
+                let result = handle_no_rule_match(evaled_items, &sexpr, &mut unified_env);
+                all_final_results.push(result);
+            }
         }
     }
 
@@ -811,6 +824,13 @@ fn pattern_match_impl(pattern: &MettaValue, value: &MettaValue, bindings: &mut B
         // Errors match if message and details match
         (MettaValue::Error(p_msg, p_details), MettaValue::Error(v_msg, v_details)) => {
             p_msg == v_msg && pattern_match_impl(p_details, v_details, bindings)
+        }
+
+        // Quoted expressions must match structurally
+        // This enables pattern matching inside quoted expressions while preserving the quote wrapper
+        // Example: (quote (+ $x $y)) matches (quote (+ 1 2)) and binds $x=1, $y=2
+        (MettaValue::Quoted(p_inner), MettaValue::Quoted(v_inner)) => {
+            pattern_match_impl(p_inner, v_inner, bindings)
         }
 
         _ => false,
@@ -2155,5 +2175,300 @@ mod tests {
             results[0], expr,
             "Short symbols should not be flagged as typos"
         );
+    }
+
+    #[test]
+    fn test_quoted_semantics_integration() {
+        // Integration test demonstrating complete Quoted semantics
+        let mut env = Environment::new();
+
+        // Define a function that returns a quoted expression
+        // (= (add-numbers $x $y) (let $sum (quote (+ $x $y)) $sum))
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("add-numbers".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Atom("$y".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("let".to_string()),
+                MettaValue::Atom("$sum".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("quote".to_string()),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("+".to_string()),
+                        MettaValue::Atom("$x".to_string()),
+                        MettaValue::Atom("$y".to_string()),
+                    ]),
+                ]),
+                MettaValue::Atom("$sum".to_string()),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // Test: (+ (add-numbers 51 6) 12)
+        // Should return: (+ (quote (+ 51 6)) 12) unevaluated
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("add-numbers".to_string()),
+                MettaValue::Long(51),
+                MettaValue::Long(6),
+            ]),
+            MettaValue::Long(12),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+
+        // Verify result is unevaluated operation with Quoted argument
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], MettaValue::Atom("+".to_string()));
+
+                // First argument should be Quoted(SExpr([+, 51, 6]))
+                match &items[1] {
+                    MettaValue::Quoted(inner) => match inner.as_ref() {
+                        MettaValue::SExpr(quoted_items) => {
+                            assert_eq!(quoted_items.len(), 3);
+                            assert_eq!(quoted_items[0], MettaValue::Atom("+".to_string()));
+                            assert_eq!(quoted_items[1], MettaValue::Long(51));
+                            assert_eq!(quoted_items[2], MettaValue::Long(6));
+                        }
+                        _ => panic!("Expected SExpr inside Quoted"),
+                    },
+                    _ => panic!("Expected Quoted value as first arg"),
+                }
+
+                assert_eq!(items[2], MettaValue::Long(12));
+            }
+            other => panic!("Expected unevaluated SExpr, got {:?}", other),
+        }
+    }
+
+    // ============================================================================
+    // PATTERN MATCHING WITH QUOTED VALUES - Tests revealing the bug
+    // ============================================================================
+
+    #[test]
+    fn test_pattern_match_quoted_exact() {
+        // Test: Direct pattern matching with identical Quoted values
+        let pattern = MettaValue::Quoted(Box::new(MettaValue::Atom("foo".to_string())));
+        let value = MettaValue::Quoted(Box::new(MettaValue::Atom("foo".to_string())));
+
+        let result = pattern_match(&pattern, &value);
+        assert!(
+            result.is_some(),
+            "BUG: Identical Quoted values should match! Got None"
+        );
+    }
+
+    #[test]
+    fn test_pattern_match_quoted_with_variable() {
+        // Test: Pattern matching Quoted with variable inside
+        let pattern = MettaValue::Quoted(Box::new(MettaValue::Atom("$x".to_string())));
+        let value = MettaValue::Quoted(Box::new(MettaValue::Atom("foo".to_string())));
+
+        let result = pattern_match(&pattern, &value);
+        assert!(
+            result.is_some(),
+            "BUG: Quoted with variable pattern should match Quoted value!"
+        );
+
+        if let Some(bindings) = result {
+            let bound_value = bindings
+                .iter()
+                .find(|(name, _)| name.as_str() == "$x")
+                .map(|(_, val)| val);
+            assert_eq!(
+                bound_value,
+                Some(&MettaValue::Atom("foo".to_string())),
+                "Variable $x should be bound to foo"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pattern_match_quoted_sexpr() {
+        // Test: Pattern matching Quoted SExpr with variables
+        let pattern = MettaValue::Quoted(Box::new(MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Atom("$a".to_string()),
+            MettaValue::Atom("$b".to_string()),
+        ])));
+
+        let value = MettaValue::Quoted(Box::new(MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ])));
+
+        let result = pattern_match(&pattern, &value);
+        assert!(
+            result.is_some(),
+            "BUG: Quoted SExpr pattern should match Quoted SExpr value!"
+        );
+
+        if let Some(bindings) = result {
+            assert_eq!(bindings.len(), 2, "Should bind two variables");
+            let a = bindings
+                .iter()
+                .find(|(name, _)| name.as_str() == "$a")
+                .map(|(_, val)| val);
+            let b = bindings
+                .iter()
+                .find(|(name, _)| name.as_str() == "$b")
+                .map(|(_, val)| val);
+            assert_eq!(a, Some(&MettaValue::Long(1)));
+            assert_eq!(b, Some(&MettaValue::Long(2)));
+        }
+    }
+
+    #[test]
+    fn test_pattern_match_quoted_mismatch() {
+        // Test: Quoted values with different content should NOT match
+        let pattern = MettaValue::Quoted(Box::new(MettaValue::Atom("foo".to_string())));
+        let value = MettaValue::Quoted(Box::new(MettaValue::Atom("bar".to_string())));
+
+        let result = pattern_match(&pattern, &value);
+        assert!(result.is_none(), "Different Quoted values should not match");
+    }
+
+    #[test]
+    fn test_let_with_quoted_value() {
+        // Test: (let (quote $x) (quote foo) $x)
+        // Should bind $x to foo and return foo
+        let env = Environment::new();
+
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("let".to_string()),
+            // Pattern: (quote $x)
+            MettaValue::Quoted(Box::new(MettaValue::Atom("$x".to_string()))),
+            // Value: (quote foo)
+            MettaValue::Quoted(Box::new(MettaValue::Atom("foo".to_string()))),
+            // Body: $x
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        let (results, _) = eval(expr, env);
+
+        // Should successfully bind and return foo
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0],
+            MettaValue::Atom("foo".to_string()),
+            "BUG: let with Quoted pattern should bind variable inside quote"
+        );
+    }
+
+    #[test]
+    fn test_chain_with_quoted_result() {
+        // Test: (chain (quote foo) $v (list got $v))
+        // Should bind $v to (quote foo) and return (list got (quote foo))
+        let env = Environment::new();
+
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("chain".to_string()),
+            // First arg evaluates to Quoted
+            MettaValue::Quoted(Box::new(MettaValue::Atom("foo".to_string()))),
+            // Variable
+            MettaValue::Atom("$v".to_string()),
+            // Body using the variable
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("list".to_string()),
+                MettaValue::Atom("got".to_string()),
+                MettaValue::Atom("$v".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(expr, env);
+
+        // Should bind $v to the Quoted value
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], MettaValue::Atom("list".to_string()));
+                assert_eq!(items[1], MettaValue::Atom("got".to_string()));
+                assert!(
+                    matches!(&items[2], MettaValue::Quoted(_)),
+                    "BUG: chain should bind Quoted value to variable. Got: {:?}",
+                    items[2]
+                );
+            }
+            other => panic!("Expected SExpr result from chain, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rule_with_quoted_pattern() {
+        // Test: Rule that matches Quoted expressions
+        // (= (process (quote $x)) (handled $x))
+        let mut env = Environment::new();
+
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("process".to_string()),
+                MettaValue::Quoted(Box::new(MettaValue::Atom("$x".to_string()))),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("handled".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // Test: (process (quote foo))
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("process".to_string()),
+            MettaValue::Quoted(Box::new(MettaValue::Atom("foo".to_string()))),
+        ]);
+
+        let (results, _) = eval(expr, env);
+
+        // Should match the rule and return (handled foo)
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], MettaValue::Atom("handled".to_string()));
+                assert_eq!(
+                    items[1],
+                    MettaValue::Atom("foo".to_string()),
+                    "BUG: Rule with Quoted pattern should extract inner value"
+                );
+            }
+            other => panic!(
+                "Expected (handled foo), got {:?}. BUG: Rule matching with Quoted failed",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_nested_quoted_pattern_match() {
+        // Test: Nested Quoted structures
+        let pattern = MettaValue::Quoted(Box::new(MettaValue::Quoted(Box::new(MettaValue::Atom(
+            "$x".to_string(),
+        )))));
+
+        let value = MettaValue::Quoted(Box::new(MettaValue::Quoted(Box::new(MettaValue::Atom(
+            "foo".to_string(),
+        )))));
+
+        let result = pattern_match(&pattern, &value);
+        assert!(
+            result.is_some(),
+            "BUG: Nested Quoted patterns should match!"
+        );
+
+        if let Some(bindings) = result {
+            let x = bindings
+                .iter()
+                .find(|(name, _)| name.as_str() == "$x")
+                .map(|(_, val)| val);
+            assert_eq!(x, Some(&MettaValue::Atom("foo".to_string())));
+        }
     }
 }

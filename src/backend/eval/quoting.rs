@@ -2,6 +2,8 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use tracing::trace;
 
+use super::eval;
+
 /// Quote: return argument wrapped in Quoted to prevent evaluation
 /// Variables ARE substituted before wrapping (via normal evaluation flow)
 pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
@@ -13,23 +15,53 @@ pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult
     (vec![MettaValue::Quoted(Box::new(items[1].clone()))], env)
 }
 
-/// Unquote: extract the inner value from a quoted expression
-/// This is the only operation that can unwrap a Quoted value
+/// Unquote: extract the inner value from a quoted expression and evaluate it
+/// Implements the MeTTa spec: (= (unquote (quote $atom)) $atom)
+///
+/// Semantics:
+/// - (unquote (quote X)) → unwraps to X, evaluates X, returns result
+/// - (unquote Y) where Y is not Quoted → returns (unquote Y) as unevaluated data
+///
+/// This is the inverse of quote, allowing extraction and evaluation of quoted expressions
 pub(super) fn eval_unquote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_unquote", ?items);
     require_args_with_usage!("unquote", items, 1, env, "(unquote expr)");
 
-    let expr = &items[1];
+    // Evaluate the argument (handles pattern matching, rules, etc.)
+    let (arg_results, arg_env) = eval(items[1].clone(), env);
 
-    // TODO
+    // Process each result (supports non-deterministic evaluation)
+    let mut final_results = Vec::new();
+    let mut current_env = arg_env;
 
-    todo!()
+    for result in arg_results {
+        match result {
+            MettaValue::Quoted(inner) => {
+                // Pattern matched: (unquote (quote X)) → evaluate X
+                // This is the core unquote semantics: unwrap and evaluate
+                let (eval_results, new_env) = eval(*inner, current_env.clone());
+                final_results.extend(eval_results);
+                current_env = new_env;
+            }
+            other => {
+                // Pattern didn't match: return (unquote Y) as unevaluated data
+                // This matches MeTTa behavior when unquote receives non-quoted values
+                final_results.push(MettaValue::SExpr(vec![
+                    MettaValue::Atom("unquote".to_string()),
+                    other,
+                ]));
+            }
+        }
+    }
+
+    (final_results, current_env)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::backend::eval::eval;
+    use crate::backend::models::Rule;
     use std::sync::Arc;
 
     #[test]
@@ -658,5 +690,311 @@ mod tests {
             }
             _ => panic!("Expected Quoted value"),
         }
+    }
+
+    // ============================================================================
+    // UNQUOTE TESTS - Unwrapping and evaluating quoted expressions
+    // ============================================================================
+
+    #[test]
+    fn test_unquote_basic() {
+        // Test: (unquote (quote (+ 1 2)))
+        // Should unwrap and evaluate to 3
+        let env = Environment::new();
+
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("unquote".to_string()),
+            MettaValue::Quoted(Box::new(MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]))),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(3));
+    }
+
+    #[test]
+    fn test_unquote_quoted_atom() {
+        // Test: (unquote (quote foo))
+        // Should unwrap and return atom foo
+        let env = Environment::new();
+
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("unquote".to_string()),
+            MettaValue::Quoted(Box::new(MettaValue::Atom("foo".to_string()))),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Atom("foo".to_string()));
+    }
+
+    #[test]
+    fn test_unquote_quoted_number() {
+        // Test: (unquote (quote 42))
+        // Should unwrap and return 42
+        let env = Environment::new();
+
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("unquote".to_string()),
+            MettaValue::Quoted(Box::new(MettaValue::Long(42))),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_unquote_non_quoted() {
+        // Test: (unquote (+ 1 2))
+        // (+ 1 2) evaluates to 3 (not Quoted)
+        // Should return (unquote 3) as unevaluated data
+        let env = Environment::new();
+
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("unquote".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+
+        // Should return (unquote 3) as unevaluated
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], MettaValue::Atom("unquote".to_string()));
+                assert_eq!(items[1], MettaValue::Long(3));
+            }
+            other => panic!("Expected (unquote 3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unquote_with_rule_returning_quoted() {
+        // Test: Rule that returns quoted value, then unquote
+        // (= (add-numbers $x $y) (quote (+ $x $y)))
+        // (unquote (add-numbers 51 6)) → evaluates to 57
+        let mut env = Environment::new();
+
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("add-numbers".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Atom("$y".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("quote".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Atom("$x".to_string()),
+                    MettaValue::Atom("$y".to_string()),
+                ]),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // (unquote (add-numbers 51 6))
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("unquote".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("add-numbers".to_string()),
+                MettaValue::Long(51),
+                MettaValue::Long(6),
+            ]),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(57));
+    }
+
+    #[test]
+    fn test_unquote_nested_quoted() {
+        // Test: (unquote (quote (quote x)))
+        // Should unwrap once to (quote x)
+        let env = Environment::new();
+
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("unquote".to_string()),
+            MettaValue::Quoted(Box::new(MettaValue::Quoted(Box::new(MettaValue::Atom(
+                "x".to_string(),
+            ))))),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+
+        // Result should be Quoted(Atom("x"))
+        match &results[0] {
+            MettaValue::Quoted(inner) => {
+                assert_eq!(**inner, MettaValue::Atom("x".to_string()));
+            }
+            other => panic!("Expected Quoted(Atom(x)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unquote_complex_expression() {
+        // Test: (unquote (quote (* (+ 2 3) (- 10 4))))
+        // Should evaluate to (* 5 6) → 30
+        let env = Environment::new();
+
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("unquote".to_string()),
+            MettaValue::Quoted(Box::new(MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Long(2),
+                    MettaValue::Long(3),
+                ]),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("-".to_string()),
+                    MettaValue::Long(10),
+                    MettaValue::Long(4),
+                ]),
+            ]))),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(30));
+    }
+
+    #[test]
+    fn test_quote_unquote_roundtrip() {
+        // Test: (unquote (quote X)) should give back X evaluated
+        let env = Environment::new();
+
+        // Original expression
+        let original = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(10),
+            MettaValue::Long(20),
+        ]);
+
+        // (quote (+ 10 20))
+        let quoted = MettaValue::SExpr(vec![
+            MettaValue::Atom("quote".to_string()),
+            original.clone(),
+        ]);
+
+        // Evaluate quote
+        let (quote_results, env1) = eval(quoted, env);
+        assert_eq!(quote_results.len(), 1);
+        assert!(matches!(&quote_results[0], MettaValue::Quoted(_)));
+
+        // (unquote <quoted-result>)
+        let unquoted = MettaValue::SExpr(vec![
+            MettaValue::Atom("unquote".to_string()),
+            quote_results[0].clone(),
+        ]);
+
+        // Evaluate unquote
+        let (unquote_results, _) = eval(unquoted, env1);
+        assert_eq!(unquote_results.len(), 1);
+
+        // Should evaluate to 30
+        assert_eq!(unquote_results[0], MettaValue::Long(30));
+    }
+
+    #[test]
+    fn test_unquote_with_variable_substitution() {
+        // Test that variables in quoted expressions are substituted correctly
+        // This tests the interaction with the rule system
+        let mut env = Environment::new();
+
+        // (= (make-op $op $x $y) (quote ($op $x $y)))
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("make-op".to_string()),
+                MettaValue::Atom("$op".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Atom("$y".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("quote".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("$op".to_string()),
+                    MettaValue::Atom("$x".to_string()),
+                    MettaValue::Atom("$y".to_string()),
+                ]),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // (unquote (make-op + 15 25))
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("unquote".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("make-op".to_string()),
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(15),
+                MettaValue::Long(25),
+            ]),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(40));
+    }
+
+    #[test]
+    fn test_unquote_inside_let_with_rule() {
+        // (= (add-numbers $x $y)
+        //     (let $sum (unquote (quote (+ $x $y)))
+        //         $sum))
+        // ! (add-numbers 12 23)
+        // Should evaluate to 35
+        let mut env = Environment::new();
+
+        let rule = Rule {
+            lhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("add-numbers".to_string()),
+                MettaValue::Atom("$x".to_string()),
+                MettaValue::Atom("$y".to_string()),
+            ]),
+            rhs: MettaValue::SExpr(vec![
+                MettaValue::Atom("let".to_string()),
+                MettaValue::Atom("$sum".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("unquote".to_string()),
+                    MettaValue::SExpr(vec![
+                        MettaValue::Atom("quote".to_string()),
+                        MettaValue::SExpr(vec![
+                            MettaValue::Atom("+".to_string()),
+                            MettaValue::Atom("$x".to_string()),
+                            MettaValue::Atom("$y".to_string()),
+                        ]),
+                    ]),
+                ]),
+                MettaValue::Atom("$sum".to_string()),
+            ]),
+        };
+        env.add_rule(rule);
+
+        // Test: (add-numbers 12 23)
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("add-numbers".to_string()),
+            MettaValue::Long(12),
+            MettaValue::Long(23),
+        ]);
+
+        let (results, _) = eval(expr, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0],
+            MettaValue::Long(35),
+            "BUG: (add-numbers 12 23) with unquote in let should evaluate to 35"
+        );
     }
 }

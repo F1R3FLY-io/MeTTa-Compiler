@@ -5,8 +5,6 @@ use tracing::{trace, warn};
 
 use super::{apply_bindings, eval, pattern_match};
 
-// TODO -> eval should NOT has special logic for quoted expressions?
-
 /// Eval: force evaluation of quoted expressions
 /// (eval expr) - complementary to quote
 pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {

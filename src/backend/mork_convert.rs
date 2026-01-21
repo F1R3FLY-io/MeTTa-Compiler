@@ -183,7 +183,6 @@ fn write_metta_value(
             }
         }
 
-        // TODO -> need to double check this
         MettaValue::Quoted(inner) => {
             // Write as (quote <inner>)
             ez.write_arity(2);

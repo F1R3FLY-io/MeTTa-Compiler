@@ -336,9 +336,8 @@ impl Environment {
                             // S-expression is complete
                             let completed_items = items.clone();
                             stack.pop();
-                            value = MettaValue::SExpr(completed_items); // Mutate, don't shadow!
 
-                            // TODO:
+                            value = MettaValue::SExpr(completed_items); // Mutate, don't shadow!
                             value = Environment::convert_quote_forms(value);
 
                             continue 'popping;
@@ -391,15 +390,11 @@ impl Environment {
             MettaValue::SExpr(items) if items.len() == 2 => {
                 if let MettaValue::Atom(op) = &items[0] {
                     if op == "quote" {
-                        dbg!("hello 🔴");
-
                         return MettaValue::Quoted(Box::new(items[1].clone()));
                     }
                 }
-
                 MettaValue::SExpr(items)
             }
-
             MettaValue::SExpr(items) => MettaValue::SExpr(
                 items
                     .into_iter()

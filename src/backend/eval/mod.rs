@@ -459,9 +459,7 @@ fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
         | MettaValue::Nil
         | MettaValue::Type(_) => EvalStep::Done((vec![value], env)),
 
-        // TODO -> what about variables binding etc
         // Quoted expressions prevent evaluation - return as-is
-        // This is the core quote semantics: the inner value is NOT evaluated
         MettaValue::Quoted(_) => EvalStep::Done((vec![value], env)),
 
         // S-expressions need special handling
@@ -608,7 +606,7 @@ fn process_collected_sexpr(
     for evaled_items in combinations {
         let has_quoted_args = evaled_items.iter().any(|arg| arg.is_quoted());
 
-        // QUOTED SEMANTICS: skip builtin, try rules or remain unevaluated
+        // Quoted semantics: skip builtin, try rules or remain unevaluated
         if let Some(MettaValue::Atom(op)) = evaled_items.first() {
             if !has_quoted_args {
                 // Only try builtins if no Quoted args
@@ -629,7 +627,7 @@ fn process_collected_sexpr(
         } else {
             // No rule matched
             if has_quoted_args {
-                // QUOTED SEMANTICS: If Quoted args and no rule matched, remain unevaluated
+                // Quoted semantics: if Quoted args and no rule matched, remain unevaluated
                 // This preserves the distinction between data (quoted) and code (evaluated)
                 // Example: (unknown-op (quote x) 3) → (unknown-op (quote x) 3)
                 all_final_results.push(sexpr);

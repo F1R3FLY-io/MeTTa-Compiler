@@ -2,8 +2,6 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use tracing::trace;
 
-// TODO -> на каком этапе в tree-walk происходит биндинг переменных?
-
 // TODO -> what about unify, chain etc.
 
 // TODO -> run all tests (could be issues with eval_eval)
@@ -537,7 +535,15 @@ mod tests {
 
         let (results, _) = eval(eval_quote, env);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(5)); // Should be evaluated by eval
+        // Quote prevents evaluation - should return Quoted expression
+        assert_eq!(
+            results[0],
+            MettaValue::Quoted(Box::new(MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ])))
+        );
     }
 
     #[test]

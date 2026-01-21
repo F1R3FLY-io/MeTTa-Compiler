@@ -571,8 +571,6 @@ fn process_collected_sexpr(
 ) -> ProcessedSExpr {
     trace!(target: "mettatron::backend::eval::process_collected_sexpr", ?collected, depth);
 
-    // dbg!("🟡 process_collected_sexpr: {}", &collected);
-
     // Check for errors in sub-expression results
     for (results, new_env) in &collected {
         if let Some(first) = results.first() {
@@ -619,8 +617,6 @@ fn process_collected_sexpr(
         // Try to match against rules
         let sexpr = MettaValue::SExpr(evaled_items.clone());
         let all_matches = try_match_all_rules(&sexpr, &unified_env);
-
-        // dbg!(&all_matches);
 
         if !all_matches.is_empty() {
             // Collect rule matches for later evaluation
@@ -903,8 +899,6 @@ fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>
 ///
 /// This is made public to support optimized match operations in Environment
 pub(crate) fn apply_bindings(value: &MettaValue, bindings: &Bindings) -> MettaValue {
-    // dbg!(&value);
-
     trace!(target: "mettatron::backend::eval::apply_bindings", ?value, ?bindings);
     match value {
         // Apply bindings to variables (atoms starting with $, &, or ')
@@ -1182,7 +1176,7 @@ mod tests {
         let env = Environment::new();
 
         // (eval (quote (+ 1 2)))
-        // Quote prevents evaluation, eval forces it
+        // Quote prevents evaluation - returns unevaluated expression
         let value = MettaValue::SExpr(vec![
             MettaValue::Atom("eval".to_string()),
             MettaValue::SExpr(vec![
@@ -1197,7 +1191,15 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Long(3));
+        // Should return the Quoted unevaluated expression
+        assert_eq!(
+            results[0],
+            MettaValue::Quoted(Box::new(MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ])))
+        );
     }
 
     #[test]

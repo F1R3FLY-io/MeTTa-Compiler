@@ -28,6 +28,8 @@ pub enum MettaValue {
     /// Represents (,), (, expr), or (, expr1 expr2 ...)
     /// Goals are evaluated left-to-right with variable binding threading
     Conjunction(Vec<MettaValue>),
+
+    // FIXME: at the moment "quote" is not consumed as MettaValue::Quoted -> only as output value from `eval_quote`
     /// Quoted expression (prevents evaluation)
     Quoted(Box<MettaValue>),
 }
@@ -459,13 +461,31 @@ impl TryFrom<&MettaExpr> for MettaValue {
                         // Convert to Conjunction variant (skip the comma operator)
                         let goals: Result<Vec<_>, _> =
                             items[1..].iter().map(MettaValue::try_from).collect();
-                        Ok(MettaValue::Conjunction(goals?))
-                    } else {
-                        // Regular S-expression
-                        let values: Result<Vec<_>, _> =
-                            items.iter().map(MettaValue::try_from).collect();
-                        Ok(MettaValue::SExpr(values?))
+                        return Ok(MettaValue::Conjunction(goals?));
+                    } else if items.len() == 2 {
+                        if let MettaExpr::Atom(op, _) = &items[0] {
+                            if op == "quote" {
+                                let inner = MettaValue::try_from(&items[1])?;
+                                return Ok(MettaValue::Quoted(Box::new(inner)));
+                            }
+                        }
                     }
+
+                    let values: Result<Vec<_>, _> =
+                        items.iter().map(MettaValue::try_from).collect();
+                    Ok(MettaValue::SExpr(values?))
+
+                    // if is_conjunction {
+                    //     // Convert to Conjunction variant (skip the comma operator)
+                    //     let goals: Result<Vec<_>, _> =
+                    //         items[1..].iter().map(MettaValue::try_from).collect();
+                    //     Ok(MettaValue::Conjunction(goals?))
+                    // } else {
+                    //     // Regular S-expression
+                    //     let values: Result<Vec<_>, _> =
+                    //         items.iter().map(MettaValue::try_from).collect();
+                    //     Ok(MettaValue::SExpr(values?))
+                    // }
                 }
             }
         }

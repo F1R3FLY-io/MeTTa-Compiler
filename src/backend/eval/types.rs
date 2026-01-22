@@ -193,6 +193,10 @@ fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
                 infer_type(goals.last().unwrap(), env)
             }
         }
+
+        // Quoted expressions preserve the type of their inner value
+        // The quote itself doesn't change the type, just prevents evaluation
+        MettaValue::Quoted(inner) => infer_type(inner, env),
     }
 }
 

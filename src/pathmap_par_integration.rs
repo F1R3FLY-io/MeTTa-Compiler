@@ -105,6 +105,19 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
+        MettaValue::Quoted(inner) => {
+            // Represent quoted expressions as tagged tuples: ("quote", <inner_value>)
+            let tag_par = create_string_par("quote".to_string());
+            let value_par = metta_value_to_par(inner);
+
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                    ps: vec![tag_par, value_par],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+            }])
+        }
     };
 
     trace!(target: "mettatron::rholang_integration::metta_value_to_par", ?par, "Par");

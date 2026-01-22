@@ -285,22 +285,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compile_quote_variable() {
-        let src = "'quoted";
-        let state = compile(src).unwrap();
-
-        assert_eq!(state.source.len(), 1);
-        // Tree-Sitter parser treats 'quoted as a prefixed expression: (' quoted)
-        assert_eq!(
-            state.source[0],
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("'".to_string()),
-                MettaValue::Atom("quoted".to_string())
-            ])
-        );
-    }
-
-    #[test]
     fn test_compile_deeply_nested() {
         let src = "(+ 1 (+ 2 (+ 3 (+ 4 5))))";
         let state = compile(src).unwrap();

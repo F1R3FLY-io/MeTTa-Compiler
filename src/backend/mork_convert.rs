@@ -182,6 +182,18 @@ fn write_metta_value(
                 write_metta_value(goal, space, ctx, ez)?;
             }
         }
+
+        MettaValue::Quoted(inner) => {
+            // Write as (quote <inner>)
+            ez.write_arity(2);
+            ez.loc += 1;
+
+            // Write "quote" symbol
+            write_symbol(b"quote", space, ez)?;
+
+            // Write the inner expression
+            write_metta_value(inner, space, ctx, ez)?;
+        }
     }
 
     Ok(())

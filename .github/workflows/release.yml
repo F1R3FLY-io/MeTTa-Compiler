@@ -105,8 +105,11 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-01-15
           target: ${{ matrix.platform.target }}
+
+      - name: Show Rust version
+        run: rustc --version && cargo --version
 
       - name: Build MeTTaTron
         env:

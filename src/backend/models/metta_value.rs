@@ -28,6 +28,8 @@ pub enum MettaValue {
     /// Represents (,), (, expr), or (, expr1 expr2 ...)
     /// Goals are evaluated left-to-right with variable binding threading
     Conjunction(Vec<MettaValue>),
+    /// Quoted expression (prevents evaluation)
+    Quoted(Box<MettaValue>),
 }
 
 impl MettaValue {
@@ -74,7 +76,14 @@ impl MettaValue {
             MettaValue::Error(_, _) => "Error",
             MettaValue::Type(_) => "Type",
             MettaValue::Conjunction(_) => "Conjunction",
+            MettaValue::Quoted(_) => "Quoted",
         }
+    }
+
+    /// Check if this value is Quoted (represents unevaluated data)
+    /// Operations receiving Quoted arguments should remain unevaluated
+    pub fn is_quoted(&self) -> bool {
+        matches!(self, MettaValue::Quoted(_))
     }
 
     /// Check if this is an evaluation expression (starts with "!")
@@ -150,6 +159,9 @@ impl MettaValue {
                     .all(|(a, b)| a.structurally_equivalent(b))
             }
 
+            // Quoted values must be structurally equivalent
+            (MettaValue::Quoted(a), MettaValue::Quoted(b)) => a.structurally_equivalent(b),
+
             _ => false,
         }
     }
@@ -220,6 +232,8 @@ impl MettaValue {
             MettaValue::Error(_, details) => details.pattern_specificity(),
             // Types: use specificity of inner type
             MettaValue::Type(t) => t.pattern_specificity(),
+            // Quoted: use specificity of inner type
+            MettaValue::Quoted(inner) => inner.pattern_specificity(),
         }
     }
 
@@ -273,6 +287,9 @@ impl MettaValue {
                     .join(" ");
                 format!("(, {})", inner)
             }
+            MettaValue::Quoted(inner) => {
+                format!("(quote {})", inner.to_mork_string())
+            }
         }
     }
 
@@ -304,6 +321,9 @@ impl MettaValue {
                     .collect::<Vec<_>>()
                     .join(" ");
                 format!("(, {})", inner)
+            }
+            MettaValue::Quoted(inner) => {
+                format!("(quote {})", inner.to_path_map_string())
             }
         }
     }
@@ -340,6 +360,9 @@ impl MettaValue {
                     r#"{{"type":"conjunction","goals":[{}]}}"#,
                     goals_json.join(",")
                 )
+            }
+            MettaValue::Quoted(inner) => {
+                format!(r#"{{"type":"quoted","value":{}}}"#, inner.to_json_string())
             }
         }
     }
@@ -402,6 +425,10 @@ impl std::hash::Hash for MettaValue {
                 10u8.hash(state);
                 goals.hash(state);
             }
+            MettaValue::Quoted(inner) => {
+                11u8.hash(state);
+                inner.hash(state);
+            }
         }
     }
 }
@@ -438,19 +465,20 @@ impl TryFrom<&MettaExpr> for MettaValue {
                         // Convert to Conjunction variant (skip the comma operator)
                         let goals: Result<Vec<_>, _> =
                             items[1..].iter().map(MettaValue::try_from).collect();
-                        Ok(MettaValue::Conjunction(goals?))
-                    } else {
-                        // Regular S-expression
-                        let values: Result<Vec<_>, _> =
-                            items.iter().map(MettaValue::try_from).collect();
-                        Ok(MettaValue::SExpr(values?))
+                        return Ok(MettaValue::Conjunction(goals?));
+                    } else if items.len() == 2 {
+                        if let MettaExpr::Atom(op, _) = &items[0] {
+                            if op == "quote" {
+                                let inner = MettaValue::try_from(&items[1])?;
+                                return Ok(MettaValue::Quoted(Box::new(inner)));
+                            }
+                        }
                     }
+
+                    let values: Result<Vec<_>, _> =
+                        items.iter().map(MettaValue::try_from).collect();
+                    Ok(MettaValue::SExpr(values?))
                 }
-            }
-            MettaExpr::Quoted(expr, _span) => {
-                // For quoted expressions, wrap in a quote operator
-                let inner = MettaValue::try_from(expr.as_ref())?;
-                Ok(MettaValue::quote(inner))
             }
         }
     }

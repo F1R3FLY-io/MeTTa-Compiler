@@ -391,7 +391,8 @@ mod tests {
         let (results, _env) = eval(state.source[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::SExpr(_)));
+        // Quote now returns Quoted(SExpr(...)) instead of just SExpr(...)
+        assert!(matches!(results[0], MettaValue::Quoted(_)));
     }
 
     #[test]

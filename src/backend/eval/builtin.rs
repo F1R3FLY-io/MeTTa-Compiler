@@ -2428,4 +2428,238 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Bool(true));
     }
+
+    // ============================================================================
+    // QUOTED ARGUMENTS TESTS - Operations remain unevaluated with Quoted args
+    // ============================================================================
+
+    #[test]
+    fn test_arithmetic_with_quoted_first_arg() {
+        let env = Environment::new();
+
+        // (+ (quote (+ 51 6)) 12) should remain unevaluated
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("quote".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Long(51),
+                    MettaValue::Long(6),
+                ]),
+            ]),
+            MettaValue::Long(12),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        // Should return unevaluated: (+ (quote (+ 51 6)) 12)
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], MettaValue::Atom("+".to_string()));
+                assert!(matches!(&items[1], MettaValue::Quoted(_)));
+                assert_eq!(items[2], MettaValue::Long(12));
+            }
+            other => panic!("Expected SExpr with Quoted arg, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_arithmetic_with_quoted_second_arg() {
+        let env = Environment::new();
+
+        // (+ 12 (quote x)) should remain unevaluated
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(12),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("quote".to_string()),
+                MettaValue::Atom("x".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        // Should return unevaluated: (+ 12 (quote x))
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], MettaValue::Atom("+".to_string()));
+                assert_eq!(items[1], MettaValue::Long(12));
+                assert!(matches!(&items[2], MettaValue::Quoted(_)));
+            }
+            other => panic!("Expected SExpr with Quoted arg, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_arithmetic_with_both_quoted() {
+        let env = Environment::new();
+
+        // (+ (quote x) (quote y)) should remain unevaluated
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("quote".to_string()),
+                MettaValue::Atom("x".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("quote".to_string()),
+                MettaValue::Atom("y".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        // Should return unevaluated: (+ (quote x) (quote y))
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items.len(), 3);
+                assert!(matches!(&items[1], MettaValue::Quoted(_)));
+                assert!(matches!(&items[2], MettaValue::Quoted(_)));
+            }
+            other => panic!("Expected SExpr with Quoted args, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_comparison_with_quoted_arg() {
+        let env = Environment::new();
+
+        // (< (quote x) 10) should remain unevaluated
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("<".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("quote".to_string()),
+                MettaValue::Atom("x".to_string()),
+            ]),
+            MettaValue::Long(10),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        // Should return unevaluated
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items[0], MettaValue::Atom("<".to_string()));
+                assert!(matches!(&items[1], MettaValue::Quoted(_)));
+            }
+            other => panic!("Expected unevaluated comparison, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_logical_with_quoted_arg() {
+        let env = Environment::new();
+
+        // (and True (quote x)) should remain unevaluated
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("and".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("quote".to_string()),
+                MettaValue::Atom("x".to_string()),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        // Should return unevaluated
+        match &results[0] {
+            MettaValue::SExpr(items) => {
+                assert_eq!(items[0], MettaValue::Atom("and".to_string()));
+                assert!(matches!(&items[2], MettaValue::Quoted(_)));
+            }
+            other => panic!("Expected unevaluated logical op, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_nested_operation_with_quoted() {
+        let env = Environment::new();
+
+        // (+ 1 (+ (quote x) 2))
+        // Inner (+ (quote x) 2) should remain unevaluated as SExpr
+        // Outer (+ 1 SExpr) receives an SExpr (not a number) → type error expected
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("quote".to_string()),
+                    MettaValue::Atom("x".to_string()),
+                ]),
+                MettaValue::Long(2),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        // The outer + will get a type error because the inner operation returns SExpr (not a number)
+        // This is correct: Quoted semantics only prevent evaluation when args are DIRECTLY Quoted,
+        // not when they're SExprs that happen to contain Quoted values
+        match &results[0] {
+            MettaValue::Error(msg, _) => {
+                assert!(msg.contains("expected Number (integer), got S-expression"));
+            }
+            other => panic!("Expected type error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_normal_arithmetic_still_works() {
+        let env = Environment::new();
+
+        // Verify that normal arithmetic (without Quoted args) still works
+        // (+ 2 3) should evaluate to 5
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(2),
+            MettaValue::Long(3),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Long(5));
+    }
+
+    #[test]
+    fn test_eval_with_quoted_keeps_it_quoted() {
+        let env = Environment::new();
+
+        // (eval (quote (+ 1 2))) should return (quote (+ 1 2)) (stays quoted)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("eval".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("quote".to_string()),
+                MettaValue::SExpr(vec![
+                    MettaValue::Atom("+".to_string()),
+                    MettaValue::Long(1),
+                    MettaValue::Long(2),
+                ]),
+            ]),
+        ]);
+
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+
+        // Should return Quoted value
+        match &results[0] {
+            MettaValue::Quoted(inner) => match inner.as_ref() {
+                MettaValue::SExpr(items) => {
+                    assert_eq!(items[0], MettaValue::Atom("+".to_string()));
+                }
+                other => panic!("Expected SExpr inside Quoted, got {:?}", other),
+            },
+            other => panic!("Expected Quoted value from eval, got {:?}", other),
+        }
+    }
 }

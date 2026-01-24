@@ -116,14 +116,15 @@ pub fn try_match_all_rules_iterative(
 ) -> Vec<(Arc<MettaValue>, Bindings)> {
     trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?expr);
     // Extract head symbol and arity for indexed lookup
-    let matching_rules = if let Some(head) = get_head_symbol(expr) {
+    // Use get_matching_rules_iter with .cloned().collect() - sorting requires all items
+    let matching_rules: Vec<_> = if let Some(head) = get_head_symbol(expr) {
         let arity = expr.get_arity();
         // O(1) indexed lookup instead of O(n) iteration
-        env.get_matching_rules(head, arity)
+        env.get_matching_rules_iter(head, arity).cloned().collect()
     } else {
         // For expressions without head symbol, check wildcard rules only
         // This is still O(k_wildcards) instead of O(n_total)
-        env.get_matching_rules("", 0) // Empty head will return only wildcards
+        env.get_matching_rules_iter("", 0).cloned().collect()
     };
 
     // Sort rules by specificity (more specific first)

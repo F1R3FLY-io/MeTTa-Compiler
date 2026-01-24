@@ -1,0 +1,436 @@
+//! Atom interning for efficient multiplicity tracking.
+//!
+//! This module provides a symbol interning system for `MettaValue` that enables:
+//! - O(1) equality comparison via integer IDs instead of structural comparison
+//! - O(1) hashing via pre-computed hash values
+//! - Reduced memory usage through deduplication
+//! - Lock-free concurrent access via DashMap
+//!
+//! # Architecture
+//!
+//! ```text
+//! MettaValue → hash(MettaValue) → DashMap lookup → AtomId
+//!                                       ↓
+//!                              Vec<MettaValue> (reverse lookup)
+//! ```
+
+use dashmap::DashMap;
+use gxhash::{GxBuildHasher, GxHasher};
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
+
+use super::MettaValue;
+
+/// A unique identifier for an interned atom.
+///
+/// `AtomId` provides O(1) equality comparison and hashing, making it ideal
+/// for use as keys in hash maps or multisets where the same atom may be
+/// referenced many times.
+///
+/// # Properties
+/// - Copy + Clone: Can be freely copied without allocation
+/// - 8 bytes: Same size as a pointer, cache-friendly
+/// - Dense: IDs are assigned sequentially starting from 0
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AtomId(u64);
+
+impl AtomId {
+    /// Get the raw u64 value of this AtomId.
+    #[inline]
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    /// Create an AtomId from a raw u64 value.
+    ///
+    /// # Safety
+    /// This should only be used with values obtained from `as_u64()` on a valid AtomId.
+    #[inline]
+    pub fn from_raw(value: u64) -> Self {
+        AtomId(value)
+    }
+}
+
+/// Thread-safe symbol interning table for MettaValue.
+///
+/// The SymbolTable provides bidirectional mapping between `MettaValue` and `AtomId`:
+/// - Forward: `MettaValue` → `AtomId` (for interning)
+/// - Reverse: `AtomId` → `MettaValue` (for materialization)
+///
+/// # Thread Safety
+///
+/// All operations are thread-safe and lock-free for the common case:
+/// - `intern()`: Uses DashMap for concurrent insert-or-get
+/// - `resolve()`: Uses RwLock with read-heavy access pattern
+///
+/// # Memory Model
+///
+/// Values are stored once and never removed (append-only). This ensures:
+/// - AtomIds remain valid for the lifetime of the SymbolTable
+/// - No ABA problem with ID reuse
+/// - Efficient memory layout with sequential storage
+pub struct SymbolTable {
+    /// Next AtomId to assign (atomic counter for lock-free ID generation)
+    next_id: AtomicU64,
+
+    /// Forward lookup: pre-computed hash → (MettaValue, AtomId)
+    /// We use the hash as a first-level key to avoid re-hashing during lookup.
+    /// Collisions are handled by comparing the actual MettaValue.
+    value_to_id: DashMap<u64, Vec<(MettaValue, AtomId)>, GxBuildHasher>,
+
+    /// Reverse lookup: AtomId → MettaValue
+    /// Sequential storage indexed by AtomId.0
+    id_to_value: RwLock<Vec<MettaValue>>,
+
+    /// Hasher for computing MettaValue hashes
+    hasher_builder: GxBuildHasher,
+}
+
+impl SymbolTable {
+    /// Create a new empty SymbolTable.
+    pub fn new() -> Self {
+        Self {
+            next_id: AtomicU64::new(0),
+            value_to_id: DashMap::with_hasher(GxBuildHasher::default()),
+            id_to_value: RwLock::new(Vec::new()),
+            hasher_builder: GxBuildHasher::default(),
+        }
+    }
+
+    /// Create a new SymbolTable with pre-allocated capacity.
+    ///
+    /// Use this when you know approximately how many unique atoms will be interned.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            next_id: AtomicU64::new(0),
+            value_to_id: DashMap::with_capacity_and_hasher(capacity, GxBuildHasher::default()),
+            id_to_value: RwLock::new(Vec::with_capacity(capacity)),
+            hasher_builder: GxBuildHasher::default(),
+        }
+    }
+
+    /// Compute the hash of a MettaValue using gxhash.
+    #[inline]
+    fn compute_hash(&self, value: &MettaValue) -> u64 {
+        let mut hasher = self.hasher_builder.build_hasher();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Intern a MettaValue, returning its unique AtomId.
+    ///
+    /// If the value has been interned before, returns the existing AtomId.
+    /// Otherwise, assigns a new AtomId and stores the value.
+    ///
+    /// # Performance
+    /// - Best case (value exists): O(1) with no allocation
+    /// - Worst case (new value with hash collision): O(k) where k = collision chain length
+    ///
+    /// # Thread Safety
+    /// This method is thread-safe and can be called concurrently from multiple threads.
+    pub fn intern(&self, value: &MettaValue) -> AtomId {
+        let hash = self.compute_hash(value);
+
+        // Fast path: check if value already exists
+        if let Some(entries) = self.value_to_id.get(&hash) {
+            for (stored_value, id) in entries.iter() {
+                if stored_value == value {
+                    return *id;
+                }
+            }
+        }
+
+        // Slow path: need to insert new value
+        // Use entry API to handle race conditions
+        let mut entry = self.value_to_id.entry(hash).or_insert_with(Vec::new);
+
+        // Double-check in case another thread inserted while we were waiting
+        for (stored_value, id) in entry.iter() {
+            if stored_value == value {
+                return *id;
+            }
+        }
+
+        // Generate new ID atomically
+        let new_id = AtomId(self.next_id.fetch_add(1, Ordering::Relaxed));
+
+        // Add to forward map
+        entry.push((value.clone(), new_id));
+
+        // Add to reverse map
+        {
+            let mut id_to_value = self.id_to_value.write().expect("id_to_value lock poisoned");
+            // Ensure the vector is large enough (IDs are assigned sequentially)
+            let idx = new_id.0 as usize;
+            if id_to_value.len() <= idx {
+                id_to_value.resize(idx + 1, MettaValue::Nil);
+            }
+            id_to_value[idx] = value.clone();
+        }
+
+        new_id
+    }
+
+    /// Look up an AtomId without interning (returns None if not found).
+    ///
+    /// This is useful for checking if a value exists without modifying the table.
+    pub fn get(&self, value: &MettaValue) -> Option<AtomId> {
+        let hash = self.compute_hash(value);
+
+        if let Some(entries) = self.value_to_id.get(&hash) {
+            for (stored_value, id) in entries.iter() {
+                if stored_value == value {
+                    return Some(*id);
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve an AtomId back to its MettaValue.
+    ///
+    /// # Panics
+    /// Panics if the AtomId is invalid (not obtained from this SymbolTable).
+    pub fn resolve(&self, id: AtomId) -> MettaValue {
+        let id_to_value = self.id_to_value.read().expect("id_to_value lock poisoned");
+        id_to_value[id.0 as usize].clone()
+    }
+
+    /// Try to resolve an AtomId, returning None if invalid.
+    pub fn try_resolve(&self, id: AtomId) -> Option<MettaValue> {
+        let id_to_value = self.id_to_value.read().expect("id_to_value lock poisoned");
+        id_to_value.get(id.0 as usize).cloned()
+    }
+
+    /// Get the number of unique atoms in the symbol table.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.next_id.load(Ordering::Relaxed) as usize
+    }
+
+    /// Check if the symbol table is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Iterate over all interned (AtomId, MettaValue) pairs.
+    ///
+    /// Note: This acquires a read lock for the duration of iteration.
+    pub fn iter(&self) -> impl Iterator<Item = (AtomId, MettaValue)> + '_ {
+        let id_to_value = self.id_to_value.read().expect("id_to_value lock poisoned");
+        let len = id_to_value.len();
+        (0..len).map(move |i| {
+            let id = AtomId(i as u64);
+            let value = id_to_value[i].clone();
+            (id, value)
+        })
+    }
+}
+
+impl Default for SymbolTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for SymbolTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SymbolTable")
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_intern_basic() {
+        let table = SymbolTable::new();
+
+        let val1 = MettaValue::Atom("foo".to_string());
+        let val2 = MettaValue::Atom("bar".to_string());
+
+        let id1 = table.intern(&val1);
+        let id2 = table.intern(&val2);
+
+        // Different values get different IDs
+        assert_ne!(id1, id2);
+
+        // Same value gets same ID
+        let id1_again = table.intern(&val1);
+        assert_eq!(id1, id1_again);
+
+        assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn test_intern_various_types() {
+        let table = SymbolTable::new();
+
+        let values = vec![
+            MettaValue::Atom("symbol".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Long(42),
+            MettaValue::Float(3.14),
+            MettaValue::String("hello".to_string()),
+            MettaValue::Nil,
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+        ];
+
+        let ids: Vec<_> = values.iter().map(|v| table.intern(v)).collect();
+
+        // All should be unique
+        for (i, id1) in ids.iter().enumerate() {
+            for (j, id2) in ids.iter().enumerate() {
+                if i != j {
+                    assert_ne!(id1, id2, "IDs for {} and {} should differ", i, j);
+                }
+            }
+        }
+
+        assert_eq!(table.len(), values.len());
+    }
+
+    #[test]
+    fn test_resolve() {
+        let table = SymbolTable::new();
+
+        let val = MettaValue::SExpr(vec![
+            MettaValue::Atom("double".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        let id = table.intern(&val);
+        let resolved = table.resolve(id);
+
+        assert_eq!(val, resolved);
+    }
+
+    #[test]
+    fn test_get_without_intern() {
+        let table = SymbolTable::new();
+
+        let val1 = MettaValue::Atom("interned".to_string());
+        let val2 = MettaValue::Atom("not_interned".to_string());
+
+        let id1 = table.intern(&val1);
+
+        assert_eq!(table.get(&val1), Some(id1));
+        assert_eq!(table.get(&val2), None);
+    }
+
+    #[test]
+    fn test_try_resolve() {
+        let table = SymbolTable::new();
+
+        let val = MettaValue::Long(123);
+        let id = table.intern(&val);
+
+        assert_eq!(table.try_resolve(id), Some(val));
+        assert_eq!(table.try_resolve(AtomId(999)), None);
+    }
+
+    #[test]
+    fn test_with_capacity() {
+        let table = SymbolTable::with_capacity(1000);
+        assert!(table.is_empty());
+
+        for i in 0..100 {
+            table.intern(&MettaValue::Long(i));
+        }
+        assert_eq!(table.len(), 100);
+    }
+
+    #[test]
+    fn test_hash_collision_handling() {
+        // This test verifies that values with the same hash are handled correctly.
+        // In practice, hash collisions are rare with gxhash, but we need to handle them.
+        let table = SymbolTable::new();
+
+        // Create many values to increase chance of collision (or rely on linear chain)
+        let mut ids = Vec::new();
+        for i in 0..1000 {
+            let val = MettaValue::Long(i);
+            ids.push(table.intern(&val));
+        }
+
+        // Verify all are unique and resolvable
+        for i in 0..1000 {
+            let val = MettaValue::Long(i);
+            assert_eq!(table.resolve(ids[i as usize]), val);
+        }
+    }
+
+    #[test]
+    fn test_concurrent_intern() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let table = Arc::new(SymbolTable::new());
+        let num_threads = 8;
+        let values_per_thread = 100;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|t| {
+                let table = Arc::clone(&table);
+                thread::spawn(move || {
+                    let mut ids = Vec::new();
+                    for i in 0..values_per_thread {
+                        // Each thread interns overlapping values
+                        let val = MettaValue::Long((t * 50 + i) as i64);
+                        ids.push(table.intern(&val));
+                    }
+                    ids
+                })
+            })
+            .collect();
+
+        let all_ids: Vec<Vec<AtomId>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // Verify overlapping values got the same ID
+        // Thread 0 interns 0-99, Thread 1 interns 50-149, etc.
+        // Values 50-99 should have same ID from threads 0 and 1
+        let t0_ids = &all_ids[0];
+        let t1_ids = &all_ids[1];
+
+        // t0[50..100] should match t1[0..50] (both represent values 50-99)
+        for i in 0..50 {
+            assert_eq!(
+                t0_ids[50 + i], t1_ids[i],
+                "Value {} should have same ID from both threads",
+                50 + i
+            );
+        }
+    }
+
+    #[test]
+    fn test_iter() {
+        let table = SymbolTable::new();
+
+        let values = vec![
+            MettaValue::Atom("a".to_string()),
+            MettaValue::Atom("b".to_string()),
+            MettaValue::Atom("c".to_string()),
+        ];
+
+        for v in &values {
+            table.intern(v);
+        }
+
+        let collected: Vec<_> = table.iter().collect();
+        assert_eq!(collected.len(), 3);
+
+        // IDs should be sequential starting from 0
+        assert_eq!(collected[0].0, AtomId(0));
+        assert_eq!(collected[1].0, AtomId(1));
+        assert_eq!(collected[2].0, AtomId(2));
+    }
+}

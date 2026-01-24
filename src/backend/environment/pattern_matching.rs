@@ -2,31 +2,128 @@
 //!
 //! Provides methods for matching patterns against atoms in the Space.
 //! Includes bloom filter optimization for O(1) rejection.
+//!
+//! # Deferred Expansion
+//!
+//! `match_space()` returns `Vec<MultiplicityMatch>` with compressed (value, count) pairs
+//! instead of expanding high-multiplicity matches immediately. This:
+//!
+//! - Reduces memory usage from O(N×M) to O(N) where M = max multiplicity
+//! - Enables lazy expansion only when results are actually consumed
+//! - Prevents OOM on high-multiplicity atoms (e.g., multiplicity = 1000)
+//!
+//! Call `.expand()` on each `MultiplicityMatch` to get an iterator of cloned values,
+//! or use `.into_iter().flat_map(|m| m.expand()).collect()` to expand all results.
 
 use mork_expr::Expr;
 use tracing::trace;
 
+use super::multiplicity::{is_multiplicity_entry, MultiplicityLookup};
 use super::{Environment, MettaValue};
 use crate::backend::eval::{apply_bindings, pattern_match};
 
+/// A lazy match result with deferred multiplicity expansion.
+///
+/// Instead of cloning the template N times for atoms with multiplicity N,
+/// we store the template once with its count. This reduces memory usage
+/// from O(N×M) to O(N) where M is the maximum multiplicity.
+///
+/// # Example
+/// ```ignore
+/// // Instead of: vec![atom.clone(), atom.clone(), atom.clone()] for multiplicity 3
+/// // We store:   MultiplicityMatch { value: atom, count: 3 }
+/// ```
+#[derive(Debug, Clone)]
+pub struct MultiplicityMatch {
+    /// The instantiated template value
+    pub value: MettaValue,
+    /// Number of times this value should appear in results
+    pub count: usize,
+}
+
+impl MultiplicityMatch {
+    /// Create a new multiplicity match.
+    #[inline]
+    pub fn new(value: MettaValue, count: usize) -> Self {
+        Self { value, count }
+    }
+
+    /// Expand into an iterator of cloned values.
+    ///
+    /// This defers the cloning until the iterator is actually consumed,
+    /// enabling lazy evaluation of high-multiplicity matches.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let m = MultiplicityMatch::new(atom, 1000);
+    /// // Only clones when iterated:
+    /// for value in m.expand().take(10) {
+    ///     // Only 10 clones happen, not 1000
+    /// }
+    /// ```
+    #[inline]
+    pub fn expand(self) -> impl Iterator<Item = MettaValue> {
+        std::iter::repeat(self.value).take(self.count)
+    }
+
+    /// Check if this is a single match (count == 1).
+    #[inline]
+    pub fn is_single(&self) -> bool {
+        self.count == 1
+    }
+}
+
 impl Environment {
     /// Match pattern against all atoms in the Space (optimized for match operation)
-    /// Returns all instantiated templates for atoms matching the pattern
+    ///
+    /// Returns `MultiplicityMatch` structs containing the instantiated template and its
+    /// multiplicity count. This deferred expansion design avoids cloning the template N times
+    /// for atoms with multiplicity N.
     ///
     /// This is optimized to work directly with MORK expressions, avoiding
     /// unnecessary string serialization and parsing.
+    ///
+    /// # Memory Efficiency
+    ///
+    /// For atoms with high multiplicity (e.g., an atom added 1000 times), this returns a
+    /// single `MultiplicityMatch { value: template, count: 1000 }` rather than cloning
+    /// the template 1000 times, reducing memory from O(N×M) to O(N) where M = max multiplicity.
     ///
     /// # Arguments
     /// * `pattern` - The MeTTa pattern to match against
     /// * `template` - The template to instantiate for each match
     ///
     /// # Returns
-    /// Vector of instantiated templates (MettaValue) for all matches
-    pub fn match_space(&self, pattern: &MettaValue, template: &MettaValue) -> Vec<MettaValue> {
+    /// Vector of `MultiplicityMatch` structs, each containing a value and its count.
+    /// Call `.expand()` on each to get an iterator of cloned values.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Returns compressed results
+    /// let results = env.match_space(&pattern, &template);
+    /// let total_count: usize = results.iter().map(|m| m.count).sum();
+    ///
+    /// // Expand on demand for iteration:
+    /// for m in results {
+    ///     for value in m.expand().take(10) {
+    ///         // Process only first 10 of each match
+    ///     }
+    /// }
+    ///
+    /// // Or expand all for Vec<MettaValue>:
+    /// let expanded: Vec<MettaValue> = env.match_space(&pattern, &template)
+    ///     .into_iter()
+    ///     .flat_map(|m| m.expand())
+    ///     .collect();
+    /// ```
+    pub fn match_space(
+        &self,
+        pattern: &MettaValue,
+        template: &MettaValue,
+    ) -> Vec<MultiplicityMatch> {
         trace!(target: "mettatron::environment::match_space", ?pattern, ?template);
 
         // BLOOM FILTER CHECK: O(1) rejection if (head, arity) definitely doesn't exist
-        // This is "Tier 0" optimization - skips entire iteration if bloom filter says no match
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
             let bloom_result = self
@@ -36,7 +133,6 @@ impl Environment {
                 .expect("head_arity_bloom lock poisoned")
                 .may_contain(expected_head.as_bytes(), pattern_arity);
             if !bloom_result {
-                // Definitely no matching expressions exist
                 return Vec::new();
             }
         }
@@ -46,23 +142,30 @@ impl Environment {
         let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
 
+        // OPTIMIZATION: Use zero-allocation multiplicity lookup for hot path
+        let mut mult_lookup = MultiplicityLookup::new();
+
         // 1. Iterate through MORK PathMap (primary storage)
         while rz.to_next_val() {
-            let ptr = rz.path().as_ptr();
+            let path_bytes = rz.path();
 
-            // Get the s-expression at this position
+            // Skip multiplicity entries - we only process atom marker paths
+            if is_multiplicity_entry(path_bytes) {
+                continue;
+            }
+
+            let ptr = path_bytes.as_ptr();
             let expr = Expr {
                 ptr: ptr.cast_mut(),
             };
 
-            // FIXED: Use mork_expr_to_metta_value() instead of serialize2-based conversion
-            // This avoids the "reserved byte" panic during evaluation
             if let Ok(atom) = Self::mork_expr_to_metta_value(&expr, &space) {
-                // Try to match the pattern against this atom
                 if let Some(bindings) = pattern_match(pattern, &atom) {
-                    // Apply bindings to the template
                     let instantiated = apply_bindings(template, &bindings).into_owned();
-                    results.push(instantiated);
+                    let multiplicity = mult_lookup.get(&space.btm, path_bytes).max(1) as usize;
+
+                    // Store compressed result instead of expanding
+                    results.push(MultiplicityMatch::new(instantiated, multiplicity));
                 }
             }
         }
@@ -70,17 +173,23 @@ impl Environment {
         drop(space);
 
         // 2. Also check large expression fallback PathMap (if allocated)
-        // These are expressions with arity >= 64 that couldn't fit in MORK
         let guard = self
             .shared
             .large_expr_pathmap
             .read()
             .expect("large_expr_pathmap lock poisoned");
         if let Some(ref fallback) = *guard {
-            for (_key, stored_value) in fallback.iter() {
+            let btm = self.shared.btm.read().expect("btm lock poisoned");
+
+            for (key, stored_value) in fallback.iter() {
+                if is_multiplicity_entry(&key) {
+                    continue;
+                }
+
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
                     let instantiated = apply_bindings(template, &bindings).into_owned();
-                    results.push(instantiated);
+                    let multiplicity = mult_lookup.get(&btm, &key).max(1) as usize;
+                    results.push(MultiplicityMatch::new(instantiated, multiplicity));
                 }
             }
         }
@@ -131,7 +240,14 @@ impl Environment {
 
         // 1. Iterate through MORK PathMap (primary storage) - EARLY EXIT on first match
         while rz.to_next_val() {
-            let ptr = rz.path().as_ptr();
+            let path_bytes = rz.path();
+
+            // Skip multiplicity entries - only process atom marker paths
+            if is_multiplicity_entry(path_bytes) {
+                continue;
+            }
+
+            let ptr = path_bytes.as_ptr();
 
             // DISABLED: pre-filter extracts wrong data from rz.path()
             /*
@@ -166,7 +282,12 @@ impl Environment {
             .read()
             .expect("large_expr_pathmap lock poisoned");
         if let Some(ref fallback) = *guard {
-            for (_key, stored_value) in fallback.iter() {
+            for (key, stored_value) in fallback.iter() {
+                // Skip multiplicity entries
+                if is_multiplicity_entry(&key) {
+                    continue;
+                }
+
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
                     let instantiated = apply_bindings(template, &bindings).into_owned();
                     return Some(instantiated); // EARLY EXIT
@@ -212,7 +333,14 @@ impl Environment {
 
         // Iterate through MORK PathMap - EARLY EXIT on first match
         while rz.to_next_val() {
-            let ptr = rz.path().as_ptr();
+            let path_bytes = rz.path();
+
+            // Skip multiplicity entries - only process atom marker paths
+            if is_multiplicity_entry(path_bytes) {
+                continue;
+            }
+
+            let ptr = path_bytes.as_ptr();
 
             // DISABLED: pre-filter extracts wrong data from rz.path()
             // TODO: Investigate why mork_head_info returns garbage bytes
@@ -247,7 +375,12 @@ impl Environment {
             .read()
             .expect("large_expr_pathmap lock poisoned");
         if let Some(ref fallback) = *guard {
-            for (_key, stored_value) in fallback.iter() {
+            for (key, stored_value) in fallback.iter() {
+                // Skip multiplicity entries
+                if is_multiplicity_entry(&key) {
+                    continue;
+                }
+
                 if pattern_match(pattern, stored_value).is_some() {
                     return true; // EARLY EXIT
                 }

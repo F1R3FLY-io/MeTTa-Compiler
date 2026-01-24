@@ -743,6 +743,117 @@ Some operations require:
 - **Nondeterminism** with unbounded alternatives
 - **External calls** to interpreted code
 
+### Safe Bailout Implementation
+
+**Important**: The bailout mechanism uses **runtime function calls** instead of trap instructions. This is critical for stability across different execution environments.
+
+#### The Problem with Trap Instructions
+
+Early implementations used Cranelift's `trap()` instruction for bailout, which generates x86-64 `ud2` (undefined instruction) opcodes. While this works in isolation, it causes **SIGILL (illegal instruction)** crashes in certain scenarios:
+
+- Running under CPU affinity constraints (`taskset`)
+- Multi-threaded execution contexts
+- Integration benchmarks and end-to-end tests
+
+The `ud2` opcode (0x0F 0x0B) always raises SIGILL regardless of CPU features, making trap-based bailout unsuitable for production use.
+
+#### The Solution: Runtime Error Handlers
+
+Bailout now calls runtime error handlers that set context flags and return gracefully:
+
+**Error Handler Functions** (in `src/backend/bytecode/jit/runtime/error_handling.rs`):
+
+```rust
+/// Called when type guard fails
+pub unsafe extern "C" fn jit_runtime_type_error(
+    ctx: *mut JitContext,
+    ip: u64,
+    _expected: u64
+) {
+    if let Some(ctx) = ctx.as_mut() {
+        ctx.bailout = true;
+        ctx.bailout_ip = ip as usize;
+        ctx.bailout_reason = JitBailoutReason::TypeError;
+    }
+}
+
+/// Called on division by zero
+pub unsafe extern "C" fn jit_runtime_div_by_zero(ctx: *mut JitContext, ip: u64) {
+    if let Some(ctx) = ctx.as_mut() {
+        ctx.bailout = true;
+        ctx.bailout_ip = ip as usize;
+        ctx.bailout_reason = JitBailoutReason::DivisionByZero;
+    }
+}
+
+/// Called on arithmetic overflow
+pub unsafe extern "C" fn jit_runtime_stack_overflow(ctx: *mut JitContext, ip: u64) {
+    if let Some(ctx) = ctx.as_mut() {
+        ctx.bailout = true;
+        ctx.bailout_ip = ip as usize;
+        ctx.bailout_reason = JitBailoutReason::StackOverflow;
+    }
+}
+```
+
+#### Architecture: Error Function IDs
+
+The JIT compiler uses a modular initialization pattern for error handlers:
+
+**ErrorFuncIds** (in `src/backend/bytecode/jit/compiler/init/error_handling.rs`):
+
+```rust
+/// Function IDs for error handling operations (module-level)
+#[derive(Clone, Copy)]
+pub struct ErrorFuncIds {
+    pub type_error_func_id: FuncId,
+    pub div_by_zero_func_id: FuncId,
+    pub overflow_func_id: FuncId,
+}
+```
+
+**ErrorFuncRefs** (in `src/backend/bytecode/jit/codegen.rs`):
+
+```rust
+/// Function references for error handling (function-local)
+#[derive(Clone, Copy)]
+pub struct ErrorFuncRefs {
+    pub type_error: FuncRef,
+    pub div_by_zero: FuncRef,
+    pub overflow: FuncRef,
+}
+```
+
+The distinction is important:
+- `FuncId` is a module-level identifier obtained during JIT module initialization
+- `FuncRef` is a function-local reference created via `module.declare_func_in_func()` for each compiled function
+
+#### Bailout Code Generation
+
+The `CodegenContext` emits runtime calls instead of traps:
+
+```rust
+fn emit_type_error_bailout(&mut self, ip: usize, _expected: &'static str) {
+    if let Some(error_refs) = self.error_func_refs {
+        // Build arguments
+        let ctx = self.ctx_ptr;
+        let ip_val = self.builder.ins().iconst(types::I64, ip as i64);
+        let expected_val = self.builder.ins().iconst(types::I64, 0);
+
+        // Call runtime error handler (sets bailout flags)
+        self.builder.ins().call(error_refs.type_error, &[ctx, ip_val, expected_val]);
+
+        // Return from function (VM will check bailout flag)
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        self.builder.ins().return_(&[zero]);
+    } else {
+        // Fallback: use trap (should not happen in production)
+        self.builder.ins().trap(TrapCode::unwrap_user(1));
+    }
+    self.terminated = true;
+}
+```
+
 ### The Bailout Mechanism
 
 ```
@@ -758,15 +869,21 @@ JIT Code Executing
      ├── Comparison operations...
      │        └── Native code, no problem
      │
-     └── Encounters complex operation (e.g., pattern match)
+     └── Encounters type mismatch (e.g., non-Long operand)
               │
               ▼
-         jit_runtime_type_error(ctx, ip, expected)
+         Type guard fails
+              │
+              ▼
+         call jit_runtime_type_error(ctx, ip, expected)
               │
               ├─► ctx.bailout = true
               ├─► ctx.bailout_ip = current_instruction
-              ├─► ctx.bailout_reason = UnsupportedOperation
-              └─► return  (exit native function)
+              ├─► ctx.bailout_reason = TypeError
+              └─► (function returns normally)
+              │
+              ▼
+         return 0  (exit JIT function gracefully)
 
 Back in BytecodeVM::run()
      │
@@ -804,6 +921,18 @@ After bailout:
   Stack: [value1, value2, value3]  ◄── Same state!
 
 Result: Correct output, just slower for the bailed-out portion
+```
+
+### CPU Affinity Compatibility
+
+With the safe bailout mechanism, JIT-compiled code works correctly under CPU affinity constraints:
+
+```bash
+# This now works correctly (no SIGILL)
+taskset -c 0-3 ./target/release/mettatron examples/fib.metta
+
+# E2E benchmarks run without crashes
+taskset -c 0-17 cargo bench --bench e2e
 ```
 
 ---
@@ -1055,9 +1184,12 @@ Here's the complete decision tree for every execution:
 | `src/backend/bytecode/jit/profile.rs` | Hotness tracking, state machine |
 | `src/backend/bytecode/jit/tiered.rs` | Tier definitions, JitCache, LRU |
 | `src/backend/bytecode/jit/types.rs` | JitValue, JitContext, JitChoicePoint |
-| `src/backend/bytecode/jit/compiler.rs` | Cranelift integration, code generation |
-| `src/backend/bytecode/jit/codegen.rs` | IR building for each opcode |
+| `src/backend/bytecode/jit/compiler/mod.rs` | Cranelift integration, JitCompiler |
+| `src/backend/bytecode/jit/compiler/init/` | Modular function ID initialization |
+| `src/backend/bytecode/jit/compiler/init/error_handling.rs` | ErrorFuncIds, ErrorHandlingInit trait |
+| `src/backend/bytecode/jit/codegen.rs` | IR building, ErrorFuncRefs, bailout emission |
 | `src/backend/bytecode/jit/runtime.rs` | Runtime helper functions |
+| `src/backend/bytecode/jit/runtime/error_handling.rs` | jit_runtime_type_error, div_by_zero, overflow |
 | `src/backend/bytecode/jit/hybrid.rs` | HybridExecutor wrapper |
 
 ---

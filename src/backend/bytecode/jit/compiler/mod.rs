@@ -30,10 +30,10 @@ use tracing::trace;
 // Import initialization traits for zero-cost static dispatch
 use init::{
     ArithmeticFuncIds, ArithmeticInit, BindingFuncIds, BindingsInit, CallFuncIds, CallsInit,
-    DebugFuncIds, DebugInit, GlobalsFuncIds, GlobalsInit, HigherOrderFuncIds, HigherOrderInit,
-    NondetFuncIds, NondetInit, PatternMatchingFuncIds, PatternMatchingInit, RulesFuncIds,
-    RulesInit, SExprFuncIds, SExprInit, SpaceFuncIds, SpaceInit, SpecialFormsFuncIds,
-    SpecialFormsInit, TypeOpsFuncIds, TypeOpsInit,
+    DebugFuncIds, DebugInit, ErrorFuncIds, ErrorHandlingInit, GlobalsFuncIds, GlobalsInit,
+    HigherOrderFuncIds, HigherOrderInit, NondetFuncIds, NondetInit, PatternMatchingFuncIds,
+    PatternMatchingInit, RulesFuncIds, RulesInit, SExprFuncIds, SExprInit, SpaceFuncIds,
+    SpaceInit, SpecialFormsFuncIds, SpecialFormsInit, TypeOpsFuncIds, TypeOpsInit,
 };
 
 /// JIT Compiler for bytecode chunks
@@ -106,6 +106,9 @@ pub struct JitCompiler {
     /// Debug and meta operations
     pub(crate) debug: DebugFuncIds,
 
+    /// Error handling operations (bailout from JIT to interpreter)
+    pub(crate) errors: ErrorFuncIds,
+
     // =========================================================================
     // Miscellaneous FuncIds - not yet grouped
     // =========================================================================
@@ -147,19 +150,14 @@ impl JitCompiler {
     pub fn new() -> JitResult<Self> {
         use super::runtime;
 
-        let mut flag_builder = settings::builder();
-        // Enable optimizations
-        flag_builder
-            .set("opt_level", "speed")
-            .map_err(|e| JitError::CompilationError(format!("Failed to set opt_level: {}", e)))?;
+        // Check for environment variable to disable JIT (useful for benchmarking)
+        if std::env::var("METTATRON_DISABLE_JIT").is_ok() {
+            return Err(JitError::CompilationError(
+                "JIT disabled via METTATRON_DISABLE_JIT environment variable".to_string(),
+            ));
+        }
 
-        let isa_builder = cranelift_native::builder().map_err(|e| {
-            JitError::CompilationError(format!("Failed to create ISA builder: {}", e))
-        })?;
-
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .map_err(|e| JitError::CompilationError(format!("Failed to create ISA: {}", e)))?;
+        let isa = Self::create_validated_isa()?;
 
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
@@ -182,6 +180,7 @@ impl JitCompiler {
         let higher_order = Self::declare_higher_order_funcs(&mut module)?;
         let globals = Self::declare_globals_funcs(&mut module)?;
         let debug = Self::declare_debug_funcs(&mut module)?;
+        let errors = Self::declare_error_handling_funcs(&mut module)?;
 
         // Declare miscellaneous functions not in groups
         // load_constant: fn(ctx, index) -> value
@@ -317,6 +316,7 @@ impl JitCompiler {
             higher_order,
             globals,
             debug,
+            errors,
             // Miscellaneous FuncIds
             load_const_func_id,
             push_uri_func_id,
@@ -327,6 +327,39 @@ impl JitCompiler {
             mork_match_func_id,
             mork_insert_func_id,
             mork_delete_func_id,
+        })
+    }
+
+    /// Create ISA with native CPU features.
+    ///
+    /// Uses `cranelift_native::builder()` for auto-detection of CPU features.
+    ///
+    /// # SIGILL Under CPU Affinity
+    ///
+    /// When running under CPU affinity (e.g., `taskset`), Cranelift's auto-detection
+    /// may report features that aren't available on the assigned cores, causing SIGILL.
+    ///
+    /// Workaround: Set `METTATRON_DISABLE_JIT=1` to disable JIT compilation:
+    /// ```bash
+    /// METTATRON_DISABLE_JIT=1 taskset -c 0-N cargo bench ...
+    /// ```
+    fn create_validated_isa() -> JitResult<std::sync::Arc<dyn cranelift::codegen::isa::TargetIsa>> {
+        let mut flag_builder = settings::builder();
+
+        // Enable optimizations
+        flag_builder
+            .set("opt_level", "speed")
+            .map_err(|e| JitError::CompilationError(format!("Failed to set opt_level: {}", e)))?;
+
+        // Use native builder which auto-detects CPU features
+        let isa_builder = cranelift_native::builder().map_err(|e| {
+            JitError::CompilationError(format!("Failed to create native ISA builder: {}", e))
+        })?;
+
+        let flags = settings::Flags::new(flag_builder);
+
+        isa_builder.finish(flags).map_err(|e| {
+            JitError::CompilationError(format!("Failed to create ISA: {}", e))
         })
     }
 
@@ -351,20 +384,7 @@ impl JitCompiler {
         Self::register_higher_order_symbols(builder);
         Self::register_globals_symbols(builder);
         Self::register_debug_symbols(builder);
-
-        // Register error handling symbols (used for bailout)
-        builder.symbol(
-            "jit_runtime_type_error",
-            runtime::jit_runtime_type_error as *const u8,
-        );
-        builder.symbol(
-            "jit_runtime_div_by_zero",
-            runtime::jit_runtime_div_by_zero as *const u8,
-        );
-        builder.symbol(
-            "jit_runtime_stack_overflow",
-            runtime::jit_runtime_stack_overflow as *const u8,
-        );
+        Self::register_error_handling_symbols(builder);
 
         // Register miscellaneous symbols
         builder.symbol(
@@ -554,8 +574,26 @@ impl JitCompiler {
 
         // Use a scoping block so codegen's borrow of builder ends before finalize
         {
-            // Create codegen context for helper methods
-            let mut codegen = CodegenContext::new(&mut builder, ctx_ptr);
+            // Declare error handler FuncRefs for bailout code
+            // These allow graceful fallback to interpreter instead of SIGILL from trap()
+            let error_func_refs = {
+                use super::codegen::ErrorFuncRefs;
+                ErrorFuncRefs {
+                    type_error: self
+                        .module
+                        .declare_func_in_func(self.errors.type_error_func_id, builder.func),
+                    div_by_zero: self
+                        .module
+                        .declare_func_in_func(self.errors.div_by_zero_func_id, builder.func),
+                    overflow: self
+                        .module
+                        .declare_func_in_func(self.errors.overflow_func_id, builder.func),
+                }
+            };
+
+            // Create codegen context with error handler support
+            let mut codegen =
+                CodegenContext::with_error_handlers(&mut builder, ctx_ptr, error_func_refs);
 
             // Stage 4: Initialize local variables
             codegen.init_locals(chunk.local_count() as usize);

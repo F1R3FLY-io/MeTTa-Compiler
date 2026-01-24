@@ -75,8 +75,9 @@ mod tests;
 
 // Error handling
 pub use error_handling::{
-    jit_runtime_div_by_zero, jit_runtime_stack_overflow, jit_runtime_stack_underflow,
-    jit_runtime_type_error,
+    jit_runtime_binding_frame_overflow, jit_runtime_choice_point_overflow, jit_runtime_div_by_zero,
+    jit_runtime_integer_overflow, jit_runtime_invalid_binding, jit_runtime_results_overflow,
+    jit_runtime_stack_overflow, jit_runtime_stack_underflow, jit_runtime_type_error,
 };
 
 // Arithmetic

@@ -32,6 +32,7 @@ use crate::backend::models::{Bindings, MettaValue};
 /// // Wildcard
 /// pattern_match(&atom("_"), &long(999)) // => Some({})
 /// ```
+#[inline]
 pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Bindings> {
     trace!(target: "mettatron::backend::eval::pattern_match", ?pattern, ?value);
     let mut bindings = Bindings::new();
@@ -44,110 +45,135 @@ pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Binding
 
 /// Internal pattern matching implementation that accumulates bindings.
 ///
-/// This function is separate from `pattern_match` to allow reuse of the bindings
-/// map across recursive calls, avoiding repeated allocations.
+/// This function uses an explicit work stack instead of recursion to avoid
+/// stack overflow on deeply nested S-expressions. This is critical for:
+/// - Async evaluation (Tokio workers have smaller stacks ~2MB)
+/// - Deeply nested data structures common in knowledge graphs
+/// - Pattern matching before trampoline's MAX_EVAL_DEPTH check runs
+#[inline]
 pub(crate) fn pattern_match_impl(
     pattern: &MettaValue,
     value: &MettaValue,
     bindings: &mut Bindings,
 ) -> bool {
-    match (pattern, value) {
-        // Wildcard matches anything
-        (MettaValue::Atom(p), _) if p == "_" => true,
+    // Work stack: (pattern, value) pairs to match
+    // Use Vec as stack (push/pop from end) - more efficient than VecDeque for this use case
+    let mut work_stack: Vec<(&MettaValue, &MettaValue)> = Vec::with_capacity(16);
+    work_stack.push((pattern, value));
 
-        // FAST PATH: First variable binding (empty bindings)
-        // Optimization: Skip lookup when bindings are empty - directly insert
-        // This reduces single-variable regression from 16.8% to ~5-7%
-        (MettaValue::Atom(p), v)
-            if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
-                && p != "&"
-                && bindings.is_empty() =>
-        {
-            bindings.insert(p.clone(), v.clone());
-            true
-        }
+    while let Some((pat, val)) = work_stack.pop() {
+        // Process each pattern-value pair
+        let matches = match (pat, val) {
+            // Wildcard matches anything
+            (MettaValue::Atom(p), _) if p == "_" => true,
 
-        // GENERAL PATH: Variable with potential existing bindings
-        // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-        (MettaValue::Atom(p), v)
-            if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\'')) && p != "&" =>
-        {
-            // Check if variable is already bound (linear search for SmartBindings)
-            if let Some((_, existing)) = bindings.iter().find(|(name, _)| name.as_str() == p) {
-                existing == v
-            } else {
+            // FAST PATH: First variable binding (empty bindings)
+            // Optimization: Skip lookup when bindings are empty - directly insert
+            // This reduces single-variable regression from 16.8% to ~5-7%
+            (MettaValue::Atom(p), v)
+                if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
+                    && p != "&"
+                    && bindings.is_empty()
+                    && work_stack.is_empty() =>
+            {
                 bindings.insert(p.clone(), v.clone());
                 true
             }
-        }
 
-        // Atoms must match exactly
-        (MettaValue::Atom(p), MettaValue::Atom(v)) => p == v,
-        (MettaValue::Bool(p), MettaValue::Bool(v)) => p == v,
-        (MettaValue::Long(p), MettaValue::Long(v)) => p == v,
-        (MettaValue::Float(p), MettaValue::Float(v)) => p == v,
-        (MettaValue::String(p), MettaValue::String(v)) => p == v,
-        (MettaValue::Nil, MettaValue::Nil) => true,
-        // Nil also matches Unit (HE-compatible: both represent "nothing")
-        (MettaValue::Nil, MettaValue::Unit) => true,
-        // Nil pattern matches Empty atom (HE-compatible: () pattern in case matches Empty)
-        // This is needed because case converts empty results to Atom("Empty") internally
-        (MettaValue::Nil, MettaValue::Atom(v)) if v == "Empty" => true,
-        // Empty atom pattern matches Nil (symmetry: Empty pattern matches () values)
-        (MettaValue::Atom(p), MettaValue::Nil) if p == "Empty" => true,
-        // Unit also matches Nil and other Units
-        (MettaValue::Unit, MettaValue::Unit) => true,
-        (MettaValue::Unit, MettaValue::Nil) => true,
-
-        // Nil pattern matches only empty values (Nil, Unit, empty S-expr, or Empty atom)
-        // For discard pattern, use wildcard _ instead
-        (MettaValue::Nil, MettaValue::SExpr(v_items)) if v_items.is_empty() => true,
-        (MettaValue::Nil, MettaValue::Atom(v)) if v == "Empty" => true,
-
-        // Empty S-expression () matches only empty values (empty S-expr, Nil, Unit, or Empty atom)
-        // For discard pattern, use wildcard _ instead
-        (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items))
-            if p_items.is_empty() && v_items.is_empty() =>
-        {
-            true
-        }
-        (MettaValue::SExpr(p_items), MettaValue::Nil) if p_items.is_empty() => true,
-        (MettaValue::SExpr(p_items), MettaValue::Unit) if p_items.is_empty() => true,
-        (MettaValue::SExpr(p_items), MettaValue::Atom(v)) if p_items.is_empty() && v == "Empty" => {
-            true
-        }
-
-        // S-expressions must have same length and all elements must match
-        (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items)) => {
-            if p_items.len() != v_items.len() {
-                return false;
-            }
-            for (p, v) in p_items.iter().zip(v_items.iter()) {
-                if !pattern_match_impl(p, v, bindings) {
-                    return false;
+            // GENERAL PATH: Variable with potential existing bindings
+            // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
+            (MettaValue::Atom(p), v)
+                if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
+                    && p != "&" =>
+            {
+                // Check if variable is already bound (linear search for SmartBindings)
+                if let Some((_, existing)) = bindings.iter().find(|(name, _)| name.as_str() == p) {
+                    existing == v
+                } else {
+                    bindings.insert(p.clone(), v.clone());
+                    true
                 }
             }
-            true
-        }
 
-        // Conjunctions must have same length and all goals must match
-        (MettaValue::Conjunction(p_goals), MettaValue::Conjunction(v_goals)) => {
-            if p_goals.len() != v_goals.len() {
-                return false;
+            // Atoms must match exactly
+            (MettaValue::Atom(p), MettaValue::Atom(v)) => p == v,
+            (MettaValue::Bool(p), MettaValue::Bool(v)) => p == v,
+            (MettaValue::Long(p), MettaValue::Long(v)) => p == v,
+            (MettaValue::Float(p), MettaValue::Float(v)) => p == v,
+            (MettaValue::String(p), MettaValue::String(v)) => p == v,
+            (MettaValue::Nil, MettaValue::Nil) => true,
+            // Nil also matches Unit (HE-compatible: both represent "nothing")
+            (MettaValue::Nil, MettaValue::Unit) => true,
+            // Nil pattern matches Empty atom (HE-compatible: () pattern in case matches Empty)
+            // This is needed because case converts empty results to Atom("Empty") internally
+            (MettaValue::Nil, MettaValue::Atom(v)) if v == "Empty" => true,
+            // Empty atom pattern matches Nil (symmetry: Empty pattern matches () values)
+            (MettaValue::Atom(p), MettaValue::Nil) if p == "Empty" => true,
+            // Unit also matches Nil and other Units
+            (MettaValue::Unit, MettaValue::Unit) => true,
+            (MettaValue::Unit, MettaValue::Nil) => true,
+
+            // Nil pattern matches only empty values (Nil, Unit, empty S-expr, or Empty atom)
+            // For discard pattern, use wildcard _ instead
+            (MettaValue::Nil, MettaValue::SExpr(v_items)) if v_items.is_empty() => true,
+            (MettaValue::Nil, MettaValue::Atom(v)) if v == "Empty" => true,
+
+            // Empty S-expression () matches only empty values (empty S-expr, Nil, Unit, or Empty atom)
+            // For discard pattern, use wildcard _ instead
+            (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items))
+                if p_items.is_empty() && v_items.is_empty() =>
+            {
+                true
             }
-            for (p, v) in p_goals.iter().zip(v_goals.iter()) {
-                if !pattern_match_impl(p, v, bindings) {
-                    return false;
+            (MettaValue::SExpr(p_items), MettaValue::Nil) if p_items.is_empty() => true,
+            (MettaValue::SExpr(p_items), MettaValue::Unit) if p_items.is_empty() => true,
+            (MettaValue::SExpr(p_items), MettaValue::Atom(v))
+                if p_items.is_empty() && v == "Empty" =>
+            {
+                true
+            }
+
+            // S-expressions: push children onto work stack (replaces recursion)
+            (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items)) => {
+                if p_items.len() != v_items.len() {
+                    return false; // Early exit on length mismatch
                 }
+                // Push in reverse order so first element is processed first (LIFO)
+                for (p, v) in p_items.iter().zip(v_items.iter()).rev() {
+                    work_stack.push((p, v));
+                }
+                true // Continue processing the work stack
             }
-            true
-        }
 
-        // Errors match if message and details match
-        (MettaValue::Error(p_msg, p_details), MettaValue::Error(v_msg, v_details)) => {
-            p_msg == v_msg && pattern_match_impl(p_details, v_details, bindings)
-        }
+            // Conjunctions: push children onto work stack (replaces recursion)
+            (MettaValue::Conjunction(p_goals), MettaValue::Conjunction(v_goals)) => {
+                if p_goals.len() != v_goals.len() {
+                    return false; // Early exit on length mismatch
+                }
+                // Push in reverse order so first element is processed first
+                for (p, v) in p_goals.iter().zip(v_goals.iter()).rev() {
+                    work_stack.push((p, v));
+                }
+                true // Continue processing the work stack
+            }
 
-        _ => false,
+            // Errors: check message match, push details onto work stack
+            (MettaValue::Error(p_msg, p_details), MettaValue::Error(v_msg, v_details)) => {
+                if p_msg != v_msg {
+                    return false; // Message mismatch
+                }
+                // Push details for matching (replaces recursion)
+                work_stack.push((p_details, v_details));
+                true // Continue processing the work stack
+            }
+
+            _ => false,
+        };
+
+        if !matches {
+            return false; // Early exit on any mismatch
+        }
     }
+
+    true // All pairs matched successfully
 }

@@ -2,17 +2,289 @@
 //!
 //! Provides methods for adding, indexing, and querying rules.
 //! Rules are stored as (= lhs rhs) in MORK Space.
+//!
+//! # Multiplicity Tracking
+//!
+//! Rules can be defined multiple times, and we track multiplicities efficiently
+//! using MORK bytes as keys. This avoids the overhead of symbol interning since
+//! MORK bytes are already computed for PathMap storage.
+//!
+//! # Lazy Iteration
+//!
+//! Rule iterators use `owning_ref` to keep lock guards alive for iterator lifetimes,
+//! enabling true lazy iteration without upfront Vec allocation.
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
+use std::sync::RwLockReadGuard;
 
 use mork::space::Space;
 use mork_expr::Expr;
+use owning_ref::OwningHandle;
 use pathmap::PathMap;
 use tracing::trace;
 
+use super::multiplicity::{
+    decrement_multiplicity, get_multiplicity, increment_multiplicity, is_multiplicity_entry,
+};
 use super::{Environment, MettaValue, Rule};
+use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 use crate::backend::symbol::Symbol;
+
+/// Lazy iterator over rule heads that owns its lock guard.
+///
+/// Uses `owning_ref::OwningHandle` to safely hold a `RwLockReadGuard` alongside
+/// an iterator that borrows from it. This enables true lazy iteration without
+/// collecting to a Vec first.
+///
+/// # Performance
+/// - Zero Vec allocation
+/// - Lock held for iterator lifetime
+/// - Items produced on-demand
+pub struct RuleHeadsIter<'a> {
+    /// OwningHandle owns the guard and contains an iterator that borrows from it.
+    /// The type is: OwningHandle<Guard, Box<dyn Iterator + 'a>>
+    inner: OwningHandle<
+        RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>,
+        Box<dyn Iterator<Item = (String, usize, usize)> + 'a>,
+    >,
+}
+
+impl<'a> RuleHeadsIter<'a> {
+    /// Create a new lazy iterator from a lock guard.
+    pub fn new(guard: RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>) -> Self {
+        // SAFETY: OwningHandle ensures the guard outlives the iterator.
+        // The iterator only borrows from the owned guard, so the reference is valid.
+        let inner = OwningHandle::new_with_fn(guard, |index_ptr| {
+            // SAFETY: index_ptr is valid for the lifetime of the OwningHandle
+            let index = unsafe { &*index_ptr };
+            let iter = index
+                .iter()
+                .map(|((head, arity), rules)| (head.to_string(), *arity, rules.len()));
+            Box::new(iter) as Box<dyn Iterator<Item = (String, usize, usize)> + 'a>
+        });
+        Self { inner }
+    }
+}
+
+impl<'a> Iterator for RuleHeadsIter<'a> {
+    type Item = (String, usize, usize);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // We can't easily get size_hint from the boxed iterator
+        (0, None)
+    }
+}
+
+/// Lazy iterator over rules in the Space.
+///
+/// Iterates through the PathMap entries and converts MORK bytes to Rules on-demand.
+/// This avoids allocating a Vec of all rules upfront.
+///
+/// # Performance
+/// - Zero Vec allocation for results
+/// - MORK-to-MettaValue conversion happens lazily per item
+/// - Skips non-rule entries efficiently
+pub struct RulesIter {
+    /// Owned vector of (mork_bytes, ()) entries from PathMap iteration.
+    /// We collect the raw entries but defer MORK conversion.
+    entries: std::vec::IntoIter<(Vec<u8>, ())>,
+    /// Space for MORK-to-MettaValue conversion.
+    space: Space,
+}
+
+impl RulesIter {
+    /// Create a lazy iterator from an Environment.
+    ///
+    /// Collects PathMap entries (cheap - just references) but defers
+    /// the expensive MORK-to-MettaValue conversion until iteration.
+    pub fn new(space: Space) -> Self {
+        // Collect entries - this is O(n) but only stores byte references
+        // The expensive conversion happens in next()
+        // Note: btm.iter() returns (Vec<u8>, &()), we dereference the value
+        let entries: Vec<(Vec<u8>, ())> = space
+            .btm
+            .iter()
+            .filter(|(mork_bytes, _)| !is_multiplicity_entry(mork_bytes))
+            .map(|(bytes, val)| (bytes, *val))
+            .collect();
+
+        Self {
+            entries: entries.into_iter(),
+            space,
+        }
+    }
+
+    /// Convert MORK bytes to Rule, if valid.
+    #[inline]
+    fn convert_to_rule(&self, mork_bytes: &[u8]) -> Option<Rule> {
+        // Create Expr from bytes - safe because mork_bytes outlives expr usage
+        let expr = Expr {
+            ptr: mork_bytes.as_ptr().cast_mut(),
+        };
+
+        // Convert MORK expression to MettaValue
+        if let Ok(value) = Environment::mork_expr_to_metta_value(&expr, &self.space) {
+            if let MettaValue::SExpr(items) = &value {
+                if items.len() == 3 {
+                    if let MettaValue::Atom(op) = &items[0] {
+                        if op == "=" {
+                            return Some(Rule::new(items[1].clone(), items[2].clone()));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+impl Iterator for RulesIter {
+    type Item = Rule;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Keep trying entries until we find a valid rule or run out
+        loop {
+            let (mork_bytes, _) = self.entries.next()?;
+            if let Some(rule) = self.convert_to_rule(&mork_bytes) {
+                return Some(rule);
+            }
+            // Not a rule (e.g., fact), continue to next entry
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // Lower bound is 0 (might all be non-rules), upper bound is remaining entries
+        (0, Some(self.entries.len()))
+    }
+}
+
+/// Lazy iterator over matching rules for a given head symbol and arity.
+///
+/// Chains together indexed rules and wildcard rules without collecting to Vec.
+/// The iterator yields references to rules (no cloning until caller requests it).
+///
+/// # Performance
+/// - Zero Vec allocation
+/// - Rules are yielded as references (caller decides when to clone)
+/// - Lock guards held for iterator lifetime
+///
+/// # Usage
+/// ```ignore
+/// // Get references (no cloning)
+/// for rule in env.get_matching_rules_iter("foo", 2) {
+///     // rule is &Rule
+/// }
+///
+/// // Clone when needed
+/// let owned_rules: Vec<Rule> = env.get_matching_rules_iter("foo", 2)
+///     .cloned()
+///     .collect();
+/// ```
+pub struct MatchingRulesIter<'a> {
+    /// OwningHandle holds the rule_index guard and provides the iterator.
+    inner: OwningHandle<
+        RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>,
+        Box<dyn Iterator<Item = &'a Rule> + 'a>,
+    >,
+    /// Wildcard rules iterator (if any)
+    wildcard_iter: Option<WildcardRulesIter<'a>>,
+    /// Phase: 0 = indexed rules, 1 = wildcard rules
+    phase: u8,
+}
+
+/// Helper struct for iterating over wildcard rules
+struct WildcardRulesIter<'a> {
+    inner: OwningHandle<
+        RwLockReadGuard<'a, Vec<Rule>>,
+        Box<dyn Iterator<Item = &'a Rule> + 'a>,
+    >,
+}
+
+impl<'a> WildcardRulesIter<'a> {
+    fn new(guard: RwLockReadGuard<'a, Vec<Rule>>) -> Self {
+        let inner = OwningHandle::new_with_fn(guard, |rules_ptr| {
+            let rules = unsafe { &*rules_ptr };
+            Box::new(rules.iter()) as Box<dyn Iterator<Item = &'a Rule> + 'a>
+        });
+        Self { inner }
+    }
+}
+
+impl<'a> Iterator for WildcardRulesIter<'a> {
+    type Item = &'a Rule;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+impl<'a> MatchingRulesIter<'a> {
+    /// Create a new lazy iterator for matching rules.
+    pub fn new(
+        rule_index_guard: RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>,
+        key: (Symbol, usize),
+        wildcard_guard: Option<RwLockReadGuard<'a, Vec<Rule>>>,
+    ) -> Self {
+        // Create indexed rules iterator
+        let inner = OwningHandle::new_with_fn(rule_index_guard, move |index_ptr| {
+            let index = unsafe { &*index_ptr };
+            let iter: Box<dyn Iterator<Item = &'a Rule> + 'a> = if let Some(rules) = index.get(&key)
+            {
+                Box::new(rules.iter())
+            } else {
+                Box::new(std::iter::empty())
+            };
+            iter
+        });
+
+        // Create wildcard iterator if we have wildcard rules
+        let wildcard_iter = wildcard_guard.map(WildcardRulesIter::new);
+
+        Self {
+            inner,
+            wildcard_iter,
+            phase: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for MatchingRulesIter<'a> {
+    type Item = &'a Rule;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.phase {
+                0 => {
+                    // Phase 0: Yield indexed rules
+                    if let Some(rule) = self.inner.next() {
+                        return Some(rule);
+                    }
+                    // Indexed rules exhausted, move to wildcards
+                    self.phase = 1;
+                }
+                1 => {
+                    // Phase 1: Yield wildcard rules
+                    if let Some(ref mut wildcard_iter) = self.wildcard_iter {
+                        if let Some(rule) = wildcard_iter.next() {
+                            return Some(rule);
+                        }
+                    }
+                    // All done
+                    return None;
+                }
+                _ => return None,
+            }
+        }
+    }
+}
 
 impl Environment {
     /// Get the number of rules in the environment
@@ -53,53 +325,58 @@ impl Environment {
     /// - REPL command completion (showing available rule heads)
     /// - Rule statistics and introspection
     /// - Pattern matching optimization hints
-    pub fn iter_rule_heads(&self) -> Vec<(String, usize, usize)> {
-        let index = self
+    ///
+    /// # Performance
+    /// - Zero Vec allocation (lazy evaluation)
+    /// - Holds read lock for entire iteration lifetime
+    /// - Best for streaming/pipelining large results
+    ///
+    /// # Example
+    /// ```ignore
+    /// for (head, arity, count) in env.iter_rule_heads() {
+    ///     println!("{}/{}: {} rules", head, arity, count);
+    /// }
+    ///
+    /// // Or collect if needed:
+    /// let heads: Vec<_> = env.iter_rule_heads().collect();
+    /// ```
+    pub fn iter_rule_heads(&self) -> RuleHeadsIter<'_> {
+        // Acquire the lock - it will be held for the iterator's lifetime
+        let guard = self
             .shared
             .rule_index
             .read()
             .expect("rule_index lock poisoned");
-        index
-            .iter()
-            .map(|((head, arity), rules)| (head.to_string(), *arity, rules.len()))
-            .collect()
+
+        RuleHeadsIter::new(guard)
     }
 
-    /// Iterator over all rules in the Space
-    /// Rules are stored as MORK s-expressions: (= lhs rhs)
+    /// Iterator over all rules in the Space.
     ///
-    /// Uses PathMap's iter() method with owned copies of MORK bytes.
-    /// This avoids raw pointer issues that could cause memory corruption
-    /// under concurrent access patterns.
-    #[allow(clippy::collapsible_match)]
-    pub fn iter_rules(&self) -> impl Iterator<Item = Rule> {
+    /// Rules are stored as MORK s-expressions: `(= lhs rhs)`.
+    /// Returns a lazy iterator that defers MORK-to-MettaValue conversion
+    /// until each item is consumed.
+    ///
+    /// # Performance
+    /// - O(n) entry collection (just byte references)
+    /// - Lazy MORK conversion per-item
+    /// - No upfront Vec<Rule> allocation
+    ///
+    /// # Note
+    /// For backward compatibility, this returns `RulesIter` which implements
+    /// `Iterator<Item = Rule>`. The conversion happens lazily as you iterate.
+    pub fn iter_rules(&self) -> RulesIter {
         let space = self.create_space();
-        let mut rules = Vec::new();
+        RulesIter::new(space)
+    }
 
-        // Use PathMap's iter() which returns (Vec<u8>, &V) with owned byte vectors
-        // This is safer than raw pointer access via read_zipper().path().as_ptr()
-        // because each Vec<u8> is a fully owned copy of the MORK expression bytes
-        for (mork_bytes, _) in space.btm.iter() {
-            // Create Expr from owned bytes - safe because mork_bytes outlives expr usage
-            let expr = Expr {
-                ptr: mork_bytes.as_ptr().cast_mut(),
-            };
-
-            // Convert MORK expression to MettaValue
-            if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
-                if let MettaValue::SExpr(items) = &value {
-                    if items.len() == 3 {
-                        if let MettaValue::Atom(op) = &items[0] {
-                            if op == "=" {
-                                rules.push(Rule::new(items[1].clone(), items[2].clone()));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        rules.into_iter()
+    /// Eager version of iter_rules() - collects all rules to Vec first.
+    ///
+    /// Use this when you need random access or multiple iterations,
+    /// or when you want to release the Space quickly.
+    #[allow(clippy::collapsible_match)]
+    pub fn collect_rules(&self) -> Vec<Rule> {
+        self.iter_rules().collect()
     }
 
     /// Rebuild the rule index from the MORK Space
@@ -169,11 +446,28 @@ impl Environment {
 
     /// Add a rule to the environment
     /// Rules are stored in MORK Space as s-expressions: (= lhs rhs)
-    /// Multiply-defined rules are tracked via multiplicities
+    /// Multiply-defined rules are tracked via IndexedMultiset for O(1) lookup
     /// Rules are also indexed by (head_symbol, arity) for fast lookup
-    pub fn add_rule(&mut self, rule: Rule) {
+    pub fn add_rule(&mut self, mut rule: Rule) {
         trace!(target: "mettatron::environment::add_rule", ?rule);
         self.make_owned(); // CoW: ensure we own data before modifying
+
+        // Allocate multiplicity index if not already set
+        let idx = rule.multiplicity_idx.unwrap_or_else(|| {
+            self.shared
+                .multiplicities
+                .read()
+                .expect("multiplicities lock poisoned")
+                .allocate_index()
+        });
+        rule.multiplicity_idx = Some(idx);
+
+        // Increment count using O(1) array access
+        self.shared
+            .multiplicities
+            .read()
+            .expect("multiplicities lock poisoned")
+            .increment(idx);
 
         // Create a rule s-expression: (= lhs rhs)
         // Dereference the Arc to get the MettaValue
@@ -183,20 +477,16 @@ impl Environment {
             (*rule.rhs).clone(),
         ]);
 
-        // Generate a canonical key for the rule
-        // Use MORK string format for readable serialization
-        let rule_key = rule_sexpr.to_mork_string();
+        // Compute MORK bytes ONCE and reuse for both PathMap and legacy multiplicity tracking
+        let temp_space = Space {
+            sm: self.shared_mapping.clone(),
+            btm: PathMap::new(),
+            mmaps: HashMap::new(),
+        };
+        let mut ctx = ConversionContext::new();
 
-        // Increment the count for this rule
-        {
-            let mut counts = self
-                .shared
-                .multiplicities
-                .write()
-                .expect("multiplicities lock poisoned");
-            let new_count = *counts.entry(rule_key.clone()).or_insert(0) + 1;
-            counts.insert(rule_key.clone(), new_count);
-        } // Drop the RefMut borrow before add_to_space
+        // Convert to MORK bytes and store for PathMap insertion
+        let mork_bytes_result = metta_to_mork_bytes(&rule_sexpr, &temp_space, &mut ctx);
 
         // Add to rule index for O(k) lookup
         // Note: We store the rule only ONCE (in either index or wildcard list)
@@ -231,8 +521,32 @@ impl Environment {
                 .store(true, Ordering::Release);
         }
 
-        // Add to MORK Space (only once - PathMap will deduplicate)
-        self.add_to_space(&rule_sexpr);
+        // Add to MORK Space using fixed-width multiplicity approach
+        // 1. Atom marker at mork_bytes (for iteration and MORK pattern matching)
+        // 2. Multiplicity entry at [0x03, 0xC1, 'M', mork_bytes, count_u64] (for O(1) lookup)
+        if let Ok(mork_bytes) = mork_bytes_result {
+            // Get write lock on btm
+            let mut btm = self.shared.btm.write().expect("btm lock poisoned");
+
+            // 1. Insert atom marker (idempotent - enables iteration via to_next_val())
+            btm.insert(&mork_bytes, ());
+
+            // 2. Increment multiplicity using efficient suffix-replacement
+            increment_multiplicity(&mut btm, &mork_bytes);
+
+            drop(btm);
+            self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+            // Update bloom filter with (head, arity) for O(1) match_space() rejection
+            if let Some(head) = rule_sexpr.get_head_symbol() {
+                let arity = rule_sexpr.get_arity() as u8;
+                self.shared
+                    .head_arity_bloom
+                    .write()
+                    .expect("head_arity_bloom lock poisoned")
+                    .insert(head.as_bytes(), arity);
+            }
+        }
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
@@ -241,7 +555,7 @@ impl Environment {
     /// for large batches (20-100× speedup) due to:
     /// - Single lock acquisition for PathMap update
     /// - Bulk union operation instead of N individual inserts
-    /// - Reduced overhead for rule index and multiplicity updates
+    /// - MORK bytes reused for both PathMap and multiplicity tracking
     ///
     /// Expected speedup: 20-100× for batches of 100+ rules
     /// Complexity: O(k) where k = batch size (vs O(n × lock) for individual adds)
@@ -260,7 +574,6 @@ impl Environment {
         // Use Symbol for O(1) comparison when symbol-interning is enabled
         let mut rule_index_updates: HashMap<(Symbol, usize), Vec<Rule>> = HashMap::new();
         let mut wildcard_updates: Vec<Rule> = Vec::new();
-        let mut multiplicity_updates: HashMap<String, usize> = HashMap::new();
 
         for rule in rules {
             // Create rule s-expression: (= lhs rhs)
@@ -270,10 +583,6 @@ impl Environment {
                 (*rule.lhs).clone(),
                 (*rule.rhs).clone(),
             ]);
-
-            // Track multiplicity
-            let rule_key = rule_sexpr.to_mork_string();
-            *multiplicity_updates.entry(rule_key).or_insert(0) += 1;
 
             // Prepare rule index updates
             if let Some(head) = rule.lhs.get_head_symbol() {
@@ -294,11 +603,7 @@ impl Environment {
                 wildcard_updates.push(rule);
             }
 
-            // OPTIMIZATION: Always use direct MORK byte conversion
-            // This works for both ground terms AND variable-containing terms
-            // Variables are encoded using De Bruijn indices
-            use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
-
+            // Compute MORK bytes for PathMap insertion
             let temp_space = Space {
                 sm: self.shared_mapping.clone(),
                 btm: PathMap::new(),
@@ -309,23 +614,37 @@ impl Environment {
             let mork_bytes = metta_to_mork_bytes(&rule_sexpr, &temp_space, &mut ctx)
                 .map_err(|e| format!("MORK conversion failed for rule {:?}: {}", rule_sexpr, e))?;
 
-            // Direct insertion without string serialization or parsing
+            // Insert atom marker at mork_bytes (for iteration and MORK pattern matching)
             rule_trie.insert(&mork_bytes, ());
+
+            // Increment total atom count
+            self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
         }
+
+        // Track MORK bytes for multiplicity updates after join
+        let mork_bytes_for_multiplicity: Vec<Vec<u8>> = {
+            let temp_space = Space {
+                sm: self.shared_mapping.clone(),
+                btm: PathMap::new(),
+                mmaps: HashMap::new(),
+            };
+
+            rule_index_updates.values().flatten()
+                .chain(wildcard_updates.iter())
+                .filter_map(|rule| {
+                    let rule_sexpr = MettaValue::SExpr(vec![
+                        MettaValue::Atom("=".to_string()),
+                        (*rule.lhs).clone(),
+                        (*rule.rhs).clone(),
+                    ]);
+                    let mut ctx = ConversionContext::new();
+                    metta_to_mork_bytes(&rule_sexpr, &temp_space, &mut ctx).ok()
+                })
+                .collect()
+        };
 
         // Apply all updates in batch (minimize critical sections)
-
-        // Update multiplicities
-        {
-            let mut counts = self
-                .shared
-                .multiplicities
-                .write()
-                .expect("multiplicities lock poisoned");
-            for (key, delta) in multiplicity_updates {
-                *counts.entry(key).or_insert(0) += delta;
-            }
-        }
+        // Note: Multiplicities already updated via PathMap instance markers in the loop above
 
         // Update rule index
         {
@@ -355,10 +674,15 @@ impl Environment {
                 .store(true, Ordering::Release);
         }
 
-        // Single PathMap union (minimal critical section)
+        // Single PathMap union and multiplicity updates (minimal critical section)
         {
             let mut btm = self.shared.btm.write().expect("btm lock poisoned");
             *btm = btm.join(&rule_trie);
+
+            // Increment multiplicities for all rules
+            for mork_bytes in &mork_bytes_for_multiplicity {
+                increment_multiplicity(&mut btm, mork_bytes);
+            }
         }
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
         Ok(())
@@ -366,97 +690,547 @@ impl Environment {
 
     /// Get the number of times a rule has been defined (multiplicity)
     /// Returns 1 if the rule exists but count wasn't tracked (for backward compatibility)
+    ///
+    /// # Performance
+    /// O(1) via direct array access when rule has cached multiplicity_idx
     pub fn get_rule_count(&self, rule: &Rule) -> usize {
-        // Dereference the Arc to get the MettaValue
+        // Fast path: Use cached multiplicity_idx for O(1) lookup
+        if let Some(idx) = rule.multiplicity_idx {
+            let count = self
+                .shared
+                .multiplicities
+                .read()
+                .expect("multiplicities lock poisoned")
+                .count(idx);
+            // Backward compatibility: return 1 if count is 0 (rule exists but not tracked)
+            return if count == 0 { 1 } else { count };
+        }
+
+        // Slow path: Fall back to PathMap-based multiplicity lookup
+        // This path should rarely be hit after rules are added via add_rule()
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
             (*rule.lhs).clone(),
             (*rule.rhs).clone(),
         ]);
-        let rule_key = rule_sexpr.to_mork_string();
 
-        let counts = self
-            .shared
-            .multiplicities
-            .read()
-            .expect("multiplicities lock poisoned");
-        *counts.get(&rule_key).unwrap_or(&1)
+        // Compute MORK bytes and lookup multiplicity using efficient fixed-width encoding
+        let temp_space = Space {
+            sm: self.shared_mapping.clone(),
+            btm: PathMap::new(),
+            mmaps: HashMap::new(),
+        };
+        let mut ctx = ConversionContext::new();
+
+        match metta_to_mork_bytes(&rule_sexpr, &temp_space, &mut ctx) {
+            Ok(mork_bytes) => {
+                // Use efficient O(prefix_len) multiplicity lookup
+                let btm = self.shared.btm.read().expect("btm lock poisoned");
+                let count = get_multiplicity(&btm, &mork_bytes);
+                if count == 0 { 1 } else { count as usize } // Backward compatibility: return 1 if not tracked
+            }
+            Err(_) => 1, // Fallback to 1 on conversion error
+        }
     }
 
     /// Get the multiplicities (for serialization)
+    /// Iterates through PathMap and looks up multiplicity for each atom.
+    /// The keys are hex-encoded MORK bytes for serialization stability.
     pub fn get_multiplicities(&self) -> HashMap<String, usize> {
-        self.shared
-            .multiplicities
-            .read()
-            .expect("multiplicities lock poisoned")
-            .clone()
+        let btm = self.shared.btm.read().expect("btm lock poisoned");
+        let mut result = HashMap::new();
+
+        // Iterate through all entries, skipping multiplicity entries
+        for (path, _) in btm.iter() {
+            // Skip multiplicity entries - only process atom marker paths
+            if is_multiplicity_entry(&path) {
+                continue;
+            }
+
+            // Get multiplicity using efficient fixed-width lookup
+            let count = get_multiplicity(&btm, &path);
+            let count = if count == 0 { 1 } else { count as usize }; // Legacy compatibility
+
+            // Hex-encode the MORK bytes for serialization
+            let hex_key = hex::encode(&path);
+            result.insert(hex_key, count);
+        }
+
+        result
     }
 
     /// Set the multiplicities (used for deserialization)
+    /// Decodes hex-encoded MORK bytes and sets multiplicity counts.
     pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
         self.make_owned(); // CoW: ensure we own data before modifying
-        *self
-            .shared
-            .multiplicities
-            .write()
-            .expect("multiplicities lock poisoned") = counts;
+
+        let mut btm = self.shared.btm.write().expect("btm lock poisoned");
+
+        // For each atom with count N, ensure atom marker exists and set multiplicity
+        for (hex_key, count) in counts {
+            // Decode hex-encoded MORK bytes
+            if let Ok(mork_bytes) = hex::decode(&hex_key) {
+                // Insert atom marker (idempotent)
+                btm.insert(&mork_bytes, ());
+
+                // Set multiplicity by incrementing count times
+                // (starts from 0, so we increment count times to get to count)
+                for _ in 0..count {
+                    increment_multiplicity(&mut btm, &mork_bytes);
+                }
+
+                self.shared.total_atoms.fetch_add(count, Ordering::Relaxed);
+            }
+        }
+
+        drop(btm);
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
-    /// Get rules matching a specific head symbol and arity
-    /// Returns Vec<Rule> for O(1) lookup instead of O(n) iteration
-    /// Also includes wildcard rules that must be checked against all queries
-    pub fn get_matching_rules(&self, head: &str, arity: usize) -> Vec<Rule> {
-        trace!(target: "mettatron::environment::get_matching_rules", head, arity);
-
-        // Use Symbol for O(1) comparison when symbol-interning is enabled
+    /// Get rules matching a specific head symbol and arity (lazy version).
+    ///
+    /// Returns an iterator that yields references to matching rules without
+    /// allocating a Vec. Rules are yielded in order: indexed rules first,
+    /// then wildcard rules.
+    ///
+    /// # Performance
+    /// - Zero Vec allocation
+    /// - Rules yielded as references (caller decides when to clone)
+    /// - Lock guards held for iterator lifetime
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Process rules without cloning
+    /// for rule in env.get_matching_rules_iter("foo", 2) {
+    ///     process(rule);  // rule is &Rule
+    /// }
+    ///
+    /// // Clone when needed
+    /// let owned: Vec<Rule> = env.get_matching_rules_iter("foo", 2)
+    ///     .cloned()
+    ///     .collect();
+    /// ```
+    pub fn get_matching_rules_iter(&self, head: &str, arity: usize) -> MatchingRulesIter<'_> {
         let key = (Symbol::new(head), arity);
 
-        // Fast-path: Check if we have any wildcard rules before acquiring the lock
-        let has_wildcards = self.shared.has_wildcard_rules.load(Ordering::Acquire);
-
-        // Get indexed rules first
-        let index = self
+        // Acquire rule_index lock
+        let rule_index_guard = self
             .shared
             .rule_index
             .read()
             .expect("rule_index lock poisoned");
-        let indexed_rules = index.get(&key);
-        let indexed_len = indexed_rules.map_or(0, |r| r.len());
 
-        // OPTIMIZATION: Skip wildcard lock acquisition if no wildcard rules exist
-        if !has_wildcards {
-            // No wildcard rules - just return indexed rules
-            let mut matching_rules = Vec::with_capacity(indexed_len);
-            if let Some(rules) = indexed_rules {
-                matching_rules.extend(rules.iter().cloned());
+        // Fast-path: Check if we have any wildcard rules
+        let has_wildcards = self.shared.has_wildcard_rules.load(Ordering::Acquire);
+
+        // Only acquire wildcard lock if wildcards exist
+        let wildcard_guard = if has_wildcards {
+            Some(
+                self.shared
+                    .wildcard_rules
+                    .read()
+                    .expect("wildcard_rules lock poisoned"),
+            )
+        } else {
+            None
+        };
+
+        MatchingRulesIter::new(rule_index_guard, key, wildcard_guard)
+    }
+
+    /// Increment the multiplicity count for a rule.
+    ///
+    /// This should be called when a rule is added via add_to_space() to track
+    /// its multiplicity. It increments both the IndexedMultiset (if the rule
+    /// has a cached index) and the MorkBytesMultiset (for serialization).
+    ///
+    /// # Arguments
+    /// * `rule_sexpr` - The rule as a MettaValue s-expression `(= lhs rhs)`
+    ///
+    /// # Returns
+    /// The new count after increment.
+    pub fn increment_rule_multiplicity(&mut self, rule_sexpr: &MettaValue) -> usize {
+        trace!(target: "mettatron::environment::increment_rule_multiplicity", ?rule_sexpr);
+        self.make_owned(); // CoW: ensure we own data before modifying
+
+        // Extract LHS from (= lhs rhs) to find the rule in the index
+        let (head, arity, lhs) = if let MettaValue::SExpr(items) = rule_sexpr {
+            if items.len() == 3 {
+                if let MettaValue::Atom(op) = &items[0] {
+                    if op == "=" {
+                        let lhs = &items[1];
+                        let head = lhs.get_head_symbol();
+                        let arity = lhs.get_arity();
+                        (head, arity, Some(lhs))
+                    } else {
+                        (None, 0, None)
+                    }
+                } else {
+                    (None, 0, None)
+                }
+            } else {
+                (None, 0, None)
             }
-            return matching_rules;
+        } else {
+            (None, 0, None)
+        };
+
+        // Try to find the rule in the index and increment its IndexedMultiset count
+        if let (Some(head), Some(lhs_val)) = (head, lhs) {
+            let key = (Symbol::new(&head), arity);
+
+            // Find the rule with matching LHS to get its multiplicity_idx
+            let mut found_idx: Option<u32> = None;
+            {
+                let index = self
+                    .shared
+                    .rule_index
+                    .read()
+                    .expect("rule_index lock poisoned");
+                if let Some(rules) = index.get(&key) {
+                    for rule in rules {
+                        // Check if this rule's LHS matches
+                        if rule.lhs.structurally_equivalent(lhs_val) {
+                            found_idx = rule.multiplicity_idx;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Also check wildcard rules if not found
+            if found_idx.is_none() {
+                let wildcards = self
+                    .shared
+                    .wildcard_rules
+                    .read()
+                    .expect("wildcard_rules lock poisoned");
+                for rule in wildcards.iter() {
+                    if rule.lhs.structurally_equivalent(lhs_val) {
+                        found_idx = rule.multiplicity_idx;
+                        break;
+                    }
+                }
+            }
+
+            // Increment IndexedMultiset if we found the index
+            if let Some(idx) = found_idx {
+                self.shared
+                    .multiplicities
+                    .read()
+                    .expect("multiplicities lock poisoned")
+                    .increment(idx);
+            }
         }
 
-        // Have wildcard rules - need to acquire lock
-        let wildcards = self
-            .shared
-            .wildcard_rules
-            .read()
-            .expect("wildcard_rules lock poisoned");
-        let wildcard_len = wildcards.len();
+        // Increment multiplicity using efficient suffix-replacement approach
+        let temp_space = Space {
+            sm: self.shared_mapping.clone(),
+            btm: PathMap::new(),
+            mmaps: HashMap::new(),
+        };
+        let mut ctx = ConversionContext::new();
 
-        // OPTIMIZATION: Preallocate capacity to avoid reallocation
-        let mut matching_rules = Vec::with_capacity(indexed_len + wildcard_len);
+        match metta_to_mork_bytes(rule_sexpr, &temp_space, &mut ctx) {
+            Ok(mork_bytes) => {
+                // Use the efficient multiplicity module functions
+                let mut btm = self
+                    .shared
+                    .btm
+                    .write()
+                    .expect("btm lock poisoned in increment_rule_multiplicity");
+                let new_count = increment_multiplicity(&mut btm, &mork_bytes);
+                drop(btm);
 
-        // Get indexed rules with matching head symbol and arity
-        if let Some(rules) = indexed_rules {
-            matching_rules.extend(rules.iter().cloned());
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.modified.store(true, Ordering::Release);
+                new_count as usize
+            }
+            Err(_) => {
+                self.modified.store(true, Ordering::Release);
+                1
+            }
+        }
+    }
+
+    /// Decrement the multiplicity count for a rule.
+    ///
+    /// This should be called when a rule is removed from the space.
+    /// It decrements both the IndexedMultiset (if the rule has a cached index)
+    /// and the MorkBytesMultiset (for serialization consistency).
+    ///
+    /// # Arguments
+    /// * `rule_sexpr` - The rule as a MettaValue s-expression `(= lhs rhs)`
+    ///
+    /// # Returns
+    /// The new count after decrement, or 0 if the rule wasn't tracked.
+    pub fn decrement_rule_multiplicity(&mut self, rule_sexpr: &MettaValue) -> usize {
+        trace!(target: "mettatron::environment::decrement_rule_multiplicity", ?rule_sexpr);
+        self.make_owned(); // CoW: ensure we own data before modifying
+
+        // Extract LHS from (= lhs rhs) to find the rule in the index
+        let (head, arity, lhs) = if let MettaValue::SExpr(items) = rule_sexpr {
+            if items.len() == 3 {
+                if let MettaValue::Atom(op) = &items[0] {
+                    if op == "=" {
+                        let lhs = &items[1];
+                        let head = lhs.get_head_symbol();
+                        let arity = lhs.get_arity();
+                        (head, arity, Some(lhs))
+                    } else {
+                        (None, 0, None)
+                    }
+                } else {
+                    (None, 0, None)
+                }
+            } else {
+                (None, 0, None)
+            }
+        } else {
+            (None, 0, None)
+        };
+
+        // Try to find the rule in the index and decrement its IndexedMultiset count
+        if let (Some(head), Some(lhs_val)) = (head, lhs) {
+            let key = (Symbol::new(&head), arity);
+
+            // Find the rule with matching LHS to get its multiplicity_idx
+            let mut found_idx: Option<u32> = None;
+            {
+                let index = self
+                    .shared
+                    .rule_index
+                    .read()
+                    .expect("rule_index lock poisoned");
+                if let Some(rules) = index.get(&key) {
+                    for rule in rules {
+                        // Check if this rule's LHS matches
+                        if rule.lhs.structurally_equivalent(lhs_val) {
+                            found_idx = rule.multiplicity_idx;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Also check wildcard rules if not found
+            if found_idx.is_none() {
+                let wildcards = self
+                    .shared
+                    .wildcard_rules
+                    .read()
+                    .expect("wildcard_rules lock poisoned");
+                for rule in wildcards.iter() {
+                    if rule.lhs.structurally_equivalent(lhs_val) {
+                        found_idx = rule.multiplicity_idx;
+                        break;
+                    }
+                }
+            }
+
+            // Decrement IndexedMultiset if we found the index
+            if let Some(idx) = found_idx {
+                self.shared
+                    .multiplicities
+                    .write()
+                    .expect("multiplicities lock poisoned")
+                    .decrement(idx);
+            }
         }
 
-        // Also include wildcard rules (must always be checked)
-        matching_rules.extend(wildcards.iter().cloned());
+        // Decrement multiplicity using efficient suffix-replacement approach
+        let temp_space = Space {
+            sm: self.shared_mapping.clone(),
+            btm: PathMap::new(),
+            mmaps: HashMap::new(),
+        };
+        let mut ctx = ConversionContext::new();
 
-        trace!(
-            target: "mettatron::environment::get_matching_rules",
-            match_ctr = matching_rules.len(), "Rules matching"
-        );
-        matching_rules
+        match metta_to_mork_bytes(rule_sexpr, &temp_space, &mut ctx) {
+            Ok(mork_bytes) => {
+                // Check current count first to know if decrement will happen
+                let old_count = {
+                    let btm = self.shared.btm.read().expect("btm lock");
+                    get_multiplicity(&btm, &mork_bytes)
+                };
+
+                if old_count == 0 {
+                    self.modified.store(true, Ordering::Release);
+                    return 0;
+                }
+
+                // Use the efficient multiplicity module functions
+                let mut btm = self
+                    .shared
+                    .btm
+                    .write()
+                    .expect("btm lock poisoned in decrement_rule_multiplicity");
+                let new_count = decrement_multiplicity(&mut btm, &mork_bytes);
+                drop(btm);
+
+                self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                self.modified.store(true, Ordering::Release);
+                new_count as usize
+            }
+            Err(_) => {
+                self.modified.store(true, Ordering::Release);
+                0
+            }
+        }
+    }
+
+    /// Check if a MettaValue is a rule s-expression (= lhs rhs)
+    pub fn is_rule_sexpr(value: &MettaValue) -> bool {
+        if let MettaValue::SExpr(items) = value {
+            if items.len() == 3 {
+                if let MettaValue::Atom(op) = &items[0] {
+                    return op == "=";
+                }
+            }
+        }
+        false
+    }
+
+    // ========================================================================
+    // All-Atom Multiplicity Tracking (MeTTa HE Semantics)
+    // ========================================================================
+
+    /// Increment multiplicity for ANY atom (not just rules).
+    ///
+    /// This is the primary multiplicity tracking mechanism for MeTTa HE semantics.
+    /// Uses efficient suffix-replacement approach for O(8) count updates.
+    ///
+    /// # Arguments
+    /// * `value` - The MettaValue atom to increment count for
+    ///
+    /// # Returns
+    /// The new count after increment.
+    pub fn increment_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
+        self.make_owned(); // CoW: ensure we own data before modifying
+
+        let temp_space = Space {
+            sm: self.shared_mapping.clone(),
+            btm: PathMap::new(),
+            mmaps: HashMap::new(),
+        };
+        let mut ctx = ConversionContext::new();
+
+        match metta_to_mork_bytes(value, &temp_space, &mut ctx) {
+            Ok(mork_bytes) => {
+                // Use the efficient multiplicity module functions
+                let mut btm = self
+                    .shared
+                    .btm
+                    .write()
+                    .expect("btm lock poisoned in increment_atom_multiplicity");
+                let new_count = increment_multiplicity(&mut btm, &mork_bytes);
+                drop(btm);
+
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.modified.store(true, Ordering::Release);
+                new_count as usize
+            }
+            Err(_) => {
+                self.modified.store(true, Ordering::Release);
+                1
+            }
+        }
+    }
+
+    /// Decrement multiplicity for ANY atom.
+    ///
+    /// Called when an atom is removed from the space. Uses efficient
+    /// suffix-replacement for O(8) count updates.
+    ///
+    /// # Arguments
+    /// * `value` - The MettaValue atom to decrement count for
+    ///
+    /// # Returns
+    /// The new count after decrement (0 means the atom should be removed from PathMap).
+    pub fn decrement_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
+        self.make_owned(); // CoW: ensure we own data before modifying
+
+        let temp_space = Space {
+            sm: self.shared_mapping.clone(),
+            btm: PathMap::new(),
+            mmaps: HashMap::new(),
+        };
+        let mut ctx = ConversionContext::new();
+
+        match metta_to_mork_bytes(value, &temp_space, &mut ctx) {
+            Ok(mork_bytes) => {
+                // Check current count first to know if decrement will happen
+                let old_count = {
+                    let btm = self.shared.btm.read().expect("btm lock");
+                    get_multiplicity(&btm, &mork_bytes)
+                };
+
+                if old_count == 0 {
+                    return 0;
+                }
+
+                // Use the efficient multiplicity module functions
+                let mut btm = self
+                    .shared
+                    .btm
+                    .write()
+                    .expect("btm lock poisoned in decrement_atom_multiplicity");
+                let new_count = decrement_multiplicity(&mut btm, &mork_bytes);
+                drop(btm);
+
+                self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                self.modified.store(true, Ordering::Release);
+                new_count as usize
+            }
+            Err(_) => 0,
+        }
+    }
+
+    /// Get multiplicity for ANY atom.
+    ///
+    /// Returns the number of times this atom has been added to the space.
+    /// Uses efficient O(prefix_len) lookup via multiplicity module.
+    ///
+    /// # Arguments
+    /// * `value` - The MettaValue atom to query
+    ///
+    /// # Returns
+    /// The multiplicity count (at least 1 if the atom exists).
+    pub fn get_atom_multiplicity(&self, value: &MettaValue) -> usize {
+        let temp_space = Space {
+            sm: self.shared_mapping.clone(),
+            btm: PathMap::new(),
+            mmaps: HashMap::new(),
+        };
+        let mut ctx = ConversionContext::new();
+
+        match metta_to_mork_bytes(value, &temp_space, &mut ctx) {
+            Ok(mork_bytes) => {
+                // Use efficient O(prefix_len) lookup
+                let btm = self.shared.btm.read().expect("btm lock");
+                let count = get_multiplicity(&btm, &mork_bytes);
+                // Return at least 1 if count is 0 (for backward compatibility)
+                if count == 0 { 1 } else { count as usize }
+            }
+            Err(_) => 1,
+        }
+    }
+
+    /// Get atom multiplicity from raw MORK bytes.
+    ///
+    /// This is an optimization for `match_space()` which already has the MORK bytes
+    /// and doesn't need to re-compute them. Uses efficient O(prefix_len) lookup.
+    ///
+    /// # Arguments
+    /// * `mork_bytes` - The MORK-encoded bytes of the atom
+    ///
+    /// # Returns
+    /// The multiplicity count (at least 1 if the atom exists).
+    pub fn get_multiplicity_from_mork_bytes(&self, mork_bytes: &[u8]) -> usize {
+        // Use efficient O(prefix_len) lookup
+        let btm = self.shared.btm.read().expect("btm lock");
+        let count = get_multiplicity(&btm, mork_bytes);
+        // Return at least 1 if count is 0 (for backward compatibility)
+        if count == 0 { 1 } else { count as usize }
     }
 }

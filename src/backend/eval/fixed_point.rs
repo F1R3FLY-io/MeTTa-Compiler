@@ -172,12 +172,13 @@ pub fn eval_to_fixed_point(
     }
 }
 
-/// Count number of facts in environment's space
+/// Count number of UNIQUE facts in environment's space
+///
+/// Uses `match_space` which returns one `MultiplicityMatch` per unique atom,
+/// making `.len()` give the unique count directly without manual deduplication.
 fn count_facts(env: &Environment) -> usize {
-    // Query all facts using match with wildcard
     let wildcard = MettaValue::Atom("$_".to_string());
-    let matches = env.match_space(&wildcard, &wildcard);
-    matches.len()
+    env.match_space(&wildcard, &wildcard).len()
 }
 
 /// Try to fire an exec rule once
@@ -187,16 +188,9 @@ fn count_facts(env: &Environment) -> usize {
 fn try_fire_rule(rule: &ExecRule, env: Environment) -> Environment {
     use super::eval;
 
-    // DEBUG: Check what facts are in environment before firing
-    let wildcard = MettaValue::Atom("$_".to_string());
-    let _all_facts = env.match_space(&wildcard, &wildcard);
-
     // Evaluate the full exec expression
     // This will handle antecedent matching and consequent execution
     let (_results, new_env) = eval(rule.full_expr.clone(), env);
-
-    // DEBUG: Check facts after firing
-    let _after_facts = new_env.match_space(&wildcard, &wildcard);
 
     new_env
 }
@@ -257,10 +251,13 @@ fn extract_exec_rules(env: &Environment) -> Vec<ExecRule> {
         MettaValue::Atom("$c".to_string()),
     ]);
 
-    let matches = env.match_space(&exec_pattern, &exec_pattern);
-
-    // Parse each match into an ExecRule
-    matches.iter().filter_map(ExecRule::from_sexpr).collect()
+    // Use deferred expansion: match_space returns Vec<MultiplicityMatch>,
+    // then flat_map expands multiplicity on demand
+    env.match_space(&exec_pattern, &exec_pattern)
+        .into_iter()
+        .flat_map(|m| m.expand())
+        .filter_map(|m| ExecRule::from_sexpr(&m))
+        .collect()
 }
 
 #[cfg(test)]

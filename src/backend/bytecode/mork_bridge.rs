@@ -179,13 +179,13 @@ impl MorkBridge {
         expr: &MettaValue,
         env: &Environment,
     ) -> Vec<(Arc<MettaValue>, Arc<MettaValue>, Bindings)> {
-        // Extract head symbol and arity for indexed lookup
+        // Extract head symbol and arity for indexed lookup (lazy iteration)
         let matching_rules = if let Some(head) = get_head_symbol(expr) {
             let arity = expr.get_arity();
-            env.get_matching_rules(head, arity)
+            env.get_matching_rules_iter(head, arity)
         } else {
             // For expressions without head symbol, check wildcard rules
-            env.get_matching_rules("", 0)
+            env.get_matching_rules_iter("", 0)
         };
 
         // Collect matching rules with bindings

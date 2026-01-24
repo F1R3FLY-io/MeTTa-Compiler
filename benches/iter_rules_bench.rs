@@ -17,25 +17,25 @@ use std::sync::Arc;
 
 /// Create a test rule for benchmarking with varying structure
 fn make_test_rule(pattern: &str, body: &str) -> Rule {
-    Rule {
-        lhs: Arc::new(MettaValue::sym(pattern)),
-        rhs: Arc::new(MettaValue::sym(body)),
-    }
+    Rule::from_arc(
+        Arc::new(MettaValue::sym(pattern)),
+        Arc::new(MettaValue::sym(body)),
+    )
 }
 
 /// Create a rule with S-expression structure (more realistic)
 fn make_sexpr_rule(head: &str, idx: usize) -> Rule {
-    Rule {
-        lhs: Arc::new(MettaValue::sexpr(vec![
+    Rule::from_arc(
+        Arc::new(MettaValue::sexpr(vec![
             MettaValue::sym(head),
             MettaValue::sym(&format!("arg{}", idx)),
             MettaValue::var(&format!("x{}", idx)),
         ])),
-        rhs: Arc::new(MettaValue::sexpr(vec![
+        Arc::new(MettaValue::sexpr(vec![
             MettaValue::sym("result"),
             MettaValue::var(&format!("x{}", idx)),
         ])),
-    }
+    )
 }
 
 /// Populate environment with n simple rules
@@ -193,22 +193,22 @@ fn bench_iter_rules_allocation(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark 5: iter_rule_heads() Performance
+// Benchmark 5: iter_rule_heads() Performance (Lazy Iterator)
 // ============================================================================
 
 fn bench_iter_rule_heads(c: &mut Criterion) {
     let mut group = c.benchmark_group("iter_rule_heads");
 
-    // Compare iter_rule_heads() vs iter_rules() for getting head info
+    // Compare iter_rule_heads() (lazy) vs iter_rules() for getting head info
     for size in [100, 1000, 10000].iter() {
         let env = populate_environment(*size);
 
         group.throughput(Throughput::Elements(*size as u64));
 
-        // New O(k) method
+        // New O(k) lazy method - collects to Vec for fair comparison
         group.bench_with_input(BenchmarkId::new("heads_only", size), size, |b, _| {
             b.iter(|| {
-                let heads = black_box(&env).iter_rule_heads();
+                let heads: Vec<_> = black_box(&env).iter_rule_heads().collect();
                 black_box(heads)
             })
         });
@@ -234,7 +234,7 @@ fn bench_iter_rule_heads(c: &mut Criterion) {
             rules,
             |b, _| {
                 b.iter(|| {
-                    let heads = black_box(&env).iter_rule_heads();
+                    let heads: Vec<_> = black_box(&env).iter_rule_heads().collect();
                     black_box(heads)
                 })
             },

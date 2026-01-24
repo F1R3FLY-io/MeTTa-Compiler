@@ -145,15 +145,15 @@ fn test_isolation_after_clone_mutation() {
 
     // Original should only have rule1
     let (head1, arity1) = extract_head_arity(&rule1.lhs);
-    let original_rules = env.get_matching_rules(head1, arity1);
+    let original_rules: Vec<_> = env.get_matching_rules_iter(head1, arity1).collect();
     assert_eq!(original_rules.len(), 1, "Original should have 1 rule");
 
     // Clone should have both rules (rule1 was shared, rule2 was added)
-    let clone_rules = clone.get_matching_rules(head1, arity1);
+    let clone_rules: Vec<_> = clone.get_matching_rules_iter(head1, arity1).collect();
     assert_eq!(clone_rules.len(), 1, "Clone should have original rule");
 
     let (head2, arity2) = extract_head_arity(&rule2.lhs);
-    let clone_rules2 = clone.get_matching_rules(head2, arity2);
+    let clone_rules2: Vec<_> = clone.get_matching_rules_iter(head2, arity2).collect();
     assert_eq!(clone_rules2.len(), 1, "Clone should have new rule");
 }
 
@@ -548,8 +548,8 @@ fn integration_clone_preserves_rule_data() {
     // Verify each rule is accessible
     for rule in &rules {
         let (head, arity) = extract_head_arity(&rule.lhs);
-        let original_matches = env.get_matching_rules(head, arity);
-        let clone_matches = clone.get_matching_rules(head, arity);
+        let original_matches: Vec<_> = env.get_matching_rules_iter(head, arity).collect();
+        let clone_matches: Vec<_> = clone.get_matching_rules_iter(head, arity).collect();
 
         assert!(!original_matches.is_empty(), "Original should have rule");
         assert!(!clone_matches.is_empty(), "Clone should have rule");
@@ -559,6 +559,416 @@ fn integration_clone_preserves_rule_data() {
 // ============================================================================
 // Thread Safety Tests - Concurrent Mutation
 // ============================================================================
+
+// ============================================================================
+// ALL-ATOM MULTIPLICITY TESTS (MeTTa HE Semantics)
+// ============================================================================
+
+mod all_atom_multiplicity {
+    use super::*;
+
+    /// Test: Adding the same data atom twice results in count=2
+    #[test]
+    fn test_add_same_atom_twice_increments_count() {
+        let mut env = Environment::new();
+
+        // Create a simple data atom (not a rule)
+        let atom = MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("bar".to_string()),
+        ]);
+
+        // Add the atom twice
+        env.add_to_space(&atom);
+        env.add_to_space(&atom);
+
+        // Check multiplicity is 2
+        let count = env.get_atom_multiplicity(&atom);
+        assert_eq!(count, 2, "Atom added twice should have multiplicity 2");
+    }
+
+    /// Test: match_space returns N results for atoms with multiplicity N
+    #[test]
+    fn test_match_space_returns_n_copies_for_multiplicity_n() {
+        let mut env = Environment::new();
+
+        // Create and add a data atom 3 times
+        let atom = MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("bar".to_string()),
+        ]);
+
+        env.add_to_space(&atom);
+        env.add_to_space(&atom);
+        env.add_to_space(&atom);
+
+        // Match should return 3 results
+        let pattern = MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("bar".to_string()),
+        ]);
+        let template = MettaValue::Atom("found".to_string());
+
+        // match_space returns Vec<MultiplicityMatch>, expand for MeTTa HE semantics
+        let results: Vec<MettaValue> = env
+            .match_space(&pattern, &template)
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect();
+        assert_eq!(
+            results.len(),
+            3,
+            "match_space should return 3 results for atom with multiplicity 3"
+        );
+
+        // All results should be the template
+        for result in &results {
+            assert_eq!(
+                result,
+                &template,
+                "Each result should be the instantiated template"
+            );
+        }
+    }
+
+    /// Test: Removing once decrements counter, atom still in space
+    #[test]
+    fn test_remove_once_decrements_counter_keeps_atom() {
+        let mut env = Environment::new();
+
+        // Add atom twice
+        let atom = MettaValue::SExpr(vec![
+            MettaValue::Atom("test".to_string()),
+            MettaValue::Long(42),
+        ]);
+
+        env.add_to_space(&atom);
+        env.add_to_space(&atom);
+
+        // Verify count is 2
+        assert_eq!(
+            env.get_atom_multiplicity(&atom),
+            2,
+            "Should have multiplicity 2"
+        );
+
+        // Remove once
+        env.remove_from_space(&atom);
+
+        // Count should be 1
+        assert_eq!(
+            env.get_atom_multiplicity(&atom),
+            1,
+            "Should have multiplicity 1 after one removal"
+        );
+
+        // Atom should still be matchable (1 result)
+        let results: Vec<MettaValue> = env
+            .match_space(&atom, &MettaValue::Atom("found".to_string()))
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect();
+        assert_eq!(
+            results.len(),
+            1,
+            "Should return 1 result after one removal"
+        );
+    }
+
+    /// Test: Removing twice (count=0) removes atom from PathMap
+    #[test]
+    fn test_remove_all_copies_removes_from_space() {
+        let mut env = Environment::new();
+
+        // Add atom twice
+        let atom = MettaValue::SExpr(vec![
+            MettaValue::Atom("removable".to_string()),
+            MettaValue::Long(123),
+        ]);
+
+        env.add_to_space(&atom);
+        env.add_to_space(&atom);
+
+        // Remove twice
+        env.remove_from_space(&atom);
+        env.remove_from_space(&atom);
+
+        // Atom should no longer be matchable
+        let results: Vec<MettaValue> = env
+            .match_space(&atom, &MettaValue::Atom("found".to_string()))
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect();
+        assert_eq!(
+            results.len(),
+            0,
+            "Should return 0 results after all copies removed"
+        );
+    }
+
+    /// Test: Simple atom (not s-expression) multiplicity
+    #[test]
+    fn test_simple_atom_multiplicity() {
+        let mut env = Environment::new();
+
+        let atom = MettaValue::Atom("simple-fact".to_string());
+
+        // Add 4 times
+        for _ in 0..4 {
+            env.add_to_space(&atom);
+        }
+
+        // Check multiplicity
+        assert_eq!(
+            env.get_atom_multiplicity(&atom),
+            4,
+            "Simple atom should have multiplicity 4"
+        );
+
+        // Match should return 4 results
+        // Use a variable pattern to match any atom
+        let pattern = MettaValue::Atom("simple-fact".to_string());
+        let template = MettaValue::Atom("matched".to_string());
+        let results: Vec<MettaValue> = env
+            .match_space(&pattern, &template)
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect();
+        assert_eq!(
+            results.len(),
+            4,
+            "match_space should return 4 results for multiplicity 4"
+        );
+    }
+
+    /// Test: Rules with multiplicity still work correctly
+    #[test]
+    fn test_rules_with_multiplicity() {
+        let mut env = Environment::new();
+
+        // Create a rule s-expression
+        let rule_sexpr = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("double".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+        ]);
+
+        // Add the rule twice via add_to_space
+        env.add_to_space(&rule_sexpr);
+        env.add_to_space(&rule_sexpr);
+
+        // Check multiplicity
+        assert_eq!(
+            env.get_atom_multiplicity(&rule_sexpr),
+            2,
+            "Rule should have multiplicity 2"
+        );
+
+        // Match the rule pattern
+        let pattern = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::Atom("$lhs".to_string()),
+            MettaValue::Atom("$rhs".to_string()),
+        ]);
+        let template = MettaValue::Atom("rule-found".to_string());
+
+        let results: Vec<MettaValue> = env
+            .match_space(&pattern, &template)
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect();
+        assert_eq!(
+            results.len(),
+            2,
+            "match_space should return 2 results for rule with multiplicity 2"
+        );
+    }
+
+    /// Test: Fork/CoW preserves multiplicities correctly
+    #[test]
+    fn test_fork_preserves_multiplicities() {
+        let mut env = Environment::new();
+
+        // Add atom 3 times
+        let atom = MettaValue::SExpr(vec![
+            MettaValue::Atom("preserved".to_string()),
+            MettaValue::Long(999),
+        ]);
+
+        env.add_to_space(&atom);
+        env.add_to_space(&atom);
+        env.add_to_space(&atom);
+
+        // Clone the environment (fork)
+        let mut forked = env.clone();
+
+        // Original should still have multiplicity 3
+        assert_eq!(
+            env.get_atom_multiplicity(&atom),
+            3,
+            "Original should have multiplicity 3"
+        );
+
+        // Forked should also have multiplicity 3
+        assert_eq!(
+            forked.get_atom_multiplicity(&atom),
+            3,
+            "Forked should have multiplicity 3"
+        );
+
+        // Add once more to forked
+        forked.add_to_space(&atom);
+
+        // Forked should now have multiplicity 4
+        assert_eq!(
+            forked.get_atom_multiplicity(&atom),
+            4,
+            "Forked should have multiplicity 4 after add"
+        );
+
+        // Original should still have multiplicity 3 (isolation)
+        assert_eq!(
+            env.get_atom_multiplicity(&atom),
+            3,
+            "Original should still have multiplicity 3 after fork mutation"
+        );
+    }
+
+    /// Test: Different atoms have independent multiplicities
+    #[test]
+    fn test_different_atoms_independent_multiplicities() {
+        let mut env = Environment::new();
+
+        let atom1 = MettaValue::SExpr(vec![
+            MettaValue::Atom("first".to_string()),
+            MettaValue::Long(1),
+        ]);
+
+        let atom2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("second".to_string()),
+            MettaValue::Long(2),
+        ]);
+
+        // Add atom1 twice, atom2 once
+        env.add_to_space(&atom1);
+        env.add_to_space(&atom1);
+        env.add_to_space(&atom2);
+
+        // Check multiplicities
+        assert_eq!(
+            env.get_atom_multiplicity(&atom1),
+            2,
+            "atom1 should have multiplicity 2"
+        );
+        assert_eq!(
+            env.get_atom_multiplicity(&atom2),
+            1,
+            "atom2 should have multiplicity 1"
+        );
+
+        // Match each and verify results
+        let template = MettaValue::Atom("found".to_string());
+
+        let results1: Vec<MettaValue> = env
+            .match_space(&atom1, &template)
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect();
+        let results2: Vec<MettaValue> = env
+            .match_space(&atom2, &template)
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect();
+
+        assert_eq!(results1.len(), 2, "atom1 should match twice");
+        assert_eq!(results2.len(), 1, "atom2 should match once");
+    }
+
+    /// Test: match_space with variable pattern and multiplicity
+    #[test]
+    fn test_match_space_variable_pattern_with_multiplicity() {
+        let mut env = Environment::new();
+
+        // Add same fact twice
+        let fact = MettaValue::SExpr(vec![
+            MettaValue::Atom("person".to_string()),
+            MettaValue::Atom("Alice".to_string()),
+        ]);
+
+        env.add_to_space(&fact);
+        env.add_to_space(&fact);
+
+        // Match with variable pattern
+        let pattern = MettaValue::SExpr(vec![
+            MettaValue::Atom("person".to_string()),
+            MettaValue::Atom("$name".to_string()),
+        ]);
+        let template = MettaValue::Atom("$name".to_string());
+
+        let results: Vec<MettaValue> = env
+            .match_space(&pattern, &template)
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect();
+        assert_eq!(
+            results.len(),
+            2,
+            "Should return 2 results for multiplicity 2"
+        );
+
+        // Both results should be "Alice"
+        for result in &results {
+            if let MettaValue::Atom(name) = result {
+                assert_eq!(name, "Alice", "Result should be Alice");
+            } else {
+                panic!("Result should be an atom");
+            }
+        }
+    }
+
+    /// Test: Multiplicity survives rebuild_rule_index
+    #[test]
+    fn test_multiplicity_survives_rebuild() {
+        let mut env = Environment::new();
+
+        // Add a rule twice
+        let rule_sexpr = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("test-rebuild".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        env.add_to_space(&rule_sexpr);
+        env.add_to_space(&rule_sexpr);
+
+        // Check multiplicity before rebuild
+        assert_eq!(
+            env.get_atom_multiplicity(&rule_sexpr),
+            2,
+            "Multiplicity should be 2 before rebuild"
+        );
+
+        // Rebuild rule index
+        env.rebuild_rule_index();
+
+        // Check multiplicity after rebuild (should still be 2)
+        assert_eq!(
+            env.get_atom_multiplicity(&rule_sexpr),
+            2,
+            "Multiplicity should still be 2 after rebuild"
+        );
+    }
+}
 
 mod thread_safety {
     use super::*;
@@ -1036,5 +1446,79 @@ mod thread_safety {
 
         // Shared should be unchanged
         assert_eq!(shared.rule_count(), 30);
+    }
+
+    #[test]
+    fn test_remove_from_space_decrements_multiplicity() {
+        // Test: Removing a rule should decrement its multiplicity count
+        let mut env = Environment::new();
+
+        // Create a rule and add it first via add_rule() (which sets up multiplicity tracking)
+        let lhs = MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+        let rhs = MettaValue::SExpr(vec![
+            MettaValue::Atom("bar".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+
+        // Add the rule via add_rule() first (sets up rule_index and multiplicity tracking)
+        env.add_rule(Rule::new(lhs.clone(), rhs.clone()));
+
+        // Create the rule s-expression for add_to_space() second add
+        let rule_sexpr = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            lhs.clone(),
+            rhs.clone(),
+        ]);
+
+        // Add the rule again via add_to_space() (should increment multiplicity)
+        env.add_to_space(&rule_sexpr);
+
+        // Get the rule count (should be 2)
+        // Find the rule and check its count
+        let rules: Vec<Rule> = env.iter_rules().collect();
+        assert!(!rules.is_empty(), "Should have at least one rule");
+
+        // Find the rule we added
+        let rule = rules
+            .iter()
+            .find(|r| {
+                if let MettaValue::SExpr(lhs_elems) = r.lhs.as_ref() {
+                    if lhs_elems.len() == 2 {
+                        if let MettaValue::Atom(head) = &lhs_elems[0] {
+                            return head == "foo";
+                        }
+                    }
+                }
+                false
+            })
+            .expect("Should find the foo rule");
+
+        let count_before = env.get_rule_count(rule);
+        assert_eq!(count_before, 2, "Rule should have multiplicity of 2");
+
+        // Remove the rule once
+        env.remove_from_space(&rule_sexpr);
+
+        // Check that multiplicity decreased
+        // Note: The rule might still be present (or removed depending on implementation)
+        // but the multiplicity count should have been decremented
+        let count_after = env.get_rule_count(rule);
+        assert_eq!(
+            count_after, 1,
+            "Rule multiplicity should be 1 after removal"
+        );
+
+        // Remove the rule again
+        env.remove_from_space(&rule_sexpr);
+
+        // After second removal, count should be 0 (but get_rule_count returns 1 for missing)
+        let count_final = env.get_rule_count(rule);
+        assert!(
+            count_final <= 1,
+            "Rule multiplicity should be 0 or 1 after second removal"
+        );
     }
 }

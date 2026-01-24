@@ -218,6 +218,7 @@ pub unsafe extern "C" fn jit_runtime_clear_bindings(ctx: *mut JitContext) {
 /// Push a new binding frame onto the binding frame stack.
 ///
 /// Creates a new scope level for bindings.
+/// On binding frame overflow, sets the bailout flag for graceful fallback.
 ///
 /// # Arguments
 /// * `ctx` - JIT context pointer
@@ -237,7 +238,15 @@ pub unsafe extern "C" fn jit_runtime_push_binding_frame(ctx: *mut JitContext) ->
     if ctx_ref.binding_frames.is_null()
         || ctx_ref.binding_frames_count >= ctx_ref.binding_frames_cap
     {
-        return -1; // No capacity or overflow
+        // Binding frame overflow - signal bailout for graceful fallback
+        ctx_ref.bailout = true;
+        ctx_ref.bailout_reason = JitBailoutReason::BindingFrameOverflow;
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "JIT runtime: binding frame overflow (count={}, cap={})",
+            ctx_ref.binding_frames_count, ctx_ref.binding_frames_cap
+        );
+        return -1;
     }
 
     // Create new frame with incremented scope depth

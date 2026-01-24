@@ -1,13 +1,19 @@
+pub mod atom_id;
 pub mod bindings;
+pub mod indexed_multiset;
 pub mod memo_handle;
 pub mod metta_state;
 pub mod metta_value;
+pub mod multiset;
 pub mod space_handle;
 
+pub use atom_id::{AtomId, SymbolTable};
 pub use bindings::SmartBindings as Bindings;
+pub use indexed_multiset::IndexedMultiset;
 pub use memo_handle::MemoHandle;
 pub use metta_state::MettaState;
 pub use metta_value::{ArcValue, MettaValue};
+pub use multiset::{AtomMultiset, AtomMultisetSnapshot};
 pub use space_handle::SpaceHandle;
 
 use crate::backend::environment::Environment;
@@ -23,6 +29,10 @@ pub type EvalResult = (Vec<MettaValue>, Environment);
 pub struct Rule {
     pub lhs: Arc<MettaValue>,
     pub rhs: Arc<MettaValue>,
+    /// Cached index into multiplicity counts array.
+    /// Set during add_rule(), used for O(1) count lookup.
+    /// None for rules created before being added to an environment.
+    pub(crate) multiplicity_idx: Option<u32>,
 }
 
 impl Rule {
@@ -31,12 +41,39 @@ impl Rule {
         Rule {
             lhs: Arc::new(lhs),
             rhs: Arc::new(rhs),
+            multiplicity_idx: None, // Set during add_rule()
         }
     }
 
     /// Create a new rule from Arc-wrapped MettaValues
     pub fn from_arc(lhs: Arc<MettaValue>, rhs: Arc<MettaValue>) -> Self {
-        Rule { lhs, rhs }
+        Rule {
+            lhs,
+            rhs,
+            multiplicity_idx: None, // Set during add_rule()
+        }
+    }
+
+    /// Create rule with pre-assigned index (for bulk operations)
+    pub(crate) fn with_index(lhs: MettaValue, rhs: MettaValue, idx: u32) -> Self {
+        Rule {
+            lhs: Arc::new(lhs),
+            rhs: Arc::new(rhs),
+            multiplicity_idx: Some(idx),
+        }
+    }
+
+    /// Create rule from Arc-wrapped MettaValues with pre-assigned index
+    pub(crate) fn from_arc_with_index(
+        lhs: Arc<MettaValue>,
+        rhs: Arc<MettaValue>,
+        idx: u32,
+    ) -> Self {
+        Rule {
+            lhs,
+            rhs,
+            multiplicity_idx: Some(idx),
+        }
     }
 
     /// Get a reference to the LHS pattern

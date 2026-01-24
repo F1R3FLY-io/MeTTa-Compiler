@@ -1,12 +1,14 @@
 //! Stack operations runtime functions for JIT compilation
 //!
 //! This module provides FFI-callable stack manipulation functions:
-//! - push, pop - Basic stack operations
+//! - push, pop - Basic stack operations with proper bailout signaling
 //! - get_sp, set_sp - Stack pointer access
-//! - load_constant - Constant pool access
+//! - load_constant - Constant pool access with bounds checking
 //! - debug_print, debug_stack - Debugging utilities
 
-use crate::backend::bytecode::jit::types::{JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_NIL};
+use crate::backend::bytecode::jit::types::{
+    JitBailoutReason, JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_NIL,
+};
 use crate::backend::models::MettaValue;
 use tracing::trace;
 
@@ -17,6 +19,7 @@ use tracing::trace;
 /// Push a value onto the JIT context's memory stack
 ///
 /// Used when we need to materialize values to memory (e.g., for calls).
+/// On stack overflow, sets the bailout flag and reason for graceful fallback.
 ///
 /// # Safety
 /// The context pointer and stack must be valid.
@@ -24,7 +27,10 @@ use tracing::trace;
 pub unsafe extern "C" fn jit_runtime_push(ctx: *mut JitContext, val: u64) -> i32 {
     if let Some(ctx) = ctx.as_mut() {
         if ctx.sp >= ctx.stack_cap {
-            return -1; // Stack overflow
+            // Stack overflow - signal bailout for graceful fallback
+            ctx.bailout = true;
+            ctx.bailout_reason = JitBailoutReason::StackOverflow;
+            return -1;
         }
         *ctx.value_stack.add(ctx.sp) = JitValue::from_raw(val);
         ctx.sp += 1;
@@ -36,13 +42,17 @@ pub unsafe extern "C" fn jit_runtime_push(ctx: *mut JitContext, val: u64) -> i32
 
 /// Pop a value from the JIT context's memory stack
 ///
+/// On stack underflow, sets the bailout flag and reason for graceful fallback.
+///
 /// # Safety
 /// The context pointer and stack must be valid.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_pop(ctx: *mut JitContext) -> u64 {
     if let Some(ctx) = ctx.as_mut() {
         if ctx.sp == 0 {
-            // Stack underflow - return nil as sentinel
+            // Stack underflow - signal bailout for graceful fallback
+            ctx.bailout = true;
+            ctx.bailout_reason = JitBailoutReason::StackUnderflow;
             return TAG_NIL;
         }
         ctx.sp -= 1;
@@ -77,6 +87,8 @@ pub unsafe extern "C" fn jit_runtime_set_sp(ctx: *mut JitContext, sp: u64) {
 /// Load a constant from the constant pool
 ///
 /// Returns the constant as a JitValue (boxing if necessary).
+/// On out-of-bounds access, returns nil (no bailout since this is typically
+/// a compilation bug rather than a runtime error).
 ///
 /// # Safety
 /// The context pointer and constant index must be valid.
@@ -85,7 +97,13 @@ pub unsafe extern "C" fn jit_runtime_load_constant(ctx: *const JitContext, index
     if let Some(ctx) = ctx.as_ref() {
         let idx = index as usize;
         if idx >= ctx.constants_len {
-            // Invalid constant index - return nil
+            // Invalid constant index - this is likely a JIT compilation bug
+            // but we handle gracefully by returning nil
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "JIT runtime: constant pool out of bounds (index={}, len={})",
+                idx, ctx.constants_len
+            );
             return TAG_NIL;
         }
 

@@ -325,6 +325,14 @@ pub fn pattern_specificity(pattern: &MettaValue) -> usize {
 /// Uses Cow<'a, MettaValue> to avoid cloning when no substitution is needed.
 /// Returns Cow::Borrowed(value) when the expression contains no variables bound in `bindings`.
 /// Returns Cow::Owned(new_value) only when actual substitution occurred.
+///
+/// # Implementation Note
+///
+/// This function uses an explicit work stack instead of recursion to avoid
+/// stack overflow on deeply nested S-expressions. This is critical for:
+/// - Async evaluation (Tokio workers have smaller stacks ~2MB)
+/// - Deeply nested data structures common in knowledge graphs
+/// - Processing before trampoline's MAX_EVAL_DEPTH check runs
 pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a, MettaValue> {
     trace!(target: "mettatron::backend::eval::apply_bindings", ?value, ?bindings);
 
@@ -332,6 +340,8 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
     if bindings.is_empty() {
         return Cow::Borrowed(value);
     }
+
+    // For simple cases without nesting, use fast path
     match value {
         // Apply bindings to variables (atoms starting with $, &, or ')
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
@@ -339,65 +349,161 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
             if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" =>
         {
             match bindings.iter().find(|(name, _)| name.as_str() == s) {
-                Some((_name, val)) => Cow::Owned(val.clone()),
-                None => Cow::Borrowed(value),
+                Some((_name, val)) => return Cow::Owned(val.clone()),
+                None => return Cow::Borrowed(value),
             }
         }
-        MettaValue::SExpr(items) => {
-            // Check if any substitution will occur before allocating
-            let mut needs_copy = false;
-            let mut results: Vec<Cow<'_, MettaValue>> = Vec::with_capacity(items.len());
+        // Non-compound types don't need substitution
+        MettaValue::Long(_)
+        | MettaValue::Float(_)
+        | MettaValue::Bool(_)
+        | MettaValue::String(_)
+        | MettaValue::Nil
+        | MettaValue::Unit
+        | MettaValue::Space(_)
+        | MettaValue::State(_)
+        | MettaValue::Type(_)
+        | MettaValue::Memo(_)
+        | MettaValue::Empty => return Cow::Borrowed(value),
+        // Regular atoms (not variables)
+        MettaValue::Atom(_) => return Cow::Borrowed(value),
+        // Compound types need iterative processing
+        MettaValue::SExpr(_) | MettaValue::Conjunction(_) | MettaValue::Error(_, _) => {}
+    }
 
-            for item in items {
-                let result = apply_bindings(item, bindings);
-                if matches!(result, Cow::Owned(_)) {
-                    needs_copy = true;
+    // Iterative implementation using explicit work stack
+    apply_bindings_iterative(value, bindings)
+}
+
+/// Work item for iterative apply_bindings
+#[derive(Clone)]
+enum ApplyBindingsWork<'a> {
+    /// Process a value - may push more work
+    Process(&'a MettaValue),
+    /// Build an SExpr from the last N results
+    BuildSExpr(usize, &'a MettaValue),
+    /// Build a Conjunction from the last N results
+    BuildConjunction(usize, &'a MettaValue),
+    /// Build an Error from the last result
+    BuildError(String, &'a MettaValue),
+}
+
+/// Iterative implementation of apply_bindings using explicit work stack.
+///
+/// This avoids recursion to prevent stack overflow on deeply nested structures.
+fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a, MettaValue> {
+    // Work stack: items to process
+    let mut work_stack: Vec<ApplyBindingsWork<'a>> = Vec::with_capacity(32);
+    // Result stack: processed results (MettaValue, was_modified)
+    let mut result_stack: Vec<(MettaValue, bool)> = Vec::with_capacity(32);
+
+    work_stack.push(ApplyBindingsWork::Process(value));
+
+    while let Some(work) = work_stack.pop() {
+        match work {
+            ApplyBindingsWork::Process(val) => {
+                match val {
+                    // Variable substitution
+                    MettaValue::Atom(s)
+                        if (s.starts_with('$')
+                            || s.starts_with('&')
+                            || s.starts_with('\''))
+                            && s != "&" =>
+                    {
+                        match bindings.iter().find(|(name, _)| name.as_str() == s) {
+                            Some((_name, bound_val)) => {
+                                result_stack.push((bound_val.clone(), true));
+                            }
+                            None => {
+                                result_stack.push((val.clone(), false));
+                            }
+                        }
+                    }
+                    // S-expression: push build marker, then push children in reverse order
+                    MettaValue::SExpr(items) => {
+                        if items.is_empty() {
+                            result_stack.push((val.clone(), false));
+                        } else {
+                            // Push build marker first (processed last)
+                            work_stack.push(ApplyBindingsWork::BuildSExpr(items.len(), val));
+                            // Push children in reverse order so first child is processed first
+                            for item in items.iter().rev() {
+                                work_stack.push(ApplyBindingsWork::Process(item));
+                            }
+                        }
+                    }
+                    // Conjunction: similar to SExpr
+                    MettaValue::Conjunction(goals) => {
+                        if goals.is_empty() {
+                            result_stack.push((val.clone(), false));
+                        } else {
+                            work_stack.push(ApplyBindingsWork::BuildConjunction(goals.len(), val));
+                            for goal in goals.iter().rev() {
+                                work_stack.push(ApplyBindingsWork::Process(goal));
+                            }
+                        }
+                    }
+                    // Error: push build marker, then push details
+                    MettaValue::Error(msg, details) => {
+                        work_stack.push(ApplyBindingsWork::BuildError(msg.clone(), val));
+                        work_stack.push(ApplyBindingsWork::Process(details));
+                    }
+                    // All other types: no substitution needed
+                    _ => {
+                        result_stack.push((val.clone(), false));
+                    }
                 }
-                results.push(result);
             }
+            ApplyBindingsWork::BuildSExpr(count, original) => {
+                // Pop `count` results and build SExpr
+                let start = result_stack.len() - count;
+                let children: Vec<(MettaValue, bool)> = result_stack.drain(start..).collect();
 
-            if needs_copy {
-                Cow::Owned(MettaValue::SExpr(
-                    results.into_iter().map(|cow| cow.into_owned()).collect(),
-                ))
-            } else {
-                Cow::Borrowed(value)
-            }
-        }
-        MettaValue::Conjunction(goals) => {
-            // Check if any substitution will occur before allocating
-            let mut needs_copy = false;
-            let mut results: Vec<Cow<'_, MettaValue>> = Vec::with_capacity(goals.len());
-
-            for goal in goals {
-                let result = apply_bindings(goal, bindings);
-                if matches!(result, Cow::Owned(_)) {
-                    needs_copy = true;
+                let any_modified = children.iter().any(|(_, modified)| *modified);
+                if any_modified {
+                    let new_items: Vec<MettaValue> =
+                        children.into_iter().map(|(v, _)| v).collect();
+                    result_stack.push((MettaValue::SExpr(new_items), true));
+                } else {
+                    result_stack.push((original.clone(), false));
                 }
-                results.push(result);
             }
+            ApplyBindingsWork::BuildConjunction(count, original) => {
+                let start = result_stack.len() - count;
+                let children: Vec<(MettaValue, bool)> = result_stack.drain(start..).collect();
 
-            if needs_copy {
-                Cow::Owned(MettaValue::Conjunction(
-                    results.into_iter().map(|cow| cow.into_owned()).collect(),
-                ))
-            } else {
-                Cow::Borrowed(value)
+                let any_modified = children.iter().any(|(_, modified)| *modified);
+                if any_modified {
+                    let new_goals: Vec<MettaValue> =
+                        children.into_iter().map(|(v, _)| v).collect();
+                    result_stack.push((MettaValue::Conjunction(new_goals), true));
+                } else {
+                    result_stack.push((original.clone(), false));
+                }
+            }
+            ApplyBindingsWork::BuildError(msg, original) => {
+                // Pop the details result
+                let (details, modified) = result_stack
+                    .pop()
+                    .expect("BuildError should have details on result stack");
+
+                if modified {
+                    result_stack.push((MettaValue::Error(msg, Arc::new(details)), true));
+                } else {
+                    result_stack.push((original.clone(), false));
+                }
             }
         }
-        MettaValue::Error(msg, details) => {
-            let new_details = apply_bindings(details, bindings);
-            if matches!(new_details, Cow::Owned(_)) {
-                Cow::Owned(MettaValue::Error(
-                    msg.clone(),
-                    Arc::new(new_details.into_owned()),
-                ))
-            } else {
-                Cow::Borrowed(value)
-            }
-        }
-        // Literals don't need substitution - return borrowed reference
-        _ => Cow::Borrowed(value),
+    }
+
+    // Final result should be on the stack
+    debug_assert_eq!(result_stack.len(), 1, "apply_bindings should produce exactly one result");
+    let (result, modified) = result_stack.pop().expect("Result stack should not be empty");
+
+    if modified {
+        Cow::Owned(result)
+    } else {
+        Cow::Borrowed(value)
     }
 }
 
@@ -408,64 +514,92 @@ pub fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaValue> {
 
 /// Check structural equality between two MettaValues
 /// HE-compatible: Nil and empty SExpr are considered equal
+///
+/// # Implementation Note
+///
+/// This function uses an explicit work stack instead of recursion to avoid
+/// stack overflow on deeply nested S-expressions. This is critical for:
+/// - Async evaluation (Tokio workers have smaller stacks ~2MB)
+/// - Deeply nested data structures common in knowledge graphs
 pub fn values_equal(a: &MettaValue, b: &MettaValue) -> bool {
-    match (a, b) {
-        // Same-type comparisons
-        (MettaValue::Atom(a), MettaValue::Atom(b)) => a == b,
-        (MettaValue::Bool(a), MettaValue::Bool(b)) => a == b,
-        (MettaValue::Long(a), MettaValue::Long(b)) => a == b,
-        (MettaValue::Float(a), MettaValue::Float(b)) => a == b,
-        (MettaValue::String(a), MettaValue::String(b)) => a == b,
-        (MettaValue::Nil, MettaValue::Nil) => true,
-        (MettaValue::Unit, MettaValue::Unit) => true,
+    // Work stack: pairs of values to compare
+    let mut work_stack: Vec<(&MettaValue, &MettaValue)> = Vec::with_capacity(16);
+    work_stack.push((a, b));
 
-        // HE-compatible: Nil equals empty SExpr
-        (MettaValue::Nil, MettaValue::SExpr(items))
-        | (MettaValue::SExpr(items), MettaValue::Nil) => items.is_empty(),
+    while let Some((val_a, val_b)) = work_stack.pop() {
+        let equal = match (val_a, val_b) {
+            // Same-type comparisons
+            (MettaValue::Atom(a), MettaValue::Atom(b)) => a == b,
+            (MettaValue::Bool(a), MettaValue::Bool(b)) => a == b,
+            (MettaValue::Long(a), MettaValue::Long(b)) => a == b,
+            (MettaValue::Float(a), MettaValue::Float(b)) => a == b,
+            (MettaValue::String(a), MettaValue::String(b)) => a == b,
+            (MettaValue::Nil, MettaValue::Nil) => true,
+            (MettaValue::Unit, MettaValue::Unit) => true,
+            (MettaValue::Empty, MettaValue::Empty) => true,
 
-        // HE-compatible: Nil equals Unit
-        (MettaValue::Nil, MettaValue::Unit) | (MettaValue::Unit, MettaValue::Nil) => true,
+            // HE-compatible: Nil equals empty SExpr
+            (MettaValue::Nil, MettaValue::SExpr(items))
+            | (MettaValue::SExpr(items), MettaValue::Nil) => items.is_empty(),
 
-        // HE-compatible: Nil (value) equals Nil (atom symbol)
-        (MettaValue::Nil, MettaValue::Atom(s)) | (MettaValue::Atom(s), MettaValue::Nil) => {
-            s == "Nil"
-        }
+            // HE-compatible: Nil equals Unit
+            (MettaValue::Nil, MettaValue::Unit) | (MettaValue::Unit, MettaValue::Nil) => true,
 
-        // S-expression structural equality
-        (MettaValue::SExpr(a_items), MettaValue::SExpr(b_items)) => {
-            if a_items.len() != b_items.len() {
-                return false;
+            // HE-compatible: Nil (value) equals Nil (atom symbol)
+            (MettaValue::Nil, MettaValue::Atom(s)) | (MettaValue::Atom(s), MettaValue::Nil) => {
+                s == "Nil"
             }
-            a_items
-                .iter()
-                .zip(b_items.iter())
-                .all(|(a, b)| values_equal(a, b))
-        }
 
-        // Conjunction structural equality
-        (MettaValue::Conjunction(a_goals), MettaValue::Conjunction(b_goals)) => {
-            if a_goals.len() != b_goals.len() {
-                return false;
+            // S-expression structural equality: push children onto work stack
+            (MettaValue::SExpr(a_items), MettaValue::SExpr(b_items)) => {
+                if a_items.len() != b_items.len() {
+                    return false; // Early exit on length mismatch
+                }
+                // Push children in reverse order for LIFO processing
+                for (a, b) in a_items.iter().zip(b_items.iter()).rev() {
+                    work_stack.push((a, b));
+                }
+                true // Continue processing work stack
             }
-            a_goals
-                .iter()
-                .zip(b_goals.iter())
-                .all(|(a, b)| values_equal(a, b))
+
+            // Conjunction structural equality: push children onto work stack
+            (MettaValue::Conjunction(a_goals), MettaValue::Conjunction(b_goals)) => {
+                if a_goals.len() != b_goals.len() {
+                    return false; // Early exit on length mismatch
+                }
+                for (a, b) in a_goals.iter().zip(b_goals.iter()).rev() {
+                    work_stack.push((a, b));
+                }
+                true // Continue processing work stack
+            }
+
+            // Error equality: check message and push details onto work stack
+            (MettaValue::Error(a_msg, a_details), MettaValue::Error(b_msg, b_details)) => {
+                if a_msg != b_msg {
+                    return false; // Message mismatch
+                }
+                work_stack.push((a_details, b_details));
+                true // Continue processing work stack
+            }
+
+            // Space and State equality by identity
+            (MettaValue::Space(a), MettaValue::Space(b)) => a.id == b.id,
+            (MettaValue::State(a), MettaValue::State(b)) => a == b,
+
+            // Type equality
+            (MettaValue::Type(a), MettaValue::Type(b)) => a == b,
+
+            // Memo equality by identity
+            (MettaValue::Memo(a), MettaValue::Memo(b)) => a.id == b.id,
+
+            // Different types are not equal
+            _ => false,
+        };
+
+        if !equal {
+            return false; // Early exit on any mismatch
         }
-
-        // Error equality (message and details must match)
-        (MettaValue::Error(a_msg, a_details), MettaValue::Error(b_msg, b_details)) => {
-            a_msg == b_msg && values_equal(a_details, b_details)
-        }
-
-        // Space and State equality by identity
-        (MettaValue::Space(a), MettaValue::Space(b)) => a.id == b.id,
-        (MettaValue::State(a), MettaValue::State(b)) => a == b,
-
-        // Type equality
-        (MettaValue::Type(a), MettaValue::Type(b)) => a == b,
-
-        // Different types are not equal
-        _ => false,
     }
+
+    true // All pairs matched successfully
 }

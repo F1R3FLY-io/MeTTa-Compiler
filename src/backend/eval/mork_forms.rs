@@ -195,13 +195,16 @@ fn thread_bindings_through_goals(
         // Apply current bindings to this goal
         let instantiated_goal = apply_bindings(goal, &bindings).into_owned();
 
-        // Get all facts from space (we'll match against all of them)
+        // Get all facts from space with deferred expansion
         let wildcard = MettaValue::Atom("$_".to_string());
-        let all_facts = env.match_space(&wildcard, &wildcard);
+        let all_facts = env
+            .match_space(&wildcard, &wildcard)
+            .into_iter()
+            .flat_map(|m| m.expand());
 
         // Try to match instantiated goal against each fact
-        for fact in &all_facts {
-            if let Some(new_bindings) = pattern_match(&instantiated_goal, fact) {
+        for fact in all_facts {
+            if let Some(new_bindings) = pattern_match(&instantiated_goal, &fact) {
                 // Merge new bindings with current bindings
                 let mut merged = bindings.clone();
                 for (name, value) in new_bindings.iter() {
@@ -263,17 +266,16 @@ fn eval_consequent_conjunction_with_bindings(
         }
 
         // If goal has variables, try to match against space
+        // Use match_space_first for O(1) bloom filter + early exit on first match
         if has_variables(&instantiated_goal) {
-            let wildcard = MettaValue::Atom("$_".to_string());
-            let all_facts = env.match_space(&wildcard, &wildcard);
-
-            for fact in &all_facts {
-                if let Some(new_bindings) = pattern_match(&instantiated_goal, fact) {
-                    // Merge new bindings
+            if let Some(matched_fact) =
+                env.match_space_first(&instantiated_goal, &instantiated_goal)
+            {
+                // Extract bindings from the match (template=pattern, so result is the matched fact)
+                if let Some(new_bindings) = pattern_match(&instantiated_goal, &matched_fact) {
                     for (name, value) in new_bindings.iter() {
                         current_bindings.insert(name.clone(), value.clone());
                     }
-                    break; // Use first match
                 }
             }
         }

@@ -90,6 +90,18 @@ harness = false
 name = "iter_rules_bench"
 harness = false
 
+[[bench]]
+name = "multiplicity_tracking"
+harness = false
+
+[[bench]]
+name = "multiplicity_baseline"
+harness = false
+
+[[bench]]
+name = "match_space_multiplicity"
+harness = false
+
 [dependencies]
 # MORK - MeTTa Optimal Reduction Kernel for pattern matching
 mork = { path = "../MORK/kernel", features = ["interning"] }
@@ -142,6 +154,8 @@ liblevenshtein = { version = "^0.7", features = ["pathmap-backend", "simd"] }
 toml = "0.8"
 # Serde - Serialization for package manifest
 serde = { version = "1.0", features = ["derive"] }
+# Hex - Hex encoding for MORK bytes serialization
+hex = "0.4"
 # Semver - Version constraint parsing and validation
 semver = "1.0"
 
@@ -160,6 +174,11 @@ cranelift-jit = "0.126"
 cranelift-module = "0.126"
 cranelift-native = "0.126"
 
+# target-lexicon - Target triple parsing for cross-platform JIT ISA creation
+# Used for explicit CPU feature detection to avoid SIGILL under taskset
+# Version must match what cranelift uses (0.13)
+target-lexicon = "0.13"
+
 # DashMap - Lock-free concurrent hash map for tiered compilation cache
 dashmap = "6.1"
 
@@ -171,6 +190,15 @@ rayon = "1.10"
 
 # Crossbeam - Lock-free channels for custom eval thread pool
 crossbeam-channel = "0.5"
+
+# im - Persistent immutable collections (HAMT) for fork/CoW semantics
+im = "15.1"
+
+# owning_ref - Safe abstraction for returning iterators that own their lock guards
+owning_ref = "0.4"
+
+# either - Left/Right iterator pattern for optional iteration paths
+either = "1.13"
 
 # num_cpus - CPU count detection for thread pool sizing
 num_cpus = "1.16"

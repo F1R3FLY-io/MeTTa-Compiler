@@ -39,6 +39,8 @@ mod globals;
 
 mod debug;
 
+mod error_handling;
+
 // Public re-exports
 
 pub use arithmetic::{ArithmeticFuncIds, ArithmeticInit};
@@ -67,6 +69,8 @@ pub use globals::{GlobalsFuncIds, GlobalsInit};
 
 pub use debug::{DebugFuncIds, DebugInit};
 
+pub use error_handling::{ErrorFuncIds, ErrorHandlingInit};
+
 // =============================================================================
 // Aggregated FuncId Groups
 // =============================================================================
@@ -87,6 +91,7 @@ pub struct FuncIdGroups {
     pub higher_order: HigherOrderFuncIds,
     pub globals: GlobalsFuncIds,
     pub debug: DebugFuncIds,
+    pub errors: ErrorFuncIds,
 }
 
 // =============================================================================

@@ -11,6 +11,7 @@ use mork_expr::Expr;
 use pathmap::PathMap;
 use tracing::trace;
 
+use super::multiplicity::{decrement_multiplicity, get_multiplicity, increment_multiplicity};
 use super::{Environment, MettaValue};
 
 impl Environment {
@@ -292,10 +293,24 @@ impl Environment {
     /// IMPORTANT: Official MeTTa semantics - only the top-level expression is stored.
     /// Nested sub-expressions are NOT recursively extracted and stored separately.
     /// To query nested parts, use pattern matching with variables, e.g., (Outer $x)
+    ///
+    /// # Multiplicity Tracking (MeTTa HE Semantics) - Fixed-Width Suffix Approach
+    ///
+    /// Multiplicities are tracked in PathMap using efficient fixed-width encoding:
+    /// 1. Atom marker at `mork_bytes` path (idempotent - for efficient iteration)
+    /// 2. Multiplicity entry at `[0x03, 0xC1, 'M', mork_bytes, count_u64]` (for O(1) lookup)
+    ///
+    /// This approach:
+    /// - Enables O(1) fork via PathMap's CoW structural sharing
+    /// - Uses O(prefix_len + 8) suffix-replacement for count updates
+    /// - Provides O(prefix_len) multiplicity queries via direct lookup
     pub fn add_to_space(&mut self, value: &MettaValue) {
         trace!(target: "mettatron::environment::add_to_space", ?value);
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
         use crate::backend::varint_encoding::metta_to_varint_key;
+
+        // CoW: ensure we own data before modifying
+        self.make_owned();
 
         // Always try direct byte conversion first (handles both ground and non-ground values)
         // This skips string serialization + parsing for 10-20× speedup
@@ -305,10 +320,22 @@ impl Environment {
 
         match metta_to_mork_bytes(value, &space, &mut ctx) {
             Ok(mork_bytes) => {
-                // Primary: Store in MORK PathMap (fast O(k) query_multi)
-                let mut space_mut = self.create_space();
-                space_mut.btm.insert(&mork_bytes, ());
-                self.update_pathmap(space_mut);
+                // Get write lock on btm for both atom and multiplicity updates
+                let mut btm = self.shared.btm.write().expect("btm lock poisoned");
+
+                // 1. Insert atom marker (idempotent - PathMap handles existing values)
+                //    This enables efficient iteration via to_next_val() without visiting
+                //    multiplicity entries separately.
+                btm.insert(&mork_bytes, ());
+
+                // 2. Increment multiplicity using efficient suffix-replacement
+                //    Path: [0x03, 0xC1, 'M'] ++ mork_bytes ++ count_u64_be
+                increment_multiplicity(&mut btm, &mork_bytes);
+
+                drop(btm); // Release lock
+
+                // Increment O(1) total atom count
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
 
                 // Update bloom filter with (head, arity) for O(1) match_space() rejection
                 if let Some(head) = value.get_head_symbol() {
@@ -322,16 +349,29 @@ impl Environment {
             }
             Err(_e) => {
                 // Fallback: Store in PathMap with varint encoding (arity >= 64)
-                // Lazy allocation: only create PathMap on first use
+                // Uses same multiplicity tracking approach
                 let key = metta_to_varint_key(value);
-                self.make_owned(); // CoW: ensure we own data before modifying
+
                 let mut guard = self
                     .shared
                     .large_expr_pathmap
                     .write()
                     .expect("large_expr_pathmap lock poisoned");
                 let fallback = guard.get_or_insert_with(PathMap::new);
+
+                // 1. Insert atom marker
                 fallback.insert(&key, value.clone());
+
+                // 2. Increment multiplicity count
+                // Note: large_expr_pathmap stores MettaValue, but we still track counts
+                // using the same fixed-width approach in the main btm
+                {
+                    let mut btm = self.shared.btm.write().expect("btm lock poisoned");
+                    increment_multiplicity(&mut btm, &key);
+                }
+
+                // Increment O(1) total atom count
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
 
                 #[cfg(debug_assertions)]
                 eprintln!("Info: large expression stored in fallback PathMap: {}", _e);
@@ -351,10 +391,19 @@ impl Environment {
     /// # Thread Safety
     /// - Acquires write lock on PathMap
     /// - Marks environment as modified (CoW)
+    ///
+    /// # Multiplicity Tracking (MeTTa HE Semantics) - Fixed-Width Suffix Approach
+    ///
+    /// Decrements the multiplicity count using efficient suffix-replacement.
+    /// If this was the last instance, also removes the atom marker.
+    /// Decrements the total_atoms counter.
     pub fn remove_from_space(&mut self, value: &MettaValue) {
         trace!(target: "mettatron::environment::remove_from_space", ?value);
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
         use crate::backend::varint_encoding::metta_to_varint_key;
+
+        // CoW: ensure we own data before modifying
+        self.make_owned();
 
         // Always try direct byte conversion (handles both ground and non-ground values)
         // Also properly handles arity limits (returns error instead of panicking)
@@ -363,30 +412,73 @@ impl Environment {
 
         match metta_to_mork_bytes(value, &space, &mut ctx) {
             Ok(mork_bytes) => {
-                // Remove from primary MORK PathMap
-                let mut space_mut = self.create_space();
-                space_mut.btm.remove(&mork_bytes);
-                self.update_pathmap(space_mut);
+                // Get write lock on btm
+                let mut btm = self.shared.btm.write().expect("btm lock poisoned");
 
-                // Note deletion for bloom filter lazy rebuild tracking
-                // (Standard bloom filters don't support deletion, so we track count
-                // for periodic rebuild when false positive rate becomes too high)
-                self.shared
-                    .head_arity_bloom
-                    .write()
-                    .expect("head_arity_bloom lock poisoned")
-                    .note_deletion();
+                // Check current multiplicity
+                let current_count = get_multiplicity(&btm, &mork_bytes);
+                if current_count == 0 {
+                    // Check if atom exists without multiplicity (legacy data)
+                    if !btm.contains(&mork_bytes) {
+                        trace!(target: "mettatron::environment::remove_from_space",
+                               "Atom not found in PathMap, skipping removal");
+                        return;
+                    }
+                    // Legacy atom without multiplicity entry - just remove
+                    btm.remove(&mork_bytes);
+                    drop(btm);
+                    self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    self.shared
+                        .head_arity_bloom
+                        .write()
+                        .expect("head_arity_bloom lock poisoned")
+                        .note_deletion();
+                    return;
+                }
+
+                // Decrement multiplicity using efficient suffix-replacement
+                let new_count = decrement_multiplicity(&mut btm, &mork_bytes);
+
+                if new_count == 0 {
+                    // Last instance removed - also remove atom marker
+                    btm.remove(&mork_bytes);
+
+                    // Note deletion for bloom filter lazy rebuild tracking
+                    self.shared
+                        .head_arity_bloom
+                        .write()
+                        .expect("head_arity_bloom lock poisoned")
+                        .note_deletion();
+                }
+
+                drop(btm);
+                self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
             }
             Err(_) => {
                 // Remove from fallback PathMap (if it exists)
                 let key = metta_to_varint_key(value);
+
+                // Decrement multiplicity in main btm first
+                {
+                    let mut btm = self.shared.btm.write().expect("btm lock poisoned");
+                    let current_count = get_multiplicity(&btm, &key);
+                    if current_count > 0 {
+                        decrement_multiplicity(&mut btm, &key);
+                    }
+                }
+
                 let mut guard = self
                     .shared
                     .large_expr_pathmap
                     .write()
                     .expect("large_expr_pathmap lock poisoned");
+
                 if let Some(ref mut fallback) = *guard {
-                    fallback.remove(&key);
+                    // Check if atom exists
+                    if fallback.contains(&key) {
+                        fallback.remove(&key);
+                        self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -394,31 +486,43 @@ impl Environment {
 
     /// Remove all facts matching a pattern from MORK Space
     ///
-    /// This finds all facts that match the given pattern (with variables)
-    /// and removes each match from the space.
+    /// Uses lazy matching to avoid creating expanded duplicates in memory.
+    /// Returns just the count of removed items (more efficient than returning Vec).
     ///
     /// # Returns
-    /// Vector of all removed facts (for logging/undo)
+    /// Count of removed facts (total, respecting multiplicity)
     ///
     /// # Performance
-    /// - O(n × m) where n = facts in space, m = pattern complexity
-    /// - Optimized by query_all() which uses PathMap prefix search
+    /// - Memory: O(k) where k = unique matching atoms (vs O(n×m) for expanded)
+    /// - Calls remove_from_space() once per instance, respecting multiplicity
     ///
-    /// # Thread Safety
-    /// - Acquires multiple write locks (one per fact removed)
-    /// - Consider using bulk removal for large result sets
-    pub fn remove_matching(&mut self, pattern: &MettaValue) -> Vec<MettaValue> {
-        trace!(target: "mettatron::environment::remove_matching", ?pattern);
-        // Query for all matches using match_space with identity template
+    /// # Example
+    /// ```ignore
+    /// // If (fact 1) exists with multiplicity 3, remove_matching_count returns 3
+    /// // but only allocates space for 1 MultiplicityMatch struct
+    /// let count = env.remove_matching_count(&pattern);
+    /// ```
+    pub fn remove_matching_count(&mut self, pattern: &MettaValue) -> usize {
+        trace!(target: "mettatron::environment::remove_matching_count", ?pattern);
+
+        // Use match_space to get compressed (value, count) pairs
+        // This avoids expanding multiplicity N into N copies in memory
         let matches = self.match_space(pattern, pattern);
 
-        // Remove each match
-        trace!(target: "mettatron::environment::remove_matching", match_count = matches.len());
-        for m in &matches {
-            self.remove_from_space(m);
+        // Calculate total count (sum of all multiplicities)
+        let count: usize = matches.iter().map(|m| m.count).sum();
+
+        trace!(target: "mettatron::environment::remove_matching_count",
+               unique_matches = matches.len(), total_count = count);
+
+        // Remove each match N times based on its multiplicity
+        for m in matches {
+            for _ in 0..m.count {
+                self.remove_from_space(&m.value);
+            }
         }
 
-        matches
+        count
     }
 
     /// Rebuild the bloom filter by iterating through all entries in MORK space.

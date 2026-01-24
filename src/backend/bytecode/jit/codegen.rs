@@ -3,11 +3,27 @@
 //! This module provides helper functions for generating Cranelift IR,
 //! abstracting common patterns like NaN-boxing, type guards, and stack operations.
 
+use cranelift::codegen::ir::FuncRef;
 use cranelift::prelude::*;
 
 use super::types::{
     JitError, JitResult, PAYLOAD_MASK, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_NIL, TAG_UNIT,
 };
+
+/// Pre-declared function references for error handlers.
+///
+/// These are created once at the start of function compilation and used
+/// by bailout code to call runtime error handlers instead of using trap().
+/// This prevents SIGILL crashes from ud2 instructions.
+#[derive(Clone, Copy)]
+pub struct ErrorFuncRefs {
+    /// Type error handler: fn(ctx, ip, expected) -> ()
+    pub type_error: FuncRef,
+    /// Division by zero handler: fn(ctx, ip) -> ()
+    pub div_by_zero: FuncRef,
+    /// Arithmetic overflow handler: fn(ctx, ip) -> ()
+    pub overflow: FuncRef,
+}
 
 /// Code generation context wrapping a Cranelift FunctionBuilder
 ///
@@ -32,6 +48,10 @@ pub struct CodegenContext<'a, 'b> {
 
     /// Local variables (for Stage 4 local variable support)
     locals: Vec<Option<Value>>,
+
+    /// Pre-declared error handler function references.
+    /// When set, bailout code calls these instead of using trap().
+    error_func_refs: Option<ErrorFuncRefs>,
 }
 
 impl<'a, 'b> CodegenContext<'a, 'b> {
@@ -43,6 +63,27 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
             value_stack: Vec::with_capacity(32),
             terminated: false,
             locals: Vec::new(),
+            error_func_refs: None,
+        }
+    }
+
+    /// Create a new codegen context with error handler support
+    ///
+    /// When error FuncRefs are provided, bailout code will call the runtime
+    /// error handlers and return instead of using trap() instructions.
+    /// This prevents SIGILL crashes from ud2 instructions.
+    pub fn with_error_handlers(
+        builder: &'a mut FunctionBuilder<'b>,
+        ctx_ptr: Value,
+        error_func_refs: ErrorFuncRefs,
+    ) -> Self {
+        CodegenContext {
+            builder,
+            ctx_ptr,
+            value_stack: Vec::with_capacity(32),
+            terminated: false,
+            locals: Vec::new(),
+            error_func_refs: Some(error_func_refs),
         }
     }
 
@@ -319,24 +360,73 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
     // =========================================================================
 
     /// Emit code for type error bailout
-    fn emit_type_error_bailout(&mut self, _ip: usize, _expected: &'static str) {
-        // For now, just trap - in full implementation would call runtime
-        // Use user trap code 1 for type errors (0 is reserved/invalid)
-        self.builder.ins().trap(TrapCode::unwrap_user(1));
+    ///
+    /// If error FuncRefs are available, calls the runtime error handler and returns.
+    /// Otherwise falls back to trap() which generates ud2 (may cause SIGILL).
+    fn emit_type_error_bailout(&mut self, ip: usize, _expected: &'static str) {
+        if let Some(error_refs) = self.error_func_refs {
+            // Call jit_runtime_type_error(ctx, ip, expected)
+            let ctx = self.ctx_ptr;
+            let ip_val = self.builder.ins().iconst(types::I64, ip as i64);
+            let expected_val = self.builder.ins().iconst(types::I64, 0); // placeholder for expected type
+
+            self.builder
+                .ins()
+                .call(error_refs.type_error, &[ctx, ip_val, expected_val]);
+
+            // Return from function - VM will check bailout flag
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            self.builder.ins().return_(&[zero]);
+        } else {
+            // Fallback: use trap (may cause SIGILL but backwards compatible)
+            self.builder.ins().trap(TrapCode::unwrap_user(1));
+        }
         self.terminated = true;
     }
 
     /// Emit code for division by zero bailout
-    fn emit_div_zero_bailout(&mut self, _ip: usize) {
-        // Use user trap code 2 for division by zero
-        self.builder.ins().trap(TrapCode::unwrap_user(2));
+    ///
+    /// If error FuncRefs are available, calls the runtime error handler and returns.
+    /// Otherwise falls back to trap() which generates ud2 (may cause SIGILL).
+    fn emit_div_zero_bailout(&mut self, ip: usize) {
+        if let Some(error_refs) = self.error_func_refs {
+            // Call jit_runtime_div_by_zero(ctx, ip)
+            let ctx = self.ctx_ptr;
+            let ip_val = self.builder.ins().iconst(types::I64, ip as i64);
+
+            self.builder
+                .ins()
+                .call(error_refs.div_by_zero, &[ctx, ip_val]);
+
+            // Return from function - VM will check bailout flag
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            self.builder.ins().return_(&[zero]);
+        } else {
+            // Fallback: use trap (may cause SIGILL but backwards compatible)
+            self.builder.ins().trap(TrapCode::unwrap_user(2));
+        }
         self.terminated = true;
     }
 
     /// Emit code for arithmetic overflow bailout
-    fn emit_overflow_bailout(&mut self, _ip: usize) {
-        // Use user trap code 3 for arithmetic overflow
-        self.builder.ins().trap(TrapCode::unwrap_user(3));
+    ///
+    /// If error FuncRefs are available, calls the runtime error handler and returns.
+    /// Otherwise falls back to trap() which generates ud2 (may cause SIGILL).
+    fn emit_overflow_bailout(&mut self, ip: usize) {
+        if let Some(error_refs) = self.error_func_refs {
+            // Call jit_runtime_stack_overflow(ctx, ip) - reused for arithmetic overflow
+            let ctx = self.ctx_ptr;
+            let ip_val = self.builder.ins().iconst(types::I64, ip as i64);
+
+            self.builder.ins().call(error_refs.overflow, &[ctx, ip_val]);
+
+            // Return from function - VM will check bailout flag
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            self.builder.ins().return_(&[zero]);
+        } else {
+            // Fallback: use trap (may cause SIGILL but backwards compatible)
+            self.builder.ins().trap(TrapCode::unwrap_user(3));
+        }
         self.terminated = true;
     }
 

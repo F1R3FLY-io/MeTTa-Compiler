@@ -21,6 +21,7 @@ mod fact_storage;
 mod grounded_ops;
 mod module_ops;
 mod mork_encoding;
+pub(crate) mod multiplicity;
 mod mutable_state;
 mod named_spaces;
 mod pattern_matching;
@@ -34,6 +35,9 @@ mod tests;
 mod type_system;
 
 pub(crate) use bloom::HeadArityBloomFilter;
+pub use named_spaces::NamedSpaceIter;
+pub use pattern_matching::MultiplicityMatch;
+pub use rule_management::{MatchingRulesIter, RuleHeadsIter, RulesIter};
 pub use scope::ScopeTracker;
 
 use lru::LruCache;
@@ -43,12 +47,14 @@ use pathmap::PathMap;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+
 use tracing::trace;
 
 use super::fuzzy_match::FuzzyMatcher;
 use super::grounded::{GroundedRegistry, GroundedRegistryTCO};
+use super::models::{IndexedMultiset, SymbolTable};
 use super::modules::{ModuleRegistry, Tokenizer};
 use super::symbol::Symbol;
 use super::{MettaValue, Rule};
@@ -73,8 +79,14 @@ pub(crate) struct EnvironmentShared {
     /// Fast flag: true if any wildcard rules exist (avoids lock acquisition when empty)
     pub(crate) has_wildcard_rules: AtomicBool,
 
-    /// Multiplicities: tracks how many times each rule is defined
-    pub(crate) multiplicities: RwLock<HashMap<String, usize>>,
+    /// Shared symbol table for atom interning (Arc-wrapped for sharing across clones)
+    /// Enables O(1) equality comparison via AtomId instead of structural comparison
+    pub(crate) symbols: Arc<SymbolTable>,
+
+    /// Indexed multiplicity tracking: O(1) lookup via array indexing.
+    /// Each Rule has a cached multiplicity_idx that directly indexes into this array.
+    /// Wrapped in RwLock to allow mutable access for decrement operations.
+    pub(crate) multiplicities: RwLock<IndexedMultiset>,
 
     /// Pattern cache: LRU cache for MORK serialization results
     pub(crate) pattern_cache: RwLock<LruCache<MettaValue, Vec<u8>>>,
@@ -125,6 +137,10 @@ pub(crate) struct EnvironmentShared {
     /// Bloom filter for (head_symbol, arity) pairs - enables O(1) match_space() rejection
     /// when the pattern's (head, arity) definitely doesn't exist in the space.
     pub(crate) head_arity_bloom: RwLock<HeadArityBloomFilter>,
+
+    /// O(1) total atom count (sum of all multiplicities).
+    /// Incremented on add_to_space(), decremented on remove_from_space().
+    pub(crate) total_atoms: AtomicUsize,
 }
 
 /// The environment contains the fact database and type assertions
@@ -168,12 +184,16 @@ impl Environment {
     pub fn new() -> Self {
         use mork_interning::SharedMapping;
 
+        // Create shared symbol table for atom interning
+        let symbols = Arc::new(SymbolTable::new());
+
         let shared = Arc::new(EnvironmentShared {
             btm: RwLock::new(PathMap::new()),
             rule_index: RwLock::new(HashMap::with_capacity(128)),
             wildcard_rules: RwLock::new(Vec::new()),
             has_wildcard_rules: AtomicBool::new(false),
-            multiplicities: RwLock::new(HashMap::new()),
+            symbols,
+            multiplicities: RwLock::new(IndexedMultiset::new()),
             pattern_cache: RwLock::new(LruCache::new(
                 NonZeroUsize::new(1000).expect("1000 is non-zero"),
             )),
@@ -192,6 +212,7 @@ impl Environment {
             fuzzy_matcher: RwLock::new(FuzzyMatcher::new()),
             scope_tracker: RwLock::new(ScopeTracker::new()),
             head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // ~10KB for 10k expected entries
+            total_atoms: AtomicUsize::new(0), // Start with 0 atoms
         });
 
         Environment {
@@ -234,12 +255,16 @@ impl Environment {
             has_wildcard_rules: AtomicBool::new(
                 self.shared.has_wildcard_rules.load(Ordering::Acquire),
             ),
+            // Share the symbol table (Arc clone is O(1))
+            // Symbol tables are append-only so sharing is safe
+            symbols: Arc::clone(&self.shared.symbols),
+            // Fork IndexedMultiset: O(1) via Arc clone with lazy CoW
             multiplicities: RwLock::new(
                 self.shared
                     .multiplicities
                     .read()
                     .expect("multiplicities lock poisoned")
-                    .clone(),
+                    .fork(),
             ),
             pattern_cache: RwLock::new(
                 self.shared
@@ -353,6 +378,10 @@ impl Environment {
                     .expect("head_arity_bloom lock poisoned")
                     .clone(),
             ),
+            // Copy current total_atoms value
+            total_atoms: AtomicUsize::new(
+                self.shared.total_atoms.load(Ordering::Acquire),
+            ),
         });
 
         self.shared = new_shared;
@@ -368,9 +397,17 @@ impl Environment {
     /// When evaluation forks (e.g., from `match` returning multiple results),
     /// each branch needs its own isolated view of mutable state.
     ///
-    /// This method:
-    /// 1. Clones the environment (CoW for states)
-    /// 2. Forks all SpaceHandles in bindings for branch isolation
+    /// # Optimization Strategy
+    ///
+    /// This method uses a specialized fork path optimized for nondeterministic evaluation:
+    /// - Uses `IndexedMultiset::fork()` for O(1) multiplicity tracking (vs O(n) deep copy)
+    /// - Uses PathMap's CoW for O(1) fork of fact storage
+    /// - Clears pattern_cache instead of copying (will be regenerated on demand)
+    ///
+    /// # Performance
+    ///
+    /// - Fork: O(n) for bindings/rules, but O(1) for multiplicities
+    /// - First write after fork: May trigger additional copies (lazy CoW)
     ///
     /// # Example
     /// ```ignore
@@ -379,10 +416,169 @@ impl Environment {
     /// // forked's &stack is isolated from original's
     /// ```
     pub fn fork_for_nondeterminism(&self) -> Environment {
-        let mut forked = self.clone();
-        forked.make_owned(); // Ensure we have our own copy of state
+        trace!(target: "mettatron::environment::fork", "Forking environment for nondeterminism");
 
-        // Fork all SpaceHandles in bindings
+        // Create optimized fork of shared state
+        let new_shared = Arc::new(EnvironmentShared {
+            // Rules and types: Copy for isolation (these are typically read-only during eval)
+            btm: RwLock::new(self.shared.btm.read().expect("btm lock poisoned").clone()),
+            rule_index: RwLock::new(
+                self.shared
+                    .rule_index
+                    .read()
+                    .expect("rule_index lock poisoned")
+                    .clone(),
+            ),
+            wildcard_rules: RwLock::new(
+                self.shared
+                    .wildcard_rules
+                    .read()
+                    .expect("wildcard_rules lock poisoned")
+                    .clone(),
+            ),
+            has_wildcard_rules: AtomicBool::new(
+                self.shared.has_wildcard_rules.load(Ordering::Acquire),
+            ),
+            // Share symbol table (Arc clone is O(1), append-only so safe to share)
+            symbols: Arc::clone(&self.shared.symbols),
+            // Use efficient O(1) fork for multiplicities (lazy CoW)
+            multiplicities: RwLock::new(
+                self.shared
+                    .multiplicities
+                    .read()
+                    .expect("multiplicities lock poisoned")
+                    .fork(),
+            ),
+            // Clear pattern cache instead of copying - will be regenerated on demand
+            // This saves significant memory and copy time for large caches
+            pattern_cache: RwLock::new(LruCache::new(
+                NonZeroUsize::new(1000).expect("1000 is non-zero"),
+            )),
+            // Type index: Clone for isolation
+            type_index: RwLock::new(
+                self.shared
+                    .type_index
+                    .read()
+                    .expect("type_index lock poisoned")
+                    .clone(),
+            ),
+            type_index_dirty: RwLock::new(
+                *self
+                    .shared
+                    .type_index_dirty
+                    .read()
+                    .expect("type_index_dirty lock poisoned"),
+            ),
+            // Space-related state: Must copy for isolation
+            named_spaces: RwLock::new(
+                self.shared
+                    .named_spaces
+                    .read()
+                    .expect("named_spaces lock poisoned")
+                    .clone(),
+            ),
+            next_space_id: RwLock::new(
+                *self
+                    .shared
+                    .next_space_id
+                    .read()
+                    .expect("next_space_id lock poisoned"),
+            ),
+            // Mutable state: Must copy for isolation
+            states: RwLock::new(
+                self.shared
+                    .states
+                    .read()
+                    .expect("states lock poisoned")
+                    .clone(),
+            ),
+            next_state_id: RwLock::new(
+                *self
+                    .shared
+                    .next_state_id
+                    .read()
+                    .expect("next_state_id lock poisoned"),
+            ),
+            // Bindings: Will be forked below
+            bindings: RwLock::new(
+                self.shared
+                    .bindings
+                    .read()
+                    .expect("bindings lock poisoned")
+                    .clone(),
+            ),
+            // Read-only registries: Clone for safety
+            module_registry: RwLock::new(
+                self.shared
+                    .module_registry
+                    .read()
+                    .expect("module_registry lock poisoned")
+                    .clone(),
+            ),
+            tokenizer: RwLock::new(
+                self.shared
+                    .tokenizer
+                    .read()
+                    .expect("tokenizer lock poisoned")
+                    .clone(),
+            ),
+            grounded_registry: RwLock::new(
+                self.shared
+                    .grounded_registry
+                    .read()
+                    .expect("grounded_registry lock poisoned")
+                    .clone(),
+            ),
+            grounded_registry_tco: RwLock::new(
+                self.shared
+                    .grounded_registry_tco
+                    .read()
+                    .expect("grounded_registry_tco lock poisoned")
+                    .clone(),
+            ),
+            large_expr_pathmap: RwLock::new(
+                self.shared
+                    .large_expr_pathmap
+                    .read()
+                    .expect("large_expr_pathmap lock poisoned")
+                    .clone(),
+            ),
+            fuzzy_matcher: RwLock::new(
+                self.shared
+                    .fuzzy_matcher
+                    .read()
+                    .expect("fuzzy_matcher lock poisoned")
+                    .clone(),
+            ),
+            scope_tracker: RwLock::new(
+                self.shared
+                    .scope_tracker
+                    .read()
+                    .expect("scope_tracker lock poisoned")
+                    .clone(),
+            ),
+            head_arity_bloom: RwLock::new(
+                self.shared
+                    .head_arity_bloom
+                    .read()
+                    .expect("head_arity_bloom lock poisoned")
+                    .clone(),
+            ),
+            // Copy current total_atoms value for isolation
+            total_atoms: AtomicUsize::new(
+                self.shared.total_atoms.load(Ordering::Acquire),
+            ),
+        });
+
+        let forked = Environment {
+            shared: new_shared,
+            shared_mapping: self.shared_mapping.clone(),
+            owns_data: true, // Forked environment owns its data
+            modified: Arc::new(AtomicBool::new(false)),
+            current_module_path: self.current_module_path.clone(),
+        };
+
+        // Fork all SpaceHandles in bindings for branch isolation
         let mut forked_bindings = forked
             .shared
             .bindings

@@ -1190,33 +1190,118 @@ Opcode::Yield => {
 
 ## 10. Bailout and Error Handling
 
-### Trap Codes
+### Safe Bailout (Runtime Calls Instead of Traps)
 
-| Trap Code | Meaning | Recovery |
-|-----------|---------|----------|
-| `user1` | Type mismatch | Bailout to VM, re-execute with type check |
-| `user2` | Division by zero | Error result |
-| `user3` | Stack overflow | Error result |
+**Important**: The JIT uses **runtime function calls** instead of trap instructions for bailout. This is critical for stability across different execution environments.
 
-### Bailout Mechanism
+#### Why Not Traps?
+
+Early implementations used Cranelift's `trap()` instruction, which generates x86-64 `ud2` opcodes. This caused **SIGILL crashes** in:
+- CPU-affinity constrained execution (`taskset`)
+- Multi-threaded benchmarks
+- Integration tests
+
+The `ud2` opcode (0x0F 0x0B) always raises SIGILL regardless of CPU features.
+
+### Error Handling Architecture
+
+#### Error Function IDs (Module-Level)
+
+**File**: `src/backend/bytecode/jit/compiler/init/error_handling.rs`
+
+```rust
+/// Function IDs for error handling operations
+#[derive(Clone, Copy)]
+pub struct ErrorFuncIds {
+    pub type_error_func_id: FuncId,    // Type guard failures
+    pub div_by_zero_func_id: FuncId,   // Division by zero
+    pub overflow_func_id: FuncId,       // Arithmetic overflow
+}
+```
+
+#### Error Function Refs (Function-Local)
+
+**File**: `src/backend/bytecode/jit/codegen.rs`
+
+```rust
+/// Function references for error handling (per-function)
+#[derive(Clone, Copy)]
+pub struct ErrorFuncRefs {
+    pub type_error: FuncRef,
+    pub div_by_zero: FuncRef,
+    pub overflow: FuncRef,
+}
+```
+
+The `FuncId` → `FuncRef` conversion happens via `module.declare_func_in_func()` for each compiled function.
+
+### Runtime Error Handlers
+
+**File**: `src/backend/bytecode/jit/runtime/error_handling.rs`
+
+| Function | Signature | Purpose |
+|----------|-----------|---------|
+| `jit_runtime_type_error` | `(ctx: *mut, ip: u64, expected: u64)` | Type guard failure |
+| `jit_runtime_div_by_zero` | `(ctx: *mut, ip: u64)` | Division by zero |
+| `jit_runtime_stack_overflow` | `(ctx: *mut, ip: u64)` | Arithmetic overflow |
+
+All error handlers:
+1. Set `ctx.bailout = true`
+2. Set `ctx.bailout_ip = ip`
+3. Set `ctx.bailout_reason` appropriately
+4. Return normally (no trap)
+
+### Bailout Code Generation Pattern
+
+```rust
+fn emit_type_error_bailout(&mut self, ip: usize, _expected: &'static str) {
+    if let Some(error_refs) = self.error_func_refs {
+        // Build arguments
+        let ctx = self.ctx_ptr;
+        let ip_val = self.builder.ins().iconst(types::I64, ip as i64);
+        let expected_val = self.builder.ins().iconst(types::I64, 0);
+
+        // Call runtime error handler (sets bailout flags in ctx)
+        self.builder.ins().call(error_refs.type_error, &[ctx, ip_val, expected_val]);
+
+        // Return from function - VM will check bailout flag
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        self.builder.ins().return_(&[zero]);
+    } else {
+        // Fallback (should not happen in production)
+        self.builder.ins().trap(TrapCode::unwrap_user(1));
+    }
+    self.terminated = true;
+}
+```
+
+### Bailout Flow Diagram
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                        Bailout Flow                                          │
+│                        Safe Bailout Flow                                     │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  JIT Code                              Bytecode VM                           │
 │  ┌─────────────────────┐               ┌─────────────────────┐               │
 │  │ ...arithmetic...    │               │                     │               │
 │  │                     │               │                     │               │
-│  │ guard_long(a)───────┼───trap──────► │ Transfer stack:     │               │
-│  │   │                 │               │   for v in jit_stack│               │
-│  │   ├─►continue_block │               │     vm_stack.push(v)│               │
+│  │ guard_long(a)       │               │                     │               │
 │  │   │                 │               │                     │               │
-│  │   └─►bailout_block  │               │ Set VM.ip = trap_ip │               │
-│  │       trap(user1)───┼───────────────┤                     │               │
-│  │                     │               │ Resume bytecode     │               │
-│  └─────────────────────┘               │   interpretation    │               │
+│  │   ├─►continue_block │               │                     │               │
+│  │   │                 │               │                     │               │
+│  │   └─►bailout_block  │               │                     │               │
+│  │       call type_err─┼───returns────►│ Check ctx.bailout   │               │
+│  │       return 0      │               │   └─► true!         │               │
+│  │                     │               │                     │               │
+│  └─────────────────────┘               │ Transfer stack:     │               │
+│                                        │   for v in jit_stack│               │
+│                                        │     vm_stack.push(v)│               │
+│                                        │                     │               │
+│                                        │ Set VM.ip = trap_ip │               │
+│                                        │                     │               │
+│                                        │ Resume bytecode     │               │
+│                                        │   interpretation    │               │
 │                                        └─────────────────────┘               │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -1243,6 +1328,16 @@ fn transfer_jit_to_vm(ctx: &JitContext, vm: &mut BytecodeVM) {
     // ... transfer binding frames ...
 }
 ```
+
+### Legacy Trap Codes (For Reference)
+
+These trap codes are still defined for fallback scenarios but should not be used in production:
+
+| Trap Code | Meaning | Recovery |
+|-----------|---------|----------|
+| `user1` | Type mismatch | Bailout to VM |
+| `user2` | Division by zero | Error result |
+| `user3` | Stack overflow | Error result |
 
 ---
 
@@ -1448,10 +1543,13 @@ L1:
 | `src/backend/bytecode/vm.rs` | Bytecode VM execution | ~1200 |
 | `src/backend/bytecode/chunk.rs` | BytecodeChunk structure | ~400 |
 | `src/backend/bytecode/optimizer.rs` | Peephole optimization | ~350 |
-| `src/backend/bytecode/jit/compiler.rs` | JIT compilation (Cranelift) | ~3900 |
-| `src/backend/bytecode/jit/codegen.rs` | CodegenContext helpers | ~600 |
+| `src/backend/bytecode/jit/compiler/mod.rs` | JIT compilation (Cranelift), JitCompiler | ~3900 |
+| `src/backend/bytecode/jit/compiler/init/` | Modular function ID initialization | - |
+| `src/backend/bytecode/jit/compiler/init/error_handling.rs` | ErrorFuncIds, ErrorHandlingInit trait | ~120 |
+| `src/backend/bytecode/jit/codegen.rs` | CodegenContext, ErrorFuncRefs, bailout emission | ~700 |
 | `src/backend/bytecode/jit/types.rs` | JitValue, JitContext, signals | ~800 |
 | `src/backend/bytecode/jit/runtime.rs` | Runtime helper functions | ~500 |
+| `src/backend/bytecode/jit/runtime/error_handling.rs` | Error handler runtime functions | ~80 |
 | `src/backend/bytecode/jit/profile.rs` | Hotness tracking | ~300 |
 
 ---

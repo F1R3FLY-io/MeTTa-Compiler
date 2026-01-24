@@ -129,23 +129,51 @@ fn test_remove_and_readd() {
 
 #[test]
 fn test_remove_multiple_identical_facts() {
+    // MeTTa HE semantics: multiplicity tracking (ref-counting)
+    // Adding the same fact N times creates multiplicity N
+    // Removing once decrements multiplicity to N-1
+    // match_space returns N copies for multiplicity N
+
     let mut env = Environment::new();
 
     let source = "(foo bar)";
     let state = compile(source).unwrap();
     let fact = &state.source[0];
 
-    // Add same fact twice (PathMap handles duplicates)
+    // Add same fact twice - creates multiplicity 2
     env.add_to_space(fact);
     env.add_to_space(fact);
 
-    // Remove once
-    env.remove_from_space(fact);
-
-    // Verify it's gone (PathMap doesn't store duplicates)
+    // Verify multiplicity is 2 (returns 2 copies)
     let query = compile("(match &self (foo bar) (foo bar))").unwrap();
     let (results, _) = eval(query.source[0].clone(), env.clone());
-    assert_eq!(results.len(), 0, "Fact should be removed");
+    assert_eq!(
+        results.len(),
+        2,
+        "Fact should exist with multiplicity 2 after adding twice"
+    );
+
+    // Remove once - decrements multiplicity from 2 to 1
+    env.remove_from_space(fact);
+
+    // Verify multiplicity is 1 (fact still exists)
+    let (results_after_first_remove, _) = eval(query.source[0].clone(), env.clone());
+    assert_eq!(
+        results_after_first_remove.len(),
+        1,
+        "Fact should still exist with multiplicity 1 after removing once"
+    );
+
+    // Remove again - fully removes the fact (multiplicity 0)
+    env.remove_from_space(fact);
+
+    // Verify fact is fully removed
+    let (results_after_second_remove, _) = eval(query.source[0].clone(), env.clone());
+    assert_eq!(
+        results_after_second_remove.len(),
+        0,
+        "Fact should be fully removed after removing twice"
+    );
 }
 
 #[test]

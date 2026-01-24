@@ -113,10 +113,10 @@ pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
                     continue;
                 }
 
-                // For non-boolean patterns on module spaces, use match_space for all matches
-                // This path benefits from bloom filter + head filtering but returns all matches
-                let matches = final_env.match_space(&pattern, &pattern);
-                if matches.is_empty() {
+                // For non-boolean patterns on module spaces, use match_space with deferred expansion
+                // This benefits from bloom filter + head filtering with compressed multiplicity storage
+                let lazy_matches = final_env.match_space(&pattern, &pattern);
+                if lazy_matches.is_empty() {
                     // No matches - evaluate failure body
                     if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
                         eprintln!("[DEBUG unify] NO MATCH FOUND (module space path)");
@@ -126,8 +126,8 @@ pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
                     final_env = failure_env;
                     all_results.extend(failure_results);
                 } else {
-                    // Apply bindings and evaluate success body for each match
-                    for matched_atom in matches {
+                    // Apply bindings and evaluate success body for each match (expand multiplicity on demand)
+                    for matched_atom in lazy_matches.into_iter().flat_map(|m| m.expand()) {
                         if let Some(bindings) = pattern_match(&pattern, &matched_atom) {
                             if std::env::var("METTA_DEBUG_UNIFY").is_ok() {
                                 eprintln!(
@@ -283,48 +283,157 @@ pub(crate) fn eval_sealed(items: Vec<MettaValue>, env: Environment) -> EvalResul
 }
 
 /// Collect all variable names from an expression (variables start with $)
+///
+/// # Implementation Note
+///
+/// This function uses an explicit work stack instead of recursion to avoid
+/// stack overflow on deeply nested S-expressions. This is critical for:
+/// - Async evaluation (Tokio workers have smaller stacks ~2MB)
+/// - Deeply nested data structures common in knowledge graphs
 fn collect_variables(expr: &MettaValue) -> HashSet<String> {
     let mut vars = HashSet::new();
-    collect_variables_impl(expr, &mut vars);
+
+    // Work stack: expressions to process
+    let mut work_stack: Vec<&MettaValue> = Vec::with_capacity(16);
+    work_stack.push(expr);
+
+    while let Some(val) = work_stack.pop() {
+        match val {
+            MettaValue::Atom(name) if name.starts_with('$') => {
+                vars.insert(name.clone());
+            }
+            MettaValue::SExpr(items) => {
+                // Push all children onto work stack
+                for item in items.iter().rev() {
+                    work_stack.push(item);
+                }
+            }
+            MettaValue::Conjunction(goals) => {
+                for goal in goals.iter().rev() {
+                    work_stack.push(goal);
+                }
+            }
+            _ => {}
+        }
+    }
+
     vars
 }
 
-fn collect_variables_impl(expr: &MettaValue, vars: &mut HashSet<String>) {
-    match expr {
-        MettaValue::Atom(name) if name.starts_with('$') => {
-            vars.insert(name.clone());
-        }
-        MettaValue::SExpr(items) => {
-            for item in items {
-                collect_variables_impl(item, vars);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Recursively replace variables in expr with unique versions, except those in ignore set
+/// Replace variables in expr with unique versions, except those in ignore set
+///
+/// # Implementation Note
+///
+/// This function uses an explicit work stack instead of recursion to avoid
+/// stack overflow on deeply nested S-expressions. This is critical for:
+/// - Async evaluation (Tokio workers have smaller stacks ~2MB)
+/// - Deeply nested data structures common in knowledge graphs
 fn seal_variables(expr: &MettaValue, ignore: &HashSet<String>, unique_id: u64) -> MettaValue {
+    // Fast path for simple cases
     match expr {
         MettaValue::Atom(name) if name.starts_with('$') && !ignore.contains(name) => {
-            // Replace $var with $var_unique_id
-            MettaValue::Atom(format!("{}_{}", name, unique_id))
+            return MettaValue::Atom(format!("{}_{}", name, unique_id));
         }
-        MettaValue::SExpr(items) => MettaValue::SExpr(
-            items
-                .iter()
-                .map(|item| seal_variables(item, ignore, unique_id))
-                .collect(),
-        ),
-        MettaValue::Conjunction(goals) => MettaValue::Conjunction(
-            goals
-                .iter()
-                .map(|goal| seal_variables(goal, ignore, unique_id))
-                .collect(),
-        ),
-        // All other values pass through unchanged
-        _ => expr.clone(),
+        MettaValue::Atom(_)
+        | MettaValue::Long(_)
+        | MettaValue::Float(_)
+        | MettaValue::Bool(_)
+        | MettaValue::String(_)
+        | MettaValue::Nil
+        | MettaValue::Unit
+        | MettaValue::Space(_)
+        | MettaValue::State(_)
+        | MettaValue::Type(_)
+        | MettaValue::Memo(_)
+        | MettaValue::Empty
+        | MettaValue::Error(_, _) => return expr.clone(),
+        // Compound types need iterative processing
+        MettaValue::SExpr(_) | MettaValue::Conjunction(_) => {}
     }
+
+    // Iterative implementation using explicit work stack
+    seal_variables_iterative(expr, ignore, unique_id)
+}
+
+/// Work item for iterative seal_variables
+enum SealWork<'a> {
+    /// Process a value - may push more work
+    Process(&'a MettaValue),
+    /// Build an SExpr from the last N results
+    BuildSExpr(usize),
+    /// Build a Conjunction from the last N results
+    BuildConjunction(usize),
+}
+
+/// Iterative implementation of seal_variables using explicit work stack.
+fn seal_variables_iterative(
+    expr: &MettaValue,
+    ignore: &HashSet<String>,
+    unique_id: u64,
+) -> MettaValue {
+    // Work stack: items to process
+    let mut work_stack: Vec<SealWork> = Vec::with_capacity(32);
+    // Result stack: processed results
+    let mut result_stack: Vec<MettaValue> = Vec::with_capacity(32);
+
+    work_stack.push(SealWork::Process(expr));
+
+    while let Some(work) = work_stack.pop() {
+        match work {
+            SealWork::Process(val) => {
+                match val {
+                    // Variable replacement (if not ignored)
+                    MettaValue::Atom(name) if name.starts_with('$') && !ignore.contains(name) => {
+                        result_stack.push(MettaValue::Atom(format!("{}_{}", name, unique_id)));
+                    }
+                    // S-expression: push build marker, then push children in reverse order
+                    MettaValue::SExpr(items) => {
+                        if items.is_empty() {
+                            result_stack.push(val.clone());
+                        } else {
+                            work_stack.push(SealWork::BuildSExpr(items.len()));
+                            for item in items.iter().rev() {
+                                work_stack.push(SealWork::Process(item));
+                            }
+                        }
+                    }
+                    // Conjunction: similar to SExpr
+                    MettaValue::Conjunction(goals) => {
+                        if goals.is_empty() {
+                            result_stack.push(val.clone());
+                        } else {
+                            work_stack.push(SealWork::BuildConjunction(goals.len()));
+                            for goal in goals.iter().rev() {
+                                work_stack.push(SealWork::Process(goal));
+                            }
+                        }
+                    }
+                    // All other types: pass through unchanged
+                    _ => {
+                        result_stack.push(val.clone());
+                    }
+                }
+            }
+            SealWork::BuildSExpr(count) => {
+                let start = result_stack.len() - count;
+                let children: Vec<MettaValue> = result_stack.drain(start..).collect();
+                result_stack.push(MettaValue::SExpr(children));
+            }
+            SealWork::BuildConjunction(count) => {
+                let start = result_stack.len() - count;
+                let children: Vec<MettaValue> = result_stack.drain(start..).collect();
+                result_stack.push(MettaValue::Conjunction(children));
+            }
+        }
+    }
+
+    // Final result should be on the stack
+    debug_assert_eq!(
+        result_stack.len(),
+        1,
+        "seal_variables should produce exactly one result"
+    );
+    result_stack.pop().expect("Result stack should not be empty")
 }
 
 /// atom-subst: Variable substitution through pattern matching

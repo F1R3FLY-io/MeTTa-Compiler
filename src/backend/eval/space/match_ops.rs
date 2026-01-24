@@ -85,7 +85,12 @@ pub(crate) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
                 match space_name {
                     MettaValue::Atom(name) if name == "self" => {
                         // Use optimized match_space method that works directly with MORK
-                        let results = env.match_space(pattern, template);
+                        // Expand multiplicity matches to Vec<MettaValue> for API compatibility
+                        let results: Vec<MettaValue> = env
+                            .match_space(pattern, template)
+                            .into_iter()
+                            .flat_map(|m| m.expand())
+                            .collect();
                         (results, env)
                     }
                     _ => {
@@ -175,7 +180,11 @@ fn match_with_space_handle(
         if debug {
             eprintln!("[DEBUG match] Using env.match_space (module/self path)");
         }
+        // Expand multiplicity matches to Vec<MettaValue> for API compatibility
         env.match_space(pattern, template)
+            .into_iter()
+            .flat_map(|m| m.expand())
+            .collect()
     } else {
         // Owned space (from new-space) - match against atoms stored in SpaceHandle
         let atoms = handle.collapse();

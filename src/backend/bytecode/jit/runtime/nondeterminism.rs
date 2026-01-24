@@ -280,7 +280,15 @@ pub unsafe extern "C" fn jit_runtime_yield(ctx: *mut JitContext, value: u64, ip:
     };
 
     // Store the result if there's space
-    if ctx_ref.results_count < ctx_ref.results_cap && !ctx_ref.results.is_null() {
+    if ctx_ref.results.is_null() || ctx_ref.results_count >= ctx_ref.results_cap {
+        // Results buffer overflow - log but continue (yield will still trigger backtracking)
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "JIT runtime: results buffer overflow at ip={} (count={}, cap={})",
+            ip, ctx_ref.results_count, ctx_ref.results_cap
+        );
+        // We still continue with the yield - the result is lost but evaluation proceeds
+    } else {
         let result_val = JitValue::from_raw(value);
         *ctx_ref.results.add(ctx_ref.results_count) = result_val;
         ctx_ref.results_count += 1;
@@ -588,8 +596,16 @@ pub unsafe extern "C" fn jit_runtime_yield_native(
         None => return JIT_SIGNAL_ERROR,
     };
 
-    // Store the result
-    if ctx_ref.results_count < ctx_ref.results_cap && !ctx_ref.results.is_null() {
+    // Store the result if there's space
+    if ctx_ref.results.is_null() || ctx_ref.results_count >= ctx_ref.results_cap {
+        // Results buffer overflow - log but continue (yield will still trigger backtracking)
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "JIT runtime: results buffer overflow at ip={} (count={}, cap={})",
+            ip, ctx_ref.results_count, ctx_ref.results_cap
+        );
+        // We still continue with the yield - the result is lost but evaluation proceeds
+    } else {
         let result_val = JitValue::from_raw(value);
         *ctx_ref.results.add(ctx_ref.results_count) = result_val;
         ctx_ref.results_count += 1;

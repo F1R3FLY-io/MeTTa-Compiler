@@ -282,6 +282,52 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             });
                         }
                     }
+
+                    // Evaluate grounded arguments before rule matching.
+                    // This defers grounded arg evaluation to the trampoline, preventing stack overflow.
+                    EvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices,
+                        env,
+                        depth,
+                    } => {
+                        if grounded_indices.is_empty() {
+                            // No grounded args - shouldn't happen, but handle gracefully.
+                            // Continue to rule matching by creating EvalSExpr step.
+                            work_stack.push(WorkItem::Eval {
+                                value: MettaValue::SExpr(items),
+                                env,
+                                depth,
+                                cont_id,
+                                is_tail_call: false,
+                            });
+                        } else {
+                            // Evaluate first grounded arg
+                            let first_idx = grounded_indices[0];
+                            let arg_to_eval = items[first_idx].clone();
+
+                            // Create continuation to collect result
+                            let grounded_cont_id = continuations.len();
+                            continuations.push(Continuation::CollectGroundedArg {
+                                items,
+                                grounded_indices,
+                                current_idx: 0,
+                                evaluated_results: Vec::new(),
+                                env: env.clone(),
+                                depth,
+                                parent_cont: cont_id,
+                            });
+
+                            // Push evaluation of the grounded arg
+                            work_stack.push(WorkItem::Eval {
+                                value: arg_to_eval,
+                                env,
+                                depth: depth + 1,
+                                cont_id: grounded_cont_id,
+                                is_tail_call: false,
+                            });
+                        }
+                    }
                 }
             }
 
@@ -796,6 +842,100 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    // Handle grounded arg collection continuation
+                    Continuation::CollectGroundedArg {
+                        mut items,
+                        grounded_indices,
+                        current_idx,
+                        mut evaluated_results,
+                        env: _grounded_env, // Unused - we use result_env from the resumed result
+                        depth,
+                        parent_cont,
+                    } => {
+                        // Take first result from evaluation (deterministic for grounded ops)
+                        let (result_values, result_env) = result;
+                        if let Some(first_result) = result_values.into_iter().next() {
+                            evaluated_results.push(first_result);
+                        }
+
+                        let next_idx = current_idx + 1;
+                        if next_idx < grounded_indices.len() {
+                            // More grounded args to evaluate
+                            let arg_idx = grounded_indices[next_idx];
+                            let arg_to_eval = items[arg_idx].clone();
+
+                            continuations[cont_id] = Continuation::CollectGroundedArg {
+                                items,
+                                grounded_indices,
+                                current_idx: next_idx,
+                                evaluated_results,
+                                env: result_env.clone(),
+                                depth,
+                                parent_cont,
+                            };
+
+                            work_stack.push(WorkItem::Eval {
+                                value: arg_to_eval,
+                                env: result_env,
+                                depth: depth + 1,
+                                cont_id,
+                                is_tail_call: false,
+                            });
+                        } else {
+                            // All grounded args evaluated - substitute results back into items
+                            for (i, grounded_idx) in grounded_indices.iter().enumerate() {
+                                if i < evaluated_results.len() {
+                                    items[*grounded_idx] = evaluated_results[i].clone();
+                                }
+                            }
+
+                            // Continue with rule matching using the updated items
+                            let resolved_items =
+                                super::super::resolve_tokens_shallow(&items, &result_env);
+                            let resolved_sexpr = MettaValue::SExpr(resolved_items.clone());
+                            let all_matches =
+                                super::super::try_match_all_rules(&resolved_sexpr, &result_env);
+
+                            if !all_matches.is_empty() {
+                                // Rules matched - evaluate them via EvalRuleMatchesLazy
+                                let mut matches_deque: VecDeque<_> =
+                                    all_matches.into_iter().collect();
+                                let (rhs, bindings) = matches_deque.pop_front().unwrap();
+
+                                // Create continuation to process remaining rule matches
+                                let match_cont_id = continuations.len();
+                                continuations.push(Continuation::ProcessRuleMatches {
+                                    remaining_matches: matches_deque,
+                                    results: vec![],
+                                    env: result_env.clone(),
+                                    depth,
+                                    parent_cont,
+                                });
+
+                                // Evaluate first rule RHS with bindings
+                                let instantiated_rhs =
+                                    apply_bindings(&rhs, &bindings).into_owned();
+                                work_stack.push(WorkItem::Eval {
+                                    value: instantiated_rhs,
+                                    env: result_env,
+                                    depth, // TCO: reuse depth
+                                    cont_id: match_cont_id,
+                                    is_tail_call: true,
+                                });
+                            } else {
+                                // No rules matched - expression is irreducible (data constructor)
+                                // Continue evaluating sub-items via EvalSExpr
+                                work_stack.push(WorkItem::Eval {
+                                    value: MettaValue::SExpr(items),
+                                    env: result_env,
+                                    depth,
+                                    cont_id: parent_cont,
+                                    is_tail_call: false,
+                                });
                             }
                         }
                     }

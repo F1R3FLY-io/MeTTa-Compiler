@@ -22,6 +22,14 @@ pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 }
 
 /// Evaluation: ! expr - force evaluation
+///
+/// DEPRECATED: This function is no longer used by the trampoline-based evaluator.
+/// The `!` operator now returns `EvalStep::EvalIfBranch` in `sexpr_step.rs` to defer
+/// evaluation to the trampoline, enabling tail call optimization and preventing
+/// stack overflow on small worker thread stacks (e.g., 2MB rayon threads).
+///
+/// This function is kept for backward compatibility and testing purposes.
+#[allow(dead_code)]
 pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::force_eval", ?items);
     require_args_with_usage!("!", items, 1, env, "(! expr)");

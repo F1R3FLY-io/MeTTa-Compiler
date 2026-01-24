@@ -114,4 +114,23 @@ pub enum Continuation {
         /// Parent continuation to resume after all values processed
         parent_cont: usize,
     },
+    /// Collecting grounded arg evaluation results.
+    /// This enables grounded arg evaluation to use the trampoline instead of
+    /// nested recursive calls, preventing stack overflow.
+    CollectGroundedArg {
+        /// Original S-expression items
+        items: Vec<MettaValue>,
+        /// All indices needing evaluation (indices into items)
+        grounded_indices: Vec<usize>,
+        /// Current position in grounded_indices being evaluated
+        current_idx: usize,
+        /// Evaluated results so far (corresponds to grounded_indices[0..current_idx])
+        evaluated_results: Vec<MettaValue>,
+        /// Environment
+        env: Environment,
+        /// Depth
+        depth: usize,
+        /// Parent continuation
+        parent_cont: usize,
+    },
 }

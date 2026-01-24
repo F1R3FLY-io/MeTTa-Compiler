@@ -13,7 +13,9 @@ mod control_flow;
 mod error;
 pub mod folding;
 mod higher_order;
+mod iterative;
 mod patterns;
+mod work_item;
 
 #[cfg(test)]
 mod tests;
@@ -67,81 +69,12 @@ impl Compiler {
     }
 
     /// Compile a MettaValue expression
+    ///
+    /// This method uses an iterative trampoline pattern internally to prevent
+    /// stack overflow for deeply nested expressions.
     pub fn compile(&mut self, expr: &MettaValue) -> CompileResult<()> {
-        match expr {
-            // Literals
-            MettaValue::Nil => {
-                self.builder.emit(Opcode::PushNil);
-            }
-            MettaValue::Unit => {
-                self.builder.emit(Opcode::PushUnit);
-            }
-            MettaValue::Bool(true) => {
-                self.builder.emit(Opcode::PushTrue);
-            }
-            MettaValue::Bool(false) => {
-                self.builder.emit(Opcode::PushFalse);
-            }
-            MettaValue::Long(n) => {
-                self.compile_long(*n)?;
-            }
-            MettaValue::Float(f) => {
-                self.compile_float(*f)?;
-            }
-            MettaValue::String(s) => {
-                let idx = self.builder.add_constant(MettaValue::String(s.clone()));
-                self.builder.emit_u16(Opcode::PushString, idx);
-            }
-
-            // Atoms (symbols and variables)
-            MettaValue::Atom(name) => {
-                self.compile_atom(name)?;
-            }
-
-            // S-expressions
-            MettaValue::SExpr(items) => {
-                self.compile_sexpr(items)?;
-            }
-
-            // Type
-            MettaValue::Type(t) => {
-                let idx = self.builder.add_constant(MettaValue::Type(t.clone()));
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-
-            // Conjunction (multiple values)
-            MettaValue::Conjunction(values) => {
-                self.compile_conjunction(values)?;
-            }
-
-            // Error
-            MettaValue::Error(msg, details) => {
-                let idx = self
-                    .builder
-                    .add_constant(MettaValue::Error(msg.clone(), details.clone()));
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-
-            // Space and State are runtime values, compile as constants
-            MettaValue::Space(handle) => {
-                let idx = self.builder.add_constant(MettaValue::Space(handle.clone()));
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-            MettaValue::State(handle) => {
-                let idx = self.builder.add_constant(MettaValue::State(handle.clone()));
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-            MettaValue::Memo(handle) => {
-                let idx = self.builder.add_constant(MettaValue::Memo(handle.clone()));
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-            MettaValue::Empty => {
-                // Empty sentinel - push as constant (should be filtered before this, but handle gracefully)
-                let idx = self.builder.add_constant(MettaValue::Empty);
-                self.builder.emit_u16(Opcode::PushConstant, idx);
-            }
-        }
-        Ok(())
+        // Use the iterative compiler to prevent stack overflow
+        self.compile_iterative(expr)
     }
 
     /// Compile a long integer

@@ -16,7 +16,7 @@ use super::super::{
     mork_forms, preprocess_space_refs, quoting, resolve_tokens_shallow, space, strings,
     try_match_all_rules, types, utilities,
 };
-use super::grounded::evaluate_grounded_args;
+use super::grounded::find_grounded_arg_indices;
 use super::types::EvalStep;
 
 /// Evaluate an S-expression step - handles special forms and delegates to iterative collection
@@ -36,7 +36,27 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
     if let Some(MettaValue::Atom(op)) = items.first() {
         match op.as_str() {
             "=" => return EvalStep::Done(space::eval_add(items, env)),
-            "!" => return EvalStep::Done(evaluation::force_eval(items, env)),
+            "!" => {
+                // Force evaluation operator - defer to trampoline for TCO
+                if items.len() != 2 {
+                    let err = MettaValue::Error(
+                        format!(
+                            "! requires exactly 1 argument, got {}. Usage: (! expr)",
+                            items.len() - 1
+                        ),
+                        Arc::new(MettaValue::SExpr(items)),
+                    );
+                    return EvalStep::Done((vec![err], env));
+                }
+                // Defer evaluation to trampoline - this IS a tail call (TCO)
+                // Reusing EvalIfBranch since it has identical semantics:
+                // evaluate an expression and return result to parent continuation
+                return EvalStep::EvalIfBranch {
+                    branch: items[1].clone(),
+                    env,
+                    depth,
+                };
+            }
             "quote" => return EvalStep::Done(quoting::eval_quote(items, env)),
             "if" => return control_flow::eval_if_step(items, env, depth),
             "error" => return EvalStep::Done(errors::eval_error(items, env)),
@@ -189,9 +209,8 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
         }
     }
 
-    // Step 2: Evaluate grounded sub-expressions BEFORE rule matching (hybrid lazy/eager)
-    // This ensures that arithmetic operations like (- 3 1) are evaluated to values
-    // before being used in pattern matching, while keeping user-defined expressions lazy.
+    // Step 2: Check for grounded args that need evaluation BEFORE rule matching
+    // This defers grounded arg evaluation to the trampoline to prevent stack overflow.
     //
     // WHY: Pure lazy evaluation causes infinite loops with recursive rules like:
     //   (= (countdown $n) (countdown (- $n 1)))
@@ -199,11 +218,20 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
     //
     // SOLUTION: Evaluate arguments that are GROUNDED operations (like +, -, *, /)
     // but keep user-defined expressions unevaluated (for lazy pattern matching).
-    let items_with_grounded_evaluated = evaluate_grounded_args(&items, &env);
+    // The key change: evaluation is DEFERRED to the trampoline, not done synchronously.
+    let grounded_indices = find_grounded_arg_indices(&items, &env);
+    if !grounded_indices.is_empty() {
+        // Defer evaluation to trampoline - this returns immediately without calling eval()
+        return EvalStep::EvalGroundedArgs {
+            items,
+            grounded_indices,
+            env,
+            depth,
+        };
+    }
 
-    // Step 3: Try user rule matching with partially-evaluated arguments
-    // Grounded operations in arguments are now values, user-defined expressions are still lazy.
-    let resolved_items = resolve_tokens_shallow(&items_with_grounded_evaluated, &env);
+    // Step 3: No grounded args - proceed with rule matching directly
+    let resolved_items = resolve_tokens_shallow(&items, &env);
     let resolved_sexpr = MettaValue::SExpr(resolved_items.clone());
     let all_matches = try_match_all_rules(&resolved_sexpr, &env);
 
@@ -219,9 +247,5 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
     // Step 4: No lazy rules matched - expression is irreducible (data constructor).
     // In HE semantics, if no rule matches the unevaluated expression, it's a data constructor.
     // We still evaluate arguments (for grounded operations within them) but don't retry rule matching.
-    EvalStep::EvalSExpr {
-        items: items_with_grounded_evaluated,
-        env,
-        depth,
-    }
+    EvalStep::EvalSExpr { items, env, depth }
 }

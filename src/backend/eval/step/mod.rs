@@ -7,7 +7,7 @@ mod grounded;
 mod sexpr_step;
 mod types;
 
-pub use grounded::evaluate_grounded_args;
+pub use grounded::find_grounded_arg_indices;
 pub use sexpr_step::eval_sexpr_step;
 pub use types::{EvalStep, ProcessedSExpr};
 

@@ -1,67 +1,48 @@
 //! Grounded Arguments Evaluation
 //!
-//! This module handles the evaluation of grounded arguments in a hybrid
-//! lazy/eager evaluation strategy.
+//! This module handles the identification of grounded arguments that need
+//! evaluation in a hybrid lazy/eager evaluation strategy.
 
 use crate::backend::environment::Environment;
 use crate::backend::models::MettaValue;
 
-use super::super::{eval, is_grounded_op};
+use super::super::is_grounded_op;
 
-/// Evaluate arguments that are grounded operations (hybrid lazy/eager evaluation).
+/// Find indices of arguments that are grounded operations needing evaluation.
 ///
-/// This function implements a key insight for MeTTa evaluation:
+/// This function identifies which arguments in an S-expression should be
+/// evaluated eagerly (before pattern matching) vs lazily (after pattern matching).
+///
+/// Returns empty vec if no grounded args (can proceed directly to rule matching).
+///
+/// ## Why This Exists
+///
+/// MeTTa uses hybrid lazy/eager evaluation:
 /// - Grounded operations (like arithmetic) should be evaluated BEFORE pattern matching
 /// - User-defined expressions should remain unevaluated for lazy pattern matching
 ///
 /// Example: For `(countdown (- 3 1))`:
-/// - The argument `(- 3 1)` is a grounded operation, so evaluate it to `2`
+/// - The argument `(- 3 1)` is a grounded operation, so it needs evaluation to `2`
 /// - Result: `(countdown 2)` - now pattern matching works correctly
 ///
 /// Example: For `(wrapper $a (add-atom &stack x))`:
 /// - The argument `(add-atom &stack x)` is NOT grounded (user-defined side effect)
 /// - Keep it unevaluated for lazy pattern matching
-pub fn evaluate_grounded_args(items: &[MettaValue], env: &Environment) -> Vec<MettaValue> {
-    if items.is_empty() {
-        return items.to_vec();
-    }
+/// - Returns empty vec
+pub fn find_grounded_arg_indices(items: &[MettaValue], env: &Environment) -> Vec<usize> {
+    let mut indices = Vec::new();
 
-    let mut result = Vec::with_capacity(items.len());
-
-    // Keep the first item (operator) as-is
-    result.push(items[0].clone());
-
-    // Process arguments (items after the first)
-    for item in &items[1..] {
-        match item {
-            MettaValue::SExpr(sub_items) if !sub_items.is_empty() => {
-                // Check if this is a grounded operation
-                if let Some(MettaValue::Atom(op)) = sub_items.first() {
-                    if is_grounded_op(op) {
-                        // This is a grounded operation - evaluate it eagerly
-                        // Recursively evaluate grounded args in sub-expression first
-                        let evaluated_sub = evaluate_grounded_args(sub_items, env);
-                        let (results, _) = eval(MettaValue::SExpr(evaluated_sub), env.clone());
-
-                        // Use the first result (deterministic evaluation for grounded ops)
-                        if let Some(first_result) = results.first() {
-                            result.push(first_result.clone());
-                        } else {
-                            // Evaluation returned nothing - keep original
-                            result.push(item.clone());
-                        }
-                        continue;
-                    }
+    // Skip the first item (operator) - we only check arguments
+    for (i, item) in items.iter().enumerate().skip(1) {
+        if let MettaValue::SExpr(sub_items) = item {
+            if let Some(MettaValue::Atom(op)) = sub_items.first() {
+                // Check if this is a grounded operation (built-in or TCO)
+                if is_grounded_op(op) || env.get_grounded_operation_tco(op).is_some() {
+                    indices.push(i); // Store actual index in items
                 }
-                // Not a grounded operation - keep unevaluated (lazy)
-                result.push(item.clone());
-            }
-            _ => {
-                // Not an S-expression - keep as-is
-                result.push(item.clone());
             }
         }
     }
 
-    result
+    indices
 }

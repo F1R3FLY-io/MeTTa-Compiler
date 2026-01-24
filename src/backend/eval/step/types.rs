@@ -66,6 +66,18 @@ pub enum EvalStep {
         /// Evaluation depth
         depth: usize,
     },
+    /// Evaluate grounded arguments before rule matching.
+    /// This defers grounded arg evaluation to the trampoline to prevent stack overflow.
+    EvalGroundedArgs {
+        /// The original S-expression items
+        items: Vec<MettaValue>,
+        /// Indices of arguments that need evaluation (grounded ops)
+        grounded_indices: Vec<usize>,
+        /// Environment
+        env: Environment,
+        /// Depth
+        depth: usize,
+    },
 }
 
 /// Result of processing collected S-expression results

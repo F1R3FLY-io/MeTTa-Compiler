@@ -127,6 +127,7 @@ pub fn compile_yield<'a, 'b>(
     // Return the signal to dispatcher (JIT_SIGNAL_YIELD = 2)
     // Dispatcher will handle backtracking and re-entry
     codegen.builder.ins().return_(&[signal]);
+    codegen.mark_terminated();
     Ok(())
 }
 
@@ -221,6 +222,7 @@ pub fn compile_guard<'a, 'b>(
         .ins()
         .iconst(types::I64, crate::backend::bytecode::jit::JIT_SIGNAL_FAIL);
     codegen.builder.ins().return_(&[fail_signal]);
+    codegen.mark_terminated();
 
     // Continue block
     codegen.builder.switch_to_block(cont_block);
@@ -304,6 +306,7 @@ pub fn compile_backtrack<'a, 'b>(
     let signal = codegen.builder.inst_results(call_inst)[0];
     // Return the FAIL signal
     codegen.builder.ins().return_(&[signal]);
+    codegen.mark_terminated();
     Ok(())
 }
 
@@ -318,6 +321,7 @@ pub fn compile_fail<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResult<(
         .ins()
         .iconst(types::I64, crate::backend::bytecode::jit::JIT_SIGNAL_FAIL);
     codegen.builder.ins().return_(&[signal]);
+    codegen.mark_terminated();
     Ok(())
 }
 

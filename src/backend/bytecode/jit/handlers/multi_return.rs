@@ -37,6 +37,7 @@ pub fn compile_return_multi(
         .call(func_ref, &[ctx_ptr, count, ip_val]);
     let signal = codegen.builder.inst_results(inst)[0];
     codegen.builder.ins().return_(&[signal]);
+    codegen.mark_terminated();
 
     Ok(())
 }

@@ -23,6 +23,7 @@ pub(crate) fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaVal
         // Logical operators
         "and" => Some(eval_logical_binary(args, |a, b| a && b, "and")),
         "or" => Some(eval_logical_binary(args, |a, b| a || b, "or")),
+        "xor" => Some(eval_logical_binary(args, |a, b| a ^ b, "xor")),
         "not" => Some(eval_logical_not(args)),
 
         // Math functions
@@ -758,6 +759,16 @@ mod tests {
             MettaValue::Atom("not".to_string()),
             MettaValue::Long(42),
         ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], MettaValue::Error(_, _)));
+
+        // xor with non-boolean should error
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("xor".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Long(1),
+        ]);
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], MettaValue::Error(_, _)));
@@ -782,9 +793,74 @@ mod tests {
             MettaValue::Bool(true),
             MettaValue::Bool(false),
         ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], MettaValue::Error(_, _)));
+
+        // xor with wrong arity (too few args)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("xor".to_string()),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], MettaValue::Error(_, _)));
+
+        // xor with wrong arity (too many args)
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("xor".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Bool(false),
+            MettaValue::Bool(true),
+        ]);
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0], MettaValue::Error(_, _)));
+    }
+
+    #[test]
+    fn test_eval_logical_xor() {
+        let env = Environment::new();
+
+        // True xor True = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("xor".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
+
+        // True xor False = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("xor".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::Bool(false),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // False xor True = True
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("xor".to_string()),
+            MettaValue::Bool(false),
+            MettaValue::Bool(true),
+        ]);
+        let (results, _) = eval(value, env.clone());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(true));
+
+        // False xor False = False
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("xor".to_string()),
+            MettaValue::Bool(false),
+            MettaValue::Bool(false),
+        ]);
+        let (results, _) = eval(value, env);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], MettaValue::Bool(false));
     }
 
     #[test]

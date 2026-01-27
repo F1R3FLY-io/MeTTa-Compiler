@@ -31,9 +31,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::thread::{self, JoinHandle};
 
+/// Get thread count from METTATRON_NUM_THREADS env var, falling back to num_cpus::get().
+/// Also sets RAYON_NUM_THREADS if METTATRON_NUM_THREADS is set but RAYON_NUM_THREADS is not.
+fn get_configured_thread_count() -> usize {
+    match std::env::var("METTATRON_NUM_THREADS") {
+        Ok(val) => {
+            let count = val
+                .parse::<usize>()
+                .unwrap_or_else(|_| num_cpus::get());
+            // Propagate to RAYON_NUM_THREADS if not already set
+            if std::env::var("RAYON_NUM_THREADS").is_err() {
+                std::env::set_var("RAYON_NUM_THREADS", &val);
+            }
+            count
+        }
+        Err(_) => num_cpus::get(),
+    }
+}
+
 /// Global eval thread pool instance
 static GLOBAL_POOL: LazyLock<EvalThreadPool> = LazyLock::new(|| {
-    let num_threads = num_cpus::get();
+    let num_threads = get_configured_thread_count();
     EvalThreadPool::new(num_threads)
 });
 

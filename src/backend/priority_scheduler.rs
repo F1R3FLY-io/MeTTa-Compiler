@@ -325,9 +325,17 @@ pub struct SchedulerConfig {
     pub max_queue_size: usize,
 }
 
+/// Get thread count from METTATRON_NUM_THREADS env var, falling back to num_cpus::get().
+fn get_configured_thread_count() -> usize {
+    std::env::var("METTATRON_NUM_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(num_cpus::get)
+}
+
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        let num_cpus = num_cpus::get();
+        let num_cpus = get_configured_thread_count();
         Self {
             runtime_weight: 1.0,
             decay_rate: 0.1,
@@ -631,7 +639,7 @@ pub struct PriorityPoolStats {
 
 /// Global priority-aware eval thread pool instance
 static GLOBAL_PRIORITY_POOL: LazyLock<PriorityEvalThreadPool> = LazyLock::new(|| {
-    let num_threads = num_cpus::get();
+    let num_threads = get_configured_thread_count();
     PriorityEvalThreadPool::new(num_threads, SchedulerConfig::default())
 });
 

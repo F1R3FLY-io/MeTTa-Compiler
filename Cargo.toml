@@ -286,6 +286,11 @@ inherits = "release"
 strip = false        # Keep debug symbols for flamegraphs
 debug = 1            # Line tables only (smaller than debug = true)
 
+[profile.release-with-debug]
+inherits = "release"
+debug = 2            # Full debug info for GDB (level 2 = maximum)
+strip = false        # Keep symbols for debugging
+
 # Debian package metadata
 [package.metadata.deb]
 maintainer = "F1R3FLY.io <noreply@f1r3fly.io>"

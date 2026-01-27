@@ -384,9 +384,7 @@ impl BytecodeVM {
 
         // Get and execute native code
         if let Some(native_fn) = unsafe { self.chunk.jit_profile().get_native_fn() } {
-            unsafe {
-                native_fn(&mut ctx as *mut JitContext);
-            }
+            let jit_result = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
             // Check for bailout
             if ctx.bailout {
@@ -402,11 +400,30 @@ impl BytecodeVM {
             }
 
             // JIT execution completed - collect results
-            let mut results = Vec::with_capacity(ctx.sp);
-            for i in 0..ctx.sp {
-                let jit_val = unsafe { *ctx.value_stack.add(i) };
+            // Priority: collected results > return value > stack
+            let mut results = Vec::new();
+
+            // Check for collected results (from nondeterminism)
+            if ctx.results_count > 0 {
+                results.reserve(ctx.results_count);
+                for i in 0..ctx.results_count {
+                    let jit_val = unsafe { *ctx.results.add(i) };
+                    let metta_val = unsafe { jit_val.to_metta() };
+                    results.push(metta_val);
+                }
+            } else if jit_result != 0 {
+                // Use the function return value (NaN-boxed JitValue)
+                let jit_val = JitValue::from_raw(jit_result as u64);
                 let metta_val = unsafe { jit_val.to_metta() };
                 results.push(metta_val);
+            } else {
+                // Fallback to stack
+                results.reserve(ctx.sp);
+                for i in 0..ctx.sp {
+                    let jit_val = unsafe { *ctx.value_stack.add(i) };
+                    let metta_val = unsafe { jit_val.to_metta() };
+                    results.push(metta_val);
+                }
             }
 
             if results.is_empty() {

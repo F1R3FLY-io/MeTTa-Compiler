@@ -227,10 +227,14 @@ impl JitProfile {
     ///
     /// # Safety
     /// The caller must ensure JitContext is valid and properly initialized
+    ///
+    /// # Return Type
+    /// The JIT function returns i64 (NaN-boxed result or signal code).
+    /// Signal codes: 0 = normal return, 1 = bailout, 2 = halt
     #[inline]
-    pub unsafe fn get_native_fn(&self) -> Option<unsafe extern "C" fn(*mut super::JitContext)> {
+    pub unsafe fn get_native_fn(&self) -> Option<unsafe extern "C" fn(*mut super::JitContext) -> i64> {
         self.native_code().map(|ptr| {
-            std::mem::transmute::<*const (), unsafe extern "C" fn(*mut super::JitContext)>(ptr)
+            std::mem::transmute::<*const (), unsafe extern "C" fn(*mut super::JitContext) -> i64>(ptr)
         })
     }
 

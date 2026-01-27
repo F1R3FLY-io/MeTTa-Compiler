@@ -31,6 +31,15 @@ use std::sync::Arc;
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_decon_atom(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
+
+    // Validate value has valid tag
+    debug_assert!(
+        jit_val.is_valid_tag(),
+        "jit_runtime_decon_atom: Invalid JitValue: raw={:#018x}, tag={:#06x}",
+        val,
+        (val >> 48) as u16
+    );
+
     let metta_val = jit_val.to_metta();
 
     match metta_val {
@@ -64,6 +73,15 @@ pub unsafe extern "C" fn jit_runtime_decon_atom(_ctx: *mut JitContext, val: u64,
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_repr(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
+
+    // Validate value has valid tag
+    debug_assert!(
+        jit_val.is_valid_tag(),
+        "jit_runtime_repr: Invalid JitValue: raw={:#018x}, tag={:#06x}",
+        val,
+        (val >> 48) as u16
+    );
+
     let metta_val = jit_val.to_metta();
 
     // Format the value as a string (using Debug since Display not impl'd)
@@ -143,6 +161,15 @@ pub unsafe extern "C" fn jit_runtime_map_atom(
 
     // Get the list items
     let jit_list = JitValue::from_raw(list);
+
+    // Validate list value has valid tag
+    debug_assert!(
+        jit_list.is_valid_tag(),
+        "jit_runtime_map_atom: Invalid list JitValue: raw={:#018x}, tag={:#06x}",
+        list,
+        (list >> 48) as u16
+    );
+
     let metta_list = jit_list.to_metta();
     let items = match metta_list {
         MettaValue::SExpr(items) => items,
@@ -210,6 +237,15 @@ pub unsafe extern "C" fn jit_runtime_filter_atom(
 
     // Get the list items
     let jit_list = JitValue::from_raw(list);
+
+    // Validate list value has valid tag
+    debug_assert!(
+        jit_list.is_valid_tag(),
+        "jit_runtime_filter_atom: Invalid list JitValue: raw={:#018x}, tag={:#06x}",
+        list,
+        (list >> 48) as u16
+    );
+
     let metta_list = jit_list.to_metta();
     let items = match metta_list {
         MettaValue::SExpr(items) => items,
@@ -277,6 +313,22 @@ pub unsafe extern "C" fn jit_runtime_foldl_atom(
 
     // Get the list items
     let jit_list = JitValue::from_raw(list);
+    let jit_init = JitValue::from_raw(init);
+
+    // Validate both values have valid tags
+    debug_assert!(
+        jit_list.is_valid_tag(),
+        "jit_runtime_foldl_atom: Invalid list JitValue: raw={:#018x}, tag={:#06x}",
+        list,
+        (list >> 48) as u16
+    );
+    debug_assert!(
+        jit_init.is_valid_tag(),
+        "jit_runtime_foldl_atom: Invalid init JitValue: raw={:#018x}, tag={:#06x}",
+        init,
+        (init >> 48) as u16
+    );
+
     let metta_list = jit_list.to_metta();
     let items = match metta_list {
         MettaValue::SExpr(items) => items,
@@ -296,7 +348,6 @@ pub unsafe extern "C" fn jit_runtime_foldl_atom(
     };
 
     // Get initial accumulator value
-    let jit_init = JitValue::from_raw(init);
     let mut acc = jit_init.to_metta();
 
     // Fold over elements

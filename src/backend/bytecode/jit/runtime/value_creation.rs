@@ -44,6 +44,14 @@ pub unsafe extern "C" fn jit_runtime_make_sexpr(
 ) -> u64 {
     let count = count as usize;
 
+    // Sanity check: count should be reasonable (prevent garbage allocation size)
+    debug_assert!(
+        count <= 1_000_000,
+        "jit_runtime_make_sexpr: Suspiciously large count: {} (raw: {:#x})",
+        count,
+        count
+    );
+
     // Handle empty S-expression
     if count == 0 {
         let sexpr = Box::new(MettaValue::SExpr(Vec::new()));
@@ -51,11 +59,28 @@ pub unsafe extern "C" fn jit_runtime_make_sexpr(
         return TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK);
     }
 
+    // Validate values_ptr is not null
+    debug_assert!(
+        !values_ptr.is_null(),
+        "jit_runtime_make_sexpr: Null values_ptr with count={}",
+        count
+    );
+
     // Convert each value to MettaValue
     let mut elements = Vec::with_capacity(count);
     for i in 0..count {
         let raw_val = *values_ptr.add(i);
         let jit_val = JitValue::from_raw(raw_val);
+
+        // Validate each value before conversion
+        debug_assert!(
+            jit_val.is_valid_tag(),
+            "jit_runtime_make_sexpr: Invalid JitValue at index {}: raw={:#018x}, tag={:#06x}",
+            i,
+            raw_val,
+            (raw_val >> 48) as u16
+        );
+
         elements.push(jit_val.to_metta());
     }
 
@@ -92,6 +117,22 @@ pub unsafe extern "C" fn jit_runtime_cons_atom(
     ip: u64,
 ) -> u64 {
     let head_val = JitValue::from_raw(head);
+    let tail_val = JitValue::from_raw(tail);
+
+    // Validate both values have valid tags
+    debug_assert!(
+        head_val.is_valid_tag(),
+        "jit_runtime_cons_atom: Invalid head JitValue: raw={:#018x}, tag={:#06x}",
+        head,
+        (head >> 48) as u16
+    );
+    debug_assert!(
+        tail_val.is_valid_tag(),
+        "jit_runtime_cons_atom: Invalid tail JitValue: raw={:#018x}, tag={:#06x}",
+        tail,
+        (tail >> 48) as u16
+    );
+
     let head_metta = head_val.to_metta();
 
     let tail_tag = tail & TAG_MASK;
@@ -198,10 +239,25 @@ pub unsafe extern "C" fn jit_runtime_make_list(
 ) -> u64 {
     let count = count as usize;
 
+    // Sanity check: count should be reasonable
+    debug_assert!(
+        count <= 1_000_000,
+        "jit_runtime_make_list: Suspiciously large count: {} (raw: {:#x})",
+        count,
+        count
+    );
+
     // Empty list is Nil
     if count == 0 {
         return TAG_NIL;
     }
+
+    // Validate values_ptr is not null
+    debug_assert!(
+        !values_ptr.is_null(),
+        "jit_runtime_make_list: Null values_ptr with count={}",
+        count
+    );
 
     // Build the list from the end (reverse order to get proper Cons structure)
     // Start with Nil, then Cons each element from the end
@@ -210,6 +266,16 @@ pub unsafe extern "C" fn jit_runtime_make_list(
     for i in (0..count).rev() {
         let raw_val = *values_ptr.add(i);
         let jit_val = JitValue::from_raw(raw_val);
+
+        // Validate each value before conversion
+        debug_assert!(
+            jit_val.is_valid_tag(),
+            "jit_runtime_make_list: Invalid JitValue at index {}: raw={:#018x}, tag={:#06x}",
+            i,
+            raw_val,
+            (raw_val >> 48) as u16
+        );
+
         let elem = jit_val.to_metta();
 
         // Build (Cons elem list)
@@ -239,6 +305,15 @@ pub unsafe extern "C" fn jit_runtime_make_list(
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_make_quote(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
+
+    // Validate value has valid tag
+    debug_assert!(
+        jit_val.is_valid_tag(),
+        "jit_runtime_make_quote: Invalid JitValue: raw={:#018x}, tag={:#06x}",
+        val,
+        (val >> 48) as u16
+    );
+
     let inner = jit_val.to_metta();
 
     // Create (quote value)

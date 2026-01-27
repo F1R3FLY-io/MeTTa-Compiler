@@ -30,27 +30,49 @@
 
 (= (count-args ()) 0)
 (= (count-args $list)
-    (if (== () $list) 0 (+ 1 (count-args (cdr-atom $list)))))
+    (if (== () $list)
+        0
+        (let $rest (cdr-atom $list)
+          (+ 1 (count-args $rest)))))
 
 ; Template instantiation system
 (= (instantiate-template $template $bindings)
     (substitute-vars $template $bindings))
 
+; Look up a variable in bindings list
+; Bindings format: (($var1 $val1) ($var2 $val2) ...)
+(= (lookup-var $var ())
+    $var)
+(= (lookup-var $var $bindings)
+    (let $first (car-atom $bindings)
+      (let $rest (cdr-atom $bindings)
+        (let $key (car-atom $first)
+          (let $first-tail (cdr-atom $first)
+            (let $val (car-atom $first-tail)
+              (if (== $key $var)
+                  $val
+                  (lookup-var $var $rest))))))))
+
+; Substitute variables in an expression
+; Empty bindings -> return expression unchanged
 (= (substitute-vars $expr ())
     $expr)
-(= (substitute-vars $var (($var $val) . $rest))
-    $val)
-(= (substitute-vars $var (($other $val) . $rest))
-    (substitute-vars $var $rest))
+; Non-empty bindings -> dispatch based on metatype
 (= (substitute-vars $expr $bindings)
-    (if (== Expression (get-metatype $expr))
-        (map-substitute $expr $bindings)
-        $expr))
+    (case (get-metatype $expr)
+      ((Variable (lookup-var $expr $bindings))
+       (Expression (map-substitute $expr $bindings))
+       ($_ $expr))))
 
+; Map substitution over expression elements
 (= (map-substitute $expr $bindings)
-    (cons-atom 
-      (substitute-vars (car-atom $expr) $bindings)
-      (substitute-vars (cdr-atom $expr) $bindings)))
+    (if (== () $expr)
+        ()
+        (let $head (car-atom $expr)
+          (let $tail (cdr-atom $expr)
+            (chain (substitute-vars $head $bindings) $subst-head
+              (chain (map-substitute $tail $bindings) $subst-tail
+                (cons-atom $subst-head $subst-tail)))))))
 
 ; Dynamic fact and rule generation
 !(create-fact (person Alice))

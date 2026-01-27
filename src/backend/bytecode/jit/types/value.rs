@@ -4,6 +4,7 @@
 //! used for efficient JIT code generation.
 
 use std::fmt;
+use std::sync::Arc;
 
 use super::constants::{
     PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG,
@@ -132,6 +133,37 @@ impl JitValue {
     #[inline(always)]
     pub const fn tag(self) -> u64 {
         self.0 & TAG_MASK
+    }
+
+    /// Check if this value has a valid NaN-boxed tag.
+    ///
+    /// Valid tags are in the range 0x7FF8..=0x7FFF (quiet NaN with tag bits 0-7).
+    /// This is useful for detecting corrupted or uninitialized values.
+    #[inline(always)]
+    pub const fn is_valid_tag(self) -> bool {
+        let tag = self.tag();
+        // Valid tags are TAG_LONG through TAG_VAR (0x7FF8_xxxx through 0x7FFF_xxxx)
+        tag == TAG_LONG
+            || tag == TAG_BOOL
+            || tag == TAG_NIL
+            || tag == TAG_UNIT
+            || tag == TAG_HEAP
+            || tag == TAG_ERROR
+            || tag == TAG_ATOM
+            || tag == TAG_VAR
+    }
+
+    /// Validate that this value has a valid tag, panicking with debug info if not.
+    ///
+    /// This is a debug helper to catch corrupted values early.
+    #[inline]
+    pub fn assert_valid(&self) {
+        debug_assert!(
+            self.is_valid_tag(),
+            "Invalid JitValue: raw={:#018x}, tag={:#06x} (expected 0x7FF8..0x7FFF)",
+            self.0,
+            (self.0 >> 48) as u16
+        );
     }
 
     /// Check if this is a Long (integer)
@@ -288,23 +320,96 @@ impl JitValue {
     /// # Safety
     /// For heap pointers, the referenced MettaValue must be valid
     pub unsafe fn to_metta(self) -> MettaValue {
+        // Validate tag before any operations
+        debug_assert!(
+            self.is_valid_tag(),
+            "to_metta: Invalid JitValue tag: raw={:#018x}, tag={:#06x}",
+            self.0,
+            (self.0 >> 48) as u16
+        );
+
         match self.tag() {
             TAG_LONG => MettaValue::Long(self.as_long()),
             TAG_BOOL => MettaValue::Bool(self.as_bool()),
             TAG_NIL => MettaValue::Nil,
             TAG_UNIT => MettaValue::Unit,
-            TAG_HEAP => (*self.as_heap_ptr()).clone(),
-            TAG_ERROR => (*self.as_error_ptr()).clone(),
+            TAG_HEAP => {
+                let ptr = self.as_heap_ptr();
+                debug_assert!(
+                    !ptr.is_null(),
+                    "to_metta: Null heap pointer in JitValue: raw={:#018x}",
+                    self.0
+                );
+                debug_assert!(
+                    (ptr as usize) % std::mem::align_of::<MettaValue>() == 0,
+                    "to_metta: Misaligned heap pointer: {:p} (raw={:#018x})",
+                    ptr,
+                    self.0
+                );
+                (*ptr).clone()
+            }
+            TAG_ERROR => {
+                let ptr = self.as_error_ptr();
+                debug_assert!(
+                    !ptr.is_null(),
+                    "to_metta: Null error pointer in JitValue: raw={:#018x}",
+                    self.0
+                );
+                debug_assert!(
+                    (ptr as usize) % std::mem::align_of::<MettaValue>() == 0,
+                    "to_metta: Misaligned error pointer: {:p} (raw={:#018x})",
+                    ptr,
+                    self.0
+                );
+                (*ptr).clone()
+            }
             TAG_ATOM => {
-                let s = &*self.as_atom_ptr();
+                let ptr = self.as_atom_ptr();
+                debug_assert!(
+                    !ptr.is_null(),
+                    "to_metta: Null atom pointer in JitValue: raw={:#018x}",
+                    self.0
+                );
+                debug_assert!(
+                    (ptr as usize) % std::mem::align_of::<String>() == 0,
+                    "to_metta: Misaligned atom pointer: {:p} (raw={:#018x})",
+                    ptr,
+                    self.0
+                );
+                let s = &*ptr;
                 MettaValue::Atom(s.clone())
             }
             TAG_VAR => {
+                let ptr = self.as_var_ptr();
+                debug_assert!(
+                    !ptr.is_null(),
+                    "to_metta: Null var pointer in JitValue: raw={:#018x}",
+                    self.0
+                );
+                debug_assert!(
+                    (ptr as usize) % std::mem::align_of::<String>() == 0,
+                    "to_metta: Misaligned var pointer: {:p} (raw={:#018x})",
+                    ptr,
+                    self.0
+                );
                 // Variables in MeTTa are atoms that start with $
-                let s = &*self.as_var_ptr();
+                let s = &*ptr;
                 MettaValue::Atom(s.clone())
             }
-            _ => unreachable!("Invalid JitValue tag"),
+            _ => {
+                // In release builds, return an error value instead of panicking
+                #[cfg(debug_assertions)]
+                unreachable!(
+                    "Invalid JitValue tag: raw={:#018x}, tag={:#06x}",
+                    self.0,
+                    (self.0 >> 48) as u16
+                );
+                #[cfg(not(debug_assertions))]
+                MettaValue::Error(
+                    "JIT: Invalid JitValue tag".to_string(),
+                    Arc::new(MettaValue::String(format!("{:#018x}", self.0))),
+                )
+            }
         }
     }
 }

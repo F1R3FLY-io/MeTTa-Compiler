@@ -5,7 +5,7 @@
 //! - MORK bindings → SmallVec<[(String, MettaValue); 8]> (for pattern match results)
 
 use super::models::{Bindings, MettaValue};
-use mork::space::Space;
+use mork::space::{ParDataParser, Space};
 use mork_expr::{Expr, ExprEnv, ExprZipper};
 use mork_frontend::bytestring_parser::Parser;
 use std::collections::HashMap;
@@ -68,7 +68,13 @@ pub fn metta_to_mork_bytes(
     };
     let mut ez = ExprZipper::new(expr);
 
-    write_metta_value(value, space, ctx, &mut ez).map_err(|e| {
+    // Create ParDataParser once for the entire conversion to avoid data races.
+    // MORK's threading model assumes each thread holds ONE WritePermit for the duration
+    // of operations. Creating a new ParDataParser per symbol (as was done before) violated
+    // this assumption and caused races when multiple threads accessed the same Slab chain.
+    let mut pdp = ParDataParser::new(&space.sm);
+
+    write_metta_value(value, &mut pdp, ctx, &mut ez).map_err(|e| {
         debug!(
             target: "mettatron::conversion::metta_to_mork_bytes",
             error = %e, "Conversion to MORK bytes failed"
@@ -90,7 +96,7 @@ pub fn metta_to_mork_bytes(
 /// Recursively write MettaValue to ExprZipper
 fn write_metta_value(
     value: &MettaValue,
-    space: &Space,
+    pdp: &mut ParDataParser,
     ctx: &mut ConversionContext,
     ez: &mut ExprZipper,
 ) -> Result<(), String> {
@@ -101,7 +107,7 @@ fn write_metta_value(
             // EXCEPT: "&self", "&kb", "&stack" are space references, not variables
             if name == "&" || name == "&self" || name == "&kb" || name == "&stack" {
                 // Space references and standalone & are NOT variables - write as symbols
-                write_symbol(name.as_bytes(), space, ez)?;
+                write_symbol(name.as_bytes(), pdp, ez)?;
             } else if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
                 // Variable - use De Bruijn encoding
                 let var_id = &name[1..]; // Remove prefix
@@ -123,29 +129,29 @@ fn write_metta_value(
                 ez.loc += 1;
             } else {
                 // Regular atom - write as symbol
-                write_symbol(name.as_bytes(), space, ez)?;
+                write_symbol(name.as_bytes(), pdp, ez)?;
             }
         }
 
         MettaValue::Bool(b) => {
             let s = if *b { "true" } else { "false" };
-            write_symbol(s.as_bytes(), space, ez)?;
+            write_symbol(s.as_bytes(), pdp, ez)?;
         }
 
         MettaValue::Long(n) => {
             let s = n.to_string();
-            write_symbol(s.as_bytes(), space, ez)?;
+            write_symbol(s.as_bytes(), pdp, ez)?;
         }
 
         MettaValue::Float(f) => {
             let s = f.to_string();
-            write_symbol(s.as_bytes(), space, ez)?;
+            write_symbol(s.as_bytes(), pdp, ez)?;
         }
 
         MettaValue::String(s) => {
             // MORK uses quoted strings
             let quoted = format!("\"{}\"", s);
-            write_symbol(quoted.as_bytes(), space, ez)?;
+            write_symbol(quoted.as_bytes(), pdp, ez)?;
         }
 
         MettaValue::Nil => {
@@ -169,7 +175,7 @@ fn write_metta_value(
 
             // Write each element
             for item in items {
-                write_metta_value(item, space, ctx, ez)?;
+                write_metta_value(item, pdp, ctx, ez)?;
             }
         }
 
@@ -177,14 +183,14 @@ fn write_metta_value(
             // (error "msg" details)
             ez.write_arity(3);
             ez.loc += 1;
-            write_symbol(b"error", space, ez)?;
-            write_symbol(format!("\"{}\"", msg).as_bytes(), space, ez)?;
-            write_metta_value(details, space, ctx, ez)?;
+            write_symbol(b"error", pdp, ez)?;
+            write_symbol(format!("\"{}\"", msg).as_bytes(), pdp, ez)?;
+            write_metta_value(details, pdp, ctx, ez)?;
         }
 
         MettaValue::Type(t) => {
             // Types are just atoms/expressions
-            write_metta_value(t, space, ctx, ez)?;
+            write_metta_value(t, pdp, ctx, ez)?;
         }
 
         MettaValue::Conjunction(goals) => {
@@ -202,11 +208,11 @@ fn write_metta_value(
             ez.loc += 1;
 
             // Write the comma symbol as first child
-            write_symbol(b",", space, ez)?;
+            write_symbol(b",", pdp, ez)?;
 
             // Write each goal
             for goal in goals {
-                write_metta_value(goal, space, ctx, ez)?;
+                write_metta_value(goal, pdp, ctx, ez)?;
             }
         }
 
@@ -214,17 +220,17 @@ fn write_metta_value(
         MettaValue::Space(handle) => {
             ez.write_arity(3);
             ez.loc += 1;
-            write_symbol(b"Space", space, ez)?;
-            write_symbol(handle.id.to_string().as_bytes(), space, ez)?;
-            write_symbol(format!("\"{}\"", handle.name).as_bytes(), space, ez)?;
+            write_symbol(b"Space", pdp, ez)?;
+            write_symbol(handle.id.to_string().as_bytes(), pdp, ez)?;
+            write_symbol(format!("\"{}\"", handle.name).as_bytes(), pdp, ez)?;
         }
 
         // State references are written as (State id)
         MettaValue::State(id) => {
             ez.write_arity(2);
             ez.loc += 1;
-            write_symbol(b"State", space, ez)?;
-            write_symbol(id.to_string().as_bytes(), space, ez)?;
+            write_symbol(b"State", pdp, ez)?;
+            write_symbol(id.to_string().as_bytes(), pdp, ez)?;
         }
 
         // Unit is written as ()
@@ -252,10 +258,12 @@ fn write_metta_value(
     Ok(())
 }
 
-/// Write a symbol to ExprZipper using Space's symbol table
-fn write_symbol(bytes: &[u8], space: &Space, ez: &mut ExprZipper) -> Result<(), String> {
-    // Use MORK's ParDataParser to intern the symbol
-    let mut pdp = mork::space::ParDataParser::new(&space.sm);
+/// Write a symbol to ExprZipper using the provided ParDataParser
+///
+/// The caller must provide a ParDataParser (which holds a WritePermit) that is held
+/// for the duration of the entire conversion operation. This ensures MORK's threading
+/// model is respected - each thread holds ONE WritePermit, not one per symbol.
+fn write_symbol(bytes: &[u8], pdp: &mut ParDataParser, ez: &mut ExprZipper) -> Result<(), String> {
     let token = pdp.tokenizer(bytes);
 
     ez.write_symbol(token);

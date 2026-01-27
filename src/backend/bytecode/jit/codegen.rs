@@ -284,6 +284,7 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         // Continue block
         self.builder.switch_to_block(continue_block);
         self.builder.seal_block(continue_block);
+        self.clear_terminated(); // Reset flag for new unterminated block
 
         Ok(())
     }
@@ -307,6 +308,7 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
 
         self.builder.switch_to_block(continue_block);
         self.builder.seal_block(continue_block);
+        self.clear_terminated(); // Reset flag for new unterminated block
 
         Ok(())
     }
@@ -329,6 +331,7 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
 
         self.builder.switch_to_block(continue_block);
         self.builder.seal_block(continue_block);
+        self.clear_terminated(); // Reset flag for new unterminated block
 
         Ok(())
     }
@@ -351,6 +354,7 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
 
         self.builder.switch_to_block(continue_block);
         self.builder.seal_block(continue_block);
+        self.clear_terminated(); // Reset flag for new unterminated block
 
         Ok(())
     }

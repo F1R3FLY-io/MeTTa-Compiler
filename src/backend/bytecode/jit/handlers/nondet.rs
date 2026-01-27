@@ -227,6 +227,7 @@ pub fn compile_guard<'a, 'b>(
     // Continue block
     codegen.builder.switch_to_block(cont_block);
     codegen.builder.seal_block(cont_block);
+    codegen.clear_terminated(); // Reset flag for new unterminated block
     Ok(())
 }
 

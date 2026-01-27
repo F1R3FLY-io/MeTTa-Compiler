@@ -11,7 +11,7 @@ use mork_expr::Expr;
 use pathmap::PathMap;
 use tracing::trace;
 
-use super::multiplicity::{decrement_multiplicity, get_multiplicity, increment_multiplicity};
+use super::multiplicity::{add_atom, get_multiplicity, Multiplicity, remove_atom};
 use super::{Environment, MettaValue};
 
 impl Environment {
@@ -320,17 +320,12 @@ impl Environment {
 
         match metta_to_mork_bytes(value, &space, &mut ctx) {
             Ok(mork_bytes) => {
-                // Get write lock on btm for both atom and multiplicity updates
+                // Get write lock on btm
                 let mut btm = self.shared.btm.write().expect("btm lock poisoned");
 
-                // 1. Insert atom marker (idempotent - PathMap handles existing values)
-                //    This enables efficient iteration via to_next_val() without visiting
-                //    multiplicity entries separately.
-                btm.insert(&mork_bytes, ());
-
-                // 2. Increment multiplicity using efficient suffix-replacement
-                //    Path: [0x03, 0xC1, 'M'] ++ mork_bytes ++ count_u64_be
-                increment_multiplicity(&mut btm, &mork_bytes);
+                // Add atom with multiplicity tracking (single entry design)
+                // add_atom handles both insertion and multiplicity increment
+                add_atom(&mut btm, &mork_bytes);
 
                 drop(btm); // Release lock
 
@@ -364,10 +359,10 @@ impl Environment {
 
                 // 2. Increment multiplicity count
                 // Note: large_expr_pathmap stores MettaValue, but we still track counts
-                // using the same fixed-width approach in the main btm
+                // in the main btm using the key as path
                 {
                     let mut btm = self.shared.btm.write().expect("btm lock poisoned");
-                    increment_multiplicity(&mut btm, &key);
+                    add_atom(&mut btm, &key);
                 }
 
                 // Increment O(1) total atom count
@@ -436,14 +431,11 @@ impl Environment {
                     return;
                 }
 
-                // Decrement multiplicity using efficient suffix-replacement
-                let new_count = decrement_multiplicity(&mut btm, &mork_bytes);
+                // Decrement multiplicity (entry auto-removed when count reaches 0)
+                let new_count = remove_atom(&mut btm, &mork_bytes);
 
                 if new_count == 0 {
-                    // Last instance removed - also remove atom marker
-                    btm.remove(&mork_bytes);
-
-                    // Note deletion for bloom filter lazy rebuild tracking
+                    // Last instance removed - note deletion for bloom filter lazy rebuild tracking
                     self.shared
                         .head_arity_bloom
                         .write()
@@ -458,13 +450,10 @@ impl Environment {
                 // Remove from fallback PathMap (if it exists)
                 let key = metta_to_varint_key(value);
 
-                // Decrement multiplicity in main btm first
+                // Decrement multiplicity in main btm
                 {
                     let mut btm = self.shared.btm.write().expect("btm lock poisoned");
-                    let current_count = get_multiplicity(&btm, &key);
-                    if current_count > 0 {
-                        decrement_multiplicity(&mut btm, &key);
-                    }
+                    remove_atom(&mut btm, &key);
                 }
 
                 let mut guard = self
@@ -591,9 +580,10 @@ impl Environment {
 
         // OPTIMIZATION: Use direct MORK byte conversion
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
+        use super::multiplicity::Multiplicity;
 
         // Create shared temporary space for MORK conversion
-        let temp_space = Space {
+        let temp_space: Space<Multiplicity> = Space {
             sm: self.shared_mapping.clone(),
             btm: PathMap::new(),
             mmaps: HashMap::new(),
@@ -618,10 +608,10 @@ impl Environment {
         // STRATEGY 1: Simple iterator-based PathMap construction
         // Build temporary PathMap outside the lock using individual inserts
         // This is faster than anamorphism due to avoiding excessive cloning
-        let mut fact_trie = PathMap::new();
+        let mut fact_trie: PathMap<Multiplicity> = PathMap::new();
 
         for mork_bytes in mork_facts {
-            fact_trie.insert(&mork_bytes, ());
+            fact_trie.insert(&mork_bytes, Multiplicity::new(1));
         }
 
         // Single lock acquisition → union → unlock

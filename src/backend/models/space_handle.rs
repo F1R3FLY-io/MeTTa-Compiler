@@ -19,7 +19,9 @@
 //! - `SpaceData` - For dynamically created spaces (`new-space`)
 //! - `ModuleSpace` - For module-backed spaces (`mod-space!`) with live references
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use super::{MettaValue, Rule};
 use crate::backend::modules::{ModId, ModuleSpace};
@@ -198,7 +200,7 @@ impl SpaceHandle {
             SpaceBacking::Module { mod_id, space } => {
                 // Module spaces: for now, fork creates a snapshot (not live)
                 // This gives each branch its own isolated copy
-                let atoms = space.read().unwrap().get_all_atoms();
+                let atoms = space.read().get_all_atoms();
                 Self {
                     id: self.id,
                     name: self.name.clone(),
@@ -260,7 +262,7 @@ impl SpaceHandle {
             SpaceBacking::Owned { base, overlay } => {
                 if let Some(overlay) = overlay {
                     // Forked: add to overlay
-                    let mut overlay = overlay.write().unwrap();
+                    let mut overlay = overlay.write();
                     // If this atom was previously removed, un-remove it
                     if let Some(pos) = overlay.removed.iter().position(|r| r == &atom) {
                         overlay.removed.remove(pos);
@@ -268,12 +270,12 @@ impl SpaceHandle {
                     overlay.added.push(atom);
                 } else {
                     // Not forked: add directly to base
-                    let mut data = base.write().unwrap();
+                    let mut data = base.write();
                     data.atoms.push(atom);
                 }
             }
             SpaceBacking::Module { space, .. } => {
-                let mut space = space.write().unwrap();
+                let mut space = space.write();
                 space.add_atom(atom);
             }
         }
@@ -289,7 +291,7 @@ impl SpaceHandle {
             SpaceBacking::Owned { base, overlay } => {
                 if let Some(overlay) = overlay {
                     // Forked: check if atom exists (in base or overlay.added)
-                    let mut overlay_lock = overlay.write().unwrap();
+                    let mut overlay_lock = overlay.write();
 
                     // First check if it was added in this overlay
                     if let Some(pos) = overlay_lock.added.iter().position(|a| a == atom) {
@@ -298,7 +300,7 @@ impl SpaceHandle {
                     }
 
                     // Check if it exists in base (and not already removed)
-                    let base_data = base.read().unwrap();
+                    let base_data = base.read();
                     if base_data.atoms.contains(atom) && !overlay_lock.is_removed(atom) {
                         // Add tombstone
                         overlay_lock.removed.push(atom.clone());
@@ -308,7 +310,7 @@ impl SpaceHandle {
                     false
                 } else {
                     // Not forked: remove directly from base
-                    let mut data = base.write().unwrap();
+                    let mut data = base.write();
                     if let Some(pos) = data.atoms.iter().position(|a| a == atom) {
                         data.atoms.remove(pos);
                         true
@@ -318,7 +320,7 @@ impl SpaceHandle {
                 }
             }
             SpaceBacking::Module { space, .. } => {
-                let mut space = space.write().unwrap();
+                let mut space = space.write();
                 space.remove_atom(atom)
             }
         }
@@ -330,10 +332,10 @@ impl SpaceHandle {
     pub fn collapse(&self) -> Vec<MettaValue> {
         match &self.backing {
             SpaceBacking::Owned { base, overlay } => {
-                let base_data = base.read().unwrap();
+                let base_data = base.read();
 
                 if let Some(overlay) = overlay {
-                    let overlay_lock = overlay.read().unwrap();
+                    let overlay_lock = overlay.read();
 
                     // Start with base atoms, filter out removed ones
                     let mut result: Vec<MettaValue> = base_data
@@ -352,7 +354,7 @@ impl SpaceHandle {
                 }
             }
             SpaceBacking::Module { space, .. } => {
-                let space = space.read().unwrap();
+                let space = space.read();
                 space.get_all_atoms()
             }
         }
@@ -363,8 +365,8 @@ impl SpaceHandle {
         match &self.backing {
             SpaceBacking::Owned { base, overlay } => {
                 if let Some(overlay) = overlay {
-                    let base_data = base.read().unwrap();
-                    let overlay_lock = overlay.read().unwrap();
+                    let base_data = base.read();
+                    let overlay_lock = overlay.read();
 
                     // Count = base - removed + added
                     let base_count = base_data.atoms.len();
@@ -373,12 +375,12 @@ impl SpaceHandle {
 
                     base_count.saturating_sub(removed_count) + added_count
                 } else {
-                    let data = base.read().unwrap();
+                    let data = base.read();
                     data.atoms.len()
                 }
             }
             SpaceBacking::Module { space, .. } => {
-                let space = space.read().unwrap();
+                let space = space.read();
                 space.get_all_atoms().len()
             }
         }
@@ -391,7 +393,7 @@ impl SpaceHandle {
         match &self.backing {
             SpaceBacking::Owned { base, overlay } => {
                 if let Some(overlay) = overlay {
-                    let overlay_lock = overlay.read().unwrap();
+                    let overlay_lock = overlay.read();
 
                     // Check if removed
                     if overlay_lock.is_removed(atom) {
@@ -404,15 +406,15 @@ impl SpaceHandle {
                     }
 
                     // Check base
-                    let base_data = base.read().unwrap();
+                    let base_data = base.read();
                     base_data.atoms.contains(atom)
                 } else {
-                    let data = base.read().unwrap();
+                    let data = base.read();
                     data.atoms.contains(atom)
                 }
             }
             SpaceBacking::Module { space, .. } => {
-                let space = space.read().unwrap();
+                let space = space.read();
                 space.contains(atom)
             }
         }
@@ -425,11 +427,11 @@ impl SpaceHandle {
             SpaceBacking::Owned { base, overlay } => {
                 if let Some(overlay) = overlay {
                     // Forked: add to overlay
-                    let mut overlay_lock = overlay.write().unwrap();
+                    let mut overlay_lock = overlay.write();
                     overlay_lock.added_rules.push(rule);
                 } else {
                     // Not forked: add directly to base
-                    let mut data = base.write().unwrap();
+                    let mut data = base.write();
                     data.rules.push(rule);
                 }
             }
@@ -445,10 +447,10 @@ impl SpaceHandle {
     pub fn rules(&self) -> Vec<Rule> {
         match &self.backing {
             SpaceBacking::Owned { base, overlay } => {
-                let base_data = base.read().unwrap();
+                let base_data = base.read();
 
                 if let Some(overlay) = overlay {
-                    let overlay_lock = overlay.read().unwrap();
+                    let overlay_lock = overlay.read();
                     let mut rules = base_data.rules.clone();
                     rules.extend(overlay_lock.added_rules.iter().cloned());
                     rules

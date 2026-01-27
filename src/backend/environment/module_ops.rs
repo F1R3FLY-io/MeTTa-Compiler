@@ -3,7 +3,9 @@
 //! Provides methods for module registration, lookup, and management.
 
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use super::Environment;
 use crate::backend::modules::{LoadOptions, ModId};
@@ -104,7 +106,7 @@ impl Environment {
     pub fn get_module_space(
         &self,
         mod_id: ModId,
-    ) -> Option<std::sync::Arc<RwLock<crate::backend::modules::ModuleSpace>>> {
+    ) -> Option<Arc<RwLock<crate::backend::modules::ModuleSpace>>> {
         let registry = self
             .shared
             .module_registry

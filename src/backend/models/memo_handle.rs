@@ -23,26 +23,26 @@ static NEXT_MEMO_ID: AtomicU64 = AtomicU64::new(1);
 /// - Uses expression hash as cache key (not structural equality)
 /// - Supports optional LRU eviction with configurable max size
 /// - Thread-safe via RwLock for concurrent access
-/// - Tracks hit/miss statistics for performance analysis
-#[derive(Debug, Clone)]
+/// - Lock-free hit/miss statistics via AtomicU64 (no write lock needed for reads)
+#[derive(Debug)]
 pub struct MemoHandle {
     /// Unique identifier for this memo table
     pub id: u64,
     /// Optional name for debugging/display
     pub name: String,
-    /// Shared mutable state
+    /// Shared mutable state (cache only)
     inner: Arc<RwLock<MemoInner>>,
+    /// Cache hit counter (lock-free atomic)
+    hits: AtomicU64,
+    /// Cache miss counter (lock-free atomic)
+    misses: AtomicU64,
 }
 
-/// Internal memoization state
+/// Internal memoization state (cache only; counters are external atomics)
 #[derive(Debug)]
 struct MemoInner {
     /// Cache: expression_hash -> cached results
     cache: HashMap<u64, MemoEntry>,
-    /// Cache hit counter
-    hits: u64,
-    /// Cache miss counter
-    misses: u64,
     /// Maximum cache size (0 = unlimited)
     max_size: usize,
     /// LRU order tracking (most recent at end)
@@ -76,11 +76,11 @@ impl MemoHandle {
             name,
             inner: Arc::new(RwLock::new(MemoInner {
                 cache: HashMap::new(),
-                hits: 0,
-                misses: 0,
                 max_size,
                 lru_order: Vec::new(),
             })),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
     }
 
@@ -96,29 +96,33 @@ impl MemoHandle {
     /// Look up cached results for an expression
     ///
     /// Returns Some(results) if cached, None if miss.
-    /// Updates hit/miss counters.
+    /// Updates hit/miss counters via lock-free atomics.
     pub fn lookup(&self, expr: &MettaValue) -> Option<Vec<MettaValue>> {
         let hash = Self::hash_expression(expr);
-        let mut inner = self.inner.write().unwrap();
 
-        // Check if entry exists and get results if so
-        let result = inner.cache.get(&hash).map(|entry| entry.results.clone());
-
-        if result.is_some() {
-            inner.hits += 1;
-
-            // Update LRU order if tracking
-            if inner.max_size > 0 {
-                if let Some(pos) = inner.lru_order.iter().position(|&h| h == hash) {
-                    inner.lru_order.remove(pos);
-                    inner.lru_order.push(hash);
+        // Fast path: check cache with read lock, update atomics without lock
+        {
+            let inner = self.inner.read().unwrap();
+            if let Some(entry) = inner.cache.get(&hash) {
+                let result = entry.results.clone();
+                // Update LRU requires write lock - defer to slow path if needed
+                if inner.max_size > 0 {
+                    drop(inner);
+                    // Slow path: update LRU order with write lock
+                    let mut inner = self.inner.write().unwrap();
+                    if let Some(pos) = inner.lru_order.iter().position(|&h| h == hash) {
+                        inner.lru_order.remove(pos);
+                        inner.lru_order.push(hash);
+                    }
                 }
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                return Some(result);
             }
-        } else {
-            inner.misses += 1;
         }
 
-        result
+        // Cache miss - only atomic increment needed
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        None
     }
 
     /// Store evaluation results for an expression
@@ -166,17 +170,32 @@ impl MemoHandle {
     /// Returns (hits, misses, current_size, max_size)
     pub fn stats(&self) -> (u64, u64, usize, usize) {
         let inner = self.inner.read().unwrap();
-        (inner.hits, inner.misses, inner.cache.len(), inner.max_size)
+        let hits = self.hits.load(Ordering::Relaxed);
+        let misses = self.misses.load(Ordering::Relaxed);
+        (hits, misses, inner.cache.len(), inner.max_size)
     }
 
     /// Get the hit rate as a percentage (0.0 - 100.0)
     pub fn hit_rate(&self) -> f64 {
-        let inner = self.inner.read().unwrap();
-        let total = inner.hits + inner.misses;
+        let hits = self.hits.load(Ordering::Relaxed);
+        let misses = self.misses.load(Ordering::Relaxed);
+        let total = hits + misses;
         if total == 0 {
             0.0
         } else {
-            (inner.hits as f64 / total as f64) * 100.0
+            (hits as f64 / total as f64) * 100.0
+        }
+    }
+}
+
+impl Clone for MemoHandle {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            name: self.name.clone(),
+            inner: Arc::clone(&self.inner),
+            hits: AtomicU64::new(self.hits.load(Ordering::Relaxed)),
+            misses: AtomicU64::new(self.misses.load(Ordering::Relaxed)),
         }
     }
 }

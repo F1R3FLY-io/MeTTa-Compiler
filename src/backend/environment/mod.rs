@@ -59,14 +59,16 @@ use super::modules::{ModuleRegistry, Tokenizer};
 use super::symbol::Symbol;
 use super::{MettaValue, Rule};
 
+use multiplicity::Multiplicity;
+
 /// Shared state across all Environment clones.
 /// Consolidates 17 Arc<RwLock<T>> fields into a single Arc<EnvironmentShared>
 /// for O(1) clone operations (1 atomic increment instead of 17).
 ///
 /// Thread-safe: All fields use RwLock for concurrent read/exclusive write access.
 pub(crate) struct EnvironmentShared {
-    /// PathMap trie for fact storage
-    pub(crate) btm: RwLock<PathMap<()>>,
+    /// PathMap trie for fact storage (value = atom multiplicity)
+    pub(crate) btm: RwLock<PathMap<Multiplicity>>,
 
     /// Rule index: Maps (head_symbol, arity) -> Vec<Rule> for O(1) rule lookup
     /// Uses Symbol for O(1) comparison when symbol-interning feature is enabled
@@ -92,7 +94,7 @@ pub(crate) struct EnvironmentShared {
     pub(crate) pattern_cache: RwLock<LruCache<MettaValue, Vec<u8>>>,
 
     /// Type index: Lazy-initialized subtrie containing only type assertions
-    pub(crate) type_index: RwLock<Option<PathMap<()>>>,
+    pub(crate) type_index: RwLock<Option<PathMap<Multiplicity>>>,
 
     /// Type index invalidation flag
     pub(crate) type_index_dirty: RwLock<bool>,
@@ -187,6 +189,29 @@ impl Environment {
         // Create shared symbol table for atom interning
         let symbols = Arc::new(SymbolTable::new());
 
+        // Create the shared mapping for MORK symbol interning
+        let shared_mapping = SharedMapping::new();
+
+        // Warm up SharedMapping to avoid PathMap ensure_root() TOCTOU race.
+        //
+        // PathMap's ensure_root() has a time-of-check-time-of-use race when called
+        // concurrently through read locks: multiple threads can see root.is_none()
+        // and all try to initialize the root, causing double-free panics.
+        //
+        // By initializing all 128 PathMap buckets now (before any cloning occurs),
+        // concurrent access from clones won't trigger ensure_root() races.
+        //
+        // See: https://github.com/f1r3fly-io/MeTTa-Compiler/issues/XX (flaky test_concurrent_add_rules)
+        if let Ok(permit) = shared_mapping.try_aquire_permission() {
+            // Insert dummy symbols to trigger PathMap initialization in each bucket.
+            // SharedMapping uses Pearson hash on first 8 bytes to select bucket (mod 128).
+            // Single-byte keys [0..128] maximize bucket coverage.
+            for i in 0..128u8 {
+                // Ignore result - we just need to trigger initialization
+                let _ = permit.get_sym_or_insert(&[i]);
+            }
+        }
+
         let shared = Arc::new(EnvironmentShared {
             btm: RwLock::new(PathMap::new()),
             rule_index: RwLock::new(HashMap::with_capacity(128)),
@@ -217,7 +242,7 @@ impl Environment {
 
         Environment {
             shared,
-            shared_mapping: SharedMapping::new(),
+            shared_mapping, // Use pre-warmed SharedMapping (all PathMap buckets initialized)
             owns_data: true, // CoW: new environments own their data
             modified: Arc::new(AtomicBool::new(false)), // CoW: track modifications
             current_module_path: None,
@@ -634,7 +659,7 @@ impl Environment {
     ///
     /// This is useful for advanced operations that need direct access to the Space,
     /// such as debugging or custom MORK queries.
-    pub fn create_space(&self) -> Space {
+    pub fn create_space(&self) -> Space<Multiplicity> {
         let btm = self.shared.btm.read().expect("btm lock poisoned").clone(); // CoW: read lock for concurrent reads
         Space {
             btm,
@@ -645,7 +670,7 @@ impl Environment {
 
     /// Update PathMap and shared mapping after Space modifications (write operations)
     /// This updates both the PathMap (btm) and the SharedMappingHandle (sm)
-    pub(crate) fn update_pathmap(&mut self, space: Space) {
+    pub(crate) fn update_pathmap(&mut self, space: Space<Multiplicity>) {
         self.make_owned(); // CoW: ensure we own data before modifying
         *self.shared.btm.write().expect("btm lock poisoned") = space.btm; // CoW: write lock for exclusive access
         self.shared_mapping = space.sm;

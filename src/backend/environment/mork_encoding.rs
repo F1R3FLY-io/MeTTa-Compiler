@@ -76,9 +76,9 @@ impl super::Environment {
     /// Since MORK uses immutable trie storage, identical pointers always represent
     /// identical expressions during evaluation, making caching safe and effective.
     #[allow(unused_variables)]
-    pub(crate) fn mork_expr_to_metta_value(
+    pub(crate) fn mork_expr_to_metta_value<V: Clone + Default + Send + Sync + Unpin>(
         expr: &Expr,
-        space: &Space,
+        space: &Space<V>,
     ) -> Result<MettaValue, String> {
         // CACHE DISABLED: Pointer-based caching doesn't work with PathMap's buffer reuse.
         // PathMap's read_zipper.path() returns a reference to an internal buffer that

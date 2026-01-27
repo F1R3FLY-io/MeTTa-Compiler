@@ -25,7 +25,8 @@ use pathmap::PathMap;
 use tracing::trace;
 
 use super::multiplicity::{
-    decrement_multiplicity, get_multiplicity, increment_multiplicity, is_multiplicity_entry,
+    add_atom, decrement_multiplicity, get_multiplicity, increment_multiplicity, Multiplicity,
+    remove_atom, set_multiplicity,
 };
 use super::{Environment, MettaValue, Rule};
 use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
@@ -91,28 +92,27 @@ impl<'a> Iterator for RuleHeadsIter<'a> {
 /// - Zero Vec allocation for results
 /// - MORK-to-MettaValue conversion happens lazily per item
 /// - Skips non-rule entries efficiently
-pub struct RulesIter {
-    /// Owned vector of (mork_bytes, ()) entries from PathMap iteration.
+pub struct RulesIter<V: Clone + Default + Send + Sync + Unpin> {
+    /// Owned vector of (mork_bytes, V) entries from PathMap iteration.
     /// We collect the raw entries but defer MORK conversion.
-    entries: std::vec::IntoIter<(Vec<u8>, ())>,
+    entries: std::vec::IntoIter<(Vec<u8>, V)>,
     /// Space for MORK-to-MettaValue conversion.
-    space: Space,
+    space: Space<V>,
 }
 
-impl RulesIter {
+impl<V: Clone + Default + Send + Sync + Unpin> RulesIter<V> {
     /// Create a lazy iterator from an Environment.
     ///
     /// Collects PathMap entries (cheap - just references) but defers
     /// the expensive MORK-to-MettaValue conversion until iteration.
-    pub fn new(space: Space) -> Self {
+    pub fn new(space: Space<V>) -> Self {
         // Collect entries - this is O(n) but only stores byte references
         // The expensive conversion happens in next()
-        // Note: btm.iter() returns (Vec<u8>, &()), we dereference the value
-        let entries: Vec<(Vec<u8>, ())> = space
+        // With value-based multiplicity, all entries are atoms (no filtering needed)
+        let entries: Vec<(Vec<u8>, V)> = space
             .btm
             .iter()
-            .filter(|(mork_bytes, _)| !is_multiplicity_entry(mork_bytes))
-            .map(|(bytes, val)| (bytes, *val))
+            .map(|(bytes, val)| (bytes, val.clone()))
             .collect();
 
         Self {
@@ -145,7 +145,7 @@ impl RulesIter {
     }
 }
 
-impl Iterator for RulesIter {
+impl<V: Clone + Default + Send + Sync + Unpin> Iterator for RulesIter<V> {
     type Item = Rule;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -365,7 +365,7 @@ impl Environment {
     /// # Note
     /// For backward compatibility, this returns `RulesIter` which implements
     /// `Iterator<Item = Rule>`. The conversion happens lazily as you iterate.
-    pub fn iter_rules(&self) -> RulesIter {
+    pub fn iter_rules(&self) -> RulesIter<Multiplicity> {
         let space = self.create_space();
         RulesIter::new(space)
     }
@@ -478,7 +478,7 @@ impl Environment {
         ]);
 
         // Compute MORK bytes ONCE and reuse for both PathMap and legacy multiplicity tracking
-        let temp_space = Space {
+        let temp_space: Space<Multiplicity> = Space {
             sm: self.shared_mapping.clone(),
             btm: PathMap::new(),
             mmaps: HashMap::new(),
@@ -521,18 +521,14 @@ impl Environment {
                 .store(true, Ordering::Release);
         }
 
-        // Add to MORK Space using fixed-width multiplicity approach
-        // 1. Atom marker at mork_bytes (for iteration and MORK pattern matching)
-        // 2. Multiplicity entry at [0x03, 0xC1, 'M', mork_bytes, count_u64] (for O(1) lookup)
+        // Add to MORK Space using value-based multiplicity tracking
+        // Single entry: mork_bytes → Multiplicity(count)
         if let Ok(mork_bytes) = mork_bytes_result {
             // Get write lock on btm
             let mut btm = self.shared.btm.write().expect("btm lock poisoned");
 
-            // 1. Insert atom marker (idempotent - enables iteration via to_next_val())
-            btm.insert(&mork_bytes, ());
-
-            // 2. Increment multiplicity using efficient suffix-replacement
-            increment_multiplicity(&mut btm, &mork_bytes);
+            // Add atom with multiplicity tracking (single entry design)
+            add_atom(&mut btm, &mork_bytes);
 
             drop(btm);
             self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
@@ -568,7 +564,7 @@ impl Environment {
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // Build temporary PathMap outside the lock
-        let mut rule_trie = PathMap::new();
+        let mut rule_trie: PathMap<Multiplicity> = PathMap::new();
 
         // Track rule metadata while building trie
         // Use Symbol for O(1) comparison when symbol-interning is enabled
@@ -604,7 +600,7 @@ impl Environment {
             }
 
             // Compute MORK bytes for PathMap insertion
-            let temp_space = Space {
+            let temp_space: Space<Multiplicity> = Space {
                 sm: self.shared_mapping.clone(),
                 btm: PathMap::new(),
                 mmaps: HashMap::new(),
@@ -614,37 +610,15 @@ impl Environment {
             let mork_bytes = metta_to_mork_bytes(&rule_sexpr, &temp_space, &mut ctx)
                 .map_err(|e| format!("MORK conversion failed for rule {:?}: {}", rule_sexpr, e))?;
 
-            // Insert atom marker at mork_bytes (for iteration and MORK pattern matching)
-            rule_trie.insert(&mork_bytes, ());
+            // Insert atom with multiplicity 1
+            rule_trie.insert(&mork_bytes, Multiplicity::new(1));
 
             // Increment total atom count
             self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
         }
 
-        // Track MORK bytes for multiplicity updates after join
-        let mork_bytes_for_multiplicity: Vec<Vec<u8>> = {
-            let temp_space = Space {
-                sm: self.shared_mapping.clone(),
-                btm: PathMap::new(),
-                mmaps: HashMap::new(),
-            };
-
-            rule_index_updates.values().flatten()
-                .chain(wildcard_updates.iter())
-                .filter_map(|rule| {
-                    let rule_sexpr = MettaValue::SExpr(vec![
-                        MettaValue::Atom("=".to_string()),
-                        (*rule.lhs).clone(),
-                        (*rule.rhs).clone(),
-                    ]);
-                    let mut ctx = ConversionContext::new();
-                    metta_to_mork_bytes(&rule_sexpr, &temp_space, &mut ctx).ok()
-                })
-                .collect()
-        };
-
         // Apply all updates in batch (minimize critical sections)
-        // Note: Multiplicities already updated via PathMap instance markers in the loop above
+        // Note: With value-based multiplicity, PathMap's join uses pjoin which adds multiplicities
 
         // Update rule index
         {
@@ -674,15 +648,11 @@ impl Environment {
                 .store(true, Ordering::Release);
         }
 
-        // Single PathMap union and multiplicity updates (minimal critical section)
+        // Single PathMap union (minimal critical section)
+        // Note: With value-based multiplicity, join uses pjoin which adds multiplicities together
         {
             let mut btm = self.shared.btm.write().expect("btm lock poisoned");
             *btm = btm.join(&rule_trie);
-
-            // Increment multiplicities for all rules
-            for mork_bytes in &mork_bytes_for_multiplicity {
-                increment_multiplicity(&mut btm, mork_bytes);
-            }
         }
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
         Ok(())
@@ -715,7 +685,7 @@ impl Environment {
         ]);
 
         // Compute MORK bytes and lookup multiplicity using efficient fixed-width encoding
-        let temp_space = Space {
+        let temp_space: Space<Multiplicity> = Space {
             sm: self.shared_mapping.clone(),
             btm: PathMap::new(),
             mmaps: HashMap::new(),
@@ -734,22 +704,16 @@ impl Environment {
     }
 
     /// Get the multiplicities (for serialization)
-    /// Iterates through PathMap and looks up multiplicity for each atom.
+    /// Iterates through PathMap and reads multiplicity values directly.
     /// The keys are hex-encoded MORK bytes for serialization stability.
     pub fn get_multiplicities(&self) -> HashMap<String, usize> {
         let btm = self.shared.btm.read().expect("btm lock poisoned");
         let mut result = HashMap::new();
 
-        // Iterate through all entries, skipping multiplicity entries
-        for (path, _) in btm.iter() {
-            // Skip multiplicity entries - only process atom marker paths
-            if is_multiplicity_entry(&path) {
-                continue;
-            }
-
-            // Get multiplicity using efficient fixed-width lookup
-            let count = get_multiplicity(&btm, &path);
-            let count = if count == 0 { 1 } else { count as usize }; // Legacy compatibility
+        // With value-based multiplicity, every entry is an atom with its count as the value
+        for (path, multiplicity) in btm.iter() {
+            let count = multiplicity.count() as usize;
+            let count = if count == 0 { 1 } else { count }; // Legacy compatibility
 
             // Hex-encode the MORK bytes for serialization
             let hex_key = hex::encode(&path);
@@ -766,19 +730,12 @@ impl Environment {
 
         let mut btm = self.shared.btm.write().expect("btm lock poisoned");
 
-        // For each atom with count N, ensure atom marker exists and set multiplicity
+        // For each atom with count N, set the multiplicity directly
         for (hex_key, count) in counts {
             // Decode hex-encoded MORK bytes
             if let Ok(mork_bytes) = hex::decode(&hex_key) {
-                // Insert atom marker (idempotent)
-                btm.insert(&mork_bytes, ());
-
-                // Set multiplicity by incrementing count times
-                // (starts from 0, so we increment count times to get to count)
-                for _ in 0..count {
-                    increment_multiplicity(&mut btm, &mork_bytes);
-                }
-
+                // Set multiplicity directly (single entry design)
+                set_multiplicity(&mut btm, &mork_bytes, count as u64);
                 self.shared.total_atoms.fetch_add(count, Ordering::Relaxed);
             }
         }
@@ -924,7 +881,7 @@ impl Environment {
         }
 
         // Increment multiplicity using efficient suffix-replacement approach
-        let temp_space = Space {
+        let temp_space: Space<Multiplicity> = Space {
             sm: self.shared_mapping.clone(),
             btm: PathMap::new(),
             mmaps: HashMap::new(),
@@ -1039,7 +996,7 @@ impl Environment {
         }
 
         // Decrement multiplicity using efficient suffix-replacement approach
-        let temp_space = Space {
+        let temp_space: Space<Multiplicity> = Space {
             sm: self.shared_mapping.clone(),
             btm: PathMap::new(),
             mmaps: HashMap::new(),
@@ -1108,7 +1065,7 @@ impl Environment {
     pub fn increment_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
         self.make_owned(); // CoW: ensure we own data before modifying
 
-        let temp_space = Space {
+        let temp_space: Space<Multiplicity> = Space {
             sm: self.shared_mapping.clone(),
             btm: PathMap::new(),
             mmaps: HashMap::new(),
@@ -1150,7 +1107,7 @@ impl Environment {
     pub fn decrement_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
         self.make_owned(); // CoW: ensure we own data before modifying
 
-        let temp_space = Space {
+        let temp_space: Space<Multiplicity> = Space {
             sm: self.shared_mapping.clone(),
             btm: PathMap::new(),
             mmaps: HashMap::new(),
@@ -1197,7 +1154,7 @@ impl Environment {
     /// # Returns
     /// The multiplicity count (at least 1 if the atom exists).
     pub fn get_atom_multiplicity(&self, value: &MettaValue) -> usize {
-        let temp_space = Space {
+        let temp_space: Space<Multiplicity> = Space {
             sm: self.shared_mapping.clone(),
             btm: PathMap::new(),
             mmaps: HashMap::new(),

@@ -16,7 +16,8 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 use super::compiler::JitCompiler;
 use super::profile::{JitProfile, JitState, HOT_THRESHOLD, WARM_THRESHOLD};
@@ -170,7 +171,7 @@ impl JitCache {
 
     /// Get a cached entry, updating its last access time
     pub fn get(&self, id: &ChunkId) -> Option<*const ()> {
-        let mut entries = self.entries.write().ok()?;
+        let mut entries = self.entries.write();
         if let Some(entry) = entries.get_mut(id) {
             entry.last_access = std::time::Instant::now();
             Some(entry.native_code)
@@ -181,10 +182,7 @@ impl JitCache {
 
     /// Check if a chunk is cached
     pub fn contains(&self, id: &ChunkId) -> bool {
-        self.entries
-            .read()
-            .map(|e| e.contains_key(id))
-            .unwrap_or(false)
+        self.entries.read().contains_key(id)
     }
 
     /// Insert a compiled entry into the cache
@@ -193,30 +191,24 @@ impl JitCache {
         self.maybe_evict();
 
         let code_size = entry.code_size;
-        if let Ok(mut entries) = self.entries.write() {
-            entries.insert(id, entry);
-        }
-        if let Ok(mut total) = self.total_code_bytes.write() {
-            *total += code_size;
-        }
+        self.entries.write().insert(id, entry);
+        *self.total_code_bytes.write() += code_size;
     }
 
     /// Remove an entry from the cache
     pub fn remove(&self, id: &ChunkId) -> Option<CacheEntry> {
-        if let Ok(mut entries) = self.entries.write() {
-            if let Some(entry) = entries.remove(id) {
-                if let Ok(mut total) = self.total_code_bytes.write() {
-                    *total = total.saturating_sub(entry.code_size);
-                }
-                return Some(entry);
-            }
+        let mut entries = self.entries.write();
+        if let Some(entry) = entries.remove(id) {
+            let mut bytes = self.total_code_bytes.write();
+            *bytes = bytes.saturating_sub(entry.code_size);
+            return Some(entry);
         }
         None
     }
 
     /// Get the number of cached entries
     pub fn len(&self) -> usize {
-        self.entries.read().map(|e| e.len()).unwrap_or(0)
+        self.entries.read().len()
     }
 
     /// Check if the cache is empty
@@ -226,17 +218,13 @@ impl JitCache {
 
     /// Get the total bytes of compiled code
     pub fn total_code_bytes(&self) -> usize {
-        self.total_code_bytes.read().map(|t| *t).unwrap_or(0)
+        *self.total_code_bytes.read()
     }
 
     /// Clear the entire cache
     pub fn clear(&self) {
-        if let Ok(mut entries) = self.entries.write() {
-            entries.clear();
-        }
-        if let Ok(mut total) = self.total_code_bytes.write() {
-            *total = 0;
-        }
+        self.entries.write().clear();
+        *self.total_code_bytes.write() = 0;
     }
 
     /// Evict least recently used entries if cache is full
@@ -248,19 +236,18 @@ impl JitCache {
         };
 
         if should_evict {
-            if let Ok(mut entries) = self.entries.write() {
-                // Find the LRU entry
-                let lru_id = entries
-                    .iter()
-                    .min_by_key(|(_, e)| e.last_access)
-                    .map(|(id, _)| *id);
+            let mut entries = self.entries.write();
+            // Find the LRU entry
+            let lru_id = entries
+                .iter()
+                .min_by_key(|(_, e)| e.last_access)
+                .map(|(id, _)| *id);
 
-                if let Some(id) = lru_id {
-                    if let Some(entry) = entries.remove(&id) {
-                        if let Ok(mut total) = self.total_code_bytes.write() {
-                            *total = total.saturating_sub(entry.code_size);
-                        }
-                    }
+            if let Some(id) = lru_id {
+                if let Some(entry) = entries.remove(&id) {
+                    drop(entries); // Release lock before acquiring another
+                    let mut bytes = self.total_code_bytes.write();
+                    *bytes = bytes.saturating_sub(entry.code_size);
                 }
             }
         }
@@ -402,17 +389,15 @@ impl TieredCompiler {
         let id = ChunkId::from_chunk(chunk);
 
         // Try read-only access first
-        if let Ok(profiles) = self.profiles.read() {
+        {
+            let profiles = self.profiles.read();
             if let Some(profile) = profiles.get(&id) {
                 return profile.clone();
             }
         }
 
         // Need to create a new profile
-        let mut profiles = self
-            .profiles
-            .write()
-            .expect("Failed to acquire profile lock");
+        let mut profiles = self.profiles.write();
         profiles
             .entry(id)
             .or_insert_with(|| Arc::new(JitProfile::new()))
@@ -448,7 +433,8 @@ impl TieredCompiler {
         let tier = self.get_tier(chunk);
 
         // Record stats
-        if let Ok(mut stats) = self.stats.write() {
+        {
+            let mut stats = self.stats.write();
             stats.record_execution(tier);
         }
 
@@ -471,18 +457,13 @@ impl TieredCompiler {
         // Check if chunk is compilable
         if !JitCompiler::can_compile_stage1(chunk) {
             profile.set_failed();
-            if let Ok(mut stats) = self.stats.write() {
-                stats.jit_failures += 1;
-            }
+            self.stats.write().jit_failures += 1;
             return;
         }
 
         // Create or get JIT compiler
         let compile_result = {
-            let mut compiler_lock = self
-                .jit_compiler
-                .write()
-                .expect("Failed to acquire JIT compiler lock");
+            let mut compiler_lock = self.jit_compiler.write();
             let compiler = compiler_lock
                 .get_or_insert_with(|| JitCompiler::new().expect("Failed to create JIT compiler"));
             compiler.compile(chunk)
@@ -510,16 +491,15 @@ impl TieredCompiler {
                 self.cache.insert(id, entry);
 
                 // Update stats
-                if let Ok(mut stats) = self.stats.write() {
+                {
+                    let mut stats = self.stats.write();
                     stats.jit_compilations += 1;
                     stats.total_jit_bytes += code_size as u64;
                 }
             }
             Err(_) => {
                 profile.set_failed();
-                if let Ok(mut stats) = self.stats.write() {
-                    stats.jit_failures += 1;
-                }
+                self.stats.write().jit_failures += 1;
             }
         }
     }
@@ -530,7 +510,8 @@ impl TieredCompiler {
         let result = self.cache.get(&id);
 
         // Update cache stats
-        if let Ok(mut stats) = self.stats.write() {
+        {
+            let mut stats = self.stats.write();
             if result.is_some() {
                 stats.cache_hits += 1;
             } else {
@@ -549,14 +530,12 @@ impl TieredCompiler {
 
     /// Get a copy of the current statistics
     pub fn stats(&self) -> TieredStats {
-        self.stats.read().map(|s| s.clone()).unwrap_or_default()
+        self.stats.read().clone()
     }
 
     /// Reset statistics
     pub fn reset_stats(&self) {
-        if let Ok(mut stats) = self.stats.write() {
-            *stats = TieredStats::new();
-        }
+        *self.stats.write() = TieredStats::new();
     }
 
     /// Get the JIT cache

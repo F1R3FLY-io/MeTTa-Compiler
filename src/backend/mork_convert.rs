@@ -50,9 +50,9 @@ impl ConversionContext {
 ///
 /// This creates a MORK s-expression that can be used with query_multi.
 /// Variables are converted to De Bruijn indices.
-pub fn metta_to_mork_bytes(
+pub fn metta_to_mork_bytes<V: Clone + Default + Send + Sync + Unpin>(
     value: &MettaValue,
-    space: &Space,
+    space: &Space<V>,
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
     trace!(
@@ -265,10 +265,8 @@ fn write_metta_value(
 /// model is respected - each thread holds ONE WritePermit, not one per symbol.
 fn write_symbol(bytes: &[u8], pdp: &mut ParDataParser, ez: &mut ExprZipper) -> Result<(), String> {
     let token = pdp.tokenizer(bytes);
-
     ez.write_symbol(token);
     ez.loc += 1 + token.len();
-
     Ok(())
 }
 
@@ -280,10 +278,10 @@ fn write_symbol(bytes: &[u8], pdp: &mut ParDataParser, ez: &mut ExprZipper) -> R
 /// FIXED: Uses mork_expr_to_metta_value() instead of serialize2() to avoid reserved byte panic
 /// Now properly reports conversion errors instead of silently skipping bindings.
 #[allow(unused_variables)]
-pub fn mork_bindings_to_metta(
+pub fn mork_bindings_to_metta<V: Clone + Default + Send + Sync + Unpin>(
     mork_bindings: &std::collections::BTreeMap<(u8, u8), ExprEnv>,
     ctx: &ConversionContext,
-    space: &Space,
+    space: &Space<V>,
 ) -> Result<Bindings, String> {
     trace!(target: "mettatron::conversion::mork_bindings_to_metta", ?mork_bindings);
 

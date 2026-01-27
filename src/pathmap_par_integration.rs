@@ -1,3 +1,4 @@
+use crate::backend::environment::multiplicity::Multiplicity;
 use crate::backend::environment::Environment;
 /// PathMap Par Integration Module
 ///
@@ -819,7 +820,7 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
 
                                 // Get raw path bytes and insert directly into PathMap
                                 let path_bytes = &space_dump_bytes[offset..offset + len];
-                                space.btm.insert(path_bytes, ());
+                                space.btm.insert(path_bytes, Multiplicity::new(1));
                                 offset += len;
                             }
                         }

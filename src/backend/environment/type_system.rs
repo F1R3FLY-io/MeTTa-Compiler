@@ -11,6 +11,7 @@ use mork_expr::Expr;
 use pathmap::PathMap;
 use tracing::trace;
 
+use super::multiplicity::Multiplicity;
 use super::{Environment, MettaValue};
 
 impl Environment {
@@ -59,7 +60,7 @@ impl Environment {
 
         // Create a PathMap containing only the ":" prefix
         // restrict() will return all paths in btm that have matching prefixes in this map
-        let mut type_prefix_map = PathMap::new();
+        let mut type_prefix_map: PathMap<Multiplicity> = PathMap::new();
         let colon_bytes = b":";
 
         // Insert a single path with just ":" to match all type assertions
@@ -69,7 +70,7 @@ impl Environment {
             for &byte in colon_bytes {
                 wz.descend_to_byte(byte);
             }
-            wz.set_val(());
+            wz.set_val(Multiplicity::new(1));
         }
 
         // Extract type subtrie using restrict()

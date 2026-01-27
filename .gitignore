@@ -4,6 +4,7 @@ perf.data
 perf.data.*
 *.perf.data
 perf*.data
+perf*.txt
 *.data
 flamegraph*.svg
 *.so

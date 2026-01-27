@@ -22,6 +22,7 @@
 //! its RHS is compiled to bytecode (if not already cached) and executed.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::warn;
 
@@ -77,24 +78,58 @@ pub struct MorkBridge {
     /// Value: compiled bytecode chunk
     rule_cache: RwLock<HashMap<RuleCacheKey, Arc<BytecodeChunk>>>,
 
-    /// Statistics for cache hit/miss tracking
-    stats: RwLock<BridgeStats>,
+    /// Statistics for cache hit/miss tracking (lock-free atomics)
+    stats: BridgeStats,
 }
 
 impl std::fmt::Debug for MorkBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let stats = self.stats.read().ok();
         let cache_size = self.rule_cache.read().map(|c| c.len()).unwrap_or(0);
         f.debug_struct("MorkBridge")
             .field("cache_size", &cache_size)
-            .field("stats", &stats)
+            .field("stats", &self.stats.snapshot())
             .finish()
     }
 }
 
-/// Statistics for monitoring bridge performance
-#[derive(Debug, Default, Clone)]
+/// Statistics for monitoring bridge performance (lock-free atomics).
+#[derive(Debug)]
 pub struct BridgeStats {
+    /// Number of rule lookups performed
+    pub lookups: AtomicU64,
+    /// Number of rules found across all lookups
+    pub rules_found: AtomicU64,
+    /// Number of rule cache hits
+    pub cache_hits: AtomicU64,
+    /// Number of rule cache misses (compilations)
+    pub cache_misses: AtomicU64,
+}
+
+impl Default for BridgeStats {
+    fn default() -> Self {
+        Self {
+            lookups: AtomicU64::new(0),
+            rules_found: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Clone for BridgeStats {
+    fn clone(&self) -> Self {
+        Self {
+            lookups: AtomicU64::new(self.lookups.load(Ordering::Relaxed)),
+            rules_found: AtomicU64::new(self.rules_found.load(Ordering::Relaxed)),
+            cache_hits: AtomicU64::new(self.cache_hits.load(Ordering::Relaxed)),
+            cache_misses: AtomicU64::new(self.cache_misses.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+/// Snapshot of bridge statistics for reporting (plain u64 values).
+#[derive(Debug, Clone, Default)]
+pub struct BridgeStatsSnapshot {
     /// Number of rule lookups performed
     pub lookups: u64,
     /// Number of rules found across all lookups
@@ -105,13 +140,25 @@ pub struct BridgeStats {
     pub cache_misses: u64,
 }
 
+impl BridgeStats {
+    /// Create a snapshot of current statistics.
+    pub fn snapshot(&self) -> BridgeStatsSnapshot {
+        BridgeStatsSnapshot {
+            lookups: self.lookups.load(Ordering::Relaxed),
+            rules_found: self.rules_found.load(Ordering::Relaxed),
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            cache_misses: self.cache_misses.load(Ordering::Relaxed),
+        }
+    }
+}
+
 impl MorkBridge {
     /// Create a new bridge with the given environment
     pub fn new(env: Arc<RwLock<Environment>>) -> Self {
         Self {
             env,
             rule_cache: RwLock::new(HashMap::new()),
-            stats: RwLock::new(BridgeStats::default()),
+            stats: BridgeStats::default(),
         }
     }
 
@@ -136,21 +183,17 @@ impl MorkBridge {
     /// # Returns
     /// Vector of (compiled_rule_body, bindings) pairs for all matching rules
     pub fn dispatch_rules(&self, expr: &MettaValue) -> Vec<CompiledRule> {
-        // Update stats
-        {
-            let mut stats = self.stats.write().expect("stats lock");
-            stats.lookups += 1;
-        }
+        // Update stats (lock-free)
+        self.stats.lookups.fetch_add(1, Ordering::Relaxed);
 
         // Get matching rules from environment
         let env = self.env.read().expect("env lock");
         let matches = self.find_matching_rules(expr, &env);
 
-        // Update stats with match count
-        {
-            let mut stats = self.stats.write().expect("stats lock");
-            stats.rules_found += matches.len() as u64;
-        }
+        // Update stats with match count (lock-free)
+        self.stats
+            .rules_found
+            .fetch_add(matches.len() as u64, Ordering::Relaxed);
 
         // Compile rule bodies (with caching)
         let mut compiled = Vec::with_capacity(matches.len());
@@ -222,8 +265,7 @@ impl MorkBridge {
         {
             let cache = self.rule_cache.read().expect("cache lock");
             if let Some(chunk) = cache.get(&key) {
-                let mut stats = self.stats.write().expect("stats lock");
-                stats.cache_hits += 1;
+                self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(Arc::clone(chunk));
             }
         }
@@ -236,16 +278,15 @@ impl MorkBridge {
         {
             let mut cache = self.rule_cache.write().expect("cache lock");
             cache.insert(key, Arc::clone(&chunk));
-            let mut stats = self.stats.write().expect("stats lock");
-            stats.cache_misses += 1;
+            self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
         }
 
         Ok(chunk)
     }
 
-    /// Get bridge statistics
-    pub fn stats(&self) -> BridgeStats {
-        self.stats.read().expect("stats lock").clone()
+    /// Get bridge statistics as a snapshot (lock-free)
+    pub fn stats(&self) -> BridgeStatsSnapshot {
+        self.stats.snapshot()
     }
 
     /// Clear the rule cache

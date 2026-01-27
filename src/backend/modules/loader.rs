@@ -27,7 +27,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 use super::cache::hash_path;
 use super::metta_mod::{MettaMod, ModId};
@@ -139,11 +140,11 @@ pub struct ModuleRegistry {
     /// Content hashes currently being loaded (cycle detection).
     loading_modules: HashSet<u64>,
 
-    /// Counter for generating unique ModIds.
-    next_mod_id: u64,
-
     /// Loading options.
     options: LoadOptions,
+
+    /// Counter for generating unique module IDs within this registry.
+    next_mod_id: u64,
 }
 
 impl ModuleRegistry {
@@ -159,8 +160,8 @@ impl ModuleRegistry {
             path_to_module: HashMap::new(),
             content_to_module: HashMap::new(),
             loading_modules: HashSet::new(),
-            next_mod_id: 0,
             options,
+            next_mod_id: 0,
         }
     }
 
@@ -174,11 +175,11 @@ impl ModuleRegistry {
         self.options = options;
     }
 
-    /// Generate a new unique ModId.
+    /// Generate a new unique ModId within this registry.
     fn next_id(&mut self) -> ModId {
-        let id = ModId::new(self.next_mod_id);
+        let id = self.next_mod_id;
         self.next_mod_id += 1;
-        id
+        ModId::new(id)
     }
 
     /// Check if a module is cached by path.
@@ -280,8 +281,8 @@ impl Clone for ModuleRegistry {
             path_to_module: self.path_to_module.clone(),
             content_to_module: self.content_to_module.clone(),
             loading_modules: self.loading_modules.clone(),
-            next_mod_id: self.next_mod_id,
             options: self.options.clone(),
+            next_mod_id: self.next_mod_id,
         }
     }
 }
@@ -450,7 +451,7 @@ mod tests {
         let registry = new_shared_registry();
 
         {
-            let mut reg = registry.write().unwrap();
+            let mut reg = registry.write();
             reg.register(
                 "top:test".to_string(),
                 &PathBuf::from("/test.metta"),
@@ -460,7 +461,7 @@ mod tests {
         }
 
         {
-            let reg = registry.read().unwrap();
+            let reg = registry.read();
             assert_eq!(reg.module_count(), 1);
         }
     }

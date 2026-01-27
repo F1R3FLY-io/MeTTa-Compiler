@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 use super::module_space::ModuleSpace;
 use super::tokenizer::Tokenizer;
@@ -41,16 +43,18 @@ impl std::fmt::Display for ModId {
 /// The state of a module during loading.
 ///
 /// Used for two-pass loading and cycle detection.
+/// Stored as AtomicU8 for lock-free access: 0 = Loading, 1 = Loaded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum ModuleState {
     /// Pass 1 complete, Pass 2 in progress.
     /// Symbols are indexed but not yet evaluated.
     /// Encountering a Loading module during import indicates a cycle.
-    Loading,
+    Loading = 0,
 
     /// Fully loaded and evaluated.
     /// Safe to import all definitions.
-    Loaded,
+    Loaded = 1,
 }
 
 /// A loaded MeTTa module with its own space and tokenizer.
@@ -80,8 +84,8 @@ pub struct MettaMod {
     /// Resource directory for module assets.
     resource_dir: Option<PathBuf>,
 
-    /// Current loading state.
-    state: Arc<RwLock<ModuleState>>,
+    /// Current loading state (lock-free AtomicU8: 0 = Loading, 1 = Loaded).
+    state: AtomicU8,
 
     /// Content hash for deduplication.
     /// Modules with the same content hash are considered identical.
@@ -109,7 +113,7 @@ impl MettaMod {
             tokenizer: Arc::new(RwLock::new(Tokenizer::new())),
             imported_deps: Arc::new(RwLock::new(HashMap::new())),
             resource_dir,
-            state: Arc::new(RwLock::new(ModuleState::Loading)),
+            state: AtomicU8::new(ModuleState::Loading as u8),
             content_hash,
         }
     }
@@ -144,14 +148,17 @@ impl MettaMod {
         self.resource_dir.as_ref()
     }
 
-    /// Get the module's current state.
+    /// Get the module's current state (lock-free atomic read).
     pub fn state(&self) -> ModuleState {
-        *self.state.read().unwrap()
+        match self.state.load(Ordering::Acquire) {
+            0 => ModuleState::Loading,
+            _ => ModuleState::Loaded,
+        }
     }
 
-    /// Set the module's state.
+    /// Set the module's state (lock-free atomic write).
     pub fn set_state(&self, state: ModuleState) {
-        *self.state.write().unwrap() = state;
+        self.state.store(state as u8, Ordering::Release);
     }
 
     /// Get the module's content hash.
@@ -161,22 +168,22 @@ impl MettaMod {
 
     /// Check if a dependency has been imported.
     pub fn has_imported(&self, mod_id: ModId) -> bool {
-        self.imported_deps.read().unwrap().contains_key(&mod_id)
+        self.imported_deps.read().contains_key(&mod_id)
     }
 
     /// Mark a dependency as imported.
     pub fn mark_imported(&self, mod_id: ModId) {
-        self.imported_deps.write().unwrap().insert(mod_id, ());
+        self.imported_deps.write().insert(mod_id, ());
     }
 
     /// Get all imported dependency IDs.
     pub fn imported_dep_ids(&self) -> Vec<ModId> {
-        self.imported_deps.read().unwrap().keys().copied().collect()
+        self.imported_deps.read().keys().copied().collect()
     }
 
     /// Get the number of imported dependencies.
     pub fn imported_dep_count(&self) -> usize {
-        self.imported_deps.read().unwrap().len()
+        self.imported_deps.read().len()
     }
 }
 
@@ -189,7 +196,7 @@ impl Clone for MettaMod {
             tokenizer: Arc::clone(&self.tokenizer),
             imported_deps: Arc::clone(&self.imported_deps),
             resource_dir: self.resource_dir.clone(),
-            state: Arc::clone(&self.state),
+            state: AtomicU8::new(self.state.load(Ordering::Acquire)),
             content_hash: self.content_hash,
         }
     }

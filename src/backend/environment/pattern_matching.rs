@@ -16,9 +16,10 @@
 //! or use `.into_iter().flat_map(|m| m.expand()).collect()` to expand all results.
 
 use mork_expr::Expr;
+use pathmap::zipper::ZipperValues;
 use tracing::trace;
 
-use super::multiplicity::{is_multiplicity_entry, MultiplicityLookup};
+use super::multiplicity::get_multiplicity;
 use super::{Environment, MettaValue};
 use crate::backend::eval::{apply_bindings, pattern_match};
 
@@ -142,17 +143,13 @@ impl Environment {
         let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
 
-        // OPTIMIZATION: Use zero-allocation multiplicity lookup for hot path
-        let mut mult_lookup = MultiplicityLookup::new();
-
         // 1. Iterate through MORK PathMap (primary storage)
+        // With value-based multiplicity, every entry is an atom with its count as the value
         while rz.to_next_val() {
             let path_bytes = rz.path();
 
-            // Skip multiplicity entries - we only process atom marker paths
-            if is_multiplicity_entry(path_bytes) {
-                continue;
-            }
+            // Get multiplicity directly from the value (no separate lookup needed)
+            let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1) as usize;
 
             let ptr = path_bytes.as_ptr();
             let expr = Expr {
@@ -162,7 +159,6 @@ impl Environment {
             if let Ok(atom) = Self::mork_expr_to_metta_value(&expr, &space) {
                 if let Some(bindings) = pattern_match(pattern, &atom) {
                     let instantiated = apply_bindings(template, &bindings).into_owned();
-                    let multiplicity = mult_lookup.get(&space.btm, path_bytes).max(1) as usize;
 
                     // Store compressed result instead of expanding
                     results.push(MultiplicityMatch::new(instantiated, multiplicity));
@@ -182,13 +178,10 @@ impl Environment {
             let btm = self.shared.btm.read().expect("btm lock poisoned");
 
             for (key, stored_value) in fallback.iter() {
-                if is_multiplicity_entry(&key) {
-                    continue;
-                }
-
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
                     let instantiated = apply_bindings(template, &bindings).into_owned();
-                    let multiplicity = mult_lookup.get(&btm, &key).max(1) as usize;
+                    // Look up multiplicity from main btm using the key
+                    let multiplicity = get_multiplicity(&btm, &key).max(1) as usize;
                     results.push(MultiplicityMatch::new(instantiated, multiplicity));
                 }
             }
@@ -239,14 +232,9 @@ impl Environment {
         let pattern_arity = pattern.get_arity() as u8;
 
         // 1. Iterate through MORK PathMap (primary storage) - EARLY EXIT on first match
+        // With value-based multiplicity, every entry is an atom (no filtering needed)
         while rz.to_next_val() {
             let path_bytes = rz.path();
-
-            // Skip multiplicity entries - only process atom marker paths
-            if is_multiplicity_entry(path_bytes) {
-                continue;
-            }
-
             let ptr = path_bytes.as_ptr();
 
             // DISABLED: pre-filter extracts wrong data from rz.path()
@@ -282,12 +270,7 @@ impl Environment {
             .read()
             .expect("large_expr_pathmap lock poisoned");
         if let Some(ref fallback) = *guard {
-            for (key, stored_value) in fallback.iter() {
-                // Skip multiplicity entries
-                if is_multiplicity_entry(&key) {
-                    continue;
-                }
-
+            for (_key, stored_value) in fallback.iter() {
                 if let Some(bindings) = pattern_match(pattern, stored_value) {
                     let instantiated = apply_bindings(template, &bindings).into_owned();
                     return Some(instantiated); // EARLY EXIT
@@ -332,14 +315,9 @@ impl Environment {
         let pattern_arity = pattern.get_arity() as u8;
 
         // Iterate through MORK PathMap - EARLY EXIT on first match
+        // With value-based multiplicity, every entry is an atom (no filtering needed)
         while rz.to_next_val() {
             let path_bytes = rz.path();
-
-            // Skip multiplicity entries - only process atom marker paths
-            if is_multiplicity_entry(path_bytes) {
-                continue;
-            }
-
             let ptr = path_bytes.as_ptr();
 
             // DISABLED: pre-filter extracts wrong data from rz.path()
@@ -375,12 +353,7 @@ impl Environment {
             .read()
             .expect("large_expr_pathmap lock poisoned");
         if let Some(ref fallback) = *guard {
-            for (key, stored_value) in fallback.iter() {
-                // Skip multiplicity entries
-                if is_multiplicity_entry(&key) {
-                    continue;
-                }
-
+            for (_key, stored_value) in fallback.iter() {
                 if pattern_match(pattern, stored_value).is_some() {
                     return true; // EARLY EXIT
                 }

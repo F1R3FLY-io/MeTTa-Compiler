@@ -15,6 +15,7 @@
 use gxhash::GxHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, RwLock};
 
 use lru::LruCache;
@@ -23,9 +24,53 @@ use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::models::MettaValue;
 use std::sync::Arc;
 
-/// Statistics for bytecode cache monitoring
-#[derive(Debug, Default, Clone)]
+/// Statistics for bytecode cache monitoring (lock-free atomics).
+#[derive(Debug)]
 pub struct BytecodeCacheStats {
+    /// can_compile cache hits
+    pub can_compile_hits: AtomicU64,
+    /// can_compile cache misses
+    pub can_compile_misses: AtomicU64,
+    /// bytecode cache hits
+    pub bytecode_hits: AtomicU64,
+    /// bytecode cache misses (compilations)
+    pub bytecode_misses: AtomicU64,
+}
+
+impl Default for BytecodeCacheStats {
+    fn default() -> Self {
+        Self {
+            can_compile_hits: AtomicU64::new(0),
+            can_compile_misses: AtomicU64::new(0),
+            bytecode_hits: AtomicU64::new(0),
+            bytecode_misses: AtomicU64::new(0),
+        }
+    }
+}
+
+impl BytecodeCacheStats {
+    /// Create a snapshot of current statistics.
+    pub fn snapshot(&self) -> BytecodeCacheStatsSnapshot {
+        BytecodeCacheStatsSnapshot {
+            can_compile_hits: self.can_compile_hits.load(Ordering::Relaxed),
+            can_compile_misses: self.can_compile_misses.load(Ordering::Relaxed),
+            bytecode_hits: self.bytecode_hits.load(Ordering::Relaxed),
+            bytecode_misses: self.bytecode_misses.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Reset all counters to zero.
+    pub fn reset(&self) {
+        self.can_compile_hits.store(0, Ordering::Relaxed);
+        self.can_compile_misses.store(0, Ordering::Relaxed);
+        self.bytecode_hits.store(0, Ordering::Relaxed);
+        self.bytecode_misses.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Snapshot of bytecode cache statistics (plain u64 values).
+#[derive(Debug, Default, Clone)]
+pub struct BytecodeCacheStatsSnapshot {
     /// can_compile cache hits
     pub can_compile_hits: u64,
     /// can_compile cache misses
@@ -48,9 +93,9 @@ static BYTECODE_CACHE: LazyLock<RwLock<LruCache<u64, Arc<BytecodeChunk>>>> = Laz
     RwLock::new(LruCache::new(size))
 });
 
-/// Global statistics
-static CACHE_STATS: LazyLock<RwLock<BytecodeCacheStats>> =
-    LazyLock::new(|| RwLock::new(BytecodeCacheStats::default()));
+/// Global statistics (lock-free atomics, no RwLock needed)
+static CACHE_STATS: LazyLock<BytecodeCacheStats> =
+    LazyLock::new(BytecodeCacheStats::default);
 
 fn get_can_compile_cache_size() -> NonZeroUsize {
     std::env::var("METTA_CAN_COMPILE_CACHE_SIZE")
@@ -154,9 +199,9 @@ pub fn cache_bytecode(hash: u64, chunk: Arc<BytecodeChunk>) {
     cache.put(hash, chunk);
 }
 
-/// Get current cache statistics
-pub fn get_stats() -> BytecodeCacheStats {
-    CACHE_STATS.read().expect("stats lock poisoned").clone()
+/// Get current cache statistics (lock-free snapshot)
+pub fn get_stats() -> BytecodeCacheStatsSnapshot {
+    CACHE_STATS.snapshot()
 }
 
 /// Clear all caches (mainly for testing)
@@ -167,9 +212,8 @@ pub fn clear_caches() {
     if let Ok(mut cache) = BYTECODE_CACHE.write() {
         cache.clear();
     }
-    if let Ok(mut stats) = CACHE_STATS.write() {
-        *stats = BytecodeCacheStats::default();
-    }
+    // Reset stats atomically (no lock needed)
+    CACHE_STATS.reset();
 }
 
 /// Get current cache sizes (for diagnostics)

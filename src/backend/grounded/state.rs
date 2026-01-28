@@ -84,7 +84,36 @@ impl GroundedState {
     }
 
     /// Set evaluated arg results
+    ///
+    /// # Panics
+    /// Panics if `idx` is suspiciously large (> 1000), which likely indicates
+    /// an integer underflow bug rather than legitimate use.
     pub fn set_arg(&mut self, idx: usize, results: Vec<MettaValue>) {
+        // DEFENSIVE ASSERTION: Catch bogus indices from underflow.
+        // The 7.3 exabyte allocation bug suggests memory corruption from
+        // HashMap insertion at usize::MAX (from step - 1 when step == 0).
+        // A legitimate MeTTa function should never have > 1000 arguments.
+        debug_assert!(
+            idx < 1000,
+            "BUG: Suspicious arg index {} in set_arg (likely underflow). \
+             op_name={}, step={}, args_len={}, evaluated_args_keys={:?}",
+            idx,
+            self.op_name,
+            self.step,
+            self.args.len(),
+            self.evaluated_args.keys().collect::<Vec<_>>()
+        );
+        if idx >= 1000 {
+            panic!(
+                "BUG: Suspicious arg index {} in set_arg (likely underflow). \
+                 op_name={}, step={}, args_len={}, evaluated_args_keys={:?}",
+                idx,
+                self.op_name,
+                self.step,
+                self.args.len(),
+                self.evaluated_args.keys().collect::<Vec<_>>()
+            );
+        }
         self.evaluated_args.insert(idx, results);
     }
 }

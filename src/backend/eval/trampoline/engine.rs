@@ -1423,7 +1423,24 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                     } => {
                         // Add evaluation results to state
                         // The arg_idx is (step - 1) because step was incremented before EvalArg
-                        let arg_idx = state.step - 1;
+                        //
+                        // DEFENSIVE ASSERTION: Catch underflow that could cause memory corruption.
+                        // The 7.3 exabyte allocation bug (0x6573fb666f6f6468 = "hdoof" + 0xfb + "se")
+                        // suggests string data being read as a size - likely from HashMap corruption
+                        // caused by inserting at usize::MAX when step == 0.
+                        debug_assert!(
+                            state.step > 0,
+                            "BUG: ProcessGroundedOp resumed with step=0! op_name={}, args={:?}, \
+                             evaluated_args={:?}. This would cause underflow to usize::MAX.",
+                            state.op_name, state.args, state.evaluated_args
+                        );
+                        let arg_idx = state.step.checked_sub(1).unwrap_or_else(|| {
+                            panic!(
+                                "BUG: state.step underflow in ProcessGroundedOp! \
+                                 op_name={}, step={}, args={:?}, evaluated_args={:?}",
+                                state.op_name, state.step, state.args, state.evaluated_args
+                            )
+                        });
                         state.set_arg(arg_idx, result.0);
 
                         // Look up the TCO operation and continue

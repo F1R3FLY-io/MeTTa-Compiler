@@ -8,7 +8,7 @@
 // #[macro_use] mod macros; declaration
 
 mod basic;
-mod helpers;
+pub(crate) mod helpers;
 mod higher_order;
 
 #[cfg(test)]
@@ -18,4 +18,4 @@ mod tests;
 pub(crate) use basic::{
     eval_car_atom, eval_cdr_atom, eval_cons_atom, eval_decons_atom, eval_max_atom, eval_size_atom,
 };
-pub(crate) use higher_order::{eval_filter_atom, eval_foldl_atom, eval_map_atom};
+pub(crate) use higher_order::{eval_filter_atom_step, eval_foldl_atom_step, eval_map_atom_step};

@@ -6,7 +6,13 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 
-use super::eval;
+use super::EvalStep;
+
+/// Step version of eval_conjunction that defers evaluation to trampoline.
+/// This prevents stack overflow for deeply nested conjunction goals.
+pub fn eval_conjunction_step(goals: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+    EvalStep::StartConjunction { goals, env, depth }
+}
 
 /// Evaluate a conjunction: (,), (, expr), or (, expr1 expr2 ...)
 /// Implements MORK-style goal evaluation with left-to-right binding threading
@@ -15,7 +21,12 @@ use super::eval;
 /// - (,)          → succeed with empty result (always true)
 /// - (, expr)     → evaluate expr directly (unary passthrough)
 /// - (, e1 e2 ... en) → evaluate goals left-to-right, threading bindings through
+///
+/// DEPRECATED: Use eval_conjunction_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub fn eval_conjunction(goals: Vec<MettaValue>, env: Environment, _depth: usize) -> EvalResult {
+    use super::eval;
+
     // Empty conjunction: (,) succeeds with empty result
     if goals.is_empty() {
         return (vec![MettaValue::Nil], env);

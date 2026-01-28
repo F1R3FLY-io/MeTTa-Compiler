@@ -68,15 +68,19 @@ use rules::{try_match_all_rules, try_match_all_rules_iterative, try_match_all_ru
 use trampoline::{eval_trampoline, Continuation, WorkItem, MAX_EVAL_DEPTH};
 
 // Re-export from step module
-pub(crate) use step::{eval_sexpr_step, eval_step, EvalStep, ProcessedSExpr};
+pub(crate) use step::{eval_sexpr_step, eval_step, EvalStep, MemoOpType, ProcessedSExpr};
 
 // Re-export from processing module
 pub(crate) use processing::{
     handle_no_rule_match, process_collected_sexpr, process_single_combination,
 };
 
-// Re-export from conjunction module
+// Re-export from conjunction module (deprecated - use conjunction::eval_conjunction_step instead)
+#[allow(unused_imports)]
 use conjunction::eval_conjunction;
+
+// Re-export from control_flow module for trampoline access
+pub(crate) use control_flow::eval_switch_minimal_trampoline;
 
 /// Evaluate a MettaValue in the given environment
 /// Returns (results, new_environment)

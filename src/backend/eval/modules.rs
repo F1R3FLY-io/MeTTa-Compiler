@@ -5,7 +5,9 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue, Rule};
 use crate::backend::modules::{hash_content, resolve_module_path};
 
+#[allow(unused_imports)]
 use super::eval;
+use super::EvalStep;
 
 // ============================================================
 // Module Operations (include)
@@ -441,6 +443,44 @@ pub(super) fn eval_print_mods(items: Vec<MettaValue>, env: Environment) -> EvalR
 // Token Binding Operations (bind!)
 // ============================================================
 
+/// Step version of bind! - defers evaluation to trampoline.
+/// Usage: (bind! token atom)
+pub(crate) fn eval_bind_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+    if items.len() < 3 {
+        let err = MettaValue::Error(
+            format!(
+                "bind! requires exactly 2 arguments, got {}. Usage: (bind! token atom)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let token = match &items[1] {
+        MettaValue::Atom(s) => s.clone(),
+        other => {
+            let err = MettaValue::Error(
+                format!(
+                    "bind!: expected symbol for token, got {}",
+                    super::friendly_type_name(other)
+                ),
+                Arc::new(other.clone()),
+            );
+            return EvalStep::Done((vec![err], env));
+        }
+    };
+
+    let atom_expr = items[2].clone();
+
+    EvalStep::StartBind {
+        token,
+        atom_expr,
+        env,
+        depth,
+    }
+}
+
 /// bind!: Register a token in the current module's tokenizer (HE-compatible)
 /// Usage: (bind! token atom)
 ///
@@ -455,6 +495,9 @@ pub(super) fn eval_print_mods(items: Vec<MettaValue>, env: Environment) -> EvalR
 ///   (add-atom &kb (foo bar))  ; &kb resolves to the space
 ///
 /// Returns Unit on success
+///
+/// DEPRECATED: Use eval_bind_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("bind!", items, 2, env, "(bind! token atom)");
 

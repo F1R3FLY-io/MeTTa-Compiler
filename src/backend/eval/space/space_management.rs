@@ -10,7 +10,67 @@ use std::sync::Arc;
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue, SpaceHandle};
 
+#[allow(unused_imports)]
 use super::super::eval;
+use super::super::EvalStep;
+
+/// Step version of eval_add_atom - defers evaluation to trampoline.
+/// Usage: (add-atom space-ref atom)
+pub(crate) fn eval_add_atom_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 3 {
+        let err = MettaValue::Error(
+            format!(
+                "add-atom requires 2 arguments, got {}. Usage: (add-atom space atom)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let space_ref = items[1].clone();
+    let atom = items[2].clone();
+
+    EvalStep::StartAddAtom {
+        space_ref,
+        atom,
+        env,
+        depth,
+    }
+}
+
+/// Step version of eval_remove_atom - defers evaluation to trampoline.
+/// Usage: (remove-atom space-ref atom)
+pub(crate) fn eval_remove_atom_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 3 {
+        let err = MettaValue::Error(
+            format!(
+                "remove-atom requires 2 arguments, got {}. Usage: (remove-atom space atom)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let space_ref = items[1].clone();
+    let atom = items[2].clone();
+
+    EvalStep::StartRemoveAtom {
+        space_ref,
+        atom,
+        env,
+        depth,
+    }
+}
 
 /// new-space: Create a new named space
 /// Returns a Space reference that can be used with add-atom, remove-atom, collapse
@@ -45,6 +105,9 @@ pub(crate) fn eval_new_space(items: Vec<MettaValue>, mut env: Environment) -> Ev
 
 /// add-atom: Add an atom to a space
 /// Usage: (add-atom space-ref atom)
+///
+/// DEPRECATED: Use eval_add_atom_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("add-atom", items, 2, env, "(add-atom space atom)");
 
@@ -95,6 +158,9 @@ pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
 /// remove-atom: Remove an atom from a space
 /// Usage: (remove-atom space-ref atom)
+///
+/// DEPRECATED: Use eval_remove_atom_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("remove-atom", items, 2, env, "(remove-atom space atom)");
 

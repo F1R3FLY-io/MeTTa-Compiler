@@ -3,7 +3,7 @@ use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
 use tracing::trace;
 
-use super::eval;
+use super::{eval, EvalStep};
 
 /// Error construction: (error msg details)
 pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
@@ -53,6 +53,9 @@ pub(super) fn eval_error_he(items: Vec<MettaValue>, env: Environment) -> EvalRes
 }
 
 /// Is-error: check if value is an error (for error recovery)
+///
+/// DEPRECATED: Use eval_if_error_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_if_error", ?items);
     require_args_with_usage!("is-error", items, 1, env, "(is-error expr)");
@@ -66,9 +69,62 @@ pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalRes
     }
 }
 
+/// Step version of eval_if_error that defers evaluation to trampoline.
+pub(super) fn eval_if_error_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_if_error_step", ?items);
+    if items.len() != 2 {
+        let err = MettaValue::Error(
+            format!(
+                "is-error requires exactly 1 argument, got {}. Usage: (is-error expr)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::EvalIsError {
+        expr: items[1].clone(),
+        env,
+        depth,
+    }
+}
+
+/// Step version of eval_catch that defers evaluation to trampoline.
+pub(super) fn eval_catch_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_catch_step", ?items);
+    let args = &items[1..];
+
+    if args.len() < 2 {
+        let err = MettaValue::Error(
+            "catch requires 2 arguments: expr and default".to_string(),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartCatch {
+        expr: args[0].clone(),
+        default: args[1].clone(),
+        env,
+        depth,
+    }
+}
+
 /// Evaluate catch: error recovery mechanism
 /// (catch expr default) - if expr returns error, evaluate and return default
 /// This prevents error propagation (reduction prevention)
+///
+/// DEPRECATED: Use eval_catch_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
     trace!(target: "mettatron::eval::eval_catch", ?items, ?args);

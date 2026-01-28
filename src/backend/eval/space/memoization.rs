@@ -12,12 +12,48 @@ use std::sync::Arc;
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MemoHandle, MettaValue};
 
+#[allow(unused_imports)]
 use super::super::eval;
+use super::super::{EvalStep, MemoOpType};
+
+/// Step version of eval_new_memo - defers evaluation to trampoline.
+/// Usage: (new-memo "name") or (new-memo "name" max-size)
+pub(crate) fn eval_new_memo_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    // Allow 1 or 2 arguments: name [max-size]
+    if items.len() < 2 || items.len() > 3 {
+        let err = MettaValue::Error(
+            "new-memo: requires 1 or 2 arguments. Usage: (new-memo \"name\") or (new-memo \"name\" max-size)".to_string(),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let name_arg = items[1].clone();
+    let size_arg = if items.len() == 3 {
+        Some(items[2].clone())
+    } else {
+        None
+    };
+
+    EvalStep::StartNewMemo {
+        name_arg,
+        size_arg,
+        env,
+        depth,
+    }
+}
 
 /// new-memo: Create a new memoization table
 /// Usage: (new-memo "name")
 /// Optional: (new-memo "name" max-size) for LRU eviction
 /// Returns a Memo handle that can be used with memo/memo-first
+///
+/// DEPRECATED: Use eval_new_memo_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_new_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     // Allow 1 or 2 arguments: name [max-size]
     if items.len() < 2 || items.len() > 3 {
@@ -91,9 +127,36 @@ pub(crate) fn eval_new_memo(items: Vec<MettaValue>, env: Environment) -> EvalRes
     }
 }
 
+/// Step version of eval_memo - defers evaluation to trampoline.
+/// Usage: (memo memo-table expr)
+pub(crate) fn eval_memo_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 3 {
+        let err = MettaValue::Error(
+            "memo requires 2 arguments. Usage: (memo memo-table expr)".to_string(),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartMemo {
+        memo_ref: items[1].clone(),
+        expr: items[2].clone(),
+        first_only: false,
+        env,
+        depth,
+    }
+}
+
 /// memo: Memoized evaluation - caches all results
 /// Usage: (memo memo-table expr)
 /// Returns cached results if available, otherwise evaluates expr and caches results
+///
+/// DEPRECATED: Use eval_memo_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("memo", items, 2, env, "(memo memo-table expr)");
 
@@ -140,10 +203,37 @@ pub(crate) fn eval_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     }
 }
 
+/// Step version of eval_memo_first - defers evaluation to trampoline.
+/// Usage: (memo-first memo-table expr)
+pub(crate) fn eval_memo_first_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 3 {
+        let err = MettaValue::Error(
+            "memo-first requires 2 arguments. Usage: (memo-first memo-table expr)".to_string(),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartMemo {
+        memo_ref: items[1].clone(),
+        expr: items[2].clone(),
+        first_only: true,
+        env,
+        depth,
+    }
+}
+
 /// memo-first: Memoized evaluation - caches only first result
 /// Usage: (memo-first memo-table expr)
 /// Returns cached first result if available, otherwise evaluates expr and caches first result
 /// Useful for deterministic/backtracking scenarios where only one result is needed
+///
+/// DEPRECATED: Use eval_memo_first_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_memo_first(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("memo-first", items, 2, env, "(memo-first memo-table expr)");
 
@@ -190,9 +280,35 @@ pub(crate) fn eval_memo_first(items: Vec<MettaValue>, env: Environment) -> EvalR
     }
 }
 
+/// Step version of eval_clear_memo - defers evaluation to trampoline.
+/// Usage: (clear-memo! memo-table)
+pub(crate) fn eval_clear_memo_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            "clear-memo! requires 1 argument. Usage: (clear-memo! memo-table)".to_string(),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartMemoOp {
+        memo_ref: items[1].clone(),
+        op_type: MemoOpType::Clear,
+        env,
+        depth,
+    }
+}
+
 /// clear-memo!: Clear all cached entries from a memo table
 /// Usage: (clear-memo! memo-table)
 /// Returns the memo table for chaining
+///
+/// DEPRECATED: Use eval_clear_memo_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_clear_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("clear-memo!", items, 1, env, "(clear-memo! memo-table)");
 
@@ -226,9 +342,35 @@ pub(crate) fn eval_clear_memo(items: Vec<MettaValue>, env: Environment) -> EvalR
     }
 }
 
+/// Step version of eval_memo_stats - defers evaluation to trampoline.
+/// Usage: (memo-stats memo-table)
+pub(crate) fn eval_memo_stats_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            "memo-stats requires 1 argument. Usage: (memo-stats memo-table)".to_string(),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartMemoOp {
+        memo_ref: items[1].clone(),
+        op_type: MemoOpType::Stats,
+        env,
+        depth,
+    }
+}
+
 /// memo-stats: Get statistics about a memo table
 /// Usage: (memo-stats memo-table)
 /// Returns (stats hits misses size max-size hit-rate)
+///
+/// DEPRECATED: Use eval_memo_stats_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_memo_stats(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("memo-stats", items, 1, env, "(memo-stats memo-table)");
 

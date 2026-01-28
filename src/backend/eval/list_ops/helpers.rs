@@ -9,7 +9,7 @@ use crate::backend::models::MettaValue;
 
 /// Suggest variable format when user provides a plain atom instead of `$var`
 /// Returns a suggestion string if the atom looks like it should be a variable
-pub(super) fn suggest_variable_format(atom: &str) -> Option<String> {
+pub(crate) fn suggest_variable_format(atom: &str) -> Option<String> {
     // If it's already a variable, no suggestion needed
     if atom.starts_with('$') || atom.starts_with('&') || atom.starts_with('\'') {
         return None;
@@ -41,7 +41,7 @@ pub(super) fn suggest_variable_format(atom: &str) -> Option<String> {
 /// stack overflow on deeply nested S-expressions. This is critical for:
 /// - Async evaluation (Tokio workers have smaller stacks ~2MB)
 /// - Deeply nested data structures common in knowledge graphs
-pub(super) fn substitute_variable(
+pub(crate) fn substitute_variable(
     expr: &MettaValue,
     var_name: &str,
     value: &MettaValue,

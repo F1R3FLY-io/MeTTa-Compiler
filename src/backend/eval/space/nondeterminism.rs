@@ -15,7 +15,31 @@ use std::sync::Arc;
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 
+#[allow(unused_imports)]
 use super::super::eval;
+use super::super::EvalStep;
+
+/// Step version of eval_collapse - defers evaluation to trampoline.
+/// Usage: (collapse expr)
+pub(crate) fn eval_collapse_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            "collapse requires 1 argument. Usage: (collapse expr)".to_string(),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartCollapse {
+        expr: items[1].clone(),
+        env,
+        depth,
+    }
+}
 
 /// collapse: Gather all nondeterministic results into a list
 /// Usage: (collapse expr)
@@ -30,6 +54,9 @@ use super::super::eval;
 /// !(collapse (get-atoms &self))  ; Wraps atoms in a list
 /// !(collapse &myspace)           ; Gets atoms from space as list
 /// ```
+///
+/// DEPRECATED: Use eval_collapse_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("collapse", items, 1, env, "(collapse expr)");
 
@@ -72,6 +99,28 @@ pub(crate) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalRes
     (vec![MettaValue::SExpr(filtered)], env1)
 }
 
+/// Step version of eval_collapse_bind - defers evaluation to trampoline.
+/// Usage: (collapse-bind expr)
+pub(crate) fn eval_collapse_bind_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            "collapse-bind requires 1 argument. Usage: (collapse-bind expr)".to_string(),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartCollapseBind {
+        expr: items[1].clone(),
+        env,
+        depth,
+    }
+}
+
 /// collapse-bind: Gather all nondeterministic results into a list WITHOUT filtering
 /// Usage: (collapse-bind expr)
 ///
@@ -88,6 +137,9 @@ pub(crate) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// !(collapse-bind (superpose (1 2 3)))  ; Returns [(1 2 3)]
 /// !(collapse-bind Empty)                 ; Returns [Empty] not []
 /// ```
+///
+/// DEPRECATED: Use eval_collapse_bind_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_collapse_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("collapse-bind", items, 1, env, "(collapse-bind expr)");
 
@@ -146,6 +198,27 @@ pub(crate) fn eval_superpose(items: Vec<MettaValue>, env: Environment) -> EvalRe
 // Phase G: Advanced Nondeterminism Operations
 // =============================================================================
 
+/// Step version of eval_amb - defers evaluation to trampoline.
+/// Usage: (amb alt1 alt2 ... altN)
+pub(crate) fn eval_amb_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    let alternatives = items[1..].to_vec();
+
+    if alternatives.is_empty() {
+        // Empty amb returns empty (nondeterministic failure)
+        return EvalStep::Done((vec![], env));
+    }
+
+    EvalStep::StartAmb {
+        alternatives,
+        env,
+        depth,
+    }
+}
+
 /// amb: Ambiguous choice (inline nondeterministic choice)
 /// Usage: (amb alt1 alt2 ... altN)
 ///
@@ -157,6 +230,9 @@ pub(crate) fn eval_superpose(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// !(amb 1 2 3)  ; Returns 1, 2, 3 as separate results (after evaluation)
 /// !(amb)        ; Returns empty (no results) - nondeterministic failure
 /// ```
+///
+/// DEPRECATED: Use eval_amb_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_amb(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
@@ -178,6 +254,28 @@ pub(crate) fn eval_amb(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     (all_results, current_env)
 }
 
+/// Step version of eval_guard - defers evaluation to trampoline.
+/// Usage: (guard condition)
+pub(crate) fn eval_guard_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            "guard requires 1 argument. Usage: (guard condition)".to_string(),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartGuard {
+        condition: items[1].clone(),
+        env,
+        depth,
+    }
+}
+
 /// guard: Guarded choice - continue if condition is true, fail otherwise
 /// Usage: (guard condition)
 ///
@@ -189,6 +287,9 @@ pub(crate) fn eval_amb(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 /// !(if (guard True) "passed" "failed")   ; Returns "passed"
 /// !(if (guard False) "passed" "failed")  ; Returns "failed"
 /// ```
+///
+/// DEPRECATED: Use eval_guard_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_guard(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("guard", items, 1, env, "(guard condition)");
 
@@ -267,6 +368,28 @@ pub(crate) fn eval_backtrack(items: Vec<MettaValue>, env: Environment) -> EvalRe
     (vec![], env)
 }
 
+/// Step version of eval_get_atoms - defers evaluation to trampoline.
+/// Usage: (get-atoms space)
+pub(crate) fn eval_get_atoms_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            "get-atoms requires 1 argument. Usage: (get-atoms space)".to_string(),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartGetAtoms {
+        space_ref: items[1].clone(),
+        env,
+        depth,
+    }
+}
+
 /// get-atoms: Get all atoms from a space as a superposition
 /// Usage: (get-atoms space)
 ///
@@ -277,6 +400,9 @@ pub(crate) fn eval_backtrack(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// ```metta
 /// !(get-atoms &self)  ; Returns each atom as a separate result
 /// ```
+///
+/// DEPRECATED: Use eval_get_atoms_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_get_atoms(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("get-atoms", items, 1, env, "(get-atoms space)");
 

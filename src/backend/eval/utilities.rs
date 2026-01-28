@@ -1,11 +1,36 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 
+#[allow(unused_imports)]
 use super::eval;
+use super::EvalStep;
 
 // ============================================================
 // Utility Operations (empty, get-metatype)
 // ============================================================
+
+/// Step version of eval_get_metatype - defers evaluation to trampoline.
+/// Usage: (get-metatype atom)
+pub(crate) fn eval_get_metatype_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            format!(
+                "get-metatype requires exactly 1 argument, got {}. Usage: (get-metatype atom)",
+                items.len() - 1
+            ),
+            std::sync::Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let atom = items[1].clone();
+
+    EvalStep::StartGetMetatype { atom, env, depth }
+}
 
 /// empty: Returns the Empty sentinel atom
 /// Usage: (empty)
@@ -21,6 +46,9 @@ pub(super) fn eval_empty(_items: Vec<MettaValue>, env: Environment) -> EvalResul
 /// get-metatype: Returns the meta-type of an atom
 /// Usage: (get-metatype atom)
 /// Returns: Symbol, Variable, Expression, or Grounded
+///
+/// DEPRECATED: Use eval_get_metatype_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_get_metatype(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("get-metatype", items, 1, env, "(get-metatype atom)");
 

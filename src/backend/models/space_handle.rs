@@ -24,6 +24,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use super::{MettaValue, Rule};
+use crate::backend::environment::MultiplicityMatch;
 use crate::backend::modules::{ModId, ModuleSpace};
 
 /// Local modifications overlay for Copy-on-Write semantics.
@@ -358,6 +359,17 @@ impl SpaceHandle {
                 space.get_all_atoms()
             }
         }
+    }
+
+    /// Get all atoms as MultiplicityMatch (each with count=1).
+    ///
+    /// This provides type consistency with `Environment::match_space()` for
+    /// code that needs to handle both owned spaces and module spaces uniformly.
+    pub fn collapse_with_multiplicity(&self) -> Vec<MultiplicityMatch> {
+        self.collapse()
+            .into_iter()
+            .map(|v| MultiplicityMatch::new(v, 1))
+            .collect()
     }
 
     /// Get the number of atoms in this space.

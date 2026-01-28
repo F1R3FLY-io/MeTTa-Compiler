@@ -10,10 +10,98 @@ use std::sync::Arc;
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 
+#[allow(unused_imports)]
 use super::super::eval;
+use super::super::EvalStep;
+
+/// Step version of eval_new_state - defers evaluation to trampoline.
+/// Usage: (new-state initial-value)
+pub(crate) fn eval_new_state_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            format!(
+                "new-state requires 1 argument, got {}. Usage: (new-state initial-value)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let initial_value = items[1].clone();
+
+    EvalStep::StartNewState {
+        initial_value,
+        env,
+        depth,
+    }
+}
+
+/// Step version of eval_get_state - defers evaluation to trampoline.
+/// Usage: (get-state state-ref)
+pub(crate) fn eval_get_state_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            format!(
+                "get-state requires 1 argument, got {}. Usage: (get-state state)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let state_ref = items[1].clone();
+
+    EvalStep::StartGetState {
+        state_ref,
+        env,
+        depth,
+    }
+}
+
+/// Step version of eval_change_state - defers evaluation to trampoline.
+/// Usage: (change-state! state-ref new-value)
+pub(crate) fn eval_change_state_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 3 {
+        let err = MettaValue::Error(
+            format!(
+                "change-state! requires 2 arguments, got {}. Usage: (change-state! state new-value)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let state_ref = items[1].clone();
+    let new_value = items[2].clone();
+
+    EvalStep::StartChangeState {
+        state_ref,
+        new_value,
+        env,
+        depth,
+    }
+}
 
 /// new-state: Create a new mutable state cell with an initial value
 /// Usage: (new-state initial-value)
+///
+/// DEPRECATED: Use eval_new_state_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_new_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("new-state", items, 1, env, "(new-state initial-value)");
 
@@ -36,6 +124,9 @@ pub(crate) fn eval_new_state(items: Vec<MettaValue>, env: Environment) -> EvalRe
 
 /// get-state: Get the current value from a state cell
 /// Usage: (get-state state-ref)
+///
+/// DEPRECATED: Use eval_get_state_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_get_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("get-state", items, 1, env, "(get-state state)");
 
@@ -81,6 +172,9 @@ pub(crate) fn eval_get_state(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// change-state!: Change the value in a state cell
 /// Usage: (change-state! state-ref new-value)
 /// Returns the state reference for chaining
+///
+/// DEPRECATED: Use eval_change_state_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_change_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!(
         "change-state!",

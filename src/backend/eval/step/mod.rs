@@ -9,7 +9,7 @@ mod types;
 
 pub use grounded::find_grounded_arg_indices;
 pub use sexpr_step::eval_sexpr_step;
-pub use types::{EvalStep, ProcessedSExpr};
+pub use types::{EvalStep, MemoOpType, ProcessedSExpr};
 
 use std::sync::Arc;
 
@@ -18,8 +18,8 @@ use tracing::{trace, warn};
 use crate::backend::environment::Environment;
 use crate::backend::models::MettaValue;
 
+use super::conjunction::eval_conjunction_step;
 use super::trampoline::MAX_EVAL_DEPTH;
-use super::{eval_conjunction, friendly_value_repr};
 
 /// Perform a single step of evaluation.
 /// Returns either a final result or indicates more work is needed.
@@ -91,6 +91,6 @@ pub fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep 
         MettaValue::SExpr(items) => eval_sexpr_step(items, env, depth),
 
         // For conjunctions, evaluate goals left-to-right with binding threading
-        MettaValue::Conjunction(goals) => EvalStep::Done(eval_conjunction(goals, env, depth)),
+        MettaValue::Conjunction(goals) => eval_conjunction_step(goals, env, depth),
     }
 }

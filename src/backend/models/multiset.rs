@@ -34,7 +34,7 @@
 //! ```
 
 use dashmap::DashMap;
-use gxhash::GxBuildHasher;
+use xxhash_rust::xxh3::Xxh3Builder;
 use im::HashMap as ImHashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -52,7 +52,7 @@ pub struct AtomMultiset {
     symbols: Arc<SymbolTable>,
 
     /// AtomId → count mapping (lock-free via DashMap + AtomicUsize)
-    counts: DashMap<AtomId, AtomicUsize, GxBuildHasher>,
+    counts: DashMap<AtomId, AtomicUsize, Xxh3Builder>,
 
     /// Total count across all atoms (for fast `total()` queries)
     total: AtomicUsize,
@@ -63,7 +63,7 @@ impl AtomMultiset {
     pub fn new(symbols: Arc<SymbolTable>) -> Self {
         Self {
             symbols,
-            counts: DashMap::with_hasher(GxBuildHasher::default()),
+            counts: DashMap::with_hasher(Xxh3Builder::new()),
             total: AtomicUsize::new(0),
         }
     }
@@ -72,7 +72,7 @@ impl AtomMultiset {
     pub fn with_capacity(symbols: Arc<SymbolTable>, capacity: usize) -> Self {
         Self {
             symbols,
-            counts: DashMap::with_capacity_and_hasher(capacity, GxBuildHasher::default()),
+            counts: DashMap::with_capacity_and_hasher(capacity, Xxh3Builder::new()),
             total: AtomicUsize::new(0),
         }
     }

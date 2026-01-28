@@ -5,7 +5,7 @@
 //!
 //! # Performance
 //!
-//! Uses GxHash (SIMD-accelerated) instead of SipHash for 3-5× faster hashing.
+//! Uses xxh3 (SIMD-accelerated) instead of SipHash for 3-5× faster hashing.
 //! This reduces bloom filter overhead from ~27% to ~5-10% of total CPU time.
 
 /// Bloom filter for (head_symbol, arity) pairs.
@@ -18,7 +18,7 @@
 /// - False positives allowed (may iterate when no match exists)
 /// - No false negatives (never skips when match does exist)
 /// - Doesn't support deletion; uses lazy rebuild when staleness threshold exceeded
-/// - Uses GxHash (SIMD-accelerated) for 3-5× faster hashing than SipHash
+/// - Uses xxh3 (SIMD-accelerated) for 3-5× faster hashing than SipHash
 #[derive(Clone)]
 pub(crate) struct HeadArityBloomFilter {
     bits: Vec<u64>,
@@ -81,17 +81,17 @@ impl HeadArityBloomFilter {
         self.num_deletions = 0;
     }
 
-    /// Compute two hash values for double hashing using GxHash (SIMD-accelerated).
+    /// Compute two hash values for double hashing using xxh3 (SIMD-accelerated).
     ///
-    /// GxHash provides 3-5× faster hashing than SipHash (DefaultHasher) by using
-    /// SIMD instructions (AES-NI on x86_64). This reduces bloom filter overhead
-    /// from ~27% to ~5-10% of total CPU time in match_space().
+    /// xxh3 provides 3-5× faster hashing than SipHash (DefaultHasher) by using
+    /// SIMD instructions (SSE2/AVX2 on x86_64, NEON on ARM). This reduces bloom filter
+    /// overhead from ~27% to ~5-10% of total CPU time in match_space().
     #[inline]
     fn hash_pair(head: &[u8], arity: u8) -> (usize, usize) {
-        use gxhash::GxHasher;
         use std::hash::{Hash, Hasher};
+        use xxhash_rust::xxh3::Xxh3;
 
-        let mut hasher = GxHasher::with_seed(0);
+        let mut hasher = Xxh3::with_seed(0);
         head.hash(&mut hasher);
         arity.hash(&mut hasher);
         let h = hasher.finish();

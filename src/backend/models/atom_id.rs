@@ -15,8 +15,8 @@
 //! ```
 
 use dashmap::DashMap;
-use gxhash::{GxBuildHasher, GxHasher};
 use std::hash::{BuildHasher, Hash, Hasher};
+use xxhash_rust::xxh3::Xxh3Builder;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
@@ -77,14 +77,14 @@ pub struct SymbolTable {
     /// Forward lookup: pre-computed hash → (MettaValue, AtomId)
     /// We use the hash as a first-level key to avoid re-hashing during lookup.
     /// Collisions are handled by comparing the actual MettaValue.
-    value_to_id: DashMap<u64, Vec<(MettaValue, AtomId)>, GxBuildHasher>,
+    value_to_id: DashMap<u64, Vec<(MettaValue, AtomId)>, Xxh3Builder>,
 
     /// Reverse lookup: AtomId → MettaValue
     /// Sequential storage indexed by AtomId.0
     id_to_value: RwLock<Vec<MettaValue>>,
 
     /// Hasher for computing MettaValue hashes
-    hasher_builder: GxBuildHasher,
+    hasher_builder: Xxh3Builder,
 }
 
 impl SymbolTable {
@@ -92,9 +92,9 @@ impl SymbolTable {
     pub fn new() -> Self {
         Self {
             next_id: AtomicU64::new(0),
-            value_to_id: DashMap::with_hasher(GxBuildHasher::default()),
+            value_to_id: DashMap::with_hasher(Xxh3Builder::new()),
             id_to_value: RwLock::new(Vec::new()),
-            hasher_builder: GxBuildHasher::default(),
+            hasher_builder: Xxh3Builder::new(),
         }
     }
 
@@ -104,13 +104,13 @@ impl SymbolTable {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             next_id: AtomicU64::new(0),
-            value_to_id: DashMap::with_capacity_and_hasher(capacity, GxBuildHasher::default()),
+            value_to_id: DashMap::with_capacity_and_hasher(capacity, Xxh3Builder::new()),
             id_to_value: RwLock::new(Vec::with_capacity(capacity)),
-            hasher_builder: GxBuildHasher::default(),
+            hasher_builder: Xxh3Builder::new(),
         }
     }
 
-    /// Compute the hash of a MettaValue using gxhash.
+    /// Compute the hash of a MettaValue using xxh3.
     #[inline]
     fn compute_hash(&self, value: &MettaValue) -> u64 {
         let mut hasher = self.hasher_builder.build_hasher();
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn test_hash_collision_handling() {
         // This test verifies that values with the same hash are handled correctly.
-        // In practice, hash collisions are rare with gxhash, but we need to handle them.
+        // In practice, hash collisions are rare with xxh3, but we need to handle them.
         let table = SymbolTable::new();
 
         // Create many values to increase chance of collision (or rely on linear chain)

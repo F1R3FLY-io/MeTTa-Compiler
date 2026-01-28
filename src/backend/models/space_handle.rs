@@ -18,12 +18,19 @@
 //! SpaceHandle supports two backing stores:
 //! - `SpaceData` - For dynamically created spaces (`new-space`)
 //! - `ModuleSpace` - For module-backed spaces (`mod-space!`) with live references
+//!
+//! ## Multiplicity Tracking
+//!
+//! Space atoms are stored using `AtomMultisetSnapshot` which provides:
+//! - O(1) cloning via structural sharing (`im::HashMap`)
+//! - Proper multiplicity tracking (count per unique atom)
+//! - Memory-efficient storage (one atom + count, not N copies)
 
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use super::{MettaValue, Rule};
+use super::{AtomMultisetSnapshot, MettaValue, Rule, SymbolTable};
 use crate::backend::environment::MultiplicityMatch;
 use crate::backend::modules::{ModId, ModuleSpace};
 
@@ -31,25 +38,40 @@ use crate::backend::modules::{ModId, ModuleSpace};
 ///
 /// When a space is forked, the overlay tracks local changes without modifying
 /// the shared base. This enables nondeterministic branch isolation.
-#[derive(Debug, Clone, Default)]
+///
+/// Both `added` and `removed` use `AtomMultisetSnapshot` for:
+/// - O(1) cloning via structural sharing
+/// - Proper multiplicity tracking
+/// - Memory-efficient storage
+#[derive(Debug, Clone)]
 pub struct SpaceOverlay {
-    /// Atoms added in this fork (local additions)
-    pub added: Vec<MettaValue>,
-    /// Atoms removed in this fork (tombstones)
-    /// Stored as Vec since MettaValue doesn't implement Hash
-    pub removed: Vec<MettaValue>,
+    /// Atoms added in this fork (local additions with multiplicities)
+    pub added: AtomMultisetSnapshot,
+    /// Atoms removed in this fork (tombstones with counts)
+    /// The count represents how many instances were removed
+    pub removed: AtomMultisetSnapshot,
     /// Rules added in this fork
     pub added_rules: Vec<Rule>,
 }
 
 impl SpaceOverlay {
-    pub fn new() -> Self {
-        Self::default()
+    /// Create a new empty overlay with the given symbol table.
+    pub fn new(symbols: Arc<SymbolTable>) -> Self {
+        Self {
+            added: AtomMultisetSnapshot::new(Arc::clone(&symbols)),
+            removed: AtomMultisetSnapshot::new(symbols),
+            added_rules: Vec::new(),
+        }
     }
 
     /// Check if an atom was removed in this overlay
     pub fn is_removed(&self, atom: &MettaValue) -> bool {
-        self.removed.iter().any(|r| r == atom)
+        self.removed.contains(atom)
+    }
+
+    /// Get the net removal count for an atom (how many more removed than added back)
+    pub fn removal_count(&self, atom: &MettaValue) -> usize {
+        self.removed.count(atom)
     }
 }
 
@@ -90,27 +112,73 @@ pub struct SpaceHandle {
     pub id: u64,
     /// Human-readable name
     pub name: String,
+    /// Shared symbol table for atom interning (enables O(1) equality via AtomId)
+    symbols: Arc<SymbolTable>,
     /// The backing store (owned SpaceData or live ModuleSpace reference)
     backing: SpaceBacking,
 }
 
 /// The actual data stored in a space.
-#[derive(Debug, Clone, Default)]
+///
+/// Uses `AtomMultisetSnapshot` for atom storage, providing:
+/// - O(1) cloning via structural sharing (`im::HashMap`)
+/// - Proper multiplicity tracking (count per unique atom)
+/// - Memory-efficient storage (one atom + count, not N copies)
+#[derive(Debug, Clone)]
 pub struct SpaceData {
-    /// Atoms stored in this space
-    pub atoms: Vec<MettaValue>,
+    /// Atoms stored in this space with their multiplicities
+    pub atoms: AtomMultisetSnapshot,
     /// Rules defined in this space (for matching)
     pub rules: Vec<Rule>,
 }
 
+impl SpaceData {
+    /// Create new empty SpaceData with the given symbol table.
+    pub fn new(symbols: Arc<SymbolTable>) -> Self {
+        Self {
+            atoms: AtomMultisetSnapshot::new(symbols),
+            rules: Vec::new(),
+        }
+    }
+
+    /// Create SpaceData with initial atoms.
+    pub fn with_atoms(symbols: Arc<SymbolTable>, atoms: impl IntoIterator<Item = MettaValue>) -> Self {
+        let mut multiset = AtomMultisetSnapshot::new(symbols);
+        for atom in atoms {
+            multiset = multiset.insert(&atom);
+        }
+        Self {
+            atoms: multiset,
+            rules: Vec::new(),
+        }
+    }
+}
+
 impl SpaceHandle {
     /// Create a new space handle with the given ID and name.
+    /// Uses a fresh symbol table - prefer `with_symbols` for sharing.
     pub fn new(id: u64, name: String) -> Self {
+        let symbols = Arc::new(SymbolTable::new());
         Self {
             id,
             name,
+            symbols: Arc::clone(&symbols),
             backing: SpaceBacking::Owned {
-                base: Arc::new(RwLock::new(SpaceData::default())),
+                base: Arc::new(RwLock::new(SpaceData::new(symbols))),
+                overlay: None,
+            },
+        }
+    }
+
+    /// Create a new space handle with a shared symbol table.
+    /// This is the preferred constructor when integrating with Environment.
+    pub fn with_symbols(id: u64, name: String, symbols: Arc<SymbolTable>) -> Self {
+        Self {
+            id,
+            name,
+            symbols: Arc::clone(&symbols),
+            backing: SpaceBacking::Owned {
+                base: Arc::new(RwLock::new(SpaceData::new(symbols))),
                 overlay: None,
             },
         }
@@ -118,14 +186,31 @@ impl SpaceHandle {
 
     /// Create a space handle with existing data.
     pub fn with_data(id: u64, name: String, atoms: Vec<MettaValue>) -> Self {
+        let symbols = Arc::new(SymbolTable::new());
         Self {
             id,
             name,
+            symbols: Arc::clone(&symbols),
             backing: SpaceBacking::Owned {
-                base: Arc::new(RwLock::new(SpaceData {
-                    atoms,
-                    rules: Vec::new(),
-                })),
+                base: Arc::new(RwLock::new(SpaceData::with_atoms(symbols, atoms))),
+                overlay: None,
+            },
+        }
+    }
+
+    /// Create a space handle with existing data and a shared symbol table.
+    pub fn with_data_and_symbols(
+        id: u64,
+        name: String,
+        atoms: Vec<MettaValue>,
+        symbols: Arc<SymbolTable>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            symbols: Arc::clone(&symbols),
+            backing: SpaceBacking::Owned {
+                base: Arc::new(RwLock::new(SpaceData::with_atoms(symbols, atoms))),
                 overlay: None,
             },
         }
@@ -141,11 +226,35 @@ impl SpaceHandle {
     /// - `name` - Human-readable name for the space
     /// - `space` - Arc reference to the module's ModuleSpace
     pub fn for_module(mod_id: ModId, name: String, space: Arc<RwLock<ModuleSpace>>) -> Self {
+        // Module spaces use their own fresh symbol table
+        let symbols = Arc::new(SymbolTable::new());
         Self {
             id: mod_id.value(),
             name,
+            symbols,
             backing: SpaceBacking::Module { mod_id, space },
         }
+    }
+
+    /// Create a space handle backed by a module's space with a shared symbol table.
+    pub fn for_module_with_symbols(
+        mod_id: ModId,
+        name: String,
+        space: Arc<RwLock<ModuleSpace>>,
+        symbols: Arc<SymbolTable>,
+    ) -> Self {
+        Self {
+            id: mod_id.value(),
+            name,
+            symbols,
+            backing: SpaceBacking::Module { mod_id, space },
+        }
+    }
+
+    /// Get a reference to the symbol table used by this space.
+    #[inline]
+    pub fn symbols(&self) -> &Arc<SymbolTable> {
+        &self.symbols
     }
 
     /// Fork this space handle for nondeterministic branch isolation.
@@ -172,45 +281,64 @@ impl SpaceHandle {
                 // represents the current state (base + overlay) for the forked child.
                 // This ensures proper isolation.
                 if overlay.is_some() {
-                    // Materialize current state into a new base
-                    let current_atoms = self.collapse();
+                    // Materialize current state into a new base using multiset snapshot
+                    let current_atoms = self.collapse_to_multiset();
                     let current_rules = self.rules();
                     Self {
                         id: self.id,
                         name: self.name.clone(),
+                        symbols: Arc::clone(&self.symbols),
                         backing: SpaceBacking::Owned {
                             base: Arc::new(RwLock::new(SpaceData {
                                 atoms: current_atoms,
                                 rules: current_rules,
                             })),
-                            overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new()))),
+                            overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(
+                                Arc::clone(&self.symbols),
+                            )))),
                         },
                     }
                 } else {
-                    // No overlay yet - create forked handle with fresh overlay
+                    // No overlay yet - forked handle gets a snapshot of current base
+                    // to ensure true isolation (original modifications don't affect fork)
+                    //
+                    // Note: We create a new base from a snapshot of the current atoms.
+                    // This is O(1) via AtomMultisetSnapshot's structural sharing.
+                    // The forked space has its own independent base and overlay.
+                    let base_data = base.read();
                     Self {
                         id: self.id,
                         name: self.name.clone(),
+                        symbols: Arc::clone(&self.symbols),
                         backing: SpaceBacking::Owned {
-                            base: Arc::clone(base),
-                            overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new()))),
+                            base: Arc::new(RwLock::new(SpaceData {
+                                // Clone the snapshot - O(1) due to im::HashMap structural sharing
+                                atoms: base_data.atoms.clone(),
+                                rules: base_data.rules.clone(),
+                            })),
+                            overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(
+                                Arc::clone(&self.symbols),
+                            )))),
                         },
                     }
                 }
             }
-            SpaceBacking::Module { mod_id, space } => {
-                // Module spaces: for now, fork creates a snapshot (not live)
+            SpaceBacking::Module { mod_id: _, space } => {
+                // Module spaces: fork creates a snapshot (not live)
                 // This gives each branch its own isolated copy
                 let atoms = space.read().get_all_atoms();
                 Self {
                     id: self.id,
                     name: self.name.clone(),
+                    symbols: Arc::clone(&self.symbols),
                     backing: SpaceBacking::Owned {
-                        base: Arc::new(RwLock::new(SpaceData {
+                        base: Arc::new(RwLock::new(SpaceData::with_atoms(
+                            Arc::clone(&self.symbols),
                             atoms,
-                            rules: Vec::new(),
-                        })),
-                        overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new()))),
+                        ))),
+                        overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(
+                            Arc::clone(&self.symbols),
+                        )))),
                     },
                 }
             }
@@ -250,6 +378,7 @@ impl SpaceHandle {
         Self {
             id: new_id,
             name: new_name,
+            symbols: Arc::clone(&self.symbols),
             backing: self.backing.clone(),
         }
     }
@@ -263,16 +392,18 @@ impl SpaceHandle {
             SpaceBacking::Owned { base, overlay } => {
                 if let Some(overlay) = overlay {
                     // Forked: add to overlay
-                    let mut overlay = overlay.write();
-                    // If this atom was previously removed, un-remove it
-                    if let Some(pos) = overlay.removed.iter().position(|r| r == &atom) {
-                        overlay.removed.remove(pos);
+                    let mut overlay_lock = overlay.write();
+                    // If this atom was previously removed, decrement removal count
+                    if overlay_lock.removed.contains(&atom) {
+                        if let Some(new_removed) = overlay_lock.removed.remove(&atom) {
+                            overlay_lock.removed = new_removed;
+                        }
                     }
-                    overlay.added.push(atom);
+                    overlay_lock.added = overlay_lock.added.insert(&atom);
                 } else {
                     // Not forked: add directly to base
                     let mut data = base.write();
-                    data.atoms.push(atom);
+                    data.atoms = data.atoms.insert(&atom);
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -295,16 +426,18 @@ impl SpaceHandle {
                     let mut overlay_lock = overlay.write();
 
                     // First check if it was added in this overlay
-                    if let Some(pos) = overlay_lock.added.iter().position(|a| a == atom) {
-                        overlay_lock.added.remove(pos);
-                        return true;
+                    if overlay_lock.added.contains(atom) {
+                        if let Some(new_added) = overlay_lock.added.remove(atom) {
+                            overlay_lock.added = new_added;
+                            return true;
+                        }
                     }
 
                     // Check if it exists in base (and not already removed)
                     let base_data = base.read();
                     if base_data.atoms.contains(atom) && !overlay_lock.is_removed(atom) {
                         // Add tombstone
-                        overlay_lock.removed.push(atom.clone());
+                        overlay_lock.removed = overlay_lock.removed.insert(atom);
                         return true;
                     }
 
@@ -312,9 +445,13 @@ impl SpaceHandle {
                 } else {
                     // Not forked: remove directly from base
                     let mut data = base.write();
-                    if let Some(pos) = data.atoms.iter().position(|a| a == atom) {
-                        data.atoms.remove(pos);
-                        true
+                    if data.atoms.contains(atom) {
+                        if let Some(new_atoms) = data.atoms.remove(atom) {
+                            data.atoms = new_atoms;
+                            true
+                        } else {
+                            false
+                        }
                     } else {
                         false
                     }
@@ -327,9 +464,10 @@ impl SpaceHandle {
         }
     }
 
-    /// Get all atoms in this space (collapse).
+    /// Get all atoms in this space (collapse) - expands multiplicities.
     ///
     /// If forked, returns: (base atoms - removed) + added
+    /// Each atom is repeated according to its multiplicity.
     pub fn collapse(&self) -> Vec<MettaValue> {
         match &self.backing {
             SpaceBacking::Owned { base, overlay } => {
@@ -338,20 +476,23 @@ impl SpaceHandle {
                 if let Some(overlay) = overlay {
                     let overlay_lock = overlay.read();
 
-                    // Start with base atoms, filter out removed ones
-                    let mut result: Vec<MettaValue> = base_data
-                        .atoms
-                        .iter()
-                        .filter(|atom| !overlay_lock.is_removed(atom))
-                        .cloned()
-                        .collect();
+                    // Start with expanded base atoms, filter out removed ones
+                    let mut result: Vec<MettaValue> = Vec::new();
+                    for (atom, count) in base_data.atoms.iter() {
+                        // Get removal count from overlay
+                        let removal_count = overlay_lock.removal_count(&atom);
+                        let effective_count = count.saturating_sub(removal_count);
+                        for _ in 0..effective_count {
+                            result.push(atom.clone());
+                        }
+                    }
 
-                    // Add atoms from overlay
-                    result.extend(overlay_lock.added.iter().cloned());
+                    // Add atoms from overlay (expanded)
+                    result.extend(overlay_lock.added.expand());
 
                     result
                 } else {
-                    base_data.atoms.clone()
+                    base_data.atoms.expand()
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -361,18 +502,103 @@ impl SpaceHandle {
         }
     }
 
-    /// Get all atoms as MultiplicityMatch (each with count=1).
+    /// Get atoms as a multiset snapshot (preserves multiplicities without expansion).
+    ///
+    /// This is more efficient than `collapse()` for cases where multiplicities
+    /// need to be preserved or when O(1) cloning is desired.
+    pub fn collapse_to_multiset(&self) -> AtomMultisetSnapshot {
+        match &self.backing {
+            SpaceBacking::Owned { base, overlay } => {
+                let base_data = base.read();
+
+                if let Some(overlay) = overlay {
+                    let overlay_lock = overlay.read();
+
+                    // Merge: base + added - removed
+                    let mut merged = base_data.atoms.clone();
+
+                    // Add from overlay
+                    merged = merged.merge(&overlay_lock.added);
+
+                    // Remove tombstones
+                    for (atom, removal_count) in overlay_lock.removed.iter() {
+                        for _ in 0..removal_count {
+                            if let Some(new_merged) = merged.remove(&atom) {
+                                merged = new_merged;
+                            }
+                        }
+                    }
+
+                    merged
+                } else {
+                    base_data.atoms.clone()
+                }
+            }
+            SpaceBacking::Module { space, .. } => {
+                // Module spaces don't track multiplicities, so we convert Vec to multiset
+                let space = space.read();
+                let atoms = space.get_all_atoms();
+                SpaceData::with_atoms(Arc::clone(&self.symbols), atoms).atoms
+            }
+        }
+    }
+
+    /// Get all atoms as MultiplicityMatch with their actual counts.
     ///
     /// This provides type consistency with `Environment::match_space()` for
     /// code that needs to handle both owned spaces and module spaces uniformly.
+    ///
+    /// Unlike the previous implementation that always returned count=1, this
+    /// returns the actual multiplicities, enabling efficient handling of
+    /// high-multiplicity atoms.
     pub fn collapse_with_multiplicity(&self) -> Vec<MultiplicityMatch> {
-        self.collapse()
-            .into_iter()
-            .map(|v| MultiplicityMatch::new(v, 1))
-            .collect()
+        match &self.backing {
+            SpaceBacking::Owned { base, overlay } => {
+                let base_data = base.read();
+
+                if let Some(overlay) = overlay {
+                    let overlay_lock = overlay.read();
+
+                    // Build result from merged multiset
+                    let mut results = Vec::new();
+
+                    // Process base atoms, accounting for removals
+                    for (atom, base_count) in base_data.atoms.iter() {
+                        let removal_count = overlay_lock.removal_count(&atom);
+                        let effective_count = base_count.saturating_sub(removal_count);
+                        if effective_count > 0 {
+                            results.push(MultiplicityMatch::new(atom, effective_count));
+                        }
+                    }
+
+                    // Add atoms from overlay
+                    for (atom, count) in overlay_lock.added.iter() {
+                        results.push(MultiplicityMatch::new(atom, count));
+                    }
+
+                    results
+                } else {
+                    // No overlay: directly convert base atoms
+                    base_data
+                        .atoms
+                        .iter()
+                        .map(|(atom, count)| MultiplicityMatch::new(atom, count))
+                        .collect()
+                }
+            }
+            SpaceBacking::Module { space, .. } => {
+                // Module spaces don't track multiplicities, each atom has count=1
+                let space = space.read();
+                space
+                    .get_all_atoms()
+                    .into_iter()
+                    .map(|v| MultiplicityMatch::new(v, 1))
+                    .collect()
+            }
+        }
     }
 
-    /// Get the number of atoms in this space.
+    /// Get the total number of atoms in this space (sum of multiplicities).
     pub fn atom_count(&self) -> usize {
         match &self.backing {
             SpaceBacking::Owned { base, overlay } => {
@@ -380,20 +606,39 @@ impl SpaceHandle {
                     let base_data = base.read();
                     let overlay_lock = overlay.read();
 
-                    // Count = base - removed + added
-                    let base_count = base_data.atoms.len();
-                    let removed_count = overlay_lock.removed.len();
-                    let added_count = overlay_lock.added.len();
+                    // Count = base total - removed total + added total
+                    let base_total = base_data.atoms.total();
+                    let removed_total = overlay_lock.removed.total();
+                    let added_total = overlay_lock.added.total();
 
-                    base_count.saturating_sub(removed_count) + added_count
+                    base_total.saturating_sub(removed_total) + added_total
                 } else {
                     let data = base.read();
-                    data.atoms.len()
+                    data.atoms.total()
                 }
             }
             SpaceBacking::Module { space, .. } => {
                 let space = space.read();
                 space.get_all_atoms().len()
+            }
+        }
+    }
+
+    /// Get the number of unique atoms in this space (distinct count).
+    pub fn distinct_atom_count(&self) -> usize {
+        match &self.backing {
+            SpaceBacking::Owned { base, overlay } => {
+                if let Some(overlay) = overlay {
+                    // Need to count unique atoms across base + overlay - removed
+                    self.collapse_to_multiset().distinct_count()
+                } else {
+                    let data = base.read();
+                    data.atoms.distinct_count()
+                }
+            }
+            SpaceBacking::Module { space, .. } => {
+                let space = space.read();
+                space.get_all_atoms().len() // Module spaces don't deduplicate
             }
         }
     }
@@ -406,20 +651,18 @@ impl SpaceHandle {
             SpaceBacking::Owned { base, overlay } => {
                 if let Some(overlay) = overlay {
                     let overlay_lock = overlay.read();
+                    let base_data = base.read();
 
-                    // Check if removed
-                    if overlay_lock.is_removed(atom) {
-                        return false;
-                    }
-
-                    // Check if added
+                    // Check if added in overlay
                     if overlay_lock.added.contains(atom) {
                         return true;
                     }
 
-                    // Check base
-                    let base_data = base.read();
-                    base_data.atoms.contains(atom)
+                    // Check if in base (accounting for removals)
+                    let base_count = base_data.atoms.count(atom);
+                    let removal_count = overlay_lock.removal_count(atom);
+
+                    base_count > removal_count
                 } else {
                     let data = base.read();
                     data.atoms.contains(atom)
@@ -428,6 +671,35 @@ impl SpaceHandle {
             SpaceBacking::Module { space, .. } => {
                 let space = space.read();
                 space.contains(atom)
+            }
+        }
+    }
+
+    /// Get the multiplicity (count) of a specific atom in this space.
+    pub fn atom_multiplicity(&self, atom: &MettaValue) -> usize {
+        match &self.backing {
+            SpaceBacking::Owned { base, overlay } => {
+                if let Some(overlay) = overlay {
+                    let overlay_lock = overlay.read();
+                    let base_data = base.read();
+
+                    let base_count = base_data.atoms.count(atom);
+                    let removal_count = overlay_lock.removal_count(atom);
+                    let added_count = overlay_lock.added.count(atom);
+
+                    base_count.saturating_sub(removal_count) + added_count
+                } else {
+                    let data = base.read();
+                    data.atoms.count(atom)
+                }
+            }
+            SpaceBacking::Module { space, .. } => {
+                let space = space.read();
+                if space.contains(atom) {
+                    1
+                } else {
+                    0
+                }
             }
         }
     }
@@ -760,5 +1032,225 @@ mod tests {
         // Original unchanged: [fact1]
         assert_eq!(original.atom_count(), 1);
         assert!(original.contains(&MettaValue::Atom("fact1".to_string())));
+    }
+
+    // ============================================================
+    // Multiplicity Tracking Tests
+    // ============================================================
+
+    #[test]
+    fn test_multiplicity_same_atom_added_multiple_times() {
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::Atom("foo".to_string());
+
+        // Add the same atom 1000 times
+        for _ in 0..1000 {
+            handle.add_atom(atom.clone());
+        }
+
+        // Total count should be 1000
+        assert_eq!(handle.atom_count(), 1000);
+
+        // But distinct count should be 1 (only one unique atom)
+        assert_eq!(handle.distinct_atom_count(), 1);
+
+        // Multiplicity of the atom should be 1000
+        assert_eq!(handle.atom_multiplicity(&atom), 1000);
+
+        // Contains should return true
+        assert!(handle.contains(&atom));
+    }
+
+    #[test]
+    fn test_multiplicity_collapse_expands_correctly() {
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::Long(42);
+
+        // Add the same atom 5 times
+        for _ in 0..5 {
+            handle.add_atom(atom.clone());
+        }
+
+        // Collapse should return 5 copies
+        let collapsed = handle.collapse();
+        assert_eq!(collapsed.len(), 5);
+        assert!(collapsed.iter().all(|a| *a == atom));
+    }
+
+    #[test]
+    fn test_multiplicity_collapse_with_multiplicity_returns_actual_counts() {
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom1 = MettaValue::Long(1);
+        let atom2 = MettaValue::Long(2);
+
+        // Add atom1 three times, atom2 once
+        for _ in 0..3 {
+            handle.add_atom(atom1.clone());
+        }
+        handle.add_atom(atom2.clone());
+
+        // Get multiplicity matches
+        let matches = handle.collapse_with_multiplicity();
+
+        // Should have 2 distinct matches
+        assert_eq!(matches.len(), 2);
+
+        // Total when expanded should be 4
+        let total_expanded: usize = matches.iter().map(|m| m.count).sum();
+        assert_eq!(total_expanded, 4);
+
+        // Find atom1's match and verify count is 3
+        let atom1_match = matches.iter().find(|m| m.value == atom1).expect("Should find atom1");
+        assert_eq!(atom1_match.count, 3);
+
+        // Find atom2's match and verify count is 1
+        let atom2_match = matches.iter().find(|m| m.value == atom2).expect("Should find atom2");
+        assert_eq!(atom2_match.count, 1);
+    }
+
+    #[test]
+    fn test_multiplicity_remove_decrements_count() {
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::Atom("multi".to_string());
+
+        // Add the same atom 5 times
+        for _ in 0..5 {
+            handle.add_atom(atom.clone());
+        }
+        assert_eq!(handle.atom_multiplicity(&atom), 5);
+
+        // Remove 2 instances
+        handle.remove_atom(&atom);
+        handle.remove_atom(&atom);
+
+        // Multiplicity should now be 3
+        assert_eq!(handle.atom_multiplicity(&atom), 3);
+        assert_eq!(handle.atom_count(), 3);
+
+        // Still contains the atom
+        assert!(handle.contains(&atom));
+
+        // Remove remaining 3
+        handle.remove_atom(&atom);
+        handle.remove_atom(&atom);
+        handle.remove_atom(&atom);
+
+        // Should no longer contain the atom
+        assert_eq!(handle.atom_multiplicity(&atom), 0);
+        assert!(!handle.contains(&atom));
+    }
+
+    #[test]
+    fn test_multiplicity_fork_preserves_counts() {
+        let original = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::Long(100);
+
+        // Add the same atom 50 times to original
+        for _ in 0..50 {
+            original.add_atom(atom.clone());
+        }
+
+        // Fork the space
+        let forked = original.fork();
+
+        // Both should have multiplicity 50
+        assert_eq!(original.atom_multiplicity(&atom), 50);
+        assert_eq!(forked.atom_multiplicity(&atom), 50);
+
+        // Add more to forked - should not affect original
+        for _ in 0..10 {
+            forked.add_atom(atom.clone());
+        }
+        assert_eq!(forked.atom_multiplicity(&atom), 60);
+        assert_eq!(original.atom_multiplicity(&atom), 50);
+
+        // Remove some from original - should not affect forked
+        original.remove_atom(&atom);
+        original.remove_atom(&atom);
+        assert_eq!(original.atom_multiplicity(&atom), 48);
+        assert_eq!(forked.atom_multiplicity(&atom), 60);
+    }
+
+    #[test]
+    fn test_multiplicity_mixed_atoms() {
+        let handle = SpaceHandle::new(1, "test".to_string());
+
+        // Add different atoms with different multiplicities
+        let a = MettaValue::Atom("a".to_string());
+        let b = MettaValue::Atom("b".to_string());
+        let c = MettaValue::Atom("c".to_string());
+
+        for _ in 0..10 {
+            handle.add_atom(a.clone());
+        }
+        for _ in 0..20 {
+            handle.add_atom(b.clone());
+        }
+        for _ in 0..30 {
+            handle.add_atom(c.clone());
+        }
+
+        // Total should be 60
+        assert_eq!(handle.atom_count(), 60);
+
+        // Distinct should be 3
+        assert_eq!(handle.distinct_atom_count(), 3);
+
+        // Verify individual multiplicities
+        assert_eq!(handle.atom_multiplicity(&a), 10);
+        assert_eq!(handle.atom_multiplicity(&b), 20);
+        assert_eq!(handle.atom_multiplicity(&c), 30);
+
+        // collapse_with_multiplicity should return 3 entries
+        let matches = handle.collapse_with_multiplicity();
+        assert_eq!(matches.len(), 3);
+    }
+
+    #[test]
+    fn test_multiplicity_memory_efficiency() {
+        // This test verifies that adding the same atom many times
+        // doesn't create N copies in memory
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::String("large_string_that_would_waste_memory_if_duplicated".to_string());
+
+        // Add the same atom 10000 times
+        for _ in 0..10000 {
+            handle.add_atom(atom.clone());
+        }
+
+        // Only 1 distinct atom stored
+        assert_eq!(handle.distinct_atom_count(), 1);
+
+        // But total count is 10000
+        assert_eq!(handle.atom_count(), 10000);
+
+        // collapse_with_multiplicity should return just 1 entry with count=10000
+        let matches = handle.collapse_with_multiplicity();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].count, 10000);
+    }
+
+    #[test]
+    fn test_multiplicity_collapse_to_multiset() {
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::Long(7);
+
+        for _ in 0..100 {
+            handle.add_atom(atom.clone());
+        }
+
+        // Get multiset snapshot (O(1) clone)
+        let multiset = handle.collapse_to_multiset();
+
+        // Should have 100 total
+        assert_eq!(multiset.total(), 100);
+
+        // Should have 1 distinct
+        assert_eq!(multiset.distinct_count(), 1);
+
+        // Verify it's a proper snapshot (modifications don't affect original)
+        let multiset2 = multiset.insert(&MettaValue::Long(8));
+        assert_eq!(multiset2.total(), 101);
+        assert_eq!(multiset.total(), 100); // Original unchanged
     }
 }

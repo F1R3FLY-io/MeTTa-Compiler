@@ -12,7 +12,7 @@
 //!
 //! Both caches use LRU eviction for bounded memory usage.
 
-use gxhash::GxHasher;
+use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::{LazyLock, RwLock};
@@ -71,8 +71,8 @@ fn get_bytecode_cache_size() -> NonZeroUsize {
 /// Compute hash for a MettaValue
 ///
 /// Uses fast inline hashing for primitives (Long, Bool, Nil, Float) to avoid
-/// GxHasher allocation overhead. Falls back to SIMD-accelerated gxhash for
-/// complex types (SExpr, Atom, String, etc.).
+/// hasher allocation overhead. Falls back to FxHash for complex types
+/// (SExpr, Atom, String, etc.).
 #[inline]
 pub fn hash_metta_value(expr: &MettaValue) -> u64 {
     // Fast path for primitives - avoids GxHasher allocation
@@ -110,8 +110,9 @@ pub fn hash_metta_value(expr: &MettaValue) -> u64 {
             x ^ (x >> 32)
         }
         _ => {
-            // Full GxHasher for complex types (SExpr, Atom, String, etc.)
-            let mut hasher = GxHasher::with_seed(0);
+            // FxHash for complex types - fast and safe, avoids gxhash SIMD
+            // buffer overflow for small inputs (u8 discriminants, short strings)
+            let mut hasher = FxHasher::default();
             expr.hash(&mut hasher);
             hasher.finish()
         }

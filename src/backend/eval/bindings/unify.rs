@@ -11,10 +11,46 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use super::super::{apply_bindings, eval, pattern_match};
+use super::super::{apply_bindings, eval, pattern_match, EvalStep};
 
 /// Global counter for generating unique variable IDs in `sealed`
 static SEALED_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Step version of eval_unify that defers evaluation to trampoline.
+/// This prevents stack overflow for deeply nested unify operations.
+pub(crate) fn eval_unify_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    let args = &items[1..];
+
+    if args.len() < 4 {
+        let got = args.len();
+        let err = MettaValue::Error(
+            format!(
+                "unify requires 4 arguments, got {}. Usage: (unify pattern1 pattern2 success failure)",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let pattern1 = args[0].clone();
+    let pattern2 = args[1].clone();
+    let success_body = args[2].clone();
+    let failure_body = args[3].clone();
+
+    EvalStep::StartUnify {
+        pattern1,
+        pattern2,
+        success_body,
+        failure_body,
+        env,
+        depth,
+    }
+}
 
 /// unify: Pattern unification with success/failure branches
 /// (unify pattern1 pattern2 success-body failure-body)
@@ -26,6 +62,9 @@ static SEALED_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// (unify space pattern success-body failure-body)
 /// When the first argument is a space (like &kb), searches all atoms in the space
 /// for ones matching the pattern, and evaluates success-body for each match.
+///
+/// DEPRECATED: Use eval_unify_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 

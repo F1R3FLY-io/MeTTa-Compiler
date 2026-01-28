@@ -1,15 +1,72 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 
+#[allow(unused_imports)]
 use super::eval;
+use super::EvalStep;
 
 // ============================================================
 // I/O Operations (println!, trace!, nop)
 // ============================================================
 
+/// Step version of eval_println - defers evaluation to trampoline.
+/// Usage: (println! atom)
+pub(crate) fn eval_println_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            format!(
+                "println! requires exactly 1 argument, got {}. Usage: (println! atom)",
+                items.len() - 1
+            ),
+            std::sync::Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let atom = items[1].clone();
+
+    EvalStep::StartPrintln { atom, env, depth }
+}
+
+/// Step version of eval_trace - defers evaluation to trampoline.
+/// Usage: (trace! message value)
+pub(crate) fn eval_trace_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 3 {
+        let err = MettaValue::Error(
+            format!(
+                "trace! requires exactly 2 arguments, got {}. Usage: (trace! message value)",
+                items.len() - 1
+            ),
+            std::sync::Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let message = items[1].clone();
+    let value_expr = items[2].clone();
+
+    EvalStep::StartTrace {
+        message,
+        value_expr,
+        env,
+        depth,
+    }
+}
+
 /// println!: Print an atom to stdout
 /// Usage: (println! atom)
 /// Returns Unit after printing
+///
+/// DEPRECATED: Use eval_println_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_println(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("println!", items, 1, env, "(println! atom)");
 
@@ -35,6 +92,9 @@ pub(super) fn eval_println(items: Vec<MettaValue>, env: Environment) -> EvalResu
 /// trace!: Debug trace - prints message to stderr and returns the value
 /// Usage: (trace! message value)
 /// Prints message to stderr, returns value unchanged
+///
+/// DEPRECATED: Use eval_trace_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_trace(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("trace!", items, 2, env, "(trace! message value)");
 

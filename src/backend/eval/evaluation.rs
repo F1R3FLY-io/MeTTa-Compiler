@@ -3,10 +3,13 @@ use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
 use tracing::{trace, warn};
 
-use super::{apply_bindings, eval, pattern_match};
+use super::{apply_bindings, eval, pattern_match, EvalStep};
 
 /// Eval: force evaluation of quoted expressions
 /// (eval expr) - complementary to quote
+///
+/// DEPRECATED: Use eval_eval_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_eval", ?items);
     require_args_with_usage!("eval", items, 1, env, "(eval expr)");
@@ -18,6 +21,27 @@ pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult 
         eval(expr.clone(), arg_env)
     } else {
         (vec![MettaValue::Nil], arg_env)
+    }
+}
+
+/// Step version of eval_eval that defers evaluation to trampoline.
+pub(super) fn eval_eval_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_eval_step", ?items);
+    if items.len() != 2 {
+        let err = MettaValue::Error(
+            format!(
+                "eval requires exactly 1 argument, got {}. Usage: (eval expr)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::EvalEval {
+        arg: items[1].clone(),
+        env,
+        depth,
     }
 }
 
@@ -39,6 +63,9 @@ pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult
 
 /// Function: creates an evaluation loop that continues
 /// until it encounters a return value
+///
+/// DEPRECATED: Use eval_function_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_function", ?items);
     require_args_with_usage!("function", items, 1, env, "(function expr)");
@@ -105,7 +132,35 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalRes
     unreachable!("Loop should always return within MAX_ITERATIONS")
 }
 
+/// Step version of eval_function that defers evaluation to trampoline.
+pub(super) fn eval_function_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_function_step", ?items);
+    if items.len() != 2 {
+        let err = MettaValue::Error(
+            format!(
+                "function requires exactly 1 argument, got {}. Usage: (function expr)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartFunction {
+        expr: items[1].clone(),
+        env,
+        depth,
+    }
+}
+
 /// Return: signals termination from a function evaluation loop
+///
+/// DEPRECATED: Use eval_return_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_return", ?items);
     require_args_with_usage!("return", items, 1, env, "(return value)");
@@ -125,11 +180,39 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResul
     (return_results, arg_env)
 }
 
+/// Step version of eval_return that defers evaluation to trampoline.
+pub(super) fn eval_return_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_return_step", ?items);
+    if items.len() != 2 {
+        let err = MettaValue::Error(
+            format!(
+                "return requires exactly 1 argument, got {}. Usage: (return value)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::EvalReturn {
+        value: items[1].clone(),
+        env,
+        depth,
+    }
+}
+
 /// Subsequently tests multiple pattern-matching conditions (second argument) for the
 /// given value (first argument)
 ///
 /// IMPORTANT: This function propagates environment changes (including state mutations)
 /// through each iteration to ensure side effects like change-state! are visible.
+///
+/// DEPRECATED: Use eval_chain_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_chain", ?items);
     require_args_with_usage!("chain", items, 3, env, "(chain expr $var body)");
@@ -157,6 +240,33 @@ pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult
     }
 
     (all_results, current_env)
+}
+
+/// Step version of eval_chain that defers evaluation to trampoline.
+pub(super) fn eval_chain_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_chain_step", ?items);
+    if items.len() != 4 {
+        let err = MettaValue::Error(
+            format!(
+                "chain requires exactly 3 arguments, got {}. Usage: (chain expr $var body)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    EvalStep::StartChain {
+        expr: items[1].clone(),
+        var: items[2].clone(),
+        body: items[3].clone(),
+        env,
+        depth,
+    }
 }
 
 #[cfg(test)]

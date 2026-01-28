@@ -23,14 +23,29 @@ mod state;
 mod tests;
 
 // Re-export all public functions
+pub(crate) use match_ops::eval_match_step;
+#[allow(unused_imports)]
 pub(crate) use match_ops::eval_match;
+pub(crate) use memoization::{
+    eval_clear_memo_step, eval_memo_first_step, eval_memo_stats_step, eval_memo_step,
+    eval_new_memo_step,
+};
+#[allow(unused_imports)]
 pub(crate) use memoization::{
     eval_clear_memo, eval_memo, eval_memo_first, eval_memo_stats, eval_new_memo,
 };
 pub(crate) use nondeterminism::{
-    eval_amb, eval_backtrack, eval_collapse, eval_collapse_bind, eval_commit, eval_get_atoms,
-    eval_guard, eval_superpose,
+    eval_amb_step, eval_backtrack, eval_collapse_bind_step, eval_collapse_step, eval_commit,
+    eval_get_atoms_step, eval_guard_step, eval_superpose,
+};
+#[allow(unused_imports)]
+pub(crate) use nondeterminism::{
+    eval_amb, eval_collapse, eval_collapse_bind, eval_get_atoms, eval_guard,
 };
 pub(crate) use rules::eval_add;
-pub(crate) use space_management::{eval_add_atom, eval_new_space, eval_remove_atom};
+pub(crate) use space_management::{eval_add_atom_step, eval_new_space, eval_remove_atom_step};
+#[allow(unused_imports)]
+pub(crate) use space_management::{eval_add_atom, eval_remove_atom};
+pub(crate) use state::{eval_change_state_step, eval_get_state_step, eval_new_state_step};
+#[allow(unused_imports)]
 pub(crate) use state::{eval_change_state, eval_get_state, eval_new_state};

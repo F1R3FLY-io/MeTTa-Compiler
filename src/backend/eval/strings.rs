@@ -2,15 +2,72 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue};
 use std::sync::Arc;
 
+#[allow(unused_imports)]
 use super::eval;
+use super::EvalStep;
 
 // ============================================================
 // String Operations (repr, format-args)
 // ============================================================
 
+/// Step version of eval_repr - defers evaluation to trampoline.
+/// Usage: (repr atom)
+pub(crate) fn eval_repr_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 2 {
+        let err = MettaValue::Error(
+            format!(
+                "repr requires exactly 1 argument, got {}. Usage: (repr atom)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let atom = items[1].clone();
+
+    EvalStep::StartRepr { atom, env, depth }
+}
+
+/// Step version of eval_format_args - defers evaluation to trampoline.
+/// Usage: (format-args format-string args-expression)
+pub(crate) fn eval_format_args_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() < 3 {
+        let err = MettaValue::Error(
+            format!(
+                "format-args requires exactly 2 arguments, got {}. Usage: (format-args format-string args)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let format_arg = items[1].clone();
+    let args_arg = items[2].clone();
+
+    EvalStep::StartFormatArgs {
+        format_arg,
+        args_arg,
+        env,
+        depth,
+    }
+}
+
 /// repr: Convert an atom to its string representation
 /// Usage: (repr atom)
 /// Returns the string representation of the atom
+///
+/// DEPRECATED: Use eval_repr_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_repr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("repr", items, 1, env, "(repr atom)");
 
@@ -36,6 +93,9 @@ pub(super) fn eval_repr(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 /// Usage: (format-args format-string args-expression)
 /// Replaces {} placeholders with the corresponding argument values
 /// Example: (format-args "Hello, {}!" (name)) -> "Hello, Alice!"
+///
+/// DEPRECATED: Use eval_format_args_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(super) fn eval_format_args(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!(
         "format-args",

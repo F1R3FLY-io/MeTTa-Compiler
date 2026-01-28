@@ -1,72 +1,16 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::MettaValue;
 use std::sync::Arc;
 use tracing::{debug, trace};
 
 use super::{apply_bindings, eval, pattern_match, EvalStep};
 
-/// Evaluate if control flow: (if condition then-branch else-branch)
-/// Only evaluates the chosen branch (lazy evaluation)
-pub(super) fn eval_if(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    let args = &items[1..];
-    trace!(target: "mettatron::eval::eval_if", ?items, ?args);
-
-    if args.len() < 3 {
-        debug!(
-            target: "mettatron::eval::if_control",
-            got = args.len(), "Invalid argument count for if expression"
-        );
-        let got = args.len();
-        let err = MettaValue::Error(
-            format!(
-                "if requires exactly 3 arguments, got {}. Usage: (if condition then-branch else-branch)",
-                got
-            ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
-        );
-        return (vec![err], env);
-    }
-
-    let condition = &args[0];
-    let then_branch = &args[1];
-    let else_branch = &args[2];
-
-    // Evaluate the condition
-    let (cond_results, env_after_cond) = eval(condition.clone(), env);
-
-    // Check for error in condition
-    if let Some(first) = cond_results.first() {
-        if matches!(first, MettaValue::Error(_, _)) {
-            return (vec![first.clone()], env_after_cond);
-        }
-
-        // Check if condition is true
-        let is_true = match first {
-            MettaValue::Bool(true) => true,
-            MettaValue::Bool(false) => false,
-            // Non-boolean values: treat as true if not Nil
-            MettaValue::Nil => false,
-            _ => true,
-        };
-
-        // Evaluate only the chosen branch
-        if is_true {
-            eval(then_branch.clone(), env_after_cond)
-        } else {
-            eval(else_branch.clone(), env_after_cond)
-        }
-    } else {
-        // No result from condition - treat as false
-        eval(else_branch.clone(), env_after_cond)
-    }
-}
-
 /// Evaluate if control flow with trampoline integration (TCO-enabled)
-/// Returns EvalStep::EvalIfBranch to defer branch evaluation to the trampoline,
-/// enabling if branches to participate in tail call optimization.
+/// Returns EvalStep::EvalIfCondition to defer condition AND branch evaluation to the trampoline,
+/// enabling if expressions to participate in tail call optimization and preventing stack overflow.
 ///
-/// This is the TCO-enabled version of eval_if(). The condition is still evaluated
-/// synchronously, but the branch evaluation is deferred to the trampoline.
+/// This is the fully lazy version of eval_if(). Both condition and branch evaluation are
+/// deferred to the trampoline.
 pub(super) fn eval_if_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     let args = &items[1..];
 
@@ -83,196 +27,115 @@ pub(super) fn eval_if_step(items: Vec<MettaValue>, env: Environment, depth: usiz
         return EvalStep::Done((vec![err], env));
     }
 
-    let condition = &args[0];
+    let condition = args[0].clone();
     let then_branch = args[1].clone();
     let else_branch = args[2].clone();
 
-    // Evaluate the condition (synchronously - starts fresh trampoline)
-    let (cond_results, env_after_cond) = eval(condition.clone(), env);
-
-    // Check for error in condition
-    if let Some(first) = cond_results.first() {
-        if matches!(first, MettaValue::Error(_, _)) {
-            return EvalStep::Done((vec![first.clone()], env_after_cond));
-        }
-
-        // Check if condition is true
-        let is_true = match first {
-            MettaValue::Bool(true) => true,
-            MettaValue::Bool(false) => false,
-            // Non-boolean values: treat as true if not Nil
-            MettaValue::Nil => false,
-            _ => true,
-        };
-
-        // Return EvalStep for branch evaluation - THIS IS TAIL CALL (TCO)
-        if is_true {
-            EvalStep::EvalIfBranch {
-                branch: then_branch,
-                env: env_after_cond,
-                depth,
-            }
-        } else {
-            EvalStep::EvalIfBranch {
-                branch: else_branch,
-                env: env_after_cond,
-                depth,
-            }
-        }
-    } else {
-        // No result from condition - treat as false
-        EvalStep::EvalIfBranch {
-            branch: else_branch,
-            env: env_after_cond,
-            depth,
-        }
+    // Defer condition evaluation to trampoline - this prevents stack overflow
+    // on deeply nested conditions and enables full lazy evaluation
+    EvalStep::EvalIfCondition {
+        condition,
+        then_branch,
+        else_branch,
+        env,
+        depth,
     }
 }
 
-/// Subsequently tests multiple pattern-matching conditions (second argument) for the
-/// given value (first argument)
-pub(super) fn eval_case(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    trace!(target: "mettatron::eval::eval_case", ?items);
-    require_args_with_usage!(
-        "case",
-        items,
-        2,
-        env,
-        "(case expr ((pattern1 result1) ...))"
-    );
+/// Trampoline-enabled case evaluation.
+/// Returns EvalStep::EvalCaseAtom to defer atom evaluation to the trampoline,
+/// preventing stack overflow for deeply nested case expressions.
+pub(super) fn eval_case_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_case_step", ?items);
 
-    let atom = items[1].clone();
-    let cases = items[2].clone();
-
-    let (atom_results, atom_env) = eval(atom, env);
-
-    // Filter out Empty sentinels - they represent "no result to report"
-    // Empty sentinels should cause the (Empty ...) pattern to match only when ALL results are Empty
-    let filtered_results: Vec<_> = atom_results
-        .into_iter()
-        .filter(|v| !matches!(v, MettaValue::Empty))
-        .collect();
-
-    // Handle case when evaluation returns no results (empty) - treat as Empty
-    if filtered_results.is_empty() {
-        let switch_result = eval_switch_minimal(
-            MettaValue::Atom("Empty".to_string()),
-            cases,
-            atom_env.clone(),
+    // Validate arity
+    if items.len() < 3 {
+        let got = items.len() - 1;
+        let err = MettaValue::Error(
+            format!(
+                "case requires exactly 2 arguments, got {}. Usage: (case expr ((pattern1 result1) ...))",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(items[1..].to_vec())),
         );
-        return (switch_result.0, atom_env);
+        return EvalStep::Done((vec![err], env));
     }
 
-    let mut final_results = Vec::new();
+    let atom = items[1].clone();
+    let cases = items[2].clone();
 
-    for atom_result in filtered_results {
-        let is_empty = match &atom_result {
-            MettaValue::Nil => true,
-            MettaValue::SExpr(items) if items.is_empty() => true,
-            _ => false,
-        };
-
-        if is_empty {
-            let switch_result = eval_switch_minimal(
-                MettaValue::Atom("Empty".to_string()),
-                cases.clone(),
-                atom_env.clone(),
-            );
-            final_results.extend(switch_result.0);
-        } else {
-            let switch_result = eval_switch_minimal(atom_result, cases.clone(), atom_env.clone());
-            final_results.extend(switch_result.0);
-        }
+    // Defer atom evaluation to trampoline - this prevents stack overflow
+    // on deeply nested case expressions
+    EvalStep::EvalCaseAtom {
+        atom,
+        cases,
+        env,
+        depth,
     }
-
-    (final_results, atom_env)
 }
 
-/// Difference between `switch` and `case` is a way how they interpret `Empty` result.
-/// case interprets first argument inside itself and then manually checks whether result is empty.
-pub(super) fn eval_switch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    trace!(target: "mettatron::eval::evaeval_switchl_case", ?items);
-    require_args_with_usage!(
-        "switch",
-        items,
-        2,
-        env,
-        "(switch expr ((pattern1 result1) ...))"
-    );
-    let atom = items[1].clone();
-    let cases = items[2].clone();
-    eval_switch_minimal(atom, cases, env)
-}
-
-pub(super) fn eval_switch_minimal_handler(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    trace!(target: "mettatron::eval::eval_switch_minimal_handler", ?items);
-    require_args_with_usage!(
-        "switch-minimal",
-        items,
-        2,
-        env,
-        "(switch-minimal expr cases)"
-    );
-    let atom = items[1].clone();
-    let cases = items[2].clone();
-    eval_switch_minimal(atom, cases, env)
-}
-
-/// This function is being called inside switch function to test one of the cases and it
-/// calls switch once again if current condition is not met
-pub(super) fn eval_switch_internal_handler(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    trace!(target: "mettatron::eval::eval_switch_internal_handler", ?items);
-    require_args_with_usage!(
-        "switch-internal",
-        items,
-        2,
-        env,
-        "(switch-internal expr cases-data)"
-    );
-    let atom = items[1].clone();
-    let cases = items[2].clone();
-    eval_switch_internal(atom, cases, env)
-}
-
-/// Helper function to implement switch-minimal logic
-/// Handles the main switch logic by deconstructing cases and calling switch-internal
-fn eval_switch_minimal(atom: MettaValue, cases: MettaValue, env: Environment) -> EvalResult {
-    trace!(target: "mettatron::eval::eval_switch_minimal", ?atom, ?cases);
-    if let MettaValue::SExpr(cases_items) = cases {
-        if cases_items.is_empty() {
-            trace!(
-                target: "mettatron::eval::switch_minimal",
-                "No cases provided, returning NotReducible"
-            );
-            return (vec![MettaValue::Atom("NotReducible".to_string())], env);
-        }
-
-        let first_case = cases_items[0].clone();
-        let remaining_cases = if cases_items.len() > 1 {
-            MettaValue::SExpr(cases_items[1..].to_vec())
-        } else {
-            MettaValue::SExpr(vec![])
-        };
-
-        let cases_list = MettaValue::SExpr(vec![first_case, remaining_cases]);
-        return eval_switch_internal(atom, cases_list, env);
+/// Step version of eval_switch that returns EvalStep for trampoline evaluation.
+/// This defers switch logic to the trampoline to prevent stack overflow.
+pub(super) fn eval_switch_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_switch_step", ?items);
+    if items.len() != 3 {
+        let err = MettaValue::Error(
+            format!(
+                "switch requires exactly 2 arguments, got {}. Usage: (switch expr ((pattern1 result1) ...))",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
     }
-
-    let err = MettaValue::Error(
-        format!(
-            "switch-minimal expects expression as second argument, got: {}",
-            super::friendly_value_repr(&cases)
-        ),
-        Arc::new(cases),
-    );
-    debug!(target: "mettatron::eval::switch_minimal", ?err, "Invalid cases argument type");
-    (vec![err], env)
+    let atom = items[1].clone();
+    let cases = items[2].clone();
+    eval_switch_minimal_trampoline(atom, cases, env, depth)
 }
 
-/// Helper function to implement switch-internal logic
-/// Tests one case and recursively tries remaining cases if no match
-fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environment) -> EvalResult {
-    trace!(target: "mettatron::eval::eval_switch_internal", ?atom, ?cases_data);
+/// Step version of eval_switch_minimal_handler that returns EvalStep.
+pub(super) fn eval_switch_minimal_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_switch_minimal_step", ?items);
+    if items.len() != 3 {
+        let err = MettaValue::Error(
+            format!(
+                "switch-minimal requires exactly 2 arguments, got {}. Usage: (switch-minimal expr cases)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+    let atom = items[1].clone();
+    let cases = items[2].clone();
+    eval_switch_minimal_trampoline(atom, cases, env, depth)
+}
+
+/// Step version of eval_switch_internal_handler that returns EvalStep.
+pub(super) fn eval_switch_internal_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_switch_internal_step", ?items);
+    if items.len() != 3 {
+        let err = MettaValue::Error(
+            format!(
+                "switch-internal requires exactly 2 arguments, got {}. Usage: (switch-internal expr cases-data)",
+                items.len() - 1
+            ),
+            Arc::new(MettaValue::SExpr(items)),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+    let atom = items[1].clone();
+    let cases_data = items[2].clone();
+
+    // Parse cases_data to extract first_case and remaining_cases
     if let MettaValue::SExpr(cases_items) = cases_data {
         if cases_items.len() != 2 {
             let err = MettaValue::Error(
@@ -283,44 +146,12 @@ fn eval_switch_internal(atom: MettaValue, cases_data: MettaValue, env: Environme
                 ),
                 Arc::new(MettaValue::SExpr(cases_items)),
             );
-            return (vec![err], env);
+            return EvalStep::Done((vec![err], env));
         }
 
         let first_case = cases_items[0].clone();
         let remaining_cases = cases_items[1].clone();
-
-        if let MettaValue::SExpr(case_items) = first_case {
-            if case_items.len() != 2 {
-                let err = MettaValue::Error(
-                    format!(
-                        "switch case should be a pattern-template pair with exactly 2 elements, got {}. \
-Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
-                        case_items.len()
-                    ),
-                    Arc::new(MettaValue::SExpr(case_items)),
-                );
-                return (vec![err], env);
-            }
-
-            let pattern = case_items[0].clone();
-            let template = case_items[1].clone();
-
-            if let Some(bindings) = pattern_match(&pattern, &atom) {
-                let instantiated_template = apply_bindings(&template, &bindings).into_owned();
-                return eval(instantiated_template, env);
-            } else {
-                return eval_switch_minimal(atom, remaining_cases, env);
-            }
-        } else {
-            let err = MettaValue::Error(
-                format!(
-                    "switch case should be an expression (pattern-template pair), got: {}",
-                    super::friendly_value_repr(&first_case)
-                ),
-                Arc::new(first_case),
-            );
-            return (vec![err], env);
-        }
+        return eval_switch_internal_trampoline(atom, first_case, remaining_cases, env, depth);
     }
 
     let err = MettaValue::Error(
@@ -330,7 +161,98 @@ Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
         ),
         Arc::new(cases_data),
     );
-    (vec![err], env)
+    EvalStep::Done((vec![err], env))
+}
+
+/// Trampoline-aware version of eval_switch_minimal.
+/// Returns EvalStep instead of calling eval() directly, enabling the trampoline
+/// to handle deep recursion in switch templates.
+pub(crate) fn eval_switch_minimal_trampoline(
+    atom: MettaValue,
+    cases: MettaValue,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_switch_minimal_trampoline", ?atom, ?cases);
+    if let MettaValue::SExpr(cases_items) = cases {
+        if cases_items.is_empty() {
+            trace!(
+                target: "mettatron::eval::switch_minimal_trampoline",
+                "No cases provided, returning NotReducible"
+            );
+            return EvalStep::Done((vec![MettaValue::Atom("NotReducible".to_string())], env));
+        }
+
+        let first_case = cases_items[0].clone();
+        let remaining_cases = if cases_items.len() > 1 {
+            MettaValue::SExpr(cases_items[1..].to_vec())
+        } else {
+            MettaValue::SExpr(vec![])
+        };
+
+        return eval_switch_internal_trampoline(atom, first_case, remaining_cases, env, depth);
+    }
+
+    let err = MettaValue::Error(
+        format!(
+            "switch-minimal expects expression as second argument, got: {}",
+            super::friendly_value_repr(&cases)
+        ),
+        Arc::new(cases),
+    );
+    debug!(target: "mettatron::eval::switch_minimal_trampoline", ?err, "Invalid cases argument type");
+    EvalStep::Done((vec![err], env))
+}
+
+/// Trampoline-aware helper for switch-internal logic.
+/// Tests one case and recursively tries remaining cases if no match.
+fn eval_switch_internal_trampoline(
+    atom: MettaValue,
+    first_case: MettaValue,
+    remaining_cases: MettaValue,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    trace!(target: "mettatron::eval::eval_switch_internal_trampoline", ?atom, ?first_case, ?remaining_cases);
+
+    if let MettaValue::SExpr(case_items) = first_case {
+        if case_items.len() != 2 {
+            let err = MettaValue::Error(
+                format!(
+                    "switch case should be a pattern-template pair with exactly 2 elements, got {}. \
+Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
+                    case_items.len()
+                ),
+                Arc::new(MettaValue::SExpr(case_items)),
+            );
+            return EvalStep::Done((vec![err], env));
+        }
+
+        let pattern = case_items[0].clone();
+        let template = case_items[1].clone();
+
+        if let Some(bindings) = pattern_match(&pattern, &atom) {
+            // Pattern matches - return EvalStep to defer template evaluation
+            let instantiated_template = apply_bindings(&template, &bindings).into_owned();
+            return EvalStep::EvalSwitchResult {
+                template: instantiated_template,
+                env,
+                depth,
+            };
+        } else {
+            // No match - try remaining cases
+            return eval_switch_minimal_trampoline(atom, remaining_cases, env, depth);
+        }
+    }
+
+    let err = MettaValue::Error(
+        format!(
+            "switch case should be an expression (pattern-template pair), got: {}",
+            super::friendly_value_repr(&first_case)
+        ),
+        Arc::new(first_case),
+    );
+    EvalStep::Done((vec![err], env))
 }
 
 #[cfg(test)]

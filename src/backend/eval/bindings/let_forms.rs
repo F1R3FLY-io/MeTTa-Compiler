@@ -12,9 +12,110 @@ use tracing::trace;
 
 use super::super::{apply_bindings, eval, pattern_match, EvalStep};
 
+/// let* step version: Sequential bindings - (let* (($x 1) ($y (+ $x 1))) body)
+/// Transforms to nested let: (let $x 1 (let $y (+ $x 1) body))
+/// Each binding can use variables from previous bindings
+///
+/// This version returns EvalStep to enable tail call optimization via the trampoline.
+pub(crate) fn eval_let_star_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    let args = &items[1..];
+
+    if args.len() < 2 {
+        let got = args.len();
+        let err = MettaValue::Error(
+            format!(
+                "let* requires at least 2 arguments (bindings and body), got {}. Usage: (let* ((pattern value) ...) body)",
+                got
+            ),
+            Arc::new(MettaValue::SExpr(args.to_vec())),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let bindings_expr = &args[0];
+    let body = &args[1];
+
+    // Extract bindings list
+    let bindings = match bindings_expr {
+        MettaValue::SExpr(items) => items,
+        MettaValue::Nil => {
+            // Empty bindings - evaluate body via trampoline (tail call)
+            return EvalStep::EvalIfBranch {
+                branch: body.clone(),
+                env,
+                depth,
+            };
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "let* bindings must be a list, got {}. Usage: (let* ((pattern value) ...) body)",
+                    super::super::friendly_value_repr(bindings_expr)
+                ),
+                Arc::new(bindings_expr.clone()),
+            );
+            return EvalStep::Done((vec![err], env));
+        }
+    };
+
+    if bindings.is_empty() {
+        // No bindings - evaluate body via trampoline (tail call)
+        return EvalStep::EvalIfBranch {
+            branch: body.clone(),
+            env,
+            depth,
+        };
+    }
+
+    // Transform to nested let
+    // (let* ((a 1) (b 2) (c 3)) body) -> (let a 1 (let b 2 (let c 3 body)))
+    let mut result_body = body.clone();
+
+    // Process bindings in reverse order to build nested structure
+    for binding in bindings.iter().rev() {
+        match binding {
+            MettaValue::SExpr(pair) if pair.len() == 2 => {
+                let pattern = &pair[0];
+                let value = &pair[1];
+
+                result_body = MettaValue::SExpr(vec![
+                    MettaValue::Atom("let".to_string()),
+                    pattern.clone(),
+                    value.clone(),
+                    result_body,
+                ]);
+            }
+            _ => {
+                let err = MettaValue::Error(
+                    format!(
+                        "let* binding must be (pattern value) pair, got {}. Usage: (let* ((pattern value) ...) body)",
+                        super::super::friendly_value_repr(binding)
+                    ),
+                    Arc::new(binding.clone()),
+                );
+                return EvalStep::Done((vec![err], env));
+            }
+        }
+    }
+
+    // Evaluate the nested let structure via trampoline (tail call)
+    EvalStep::EvalIfBranch {
+        branch: result_body,
+        env,
+        depth,
+    }
+}
+
 /// let*: Sequential bindings - (let* (($x 1) ($y (+ $x 1))) body)
 /// Transforms to nested let: (let $x 1 (let $y (+ $x 1) body))
 /// Each binding can use variables from previous bindings
+///
+/// DEPRECATED: Use eval_let_star_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_let_star(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
 
@@ -160,6 +261,9 @@ pub(crate) fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaVal
 ///
 /// IMPORTANT: This function propagates environment changes (including state mutations)
 /// through each iteration to ensure side effects like change-state! are visible.
+///
+/// DEPRECATED: Use eval_let_step for trampoline-based evaluation.
+#[allow(dead_code)]
 pub(crate) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..];
     trace!(target: "mettatron::eval::eval_let", ?args, ?items);

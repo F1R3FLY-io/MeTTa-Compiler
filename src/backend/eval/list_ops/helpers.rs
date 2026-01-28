@@ -9,7 +9,7 @@ use crate::backend::models::MettaValue;
 
 /// Suggest variable format when user provides a plain atom instead of `$var`
 /// Returns a suggestion string if the atom looks like it should be a variable
-pub(super) fn suggest_variable_format(atom: &str) -> Option<String> {
+pub(crate) fn suggest_variable_format(atom: &str) -> Option<String> {
     // If it's already a variable, no suggestion needed
     if atom.starts_with('$') || atom.starts_with('&') || atom.starts_with('\'') {
         return None;
@@ -34,7 +34,7 @@ pub(super) fn suggest_variable_format(atom: &str) -> Option<String> {
 
 /// Substitute a variable in an expression with a value
 /// This is a simplified version of atom-subst
-pub(super) fn substitute_variable(
+pub(crate) fn substitute_variable(
     expr: &MettaValue,
     var_name: &str,
     value: &MettaValue,

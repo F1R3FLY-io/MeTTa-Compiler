@@ -1918,7 +1918,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env: result_env,
-                                depth: depth + 1,
+                                depth, // TCO: reuse depth for iteration
                                 cont_id,
                                 is_tail_call: false,
                             });
@@ -1998,7 +1998,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env: result_env,
-                                depth: depth + 1,
+                                depth, // TCO: reuse depth for iteration
                                 cont_id,
                                 is_tail_call: false,
                             });
@@ -2070,7 +2070,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env: result_env,
-                                depth: depth + 1,
+                                depth, // TCO: reuse depth for iteration
                                 cont_id,
                                 is_tail_call: false,
                             });
@@ -2413,7 +2413,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 work_stack.push(WorkItem::Eval {
                                     value: instantiated_body,
                                     env: current_env,
-                                    depth: depth + 1,
+                                    depth, // TCO: reuse depth for iteration
                                     cont_id: next_cont_id,
                                     is_tail_call: false,
                                 });
@@ -2525,7 +2525,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         work_stack.push(WorkItem::Eval {
                             value: next_expr,
                             env: current_env,
-                            depth: depth + 1,
+                            depth, // TCO: reuse depth for iteration
                             cont_id: next_cont_id,
                             is_tail_call: false,
                         });
@@ -2640,7 +2640,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 work_stack.push(WorkItem::Eval {
                                     value: next_goal,
                                     env: env_after_goal,
-                                    depth: depth + 1,
+                                    depth, // TCO: reuse depth for iteration
                                     cont_id: next_cont_id,
                                     is_tail_call: false,
                                 });
@@ -2917,7 +2917,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     work_stack.push(WorkItem::Eval {
                                         value: MettaValue::Nil, // Need pattern2 here
                                         env: env_after_p2,
-                                        depth: depth + 1,
+                                        depth, // TCO: reuse depth for iteration
                                         cont_id: p2_cont_id,
                                         is_tail_call: false,
                                     });
@@ -2961,7 +2961,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             work_stack.push(WorkItem::Eval {
                                 value: next_body,
                                 env: env_after_body,
-                                depth: depth + 1,
+                                depth, // TCO: reuse depth for iteration
                                 cont_id: next_cont_id,
                                 is_tail_call: false,
                             });
@@ -3019,7 +3019,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     work_stack.push(WorkItem::Eval {
                                         value: first_body,
                                         env: env_after_body,
-                                        depth: depth + 1,
+                                        depth, // TCO: reuse depth for iteration
                                         cont_id: next_cont_id,
                                         is_tail_call: false,
                                     });
@@ -3059,7 +3059,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 work_stack.push(WorkItem::Eval {
                                     value: pattern2,
                                     env: env_after_body,
-                                    depth: depth + 1,
+                                    depth, // TCO: reuse depth for iteration
                                     cont_id: p2_cont_id,
                                     is_tail_call: false,
                                 });
@@ -3179,7 +3179,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             work_stack.push(WorkItem::Eval {
                                 value: next_alt,
                                 env: env_after,
-                                depth: depth + 1,
+                                depth, // TCO: reuse depth for iteration
                                 cont_id: amb_cont_id,
                                 is_tail_call: false,
                             });

@@ -1,7 +1,6 @@
 use crate::backend::builtin_signatures::{get_return_type, get_signature, TypeExpr};
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
-use std::sync::Arc;
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use tracing::trace;
 
 /// Built-in type names with correct capitalization for "Did you mean?" suggestions
@@ -53,10 +52,10 @@ pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> E
     let typ = items[2].clone();
 
     // Extract name from expression
-    let name = match expr {
-        MettaValue::Atom(s) => s.clone(),
-        MettaValue::SExpr(expr_items) if !expr_items.is_empty() => {
-            if let MettaValue::Atom(s) = &expr_items[0] {
+    let name = match expr.inner() {
+        MettaValueInner::Atom(s) => s.clone(),
+        MettaValueInner::SExpr(expr_items) if !expr_items.is_empty() => {
+            if let MettaValueInner::Atom(s) = expr_items[0].inner() {
                 s.clone()
             } else {
                 format!("{:?}", expr)
@@ -107,26 +106,26 @@ pub(super) fn eval_check_type(items: Vec<MettaValue>, env: Environment) -> EvalR
 /// Uses the built-in signature registry for accurate return type inference.
 /// For example, `infer_type((+ 1 2))` → `Number` based on `+`'s return type.
 pub fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
-    match expr {
+    match expr.inner() {
         // Ground types have built-in types
-        MettaValue::Bool(_) => MettaValue::Atom("Bool".to_string()),
-        MettaValue::Long(_) => MettaValue::Atom("Number".to_string()),
-        MettaValue::Float(_) => MettaValue::Atom("Number".to_string()),
-        MettaValue::String(_) => MettaValue::Atom("String".to_string()),
-        MettaValue::Nil => MettaValue::Atom("Nil".to_string()),
+        MettaValueInner::Bool(_) => MettaValue::Atom("Bool".to_string()),
+        MettaValueInner::Long(_) => MettaValue::Atom("Number".to_string()),
+        MettaValueInner::Float(_) => MettaValue::Atom("Number".to_string()),
+        MettaValueInner::String(_) => MettaValue::Atom("String".to_string()),
+        MettaValueInner::Nil => MettaValue::Atom("Nil".to_string()),
 
         // Type values have type Type
-        MettaValue::Type(_) => MettaValue::Atom("Type".to_string()),
+        MettaValueInner::Type(_) => MettaValue::Atom("Type".to_string()),
 
         // Errors have Error type
-        MettaValue::Error(_, _) => MettaValue::Atom("Error".to_string()),
+        MettaValueInner::Error(_, _) => MettaValue::Atom("Error".to_string()),
 
         // For atoms, look up in environment
-        MettaValue::Atom(name) => {
+        MettaValueInner::Atom(name) => {
             // Check if it's a variable (starts with $, &, or ')
             if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
                 // Type variable - return as-is wrapped in Type
-                return MettaValue::Type(Arc::new(MettaValue::Atom(name.clone())));
+                return MettaValue::Type(MettaValue::Atom(name.clone()));
             }
 
             // Look up type in environment
@@ -145,13 +144,13 @@ pub fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
         }
 
         // For s-expressions, try to infer from function application
-        MettaValue::SExpr(items) => {
+        MettaValueInner::SExpr(items) => {
             if items.is_empty() {
                 return MettaValue::Atom("Nil".to_string());
             }
 
             // Get the operator/function
-            if let Some(MettaValue::Atom(op)) = items.first() {
+            if let MettaValueInner::Atom(op) = items.first().expect("items is non-empty").inner() {
                 // First, check the built-in signature registry
                 if let Some(sig) = get_signature(op) {
                     if let Some(ret_type) = get_return_type(&sig.type_sig) {
@@ -167,11 +166,16 @@ pub fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
                 // Look up function type in environment (user-defined types)
                 if let Some(func_type) = env.get_type(op) {
                     // If it's an arrow type, extract return type
-                    if let MettaValue::SExpr(ref type_items) = func_type {
-                        if let Some(MettaValue::Atom(arrow)) = type_items.first() {
+                    if let MettaValueInner::SExpr(ref type_items) = func_type.inner() {
+                        if let MettaValueInner::Atom(arrow) =
+                            type_items.first().expect("type_items is non-empty").inner()
+                        {
                             if arrow == "->" && type_items.len() > 1 {
                                 // Return type is last element
-                                return type_items.last().cloned().unwrap();
+                                return type_items
+                                    .last()
+                                    .cloned()
+                                    .expect("type_items has more than 1 element");
                             }
                         }
                     }
@@ -185,30 +189,30 @@ pub fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
 
         // Conjunctions have Conjunction type
         // The type is the type of the last goal (final result)
-        MettaValue::Conjunction(goals) => {
+        MettaValueInner::Conjunction(goals) => {
             if goals.is_empty() {
                 // Empty conjunction has Nil type
                 MettaValue::Atom("Nil".to_string())
             } else {
                 // Type is the type of the last goal
-                infer_type(goals.last().unwrap(), env)
+                infer_type(goals.last().expect("goals is non-empty"), env)
             }
         }
 
         // Space references have Space type
-        MettaValue::Space(_) => MettaValue::Atom("Space".to_string()),
+        MettaValueInner::Space(_) => MettaValue::Atom("Space".to_string()),
 
         // State references have State type
-        MettaValue::State(_) => MettaValue::Atom("State".to_string()),
+        MettaValueInner::State(_) => MettaValue::Atom("State".to_string()),
 
         // Unit has Unit type
-        MettaValue::Unit => MettaValue::Atom("Unit".to_string()),
+        MettaValueInner::Unit => MettaValue::Atom("Unit".to_string()),
 
         // Memo tables have Memo type
-        MettaValue::Memo(_) => MettaValue::Atom("Memo".to_string()),
+        MettaValueInner::Memo(_) => MettaValue::Atom("Memo".to_string()),
 
         // Empty sentinel has Empty type
-        MettaValue::Empty => MettaValue::Atom("Empty".to_string()),
+        MettaValueInner::Empty => MettaValue::Atom("Empty".to_string()),
     }
 }
 
@@ -248,20 +252,20 @@ fn type_expr_to_metta_value(type_expr: &TypeExpr) -> MettaValue {
 /// Check if two types match
 /// Handles type variables and structural equality
 fn types_match(actual: &MettaValue, expected: &MettaValue) -> bool {
-    match (actual, expected) {
+    match (actual.inner(), expected.inner()) {
         // Type variables match anything
-        (_, MettaValue::Atom(e)) if e.starts_with('$') => true,
-        (MettaValue::Atom(a), _) if a.starts_with('$') => true,
+        (_, MettaValueInner::Atom(e)) if e.starts_with('$') => true,
+        (MettaValueInner::Atom(a), _) if a.starts_with('$') => true,
 
         // Type variables in Type wrapper
-        (_, MettaValue::Type(e)) => {
-            if let MettaValue::Atom(name) = e.as_ref() {
+        (_, MettaValueInner::Type(e)) => {
+            if let MettaValueInner::Atom(name) = e.inner() {
                 if name.starts_with('$') {
                     return true;
                 }
             }
             // Otherwise, unwrap and compare
-            if let MettaValue::Type(a) = actual {
+            if let MettaValueInner::Type(a) = actual.inner() {
                 types_match(a, e)
             } else {
                 false
@@ -269,19 +273,19 @@ fn types_match(actual: &MettaValue, expected: &MettaValue) -> bool {
         }
 
         // Exact atom matches
-        (MettaValue::Atom(a), MettaValue::Atom(e)) => a == e,
+        (MettaValueInner::Atom(a), MettaValueInner::Atom(e)) => a == e,
 
         // Bool matches
-        (MettaValue::Bool(a), MettaValue::Bool(e)) => a == e,
+        (MettaValueInner::Bool(a), MettaValueInner::Bool(e)) => a == e,
 
         // Long matches
-        (MettaValue::Long(a), MettaValue::Long(e)) => a == e,
+        (MettaValueInner::Long(a), MettaValueInner::Long(e)) => a == e,
 
         // String matches
-        (MettaValue::String(a), MettaValue::String(e)) => a == e,
+        (MettaValueInner::String(a), MettaValueInner::String(e)) => a == e,
 
         // S-expression matches (structural equality)
-        (MettaValue::SExpr(a_items), MettaValue::SExpr(e_items)) => {
+        (MettaValueInner::SExpr(a_items), MettaValueInner::SExpr(e_items)) => {
             if a_items.len() != e_items.len() {
                 return false;
             }
@@ -292,7 +296,7 @@ fn types_match(actual: &MettaValue, expected: &MettaValue) -> bool {
         }
 
         // Nil matches Nil
-        (MettaValue::Nil, MettaValue::Nil) => true,
+        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
 
         // Default: no match
         _ => false,
@@ -314,8 +318,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains(":"));
                 assert!(msg.contains("requires exactly 2 arguments")); // Changed
             }
@@ -332,8 +336,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("get-type"));
                 assert!(msg.contains("requires exactly 1 argument")); // Changed
             }
@@ -353,8 +357,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("check-type"));
                 assert!(msg.contains("requires exactly 2 arguments")); // Changed
             }
@@ -632,8 +636,8 @@ mod tests {
         assert_eq!(results.len(), 1);
 
         // The error from the inner expression should propagate
-        match &results[0] {
-            MettaValue::Error(msg, _details) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _details) => {
                 assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
             }
             other => panic!("Expected Error, got {:?}", other),

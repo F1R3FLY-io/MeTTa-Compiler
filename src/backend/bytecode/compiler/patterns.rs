@@ -7,7 +7,7 @@
 //! - chain: Sequential evaluation with binding
 
 use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::error::{CompileError, CompileResult};
 use super::Compiler;
@@ -76,8 +76,8 @@ impl Compiler {
         self.compile(&args[0])?;
 
         // args[1] contains ALL case branches wrapped in an SExpr
-        let cases = match &args[1] {
-            MettaValue::SExpr(items) => items,
+        let cases = match args[1].inner() {
+            MettaValueInner::SExpr(items) => items,
             _ => {
                 return Err(CompileError::InvalidExpression(
                     "case branches must be an S-expression".to_string(),
@@ -89,8 +89,8 @@ impl Compiler {
         let mut end_jumps = Vec::new();
 
         for case in cases {
-            let (pattern, result) = match case {
-                MettaValue::SExpr(items) if items.len() == 2 => (&items[0], &items[1]),
+            let (pattern, result) = match case.inner() {
+                MettaValueInner::SExpr(items) if items.len() == 2 => (&items[0], &items[1]),
                 _ => {
                     return Err(CompileError::InvalidExpression(
                         "case branch must be (pattern result)".to_string(),

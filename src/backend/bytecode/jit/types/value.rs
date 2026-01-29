@@ -4,13 +4,12 @@
 //! used for efficient JIT code generation.
 
 use std::fmt;
-use std::sync::Arc;
 
 use super::constants::{
     PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG,
     TAG_MASK, TAG_NIL, TAG_UNIT, TAG_VAR,
 };
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // JitValue - NaN-Boxed Value
@@ -295,8 +294,8 @@ impl JitValue {
     ///
     /// Returns None for values that cannot be NaN-boxed (e.g., large integers)
     pub fn try_from_metta(value: &MettaValue) -> Option<Self> {
-        match value {
-            MettaValue::Long(n) => {
+        match value.inner() {
+            MettaValueInner::Long(n) => {
                 // Check if fits in 48 bits (signed)
                 let min_48 = -(1i64 << 47);
                 let max_48 = (1i64 << 47) - 1;
@@ -307,9 +306,9 @@ impl JitValue {
                     None
                 }
             }
-            MettaValue::Bool(b) => Some(JitValue::from_bool(*b)),
-            MettaValue::Nil => Some(JitValue::nil()),
-            MettaValue::Unit => Some(JitValue::unit()),
+            MettaValueInner::Bool(b) => Some(JitValue::from_bool(*b)),
+            MettaValueInner::Nil => Some(JitValue::nil()),
+            MettaValueInner::Unit => Some(JitValue::unit()),
             // Other types need heap allocation
             _ => None,
         }
@@ -331,8 +330,8 @@ impl JitValue {
         match self.tag() {
             TAG_LONG => MettaValue::Long(self.as_long()),
             TAG_BOOL => MettaValue::Bool(self.as_bool()),
-            TAG_NIL => MettaValue::Nil,
-            TAG_UNIT => MettaValue::Unit,
+            TAG_NIL => MettaValue::Nil(),
+            TAG_UNIT => MettaValue::Unit(),
             TAG_HEAP => {
                 let ptr = self.as_heap_ptr();
                 debug_assert!(
@@ -407,7 +406,7 @@ impl JitValue {
                 #[cfg(not(debug_assertions))]
                 MettaValue::Error(
                     "JIT: Invalid JitValue tag".to_string(),
-                    Arc::new(MettaValue::String(format!("{:#018x}", self.0))),
+                    MettaValue::String(format!("{:#018x}", self.0)),
                 )
             }
         }

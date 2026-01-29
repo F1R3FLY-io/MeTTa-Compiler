@@ -3,7 +3,7 @@
 //! This module handles finding and matching user-defined rules against expressions.
 //! It supports both MORK-accelerated O(k) matching and fallback O(n) iteration.
 
-use std::sync::Arc;
+// Arc no longer needed - MettaValue now wraps Arc internally
 use tracing::trace;
 
 use mork_expr::Expr;
@@ -19,14 +19,11 @@ use super::pattern::pattern_match;
 
 /// Find ALL rules in the environment that match the given expression
 /// Returns Vec<(rhs, bindings)> with all matching rules
-/// RHS is Arc-wrapped for O(1) cloning
+/// RHS clone is O(1) since MettaValue uses Arc internally
 ///
 /// This function supports MeTTa's non-deterministic semantics where multiple rules
 /// can match the same expression and all results should be returned.
-pub fn try_match_all_rules(
-    expr: &MettaValue,
-    env: &Environment,
-) -> Vec<(Arc<MettaValue>, Bindings)> {
+pub fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
     // Try MORK's query_multi first for O(k) matching where k = number of matching rules
     // Falls back to iterative O(n) matching if query_multi fails (e.g., arity >= 64)
     let query_multi_results = try_match_all_rules_query_multi(expr, env);
@@ -39,11 +36,11 @@ pub fn try_match_all_rules(
 }
 
 /// Try pattern matching using MORK's query_multi to find ALL matching rules (O(k) where k = matching rules)
-/// RHS is Arc-wrapped for O(1) cloning
+/// RHS clone is O(1) since MettaValue uses Arc internally
 pub fn try_match_all_rules_query_multi(
     expr: &MettaValue,
     env: &Environment,
-) -> Vec<(Arc<MettaValue>, Bindings)> {
+) -> Vec<(MettaValue, Bindings)> {
     trace!(target: "mettatron::backend::eval::try_match_all_rules_query_multi", ?expr);
     // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
     // This will find all rules where the LHS matches our expression
@@ -81,7 +78,7 @@ pub fn try_match_all_rules_query_multi(
     // Collect ALL matches using query_multi
     // Note: All matches from query_multi will have the same LHS pattern (since we're querying for it)
     // Therefore, they all have the same LHS specificity and we should return all of them
-    let mut matches: Vec<(Arc<MettaValue>, Bindings)> = Vec::new();
+    let mut matches: Vec<(MettaValue, Bindings)> = Vec::new();
 
     mork::space::Space::query_multi(&space.btm, pattern_expr, |result, _matched_expr| {
         if let Err(bindings) = result {
@@ -91,7 +88,7 @@ pub fn try_match_all_rules_query_multi(
                 // Extract the RHS from bindings - variable name is "rhs" (without $)
                 if let Some((_, rhs)) = our_bindings.iter().find(|(name, _)| name.as_str() == "rhs")
                 {
-                    matches.push((Arc::new(rhs.clone()), our_bindings));
+                    matches.push((rhs.clone(), our_bindings));
                 }
             }
         }
@@ -109,11 +106,11 @@ pub fn try_match_all_rules_query_multi(
 /// Optimized: Try pattern matching using indexed lookup to find ALL matching rules
 /// Uses O(1) index lookup instead of O(n) iteration
 /// Complexity: O(k) where k = rules with matching head symbol (typically k << n)
-/// RHS is Arc-wrapped for O(1) cloning
+/// RHS clone is O(1) since MettaValue uses Arc internally
 pub fn try_match_all_rules_iterative(
     expr: &MettaValue,
     env: &Environment,
-) -> Vec<(Arc<MettaValue>, Bindings)> {
+) -> Vec<(MettaValue, Bindings)> {
     trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?expr);
     // Extract head symbol and arity for indexed lookup
     // Use get_matching_rules_iter with .cloned().collect() - sorting requires all items
@@ -133,8 +130,8 @@ pub fn try_match_all_rules_iterative(
     trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?sorted_rules);
 
     // Collect ALL matching rules, tracking LHS specificity
-    // Keep Arc<MettaValue> from Rule struct for O(1) cloning
-    let mut matches: Vec<(Arc<MettaValue>, Bindings, usize, Rule)> = Vec::new();
+    // MettaValue clone is O(1) since it uses Arc internally
+    let mut matches: Vec<(MettaValue, Bindings, usize, Rule)> = Vec::new();
     for rule in sorted_rules {
         if let Some(bindings) = pattern_match(&rule.lhs, expr) {
             let lhs_specificity = pattern_specificity(&rule.lhs);
@@ -156,8 +153,8 @@ pub fn try_match_all_rules_iterative(
         for (rhs, bindings, _, rule) in best_matches {
             let count = env.get_rule_count(&rule);
             for _ in 0..count {
-                // Arc::clone is O(1) - just increments reference count
-                final_matches.push((Arc::clone(&rhs), bindings.clone()));
+                // MettaValue clone is O(1) - just increments Arc reference count
+                final_matches.push((rhs.clone(), bindings.clone()));
             }
         }
 

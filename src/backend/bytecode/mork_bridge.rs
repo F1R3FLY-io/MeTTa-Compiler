@@ -28,7 +28,7 @@ use tracing::warn;
 
 use crate::backend::environment::Environment;
 use crate::backend::eval::pattern_match;
-use crate::backend::models::{Bindings, MettaValue};
+use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 
 use super::chunk::BytecodeChunk;
 use super::compiler::{compile, CompileError};
@@ -201,7 +201,7 @@ impl MorkBridge {
             match self.get_or_compile_rule(&rhs) {
                 Ok(body) => {
                     compiled.push(CompiledRule {
-                        lhs: (*lhs).clone(),
+                        lhs,
                         body,
                         bindings,
                     });
@@ -221,7 +221,7 @@ impl MorkBridge {
         &self,
         expr: &MettaValue,
         env: &Environment,
-    ) -> Vec<(Arc<MettaValue>, Arc<MettaValue>, Bindings)> {
+    ) -> Vec<(MettaValue, MettaValue, Bindings)> {
         // Extract head symbol and arity for indexed lookup (lazy iteration)
         let matching_rules = if let Some(head) = get_head_symbol(expr) {
             let arity = expr.get_arity();
@@ -232,16 +232,11 @@ impl MorkBridge {
         };
 
         // Collect matching rules with bindings
-        let mut matches: Vec<(Arc<MettaValue>, Arc<MettaValue>, Bindings, usize)> = Vec::new();
+        let mut matches: Vec<(MettaValue, MettaValue, Bindings, usize)> = Vec::new();
         for rule in matching_rules {
             if let Some(bindings) = pattern_match(&rule.lhs, expr) {
                 let specificity = pattern_specificity(&rule.lhs);
-                matches.push((
-                    Arc::clone(&rule.lhs),
-                    Arc::clone(&rule.rhs),
-                    bindings,
-                    specificity,
-                ));
+                matches.push((rule.lhs.clone(), rule.rhs.clone(), bindings, specificity));
             }
         }
 
@@ -302,12 +297,12 @@ impl MorkBridge {
 
 /// Extract head symbol from an expression
 fn get_head_symbol(expr: &MettaValue) -> Option<&str> {
-    match expr {
-        MettaValue::SExpr(items) if !items.is_empty() => match &items[0] {
-            MettaValue::Atom(name) => Some(name.as_str()),
+    match expr.inner() {
+        MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner() {
+            MettaValueInner::Atom(name) => Some(name.as_str()),
             _ => None,
         },
-        MettaValue::Atom(name) => Some(name.as_str()),
+        MettaValueInner::Atom(name) => Some(name.as_str()),
         _ => None,
     }
 }
@@ -318,15 +313,15 @@ fn get_head_symbol(expr: &MettaValue) -> Option<&str> {
 /// - Number of variables (more variables = less specific)
 /// - Wildcard presence (wildcards are least specific)
 fn pattern_specificity(pattern: &MettaValue) -> usize {
-    match pattern {
-        MettaValue::Atom(name) if name == "_" => 1000, // Wildcard - least specific
-        MettaValue::Atom(name) if name.starts_with('$') => 100, // Variable
-        MettaValue::Atom(_) => 0,                      // Concrete symbol
-        MettaValue::SExpr(items) => items.iter().map(pattern_specificity).sum(),
-        MettaValue::Long(_)
-        | MettaValue::Float(_)
-        | MettaValue::Bool(_)
-        | MettaValue::String(_) => 0,
+    match pattern.inner() {
+        MettaValueInner::Atom(name) if name == "_" => 1000, // Wildcard - least specific
+        MettaValueInner::Atom(name) if name.starts_with('$') => 100, // Variable
+        MettaValueInner::Atom(_) => 0,                      // Concrete symbol
+        MettaValueInner::SExpr(items) => items.iter().map(pattern_specificity).sum(),
+        MettaValueInner::Long(_)
+        | MettaValueInner::Float(_)
+        | MettaValueInner::Bool(_)
+        | MettaValueInner::String(_) => 0,
         _ => 50, // Other types
     }
 }

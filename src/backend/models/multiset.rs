@@ -34,10 +34,10 @@
 //! ```
 
 use dashmap::DashMap;
-use xxhash_rust::xxh3::Xxh3Builder;
 use im::HashMap as ImHashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use xxhash_rust::xxh3::Xxh3Builder;
 
 use super::atom_id::{AtomId, SymbolTable};
 use super::MettaValue;

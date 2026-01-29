@@ -7,7 +7,7 @@
 //! - collapse: Collect non-deterministic results
 
 use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::error::{CompileError, CompileResult};
 use super::Compiler;
@@ -21,8 +21,8 @@ impl Compiler {
         self.check_arity("superpose", args.len(), 1)?;
 
         // The argument should be a list of alternatives
-        match &args[0] {
-            MettaValue::SExpr(alternatives) => {
+        match args[0].inner() {
+            MettaValueInner::SExpr(alternatives) => {
                 if alternatives.is_empty() {
                     // Empty superposition - return Empty
                     self.builder.emit(Opcode::PushEmpty);
@@ -57,7 +57,7 @@ impl Compiler {
                 Ok(())
             }
             // If not an S-expression, just evaluate the argument
-            other => self.compile(other),
+            _ => self.compile(&args[0]),
         }
     }
 
@@ -155,8 +155,8 @@ impl Compiler {
         self.check_arity("let*", args.len(), 2)?;
 
         // Get bindings list
-        let bindings = match &args[0] {
-            MettaValue::SExpr(items) => items,
+        let bindings = match args[0].inner() {
+            MettaValueInner::SExpr(items) => items,
             _ => {
                 return Err(CompileError::InvalidExpression(
                     "let* bindings must be a list".to_string(),
@@ -173,8 +173,8 @@ impl Compiler {
 
         // Process each binding
         for binding in bindings {
-            let (pattern, value) = match binding {
-                MettaValue::SExpr(pair) if pair.len() == 2 => (&pair[0], &pair[1]),
+            let (pattern, value) = match binding.inner() {
+                MettaValueInner::SExpr(pair) if pair.len() == 2 => (&pair[0], &pair[1]),
                 _ => {
                     return Err(CompileError::InvalidExpression(
                         "let* binding must be (pattern value)".to_string(),
@@ -207,8 +207,8 @@ impl Compiler {
 
     /// Compile a pattern binding (creates local variables)
     pub(crate) fn compile_pattern_binding(&mut self, pattern: &MettaValue) -> CompileResult<()> {
-        match pattern {
-            MettaValue::Atom(name) if name.starts_with('$') => {
+        match pattern.inner() {
+            MettaValueInner::Atom(name) if name.starts_with('$') => {
                 // Simple variable binding
                 let var_name = name[1..].to_string();
                 let slot = self.context.declare_local(var_name)?;
@@ -218,11 +218,11 @@ impl Compiler {
                     self.builder.emit_u16(Opcode::StoreLocalWide, slot);
                 }
             }
-            MettaValue::Atom(name) if name == "_" => {
+            MettaValueInner::Atom(name) if name == "_" => {
                 // Wildcard - just pop the value
                 self.builder.emit(Opcode::Pop);
             }
-            MettaValue::SExpr(items) => {
+            MettaValueInner::SExpr(items) => {
                 // Destructuring pattern
                 // For each element, dup the value, extract element, bind
                 for (i, item) in items.iter().enumerate() {
@@ -243,9 +243,9 @@ impl Compiler {
 
     /// Compile a quoted expression (no evaluation)
     pub(crate) fn compile_quoted(&mut self, expr: &MettaValue) -> CompileResult<()> {
-        match expr {
+        match expr.inner() {
             // Atoms can be pushed directly
-            MettaValue::Atom(name) => {
+            MettaValueInner::Atom(name) => {
                 let idx = self.builder.add_constant(MettaValue::Atom(name.clone()));
                 if name.starts_with('$') {
                     self.builder.emit_u16(Opcode::PushVariable, idx);
@@ -254,7 +254,7 @@ impl Compiler {
                 }
             }
             // S-expressions need to be built
-            MettaValue::SExpr(items) => {
+            MettaValueInner::SExpr(items) => {
                 for item in items {
                     self.compile_quoted(item)?;
                 }

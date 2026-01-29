@@ -10,8 +10,6 @@
 //! - Trigonometric functions (sin, cos, tan, asin, acos, atan)
 //! - Special value checks (isnan, isinf)
 
-use std::sync::Arc;
-
 use crate::backend::models::MettaValue;
 
 use super::extractors::{extract_float, extract_long};
@@ -34,7 +32,7 @@ pub(crate) fn eval_sqrt(args: &[MettaValue]) -> MettaValue {
                 "Square root of negative number not supported: sqrt({})",
                 value
             ),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 
@@ -68,14 +66,14 @@ pub(crate) fn eval_log(args: &[MettaValue]) -> MettaValue {
                 "Logarithm base must be positive: log-math({}, {})",
                 base, value
             ),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 
     if base == 1 {
         return MettaValue::Error(
             format!("Logarithm base cannot be 1: log-math({}, {})", base, value),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 
@@ -86,7 +84,7 @@ pub(crate) fn eval_log(args: &[MettaValue]) -> MettaValue {
                 "Logarithm input must be positive: log-math({}, {})",
                 base, value
             ),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 
@@ -180,7 +178,7 @@ pub(crate) fn eval_asin(args: &[MettaValue]) -> MettaValue {
                 "Arcsine input must be in range [-1, 1]: asin-math({})",
                 value
             ),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 
@@ -218,7 +216,7 @@ pub(crate) fn eval_acos(args: &[MettaValue]) -> MettaValue {
                 "Arccosine input must be in range [-1, 1]: acos-math({})",
                 value
             ),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 

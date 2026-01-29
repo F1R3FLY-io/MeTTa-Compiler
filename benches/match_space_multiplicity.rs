@@ -117,10 +117,7 @@ fn bench_match_space_high_multiplicity(c: &mut Criterion) {
             var("x"),
             var("y"),
         ]);
-        let template = MettaValue::SExpr(vec![
-            MettaValue::Atom("result".to_string()),
-            var("x"),
-        ]);
+        let template = MettaValue::SExpr(vec![MettaValue::Atom("result".to_string()), var("x")]);
 
         group.bench_with_input(
             BenchmarkId::new("100_atoms", multiplicity),

@@ -225,7 +225,7 @@ pub fn global_space_registry() -> &'static SpaceRegistry {
     &GLOBAL_SPACE_REGISTRY
 }
 
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 /// Error type for bytecode evaluation
 #[derive(Debug)]
@@ -275,19 +275,19 @@ impl std::error::Error for BytecodeEvalError {}
 /// can also be compiled. This prevents the bytecode VM from returning wrong results
 /// when a subexpression needs rule resolution.
 pub fn can_compile(expr: &MettaValue) -> bool {
-    match expr {
+    match expr.inner() {
         // Always compilable literals
-        MettaValue::Nil
-        | MettaValue::Unit
-        | MettaValue::Bool(_)
-        | MettaValue::Long(_)
-        | MettaValue::Float(_)
-        | MettaValue::String(_) => true,
+        MettaValueInner::Nil
+        | MettaValueInner::Unit
+        | MettaValueInner::Bool(_)
+        | MettaValueInner::Long(_)
+        | MettaValueInner::Float(_)
+        | MettaValueInner::String(_) => true,
 
         // Atoms: only variables and known constants are safe
         // - Variables (start with $) are OK - they'll be substituted
         // - Other atoms might need rule resolution, so reject them
-        MettaValue::Atom(name) => {
+        MettaValueInner::Atom(name) => {
             // Variables are OK
             if name.starts_with('$') {
                 return true;
@@ -301,10 +301,10 @@ pub fn can_compile(expr: &MettaValue) -> bool {
         }
 
         // S-expressions - check head AND all operands recursively
-        MettaValue::SExpr(items) if items.is_empty() => true,
-        MettaValue::SExpr(items) => {
+        MettaValueInner::SExpr(items) if items.is_empty() => true,
+        MettaValueInner::SExpr(items) => {
             // Check head for supported operations
-            if let MettaValue::Atom(head) = &items[0] {
+            if let MettaValueInner::Atom(head) = items[0].inner() {
                 let head_ok = match head.as_str() {
                     // Arithmetic
                     "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => true,
@@ -361,17 +361,17 @@ pub fn can_compile(expr: &MettaValue) -> bool {
         }
 
         // Errors can be compiled (they just push the error value)
-        MettaValue::Error(_, _) => true,
+        MettaValueInner::Error(_, _) => true,
 
         // Types that need environment or special runtime support
-        MettaValue::Space(_)
-        | MettaValue::State(_)
-        | MettaValue::Type(_)
-        | MettaValue::Conjunction(_)
-        | MettaValue::Memo(_) => false,
+        MettaValueInner::Space(_)
+        | MettaValueInner::State(_)
+        | MettaValueInner::Type(_)
+        | MettaValueInner::Conjunction(_)
+        | MettaValueInner::Memo(_) => false,
 
         // Empty is a sentinel that should be filtered, but can be compiled if needed
-        MettaValue::Empty => true,
+        MettaValueInner::Empty => true,
     }
 }
 
@@ -404,17 +404,17 @@ pub fn can_compile_cached(expr: &MettaValue) -> bool {
 /// Use this when bytecode execution will have access to an Environment for
 /// rule lookup and definition (e.g., mmverify workloads).
 pub fn can_compile_with_env(expr: &MettaValue) -> bool {
-    match expr {
+    match expr.inner() {
         // Always compilable literals
-        MettaValue::Nil
-        | MettaValue::Unit
-        | MettaValue::Bool(_)
-        | MettaValue::Long(_)
-        | MettaValue::Float(_)
-        | MettaValue::String(_) => true,
+        MettaValueInner::Nil
+        | MettaValueInner::Unit
+        | MettaValueInner::Bool(_)
+        | MettaValueInner::Long(_)
+        | MettaValueInner::Float(_)
+        | MettaValueInner::String(_) => true,
 
         // Atoms: variables, known constants, AND unknown atoms (for rule dispatch)
-        MettaValue::Atom(name) => {
+        MettaValueInner::Atom(name) => {
             // Variables are OK
             if name.starts_with('$') {
                 return true;
@@ -432,10 +432,10 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
         }
 
         // S-expressions - check head AND all operands recursively
-        MettaValue::SExpr(items) if items.is_empty() => true,
-        MettaValue::SExpr(items) => {
+        MettaValueInner::SExpr(items) if items.is_empty() => true,
+        MettaValueInner::SExpr(items) => {
             // Check head for supported operations
-            if let MettaValue::Atom(head) = &items[0] {
+            if let MettaValueInner::Atom(head) = items[0].inner() {
                 let head_ok = match head.as_str() {
                     // Rule definitions need tree-walker (bytecode compiler doesn't emit DefineRule)
                     "=" => false,
@@ -492,17 +492,17 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
         }
 
         // Errors can be compiled
-        MettaValue::Error(_, _) => true,
+        MettaValueInner::Error(_, _) => true,
 
         // Types that need special runtime support (even with environment)
-        MettaValue::Space(_)
-        | MettaValue::State(_)
-        | MettaValue::Type(_)
-        | MettaValue::Conjunction(_)
-        | MettaValue::Memo(_) => false,
+        MettaValueInner::Space(_)
+        | MettaValueInner::State(_)
+        | MettaValueInner::Type(_)
+        | MettaValueInner::Conjunction(_)
+        | MettaValueInner::Memo(_) => false,
 
         // Empty sentinel
-        MettaValue::Empty => true,
+        MettaValueInner::Empty => true,
     }
 }
 
@@ -511,7 +511,7 @@ fn can_compile_chain_with_env(items: &[MettaValue]) -> bool {
     if items.len() != 4 {
         return false;
     }
-    let var_ok = matches!(&items[2], MettaValue::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
     var_ok && can_compile_with_env(&items[1]) && can_compile_with_env(&items[3])
 }
 
@@ -520,7 +520,7 @@ fn can_compile_map_atom_with_env(items: &[MettaValue]) -> bool {
     if items.len() != 4 {
         return false;
     }
-    let var_ok = matches!(&items[2], MettaValue::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
     var_ok && can_compile_with_env(&items[1])
 }
 
@@ -529,7 +529,7 @@ fn can_compile_filter_atom_with_env(items: &[MettaValue]) -> bool {
     if items.len() != 4 {
         return false;
     }
-    let var_ok = matches!(&items[2], MettaValue::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
     var_ok && can_compile_with_env(&items[1])
 }
 
@@ -538,7 +538,7 @@ fn can_compile_foldl_atom_with_env(items: &[MettaValue]) -> bool {
     if items.len() != 5 {
         return false;
     }
-    let var_ok = matches!(&items[3], MettaValue::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[3].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
     var_ok && can_compile_with_env(&items[1]) && can_compile_with_env(&items[2])
 }
 
@@ -552,7 +552,7 @@ fn can_compile_chain(items: &[MettaValue]) -> bool {
     // items[1] is expr - must be compilable
     // items[2] is $var - must be a variable
     // items[3] is body - must be compilable
-    let var_ok = matches!(&items[2], MettaValue::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
     var_ok && can_compile(&items[1]) && can_compile(&items[3])
 }
 
@@ -566,7 +566,7 @@ fn can_compile_map_atom(items: &[MettaValue]) -> bool {
     // items[1] is list - must be compilable
     // items[2] is $var - must be a variable
     // items[3] is template - compiled as sub-chunk, so we accept it
-    let var_ok = matches!(&items[2], MettaValue::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
     var_ok && can_compile(&items[1])
 }
 
@@ -576,7 +576,7 @@ fn can_compile_filter_atom(items: &[MettaValue]) -> bool {
     if items.len() != 4 {
         return false;
     }
-    let var_ok = matches!(&items[2], MettaValue::Atom(s) if s.starts_with('$'));
+    let var_ok = matches!(items[2].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
     var_ok && can_compile(&items[1])
 }
 
@@ -592,8 +592,8 @@ fn can_compile_foldl_atom(items: &[MettaValue]) -> bool {
     // items[3] is $acc
     // items[4] is $item
     // items[5] is op (compiled as sub-chunk)
-    let acc_ok = matches!(&items[3], MettaValue::Atom(s) if s.starts_with('$'));
-    let item_ok = matches!(&items[4], MettaValue::Atom(s) if s.starts_with('$'));
+    let acc_ok = matches!(items[3].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
+    let item_ok = matches!(items[4].inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
     acc_ok && item_ok && can_compile(&items[1]) && can_compile(&items[2])
 }
 
@@ -825,7 +825,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::MettaValue;
+    use crate::backend::models::{MettaValue, MettaValueInner};
 
     #[test]
     fn test_integration_arithmetic() {
@@ -951,8 +951,8 @@ mod tests {
         let results = vm.run().expect("VM should succeed");
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3);
                 assert_eq!(items[0], MettaValue::sym("foo"));
                 assert_eq!(items[1], MettaValue::Long(1));
@@ -989,8 +989,8 @@ mod tests {
     #[allow(clippy::approx_constant)]
     fn test_can_compile_literals() {
         // Compilable literals
-        assert!(can_compile(&MettaValue::Nil));
-        assert!(can_compile(&MettaValue::Unit));
+        assert!(can_compile(&MettaValue::Nil()));
+        assert!(can_compile(&MettaValue::Unit()));
         assert!(can_compile(&MettaValue::Bool(true)));
         assert!(can_compile(&MettaValue::Long(42)));
         assert!(can_compile(&MettaValue::Float(3.14)));

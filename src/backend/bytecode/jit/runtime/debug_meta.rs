@@ -10,7 +10,7 @@ use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
     JitContext, JitValue, TAG_ATOM, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_NIL, TAG_UNIT, TAG_VAR,
 };
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use tracing::{debug, trace};
 
 // =============================================================================
@@ -89,9 +89,9 @@ pub unsafe extern "C" fn jit_runtime_get_metatype(
         t if t == TAG_HEAP => {
             // Could be SExpr or other heap type
             let metta = jit_val.to_metta();
-            match metta {
-                MettaValue::SExpr(_) => "Expression",
-                MettaValue::String(_) => "Grounded",
+            match metta.inner() {
+                MettaValueInner::SExpr(_) => "Expression",
+                MettaValueInner::String(_) => "Grounded",
                 _ => "Expression",
             }
         }

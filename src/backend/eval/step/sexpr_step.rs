@@ -3,13 +3,11 @@
 //! This module handles the evaluation step for S-expressions, including
 //! special forms dispatch and rule matching.
 
-use std::sync::Arc;
-
 use tracing::trace;
 
 use crate::backend::environment::Environment;
 use crate::backend::grounded::{ExecError, GroundedState};
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::super::{
     bindings, control_flow, errors, eval, evaluation, expression, io, list_ops, modules,
@@ -33,8 +31,11 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
     }
 
     // Check for special forms - these are handled directly (they manage their own recursion)
-    if let Some(MettaValue::Atom(op)) = items.first() {
-        match op.as_str() {
+    if let Some(op) = items.first().and_then(|v| match v.inner() {
+        MettaValueInner::Atom(s) => Some(s.as_str()),
+        _ => None,
+    }) {
+        match op {
             "=" => return EvalStep::Done(space::eval_add(items, env)),
             "!" => {
                 // Force evaluation operator - defer to trampoline for TCO
@@ -44,7 +45,7 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
                             "! requires exactly 1 argument, got {}. Usage: (! expr)",
                             items.len() - 1
                         ),
-                        Arc::new(MettaValue::SExpr(items)),
+                        MettaValue::SExpr(items),
                     );
                     return EvalStep::Done((vec![err], env));
                 }
@@ -143,17 +144,18 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
     }
 
     // HE-compatible lazy evaluation: try grounded operations and rules with UNEVALUATED args first
-    let sexpr = MettaValue::SExpr(items.clone());
-
     // Step 1: Try grounded operations with RAW (unevaluated) arguments
     // First try TCO-enabled operations (which use trampoline for deep recursion),
     // then fall back to legacy operations if no TCO version exists.
-    if let Some(MettaValue::Atom(op)) = items.first() {
+    if let Some(op) = items.first().and_then(|v| match v.inner() {
+        MettaValueInner::Atom(s) => Some(s.as_str()),
+        _ => None,
+    }) {
         // Try TCO operation first - these don't call eval() internally and are
         // safe for arbitrarily deep recursion
         if env.get_grounded_operation_tco(op).is_some() {
             // Create initial state for the grounded operation
-            let state = GroundedState::new(op.clone(), items[1..].to_vec());
+            let state = GroundedState::new(op.to_string(), items[1..].to_vec());
             return EvalStep::StartGroundedOp { state, env, depth };
         }
 
@@ -178,7 +180,7 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
                     return EvalStep::Done((
                         vec![MettaValue::Error(
                             msg,
-                            Arc::new(MettaValue::Atom("TypeError".to_string())),
+                            MettaValue::Atom("TypeError".to_string()),
                         )],
                         env,
                     ));
@@ -187,7 +189,7 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
                     return EvalStep::Done((
                         vec![MettaValue::Error(
                             msg,
-                            Arc::new(MettaValue::Atom("ArityError".to_string())),
+                            MettaValue::Atom("ArityError".to_string()),
                         )],
                         env,
                     ));
@@ -196,7 +198,7 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
                     return EvalStep::Done((
                         vec![MettaValue::Error(
                             msg,
-                            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+                            MettaValue::Atom("ArithmeticError".to_string()),
                         )],
                         env,
                     ));

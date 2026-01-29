@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::backend::bytecode::{BytecodeVM, ChunkBuilder, Opcode};
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use std::sync::Arc;
 
 #[test]
@@ -236,7 +236,7 @@ fn test_semantic_equivalence_fork_basic() {
     let vm_longs: Vec<i64> = vm_results
         .iter()
         .filter_map(|v| {
-            if let MettaValue::Long(n) = v {
+            if let MettaValueInner::Long(n) = v.inner() {
                 Some(*n)
             } else {
                 None
@@ -247,7 +247,7 @@ fn test_semantic_equivalence_fork_basic() {
     let hybrid_longs: Vec<i64> = hybrid_results
         .iter()
         .filter_map(|v| {
-            if let MettaValue::Long(n) = v {
+            if let MettaValueInner::Long(n) = v.inner() {
                 Some(*n)
             } else {
                 None
@@ -314,7 +314,7 @@ fn test_semantic_equivalence_fork_five_alternatives() {
     let mut vm_longs: Vec<i64> = vm_results
         .iter()
         .filter_map(|v| {
-            if let MettaValue::Long(n) = v {
+            if let MettaValueInner::Long(n) = v.inner() {
                 Some(*n)
             } else {
                 None
@@ -325,7 +325,7 @@ fn test_semantic_equivalence_fork_five_alternatives() {
     let mut hybrid_longs: Vec<i64> = hybrid_results
         .iter()
         .filter_map(|v| {
-            if let MettaValue::Long(n) = v {
+            if let MettaValueInner::Long(n) = v.inner() {
                 Some(*n)
             } else {
                 None

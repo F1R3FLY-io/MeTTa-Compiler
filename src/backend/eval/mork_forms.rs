@@ -6,10 +6,8 @@
 //! - lookup: Conditional fact lookup with success/failure branches
 //! - rulify: Meta-programming for runtime rule generation
 
-use std::sync::Arc;
-
 use crate::backend::environment::Environment;
-use crate::backend::models::{Bindings, MettaValue};
+use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 
 use super::{eval, EvalResult};
 
@@ -35,7 +33,7 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalRes
     if args.len() < 3 {
         let err = MettaValue::Error(
             "exec requires 3 arguments: priority, antecedent, and consequent".to_string(),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return (vec![err], env);
     }
@@ -52,10 +50,11 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalRes
     // Antecedent must be a conjunction
     // Handle both MettaValue::Conjunction and SExpr representation (,  ...)
     // The latter occurs when exec is retrieved from PathMap space
-    let antecedent_goals = match antecedent {
-        MettaValue::Conjunction(goals) => goals.clone(),
-        MettaValue::SExpr(items)
-            if !items.is_empty() && matches!(&items[0], MettaValue::Atom(op) if op == ",") =>
+    let antecedent_goals = match antecedent.inner() {
+        MettaValueInner::Conjunction(goals) => goals.clone(),
+        MettaValueInner::SExpr(items)
+            if !items.is_empty()
+                && matches!(items[0].inner(), MettaValueInner::Atom(op) if op == ",") =>
         {
             // Conjunction represented as SExpr: (, goal1 goal2 ...)
             items[1..].to_vec() // Skip the "," operator
@@ -63,7 +62,7 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalRes
         _ => {
             let err = MettaValue::Error(
                 "exec antecedent must be a conjunction (,)".to_string(),
-                Arc::new(antecedent.clone()),
+                antecedent.clone(),
             );
             return (vec![err], env);
         }
@@ -91,8 +90,8 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalRes
         let instantiated_consequent = apply_bindings(consequent, &bindings).into_owned();
 
         // Consequent can be either a conjunction or an operation
-        match &instantiated_consequent {
-            MettaValue::Conjunction(goals) => {
+        match instantiated_consequent.inner() {
+            MettaValueInner::Conjunction(goals) => {
                 // PHASE 3: Check for exec in consequent goals and thread bindings
                 let (conseq_results, conseq_env) = eval_consequent_conjunction_with_bindings(
                     goals.clone(),
@@ -103,8 +102,9 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalRes
                 // Use conseq_env directly since it has the updated facts
                 final_env = conseq_env;
             }
-            MettaValue::SExpr(items)
-                if !items.is_empty() && matches!(&items[0], MettaValue::Atom(op) if op == ",") =>
+            MettaValueInner::SExpr(items)
+                if !items.is_empty()
+                    && matches!(items[0].inner(), MettaValueInner::Atom(op) if op == ",") =>
             {
                 // Conjunction represented as SExpr (from PathMap)
                 let goals = items[1..].to_vec();
@@ -117,7 +117,7 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalRes
                 // Use conseq_env directly since it has the updated facts
                 final_env = conseq_env;
             }
-            MettaValue::SExpr(items) if matches_operation(items) => {
+            MettaValueInner::SExpr(items) if matches_operation(items) => {
                 // Handle operation: (O (+ fact) (- fact) ...)
                 let op_result = eval_operation(items, final_env.clone());
                 all_results.extend(op_result.0);
@@ -126,7 +126,7 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalRes
             _ => {
                 let err = MettaValue::Error(
                     "exec consequent must be a conjunction or operation (O ...)".to_string(),
-                    Arc::new(instantiated_consequent.clone()),
+                    instantiated_consequent.clone(),
                 );
                 all_results.push(err);
             }
@@ -251,7 +251,7 @@ fn eval_consequent_conjunction_with_bindings(
     use crate::backend::eval::{apply_bindings, pattern_match};
 
     if goals.is_empty() {
-        return (vec![MettaValue::Nil], env);
+        return (vec![MettaValue::Nil()], env);
     }
 
     // Pass 1: Collect bindings by matching goals against space
@@ -308,20 +308,20 @@ fn eval_consequent_conjunction_with_bindings(
 
 /// Check if a MettaValue contains any variables
 fn has_variables(value: &MettaValue) -> bool {
-    match value {
-        MettaValue::Atom(s) => s.starts_with('$') || s.starts_with('&') || s.starts_with('\''),
-        MettaValue::SExpr(items) => items.iter().any(has_variables),
-        MettaValue::Conjunction(goals) => goals.iter().any(has_variables),
-        MettaValue::Error(_, details) => has_variables(details),
+    match value.inner() {
+        MettaValueInner::Atom(s) => s.starts_with('$') || s.starts_with('&') || s.starts_with('\''),
+        MettaValueInner::SExpr(items) => items.iter().any(has_variables),
+        MettaValueInner::Conjunction(goals) => goals.iter().any(has_variables),
+        MettaValueInner::Error(_, details) => has_variables(details),
         _ => false,
     }
 }
 
 /// Check if a MettaValue is an exec form: (exec ...)
 fn is_exec_form(value: &MettaValue) -> bool {
-    match value {
-        MettaValue::SExpr(items) if !items.is_empty() => {
-            matches!(&items[0], MettaValue::Atom(op) if op == "exec")
+    match value.inner() {
+        MettaValueInner::SExpr(items) if !items.is_empty() => {
+            matches!(items[0].inner(), MettaValueInner::Atom(op) if op == "exec")
         }
         _ => false,
     }
@@ -329,9 +329,9 @@ fn is_exec_form(value: &MettaValue) -> bool {
 
 /// Check if a MettaValue is an operation form: (O ...)
 fn is_operation_form(value: &MettaValue) -> bool {
-    match value {
-        MettaValue::SExpr(items) if !items.is_empty() => {
-            matches!(&items[0], MettaValue::Atom(op) if op == "O")
+    match value.inner() {
+        MettaValueInner::SExpr(items) if !items.is_empty() => {
+            matches!(items[0].inner(), MettaValueInner::Atom(op) if op == "O")
         }
         _ => false,
     }
@@ -339,15 +339,15 @@ fn is_operation_form(value: &MettaValue) -> bool {
 
 /// Evaluate an operation from a MettaValue
 fn eval_operation_from_value(value: &MettaValue, env: Environment) -> EvalResult {
-    match value {
-        MettaValue::SExpr(items) => eval_operation(items, env),
+    match value.inner() {
+        MettaValueInner::SExpr(items) => eval_operation(items, env),
         _ => (vec![], env),
     }
 }
 
 /// Check if an S-expression is an operation (starts with "O")
 fn matches_operation(items: &[MettaValue]) -> bool {
-    matches!(items.first(), Some(MettaValue::Atom(s)) if s == "O")
+    matches!(items.first().map(|v| v.inner()), Some(MettaValueInner::Atom(s)) if s == "O")
 }
 
 /// Evaluate operation: (O (+ fact) (- fact) ...)
@@ -356,21 +356,20 @@ fn eval_operation(items: &[MettaValue], mut env: Environment) -> EvalResult {
     let operations = &items[1..]; // Skip "O" operator
 
     for op in operations {
-        match op {
-            MettaValue::SExpr(op_items) if op_items.len() == 2 => {
-                match (&op_items[0], &op_items[1]) {
-                    (MettaValue::Atom(op_type), fact) if op_type == "+" => {
+        if let MettaValueInner::SExpr(op_items) = op.inner() {
+            if op_items.len() == 2 {
+                match (op_items[0].inner(), &op_items[1]) {
+                    (MettaValueInner::Atom(op_type), fact) if op_type == "+" => {
                         // Add fact to space
                         env.add_to_space(fact);
                     }
-                    (MettaValue::Atom(op_type), fact) if op_type == "-" => {
+                    (MettaValueInner::Atom(op_type), fact) if op_type == "-" => {
                         // Remove fact from space
                         env.remove_from_space(fact);
                     }
                     _ => {}
                 }
             }
-            _ => {}
         }
     }
 
@@ -399,7 +398,7 @@ pub(super) fn eval_coalg(items: Vec<MettaValue>, env: Environment) -> EvalResult
     if args.len() < 2 {
         let err = MettaValue::Error(
             "coalg requires 2 arguments: pattern and templates".to_string(),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return (vec![err], env);
     }
@@ -408,12 +407,12 @@ pub(super) fn eval_coalg(items: Vec<MettaValue>, env: Environment) -> EvalResult
     let templates = &args[1];
 
     // Templates must be a conjunction
-    let template_list = match templates {
-        MettaValue::Conjunction(temps) => temps,
+    let template_list = match templates.inner() {
+        MettaValueInner::Conjunction(temps) => temps,
         _ => {
             let err = MettaValue::Error(
                 "coalg templates must be a conjunction (,)".to_string(),
-                Arc::new(templates.clone()),
+                templates.clone(),
             );
             return (vec![err], env);
         }
@@ -455,7 +454,7 @@ pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResul
     if args.len() < 3 {
         let err = MettaValue::Error(
             "lookup requires 3 arguments: pattern, success-goals, and failure-goals".to_string(),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return (vec![err], env);
     }
@@ -465,23 +464,23 @@ pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResul
     let failure_goals = &args[2];
 
     // Both branches must be conjunctions
-    let _success_conj = match success_goals {
-        MettaValue::Conjunction(_) => success_goals,
+    let _success_conj = match success_goals.inner() {
+        MettaValueInner::Conjunction(_) => success_goals,
         _ => {
             let err = MettaValue::Error(
                 "lookup success branch must be a conjunction (,)".to_string(),
-                Arc::new(success_goals.clone()),
+                success_goals.clone(),
             );
             return (vec![err], env);
         }
     };
 
-    let _failure_conj = match failure_goals {
-        MettaValue::Conjunction(_) => failure_goals,
+    let _failure_conj = match failure_goals.inner() {
+        MettaValueInner::Conjunction(_) => failure_goals,
         _ => {
             let err = MettaValue::Error(
                 "lookup failure branch must be a conjunction (,)".to_string(),
-                Arc::new(failure_goals.clone()),
+                failure_goals.clone(),
             );
             return (vec![err], env);
         }
@@ -491,18 +490,18 @@ pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResul
     // For now, we'll use a simple heuristic: if pattern is a variable, assume not found
     // In a full implementation, this would query the MORK space
 
-    let pattern_found = !matches!(pattern, MettaValue::Atom(s) if s.starts_with('$'));
+    let pattern_found = !matches!(pattern.inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
 
     if pattern_found {
         // Evaluate success branch
-        match success_goals {
-            MettaValue::Conjunction(goals) => eval_conjunction_goals(goals.clone(), env),
+        match success_goals.inner() {
+            MettaValueInner::Conjunction(goals) => eval_conjunction_goals(goals.clone(), env),
             _ => unreachable!(), // Already checked above
         }
     } else {
         // Evaluate failure branch
-        match failure_goals {
-            MettaValue::Conjunction(goals) => eval_conjunction_goals(goals.clone(), env),
+        match failure_goals.inner() {
+            MettaValueInner::Conjunction(goals) => eval_conjunction_goals(goals.clone(), env),
             _ => unreachable!(), // Already checked above
         }
     }
@@ -538,7 +537,7 @@ pub(super) fn eval_rulify(items: Vec<MettaValue>, env: Environment) -> EvalResul
         let err = MettaValue::Error(
             "rulify requires 5 arguments: name, pattern, templates, antecedent, consequent"
                 .to_string(),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return (vec![err], env);
     }
@@ -550,24 +549,24 @@ pub(super) fn eval_rulify(items: Vec<MettaValue>, env: Environment) -> EvalResul
     let rule_consequent = &args[4];
 
     // Extract pattern from unary conjunction
-    let pattern = match pattern_conj {
-        MettaValue::Conjunction(ps) if ps.len() == 1 => &ps[0],
+    let pattern = match pattern_conj.inner() {
+        MettaValueInner::Conjunction(ps) if ps.len() == 1 => &ps[0],
         _ => {
             let err = MettaValue::Error(
                 "rulify pattern must be a unary conjunction (, $p0)".to_string(),
-                Arc::new(pattern_conj.clone()),
+                pattern_conj.clone(),
             );
             return (vec![err], env);
         }
     };
 
     // Extract templates from conjunction
-    let templates = match templates_conj {
-        MettaValue::Conjunction(ts) => ts,
+    let templates = match templates_conj.inner() {
+        MettaValueInner::Conjunction(ts) => ts,
         _ => {
             let err = MettaValue::Error(
                 "rulify templates must be a conjunction (, $t0 ...)".to_string(),
-                Arc::new(templates_conj.clone()),
+                templates_conj.clone(),
             );
             return (vec![err], env);
         }

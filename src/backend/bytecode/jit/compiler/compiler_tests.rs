@@ -1,5 +1,6 @@
 use super::*;
 use crate::backend::bytecode::ChunkBuilder;
+use crate::backend::models::metta_value::MettaValueInner;
 
 #[test]
 fn test_can_compile_stage1_arithmetic() {
@@ -663,7 +664,7 @@ fn test_jit_vm_equivalence_arithmetic() {
 
             // Compare with VM
             assert_eq!(vm_results.len(), 1, "VM should return single value");
-            if let MettaValue::Long(vm_val) = &vm_results[0] {
+            if let MettaValueInner::Long(vm_val) = vm_results[0].inner() {
                 assert_eq!(
                     jit_val, *vm_val,
                     "JIT vs VM mismatch for ({} {} {})",
@@ -730,7 +731,7 @@ fn test_jit_vm_equivalence_comparisons() {
             let jit_val = jit_result.as_bool();
 
             assert_eq!(vm_results.len(), 1);
-            if let MettaValue::Bool(vm_val) = &vm_results[0] {
+            if let MettaValueInner::Bool(vm_val) = vm_results[0].inner() {
                 assert_eq!(
                     jit_val, *vm_val,
                     "JIT vs VM mismatch for ({} {} {})",
@@ -1378,7 +1379,7 @@ fn test_jit_collect_signals_bailout() {
 
     // Verify the collected SExpr (should be (1 2 3))
     let metta = unsafe { jv.to_metta() };
-    if let crate::backend::models::MettaValue::SExpr(items) = metta {
+    if let MettaValueInner::SExpr(items) = metta.inner() {
         assert_eq!(items.len(), 3, "Collected SExpr should have 3 items");
     } else {
         panic!("Collect should return SExpr");
@@ -3840,8 +3841,8 @@ fn test_jit_execute_get_type_long() {
     // GetType(42) should return "Number" atom
     let result = JitValue::from_raw(result_bits as u64);
     let metta_val = unsafe { result.to_metta() };
-    match metta_val {
-        MettaValue::Atom(s) => assert_eq!(s, "Number", "GetType(Long) should return 'Number'"),
+    match metta_val.inner() {
+        MettaValueInner::Atom(s) => assert_eq!(s, "Number", "GetType(Long) should return 'Number'"),
         other => panic!("Expected Atom('Number'), got: {:?}", other),
     }
 }
@@ -3877,8 +3878,8 @@ fn test_jit_execute_get_type_bool() {
     // GetType(True) should return "Bool" atom
     let result = JitValue::from_raw(result_bits as u64);
     let metta_val = unsafe { result.to_metta() };
-    match metta_val {
-        MettaValue::Atom(s) => assert_eq!(s, "Bool", "GetType(Bool) should return 'Bool'"),
+    match metta_val.inner() {
+        MettaValueInner::Atom(s) => assert_eq!(s, "Bool", "GetType(Bool) should return 'Bool'"),
         other => panic!("Expected Atom('Bool'), got: {:?}", other),
     }
 }
@@ -3920,8 +3921,8 @@ fn test_jit_execute_get_type_sexpr() {
     // GetType((1 2 3)) should return "Expression" atom
     let result = JitValue::from_raw(result_bits as u64);
     let metta_val = unsafe { result.to_metta() };
-    match metta_val {
-        MettaValue::Atom(s) => {
+    match metta_val.inner() {
+        MettaValueInner::Atom(s) => {
             assert_eq!(s, "Expression", "GetType(SExpr) should return 'Expression'")
         }
         other => panic!("Expected Atom('Expression'), got: {:?}", other),
@@ -4300,8 +4301,8 @@ fn test_jit_execute_make_sexpr_empty() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert!(
                 items.is_empty(),
                 "Expected empty S-expression, got {:?}",
@@ -4342,11 +4343,11 @@ fn test_jit_execute_make_sexpr_single() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 1, "Expected 1 element");
-            match &items[0] {
-                MettaValue::Long(v) => assert_eq!(*v, 42),
+            match items[0].inner() {
+                MettaValueInner::Long(v) => assert_eq!(*v, 42),
                 _ => panic!("Expected Long, got: {:?}", items[0]),
             }
         }
@@ -4386,11 +4387,11 @@ fn test_jit_execute_make_sexpr_multiple() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3, "Expected 3 elements");
-            match (&items[0], &items[1], &items[2]) {
-                (MettaValue::Long(a), MettaValue::Long(b), MettaValue::Long(c)) => {
+            match (items[0].inner(), items[1].inner(), items[2].inner()) {
+                (MettaValueInner::Long(a), MettaValueInner::Long(b), MettaValueInner::Long(c)) => {
                     assert_eq!((*a, *b, *c), (10, 20, 30));
                 }
                 _ => panic!("Expected three Longs, got: {:?}", items),
@@ -4431,11 +4432,11 @@ fn test_jit_execute_cons_atom_to_nil() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 1, "Expected 1 element");
-            match &items[0] {
-                MettaValue::Long(v) => assert_eq!(*v, 1),
+            match items[0].inner() {
+                MettaValueInner::Long(v) => assert_eq!(*v, 1),
                 _ => panic!("Expected Long, got: {:?}", items[0]),
             }
         }
@@ -4479,11 +4480,11 @@ fn test_jit_execute_cons_atom_to_sexpr() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3, "Expected 3 elements, got {:?}", items);
-            match (&items[0], &items[1], &items[2]) {
-                (MettaValue::Long(a), MettaValue::Long(b), MettaValue::Long(c)) => {
+            match (items[0].inner(), items[1].inner(), items[2].inner()) {
+                (MettaValueInner::Long(a), MettaValueInner::Long(b), MettaValueInner::Long(c)) => {
                     assert_eq!((*a, *b, *c), (1, 2, 3));
                 }
                 _ => panic!("Expected three Longs, got: {:?}", items),
@@ -4531,15 +4532,15 @@ fn test_jit_execute_make_sexpr_nested() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 2, "Expected 2 elements");
             // Check first element is (1 2)
-            match &items[0] {
-                MettaValue::SExpr(inner) => {
+            match items[0].inner() {
+                MettaValueInner::SExpr(inner) => {
                     assert_eq!(inner.len(), 2);
-                    match (&inner[0], &inner[1]) {
-                        (MettaValue::Long(a), MettaValue::Long(b)) => {
+                    match (inner[0].inner(), inner[1].inner()) {
+                        (MettaValueInner::Long(a), MettaValueInner::Long(b)) => {
                             assert_eq!((*a, *b), (1, 2));
                         }
                         _ => panic!("Expected Longs in inner, got: {:?}", inner),
@@ -4548,11 +4549,11 @@ fn test_jit_execute_make_sexpr_nested() {
                 _ => panic!("Expected inner SExpr, got: {:?}", items[0]),
             }
             // Check second element is (3 4)
-            match &items[1] {
-                MettaValue::SExpr(inner) => {
+            match items[1].inner() {
+                MettaValueInner::SExpr(inner) => {
                     assert_eq!(inner.len(), 2);
-                    match (&inner[0], &inner[1]) {
-                        (MettaValue::Long(a), MettaValue::Long(b)) => {
+                    match (inner[0].inner(), inner[1].inner()) {
+                        (MettaValueInner::Long(a), MettaValueInner::Long(b)) => {
                             assert_eq!((*a, *b), (3, 4));
                         }
                         _ => panic!("Expected Longs in inner, got: {:?}", inner),
@@ -4646,8 +4647,8 @@ fn test_jit_execute_push_uri() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::Atom(s) => assert_eq!(s, "http://example.com"),
+    match metta.inner() {
+        MettaValueInner::Atom(s) => assert_eq!(s, "http://example.com"),
         _ => panic!("Expected Atom, got: {:?}", metta),
     }
 }
@@ -4682,7 +4683,7 @@ fn test_jit_execute_make_list_empty() {
 
     // Empty list is Nil
     assert!(
-        matches!(metta, MettaValue::Nil),
+        matches!(metta.inner(), MettaValueInner::Nil),
         "Expected Nil, got: {:?}",
         metta
     );
@@ -4718,11 +4719,11 @@ fn test_jit_execute_make_list_single() {
     let metta = unsafe { result.to_metta() };
 
     // Should be (Cons 42 Nil)
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3, "Expected (Cons elem Nil) structure");
-            match (&items[0], &items[1], &items[2]) {
-                (MettaValue::Atom(cons), MettaValue::Long(v), MettaValue::Nil) => {
+            match (items[0].inner(), items[1].inner(), items[2].inner()) {
+                (MettaValueInner::Atom(cons), MettaValueInner::Long(v), MettaValueInner::Nil) => {
                     assert_eq!(cons, "Cons");
                     assert_eq!(*v, 42);
                 }
@@ -4766,15 +4767,15 @@ fn test_jit_execute_make_list_multiple() {
 
     // Should be (Cons 1 (Cons 2 (Cons 3 Nil)))
     // Just check the outer structure
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3, "Expected (Cons elem rest) structure");
-            match &items[0] {
-                MettaValue::Atom(s) => assert_eq!(s, "Cons"),
+            match items[0].inner() {
+                MettaValueInner::Atom(s) => assert_eq!(s, "Cons"),
                 _ => panic!("Expected Cons atom, got: {:?}", items[0]),
             }
-            match &items[1] {
-                MettaValue::Long(v) => assert_eq!(*v, 1),
+            match items[1].inner() {
+                MettaValueInner::Long(v) => assert_eq!(*v, 1),
                 _ => panic!("Expected Long 1, got: {:?}", items[1]),
             }
         }
@@ -4812,11 +4813,11 @@ fn test_jit_execute_make_quote() {
     let metta = unsafe { result.to_metta() };
 
     // Should be (quote 42)
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 2, "Expected (quote value)");
-            match (&items[0], &items[1]) {
-                (MettaValue::Atom(q), MettaValue::Long(v)) => {
+            match (items[0].inner(), items[1].inner()) {
+                (MettaValueInner::Atom(q), MettaValueInner::Long(v)) => {
                     assert_eq!(q, "quote");
                     assert_eq!(*v, 42);
                 }
@@ -4860,18 +4861,18 @@ fn test_jit_execute_make_quote_nested() {
     let metta = unsafe { result.to_metta() };
 
     // Should be (quote (1 2))
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 2, "Expected (quote expr)");
-            match &items[0] {
-                MettaValue::Atom(q) => assert_eq!(q, "quote"),
+            match items[0].inner() {
+                MettaValueInner::Atom(q) => assert_eq!(q, "quote"),
                 _ => panic!("Expected quote atom, got: {:?}", items[0]),
             }
-            match &items[1] {
-                MettaValue::SExpr(inner) => {
+            match items[1].inner() {
+                MettaValueInner::SExpr(inner) => {
                     assert_eq!(inner.len(), 2);
-                    match (&inner[0], &inner[1]) {
-                        (MettaValue::Long(a), MettaValue::Long(b)) => {
+                    match (inner[0].inner(), inner[1].inner()) {
+                        (MettaValueInner::Long(a), MettaValueInner::Long(b)) => {
                             assert_eq!((*a, *b), (1, 2));
                         }
                         _ => panic!("Expected (1 2), got: {:?}", inner),
@@ -5064,19 +5065,19 @@ fn test_jit_call_builds_correct_expression() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3, "Expected (add 5 3)");
-            match &items[0] {
-                MettaValue::Atom(s) => assert_eq!(s, "add"),
+            match items[0].inner() {
+                MettaValueInner::Atom(s) => assert_eq!(s, "add"),
                 _ => panic!("Expected 'add' atom, got: {:?}", items[0]),
             }
-            match &items[1] {
-                MettaValue::Long(n) => assert_eq!(*n, 5),
+            match items[1].inner() {
+                MettaValueInner::Long(n) => assert_eq!(*n, 5),
                 _ => panic!("Expected 5, got: {:?}", items[1]),
             }
-            match &items[2] {
-                MettaValue::Long(n) => assert_eq!(*n, 3),
+            match items[2].inner() {
+                MettaValueInner::Long(n) => assert_eq!(*n, 3),
                 _ => panic!("Expected 3, got: {:?}", items[2]),
             }
         }
@@ -5142,8 +5143,8 @@ fn test_jit_call_with_mixed_argument_types() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(
                 items.len(),
                 5,
@@ -5151,43 +5152,43 @@ fn test_jit_call_with_mixed_argument_types() {
             );
 
             // Head: process
-            match &items[0] {
-                MettaValue::Atom(s) => assert_eq!(s, "process"),
+            match items[0].inner() {
+                MettaValueInner::Atom(s) => assert_eq!(s, "process"),
                 _ => panic!("Expected 'process' atom"),
             }
 
             // Arg 1: atom-arg
-            match &items[1] {
-                MettaValue::Atom(s) => assert_eq!(s, "atom-arg"),
+            match items[1].inner() {
+                MettaValueInner::Atom(s) => assert_eq!(s, "atom-arg"),
                 _ => panic!("Expected 'atom-arg' atom"),
             }
 
             // Arg 2: 42
-            match &items[2] {
-                MettaValue::Long(n) => assert_eq!(*n, 42),
+            match items[2].inner() {
+                MettaValueInner::Long(n) => assert_eq!(*n, 42),
                 _ => panic!("Expected Long(42)"),
             }
 
             // Arg 3: True
-            match &items[3] {
-                MettaValue::Bool(b) => assert!(*b),
+            match items[3].inner() {
+                MettaValueInner::Bool(b) => assert!(*b),
                 _ => panic!("Expected Bool(true)"),
             }
 
             // Arg 4: (nested 1 2)
-            match &items[4] {
-                MettaValue::SExpr(nested) => {
+            match items[4].inner() {
+                MettaValueInner::SExpr(nested) => {
                     assert_eq!(nested.len(), 3);
-                    match &nested[0] {
-                        MettaValue::Atom(s) => assert_eq!(s, "nested"),
+                    match nested[0].inner() {
+                        MettaValueInner::Atom(s) => assert_eq!(s, "nested"),
                         _ => panic!("Expected 'nested' atom"),
                     }
-                    match &nested[1] {
-                        MettaValue::Long(n) => assert_eq!(*n, 1),
+                    match nested[1].inner() {
+                        MettaValueInner::Long(n) => assert_eq!(*n, 1),
                         _ => panic!("Expected Long(1)"),
                     }
-                    match &nested[2] {
-                        MettaValue::Long(n) => assert_eq!(*n, 2),
+                    match nested[2].inner() {
+                        MettaValueInner::Long(n) => assert_eq!(*n, 2),
                         _ => panic!("Expected Long(2)"),
                     }
                 }
@@ -5237,21 +5238,21 @@ fn test_jit_call_expression_valid_for_rule_pattern() {
     ]);
 
     // The call expression should have the same structure
-    match (&call_expr, &pattern) {
-        (MettaValue::SExpr(expr_items), MettaValue::SExpr(pattern_items)) => {
+    match (call_expr.inner(), pattern.inner()) {
+        (MettaValueInner::SExpr(expr_items), MettaValueInner::SExpr(pattern_items)) => {
             assert_eq!(expr_items.len(), pattern_items.len(), "Arity mismatch");
 
             // Head should match exactly
-            match (&expr_items[0], &pattern_items[0]) {
-                (MettaValue::Atom(e), MettaValue::Atom(p)) => {
+            match (expr_items[0].inner(), pattern_items[0].inner()) {
+                (MettaValueInner::Atom(e), MettaValueInner::Atom(p)) => {
                     assert_eq!(e, p, "Head atoms should match");
                 }
                 _ => panic!("Expected both heads to be atoms"),
             }
 
             // Argument should be a Long that would bind to $n
-            match &expr_items[1] {
-                MettaValue::Long(n) => assert_eq!(*n, 10, "Argument should be 10"),
+            match expr_items[1].inner() {
+                MettaValueInner::Long(n) => assert_eq!(*n, 10, "Argument should be 10"),
                 _ => panic!("Expected Long argument"),
             }
         }
@@ -5299,19 +5300,19 @@ fn test_jit_tail_call_preserves_tco_flag() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3, "Expected (recurse 5 100)");
-            match &items[0] {
-                MettaValue::Atom(s) => assert_eq!(s, "recurse"),
+            match items[0].inner() {
+                MettaValueInner::Atom(s) => assert_eq!(s, "recurse"),
                 _ => panic!("Expected 'recurse' atom"),
             }
-            match &items[1] {
-                MettaValue::Long(n) => assert_eq!(*n, 5),
+            match items[1].inner() {
+                MettaValueInner::Long(n) => assert_eq!(*n, 5),
                 _ => panic!("Expected Long(5)"),
             }
-            match &items[2] {
-                MettaValue::Long(n) => assert_eq!(*n, 100),
+            match items[2].inner() {
+                MettaValueInner::Long(n) => assert_eq!(*n, 100),
                 _ => panic!("Expected Long(100)"),
             }
         }
@@ -5348,11 +5349,11 @@ fn test_jit_call_with_zero_args_returns_head_only() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match &metta {
-        MettaValue::SExpr(items) => {
+    match metta.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 1, "Expected (get-value) with just head");
-            match &items[0] {
-                MettaValue::Atom(s) => assert_eq!(s, "get-value"),
+            match items[0].inner() {
+                MettaValueInner::Atom(s) => assert_eq!(s, "get-value"),
                 _ => panic!("Expected 'get-value' atom"),
             }
         }
@@ -5429,8 +5430,8 @@ fn test_jit_binding_frame_operations() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match metta {
-        MettaValue::Long(n) => assert_eq!(n, 42, "Expected 42 from binding"),
+    match metta.inner() {
+        MettaValueInner::Long(n) => assert_eq!(*n, 42, "Expected 42 from binding"),
         other => panic!("Expected Long(42), got: {:?}", other),
     }
 }
@@ -5481,8 +5482,8 @@ fn test_jit_has_binding() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match metta {
-        MettaValue::Bool(b) => assert!(b, "Expected True for has_binding after store"),
+    match metta.inner() {
+        MettaValueInner::Bool(b) => assert!(*b, "Expected True for has_binding after store"),
         other => panic!("Expected Bool(true), got: {:?}", other),
     }
 }
@@ -5534,8 +5535,8 @@ fn test_jit_clear_bindings() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match metta {
-        MettaValue::Bool(b) => assert!(!b, "Expected False for has_binding after clear"),
+    match metta.inner() {
+        MettaValueInner::Bool(b) => assert!(!*b, "Expected False for has_binding after clear"),
         other => panic!("Expected Bool(false), got: {:?}", other),
     }
 }
@@ -5620,8 +5621,8 @@ fn test_jit_pattern_match_simple() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match metta {
-        MettaValue::Bool(b) => assert!(b, "Matching 42 against 42 should return True"),
+    match metta.inner() {
+        MettaValueInner::Bool(b) => assert!(*b, "Matching 42 against 42 should return True"),
         other => panic!("Expected Bool(true), got: {:?}", other),
     }
 }
@@ -5660,8 +5661,8 @@ fn test_jit_pattern_match_mismatch() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match metta {
-        MettaValue::Bool(b) => assert!(!b, "Matching 42 against 99 should return False"),
+    match metta.inner() {
+        MettaValueInner::Bool(b) => assert!(!*b, "Matching 42 against 99 should return False"),
         other => panic!("Expected Bool(false), got: {:?}", other),
     }
 }
@@ -5700,8 +5701,8 @@ fn test_jit_unify_simple() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match metta {
-        MettaValue::Bool(b) => assert!(b, "Unifying 42 with 42 should return True"),
+    match metta.inner() {
+        MettaValueInner::Bool(b) => assert!(*b, "Unifying 42 with 42 should return True"),
         other => panic!("Expected Bool(true), got: {:?}", other),
     }
 }
@@ -5749,8 +5750,8 @@ fn test_jit_match_arity() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match metta {
-        MettaValue::Bool(b) => assert!(b, "S-expr (a b c) should have arity 3"),
+    match metta.inner() {
+        MettaValueInner::Bool(b) => assert!(*b, "S-expr (a b c) should have arity 3"),
         other => panic!("Expected Bool(true), got: {:?}", other),
     }
 }
@@ -5799,8 +5800,8 @@ fn test_jit_match_head() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match metta {
-        MettaValue::Bool(b) => assert!(b, "S-expr (foo bar baz) should have head 'foo'"),
+    match metta.inner() {
+        MettaValueInner::Bool(b) => assert!(*b, "S-expr (foo bar baz) should have head 'foo'"),
         other => panic!("Expected Bool(true), got: {:?}", other),
     }
 }
@@ -5867,8 +5868,8 @@ fn test_jit_match_bind_variable_extraction() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match metta {
-        MettaValue::Long(n) => assert_eq!(n, 1, "MatchBind should have bound $x to 1"),
+    match metta.inner() {
+        MettaValueInner::Long(n) => assert_eq!(*n, 1, "MatchBind should have bound $x to 1"),
         other => panic!("Expected Long(1) from bound variable, got: {:?}", other),
     }
 }

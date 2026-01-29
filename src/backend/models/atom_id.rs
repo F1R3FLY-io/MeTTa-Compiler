@@ -16,9 +16,9 @@
 
 use dashmap::DashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
-use xxhash_rust::xxh3::Xxh3Builder;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
+use xxhash_rust::xxh3::Xxh3Builder;
 
 use super::MettaValue;
 
@@ -164,7 +164,7 @@ impl SymbolTable {
             // Ensure the vector is large enough (IDs are assigned sequentially)
             let idx = new_id.0 as usize;
             if id_to_value.len() <= idx {
-                id_to_value.resize(idx + 1, MettaValue::Nil);
+                id_to_value.resize(idx + 1, MettaValue::Nil());
             }
             id_to_value[idx] = value.clone();
         }
@@ -277,7 +277,7 @@ mod tests {
             MettaValue::Long(42),
             MettaValue::Float(3.14),
             MettaValue::String("hello".to_string()),
-            MettaValue::Nil,
+            MettaValue::Nil(),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("+".to_string()),
                 MettaValue::Long(1),
@@ -404,7 +404,8 @@ mod tests {
         // t0[50..100] should match t1[0..50] (both represent values 50-99)
         for i in 0..50 {
             assert_eq!(
-                t0_ids[50 + i], t1_ids[i],
+                t0_ids[50 + i],
+                t1_ids[i],
                 "Value {} should have same ID from both threads",
                 50 + i
             );

@@ -9,7 +9,7 @@ use tracing::trace;
 
 use super::types::{Alternative, ChoicePoint, VmError, VmResult};
 use super::BytecodeVM;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 impl BytecodeVM {
     // === Nondeterminism Operations ===
@@ -127,7 +127,7 @@ impl BytecodeVM {
         // Filter out Nil values (matches collapse semantics)
         let collected: Vec<MettaValue> = std::mem::take(&mut self.results)
             .into_iter()
-            .filter(|v| !matches!(v, MettaValue::Nil))
+            .filter(|v| !matches!(v.inner(), MettaValueInner::Nil))
             .collect();
 
         // Push the collected results as a single S-expression
@@ -144,7 +144,7 @@ impl BytecodeVM {
         // Take up to N results
         let collected: Vec<MettaValue> = std::mem::take(&mut self.results)
             .into_iter()
-            .filter(|v| !matches!(v, MettaValue::Nil))
+            .filter(|v| !matches!(v.inner(), MettaValueInner::Nil))
             .take(n)
             .collect();
 
@@ -178,18 +178,18 @@ impl BytecodeVM {
     pub(super) fn op_guard(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
         trace!(target: "mettatron::vm::nondet", ip = self.ip, "guard");
         let cond = self.pop()?;
-        match cond {
-            MettaValue::Bool(true) => {
+        match cond.inner() {
+            MettaValueInner::Bool(true) => {
                 // Continue execution
                 Ok(ControlFlow::Continue(()))
             }
-            MettaValue::Bool(false) => {
+            MettaValueInner::Bool(false) => {
                 // Backtrack
                 self.op_fail()
             }
-            other => Err(VmError::TypeError {
+            _ => Err(VmError::TypeError {
                 expected: "Bool",
-                got: other.type_name(),
+                got: cond.type_name(),
             }),
         }
     }
@@ -220,7 +220,7 @@ impl BytecodeVM {
 
         if count == 0 {
             // Empty amb - push Nil (will fail on subsequent op_fail)
-            self.push(MettaValue::Nil);
+            self.push(MettaValue::Nil());
             return Ok(());
         }
 

@@ -8,8 +8,7 @@
 use crate::backend::bytecode::jit::types::{
     JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_LONG,
 };
-use crate::backend::models::MettaValue;
-use std::sync::Arc;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // NaN-Boxing Helpers
@@ -48,14 +47,14 @@ pub fn box_long(n: i64) -> u64 {
 /// For simple types (Long, Bool, Nil, Unit), creates a NaN-boxed value directly.
 /// For complex types (SExpr, Atom, String, etc.), boxes the value and returns a heap pointer.
 pub fn metta_to_jit(val: &MettaValue) -> JitValue {
-    match val {
-        MettaValue::Long(n) => JitValue::from_long(*n),
-        MettaValue::Bool(b) => JitValue::from_bool(*b),
-        MettaValue::Nil => JitValue::nil(),
-        MettaValue::Unit => JitValue::unit(),
+    match val.inner() {
+        MettaValueInner::Long(n) => JitValue::from_long(*n),
+        MettaValueInner::Bool(b) => JitValue::from_bool(*b),
+        MettaValueInner::Nil => JitValue::nil(),
+        MettaValueInner::Unit => JitValue::unit(),
         // For complex types, box and return heap pointer
-        other => {
-            let boxed = Box::new(other.clone());
+        _ => {
+            let boxed = Box::new(val.clone());
             JitValue::from_heap_ptr(Box::into_raw(boxed))
         }
     }
@@ -70,14 +69,14 @@ pub fn metta_to_jit(val: &MettaValue) -> JitValue {
 /// # Safety
 /// - `ctx` must be a valid pointer to a JitContext (or null to disable tracking)
 pub unsafe fn metta_to_jit_tracked(val: &MettaValue, ctx: *mut JitContext) -> JitValue {
-    match val {
-        MettaValue::Long(n) => JitValue::from_long(*n),
-        MettaValue::Bool(b) => JitValue::from_bool(*b),
-        MettaValue::Nil => JitValue::nil(),
-        MettaValue::Unit => JitValue::unit(),
+    match val.inner() {
+        MettaValueInner::Long(n) => JitValue::from_long(*n),
+        MettaValueInner::Bool(b) => JitValue::from_bool(*b),
+        MettaValueInner::Nil => JitValue::nil(),
+        MettaValueInner::Unit => JitValue::unit(),
         // For complex types, box, track, and return heap pointer
-        other => {
-            let boxed = Box::new(other.clone());
+        _ => {
+            let boxed = Box::new(val.clone());
             let ptr = Box::into_raw(boxed);
             // Track the allocation if context has heap tracking enabled
             if let Some(ctx_ref) = ctx.as_mut() {
@@ -96,7 +95,7 @@ pub unsafe fn metta_to_jit_tracked(val: &MettaValue, ctx: *mut JitContext) -> Ji
 ///
 /// Creates a heap-allocated Error value and returns it as a NaN-boxed pointer.
 pub fn make_jit_error(msg: &str) -> u64 {
-    let error_val = MettaValue::Error(msg.to_string(), Arc::new(MettaValue::Nil));
+    let error_val = MettaValue::Error(msg.to_string(), MettaValue::Nil());
     let boxed = Box::new(error_val);
     let ptr = Box::into_raw(boxed);
     ((TAG_HEAP as u64) << 48) | (ptr as u64 & PAYLOAD_MASK)
@@ -107,10 +106,7 @@ pub fn make_jit_error(msg: &str) -> u64 {
 /// Creates a heap-allocated Error value with additional detail information
 /// and returns it as a NaN-boxed pointer.
 pub fn make_jit_error_with_details(msg: &str, details: &str) -> u64 {
-    let error_val = MettaValue::Error(
-        msg.to_string(),
-        Arc::new(MettaValue::Atom(details.to_string())),
-    );
+    let error_val = MettaValue::Error(msg.to_string(), MettaValue::Atom(details.to_string()));
     let boxed = Box::new(error_val);
     let ptr = Box::into_raw(boxed);
     ((TAG_HEAP as u64) << 48) | (ptr as u64 & PAYLOAD_MASK)

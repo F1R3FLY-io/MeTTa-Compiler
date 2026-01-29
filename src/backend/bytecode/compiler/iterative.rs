@@ -15,7 +15,7 @@ use super::work_item::{
 use super::Compiler;
 use crate::backend::bytecode::chunk::JumpLabel;
 use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 impl Compiler {
     /// Compile a MettaValue expression using iterative trampoline pattern.
@@ -334,13 +334,7 @@ impl Compiler {
                 cont_id,
             } => {
                 self.compile_match_iterative(
-                    space,
-                    pattern,
-                    template,
-                    default,
-                    state,
-                    cont_id,
-                    work_stack,
+                    space, pattern, template, default, state, cont_id, work_stack,
                 )?;
             }
 
@@ -441,61 +435,61 @@ impl Compiler {
         work_stack: &mut Vec<CompileWork>,
         _continuations: &mut Vec<Continuation>,
     ) -> CompileResult<()> {
-        match expr {
+        match expr.inner() {
             // ================================================================
             // Literals - direct emit, no recursion
             // ================================================================
-            MettaValue::Nil => {
+            MettaValueInner::Nil => {
                 self.builder.emit(Opcode::PushNil);
             }
-            MettaValue::Unit => {
+            MettaValueInner::Unit => {
                 self.builder.emit(Opcode::PushUnit);
             }
-            MettaValue::Bool(true) => {
+            MettaValueInner::Bool(true) => {
                 self.builder.emit(Opcode::PushTrue);
             }
-            MettaValue::Bool(false) => {
+            MettaValueInner::Bool(false) => {
                 self.builder.emit(Opcode::PushFalse);
             }
-            MettaValue::Long(n) => {
-                self.compile_long(n)?;
+            MettaValueInner::Long(n) => {
+                self.compile_long(*n)?;
             }
-            MettaValue::Float(f) => {
-                self.compile_float(f)?;
+            MettaValueInner::Float(f) => {
+                self.compile_float(*f)?;
             }
-            MettaValue::String(s) => {
-                let idx = self.builder.add_constant(MettaValue::String(s));
+            MettaValueInner::String(s) => {
+                let idx = self.builder.add_constant(MettaValue::String(s.clone()));
                 self.builder.emit_u16(Opcode::PushString, idx);
             }
 
             // ================================================================
             // Atoms (symbols and variables)
             // ================================================================
-            MettaValue::Atom(name) => {
-                self.compile_atom(&name)?;
+            MettaValueInner::Atom(name) => {
+                self.compile_atom(name)?;
             }
 
             // ================================================================
             // S-expressions - dispatch to builtin or generic
             // ================================================================
-            MettaValue::SExpr(items) => {
-                self.compile_sexpr_iterative(items, cont_id, work_stack)?;
+            MettaValueInner::SExpr(items) => {
+                self.compile_sexpr_iterative(items.clone(), cont_id, work_stack)?;
             }
 
             // ================================================================
             // Type
             // ================================================================
-            MettaValue::Type(t) => {
-                let idx = self.builder.add_constant(MettaValue::Type(t));
+            MettaValueInner::Type(t) => {
+                let idx = self.builder.add_constant(MettaValue::Type(t.clone()));
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
 
             // ================================================================
             // Conjunction (multiple values)
             // ================================================================
-            MettaValue::Conjunction(values) => {
+            MettaValueInner::Conjunction(values) => {
                 work_stack.push(CompileWork::CompileConjunction {
-                    values: values.into_iter().collect(),
+                    values: values.iter().cloned().collect(),
                     state: super::work_item::ConjunctionState::Analyzing,
                     cont_id,
                 });
@@ -504,28 +498,30 @@ impl Compiler {
             // ================================================================
             // Error
             // ================================================================
-            MettaValue::Error(msg, details) => {
-                let idx = self.builder.add_constant(MettaValue::Error(msg, details));
+            MettaValueInner::Error(msg, details) => {
+                let idx = self
+                    .builder
+                    .add_constant(MettaValue::Error(msg.clone(), details.clone()));
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
 
             // ================================================================
             // Space and State are runtime values, compile as constants
             // ================================================================
-            MettaValue::Space(handle) => {
-                let idx = self.builder.add_constant(MettaValue::Space(handle));
+            MettaValueInner::Space(handle) => {
+                let idx = self.builder.add_constant(MettaValue::Space(handle.clone()));
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
-            MettaValue::State(handle) => {
-                let idx = self.builder.add_constant(MettaValue::State(handle));
+            MettaValueInner::State(handle) => {
+                let idx = self.builder.add_constant(MettaValue::State(*handle));
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
-            MettaValue::Memo(handle) => {
-                let idx = self.builder.add_constant(MettaValue::Memo(handle));
+            MettaValueInner::Memo(handle) => {
+                let idx = self.builder.add_constant(MettaValue::Memo(handle.clone()));
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
-            MettaValue::Empty => {
-                let idx = self.builder.add_constant(MettaValue::Empty);
+            MettaValueInner::Empty => {
+                let idx = self.builder.add_constant(MettaValue::Empty());
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
         }
@@ -545,11 +541,12 @@ impl Compiler {
         }
 
         // Check if the head is a known operation
-        if let Some(MettaValue::Atom(op_name)) = items.first() {
+        if let Some(MettaValueInner::Atom(op_name)) = items.first().map(|v| v.inner()) {
             let args = &items[1..];
 
             // Try to compile as built-in operation
-            if let Some(()) = self.try_compile_builtin_iterative(op_name, args, cont_id, work_stack)?
+            if let Some(()) =
+                self.try_compile_builtin_iterative(op_name, args, cont_id, work_stack)?
             {
                 return Ok(());
             }
@@ -723,13 +720,13 @@ impl Compiler {
             "*" => {
                 self.check_arity("*", args.len(), 2)?;
                 // Special cases for multiplication
-                if matches!(&args[0], MettaValue::Long(0))
-                    || matches!(&args[1], MettaValue::Long(0))
+                if matches!(args[0].inner(), MettaValueInner::Long(0))
+                    || matches!(args[1].inner(), MettaValueInner::Long(0))
                 {
                     self.builder.emit_byte(Opcode::PushLongSmall, 0);
                     return Ok(Some(()));
                 }
-                if matches!(&args[0], MettaValue::Long(1)) {
+                if matches!(args[0].inner(), MettaValueInner::Long(1)) {
                     work_stack.push(CompileWork::CompileExpr {
                         expr: args[1].clone(),
                         in_tail_position: false,
@@ -737,7 +734,7 @@ impl Compiler {
                     });
                     return Ok(Some(()));
                 }
-                if matches!(&args[1], MettaValue::Long(1)) {
+                if matches!(args[1].inner(), MettaValueInner::Long(1)) {
                     work_stack.push(CompileWork::CompileExpr {
                         expr: args[0].clone(),
                         in_tail_position: false,
@@ -757,7 +754,7 @@ impl Compiler {
             }
             "/" => {
                 self.check_arity("/", args.len(), 2)?;
-                if matches!(&args[1], MettaValue::Long(1)) {
+                if matches!(args[1].inner(), MettaValueInner::Long(1)) {
                     work_stack.push(CompileWork::CompileExpr {
                         expr: args[0].clone(),
                         in_tail_position: false,
@@ -789,11 +786,11 @@ impl Compiler {
             }
             "pow" | "pow-math" => {
                 self.check_arity("pow", args.len(), 2)?;
-                if matches!(&args[1], MettaValue::Long(0)) {
+                if matches!(args[1].inner(), MettaValueInner::Long(0)) {
                     self.builder.emit_byte(Opcode::PushLongSmall, 1);
                     return Ok(Some(()));
                 }
-                if matches!(&args[1], MettaValue::Long(1)) {
+                if matches!(args[1].inner(), MettaValueInner::Long(1)) {
                     work_stack.push(CompileWork::CompileExpr {
                         expr: args[0].clone(),
                         in_tail_position: false,
@@ -1125,8 +1122,8 @@ impl Compiler {
                 self.check_arity("if", args.len(), 3)?;
                 // Try constant condition folding
                 if let Some(cond_val) = self.try_eval_constant(&args[0]) {
-                    if let MettaValue::Bool(cond) = cond_val {
-                        let branch = if cond {
+                    if let MettaValueInner::Bool(cond) = cond_val.inner() {
+                        let branch = if *cond {
                             args[1].clone()
                         } else {
                             args[2].clone()
@@ -1171,11 +1168,11 @@ impl Compiler {
             }
             "let*" => {
                 self.check_arity("let*", args.len(), 2)?;
-                let bindings = match &args[0] {
-                    MettaValue::SExpr(items) => items
+                let bindings = match args[0].inner() {
+                    MettaValueInner::SExpr(items) => items
                         .iter()
-                        .map(|b| match b {
-                            MettaValue::SExpr(pair) if pair.len() == 2 => {
+                        .map(|b| match b.inner() {
+                            MettaValueInner::SExpr(pair) if pair.len() == 2 => {
                                 Ok((pair[0].clone(), pair[1].clone()))
                             }
                             _ => Err(CompileError::InvalidExpression(
@@ -1275,9 +1272,9 @@ impl Compiler {
             // ================================================================
             "superpose" => {
                 self.check_arity("superpose", args.len(), 1)?;
-                let alternatives = match &args[0] {
-                    MettaValue::SExpr(items) => items.clone(),
-                    other => vec![other.clone()],
+                let alternatives = match args[0].inner() {
+                    MettaValueInner::SExpr(items) => items.clone(),
+                    _ => vec![args[0].clone()],
                 };
                 work_stack.push(CompileWork::CompileSuperpose {
                     alternatives: alternatives.into_iter().collect(),
@@ -1403,8 +1400,8 @@ impl Compiler {
             // ================================================================
             "map-atom" => {
                 self.check_arity("map-atom", args.len(), 3)?;
-                let var_name = match &args[1] {
-                    MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+                let var_name = match args[1].inner() {
+                    MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
                     _ => {
                         return Err(CompileError::InvalidExpression(
                             "map-atom variable must be $var".to_string(),
@@ -1424,8 +1421,8 @@ impl Compiler {
             }
             "filter-atom" => {
                 self.check_arity("filter-atom", args.len(), 3)?;
-                let var_name = match &args[1] {
-                    MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+                let var_name = match args[1].inner() {
+                    MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
                     _ => {
                         return Err(CompileError::InvalidExpression(
                             "filter-atom variable must be $var".to_string(),
@@ -1445,16 +1442,16 @@ impl Compiler {
             }
             "foldl-atom" => {
                 self.check_arity("foldl-atom", args.len(), 5)?;
-                let acc_name = match &args[2] {
-                    MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+                let acc_name = match args[2].inner() {
+                    MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
                     _ => {
                         return Err(CompileError::InvalidExpression(
                             "foldl-atom accumulator must be $var".to_string(),
                         ))
                     }
                 };
-                let item_name = match &args[3] {
-                    MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+                let item_name = match args[3].inner() {
+                    MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
                     _ => {
                         return Err(CompileError::InvalidExpression(
                             "foldl-atom item must be $var".to_string(),
@@ -1524,11 +1521,11 @@ impl Compiler {
             }
             "case" => {
                 self.check_arity("case", args.len(), 2)?;
-                let cases = match &args[1] {
-                    MettaValue::SExpr(items) => items
+                let cases = match args[1].inner() {
+                    MettaValueInner::SExpr(items) => items
                         .iter()
-                        .map(|c| match c {
-                            MettaValue::SExpr(pair) if pair.len() == 2 => {
+                        .map(|c| match c.inner() {
+                            MettaValueInner::SExpr(pair) if pair.len() == 2 => {
                                 Ok((pair[0].clone(), pair[1].clone()))
                             }
                             _ => Err(CompileError::InvalidExpression(
@@ -1560,13 +1557,13 @@ impl Compiler {
                 self.check_arity("error", args.len(), 2)?;
                 // Construct MettaValue::Error at compile time, matching tree-walker semantics
                 // (error msg details) - arguments are NOT evaluated, taken as-is
-                let msg = match &args[0] {
-                    MettaValue::String(s) => s.clone(),
-                    MettaValue::Atom(s) => s.clone(),
-                    other => format!("{:?}", other),
+                let msg = match args[0].inner() {
+                    MettaValueInner::String(s) => s.clone(),
+                    MettaValueInner::Atom(s) => s.clone(),
+                    _ => format!("{:?}", args[0]),
                 };
                 let details = args[1].clone();
-                let error_value = MettaValue::Error(msg, std::sync::Arc::new(details));
+                let error_value = MettaValue::Error(msg, details);
                 let idx = self.builder.add_constant(error_value);
                 self.builder.emit_u16(Opcode::PushConstant, idx);
                 Ok(Some(()))
@@ -1698,9 +1695,7 @@ impl Compiler {
                     expr: args[0].clone(),
                     cont_id: 0,
                 });
-                let idx = self
-                    .builder
-                    .add_constant(MettaValue::Atom("=".to_string()));
+                let idx = self.builder.add_constant(MettaValue::Atom("=".to_string()));
                 self.builder.emit_u16(Opcode::PushAtom, idx);
                 Ok(Some(()))
             }
@@ -2362,8 +2357,8 @@ impl Compiler {
         cont_id: usize,
         work_stack: &mut Vec<CompileWork>,
     ) -> CompileResult<()> {
-        match expr {
-            MettaValue::Atom(name) => {
+        match expr.inner() {
+            MettaValueInner::Atom(name) => {
                 let idx = self.builder.add_constant(MettaValue::Atom(name.clone()));
                 if name.starts_with('$') {
                     self.builder.emit_u16(Opcode::PushVariable, idx);
@@ -2371,18 +2366,18 @@ impl Compiler {
                     self.builder.emit_u16(Opcode::PushAtom, idx);
                 }
             }
-            MettaValue::SExpr(items) => {
+            MettaValueInner::SExpr(items) => {
                 let total = items.len();
                 work_stack.push(CompileWork::CompileQuotedSExprElements {
-                    items: items.into_iter().collect(),
+                    items: items.iter().cloned().collect(),
                     total_count: total,
                     cont_id,
                 });
             }
-            other => {
+            _ => {
                 // Other values can be compiled normally
                 work_stack.push(CompileWork::CompileExpr {
-                    expr: other,
+                    expr,
                     in_tail_position: false,
                     cont_id,
                 });
@@ -2468,8 +2463,8 @@ impl Compiler {
     ) -> CompileResult<()> {
         match state {
             PatternBindingState::Binding => {
-                match pattern {
-                    MettaValue::Atom(name) if name.starts_with('$') => {
+                match pattern.inner() {
+                    MettaValueInner::Atom(name) if name.starts_with('$') => {
                         let var_name = name[1..].to_string();
                         let slot = self.context.declare_local(var_name)?;
                         if slot <= 255 {
@@ -2478,15 +2473,15 @@ impl Compiler {
                             self.builder.emit_u16(Opcode::StoreLocalWide, slot);
                         }
                     }
-                    MettaValue::Atom(name) if name == "_" => {
+                    MettaValueInner::Atom(name) if name == "_" => {
                         self.builder.emit(Opcode::Pop);
                     }
-                    MettaValue::SExpr(items) => {
+                    MettaValueInner::SExpr(items) => {
                         // Destructuring pattern
                         let total = items.len();
                         if total > 0 {
                             // Push work for each element in reverse order
-                            for (i, item) in items.into_iter().enumerate().rev() {
+                            for (i, item) in items.iter().cloned().enumerate().rev() {
                                 work_stack.push(CompileWork::CompilePatternBinding {
                                     pattern: item,
                                     element_index: i,
@@ -2509,7 +2504,8 @@ impl Compiler {
             PatternBindingState::DestructuringElement => {
                 // Emit Dup, GetElement, then recursively bind
                 self.builder.emit(Opcode::Dup);
-                self.builder.emit_byte(Opcode::GetElement, element_index as u8);
+                self.builder
+                    .emit_byte(Opcode::GetElement, element_index as u8);
 
                 // If this is the last element, pop the original after binding
                 if element_index == total_elements - 1 {

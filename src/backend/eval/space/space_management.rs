@@ -5,10 +5,8 @@
 //! - add-atom: Add an atom to a space
 //! - remove-atom: Remove an atom from a space
 
-use std::sync::Arc;
-
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue, SpaceHandle};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner, SpaceHandle};
 
 #[allow(unused_imports)]
 use super::super::eval;
@@ -27,7 +25,7 @@ pub(crate) fn eval_add_atom_step(
                 "add-atom requires 2 arguments, got {}. Usage: (add-atom space atom)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -56,7 +54,7 @@ pub(crate) fn eval_remove_atom_step(
                 "remove-atom requires 2 arguments, got {}. Usage: (remove-atom space atom)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -80,16 +78,17 @@ pub(crate) fn eval_new_space(items: Vec<MettaValue>, mut env: Environment) -> Ev
 
     // Get optional name, default to "space-N"
     let name = if !args.is_empty() {
-        match &args[0] {
-            MettaValue::String(s) => s.clone(),
-            MettaValue::Atom(s) => s.clone(),
-            other => {
+        match args[0].inner() {
+            MettaValueInner::String(s) => s.clone(),
+            MettaValueInner::Atom(s) => s.clone(),
+            _ => {
+                let other = &args[0];
                 let err = MettaValue::Error(
                     format!(
                         "new-space: optional name must be a string, got {}. Usage: (new-space) or (new-space \"name\")",
                         super::super::friendly_value_repr(other)
                     ),
-                    Arc::new(other.clone()),
+                    other.clone(),
                 );
                 return (vec![err], env);
             }
@@ -119,7 +118,7 @@ pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     if space_results.is_empty() {
         let err = MettaValue::Error(
             "add-atom: space evaluated to empty".to_string(),
-            Arc::new(space_ref.clone()),
+            space_ref.clone(),
         );
         return (vec![err], env1);
     }
@@ -128,7 +127,7 @@ pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     if atom_results.is_empty() {
         let err = MettaValue::Error(
             "add-atom: atom evaluated to empty".to_string(),
-            Arc::new(atom.clone()),
+            atom.clone(),
         );
         return (vec![err], env2);
     }
@@ -137,11 +136,11 @@ pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     let space_value = &space_results[0];
     let atom_value = &atom_results[0];
 
-    match space_value {
-        MettaValue::Space(handle) => {
+    match space_value.inner() {
+        MettaValueInner::Space(handle) => {
             // Use SpaceHandle's add_atom method directly (it has its own backing store)
             handle.add_atom(atom_value.clone());
-            (vec![MettaValue::Unit], env2)
+            (vec![MettaValue::Unit()], env2)
         }
         _ => {
             let err = MettaValue::Error(
@@ -149,7 +148,7 @@ pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
                     "add-atom: first argument must be a space reference, got {}. Usage: (add-atom space atom)",
                     super::super::friendly_value_repr(space_value)
                 ),
-                Arc::new(space_value.clone()),
+                space_value.clone(),
             );
             (vec![err], env2)
         }
@@ -172,7 +171,7 @@ pub(crate) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> Eval
     if space_results.is_empty() {
         let err = MettaValue::Error(
             "remove-atom: space evaluated to empty".to_string(),
-            Arc::new(space_ref.clone()),
+            space_ref.clone(),
         );
         return (vec![err], env1);
     }
@@ -181,7 +180,7 @@ pub(crate) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> Eval
     if atom_results.is_empty() {
         let err = MettaValue::Error(
             "remove-atom: atom evaluated to empty".to_string(),
-            Arc::new(atom.clone()),
+            atom.clone(),
         );
         return (vec![err], env2);
     }
@@ -190,11 +189,11 @@ pub(crate) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> Eval
     let space_value = &space_results[0];
     let atom_value = &atom_results[0];
 
-    match space_value {
-        MettaValue::Space(handle) => {
+    match space_value.inner() {
+        MettaValueInner::Space(handle) => {
             // Use SpaceHandle's remove_atom method directly (it has its own backing store)
             handle.remove_atom(atom_value);
-            (vec![MettaValue::Unit], env2)
+            (vec![MettaValue::Unit()], env2)
         }
         _ => {
             let err = MettaValue::Error(
@@ -202,7 +201,7 @@ pub(crate) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> Eval
                     "remove-atom: first argument must be a space reference, got {}. Usage: (remove-atom space atom)",
                     super::super::friendly_value_repr(space_value)
                 ),
-                Arc::new(space_value.clone()),
+                space_value.clone(),
             );
             (vec![err], env2)
         }

@@ -10,10 +10,8 @@
 //! - backtrack: Force immediate backtracking
 //! - get-atoms: Get all atoms from a space as a superposition
 
-use std::sync::Arc;
-
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
 use super::super::eval;
@@ -29,7 +27,7 @@ pub(crate) fn eval_collapse_step(
     if items.len() < 2 {
         let err = MettaValue::Error(
             "collapse requires 1 argument. Usage: (collapse expr)".to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -67,28 +65,28 @@ pub(crate) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
     if results.is_empty() {
         // Empty superposition returns Unit () (HE-compatible)
-        return (vec![MettaValue::Unit], env1);
+        return (vec![MettaValue::Unit()], env1);
     }
 
     // Filter out Empty sentinels and Nil values from results
     // Empty represents "no result to report", Nil represents "no result" in nondeterministic evaluation
     let filtered: Vec<MettaValue> = results
         .into_iter()
-        .filter(|v| !matches!(v, MettaValue::Empty | MettaValue::Nil))
+        .filter(|v| !matches!(v.inner(), MettaValueInner::Empty | MettaValueInner::Nil))
         .collect();
 
     if filtered.is_empty() {
         // All results were Empty/Nil → return Unit () (HE-compatible)
-        return (vec![MettaValue::Unit], env1);
+        return (vec![MettaValue::Unit()], env1);
     }
 
     // Check if the single result is a space (direct space collapse)
     if filtered.len() == 1 {
-        if let MettaValue::Space(handle) = &filtered[0] {
+        if let MettaValueInner::Space(handle) = filtered[0].inner() {
             // Use SpaceHandle's collapse method directly
             let atoms = handle.collapse();
             if atoms.is_empty() {
-                return (vec![MettaValue::Unit], env1);
+                return (vec![MettaValue::Unit()], env1);
             } else {
                 return (vec![MettaValue::SExpr(atoms)], env1);
             }
@@ -109,7 +107,7 @@ pub(crate) fn eval_collapse_bind_step(
     if items.len() < 2 {
         let err = MettaValue::Error(
             "collapse-bind requires 1 argument. Usage: (collapse-bind expr)".to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -173,8 +171,8 @@ pub(crate) fn eval_superpose(items: Vec<MettaValue>, env: Environment) -> EvalRe
 
     // DON'T evaluate the argument - treat it as a data list (HE-compatible)
     // This is different from most operations that evaluate their arguments
-    match expr {
-        MettaValue::SExpr(elements) => {
+    match expr.inner() {
+        MettaValueInner::SExpr(elements) => {
             if elements.is_empty() {
                 // Empty superpose returns empty (no results) - nondeterministic failure
                 (vec![], env)
@@ -183,13 +181,13 @@ pub(crate) fn eval_superpose(items: Vec<MettaValue>, env: Environment) -> EvalRe
                 (elements.clone(), env)
             }
         }
-        MettaValue::Nil => {
+        MettaValueInner::Nil => {
             // Nil superposes to empty (no results)
             (vec![], env)
         }
-        other => {
+        _ => {
             // Single value superposes to itself
-            (vec![other.clone()], env)
+            (vec![expr.clone()], env)
         }
     }
 }
@@ -200,11 +198,7 @@ pub(crate) fn eval_superpose(items: Vec<MettaValue>, env: Environment) -> EvalRe
 
 /// Step version of eval_amb - defers evaluation to trampoline.
 /// Usage: (amb alt1 alt2 ... altN)
-pub(crate) fn eval_amb_step(
-    items: Vec<MettaValue>,
-    env: Environment,
-    depth: usize,
-) -> EvalStep {
+pub(crate) fn eval_amb_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     let alternatives = items[1..].to_vec();
 
     if alternatives.is_empty() {
@@ -256,15 +250,11 @@ pub(crate) fn eval_amb(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 
 /// Step version of eval_guard - defers evaluation to trampoline.
 /// Usage: (guard condition)
-pub(crate) fn eval_guard_step(
-    items: Vec<MettaValue>,
-    env: Environment,
-    depth: usize,
-) -> EvalStep {
+pub(crate) fn eval_guard_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     if items.len() < 2 {
         let err = MettaValue::Error(
             "guard requires 1 argument. Usage: (guard condition)".to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -299,30 +289,31 @@ pub(crate) fn eval_guard(items: Vec<MettaValue>, env: Environment) -> EvalResult
     let (cond_results, env_after) = eval(condition.clone(), env);
 
     // Check the condition result
-    match cond_results.first() {
-        Some(MettaValue::Bool(true)) => {
+    match cond_results.first().map(|v| v.inner()) {
+        Some(MettaValueInner::Bool(true)) => {
             // Guard passes - return Unit and continue
-            (vec![MettaValue::Unit], env_after)
+            (vec![MettaValue::Unit()], env_after)
         }
-        Some(MettaValue::Bool(false)) => {
+        Some(MettaValueInner::Bool(false)) => {
             // Guard fails - return empty (nondeterministic failure)
             (vec![], env_after)
         }
-        Some(MettaValue::Error(msg, details)) => {
+        Some(MettaValueInner::Error(msg, details)) => {
             // Error propagates
             (
                 vec![MettaValue::Error(msg.clone(), details.clone())],
                 env_after,
             )
         }
-        Some(other) => {
+        Some(_) => {
             // Type error - guard requires a boolean
+            let other = cond_results.first().expect("checked above");
             let err = MettaValue::Error(
                 format!(
                     "guard: condition must evaluate to Bool, got {}",
                     super::super::friendly_type_name(other)
                 ),
-                Arc::new(other.clone()),
+                other.clone(),
             );
             (vec![err], env_after)
         }
@@ -349,7 +340,7 @@ pub(crate) fn eval_commit(items: Vec<MettaValue>, env: Environment) -> EvalResul
     // explicit choice points. The nondeterminism is handled through result lists.
     // Just return Unit to indicate success.
     let _ = items; // Suppress unused warning
-    (vec![MettaValue::Unit], env)
+    (vec![MettaValue::Unit()], env)
 }
 
 /// backtrack: Force immediate backtracking (nondeterministic failure)
@@ -378,7 +369,7 @@ pub(crate) fn eval_get_atoms_step(
     if items.len() < 2 {
         let err = MettaValue::Error(
             "get-atoms requires 1 argument. Usage: (get-atoms space)".to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -413,15 +404,15 @@ pub(crate) fn eval_get_atoms(items: Vec<MettaValue>, env: Environment) -> EvalRe
     if space_results.is_empty() {
         let err = MettaValue::Error(
             "get-atoms: space evaluated to empty".to_string(),
-            Arc::new(space_ref.clone()),
+            space_ref.clone(),
         );
         return (vec![err], env1);
     }
 
     let space_value = &space_results[0];
 
-    match space_value {
-        MettaValue::Space(handle) => {
+    match space_value.inner() {
+        MettaValueInner::Space(handle) => {
             // Return atoms as superposition (multiple results), not wrapped in list
             let atoms = handle.collapse();
             if atoms.is_empty() {
@@ -438,7 +429,7 @@ pub(crate) fn eval_get_atoms(items: Vec<MettaValue>, env: Environment) -> EvalRe
                     "get-atoms: argument must be a space, got {}. Usage: (get-atoms space)",
                     super::super::friendly_value_repr(space_value)
                 ),
-                Arc::new(space_value.clone()),
+                space_value.clone(),
             );
             (vec![err], env1)
         }

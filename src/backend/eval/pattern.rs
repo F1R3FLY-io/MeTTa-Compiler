@@ -5,7 +5,7 @@
 
 use tracing::trace;
 
-use crate::backend::models::{Bindings, MettaValue};
+use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 
 /// Match a pattern against a value, returning variable bindings if successful.
 ///
@@ -63,78 +63,78 @@ pub(crate) fn pattern_match_impl(
 
     while let Some((pat, val)) = work_stack.pop() {
         // Process each pattern-value pair
-        let matches = match (pat, val) {
+        let matches = match (pat.inner(), val.inner()) {
             // Wildcard matches anything
-            (MettaValue::Atom(p), _) if p == "_" => true,
+            (MettaValueInner::Atom(p), _) if p == "_" => true,
 
             // FAST PATH: First variable binding (empty bindings)
             // Optimization: Skip lookup when bindings are empty - directly insert
             // This reduces single-variable regression from 16.8% to ~5-7%
-            (MettaValue::Atom(p), v)
+            (MettaValueInner::Atom(p), _)
                 if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
                     && p != "&"
                     && bindings.is_empty()
                     && work_stack.is_empty() =>
             {
-                bindings.insert(p.clone(), v.clone());
+                bindings.insert(p.clone(), val.clone());
                 true
             }
 
             // GENERAL PATH: Variable with potential existing bindings
             // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            (MettaValue::Atom(p), v)
+            (MettaValueInner::Atom(p), _)
                 if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
                     && p != "&" =>
             {
                 // Check if variable is already bound (linear search for SmartBindings)
                 if let Some((_, existing)) = bindings.iter().find(|(name, _)| name.as_str() == p) {
-                    existing == v
+                    existing == val
                 } else {
-                    bindings.insert(p.clone(), v.clone());
+                    bindings.insert(p.clone(), val.clone());
                     true
                 }
             }
 
             // Atoms must match exactly
-            (MettaValue::Atom(p), MettaValue::Atom(v)) => p == v,
-            (MettaValue::Bool(p), MettaValue::Bool(v)) => p == v,
-            (MettaValue::Long(p), MettaValue::Long(v)) => p == v,
-            (MettaValue::Float(p), MettaValue::Float(v)) => p == v,
-            (MettaValue::String(p), MettaValue::String(v)) => p == v,
-            (MettaValue::Nil, MettaValue::Nil) => true,
+            (MettaValueInner::Atom(p), MettaValueInner::Atom(v)) => p == v,
+            (MettaValueInner::Bool(p), MettaValueInner::Bool(v)) => p == v,
+            (MettaValueInner::Long(p), MettaValueInner::Long(v)) => p == v,
+            (MettaValueInner::Float(p), MettaValueInner::Float(v)) => p == v,
+            (MettaValueInner::String(p), MettaValueInner::String(v)) => p == v,
+            (MettaValueInner::Nil, MettaValueInner::Nil) => true,
             // Nil also matches Unit (HE-compatible: both represent "nothing")
-            (MettaValue::Nil, MettaValue::Unit) => true,
+            (MettaValueInner::Nil, MettaValueInner::Unit) => true,
             // Nil pattern matches Empty atom (HE-compatible: () pattern in case matches Empty)
             // This is needed because case converts empty results to Atom("Empty") internally
-            (MettaValue::Nil, MettaValue::Atom(v)) if v == "Empty" => true,
+            (MettaValueInner::Nil, MettaValueInner::Atom(v)) if v == "Empty" => true,
             // Empty atom pattern matches Nil (symmetry: Empty pattern matches () values)
-            (MettaValue::Atom(p), MettaValue::Nil) if p == "Empty" => true,
+            (MettaValueInner::Atom(p), MettaValueInner::Nil) if p == "Empty" => true,
             // Unit also matches Nil and other Units
-            (MettaValue::Unit, MettaValue::Unit) => true,
-            (MettaValue::Unit, MettaValue::Nil) => true,
+            (MettaValueInner::Unit, MettaValueInner::Unit) => true,
+            (MettaValueInner::Unit, MettaValueInner::Nil) => true,
 
             // Nil pattern matches only empty values (Nil, Unit, empty S-expr, or Empty atom)
             // For discard pattern, use wildcard _ instead
-            (MettaValue::Nil, MettaValue::SExpr(v_items)) if v_items.is_empty() => true,
-            (MettaValue::Nil, MettaValue::Atom(v)) if v == "Empty" => true,
+            (MettaValueInner::Nil, MettaValueInner::SExpr(v_items)) if v_items.is_empty() => true,
+            (MettaValueInner::Nil, MettaValueInner::Atom(v)) if v == "Empty" => true,
 
             // Empty S-expression () matches only empty values (empty S-expr, Nil, Unit, or Empty atom)
             // For discard pattern, use wildcard _ instead
-            (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items))
+            (MettaValueInner::SExpr(p_items), MettaValueInner::SExpr(v_items))
                 if p_items.is_empty() && v_items.is_empty() =>
             {
                 true
             }
-            (MettaValue::SExpr(p_items), MettaValue::Nil) if p_items.is_empty() => true,
-            (MettaValue::SExpr(p_items), MettaValue::Unit) if p_items.is_empty() => true,
-            (MettaValue::SExpr(p_items), MettaValue::Atom(v))
+            (MettaValueInner::SExpr(p_items), MettaValueInner::Nil) if p_items.is_empty() => true,
+            (MettaValueInner::SExpr(p_items), MettaValueInner::Unit) if p_items.is_empty() => true,
+            (MettaValueInner::SExpr(p_items), MettaValueInner::Atom(v))
                 if p_items.is_empty() && v == "Empty" =>
             {
                 true
             }
 
             // S-expressions: push children onto work stack (replaces recursion)
-            (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items)) => {
+            (MettaValueInner::SExpr(p_items), MettaValueInner::SExpr(v_items)) => {
                 if p_items.len() != v_items.len() {
                     return false; // Early exit on length mismatch
                 }
@@ -146,7 +146,7 @@ pub(crate) fn pattern_match_impl(
             }
 
             // Conjunctions: push children onto work stack (replaces recursion)
-            (MettaValue::Conjunction(p_goals), MettaValue::Conjunction(v_goals)) => {
+            (MettaValueInner::Conjunction(p_goals), MettaValueInner::Conjunction(v_goals)) => {
                 if p_goals.len() != v_goals.len() {
                     return false; // Early exit on length mismatch
                 }
@@ -158,7 +158,10 @@ pub(crate) fn pattern_match_impl(
             }
 
             // Errors: check message match, push details onto work stack
-            (MettaValue::Error(p_msg, p_details), MettaValue::Error(v_msg, v_details)) => {
+            (
+                MettaValueInner::Error(p_msg, p_details),
+                MettaValueInner::Error(v_msg, v_details),
+            ) => {
                 if p_msg != v_msg {
                     return false; // Message mismatch
                 }

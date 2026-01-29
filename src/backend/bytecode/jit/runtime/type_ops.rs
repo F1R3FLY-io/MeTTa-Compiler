@@ -9,7 +9,7 @@ use crate::backend::bytecode::jit::types::{
     JitBailoutReason, JitContext, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG,
     TAG_MASK, TAG_NIL, TAG_UNIT, TAG_VAR,
 };
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // Type Operations Runtime (Phase 1 JIT)
@@ -80,22 +80,22 @@ pub unsafe extern "C" fn jit_runtime_get_type(_ctx: *mut JitContext, val: u64, _
             if ptr.is_null() {
                 TYPE_NAME_UNKNOWN
             } else {
-                match &*ptr {
-                    MettaValue::SExpr(_) => TYPE_NAME_EXPRESSION,
-                    MettaValue::String(_) => TYPE_NAME_STRING,
-                    MettaValue::Type(_) => TYPE_NAME_TYPE,
-                    MettaValue::Conjunction(_) => TYPE_NAME_CONJUNCTION,
-                    MettaValue::Space(_) => TYPE_NAME_SPACE,
-                    MettaValue::State(_) => TYPE_NAME_STATE,
-                    MettaValue::Memo(_) => TYPE_NAME_MEMO,
-                    MettaValue::Empty => TYPE_NAME_EMPTY,
-                    MettaValue::Atom(s) if s.starts_with('$') => TYPE_NAME_VARIABLE,
-                    MettaValue::Atom(_) => TYPE_NAME_SYMBOL,
-                    MettaValue::Bool(_) => TYPE_NAME_BOOL,
-                    MettaValue::Long(_) | MettaValue::Float(_) => TYPE_NAME_NUMBER,
-                    MettaValue::Nil => TYPE_NAME_NIL,
-                    MettaValue::Error(_, _) => TYPE_NAME_ERROR,
-                    MettaValue::Unit => TYPE_NAME_UNIT,
+                match (*ptr).inner() {
+                    MettaValueInner::SExpr(_) => TYPE_NAME_EXPRESSION,
+                    MettaValueInner::String(_) => TYPE_NAME_STRING,
+                    MettaValueInner::Type(_) => TYPE_NAME_TYPE,
+                    MettaValueInner::Conjunction(_) => TYPE_NAME_CONJUNCTION,
+                    MettaValueInner::Space(_) => TYPE_NAME_SPACE,
+                    MettaValueInner::State(_) => TYPE_NAME_STATE,
+                    MettaValueInner::Memo(_) => TYPE_NAME_MEMO,
+                    MettaValueInner::Empty => TYPE_NAME_EMPTY,
+                    MettaValueInner::Atom(s) if s.starts_with('$') => TYPE_NAME_VARIABLE,
+                    MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
+                    MettaValueInner::Bool(_) => TYPE_NAME_BOOL,
+                    MettaValueInner::Long(_) | MettaValueInner::Float(_) => TYPE_NAME_NUMBER,
+                    MettaValueInner::Nil => TYPE_NAME_NIL,
+                    MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
+                    MettaValueInner::Unit => TYPE_NAME_UNIT,
                 }
             }
         }
@@ -149,7 +149,7 @@ pub unsafe extern "C" fn jit_runtime_check_type(
             TAG_HEAP => {
                 let ptr = (type_atom & PAYLOAD_MASK) as *const MettaValue;
                 if !ptr.is_null() {
-                    if let MettaValue::Atom(s) = &*ptr {
+                    if let MettaValueInner::Atom(s) = (*ptr).inner() {
                         Some(s.as_str())
                     } else {
                         None
@@ -225,7 +225,7 @@ pub unsafe extern "C" fn jit_runtime_assert_type(
             TAG_HEAP => {
                 let ptr = (type_atom & PAYLOAD_MASK) as *const MettaValue;
                 if !ptr.is_null() {
-                    if let MettaValue::Atom(s) = &*ptr {
+                    if let MettaValueInner::Atom(s) = (*ptr).inner() {
                         Some(s.as_str())
                     } else {
                         None
@@ -300,22 +300,22 @@ unsafe fn get_type_name(val: u64) -> &'static str {
             if ptr.is_null() {
                 return TYPE_NAME_UNKNOWN;
             }
-            match &*ptr {
-                MettaValue::SExpr(_) => TYPE_NAME_EXPRESSION,
-                MettaValue::String(_) => TYPE_NAME_STRING,
-                MettaValue::Type(_) => TYPE_NAME_TYPE,
-                MettaValue::Conjunction(_) => TYPE_NAME_CONJUNCTION,
-                MettaValue::Space(_) => TYPE_NAME_SPACE,
-                MettaValue::State(_) => TYPE_NAME_STATE,
-                MettaValue::Memo(_) => TYPE_NAME_MEMO,
-                MettaValue::Empty => TYPE_NAME_EMPTY,
-                MettaValue::Atom(s) if s.starts_with('$') => TYPE_NAME_VARIABLE,
-                MettaValue::Atom(_) => TYPE_NAME_SYMBOL,
-                MettaValue::Bool(_) => TYPE_NAME_BOOL,
-                MettaValue::Long(_) | MettaValue::Float(_) => TYPE_NAME_NUMBER,
-                MettaValue::Nil => TYPE_NAME_NIL,
-                MettaValue::Error(_, _) => TYPE_NAME_ERROR,
-                MettaValue::Unit => TYPE_NAME_UNIT,
+            match (*ptr).inner() {
+                MettaValueInner::SExpr(_) => TYPE_NAME_EXPRESSION,
+                MettaValueInner::String(_) => TYPE_NAME_STRING,
+                MettaValueInner::Type(_) => TYPE_NAME_TYPE,
+                MettaValueInner::Conjunction(_) => TYPE_NAME_CONJUNCTION,
+                MettaValueInner::Space(_) => TYPE_NAME_SPACE,
+                MettaValueInner::State(_) => TYPE_NAME_STATE,
+                MettaValueInner::Memo(_) => TYPE_NAME_MEMO,
+                MettaValueInner::Empty => TYPE_NAME_EMPTY,
+                MettaValueInner::Atom(s) if s.starts_with('$') => TYPE_NAME_VARIABLE,
+                MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
+                MettaValueInner::Bool(_) => TYPE_NAME_BOOL,
+                MettaValueInner::Long(_) | MettaValueInner::Float(_) => TYPE_NAME_NUMBER,
+                MettaValueInner::Nil => TYPE_NAME_NIL,
+                MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
+                MettaValueInner::Unit => TYPE_NAME_UNIT,
             }
         }
         _ => TYPE_NAME_UNKNOWN,

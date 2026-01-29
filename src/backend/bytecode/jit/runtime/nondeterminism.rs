@@ -11,7 +11,7 @@ use crate::backend::bytecode::jit::types::{
     JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, MAX_ALTERNATIVES_INLINE,
     MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, TAG_HEAP, TAG_NIL,
 };
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // Non-Determinism Runtime (Choice Points)
@@ -340,7 +340,7 @@ pub unsafe extern "C" fn jit_runtime_collect(
             let jit_val = *ctx_ref.results.add(i);
             let metta_val = jit_val.to_metta();
             // Filter out Nil values (matches VM collapse semantics)
-            if !matches!(metta_val, MettaValue::Nil) {
+            if !matches!(*metta_val.inner(), MettaValueInner::Nil) {
                 items.push(metta_val);
             }
         }
@@ -349,14 +349,14 @@ pub unsafe extern "C" fn jit_runtime_collect(
         ctx_ref.results_count = 0;
 
         // Return as heap-allocated SExpr
-        let expr = MettaValue::SExpr(items);
+        let expr = MettaValue::sexpr(items);
         let boxed = Box::new(expr);
         let ptr = Box::into_raw(boxed);
         return TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK);
     }
 
     // No results - return empty SExpr
-    let empty = MettaValue::SExpr(Vec::new());
+    let empty = MettaValue::sexpr(Vec::new());
     let boxed = Box::new(empty);
     let ptr = Box::into_raw(boxed);
     TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
@@ -733,7 +733,7 @@ pub unsafe extern "C" fn jit_runtime_collect_native(ctx: *mut JitContext) -> u64
             let jit_val = *ctx_ref.results.add(i);
             let metta_val = jit_val.to_metta();
             // Filter out Nil values (matches VM collapse semantics)
-            if !matches!(metta_val, MettaValue::Nil) {
+            if !matches!(*metta_val.inner(), MettaValueInner::Nil) {
                 items.push(metta_val);
             }
         }
@@ -746,14 +746,14 @@ pub unsafe extern "C" fn jit_runtime_collect_native(ctx: *mut JitContext) -> u64
         ctx_ref.fork_depth = 0;
 
         // Return as heap-allocated SExpr
-        let expr = MettaValue::SExpr(items);
+        let expr = MettaValue::sexpr(items);
         let boxed = Box::new(expr);
         let ptr = Box::into_raw(boxed);
         return TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK);
     }
 
     // No results - return empty SExpr
-    let empty = MettaValue::SExpr(Vec::new());
+    let empty = MettaValue::sexpr(Vec::new());
     let boxed = Box::new(empty);
     let ptr = Box::into_raw(boxed);
     TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)

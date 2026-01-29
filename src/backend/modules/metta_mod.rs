@@ -3,11 +3,11 @@
 //! A `MettaMod` represents a loaded MeTTa module with its own isolated space,
 //! tokenizer, and dependency tracking.
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 use super::module_space::ModuleSpace;
 use super::tokenizer::Tokenizer;

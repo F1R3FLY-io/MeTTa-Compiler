@@ -14,7 +14,7 @@ pub use types::{EvalStep, MemoOpType, ProcessedSExpr};
 use tracing::trace;
 
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::conjunction::eval_conjunction_step;
 
@@ -30,13 +30,13 @@ use super::conjunction::eval_conjunction_step;
 pub fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::backend::eval::eval_step", ?value, depth);
 
-    match value {
+    match value.inner() {
         // Errors propagate immediately
-        MettaValue::Error(_, _) => EvalStep::Done((vec![value], env)),
+        MettaValueInner::Error(_, _) => EvalStep::Done((vec![value], env)),
 
         // Atoms: check special tokens first, then tokenizer, then evaluate to themselves
         // This enables HE-compatible bind! semantics where tokens are replaced during evaluation
-        MettaValue::Atom(ref name) => {
+        MettaValueInner::Atom(ref name) => {
             // Special handling for &self - evaluates to the current module's space
             // This is HE-compatible behavior where &self is a space reference
             if name == "&self" {
@@ -54,24 +54,24 @@ pub fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep 
         }
 
         // Ground types evaluate to themselves
-        MettaValue::Bool(_)
-        | MettaValue::Long(_)
-        | MettaValue::Float(_)
-        | MettaValue::String(_)
-        | MettaValue::Nil
-        | MettaValue::Type(_)
-        | MettaValue::Space(_)
-        | MettaValue::State(_)
-        | MettaValue::Unit
-        | MettaValue::Memo(_) => EvalStep::Done((vec![value], env)),
+        MettaValueInner::Bool(_)
+        | MettaValueInner::Long(_)
+        | MettaValueInner::Float(_)
+        | MettaValueInner::String(_)
+        | MettaValueInner::Nil
+        | MettaValueInner::Type(_)
+        | MettaValueInner::Space(_)
+        | MettaValueInner::State(_)
+        | MettaValueInner::Unit
+        | MettaValueInner::Memo(_) => EvalStep::Done((vec![value], env)),
 
         // Empty sentinel - gets filtered out at result collection
-        MettaValue::Empty => EvalStep::Done((vec![], env)),
+        MettaValueInner::Empty => EvalStep::Done((vec![], env)),
 
         // S-expressions need special handling
-        MettaValue::SExpr(items) => eval_sexpr_step(items, env, depth),
+        MettaValueInner::SExpr(items) => eval_sexpr_step(items.clone(), env, depth),
 
         // For conjunctions, evaluate goals left-to-right with binding threading
-        MettaValue::Conjunction(goals) => eval_conjunction_step(goals, env, depth),
+        MettaValueInner::Conjunction(goals) => eval_conjunction_step(goals.clone(), env, depth),
     }
 }

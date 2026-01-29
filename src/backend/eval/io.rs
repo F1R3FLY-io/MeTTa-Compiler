@@ -1,5 +1,5 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
 use super::eval;
@@ -22,7 +22,7 @@ pub(crate) fn eval_println_step(
                 "println! requires exactly 1 argument, got {}. Usage: (println! atom)",
                 items.len() - 1
             ),
-            std::sync::Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -34,18 +34,14 @@ pub(crate) fn eval_println_step(
 
 /// Step version of eval_trace - defers evaluation to trampoline.
 /// Usage: (trace! message value)
-pub(crate) fn eval_trace_step(
-    items: Vec<MettaValue>,
-    env: Environment,
-    depth: usize,
-) -> EvalStep {
+pub(crate) fn eval_trace_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     if items.len() < 3 {
         let err = MettaValue::Error(
             format!(
                 "trace! requires exactly 2 arguments, got {}. Usage: (trace! message value)",
                 items.len() - 1
             ),
-            std::sync::Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -77,7 +73,7 @@ pub(super) fn eval_println(items: Vec<MettaValue>, env: Environment) -> EvalResu
     if results.is_empty() {
         let err = MettaValue::Error(
             "println!: argument evaluated to empty".to_string(),
-            std::sync::Arc::new(atom.clone()),
+            atom.clone(),
         );
         return (vec![err], env1);
     }
@@ -86,7 +82,7 @@ pub(super) fn eval_println(items: Vec<MettaValue>, env: Environment) -> EvalResu
     let value = &results[0];
     println!("{}", atom_to_string(value));
 
-    (vec![MettaValue::Unit], env1)
+    (vec![MettaValue::Unit()], env1)
 }
 
 /// trace!: Debug trace - prints message to stderr and returns the value
@@ -106,7 +102,7 @@ pub(super) fn eval_trace(items: Vec<MettaValue>, env: Environment) -> EvalResult
     if msg_results.is_empty() {
         let err = MettaValue::Error(
             "trace!: message evaluated to empty".to_string(),
-            std::sync::Arc::new(message.clone()),
+            message.clone(),
         );
         return (vec![err], env1);
     }
@@ -116,7 +112,7 @@ pub(super) fn eval_trace(items: Vec<MettaValue>, env: Environment) -> EvalResult
     if value_results.is_empty() {
         let err = MettaValue::Error(
             "trace!: value evaluated to empty".to_string(),
-            std::sync::Arc::new(value_expr.clone()),
+            value_expr.clone(),
         );
         return (vec![err], env2);
     }
@@ -134,40 +130,40 @@ pub(super) fn eval_trace(items: Vec<MettaValue>, env: Environment) -> EvalResult
 /// Always returns Unit
 pub(super) fn eval_nop(_items: Vec<MettaValue>, env: Environment) -> EvalResult {
     // nop ignores all arguments and returns Unit
-    (vec![MettaValue::Unit], env)
+    (vec![MettaValue::Unit()], env)
 }
 
 /// Convert a MettaValue to a string for printing
 /// This converts the value to its MeTTa representation
 fn atom_to_string(value: &MettaValue) -> String {
-    match value {
-        MettaValue::Long(n) => n.to_string(),
-        MettaValue::Float(f) => f.to_string(),
-        MettaValue::Bool(b) => {
+    match value.inner() {
+        MettaValueInner::Long(n) => n.to_string(),
+        MettaValueInner::Float(f) => f.to_string(),
+        MettaValueInner::Bool(b) => {
             if *b {
                 "True".to_string()
             } else {
                 "False".to_string()
             }
         }
-        MettaValue::String(s) => s.clone(), // Print raw string without quotes for println!
-        MettaValue::Atom(a) => a.clone(),
-        MettaValue::Nil => "Nil".to_string(),
-        MettaValue::SExpr(items) => {
+        MettaValueInner::String(s) => s.clone(), // Print raw string without quotes for println!
+        MettaValueInner::Atom(a) => a.clone(),
+        MettaValueInner::Nil => "Nil".to_string(),
+        MettaValueInner::SExpr(items) => {
             let inner: Vec<String> = items.iter().map(atom_to_string).collect();
             format!("({})", inner.join(" "))
         }
-        MettaValue::Error(msg, _) => format!("(Error \"{}\")", msg),
-        MettaValue::Type(t) => format!("(: {})", atom_to_string(t)),
-        MettaValue::Conjunction(goals) => {
+        MettaValueInner::Error(msg, _) => format!("(Error \"{}\")", msg),
+        MettaValueInner::Type(t) => format!("(: {})", atom_to_string(t)),
+        MettaValueInner::Conjunction(goals) => {
             let inner: Vec<String> = goals.iter().map(atom_to_string).collect();
             format!("(, {})", inner.join(" "))
         }
-        MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-        MettaValue::State(id) => format!("(State {})", id),
-        MettaValue::Unit => "()".to_string(),
-        MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
-        MettaValue::Empty => "Empty".to_string(),
+        MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+        MettaValueInner::State(id) => format!("(State {})", id),
+        MettaValueInner::Unit => "()".to_string(),
+        MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+        MettaValueInner::Empty => "Empty".to_string(),
     }
 }
 
@@ -184,7 +180,7 @@ mod tests {
         let (results, _) = eval_nop(items, env);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
     }
 
     #[test]
@@ -201,7 +197,7 @@ mod tests {
         let (results, _) = eval_nop(items, env);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
     }
 
     #[test]
@@ -214,8 +210,8 @@ mod tests {
             "hello"
         );
         assert_eq!(atom_to_string(&MettaValue::Atom("foo".to_string())), "foo");
-        assert_eq!(atom_to_string(&MettaValue::Nil), "Nil");
-        assert_eq!(atom_to_string(&MettaValue::Unit), "()");
+        assert_eq!(atom_to_string(&MettaValue::Nil()), "Nil");
+        assert_eq!(atom_to_string(&MettaValue::Unit()), "()");
     }
 
     #[test]
@@ -245,7 +241,7 @@ mod tests {
 
         // println! returns Unit
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
     }
 
     #[test]
@@ -260,7 +256,7 @@ mod tests {
         let (results, _) = eval_println(items, env);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
     }
 
     #[test]
@@ -275,7 +271,7 @@ mod tests {
         let (results, _) = eval_println(items, env);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
     }
 
     #[test]
@@ -293,7 +289,7 @@ mod tests {
         let (results, _) = eval_println(items, env);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
     }
 
     #[test]
@@ -305,8 +301,8 @@ mod tests {
         let (results, _) = eval_println(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("requires exactly 1 argument"));
             }
             _ => panic!("Expected error"),
@@ -329,7 +325,7 @@ mod tests {
         let (results, _) = eval_println(items, env);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
     }
 
     // ============================================================
@@ -384,8 +380,8 @@ mod tests {
         let (results, _) = eval_trace(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("requires exactly 2 argument"));
             }
             _ => panic!("Expected error"),
@@ -401,8 +397,8 @@ mod tests {
         let (results, _) = eval_trace(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("requires exactly 2 argument"));
             }
             _ => panic!("Expected error"),
@@ -430,16 +426,13 @@ mod tests {
 
     #[test]
     fn test_atom_to_string_error() {
-        let err = MettaValue::Error(
-            "test error".to_string(),
-            std::sync::Arc::new(MettaValue::Nil),
-        );
+        let err = MettaValue::Error("test error".to_string(), MettaValue::Nil());
         assert_eq!(atom_to_string(&err), "(Error \"test error\")");
     }
 
     #[test]
     fn test_atom_to_string_type() {
-        let typ = MettaValue::Type(std::sync::Arc::new(MettaValue::Atom("Int".to_string())));
+        let typ = MettaValue::Type(MettaValue::Atom("Int".to_string()));
         assert_eq!(atom_to_string(&typ), "(: Int)");
     }
 

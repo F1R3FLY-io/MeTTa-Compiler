@@ -31,7 +31,7 @@ use crate::backend::bytecode::jit::types::{
     JitAlternative, JitBailoutReason, JitBindingEntry, JitContext, JitValue, JIT_SIGNAL_FAIL,
 };
 use crate::backend::eval::pattern_match;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // Phase E: Special Forms
@@ -285,9 +285,9 @@ pub unsafe extern "C" fn jit_runtime_eval_unquote(
     let metta = expr_val.to_metta();
 
     // If it's a quote, unwrap it; otherwise return as-is
-    match metta {
-        MettaValue::SExpr(elems) if !elems.is_empty() => {
-            if let MettaValue::Atom(ref s) = elems[0] {
+    match metta.inner() {
+        MettaValueInner::SExpr(elems) if !elems.is_empty() => {
+            if let MettaValueInner::Atom(ref s) = elems[0].inner() {
                 if s == "quote" && elems.len() == 2 {
                     // Return the quoted content
                     return metta_to_jit(&elems[1]).to_bits();
@@ -443,8 +443,8 @@ pub unsafe extern "C" fn jit_runtime_eval_collapse(
     let metta = expr_val.to_metta();
 
     // If already a list, return as-is (could be result of superpose)
-    match metta {
-        MettaValue::SExpr(_) => expr,
+    match metta.inner() {
+        MettaValueInner::SExpr(_) => expr,
         _ => metta_to_jit(&MettaValue::SExpr(vec![metta])).to_bits(),
     }
 }
@@ -469,8 +469,8 @@ pub unsafe extern "C" fn jit_runtime_eval_superpose(
     let list_val = JitValue::from_raw(list);
     let metta = list_val.to_metta();
 
-    match metta {
-        MettaValue::SExpr(elems) if !elems.is_empty() => {
+    match metta.inner() {
+        MettaValueInner::SExpr(elems) if !elems.is_empty() => {
             let ctx_ref = match ctx.as_mut() {
                 Some(c) => c,
                 None => return metta_to_jit(&elems[0]).to_bits(),
@@ -513,7 +513,7 @@ pub unsafe extern "C" fn jit_runtime_eval_superpose(
             // Return first element
             metta_to_jit(&elems[0]).to_bits()
         }
-        MettaValue::SExpr(elems) if elems.is_empty() => {
+        MettaValueInner::SExpr(elems) if elems.is_empty() => {
             // Empty superpose - signal failure
             JIT_SIGNAL_FAIL as u64
         }
@@ -700,8 +700,6 @@ pub unsafe extern "C" fn jit_runtime_eval_apply(
     arg_count: u64,
     ip: u64,
 ) -> u64 {
-    use std::sync::Arc;
-
     if ctx.is_null() {
         return closure;
     }
@@ -710,17 +708,17 @@ pub unsafe extern "C" fn jit_runtime_eval_apply(
     let closure_val = JitValue::from_raw(closure).to_metta();
 
     // Extract closure components: (lambda param_count (captured_env...) body_ip)
-    if let MettaValue::SExpr(ref items) = closure_val {
+    if let MettaValueInner::SExpr(ref items) = closure_val.inner() {
         if items.len() >= 3 {
-            let is_lambda = matches!(&items[0], MettaValue::Atom(s) if s == "lambda");
+            let is_lambda = matches!(items[0].inner(), MettaValueInner::Atom(s) if s == "lambda");
             if !is_lambda {
                 // Not a lambda - return unchanged
                 return closure;
             }
 
             // Get parameter count from closure
-            let param_count = match &items[1] {
-                MettaValue::Long(n) => *n as u64,
+            let param_count = match items[1].inner() {
+                MettaValueInner::Long(n) => *n as u64,
                 _ => 0,
             };
 
@@ -732,22 +730,22 @@ pub unsafe extern "C" fn jit_runtime_eval_apply(
                         "Lambda arity mismatch: expected {} arguments, got {}",
                         param_count, arg_count
                     ),
-                    Arc::new(closure_val),
+                    closure_val,
                 );
                 return metta_to_jit(&error).to_bits();
             }
 
             // Install captured environment bindings
-            if let MettaValue::SExpr(ref captured_env) = items[2] {
+            if let MettaValueInner::SExpr(ref captured_env) = items[2].inner() {
                 // Push a new binding frame for the closure scope
                 jit_runtime_push_binding_frame(ctx);
 
                 // Install each captured binding
                 // Variables in MeTTa are Atoms that start with $
                 for captured in captured_env {
-                    if let MettaValue::SExpr(ref binding) = captured {
+                    if let MettaValueInner::SExpr(ref binding) = captured.inner() {
                         if binding.len() >= 2 {
-                            if let MettaValue::Atom(ref name) = binding[0] {
+                            if let MettaValueInner::Atom(ref name) = binding[0].inner() {
                                 // Variables start with $ - strip it for binding name
                                 let binding_name = if name.starts_with('$') {
                                     &name[1..]

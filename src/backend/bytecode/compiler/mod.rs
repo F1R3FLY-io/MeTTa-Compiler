@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use super::chunk::{BytecodeChunk, ChunkBuilder};
 use super::opcodes::Opcode;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 pub use context::{CompileContext, Upvalue};
 pub use error::{CompileError, CompileResult};
@@ -139,7 +139,7 @@ impl Compiler {
 
         // Check if the head is a known operation
         if let Some(head) = items.first() {
-            if let MettaValue::Atom(op_name) = head {
+            if let MettaValueInner::Atom(op_name) = head.inner() {
                 // Try to compile as built-in operation
                 if let Some(()) = self.try_compile_builtin(op_name, &items[1..])? {
                     return Ok(());
@@ -241,17 +241,17 @@ impl Compiler {
                     return self.compile(&folded).map(Some);
                 }
                 // Special case: x * 0 = 0, 0 * x = 0 (even if x is not constant)
-                if matches!(&args[0], MettaValue::Long(0))
-                    || matches!(&args[1], MettaValue::Long(0))
+                if matches!(args[0].inner(), MettaValueInner::Long(0))
+                    || matches!(args[1].inner(), MettaValueInner::Long(0))
                 {
                     self.builder.emit_byte(Opcode::PushLongSmall, 0);
                     return Ok(Some(()));
                 }
                 // Special case: x * 1 = x, 1 * x = x
-                if matches!(&args[0], MettaValue::Long(1)) {
+                if matches!(args[0].inner(), MettaValueInner::Long(1)) {
                     return self.compile(&args[1]).map(Some);
                 }
-                if matches!(&args[1], MettaValue::Long(1)) {
+                if matches!(args[1].inner(), MettaValueInner::Long(1)) {
                     return self.compile(&args[0]).map(Some);
                 }
                 self.compile(&args[0])?;
@@ -265,7 +265,7 @@ impl Compiler {
                     return self.compile(&folded).map(Some);
                 }
                 // Special case: x / 1 = x
-                if matches!(&args[1], MettaValue::Long(1)) {
+                if matches!(args[1].inner(), MettaValueInner::Long(1)) {
                     return self.compile(&args[0]).map(Some);
                 }
                 self.compile(&args[0])?;
@@ -289,12 +289,12 @@ impl Compiler {
                     return self.compile(&folded).map(Some);
                 }
                 // Special case: x^0 = 1
-                if matches!(&args[1], MettaValue::Long(0)) {
+                if matches!(args[1].inner(), MettaValueInner::Long(0)) {
                     self.builder.emit_byte(Opcode::PushLongSmall, 1);
                     return Ok(Some(()));
                 }
                 // Special case: x^1 = x
-                if matches!(&args[1], MettaValue::Long(1)) {
+                if matches!(args[1].inner(), MettaValueInner::Long(1)) {
                     return self.compile(&args[0]).map(Some);
                 }
                 self.compile(&args[0])?;
@@ -440,9 +440,9 @@ impl Compiler {
                 if args.len() >= 3 {
                     // Try to evaluate the condition to a constant
                     if let Some(cond_val) = self.try_eval_constant(&args[0]) {
-                        if let MettaValue::Bool(cond) = cond_val {
+                        if let MettaValueInner::Bool(cond) = cond_val.inner() {
                             // Compile only the appropriate branch (recursively evaluate)
-                            if cond {
+                            if *cond {
                                 return self.compile(&args[1]).map(Some);
                             } else {
                                 return self.compile(&args[2]).map(Some);

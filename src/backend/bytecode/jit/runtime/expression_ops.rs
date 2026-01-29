@@ -7,7 +7,7 @@
 
 use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{JitBailoutReason, JitContext, JitValue};
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // Expression Manipulation Operations
@@ -29,8 +29,8 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
     let expr_mv = expr_jv.to_metta();
     let index_mv = index_jv.to_metta();
 
-    let idx = match index_mv {
-        MettaValue::Long(i) => i,
+    let idx = match index_mv.inner() {
+        MettaValueInner::Long(i) => *i,
         _ => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
@@ -42,11 +42,11 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
         }
     };
 
-    let result = match expr_mv {
-        MettaValue::SExpr(items) => {
+    let result = match expr_mv.inner() {
+        MettaValueInner::SExpr(items) => {
             if idx < 0 || idx as usize >= items.len() {
                 // Index out of bounds - return nil
-                MettaValue::Nil
+                MettaValue::Nil()
             } else {
                 items[idx as usize].clone()
             }
@@ -74,8 +74,8 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
     let expr_jv = JitValue::from_raw(expr);
     let expr_mv = expr_jv.to_metta();
 
-    match expr_mv {
-        MettaValue::SExpr(items) => {
+    match expr_mv.inner() {
+        MettaValueInner::SExpr(items) => {
             if items.is_empty() {
                 return JitValue::nil().to_bits();
             }
@@ -83,10 +83,10 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
             let mut min_val: Option<f64> = None;
             let mut min_item: Option<&MettaValue> = None;
 
-            for item in &items {
-                let val = match item {
-                    MettaValue::Long(x) => Some(*x as f64),
-                    MettaValue::Float(x) => Some(*x),
+            for item in items {
+                let val = match item.inner() {
+                    MettaValueInner::Long(x) => Some(*x as f64),
+                    MettaValueInner::Float(x) => Some(*x),
                     _ => None,
                 };
 
@@ -131,8 +131,8 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
     let expr_jv = JitValue::from_raw(expr);
     let expr_mv = expr_jv.to_metta();
 
-    match expr_mv {
-        MettaValue::SExpr(items) => {
+    match expr_mv.inner() {
+        MettaValueInner::SExpr(items) => {
             if items.is_empty() {
                 return JitValue::nil().to_bits();
             }
@@ -140,10 +140,10 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
             let mut max_val: Option<f64> = None;
             let mut max_item: Option<&MettaValue> = None;
 
-            for item in &items {
-                let val = match item {
-                    MettaValue::Long(x) => Some(*x as f64),
-                    MettaValue::Float(x) => Some(*x),
+            for item in items {
+                let val = match item.inner() {
+                    MettaValueInner::Long(x) => Some(*x as f64),
+                    MettaValueInner::Float(x) => Some(*x),
                     _ => None,
                 };
 

@@ -25,10 +25,10 @@
 //! - Return early without re-evaluating (prevents infinite loops)
 //! - The cycle is "broken" at the second encounter
 
+use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 use super::cache::hash_path;
 use super::metta_mod::{MettaMod, ModId};

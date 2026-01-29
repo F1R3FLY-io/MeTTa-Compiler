@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use crate::backend::Environment;
 
 /// Result type for external function calls
@@ -190,8 +190,8 @@ mod tests {
         let mut registry = ExternalRegistry::new();
 
         registry.register("double", |args, _ctx| {
-            let n = match args.get(0) {
-                Some(MettaValue::Long(n)) => *n,
+            let n = match args.get(0).map(|v| v.inner()) {
+                Some(MettaValueInner::Long(n)) => *n,
                 _ => {
                     return Err(ExternalError::TypeError {
                         expected: "Long",
@@ -237,7 +237,7 @@ mod tests {
     fn test_unregister() {
         let mut registry = ExternalRegistry::new();
 
-        registry.register("test", |_args, _ctx| Ok(vec![MettaValue::Unit]));
+        registry.register("test", |_args, _ctx| Ok(vec![MettaValue::Unit()]));
         assert!(registry.contains("test"));
 
         let removed = registry.unregister("test");

@@ -1,7 +1,7 @@
 //! Tests for JIT types.
 
 use super::*;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 #[test]
 fn test_nan_boxing_long() {
@@ -88,12 +88,12 @@ fn test_try_from_metta() {
     assert!(v.unwrap().as_bool());
 
     // Nil
-    let v = JitValue::try_from_metta(&MettaValue::Nil);
+    let v = JitValue::try_from_metta(&MettaValue::Nil());
     assert!(v.is_some());
     assert!(v.unwrap().is_nil());
 
     // Unit
-    let v = JitValue::try_from_metta(&MettaValue::Unit);
+    let v = JitValue::try_from_metta(&MettaValue::Unit());
     assert!(v.is_some());
     assert!(v.unwrap().is_unit());
 }
@@ -104,19 +104,19 @@ fn test_to_metta_roundtrip() {
     let orig = MettaValue::Long(42);
     let jit = JitValue::try_from_metta(&orig).unwrap();
     let back = unsafe { jit.to_metta() };
-    assert_eq!(back, orig);
+    assert!(matches!(back.inner(), MettaValueInner::Long(42)));
 
     // Bool
     let orig = MettaValue::Bool(true);
     let jit = JitValue::try_from_metta(&orig).unwrap();
     let back = unsafe { jit.to_metta() };
-    assert_eq!(back, orig);
+    assert!(matches!(back.inner(), MettaValueInner::Bool(true)));
 
     // Nil
-    let orig = MettaValue::Nil;
+    let orig = MettaValue::Nil();
     let jit = JitValue::try_from_metta(&orig).unwrap();
     let back = unsafe { jit.to_metta() };
-    assert_eq!(back, orig);
+    assert!(matches!(back.inner(), MettaValueInner::Nil));
 }
 
 #[test]

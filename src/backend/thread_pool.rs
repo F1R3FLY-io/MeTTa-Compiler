@@ -36,9 +36,7 @@ use std::thread::{self, JoinHandle};
 fn get_configured_thread_count() -> usize {
     match std::env::var("METTATRON_NUM_THREADS") {
         Ok(val) => {
-            let count = val
-                .parse::<usize>()
-                .unwrap_or_else(|_| num_cpus::get());
+            let count = val.parse::<usize>().unwrap_or_else(|_| num_cpus::get());
             // Propagate to RAYON_NUM_THREADS if not already set
             if std::env::var("RAYON_NUM_THREADS").is_err() {
                 std::env::set_var("RAYON_NUM_THREADS", &val);

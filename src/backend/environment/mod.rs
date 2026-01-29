@@ -54,7 +54,7 @@ use tracing::trace;
 
 use super::fuzzy_match::FuzzyMatcher;
 use super::grounded::{GroundedRegistry, GroundedRegistryTCO};
-use super::models::{IndexedMultiset, SymbolTable};
+use super::models::{IndexedMultiset, MettaValueInner, SymbolTable};
 use super::modules::{ModuleRegistry, Tokenizer};
 use super::symbol::Symbol;
 use super::{MettaValue, Rule};
@@ -237,7 +237,7 @@ impl Environment {
             fuzzy_matcher: RwLock::new(FuzzyMatcher::new()),
             scope_tracker: RwLock::new(ScopeTracker::new()),
             head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // ~10KB for 10k expected entries
-            total_atoms: AtomicUsize::new(0), // Start with 0 atoms
+            total_atoms: AtomicUsize::new(0),                                // Start with 0 atoms
         });
 
         Environment {
@@ -404,9 +404,7 @@ impl Environment {
                     .clone(),
             ),
             // Copy current total_atoms value
-            total_atoms: AtomicUsize::new(
-                self.shared.total_atoms.load(Ordering::Acquire),
-            ),
+            total_atoms: AtomicUsize::new(self.shared.total_atoms.load(Ordering::Acquire)),
         });
 
         self.shared = new_shared;
@@ -590,9 +588,7 @@ impl Environment {
                     .clone(),
             ),
             // Copy current total_atoms value for isolation
-            total_atoms: AtomicUsize::new(
-                self.shared.total_atoms.load(Ordering::Acquire),
-            ),
+            total_atoms: AtomicUsize::new(self.shared.total_atoms.load(Ordering::Acquire)),
         });
 
         let forked = Environment {
@@ -610,7 +606,7 @@ impl Environment {
             .write()
             .expect("bindings lock poisoned");
         for (_name, value) in forked_bindings.iter_mut() {
-            Self::fork_spaces_in_value(value);
+            *value = Self::fork_spaces_in_value(value);
         }
         drop(forked_bindings);
 
@@ -618,39 +614,46 @@ impl Environment {
     }
 
     /// Recursively fork all SpaceHandles in a MettaValue.
-    fn fork_spaces_in_value(value: &mut MettaValue) {
-        match value {
-            MettaValue::Space(handle) => {
+    /// Returns a new MettaValue with forked spaces, or the original if no spaces found.
+    fn fork_spaces_in_value(value: &MettaValue) -> MettaValue {
+        match value.inner() {
+            MettaValueInner::Space(handle) => {
                 // Fork the space handle for isolation
-                *handle = handle.fork();
+                MettaValue::Space(handle.fork())
             }
-            MettaValue::SExpr(items) => {
-                for item in items.iter_mut() {
-                    Self::fork_spaces_in_value(item);
-                }
+            MettaValueInner::SExpr(items) => {
+                let forked_items: Vec<MettaValue> = items
+                    .iter()
+                    .map(|item| Self::fork_spaces_in_value(item))
+                    .collect();
+                MettaValue::SExpr(forked_items)
             }
-            MettaValue::Conjunction(goals) => {
-                for goal in goals.iter_mut() {
-                    Self::fork_spaces_in_value(goal);
-                }
+            MettaValueInner::Conjunction(goals) => {
+                let forked_goals: Vec<MettaValue> = goals
+                    .iter()
+                    .map(|goal| Self::fork_spaces_in_value(goal))
+                    .collect();
+                MettaValue::Conjunction(forked_goals)
             }
-            MettaValue::Type(_) => {
-                // Arc<MettaValue> - can't mutate through Arc, but types rarely contain spaces
+            MettaValueInner::Type(inner) => {
+                // Recursively fork spaces in type value
+                MettaValue::Type(Self::fork_spaces_in_value(inner))
             }
-            MettaValue::Error(_, _) => {
-                // Arc<MettaValue> - can't mutate, but errors rarely contain spaces
+            MettaValueInner::Error(msg, details) => {
+                // Recursively fork spaces in error details
+                MettaValue::Error(msg.clone(), Self::fork_spaces_in_value(details))
             }
-            // Primitives don't contain spaces
-            MettaValue::Atom(_)
-            | MettaValue::Bool(_)
-            | MettaValue::Long(_)
-            | MettaValue::Float(_)
-            | MettaValue::String(_)
-            | MettaValue::Nil
-            | MettaValue::State(_)
-            | MettaValue::Unit
-            | MettaValue::Memo(_)
-            | MettaValue::Empty => {}
+            // Primitives don't contain spaces - return clone (O(1) due to Arc)
+            MettaValueInner::Atom(_)
+            | MettaValueInner::Bool(_)
+            | MettaValueInner::Long(_)
+            | MettaValueInner::Float(_)
+            | MettaValueInner::String(_)
+            | MettaValueInner::Nil
+            | MettaValueInner::State(_)
+            | MettaValueInner::Unit
+            | MettaValueInner::Memo(_)
+            | MettaValueInner::Empty => value.clone(),
         }
     }
 

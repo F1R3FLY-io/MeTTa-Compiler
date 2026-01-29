@@ -12,23 +12,22 @@ pub use bindings::SmartBindings as Bindings;
 pub use indexed_multiset::IndexedMultiset;
 pub use memo_handle::MemoHandle;
 pub use metta_state::MettaState;
-pub use metta_value::{ArcValue, MettaValue};
+pub use metta_value::{ArcValue, MettaValue, MettaValueInner};
 pub use multiset::{AtomMultiset, AtomMultisetSnapshot};
 pub use space_handle::SpaceHandle;
 
 use crate::backend::environment::Environment;
-use std::sync::Arc;
 
 /// Result of evaluation: (result, new_environment)
 pub type EvalResult = (Vec<MettaValue>, Environment);
 
 /// Represents a pattern matching rule: (= lhs rhs)
-/// Uses Arc for O(1) cloning - rules are frequently matched and their
-/// RHS is cloned for substitution.
+/// MettaValue is O(1) to clone (internally Arc-wrapped), so rules
+/// are efficient to clone and match.
 #[derive(Debug, Clone)]
 pub struct Rule {
-    pub lhs: Arc<MettaValue>,
-    pub rhs: Arc<MettaValue>,
+    pub lhs: MettaValue,
+    pub rhs: MettaValue,
     /// Cached index into multiplicity counts array.
     /// Set during add_rule(), used for O(1) count lookup.
     /// None for rules created before being added to an environment.
@@ -36,44 +35,35 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// Create a new rule from owned MettaValues (wraps in Arc)
+    /// Create a new rule from MettaValues
     pub fn new(lhs: MettaValue, rhs: MettaValue) -> Self {
-        Rule {
-            lhs: Arc::new(lhs),
-            rhs: Arc::new(rhs),
-            multiplicity_idx: None, // Set during add_rule()
-        }
-    }
-
-    /// Create a new rule from Arc-wrapped MettaValues
-    pub fn from_arc(lhs: Arc<MettaValue>, rhs: Arc<MettaValue>) -> Self {
         Rule {
             lhs,
             rhs,
             multiplicity_idx: None, // Set during add_rule()
         }
+    }
+
+    /// Create a new rule from MettaValues (alias for API compatibility)
+    /// Since MettaValue is now O(1) to clone, this is equivalent to new()
+    #[inline]
+    pub fn from_arc(lhs: MettaValue, rhs: MettaValue) -> Self {
+        Rule::new(lhs, rhs)
     }
 
     /// Create rule with pre-assigned index (for bulk operations)
     pub(crate) fn with_index(lhs: MettaValue, rhs: MettaValue, idx: u32) -> Self {
         Rule {
-            lhs: Arc::new(lhs),
-            rhs: Arc::new(rhs),
-            multiplicity_idx: Some(idx),
-        }
-    }
-
-    /// Create rule from Arc-wrapped MettaValues with pre-assigned index
-    pub(crate) fn from_arc_with_index(
-        lhs: Arc<MettaValue>,
-        rhs: Arc<MettaValue>,
-        idx: u32,
-    ) -> Self {
-        Rule {
             lhs,
             rhs,
             multiplicity_idx: Some(idx),
         }
+    }
+
+    /// Create rule from MettaValues with pre-assigned index (alias for API compatibility)
+    #[inline]
+    pub(crate) fn from_arc_with_index(lhs: MettaValue, rhs: MettaValue, idx: u32) -> Self {
+        Rule::with_index(lhs, rhs, idx)
     }
 
     /// Get a reference to the LHS pattern
@@ -88,15 +78,15 @@ impl Rule {
         &self.rhs
     }
 
-    /// Clone the RHS as an Arc (O(1) operation)
+    /// Clone the RHS (O(1) operation since MettaValue uses Arc internally)
     #[inline]
-    pub fn rhs_arc(&self) -> Arc<MettaValue> {
-        Arc::clone(&self.rhs)
+    pub fn rhs_arc(&self) -> MettaValue {
+        self.rhs.clone()
     }
 
-    /// Clone the LHS as an Arc (O(1) operation)
+    /// Clone the LHS (O(1) operation since MettaValue uses Arc internally)
     #[inline]
-    pub fn lhs_arc(&self) -> Arc<MettaValue> {
-        Arc::clone(&self.lhs)
+    pub fn lhs_arc(&self) -> MettaValue {
+        self.lhs.clone()
     }
 }

@@ -20,8 +20,8 @@
 //! - Lattice operations for efficient batch merges
 
 use pathmap::ring::{AlgebraicResult, DistributiveLattice, Lattice, COUNTER_IDENT, SELF_IDENT};
-use pathmap::PathMap;
 use pathmap::zipper::{Zipper, ZipperMoving, ZipperValues, ZipperWriting};
+use pathmap::PathMap;
 
 // =-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-==-**-=
 // =-*   `Multiplicity` Type                                                   *-=

@@ -7,8 +7,8 @@
 //
 // Operator symbols like +, -, * are preserved as-is (not normalized to add, sub, mul)
 
-use std::sync::Arc;
-
+#[cfg(test)]
+use crate::backend::models::MettaValueInner;
 use crate::backend::models::{MettaState, MettaValue};
 use crate::ir::MettaExpr;
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind, TreeSitterMettaParser};
@@ -127,7 +127,7 @@ impl TryFrom<&MettaExpr> for MettaValue {
 
 /// Helper function to create an error value
 pub fn make_error(msg: &str, details: MettaValue) -> MettaValue {
-    MettaValue::Error(msg.to_string(), Arc::new(details))
+    MettaValue::Error(msg.to_string(), details)
 }
 
 #[cfg(test)]
@@ -155,7 +155,7 @@ mod tests {
         assert!(state.output.is_empty());
 
         // Should be: (+ 1 2) - operator symbol preserved
-        if let MettaValue::SExpr(items) = &state.source[0] {
+        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Atom("+".to_string()));
             assert_eq!(items[1], MettaValue::Long(1));
@@ -188,7 +188,7 @@ mod tests {
         for (op, expected) in operators {
             let src = format!("({} 1 2)", op);
             let state = compile(&src).unwrap();
-            if let MettaValue::SExpr(items) = &state.source[0] {
+            if let MettaValueInner::SExpr(items) = state.source[0].inner() {
                 assert_eq!(
                     items[0],
                     MettaValue::Atom(expected.to_string()),
@@ -204,7 +204,7 @@ mod tests {
         // Test > operator - should be preserved as-is
         let src = "(> 1 2)";
         let state = compile(src).unwrap();
-        if let MettaValue::SExpr(items) = &state.source[0] {
+        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
             assert_eq!(items[0], MettaValue::Atom(">".to_string()));
         }
 
@@ -218,7 +218,7 @@ mod tests {
         let src = "(+ -5 -10)";
         let state = compile(src).unwrap();
 
-        if let MettaValue::SExpr(items) = &state.source[0] {
+        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
             assert_eq!(items[0], MettaValue::Atom("+".to_string()));
             assert_eq!(items[1], MettaValue::Long(-5));
             assert_eq!(items[2], MettaValue::Long(-10));
@@ -241,7 +241,7 @@ mod tests {
         let src = "(True False 42 \"hello\")";
         let state = compile(src).unwrap();
 
-        if let MettaValue::SExpr(items) = &state.source[0] {
+        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
             assert_eq!(items[0], MettaValue::Bool(true));
             assert_eq!(items[1], MettaValue::Bool(false));
             assert_eq!(items[2], MettaValue::Long(42));
@@ -254,7 +254,7 @@ mod tests {
         let src = "(list 42 -7 0 True False \"text\" ())";
         let state = compile(src).unwrap();
 
-        if let MettaValue::SExpr(items) = &state.source[0] {
+        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
             assert_eq!(items[0], MettaValue::Atom("list".to_string()));
             assert_eq!(items[1], MettaValue::Long(42));
             assert_eq!(items[2], MettaValue::Long(-7));
@@ -276,7 +276,7 @@ mod tests {
         let src = "(true false)";
         let state = compile(src).unwrap();
 
-        if let MettaValue::SExpr(items) = &state.source[0] {
+        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Atom("true".to_string()));
             assert_eq!(items[1], MettaValue::Atom("false".to_string()));
@@ -288,7 +288,7 @@ mod tests {
         let src = "(True False)";
         let state = compile(src).unwrap();
 
-        if let MettaValue::SExpr(items) = &state.source[0] {
+        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Bool(true));
             assert_eq!(items[1], MettaValue::Bool(false));
@@ -316,7 +316,7 @@ mod tests {
 
         assert_eq!(state.source.len(), 1);
 
-        if let MettaValue::SExpr(items) = &state.source[0] {
+        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Atom(":".to_string()));
             assert_eq!(items[1], MettaValue::Atom("x".to_string()));
@@ -333,11 +333,11 @@ mod tests {
 
         assert_eq!(state.source.len(), 1);
 
-        if let MettaValue::SExpr(items) = &state.source[0] {
+        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Atom("!".to_string()));
 
-            if let MettaValue::SExpr(inner) = &items[1] {
+            if let MettaValueInner::SExpr(inner) = items[1].inner() {
                 assert_eq!(inner[0], MettaValue::Atom("double".to_string()));
                 assert_eq!(inner[1], MettaValue::Long(5));
             } else {
@@ -381,22 +381,22 @@ mod tests {
         assert_eq!(state.source.len(), 1);
 
         // Outer: (+ 1 ...)
-        if let MettaValue::SExpr(outer) = &state.source[0] {
+        if let MettaValueInner::SExpr(outer) = state.source[0].inner() {
             assert_eq!(outer[0], MettaValue::Atom("+".to_string()));
             assert_eq!(outer[1], MettaValue::Long(1));
 
             // Level 2: (+ 2 ...)
-            if let MettaValue::SExpr(level2) = &outer[2] {
+            if let MettaValueInner::SExpr(level2) = outer[2].inner() {
                 assert_eq!(level2[0], MettaValue::Atom("+".to_string()));
                 assert_eq!(level2[1], MettaValue::Long(2));
 
                 // Level 3: (+ 3 ...)
-                if let MettaValue::SExpr(level3) = &level2[2] {
+                if let MettaValueInner::SExpr(level3) = level2[2].inner() {
                     assert_eq!(level3[0], MettaValue::Atom("+".to_string()));
                     assert_eq!(level3[1], MettaValue::Long(3));
 
                     // Level 4: (+ 4 5)
-                    if let MettaValue::SExpr(level4) = &level3[2] {
+                    if let MettaValueInner::SExpr(level4) = level3[2].inner() {
                         assert_eq!(level4[0], MettaValue::Atom("+".to_string()));
                         assert_eq!(level4[1], MettaValue::Long(4));
                         assert_eq!(level4[2], MettaValue::Long(5));
@@ -445,7 +445,7 @@ mod tests {
         let (results, _env) = eval(state.source[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
-        if let MettaValue::Error(msg, _) = &results[0] {
+        if let MettaValueInner::Error(msg, _) = results[0].inner() {
             assert_eq!(msg, "failure-code");
         } else {
             panic!("Expected error");

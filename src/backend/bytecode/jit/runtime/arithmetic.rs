@@ -8,7 +8,7 @@
 
 use super::helpers::{box_long, extract_long_signed, metta_to_jit};
 use crate::backend::bytecode::jit::types::JitValue;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // Integer Arithmetic Operations
@@ -101,9 +101,9 @@ pub unsafe extern "C" fn jit_runtime_sqrt(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Float(x.sqrt()),
-        MettaValue::Long(x) => MettaValue::Float((x as f64).sqrt()),
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Float(x.sqrt()),
+        MettaValueInner::Long(x) => MettaValue::Float((*x as f64).sqrt()),
         _ => MettaValue::Float(f64::NAN), // Type error - return NaN
     };
 
@@ -121,11 +121,17 @@ pub unsafe extern "C" fn jit_runtime_log(base: u64, val: u64) -> u64 {
     let base_mv = base_jv.to_metta();
     let val_mv = val_jv.to_metta();
 
-    let result = match (&base_mv, &val_mv) {
-        (MettaValue::Float(b), MettaValue::Float(v)) => MettaValue::Float(v.log(*b)),
-        (MettaValue::Long(b), MettaValue::Float(v)) => MettaValue::Float(v.log(*b as f64)),
-        (MettaValue::Float(b), MettaValue::Long(v)) => MettaValue::Float((*v as f64).log(*b)),
-        (MettaValue::Long(b), MettaValue::Long(v)) => MettaValue::Float((*v as f64).log(*b as f64)),
+    let result = match (base_mv.inner(), val_mv.inner()) {
+        (MettaValueInner::Float(b), MettaValueInner::Float(v)) => MettaValue::Float(v.log(*b)),
+        (MettaValueInner::Long(b), MettaValueInner::Float(v)) => {
+            MettaValue::Float(v.log(*b as f64))
+        }
+        (MettaValueInner::Float(b), MettaValueInner::Long(v)) => {
+            MettaValue::Float((*v as f64).log(*b))
+        }
+        (MettaValueInner::Long(b), MettaValueInner::Long(v)) => {
+            MettaValue::Float((*v as f64).log(*b as f64))
+        }
         _ => MettaValue::Float(f64::NAN), // Type error - return NaN
     };
 
@@ -141,10 +147,10 @@ pub unsafe extern "C" fn jit_runtime_trunc(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Long(x.trunc() as i64),
-        MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                   // Type error
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Long(x.trunc() as i64),
+        MettaValueInner::Long(x) => MettaValue::Long(*x), // Already an integer
+        _ => MettaValue::Long(0),                         // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -159,10 +165,10 @@ pub unsafe extern "C" fn jit_runtime_ceil(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Long(x.ceil() as i64),
-        MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                   // Type error
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Long(x.ceil() as i64),
+        MettaValueInner::Long(x) => MettaValue::Long(*x), // Already an integer
+        _ => MettaValue::Long(0),                         // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -177,10 +183,10 @@ pub unsafe extern "C" fn jit_runtime_floor_math(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Long(x.floor() as i64),
-        MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                   // Type error
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Long(x.floor() as i64),
+        MettaValueInner::Long(x) => MettaValue::Long(*x), // Already an integer
+        _ => MettaValue::Long(0),                         // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -195,10 +201,10 @@ pub unsafe extern "C" fn jit_runtime_round(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Long(x.round() as i64),
-        MettaValue::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                   // Type error
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Long(x.round() as i64),
+        MettaValueInner::Long(x) => MettaValue::Long(*x), // Already an integer
+        _ => MettaValue::Long(0),                         // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -217,9 +223,9 @@ pub unsafe extern "C" fn jit_runtime_sin(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Float(x.sin()),
-        MettaValue::Long(x) => MettaValue::Float((x as f64).sin()),
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Float(x.sin()),
+        MettaValueInner::Long(x) => MettaValue::Float((*x as f64).sin()),
         _ => MettaValue::Float(f64::NAN), // Type error
     };
 
@@ -235,9 +241,9 @@ pub unsafe extern "C" fn jit_runtime_cos(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Float(x.cos()),
-        MettaValue::Long(x) => MettaValue::Float((x as f64).cos()),
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Float(x.cos()),
+        MettaValueInner::Long(x) => MettaValue::Float((*x as f64).cos()),
         _ => MettaValue::Float(f64::NAN), // Type error
     };
 
@@ -253,9 +259,9 @@ pub unsafe extern "C" fn jit_runtime_tan(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Float(x.tan()),
-        MettaValue::Long(x) => MettaValue::Float((x as f64).tan()),
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Float(x.tan()),
+        MettaValueInner::Long(x) => MettaValue::Float((*x as f64).tan()),
         _ => MettaValue::Float(f64::NAN), // Type error
     };
 
@@ -271,9 +277,9 @@ pub unsafe extern "C" fn jit_runtime_asin(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Float(x.asin()),
-        MettaValue::Long(x) => MettaValue::Float((x as f64).asin()),
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Float(x.asin()),
+        MettaValueInner::Long(x) => MettaValue::Float((*x as f64).asin()),
         _ => MettaValue::Float(f64::NAN), // Type error
     };
 
@@ -289,9 +295,9 @@ pub unsafe extern "C" fn jit_runtime_acos(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Float(x.acos()),
-        MettaValue::Long(x) => MettaValue::Float((x as f64).acos()),
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Float(x.acos()),
+        MettaValueInner::Long(x) => MettaValue::Float((*x as f64).acos()),
         _ => MettaValue::Float(f64::NAN), // Type error
     };
 
@@ -307,9 +313,9 @@ pub unsafe extern "C" fn jit_runtime_atan(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let result = match mv {
-        MettaValue::Float(x) => MettaValue::Float(x.atan()),
-        MettaValue::Long(x) => MettaValue::Float((x as f64).atan()),
+    let result = match mv.inner() {
+        MettaValueInner::Float(x) => MettaValue::Float(x.atan()),
+        MettaValueInner::Long(x) => MettaValue::Float((*x as f64).atan()),
         _ => MettaValue::Float(f64::NAN), // Type error
     };
 
@@ -329,10 +335,10 @@ pub unsafe extern "C" fn jit_runtime_isnan(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let is_nan = match mv {
-        MettaValue::Float(x) => x.is_nan(),
-        MettaValue::Long(_) => false, // Integers are never NaN
-        _ => false,                   // Non-numeric types are not NaN
+    let is_nan = match mv.inner() {
+        MettaValueInner::Float(x) => x.is_nan(),
+        MettaValueInner::Long(_) => false, // Integers are never NaN
+        _ => false,                        // Non-numeric types are not NaN
     };
 
     JitValue::from_bool(is_nan).to_bits()
@@ -347,10 +353,10 @@ pub unsafe extern "C" fn jit_runtime_isinf(val: u64) -> u64 {
     let jv = JitValue::from_raw(val);
     let mv = jv.to_metta();
 
-    let is_inf = match mv {
-        MettaValue::Float(x) => x.is_infinite(),
-        MettaValue::Long(_) => false, // Integers are never infinite
-        _ => false,                   // Non-numeric types are not infinite
+    let is_inf = match mv.inner() {
+        MettaValueInner::Float(x) => x.is_infinite(),
+        MettaValueInner::Long(_) => false, // Integers are never infinite
+        _ => false,                        // Non-numeric types are not infinite
     };
 
     JitValue::from_bool(is_inf).to_bits()

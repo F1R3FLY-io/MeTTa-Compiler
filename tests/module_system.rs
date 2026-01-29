@@ -36,7 +36,7 @@ fn test_include_basic_file() {
 
     // Include should return Unit on success
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Unit);
+    assert_eq!(results[0], MettaValue::Unit());
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn test_import_via_include() {
 
     // Include should return Unit on success
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Unit);
+    assert_eq!(results[0], MettaValue::Unit());
 
     // Module should be loaded
     assert!(env.module_count() >= 1);
@@ -130,7 +130,7 @@ fn test_bind_creates_token() {
 
     // bind! returns Unit
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Unit);
+    assert_eq!(results[0], MettaValue::Unit());
 
     // Token should be registered
     assert!(env.has_token("my-value"));
@@ -147,7 +147,7 @@ fn test_bind_with_expression() {
     let (results, env) = eval(state.source[0].clone(), env);
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Unit);
+    assert_eq!(results[0], MettaValue::Unit());
 
     // Should bind to the computed value
     assert_eq!(env.lookup_token("sum-value"), Some(MettaValue::Long(30)));

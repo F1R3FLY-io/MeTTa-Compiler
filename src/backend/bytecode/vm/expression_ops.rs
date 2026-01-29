@@ -11,7 +11,7 @@ use super::pattern::{pattern_match_bind, pattern_matches, unify};
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
 use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 impl BytecodeVM {
     // === Pattern Matching Operations ===
@@ -55,8 +55,8 @@ impl BytecodeVM {
         trace!(target: "mettatron::vm::match", ip = self.ip, "match_arity");
         let expected_arity = self.read_u8()? as usize;
         let value = self.pop()?;
-        let matches = match &value {
-            MettaValue::SExpr(items) => items.len() == expected_arity,
+        let matches = match value.inner() {
+            MettaValueInner::SExpr(items) => items.len() == expected_arity,
             _ => false,
         };
         self.push(MettaValue::Bool(matches));
@@ -108,14 +108,14 @@ impl BytecodeVM {
 
     pub(super) fn op_is_sexpr(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        let is_sexpr = matches!(&value, MettaValue::SExpr(_));
+        let is_sexpr = matches!(value.inner(), MettaValueInner::SExpr(_));
         self.push(MettaValue::Bool(is_sexpr));
         Ok(())
     }
 
     pub(super) fn op_is_symbol(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        let is_sym = matches!(&value, MettaValue::Atom(_));
+        let is_sym = matches!(value.inner(), MettaValueInner::Atom(_));
         self.push(MettaValue::Bool(is_sym));
         Ok(())
     }
@@ -124,8 +124,8 @@ impl BytecodeVM {
 
     pub(super) fn op_get_head(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        match value {
-            MettaValue::SExpr(items) if !items.is_empty() => {
+        match value.inner() {
+            MettaValueInner::SExpr(items) if !items.is_empty() => {
                 self.push(items[0].clone());
             }
             _ => {
@@ -140,8 +140,8 @@ impl BytecodeVM {
 
     pub(super) fn op_get_tail(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        match value {
-            MettaValue::SExpr(items) if !items.is_empty() => {
+        match value.inner() {
+            MettaValueInner::SExpr(items) if !items.is_empty() => {
                 self.push(MettaValue::sexpr(items[1..].to_vec()));
             }
             _ => {
@@ -156,8 +156,8 @@ impl BytecodeVM {
 
     pub(super) fn op_get_arity(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        match value {
-            MettaValue::SExpr(items) => {
+        match value.inner() {
+            MettaValueInner::SExpr(items) => {
                 self.push(MettaValue::Long(items.len() as i64));
             }
             _ => {
@@ -173,8 +173,8 @@ impl BytecodeVM {
     pub(super) fn op_get_element(&mut self) -> VmResult<()> {
         let index = self.read_u8()? as usize;
         let value = self.pop()?;
-        match value {
-            MettaValue::SExpr(items) if index < items.len() => {
+        match value.inner() {
+            MettaValueInner::SExpr(items) if index < items.len() => {
                 self.push(items[index].clone());
             }
             _ => {
@@ -189,8 +189,8 @@ impl BytecodeVM {
 
     pub(super) fn op_decon_atom(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        match value {
-            MettaValue::SExpr(items) if !items.is_empty() => {
+        match value.inner() {
+            MettaValueInner::SExpr(items) if !items.is_empty() => {
                 let head = items[0].clone();
                 let tail = MettaValue::SExpr(items[1..].to_vec());
                 // Return (head tail) pair as S-expression
@@ -220,13 +220,15 @@ impl BytecodeVM {
         let tail = self.pop()?;
         let head = self.pop()?;
 
-        let result = match tail {
-            MettaValue::SExpr(mut elements) => {
+        let result = match tail.inner() {
+            MettaValueInner::SExpr(elements) => {
                 // Prepend head to existing S-expression
-                elements.insert(0, head);
-                MettaValue::SExpr(elements)
+                let mut new_elements = Vec::with_capacity(elements.len() + 1);
+                new_elements.push(head);
+                new_elements.extend(elements.iter().cloned());
+                MettaValue::SExpr(new_elements)
             }
-            MettaValue::Nil => {
+            MettaValueInner::Nil => {
                 // Create single-element S-expression
                 MettaValue::SExpr(vec![head])
             }
@@ -243,56 +245,56 @@ impl BytecodeVM {
     }
 
     pub(super) fn atom_repr(&self, value: &MettaValue) -> String {
-        match value {
-            MettaValue::Long(n) => n.to_string(),
-            MettaValue::Float(f) => f.to_string(),
-            MettaValue::Bool(b) => {
+        match value.inner() {
+            MettaValueInner::Long(n) => n.to_string(),
+            MettaValueInner::Float(f) => f.to_string(),
+            MettaValueInner::Bool(b) => {
                 if *b {
                     "True".to_string()
                 } else {
                     "False".to_string()
                 }
             }
-            MettaValue::String(s) => format!("\"{}\"", s),
-            MettaValue::Atom(a) => a.clone(),
-            MettaValue::SExpr(items) => {
+            MettaValueInner::String(s) => format!("\"{}\"", s),
+            MettaValueInner::Atom(a) => a.clone(),
+            MettaValueInner::SExpr(items) => {
                 let inner: Vec<String> = items.iter().map(|v| self.atom_repr(v)).collect();
                 format!("({})", inner.join(" "))
             }
-            MettaValue::Unit => "()".to_string(),
-            MettaValue::Nil => "Nil".to_string(),
-            MettaValue::Error(msg, _) => format!("(Error {})", msg),
-            MettaValue::Type(t) => format!("(: {})", self.atom_repr(t)),
-            MettaValue::Space(_) => "<space>".to_string(),
-            MettaValue::State(_) => "<state>".to_string(),
-            MettaValue::Conjunction(items) => {
+            MettaValueInner::Unit => "()".to_string(),
+            MettaValueInner::Nil => "Nil".to_string(),
+            MettaValueInner::Error(msg, _) => format!("(Error {})", msg),
+            MettaValueInner::Type(t) => format!("(: {})", self.atom_repr(t)),
+            MettaValueInner::Space(_) => "<space>".to_string(),
+            MettaValueInner::State(_) => "<state>".to_string(),
+            MettaValueInner::Conjunction(items) => {
                 let inner: Vec<String> = items.iter().map(|v| self.atom_repr(v)).collect();
                 format!("[{}]", inner.join(" "))
             }
-            MettaValue::Memo(_) => "<memo>".to_string(),
-            MettaValue::Empty => "Empty".to_string(),
+            MettaValueInner::Memo(_) => "<memo>".to_string(),
+            MettaValueInner::Empty => "Empty".to_string(),
         }
     }
 
     pub(super) fn op_get_metatype(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        let metatype = match &value {
-            MettaValue::SExpr(_) => "Expression",
-            MettaValue::Atom(s) if s.starts_with('$') => "Variable",
-            MettaValue::Atom(_) => "Symbol",
-            MettaValue::Bool(_) => "Bool",
-            MettaValue::Long(_) => "Number",
-            MettaValue::Float(_) => "Number",
-            MettaValue::String(_) => "String",
-            MettaValue::Nil => "Nil",
-            MettaValue::Unit => "Unit",
-            MettaValue::Error(_, _) => "Error",
-            MettaValue::Type(_) => "Type",
-            MettaValue::Space(_) => "Space",
-            MettaValue::State(_) => "State",
-            MettaValue::Conjunction(_) => "Conjunction",
-            MettaValue::Memo(_) => "Memo",
-            MettaValue::Empty => "Empty",
+        let metatype = match value.inner() {
+            MettaValueInner::SExpr(_) => "Expression",
+            MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
+            MettaValueInner::Atom(_) => "Symbol",
+            MettaValueInner::Bool(_) => "Bool",
+            MettaValueInner::Long(_) => "Number",
+            MettaValueInner::Float(_) => "Number",
+            MettaValueInner::String(_) => "String",
+            MettaValueInner::Nil => "Nil",
+            MettaValueInner::Unit => "Unit",
+            MettaValueInner::Error(_, _) => "Error",
+            MettaValueInner::Type(_) => "Type",
+            MettaValueInner::Space(_) => "Space",
+            MettaValueInner::State(_) => "State",
+            MettaValueInner::Conjunction(_) => "Conjunction",
+            MettaValueInner::Memo(_) => "Memo",
+            MettaValueInner::Empty => "Empty",
         };
         self.push(MettaValue::sym(metatype));
         Ok(())
@@ -304,8 +306,8 @@ impl BytecodeVM {
         let chunk_idx = self.read_u16()?;
         let list = self.pop()?;
 
-        let items = match list {
-            MettaValue::SExpr(items) => items,
+        let items = match list.inner() {
+            MettaValueInner::SExpr(items) => items.clone(),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "list/S-expression",
@@ -333,8 +335,8 @@ impl BytecodeVM {
         let chunk_idx = self.read_u16()?;
         let list = self.pop()?;
 
-        let items = match list {
-            MettaValue::SExpr(items) => items,
+        let items = match list.inner() {
+            MettaValueInner::SExpr(items) => items.clone(),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "list/S-expression",
@@ -353,7 +355,7 @@ impl BytecodeVM {
             let result =
                 self.execute_template_with_binding(Arc::clone(&predicate_chunk), item.clone())?;
             // Check if predicate returned true
-            if matches!(result, MettaValue::Bool(true)) {
+            if matches!(result.inner(), MettaValueInner::Bool(true)) {
                 results.push(item);
             }
         }
@@ -367,8 +369,8 @@ impl BytecodeVM {
         let init = self.pop()?;
         let list = self.pop()?;
 
-        let items = match list {
-            MettaValue::SExpr(items) => items,
+        let items = match list.inner() {
+            MettaValueInner::SExpr(items) => items.clone(),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "list/S-expression",
@@ -398,8 +400,8 @@ impl BytecodeVM {
         let index = self.pop()?;
         let expr = self.pop()?;
 
-        let idx = match index {
-            MettaValue::Long(i) => i,
+        let idx = match index.inner() {
+            MettaValueInner::Long(i) => *i,
             _ => {
                 return Err(VmError::TypeError {
                     expected: "Long (index)",
@@ -408,8 +410,8 @@ impl BytecodeVM {
             }
         };
 
-        let result = match expr {
-            MettaValue::SExpr(items) => {
+        let result = match expr.inner() {
+            MettaValueInner::SExpr(items) => {
                 if idx < 0 || idx as usize >= items.len() {
                     return Err(VmError::IndexOutOfBounds {
                         index: idx as usize,
@@ -431,8 +433,8 @@ impl BytecodeVM {
 
     pub(super) fn op_min_atom(&mut self) -> VmResult<()> {
         let expr = self.pop()?;
-        let items = match expr {
-            MettaValue::SExpr(items) => items,
+        let items = match expr.inner() {
+            MettaValueInner::SExpr(items) => items,
             _ => {
                 return Err(VmError::TypeError {
                     expected: "S-expression",
@@ -452,10 +454,10 @@ impl BytecodeVM {
         let mut min_val: Option<f64> = None;
         let mut min_is_long = true;
 
-        for item in &items {
-            let val = match item {
-                MettaValue::Long(x) => *x as f64,
-                MettaValue::Float(x) => {
+        for item in items {
+            let val = match item.inner() {
+                MettaValueInner::Long(x) => *x as f64,
+                MettaValueInner::Float(x) => {
                     min_is_long = false;
                     *x
                 }
@@ -480,8 +482,8 @@ impl BytecodeVM {
 
     pub(super) fn op_max_atom(&mut self) -> VmResult<()> {
         let expr = self.pop()?;
-        let items = match expr {
-            MettaValue::SExpr(items) => items,
+        let items = match expr.inner() {
+            MettaValueInner::SExpr(items) => items,
             _ => {
                 return Err(VmError::TypeError {
                     expected: "S-expression",
@@ -501,10 +503,10 @@ impl BytecodeVM {
         let mut max_val: Option<f64> = None;
         let mut max_is_long = true;
 
-        for item in &items {
-            let val = match item {
-                MettaValue::Long(x) => *x as f64,
-                MettaValue::Float(x) => {
+        for item in items {
+            let val = match item.inner() {
+                MettaValueInner::Long(x) => *x as f64,
+                MettaValueInner::Float(x) => {
                     max_is_long = false;
                     *x
                 }
@@ -569,7 +571,7 @@ impl BytecodeVM {
                     self.ip = saved_ip;
                     self.chunk = saved_chunk;
                     self.value_stack.truncate(saved_stack_base);
-                    return Ok(results.into_iter().next().unwrap_or(MettaValue::Unit));
+                    return Ok(results.into_iter().next().unwrap_or(MettaValue::Unit()));
                 }
                 Err(e) => {
                     self.ip = saved_ip;
@@ -581,7 +583,7 @@ impl BytecodeVM {
         }
 
         // Get result
-        let result = self.pop().unwrap_or(MettaValue::Unit);
+        let result = self.pop().unwrap_or(MettaValue::Unit());
 
         // Restore state
         self.ip = saved_ip;
@@ -635,7 +637,7 @@ impl BytecodeVM {
                     self.ip = saved_ip;
                     self.chunk = saved_chunk;
                     self.value_stack.truncate(saved_stack_base);
-                    return Ok(results.into_iter().next().unwrap_or(MettaValue::Unit));
+                    return Ok(results.into_iter().next().unwrap_or(MettaValue::Unit()));
                 }
                 Err(e) => {
                     self.ip = saved_ip;
@@ -646,7 +648,7 @@ impl BytecodeVM {
             }
         }
 
-        let result = self.pop().unwrap_or(MettaValue::Unit);
+        let result = self.pop().unwrap_or(MettaValue::Unit());
         self.ip = saved_ip;
         self.chunk = saved_chunk;
         while self.value_stack.len() > saved_stack_base {

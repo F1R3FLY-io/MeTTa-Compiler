@@ -14,7 +14,7 @@ use crate::backend::bytecode::jit::types::{
     JitContext, JitValue, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_LONG, TAG_NIL, TAG_UNIT,
     VAR_INDEX_CACHE_SIZE,
 };
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // Phase B: Pattern Matching Runtime Functions
@@ -211,7 +211,7 @@ pub(crate) unsafe fn lookup_var_index_cached(
             // Verify the cached index is valid and matches the name
             let idx = cached_idx as usize;
             if idx < constants.len() {
-                if let MettaValue::Atom(s) = &constants[idx] {
+                if let MettaValueInner::Atom(s) = constants[idx].inner() {
                     if s == name {
                         return Some(idx);
                     }
@@ -224,7 +224,7 @@ pub(crate) unsafe fn lookup_var_index_cached(
     // Cache miss - linear search
     let name_idx = constants
         .iter()
-        .position(|c| matches!(c, MettaValue::Atom(s) if s == name));
+        .position(|c| matches!(c.inner(), MettaValueInner::Atom(s) if s == name));
 
     // Update cache on successful lookup
     if let Some(idx) = name_idx {
@@ -439,8 +439,8 @@ pub unsafe extern "C" fn jit_runtime_match_arity(
 ) -> u64 {
     let val = JitValue::from_raw(value).to_metta();
 
-    let matches = match val {
-        MettaValue::SExpr(items) => items.len() == expected_arity as usize,
+    let matches = match val.inner() {
+        MettaValueInner::SExpr(items) => items.len() == expected_arity as usize,
         _ => false,
     };
 
@@ -486,8 +486,8 @@ pub unsafe extern "C" fn jit_runtime_match_head(
             return TAG_BOOL; // false - invalid index
         };
 
-    let matches = match val {
-        MettaValue::SExpr(items) if !items.is_empty() => &items[0] == expected_head,
+    let matches = match val.inner() {
+        MettaValueInner::SExpr(items) if !items.is_empty() => &items[0] == expected_head,
         _ => false,
     };
 
@@ -595,21 +595,21 @@ pub unsafe extern "C" fn jit_runtime_unify_bind(
 
 /// Pattern match implementation (without binding)
 pub(crate) fn pattern_matches_impl(pattern: &MettaValue, value: &MettaValue) -> bool {
-    match (pattern, value) {
+    match (pattern.inner(), value.inner()) {
         // Variable matches anything (Atom starting with $)
-        (MettaValue::Atom(s), _) if s.starts_with('$') => true,
+        (MettaValueInner::Atom(s), _) if s.starts_with('$') => true,
         // Wildcard matches anything
-        (MettaValue::Atom(s), _) if s == "_" => true,
+        (MettaValueInner::Atom(s), _) if s == "_" => true,
         // Exact match for atoms
-        (MettaValue::Atom(a), MettaValue::Atom(b)) => a == b,
+        (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
         // Exact match for literals
-        (MettaValue::Long(a), MettaValue::Long(b)) => a == b,
-        (MettaValue::Bool(a), MettaValue::Bool(b)) => a == b,
-        (MettaValue::String(a), MettaValue::String(b)) => a == b,
-        (MettaValue::Nil, MettaValue::Nil) => true,
-        (MettaValue::Unit, MettaValue::Unit) => true,
+        (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
+        (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
+        (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
+        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
+        (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         // S-expression matching
-        (MettaValue::SExpr(ps), MettaValue::SExpr(vs)) => {
+        (MettaValueInner::SExpr(ps), MettaValueInner::SExpr(vs)) => {
             ps.len() == vs.len()
                 && ps
                     .iter()
@@ -626,24 +626,24 @@ fn pattern_match_bind_impl(
     value: &MettaValue,
     bindings: &mut Vec<(String, MettaValue)>,
 ) -> bool {
-    match (pattern, value) {
+    match (pattern.inner(), value.inner()) {
         // Variable binds to value (Atom starting with $)
-        (MettaValue::Atom(name), val) if name.starts_with('$') => {
-            bindings.push((name.clone(), val.clone()));
+        (MettaValueInner::Atom(name), _) if name.starts_with('$') => {
+            bindings.push((name.clone(), value.clone()));
             true
         }
         // Wildcard matches without binding
-        (MettaValue::Atom(s), _) if s == "_" => true,
+        (MettaValueInner::Atom(s), _) if s == "_" => true,
         // Exact match for atoms
-        (MettaValue::Atom(a), MettaValue::Atom(b)) => a == b,
+        (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
         // Exact match for literals
-        (MettaValue::Long(a), MettaValue::Long(b)) => a == b,
-        (MettaValue::Bool(a), MettaValue::Bool(b)) => a == b,
-        (MettaValue::String(a), MettaValue::String(b)) => a == b,
-        (MettaValue::Nil, MettaValue::Nil) => true,
-        (MettaValue::Unit, MettaValue::Unit) => true,
+        (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
+        (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
+        (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
+        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
+        (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         // S-expression matching
-        (MettaValue::SExpr(ps), MettaValue::SExpr(vs)) => {
+        (MettaValueInner::SExpr(ps), MettaValueInner::SExpr(vs)) => {
             ps.len() == vs.len()
                 && ps
                     .iter()
@@ -656,27 +656,27 @@ fn pattern_match_bind_impl(
 
 /// Unification implementation (bidirectional)
 fn unify_impl(a: &MettaValue, b: &MettaValue, bindings: &mut Vec<(String, MettaValue)>) -> bool {
-    match (a, b) {
+    match (a.inner(), b.inner()) {
         // Variables unify with anything (Atom starting with $)
-        (MettaValue::Atom(name), val) if name.starts_with('$') => {
-            bindings.push((name.clone(), val.clone()));
+        (MettaValueInner::Atom(name), _) if name.starts_with('$') => {
+            bindings.push((name.clone(), b.clone()));
             true
         }
-        (val, MettaValue::Atom(name)) if name.starts_with('$') => {
-            bindings.push((name.clone(), val.clone()));
+        (_, MettaValueInner::Atom(name)) if name.starts_with('$') => {
+            bindings.push((name.clone(), a.clone()));
             true
         }
         // Wildcard matches without binding (both directions)
-        (MettaValue::Atom(s), _) if s == "_" => true,
-        (_, MettaValue::Atom(s)) if s == "_" => true,
+        (MettaValueInner::Atom(s), _) if s == "_" => true,
+        (_, MettaValueInner::Atom(s)) if s == "_" => true,
         // Same structure
-        (MettaValue::Atom(x), MettaValue::Atom(y)) => x == y,
-        (MettaValue::Long(x), MettaValue::Long(y)) => x == y,
-        (MettaValue::Bool(x), MettaValue::Bool(y)) => x == y,
-        (MettaValue::String(x), MettaValue::String(y)) => x == y,
-        (MettaValue::Nil, MettaValue::Nil) => true,
-        (MettaValue::Unit, MettaValue::Unit) => true,
-        (MettaValue::SExpr(xs), MettaValue::SExpr(ys)) => {
+        (MettaValueInner::Atom(x), MettaValueInner::Atom(y)) => x == y,
+        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => x == y,
+        (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => x == y,
+        (MettaValueInner::String(x), MettaValueInner::String(y)) => x == y,
+        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
+        (MettaValueInner::Unit, MettaValueInner::Unit) => true,
+        (MettaValueInner::SExpr(xs), MettaValueInner::SExpr(ys)) => {
             xs.len() == ys.len()
                 && xs
                     .iter()

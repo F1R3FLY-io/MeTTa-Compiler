@@ -5,7 +5,7 @@
 
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 impl BytecodeVM {
     // === Comparison Operations ===
@@ -13,8 +13,8 @@ impl BytecodeVM {
     pub(super) fn op_lt(&mut self) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let result = match (&a, &b) {
-            (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Bool(x < y),
+        let result = match (a.inner(), b.inner()) {
+            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Bool(x < y),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "Long",
@@ -29,8 +29,8 @@ impl BytecodeVM {
     pub(super) fn op_le(&mut self) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let result = match (&a, &b) {
-            (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Bool(x <= y),
+        let result = match (a.inner(), b.inner()) {
+            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Bool(x <= y),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "Long",
@@ -45,8 +45,8 @@ impl BytecodeVM {
     pub(super) fn op_gt(&mut self) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let result = match (&a, &b) {
-            (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Bool(x > y),
+        let result = match (a.inner(), b.inner()) {
+            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Bool(x > y),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "Long",
@@ -61,8 +61,8 @@ impl BytecodeVM {
     pub(super) fn op_ge(&mut self) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let result = match (&a, &b) {
-            (MettaValue::Long(x), MettaValue::Long(y)) => MettaValue::Bool(x >= y),
+        let result = match (a.inner(), b.inner()) {
+            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Bool(x >= y),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "Long",
@@ -101,8 +101,8 @@ impl BytecodeVM {
     pub(super) fn op_and(&mut self) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let result = match (&a, &b) {
-            (MettaValue::Bool(x), MettaValue::Bool(y)) => MettaValue::Bool(*x && *y),
+        let result = match (a.inner(), b.inner()) {
+            (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => MettaValue::Bool(*x && *y),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "Bool",
@@ -117,8 +117,8 @@ impl BytecodeVM {
     pub(super) fn op_or(&mut self) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let result = match (&a, &b) {
-            (MettaValue::Bool(x), MettaValue::Bool(y)) => MettaValue::Bool(*x || *y),
+        let result = match (a.inner(), b.inner()) {
+            (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => MettaValue::Bool(*x || *y),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "Bool",
@@ -132,8 +132,8 @@ impl BytecodeVM {
 
     pub(super) fn op_not(&mut self) -> VmResult<()> {
         let a = self.pop()?;
-        let result = match a {
-            MettaValue::Bool(x) => MettaValue::Bool(!x),
+        let result = match a.inner() {
+            MettaValueInner::Bool(x) => MettaValue::Bool(!*x),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "Bool",
@@ -148,8 +148,8 @@ impl BytecodeVM {
     pub(super) fn op_xor(&mut self) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let result = match (&a, &b) {
-            (MettaValue::Bool(x), MettaValue::Bool(y)) => MettaValue::Bool(*x ^ *y),
+        let result = match (a.inner(), b.inner()) {
+            (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => MettaValue::Bool(*x ^ *y),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "Bool",
@@ -173,8 +173,8 @@ impl BytecodeVM {
     pub(super) fn op_check_type(&mut self) -> VmResult<()> {
         let type_val = self.pop()?;
         let value = self.pop()?;
-        let expected = match &type_val {
-            MettaValue::Atom(s) => s.as_str(),
+        let expected = match type_val.inner() {
+            MettaValueInner::Atom(s) => s.as_str(),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "type symbol",
@@ -200,8 +200,8 @@ impl BytecodeVM {
     pub(super) fn op_assert_type(&mut self) -> VmResult<()> {
         let type_val = self.pop()?;
         let value = self.peek()?;
-        let expected = match &type_val {
-            MettaValue::Atom(s) => s.as_str(),
+        let expected = match type_val.inner() {
+            MettaValueInner::Atom(s) => s.as_str(),
             _ => {
                 return Err(VmError::TypeError {
                     expected: "type symbol",

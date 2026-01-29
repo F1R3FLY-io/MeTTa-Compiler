@@ -8,14 +8,13 @@
 //! These operations use the trampoline for iteration to prevent stack overflow
 //! when processing deeply nested operations (e.g., map inside map).
 
-use std::sync::Arc;
 use tracing::trace;
 
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::super::step::EvalStep;
-use super::helpers::{suggest_variable_format};
+use super::helpers::suggest_variable_format;
 
 /// Map atom: (map-atom $list $var $template)
 /// Maps a function over a list of atoms
@@ -37,7 +36,7 @@ pub(crate) fn eval_map_atom_step(
                 "map-atom requires exactly 3 arguments, got {}. Usage: (map-atom list $var expr)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -47,9 +46,9 @@ pub(crate) fn eval_map_atom_step(
     let template = &items[3];
 
     // Validate variable argument
-    let var_name = match var {
-        MettaValue::Atom(name) if name.starts_with('$') => name.clone(),
-        MettaValue::Atom(name) => {
+    let var_name = match var.inner() {
+        MettaValueInner::Atom(name) if name.starts_with('$') => name.clone(),
+        MettaValueInner::Atom(name) => {
             let suggestion = suggest_variable_format(name);
             let msg = match suggestion {
                 Some(s) => format!(
@@ -60,29 +59,29 @@ pub(crate) fn eval_map_atom_step(
                     "map-atom: second argument must be a variable (starting with $)".to_string()
                 }
             };
-            let err = MettaValue::Error(msg, Arc::new(var.clone()));
+            let err = MettaValue::Error(msg, var.clone());
             return EvalStep::Done((vec![err], env));
         }
         _ => {
             let err = MettaValue::Error(
                 "map-atom: second argument must be a variable (starting with $)".to_string(),
-                Arc::new(var.clone()),
+                var.clone(),
             );
             return EvalStep::Done((vec![err], env));
         }
     };
 
     // Validate and extract list elements
-    let elements = match list {
-        MettaValue::SExpr(items) => items.clone(),
-        MettaValue::Nil => vec![],
+    let elements = match list.inner() {
+        MettaValueInner::SExpr(items) => items.clone(),
+        MettaValueInner::Nil => vec![],
         _ => {
             let err = MettaValue::Error(
                 format!(
                     "map-atom: first argument must be a list, got {}. Usage: (map-atom list $var expr)",
                     super::super::friendly_value_repr(list)
                 ),
-                Arc::new(list.clone()),
+                list.clone(),
             );
             return EvalStep::Done((vec![err], env));
         }
@@ -118,7 +117,7 @@ pub(crate) fn eval_filter_atom_step(
                 "filter-atom requires exactly 3 arguments, got {}. Usage: (filter-atom list $var predicate)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -128,9 +127,9 @@ pub(crate) fn eval_filter_atom_step(
     let predicate = &items[3];
 
     // Validate variable argument
-    let var_name = match var {
-        MettaValue::Atom(name) if name.starts_with('$') => name.clone(),
-        MettaValue::Atom(name) => {
+    let var_name = match var.inner() {
+        MettaValueInner::Atom(name) if name.starts_with('$') => name.clone(),
+        MettaValueInner::Atom(name) => {
             let suggestion = suggest_variable_format(name);
             let msg = match suggestion {
                 Some(s) => format!(
@@ -141,29 +140,29 @@ pub(crate) fn eval_filter_atom_step(
                     "filter-atom: second argument must be a variable (starting with $)".to_string()
                 }
             };
-            let err = MettaValue::Error(msg, Arc::new(var.clone()));
+            let err = MettaValue::Error(msg, var.clone());
             return EvalStep::Done((vec![err], env));
         }
         _ => {
             let err = MettaValue::Error(
                 "filter-atom: second argument must be a variable (starting with $)".to_string(),
-                Arc::new(var.clone()),
+                var.clone(),
             );
             return EvalStep::Done((vec![err], env));
         }
     };
 
     // Validate and extract list elements
-    let elements = match list {
-        MettaValue::SExpr(items) => items.clone(),
-        MettaValue::Nil => vec![],
+    let elements = match list.inner() {
+        MettaValueInner::SExpr(items) => items.clone(),
+        MettaValueInner::Nil => vec![],
         _ => {
             let err = MettaValue::Error(
                 format!(
                     "filter-atom: first argument must be a list, got {}. Usage: (filter-atom list $var predicate)",
                     super::super::friendly_value_repr(list)
                 ),
-                Arc::new(list.clone()),
+                list.clone(),
             );
             return EvalStep::Done((vec![err], env));
         }
@@ -197,7 +196,7 @@ pub(crate) fn eval_foldl_atom_step(
         let err = MettaValue::Error(
             "foldl-atom requires exactly 5 arguments: list, init, acc-var, item-var, operation"
                 .to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -209,9 +208,9 @@ pub(crate) fn eval_foldl_atom_step(
     let operation = &items[5];
 
     // Validate accumulator variable
-    let acc_var_name = match acc_var {
-        MettaValue::Atom(name) if name.starts_with('$') => name.clone(),
-        MettaValue::Atom(name) => {
+    let acc_var_name = match acc_var.inner() {
+        MettaValueInner::Atom(name) if name.starts_with('$') => name.clone(),
+        MettaValueInner::Atom(name) => {
             let suggestion = suggest_variable_format(name);
             let msg = match suggestion {
                 Some(s) => format!(
@@ -222,22 +221,22 @@ pub(crate) fn eval_foldl_atom_step(
                     "foldl-atom: third argument must be a variable (starting with $)".to_string()
                 }
             };
-            let err = MettaValue::Error(msg, Arc::new(acc_var.clone()));
+            let err = MettaValue::Error(msg, acc_var.clone());
             return EvalStep::Done((vec![err], env));
         }
         _ => {
             let err = MettaValue::Error(
                 "foldl-atom: third argument must be a variable (starting with $)".to_string(),
-                Arc::new(acc_var.clone()),
+                acc_var.clone(),
             );
             return EvalStep::Done((vec![err], env));
         }
     };
 
     // Validate item variable
-    let item_var_name = match item_var {
-        MettaValue::Atom(name) if name.starts_with('$') => name.clone(),
-        MettaValue::Atom(name) => {
+    let item_var_name = match item_var.inner() {
+        MettaValueInner::Atom(name) if name.starts_with('$') => name.clone(),
+        MettaValueInner::Atom(name) => {
             let suggestion = suggest_variable_format(name);
             let msg = match suggestion {
                 Some(s) => format!(
@@ -248,29 +247,29 @@ pub(crate) fn eval_foldl_atom_step(
                     "foldl-atom: fourth argument must be a variable (starting with $)".to_string()
                 }
             };
-            let err = MettaValue::Error(msg, Arc::new(item_var.clone()));
+            let err = MettaValue::Error(msg, item_var.clone());
             return EvalStep::Done((vec![err], env));
         }
         _ => {
             let err = MettaValue::Error(
                 "foldl-atom: fourth argument must be a variable (starting with $)".to_string(),
-                Arc::new(item_var.clone()),
+                item_var.clone(),
             );
             return EvalStep::Done((vec![err], env));
         }
     };
 
     // Validate and extract list elements
-    let elements = match list {
-        MettaValue::SExpr(items) => items.clone(),
-        MettaValue::Nil => vec![],
+    let elements = match list.inner() {
+        MettaValueInner::SExpr(items) => items.clone(),
+        MettaValueInner::Nil => vec![],
         _ => {
             let err = MettaValue::Error(
                 format!(
                     "foldl-atom: first argument must be a list, got {}. Usage: (foldl-atom list init $acc $elem expr)",
                     super::super::friendly_value_repr(list)
                 ),
-                Arc::new(list.clone()),
+                list.clone(),
             );
             return EvalStep::Done((vec![err], env));
         }

@@ -7,7 +7,7 @@ use super::basic::*;
 use super::helpers::substitute_variable;
 use crate::backend::environment::Environment;
 use crate::backend::eval::eval;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 #[test]
 fn test_map_atom_simple() {
@@ -32,8 +32,8 @@ fn test_map_atom_simple() {
     let (results, _) = eval(expr, env);
 
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(mapped) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(mapped) => {
             assert_eq!(mapped.len(), 3);
             assert_eq!(mapped[0], MettaValue::Long(2));
             assert_eq!(mapped[1], MettaValue::Long(3));
@@ -89,7 +89,7 @@ fn test_map_atom_invalid_variable() {
     let (results, _) = eval(expr, env);
 
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 }
 
 #[test]
@@ -102,8 +102,8 @@ fn test_substitute_variable() {
 
     let result = substitute_variable(&template, "$v", &MettaValue::Long(5));
 
-    match result {
-        MettaValue::SExpr(items) => {
+    match result.inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Atom("+".to_string()));
             assert_eq!(items[1], MettaValue::Long(5));
@@ -127,12 +127,12 @@ fn test_substitute_variable_nested() {
 
     let result = substitute_variable(&template, "$v", &MettaValue::Long(3));
 
-    match result {
-        MettaValue::SExpr(outer) => {
+    match result.inner() {
+        MettaValueInner::SExpr(outer) => {
             assert_eq!(outer.len(), 3);
             assert_eq!(outer[0], MettaValue::Atom("*".to_string()));
-            match &outer[1] {
-                MettaValue::SExpr(inner) => {
+            match outer[1].inner() {
+                MettaValueInner::SExpr(inner) => {
                     assert_eq!(inner[1], MettaValue::Long(3)); // $v substituted
                 }
                 _ => panic!("Expected nested S-expression"),
@@ -169,8 +169,8 @@ fn test_filter_atom_simple() {
     let (results, _) = eval(expr, env);
 
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(filtered) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(filtered) => {
             assert_eq!(filtered.len(), 2);
             assert_eq!(filtered[0], MettaValue::Long(3));
             assert_eq!(filtered[1], MettaValue::Long(4));
@@ -326,7 +326,7 @@ fn test_foldl_atom_wrong_arity() {
     let (results, _) = eval(expr, env);
 
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 }
 
 // === Integration Tests ===
@@ -370,8 +370,8 @@ fn test_map_filter_compose() {
     let (filter_results, _) = eval(filter_expr, env1);
     assert_eq!(filter_results.len(), 1);
 
-    match &filter_results[0] {
-        MettaValue::SExpr(filtered) => {
+    match filter_results[0].inner() {
+        MettaValueInner::SExpr(filtered) => {
             assert_eq!(filtered.len(), 2);
             assert_eq!(filtered[0], MettaValue::Long(6));
             assert_eq!(filtered[1], MettaValue::Long(8));
@@ -400,8 +400,8 @@ fn test_map_atom_identity_function() {
 
     let (results, _) = eval(expr, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(mapped) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(mapped) => {
             assert_eq!(mapped.len(), 3);
             assert_eq!(mapped[0], MettaValue::Long(1));
             assert_eq!(mapped[1], MettaValue::Long(2));
@@ -429,8 +429,8 @@ fn test_map_atom_constant_function() {
 
     let (results, _) = eval(expr, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(mapped) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(mapped) => {
             assert_eq!(mapped.len(), 3);
             assert_eq!(mapped[0], MettaValue::Long(42));
             assert_eq!(mapped[1], MettaValue::Long(42));
@@ -452,7 +452,7 @@ fn test_map_atom_wrong_arity() {
 
     let (results, _) = eval(expr, env);
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 }
 
 #[test]
@@ -473,7 +473,7 @@ fn test_map_atom_non_list_input() {
 
     let (results, _) = eval(expr, env);
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 }
 
 #[test]
@@ -484,7 +484,7 @@ fn test_map_atom_nil_input() {
     // Nil is treated as an empty list, and returns empty list (HE-compatible)
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("map-atom".to_string()),
-        MettaValue::Nil,
+        MettaValue::Nil(),
         MettaValue::Atom("$x".to_string()),
         MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
@@ -517,8 +517,8 @@ fn test_map_atom_mixed_types() {
 
     let (results, _) = eval(expr, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(mapped) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(mapped) => {
             assert_eq!(mapped.len(), 3);
             assert_eq!(mapped[0], MettaValue::Long(1));
             assert_eq!(mapped[1], MettaValue::String("hello".to_string()));
@@ -552,8 +552,8 @@ fn test_variable_with_underscores() {
 
     let (results, _) = eval(expr, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(mapped) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(mapped) => {
             assert_eq!(mapped.len(), 3);
             assert_eq!(mapped[0], MettaValue::Long(2));
             assert_eq!(mapped[1], MettaValue::Long(3));
@@ -585,8 +585,8 @@ fn test_variable_with_numbers() {
 
     let (results, _) = eval(expr, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(mapped) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(mapped) => {
             assert_eq!(mapped.len(), 3);
             assert_eq!(mapped[0], MettaValue::Long(2));
             assert_eq!(mapped[1], MettaValue::Long(3));
@@ -620,8 +620,8 @@ fn test_map_atom_variable_format_suggestion() {
 
     let (results, _) = eval(expr, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Error(msg, _) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert!(
                 msg.contains("Did you mean: $x"),
                 "Expected suggestion '$x' in: {}",
@@ -659,8 +659,8 @@ fn test_filter_atom_variable_format_suggestion() {
 
     let (results, _) = eval(expr, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Error(msg, _) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert!(
                 msg.contains("Did you mean: $v"),
                 "Expected suggestion '$v' in: {}",
@@ -695,8 +695,8 @@ fn test_foldl_atom_variable_format_suggestion_acc() {
 
     let (results, _) = eval(expr, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Error(msg, _) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert!(
                 msg.contains("Did you mean: $acc"),
                 "Expected suggestion '$acc' in: {}",

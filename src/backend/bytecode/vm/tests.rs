@@ -11,7 +11,7 @@ use crate::backend::bytecode::chunk::ChunkBuilder;
 use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::bytecode::opcodes::Opcode;
 use crate::backend::environment::Environment;
-use crate::backend::models::{MettaValue, SpaceHandle};
+use crate::backend::models::{MettaValue, MettaValueInner, SpaceHandle};
 
 #[test]
 fn test_vm_push_pop() {
@@ -96,8 +96,8 @@ fn test_vm_make_sexpr() {
     let results = vm.run().expect("VM should succeed");
 
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::sym("+"));
             assert_eq!(items[1], MettaValue::Long(1));
@@ -243,7 +243,7 @@ fn test_vm_push_nil() {
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
 
-    assert_eq!(results[0], MettaValue::Nil);
+    assert_eq!(results[0], MettaValue::Nil());
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn test_vm_push_unit() {
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
 
-    assert_eq!(results[0], MettaValue::Unit);
+    assert_eq!(results[0], MettaValue::Unit());
 }
 
 #[test]
@@ -301,8 +301,8 @@ fn test_vm_make_list() {
     let results = vm.run().expect("VM should succeed");
 
     // Should create (Cons 1 (Cons 2 Nil))
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items[0], MettaValue::sym("Cons"));
             assert_eq!(items[1], MettaValue::Long(1));
         }
@@ -322,8 +322,8 @@ fn test_vm_make_quote() {
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
 
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items[0], MettaValue::sym("quote"));
             assert_eq!(items[1], MettaValue::sym("foo"));
         }
@@ -795,8 +795,8 @@ fn test_vm_get_tail() {
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
 
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Long(1));
             assert_eq!(items[1], MettaValue::Long(2));
@@ -1149,8 +1149,8 @@ fn test_vm_space_add_get_atoms() {
     let results = vm.run().expect("VM should succeed");
 
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(atoms) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(atoms) => {
             assert_eq!(atoms.len(), 3);
             assert!(atoms.contains(&MettaValue::Long(1)));
             assert!(atoms.contains(&MettaValue::Long(2)));
@@ -1179,7 +1179,7 @@ fn test_vm_space_add_opcode() {
 
     // SpaceAdd returns Unit
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Unit);
+    assert_eq!(results[0], MettaValue::Unit());
 
     // Verify the atom was added
     let atoms = space.collapse();
@@ -1256,8 +1256,8 @@ fn test_vm_space_match_opcode() {
 
     // Should return matching atoms
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(matches) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(matches) => {
             // Should have 2 matches: (fact 1) and (fact 2)
             assert_eq!(matches.len(), 2);
         }
@@ -1281,8 +1281,8 @@ fn test_vm_collect_empty() {
 
     // Should return empty list
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert!(items.is_empty());
         }
         _ => panic!("Expected S-expression"),
@@ -1309,8 +1309,8 @@ fn test_vm_collect_n() {
 
     // Should return list with only 2 elements
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Long(1));
             assert_eq!(items[1], MettaValue::Long(2));
@@ -1331,16 +1331,16 @@ fn test_vm_collect_filters_nil() {
 
     // Add results including Nil
     vm.push_result(MettaValue::Long(1));
-    vm.push_result(MettaValue::Nil);
+    vm.push_result(MettaValue::Nil());
     vm.push_result(MettaValue::Long(2));
-    vm.push_result(MettaValue::Nil);
+    vm.push_result(MettaValue::Nil());
 
     let results = vm.run().expect("VM should succeed");
 
     // Should return list without Nil values
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Long(1));
             assert_eq!(items[1], MettaValue::Long(2));
@@ -1371,8 +1371,8 @@ fn test_vm_call_no_rules() {
 
     // Should return (unknown 42) since no rules match
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::sym("unknown"));
             assert_eq!(items[1], MettaValue::Long(42));
@@ -1432,8 +1432,8 @@ fn test_vm_call_no_bridge() {
 
     // Should return (unknown 42) since no bridge is attached
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::sym("unknown"));
             assert_eq!(items[1], MettaValue::Long(42));
@@ -1462,8 +1462,8 @@ fn test_vm_tail_call_no_rules() {
 
     // Should return (unknown 42) since no rules match
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::sym("unknown"));
             assert_eq!(items[1], MettaValue::Long(42));
@@ -1799,7 +1799,7 @@ fn test_vm_alternative_rulematch() {
     // Verify results contain expected patterns (cons 5 5) or (dup 5)
     // or the unevaluated SExprs if rules aren't fully evaluated
     for result in &results {
-        if let MettaValue::SExpr(inner) = result {
+        if let MettaValueInner::SExpr(inner) = result.inner() {
             if !inner.is_empty() {
                 let head = &inner[0];
                 // Check various possible forms of results
@@ -2206,8 +2206,8 @@ fn test_vm_call_external() {
     // Create registry with the function
     let mut registry = ExternalRegistry::new();
     registry.register("triple", |args, _ctx| {
-        let n = match args.first() {
-            Some(MettaValue::Long(n)) => *n,
+        let n = match args.first().map(|v| v.inner()) {
+            Some(MettaValueInner::Long(n)) => *n,
             _ => {
                 return Err(ExternalError::TypeError {
                     expected: "Long",
@@ -2270,7 +2270,7 @@ fn test_vm_call_external_multiple_args() {
         let sum: i64 = args
             .iter()
             .filter_map(|v| {
-                if let MettaValue::Long(n) = v {
+                if let MettaValueInner::Long(n) = v.inner() {
                     Some(*n)
                 } else {
                     None

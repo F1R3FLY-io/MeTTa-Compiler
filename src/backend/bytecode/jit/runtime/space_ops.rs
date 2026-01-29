@@ -20,7 +20,7 @@ use crate::backend::bytecode::jit::types::{
     JitAlternative, JitAlternativeTag, JitBailoutReason, JitBindingEntry, JitChoicePoint,
     JitContext, JitValue, TAG_NIL,
 };
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // Phase D: Space Operations
@@ -51,8 +51,8 @@ pub unsafe extern "C" fn jit_runtime_space_add(
     let space_metta = space_val.to_metta();
     let atom_metta = atom_val.to_metta();
 
-    match space_metta {
-        MettaValue::Space(handle) => {
+    match space_metta.inner() {
+        MettaValueInner::Space(handle) => {
             handle.add_atom(atom_metta);
             JitValue::unit().to_bits()
         }
@@ -88,8 +88,8 @@ pub unsafe extern "C" fn jit_runtime_space_remove(
     let space_metta = space_val.to_metta();
     let atom_metta = atom_val.to_metta();
 
-    match space_metta {
-        MettaValue::Space(handle) => {
+    match space_metta.inner() {
+        MettaValueInner::Space(handle) => {
             let removed = handle.remove_atom(&atom_metta);
             JitValue::from_bool(removed).to_bits()
         }
@@ -120,8 +120,8 @@ pub unsafe extern "C" fn jit_runtime_space_get_atoms(
     let space_val = JitValue::from_raw(space);
     let space_metta = space_val.to_metta();
 
-    match space_metta {
-        MettaValue::Space(handle) => {
+    match space_metta.inner() {
+        MettaValueInner::Space(handle) => {
             let atoms = handle.collapse();
             metta_to_jit(&MettaValue::SExpr(atoms)).to_bits()
         }
@@ -159,8 +159,8 @@ pub unsafe extern "C" fn jit_runtime_space_match(
     let space_metta = space_val.to_metta();
     let pattern_metta = pattern_val.to_metta();
 
-    match space_metta {
-        MettaValue::Space(handle) => {
+    match space_metta.inner() {
+        MettaValueInner::Space(handle) => {
             let atoms = handle.collapse();
             let mut results = Vec::new();
 
@@ -236,8 +236,8 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
     let template_metta = template_val.to_metta();
 
     // Validate we have a space
-    let handle = match &space_metta {
-        MettaValue::Space(h) => h,
+    let handle = match space_metta.inner() {
+        MettaValueInner::Space(h) => h,
         _ => {
             // Type error - not a space
             ctx_ref.bailout = true;
@@ -426,26 +426,26 @@ fn pattern_matches_with_bindings_impl(
     value: &MettaValue,
     bindings: &mut Vec<(String, MettaValue)>,
 ) -> bool {
-    match (pattern, value) {
+    match (pattern.inner(), value.inner()) {
         // Variable pattern (atom starting with $) - always matches and binds
-        (MettaValue::Atom(var), _) if var.starts_with('$') => {
+        (MettaValueInner::Atom(var), _) if var.starts_with('$') => {
             bindings.push((var.clone(), value.clone()));
             true
         }
 
         // Wildcard - always matches
-        (MettaValue::Atom(s), _) if s == "_" => true,
+        (MettaValueInner::Atom(s), _) if s == "_" => true,
 
         // Same type matching
-        (MettaValue::Atom(p), MettaValue::Atom(v)) => p == v,
-        (MettaValue::Long(p), MettaValue::Long(v)) => p == v,
-        (MettaValue::Bool(p), MettaValue::Bool(v)) => p == v,
-        (MettaValue::Nil, MettaValue::Nil) => true,
-        (MettaValue::Unit, MettaValue::Unit) => true,
-        (MettaValue::String(p), MettaValue::String(v)) => p == v,
+        (MettaValueInner::Atom(p), MettaValueInner::Atom(v)) => p == v,
+        (MettaValueInner::Long(p), MettaValueInner::Long(v)) => p == v,
+        (MettaValueInner::Bool(p), MettaValueInner::Bool(v)) => p == v,
+        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
+        (MettaValueInner::Unit, MettaValueInner::Unit) => true,
+        (MettaValueInner::String(p), MettaValueInner::String(v)) => p == v,
 
         // S-expression matching - recursive with same length
-        (MettaValue::SExpr(pats), MettaValue::SExpr(vals)) => {
+        (MettaValueInner::SExpr(pats), MettaValueInner::SExpr(vals)) => {
             if pats.len() != vals.len() {
                 return false;
             }
@@ -469,9 +469,9 @@ fn instantiate_template_impl(
     template: &MettaValue,
     bindings: &[(String, MettaValue)],
 ) -> MettaValue {
-    match template {
+    match template.inner() {
         // Variable substitution (atoms starting with $)
-        MettaValue::Atom(var) if var.starts_with('$') => {
+        MettaValueInner::Atom(var) if var.starts_with('$') => {
             for (name, value) in bindings {
                 if name == var {
                     return value.clone();
@@ -482,7 +482,7 @@ fn instantiate_template_impl(
         }
 
         // S-expression - recurse
-        MettaValue::SExpr(items) => MettaValue::SExpr(
+        MettaValueInner::SExpr(items) => MettaValue::SExpr(
             items
                 .iter()
                 .map(|item| instantiate_template_impl(item, bindings))
@@ -490,7 +490,7 @@ fn instantiate_template_impl(
         ),
 
         // Conjunction - recurse
-        MettaValue::Conjunction(items) => MettaValue::Conjunction(
+        MettaValueInner::Conjunction(items) => MettaValue::Conjunction(
             items
                 .iter()
                 .map(|item| instantiate_template_impl(item, bindings))

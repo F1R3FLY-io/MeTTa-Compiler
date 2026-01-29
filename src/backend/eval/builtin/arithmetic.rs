@@ -10,8 +10,6 @@
 //! - Power (pow-math)
 //! - Absolute value (abs-math)
 
-use std::sync::Arc;
-
 use crate::backend::models::MettaValue;
 
 use super::extractors::extract_long;
@@ -40,7 +38,7 @@ where
                 "Arithmetic overflow: {} {} {} exceeds integer bounds",
                 a, op_name, b
             ),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         ),
     }
 }
@@ -62,7 +60,7 @@ pub(crate) fn eval_division(args: &[MettaValue]) -> MettaValue {
     if b == 0 {
         return MettaValue::Error(
             "Division by zero".to_string(),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 
@@ -71,7 +69,7 @@ pub(crate) fn eval_division(args: &[MettaValue]) -> MettaValue {
         Some(result) => MettaValue::Long(result),
         None => MettaValue::Error(
             format!("Arithmetic overflow: {} / {} exceeds integer bounds", a, b),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         ),
     }
 }
@@ -94,7 +92,7 @@ pub(crate) fn eval_modulo(args: &[MettaValue]) -> MettaValue {
     if b == 0 {
         return MettaValue::Error(
             "Division by zero".to_string(),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 
@@ -103,7 +101,7 @@ pub(crate) fn eval_modulo(args: &[MettaValue]) -> MettaValue {
         Some(result) => MettaValue::Long(result),
         None => MettaValue::Error(
             format!("Arithmetic overflow: {} % {} exceeds integer bounds", a, b),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         ),
     }
 }
@@ -128,7 +126,7 @@ pub(crate) fn eval_floor_div(args: &[MettaValue]) -> MettaValue {
     if b == 0 {
         return MettaValue::Error(
             "Division by zero".to_string(),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 
@@ -159,7 +157,7 @@ pub(crate) fn eval_power(args: &[MettaValue]) -> MettaValue {
                 "Negative exponent not supported for integer exponentiation: {} ^ {}",
                 base, exp
             ),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 
@@ -171,7 +169,7 @@ pub(crate) fn eval_power(args: &[MettaValue]) -> MettaValue {
                 "Arithmetic overflow: {} ^ {} exceeds integer bounds",
                 base, exp
             ),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         ),
     }
 }
@@ -192,7 +190,7 @@ pub(crate) fn eval_abs(args: &[MettaValue]) -> MettaValue {
     if value == i64::MIN {
         return MettaValue::Error(
             format!("Arithmetic overflow: abs({}) exceeds integer bounds", value),
-            Arc::new(MettaValue::Atom("ArithmeticError".to_string())),
+            MettaValue::Atom("ArithmeticError".to_string()),
         );
     }
 

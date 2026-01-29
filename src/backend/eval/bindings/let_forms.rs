@@ -6,8 +6,7 @@
 //! - let_step: TCO-enabled let for trampoline integration
 
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
-use std::sync::Arc;
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use tracing::trace;
 
 use super::super::{apply_bindings, eval, pattern_match, EvalStep};
@@ -31,7 +30,7 @@ pub(crate) fn eval_let_star_step(
                 "let* requires at least 2 arguments (bindings and body), got {}. Usage: (let* ((pattern value) ...) body)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -40,9 +39,9 @@ pub(crate) fn eval_let_star_step(
     let body = &args[1];
 
     // Extract bindings list
-    let bindings = match bindings_expr {
-        MettaValue::SExpr(items) => items,
-        MettaValue::Nil => {
+    let bindings = match bindings_expr.inner() {
+        MettaValueInner::SExpr(items) => items,
+        MettaValueInner::Nil => {
             // Empty bindings - evaluate body via trampoline (tail call)
             return EvalStep::EvalIfBranch {
                 branch: body.clone(),
@@ -56,7 +55,7 @@ pub(crate) fn eval_let_star_step(
                     "let* bindings must be a list, got {}. Usage: (let* ((pattern value) ...) body)",
                     super::super::friendly_value_repr(bindings_expr)
                 ),
-                Arc::new(bindings_expr.clone()),
+                bindings_expr.clone(),
             );
             return EvalStep::Done((vec![err], env));
         }
@@ -77,8 +76,8 @@ pub(crate) fn eval_let_star_step(
 
     // Process bindings in reverse order to build nested structure
     for binding in bindings.iter().rev() {
-        match binding {
-            MettaValue::SExpr(pair) if pair.len() == 2 => {
+        match binding.inner() {
+            MettaValueInner::SExpr(pair) if pair.len() == 2 => {
                 let pattern = &pair[0];
                 let value = &pair[1];
 
@@ -95,7 +94,7 @@ pub(crate) fn eval_let_star_step(
                         "let* binding must be (pattern value) pair, got {}. Usage: (let* ((pattern value) ...) body)",
                         super::super::friendly_value_repr(binding)
                     ),
-                    Arc::new(binding.clone()),
+                    binding.clone(),
                 );
                 return EvalStep::Done((vec![err], env));
             }
@@ -126,7 +125,7 @@ pub(crate) fn eval_let_star(items: Vec<MettaValue>, env: Environment) -> EvalRes
                 "let* requires at least 2 arguments (bindings and body), got {}. Usage: (let* ((pattern value) ...) body)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return (vec![err], env);
     }
@@ -135,9 +134,9 @@ pub(crate) fn eval_let_star(items: Vec<MettaValue>, env: Environment) -> EvalRes
     let body = &args[1];
 
     // Extract bindings list
-    let bindings = match bindings_expr {
-        MettaValue::SExpr(items) => items,
-        MettaValue::Nil => {
+    let bindings = match bindings_expr.inner() {
+        MettaValueInner::SExpr(items) => items,
+        MettaValueInner::Nil => {
             // Empty bindings - just evaluate body
             return eval(body.clone(), env);
         }
@@ -147,7 +146,7 @@ pub(crate) fn eval_let_star(items: Vec<MettaValue>, env: Environment) -> EvalRes
                     "let* bindings must be a list, got {}. Usage: (let* ((pattern value) ...) body)",
                     super::super::friendly_value_repr(bindings_expr)
                 ),
-                Arc::new(bindings_expr.clone()),
+                bindings_expr.clone(),
             );
             return (vec![err], env);
         }
@@ -164,8 +163,8 @@ pub(crate) fn eval_let_star(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
     // Process bindings in reverse order to build nested structure
     for binding in bindings.iter().rev() {
-        match binding {
-            MettaValue::SExpr(pair) if pair.len() == 2 => {
+        match binding.inner() {
+            MettaValueInner::SExpr(pair) if pair.len() == 2 => {
                 let pattern = &pair[0];
                 let value = &pair[1];
 
@@ -182,7 +181,7 @@ pub(crate) fn eval_let_star(items: Vec<MettaValue>, env: Environment) -> EvalRes
                         "let* binding must be (pattern value) pair, got {}. Usage: (let* ((pattern value) ...) body)",
                         super::super::friendly_value_repr(binding)
                     ),
-                    Arc::new(binding.clone()),
+                    binding.clone(),
                 );
                 return (vec![err], env);
             }
@@ -195,12 +194,12 @@ pub(crate) fn eval_let_star(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
 /// Generate helpful message for pattern mismatch in let bindings
 pub(crate) fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaValue) -> String {
-    let pattern_arity = match pattern {
-        MettaValue::SExpr(items) => items.len(),
+    let pattern_arity = match pattern.inner() {
+        MettaValueInner::SExpr(items) => items.len(),
         _ => 1,
     };
-    let value_arity = match value {
-        MettaValue::SExpr(items) => items.len(),
+    let value_arity = match value.inner() {
+        MettaValueInner::SExpr(items) => items.len(),
         _ => 1,
     };
 
@@ -213,24 +212,30 @@ pub(crate) fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaVal
     }
 
     // Check for structure mismatch (different head atoms)
-    if let (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items)) = (pattern, value) {
-        if let (Some(MettaValue::Atom(p_head)), Some(MettaValue::Atom(v_head))) =
-            (p_items.first(), v_items.first())
-        {
-            if p_head != v_head {
-                return format!(
-                    "Hint: pattern head '{}' doesn't match value head '{}'.",
-                    p_head, v_head
-                );
+    if let (MettaValueInner::SExpr(p_items), MettaValueInner::SExpr(v_items)) =
+        (pattern.inner(), value.inner())
+    {
+        if let (Some(p_first), Some(v_first)) = (p_items.first(), v_items.first()) {
+            if let (MettaValueInner::Atom(p_head), MettaValueInner::Atom(v_head)) =
+                (p_first.inner(), v_first.inner())
+            {
+                if p_head != v_head {
+                    return format!(
+                        "Hint: pattern head '{}' doesn't match value head '{}'.",
+                        p_head, v_head
+                    );
+                }
             }
         }
     }
 
     // Check for literal mismatch inside structures
-    if let (MettaValue::SExpr(p_items), MettaValue::SExpr(v_items)) = (pattern, value) {
+    if let (MettaValueInner::SExpr(p_items), MettaValueInner::SExpr(v_items)) =
+        (pattern.inner(), value.inner())
+    {
         for (i, (p, v)) in p_items.iter().zip(v_items.iter()).enumerate() {
             // Skip if pattern is a variable (starts with $, &, or ')
-            if let MettaValue::Atom(name) = p {
+            if let MettaValueInner::Atom(name) = p.inner() {
                 if name.starts_with('$')
                     || name.starts_with('&')
                     || name.starts_with('\'')
@@ -240,7 +245,7 @@ pub(crate) fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaVal
                 }
             }
             // Check for literal mismatch
-            if p != v && !matches!(p, MettaValue::SExpr(_)) {
+            if p != v && !matches!(p.inner(), MettaValueInner::SExpr(_)) {
                 return format!(
                     "Hint: element at position {} doesn't match - pattern has {:?} but value has {:?}.",
                     i, p, v
@@ -275,7 +280,7 @@ pub(crate) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
                 "let requires exactly 3 arguments, got {}. Usage: (let pattern value body)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return (vec![err], env);
     }
@@ -337,7 +342,7 @@ pub(crate) fn eval_let_step(items: Vec<MettaValue>, env: Environment, depth: usi
                 "let requires exactly 3 arguments, got {}. Usage: (let pattern value body)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return EvalStep::Done((vec![err], env));
     }

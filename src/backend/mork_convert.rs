@@ -4,7 +4,7 @@
 //! - MettaValue → MORK Expr (for pattern queries)
 //! - MORK bindings → SmallVec<[(String, MettaValue); 8]> (for pattern match results)
 
-use super::models::{Bindings, MettaValue};
+use super::models::{Bindings, MettaValue, MettaValueInner};
 use mork::space::{ParDataParser, Space};
 use mork_expr::{Expr, ExprEnv, ExprZipper};
 use mork_frontend::bytestring_parser::Parser;
@@ -100,8 +100,8 @@ fn write_metta_value(
     ctx: &mut ConversionContext,
     ez: &mut ExprZipper,
 ) -> Result<(), String> {
-    match value {
-        MettaValue::Atom(name) => {
+    match value.inner() {
+        MettaValueInner::Atom(name) => {
             // Check if it's a variable
             // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
             // EXCEPT: "&self", "&kb", "&stack" are space references, not variables
@@ -133,34 +133,34 @@ fn write_metta_value(
             }
         }
 
-        MettaValue::Bool(b) => {
+        MettaValueInner::Bool(b) => {
             let s = if *b { "true" } else { "false" };
             write_symbol(s.as_bytes(), pdp, ez)?;
         }
 
-        MettaValue::Long(n) => {
+        MettaValueInner::Long(n) => {
             let s = n.to_string();
             write_symbol(s.as_bytes(), pdp, ez)?;
         }
 
-        MettaValue::Float(f) => {
+        MettaValueInner::Float(f) => {
             let s = f.to_string();
             write_symbol(s.as_bytes(), pdp, ez)?;
         }
 
-        MettaValue::String(s) => {
+        MettaValueInner::String(s) => {
             // MORK uses quoted strings
             let quoted = format!("\"{}\"", s);
             write_symbol(quoted.as_bytes(), pdp, ez)?;
         }
 
-        MettaValue::Nil => {
+        MettaValueInner::Nil => {
             // Empty list
             ez.write_arity(0);
             ez.loc += 1;
         }
 
-        MettaValue::SExpr(items) => {
+        MettaValueInner::SExpr(items) => {
             // MORK arity is limited to 6 bits (0-63)
             if items.len() >= 64 {
                 return Err(format!(
@@ -179,7 +179,7 @@ fn write_metta_value(
             }
         }
 
-        MettaValue::Error(msg, details) => {
+        MettaValueInner::Error(msg, details) => {
             // (error "msg" details)
             ez.write_arity(3);
             ez.loc += 1;
@@ -188,12 +188,12 @@ fn write_metta_value(
             write_metta_value(details, pdp, ctx, ez)?;
         }
 
-        MettaValue::Type(t) => {
+        MettaValueInner::Type(t) => {
             // Types are just atoms/expressions
             write_metta_value(t, pdp, ctx, ez)?;
         }
 
-        MettaValue::Conjunction(goals) => {
+        MettaValueInner::Conjunction(goals) => {
             // MORK arity is limited to 6 bits (0-63)
             // +1 for the comma symbol
             let total_arity = goals.len() + 1;
@@ -217,7 +217,7 @@ fn write_metta_value(
         }
 
         // Space references are written as (Space id name)
-        MettaValue::Space(handle) => {
+        MettaValueInner::Space(handle) => {
             ez.write_arity(3);
             ez.loc += 1;
             write_symbol(b"Space", pdp, ez)?;
@@ -226,7 +226,7 @@ fn write_metta_value(
         }
 
         // State references are written as (State id)
-        MettaValue::State(id) => {
+        MettaValueInner::State(id) => {
             ez.write_arity(2);
             ez.loc += 1;
             write_symbol(b"State", pdp, ez)?;
@@ -234,13 +234,13 @@ fn write_metta_value(
         }
 
         // Unit is written as ()
-        MettaValue::Unit => {
+        MettaValueInner::Unit => {
             ez.write_arity(0);
             ez.loc += 1;
         }
 
         // Memo tables are runtime-only and cannot be stored in MORK
-        MettaValue::Memo(handle) => {
+        MettaValueInner::Memo(handle) => {
             return Err(format!(
                 "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
                 handle.name, handle.id
@@ -248,7 +248,7 @@ fn write_metta_value(
         }
 
         // Empty sentinel is runtime-only and should be filtered out before MORK conversion
-        MettaValue::Empty => {
+        MettaValueInner::Empty => {
             return Err(
                 "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
             );

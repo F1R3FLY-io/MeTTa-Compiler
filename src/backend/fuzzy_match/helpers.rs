@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::backend::builtin_signatures::TypeExpr;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use crate::backend::Environment;
 
 use super::types::SuggestionConfidence;
@@ -100,40 +100,46 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &Environment
         TypeExpr::Var(_) => true,
 
         // Concrete types - check structural compatibility
-        TypeExpr::Number => matches!(actual, MettaValue::Long(_) | MettaValue::Float(_)),
+        TypeExpr::Number => matches!(
+            actual.inner(),
+            MettaValueInner::Long(_) | MettaValueInner::Float(_)
+        ),
 
         TypeExpr::Bool => {
-            matches!(actual, MettaValue::Bool(_))
-                || matches!(actual, MettaValue::Atom(s) if s == "True" || s == "False")
+            matches!(actual.inner(), MettaValueInner::Bool(_))
+                || matches!(actual.inner(), MettaValueInner::Atom(s) if s == "True" || s == "False")
         }
 
-        TypeExpr::String => matches!(actual, MettaValue::String(_)),
+        TypeExpr::String => matches!(actual.inner(), MettaValueInner::String(_)),
 
-        TypeExpr::Atom => matches!(actual, MettaValue::Atom(_)),
+        TypeExpr::Atom => matches!(actual.inner(), MettaValueInner::Atom(_)),
 
         TypeExpr::Space => {
-            matches!(actual, MettaValue::Space(_))
-                || matches!(actual, MettaValue::Atom(s) if s.starts_with('&'))
+            matches!(actual.inner(), MettaValueInner::Space(_))
+                || matches!(actual.inner(), MettaValueInner::Atom(s) if s.starts_with('&'))
         }
 
-        TypeExpr::State => matches!(actual, MettaValue::State(_)),
+        TypeExpr::State => matches!(actual.inner(), MettaValueInner::State(_)),
 
-        TypeExpr::Unit => matches!(actual, MettaValue::Unit),
+        TypeExpr::Unit => matches!(actual.inner(), MettaValueInner::Unit),
 
-        TypeExpr::Nil => matches!(actual, MettaValue::Nil),
+        TypeExpr::Nil => matches!(actual.inner(), MettaValueInner::Nil),
 
-        TypeExpr::Error => matches!(actual, MettaValue::Error(_, _)),
+        TypeExpr::Error => matches!(actual.inner(), MettaValueInner::Error(_, _)),
 
         TypeExpr::Type => {
-            matches!(actual, MettaValue::Type(_))
-                || matches!(actual, MettaValue::Atom(s) if is_type_name(s))
+            matches!(actual.inner(), MettaValueInner::Type(_))
+                || matches!(actual.inner(), MettaValueInner::Atom(s) if is_type_name(s))
         }
 
         // List type - check if it's an s-expression
-        TypeExpr::List(_) => matches!(actual, MettaValue::SExpr(_)),
+        TypeExpr::List(_) => matches!(actual.inner(), MettaValueInner::SExpr(_)),
 
         // Arrow type - callable things (atoms/s-expressions)
-        TypeExpr::Arrow(_, _) => matches!(actual, MettaValue::Atom(_) | MettaValue::SExpr(_)),
+        TypeExpr::Arrow(_, _) => matches!(
+            actual.inner(),
+            MettaValueInner::Atom(_) | MettaValueInner::SExpr(_)
+        ),
     }
 }
 
@@ -188,9 +194,9 @@ pub fn validate_type_vars(
 /// Used for type variable unification - ensures values bound to the same
 /// type variable have compatible types.
 pub fn values_compatible(a: &MettaValue, b: &MettaValue) -> bool {
-    use MettaValue::*;
+    use MettaValueInner::*;
 
-    match (a, b) {
+    match (a.inner(), b.inner()) {
         // Same ground types are compatible
         (Long(_), Long(_)) | (Long(_), Float(_)) | (Float(_), Long(_)) | (Float(_), Float(_)) => {
             true

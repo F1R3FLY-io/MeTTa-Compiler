@@ -7,10 +7,8 @@
 //! - clear-memo!: Clear all cached entries
 //! - memo-stats: Get cache statistics
 
-use std::sync::Arc;
-
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MemoHandle, MettaValue};
+use crate::backend::models::{EvalResult, MemoHandle, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
 use super::super::eval;
@@ -27,7 +25,7 @@ pub(crate) fn eval_new_memo_step(
     if items.len() < 2 || items.len() > 3 {
         let err = MettaValue::Error(
             "new-memo: requires 1 or 2 arguments. Usage: (new-memo \"name\") or (new-memo \"name\" max-size)".to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -59,7 +57,7 @@ pub(crate) fn eval_new_memo(items: Vec<MettaValue>, env: Environment) -> EvalRes
     if items.len() < 2 || items.len() > 3 {
         let err = MettaValue::Error(
             "new-memo: requires 1 or 2 arguments. Usage: (new-memo \"name\") or (new-memo \"name\" max-size)".to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return (vec![err], env);
     }
@@ -71,22 +69,22 @@ pub(crate) fn eval_new_memo(items: Vec<MettaValue>, env: Environment) -> EvalRes
     if name_results.is_empty() {
         let err = MettaValue::Error(
             "new-memo: name evaluated to empty".to_string(),
-            Arc::new(name_arg.clone()),
+            name_arg.clone(),
         );
         return (vec![err], env1);
     }
 
     // Extract string name
-    let name = match &name_results[0] {
-        MettaValue::String(s) => s.clone(),
-        MettaValue::Atom(s) => s.clone(),
-        other => {
+    let name = match name_results[0].inner() {
+        MettaValueInner::String(s) => s.clone(),
+        MettaValueInner::Atom(s) => s.clone(),
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "new-memo: name must be a string or atom, got {}",
-                    super::super::friendly_value_repr(other)
+                    super::super::friendly_value_repr(&name_results[0])
                 ),
-                Arc::new(other.clone()),
+                name_results[0].clone(),
             );
             return (vec![err], env1);
         }
@@ -99,23 +97,23 @@ pub(crate) fn eval_new_memo(items: Vec<MettaValue>, env: Environment) -> EvalRes
         if size_results.is_empty() {
             let err = MettaValue::Error(
                 "new-memo: max-size evaluated to empty".to_string(),
-                Arc::new(size_arg.clone()),
+                size_arg.clone(),
             );
             return (vec![err], env2);
         }
 
-        match &size_results[0] {
-            MettaValue::Long(n) if *n > 0 => {
+        match size_results[0].inner() {
+            MettaValueInner::Long(n) if *n > 0 => {
                 let memo = MemoHandle::with_max_size(name, *n as usize);
                 (vec![MettaValue::Memo(memo)], env2)
             }
-            other => {
+            _ => {
                 let err = MettaValue::Error(
                     format!(
                         "new-memo: max-size must be a positive integer, got {}",
-                        super::super::friendly_value_repr(other)
+                        super::super::friendly_value_repr(&size_results[0])
                     ),
-                    Arc::new(other.clone()),
+                    size_results[0].clone(),
                 );
                 (vec![err], env2)
             }
@@ -129,15 +127,11 @@ pub(crate) fn eval_new_memo(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
 /// Step version of eval_memo - defers evaluation to trampoline.
 /// Usage: (memo memo-table expr)
-pub(crate) fn eval_memo_step(
-    items: Vec<MettaValue>,
-    env: Environment,
-    depth: usize,
-) -> EvalStep {
+pub(crate) fn eval_memo_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     if items.len() < 3 {
         let err = MettaValue::Error(
             "memo requires 2 arguments. Usage: (memo memo-table expr)".to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -168,13 +162,13 @@ pub(crate) fn eval_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     if memo_results.is_empty() {
         let err = MettaValue::Error(
             "memo: memo-table evaluated to empty".to_string(),
-            Arc::new(memo_ref.clone()),
+            memo_ref.clone(),
         );
         return (vec![err], env1);
     }
 
-    match &memo_results[0] {
-        MettaValue::Memo(handle) => {
+    match memo_results[0].inner() {
+        MettaValueInner::Memo(handle) => {
             // Check cache first
             if let Some(cached) = handle.lookup(expr) {
                 return (cached, env1);
@@ -190,13 +184,13 @@ pub(crate) fn eval_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 
             (results, env2)
         }
-        other => {
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "memo: first argument must be a memo table, got {}. Usage: (memo memo-table expr)",
-                    super::super::friendly_value_repr(other)
+                    super::super::friendly_value_repr(&memo_results[0])
                 ),
-                Arc::new(other.clone()),
+                memo_results[0].clone(),
             );
             (vec![err], env1)
         }
@@ -213,7 +207,7 @@ pub(crate) fn eval_memo_first_step(
     if items.len() < 3 {
         let err = MettaValue::Error(
             "memo-first requires 2 arguments. Usage: (memo-first memo-table expr)".to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -245,13 +239,13 @@ pub(crate) fn eval_memo_first(items: Vec<MettaValue>, env: Environment) -> EvalR
     if memo_results.is_empty() {
         let err = MettaValue::Error(
             "memo-first: memo-table evaluated to empty".to_string(),
-            Arc::new(memo_ref.clone()),
+            memo_ref.clone(),
         );
         return (vec![err], env1);
     }
 
-    match &memo_results[0] {
-        MettaValue::Memo(handle) => {
+    match memo_results[0].inner() {
+        MettaValueInner::Memo(handle) => {
             // Check cache first
             if let Some(cached) = handle.lookup(expr) {
                 return (cached, env1);
@@ -267,13 +261,13 @@ pub(crate) fn eval_memo_first(items: Vec<MettaValue>, env: Environment) -> EvalR
 
             (results, env2)
         }
-        other => {
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "memo-first: first argument must be a memo table, got {}. Usage: (memo-first memo-table expr)",
-                    super::super::friendly_value_repr(other)
+                    super::super::friendly_value_repr(&memo_results[0])
                 ),
-                Arc::new(other.clone()),
+                memo_results[0].clone(),
             );
             (vec![err], env1)
         }
@@ -290,7 +284,7 @@ pub(crate) fn eval_clear_memo_step(
     if items.len() < 2 {
         let err = MettaValue::Error(
             "clear-memo! requires 1 argument. Usage: (clear-memo! memo-table)".to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -319,23 +313,23 @@ pub(crate) fn eval_clear_memo(items: Vec<MettaValue>, env: Environment) -> EvalR
     if memo_results.is_empty() {
         let err = MettaValue::Error(
             "clear-memo!: memo-table evaluated to empty".to_string(),
-            Arc::new(memo_ref.clone()),
+            memo_ref.clone(),
         );
         return (vec![err], env1);
     }
 
-    match &memo_results[0] {
-        MettaValue::Memo(handle) => {
+    match memo_results[0].inner() {
+        MettaValueInner::Memo(handle) => {
             handle.clear();
             (vec![MettaValue::Memo(handle.clone())], env1)
         }
-        other => {
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "clear-memo!: argument must be a memo table, got {}. Usage: (clear-memo! memo-table)",
-                    super::super::friendly_value_repr(other)
+                    super::super::friendly_value_repr(&memo_results[0])
                 ),
-                Arc::new(other.clone()),
+                memo_results[0].clone(),
             );
             (vec![err], env1)
         }
@@ -352,7 +346,7 @@ pub(crate) fn eval_memo_stats_step(
     if items.len() < 2 {
         let err = MettaValue::Error(
             "memo-stats requires 1 argument. Usage: (memo-stats memo-table)".to_string(),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -381,13 +375,13 @@ pub(crate) fn eval_memo_stats(items: Vec<MettaValue>, env: Environment) -> EvalR
     if memo_results.is_empty() {
         let err = MettaValue::Error(
             "memo-stats: memo-table evaluated to empty".to_string(),
-            Arc::new(memo_ref.clone()),
+            memo_ref.clone(),
         );
         return (vec![err], env1);
     }
 
-    match &memo_results[0] {
-        MettaValue::Memo(handle) => {
+    match memo_results[0].inner() {
+        MettaValueInner::Memo(handle) => {
             let (hits, misses, size, max_size) = handle.stats();
             let hit_rate = handle.hit_rate();
 
@@ -402,13 +396,13 @@ pub(crate) fn eval_memo_stats(items: Vec<MettaValue>, env: Environment) -> EvalR
             ]);
             (vec![stats], env1)
         }
-        other => {
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "memo-stats: argument must be a memo table, got {}. Usage: (memo-stats memo-table)",
-                    super::super::friendly_value_repr(other)
+                    super::super::friendly_value_repr(&memo_results[0])
                 ),
-                Arc::new(other.clone()),
+                memo_results[0].clone(),
             );
             (vec![err], env1)
         }

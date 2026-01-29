@@ -4,7 +4,7 @@
 //! with left-to-right goal evaluation and binding threading.
 
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 use super::EvalStep;
 
@@ -29,7 +29,7 @@ pub fn eval_conjunction(goals: Vec<MettaValue>, env: Environment, _depth: usize)
 
     // Empty conjunction: (,) succeeds with empty result
     if goals.is_empty() {
-        return (vec![MettaValue::Nil], env);
+        return (vec![MettaValue::Nil()], env);
     }
 
     // Unary conjunction: (, expr) evaluates expr directly
@@ -48,7 +48,7 @@ pub fn eval_conjunction(goals: Vec<MettaValue>, env: Environment, _depth: usize)
         // For each result from previous goals, evaluate the current goal
         for result in results {
             // If previous result is an error, propagate it
-            if matches!(result, MettaValue::Error(_, _)) {
+            if matches!(result.inner(), MettaValueInner::Error(_, _)) {
                 next_results.push(result);
                 continue;
             }

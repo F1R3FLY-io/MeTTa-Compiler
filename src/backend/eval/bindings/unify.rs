@@ -6,10 +6,9 @@
 //! - atom-subst: Variable substitution through pattern matching
 
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use super::super::{apply_bindings, eval, pattern_match, EvalStep};
 
@@ -18,11 +17,7 @@ static SEALED_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Step version of eval_unify that defers evaluation to trampoline.
 /// This prevents stack overflow for deeply nested unify operations.
-pub(crate) fn eval_unify_step(
-    items: Vec<MettaValue>,
-    env: Environment,
-    depth: usize,
-) -> EvalStep {
+pub(crate) fn eval_unify_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     let args = &items[1..];
 
     if args.len() < 4 {
@@ -32,7 +27,7 @@ pub(crate) fn eval_unify_step(
                 "unify requires 4 arguments, got {}. Usage: (unify pattern1 pattern2 success failure)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -75,7 +70,7 @@ pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
                 "unify requires 4 arguments, got {}. Usage: (unify pattern1 pattern2 success failure)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return (vec![err], env);
     }
@@ -98,8 +93,8 @@ pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
             results1.len(),
             results1
                 .iter()
-                .map(|v| match v {
-                    MettaValue::Space(h) => format!("Space({})", h.name),
+                .map(|v| match v.inner() {
+                    MettaValueInner::Space(h) => format!("Space({})", h.name),
                     other => format!("{:?}", other),
                 })
                 .collect::<Vec<_>>()
@@ -111,15 +106,15 @@ pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
 
     // OPTIMIZATION: Detect boolean existence check pattern: (unify &space pattern True False)
     // This avoids iterating all atoms when we only need to check if ANY match exists
-    let is_boolean_check = match (success_body, failure_body) {
-        (MettaValue::Bool(true), MettaValue::Bool(false)) => true,
-        (MettaValue::Atom(s), MettaValue::Atom(f)) if s == "True" && f == "False" => true,
+    let is_boolean_check = match (success_body.inner(), failure_body.inner()) {
+        (MettaValueInner::Bool(true), MettaValueInner::Bool(false)) => true,
+        (MettaValueInner::Atom(s), MettaValueInner::Atom(f)) if s == "True" && f == "False" => true,
         _ => false,
     };
 
     for val1 in results1 {
         // HE-compatible: If val1 is a Space, search atoms in the space
-        if let MettaValue::Space(ref handle) = val1 {
+        if let MettaValueInner::Space(ref handle) = val1.inner() {
             // Pattern2 is treated as a pattern to match against space atoms
             // It should NOT be evaluated - it's a pattern template
             let pattern = pattern2.clone();
@@ -301,7 +296,7 @@ pub(crate) fn eval_sealed(items: Vec<MettaValue>, env: Environment) -> EvalResul
                 "sealed requires 2 arguments, got {}. Usage: (sealed ignore-vars expr)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return (vec![err], env);
     }
@@ -337,17 +332,17 @@ fn collect_variables(expr: &MettaValue) -> HashSet<String> {
     work_stack.push(expr);
 
     while let Some(val) = work_stack.pop() {
-        match val {
-            MettaValue::Atom(name) if name.starts_with('$') => {
+        match val.inner() {
+            MettaValueInner::Atom(name) if name.starts_with('$') => {
                 vars.insert(name.clone());
             }
-            MettaValue::SExpr(items) => {
+            MettaValueInner::SExpr(items) => {
                 // Push all children onto work stack
                 for item in items.iter().rev() {
                     work_stack.push(item);
                 }
             }
-            MettaValue::Conjunction(goals) => {
+            MettaValueInner::Conjunction(goals) => {
                 for goal in goals.iter().rev() {
                     work_stack.push(goal);
                 }
@@ -369,25 +364,25 @@ fn collect_variables(expr: &MettaValue) -> HashSet<String> {
 /// - Deeply nested data structures common in knowledge graphs
 fn seal_variables(expr: &MettaValue, ignore: &HashSet<String>, unique_id: u64) -> MettaValue {
     // Fast path for simple cases
-    match expr {
-        MettaValue::Atom(name) if name.starts_with('$') && !ignore.contains(name) => {
+    match expr.inner() {
+        MettaValueInner::Atom(name) if name.starts_with('$') && !ignore.contains(name) => {
             return MettaValue::Atom(format!("{}_{}", name, unique_id));
         }
-        MettaValue::Atom(_)
-        | MettaValue::Long(_)
-        | MettaValue::Float(_)
-        | MettaValue::Bool(_)
-        | MettaValue::String(_)
-        | MettaValue::Nil
-        | MettaValue::Unit
-        | MettaValue::Space(_)
-        | MettaValue::State(_)
-        | MettaValue::Type(_)
-        | MettaValue::Memo(_)
-        | MettaValue::Empty
-        | MettaValue::Error(_, _) => return expr.clone(),
+        MettaValueInner::Atom(_)
+        | MettaValueInner::Long(_)
+        | MettaValueInner::Float(_)
+        | MettaValueInner::Bool(_)
+        | MettaValueInner::String(_)
+        | MettaValueInner::Nil
+        | MettaValueInner::Unit
+        | MettaValueInner::Space(_)
+        | MettaValueInner::State(_)
+        | MettaValueInner::Type(_)
+        | MettaValueInner::Memo(_)
+        | MettaValueInner::Empty
+        | MettaValueInner::Error(_, _) => return expr.clone(),
         // Compound types need iterative processing
-        MettaValue::SExpr(_) | MettaValue::Conjunction(_) => {}
+        MettaValueInner::SExpr(_) | MettaValueInner::Conjunction(_) => {}
     }
 
     // Iterative implementation using explicit work stack
@@ -420,13 +415,15 @@ fn seal_variables_iterative(
     while let Some(work) = work_stack.pop() {
         match work {
             SealWork::Process(val) => {
-                match val {
+                match val.inner() {
                     // Variable replacement (if not ignored)
-                    MettaValue::Atom(name) if name.starts_with('$') && !ignore.contains(name) => {
+                    MettaValueInner::Atom(name)
+                        if name.starts_with('$') && !ignore.contains(name) =>
+                    {
                         result_stack.push(MettaValue::Atom(format!("{}_{}", name, unique_id)));
                     }
                     // S-expression: push build marker, then push children in reverse order
-                    MettaValue::SExpr(items) => {
+                    MettaValueInner::SExpr(items) => {
                         if items.is_empty() {
                             result_stack.push(val.clone());
                         } else {
@@ -437,7 +434,7 @@ fn seal_variables_iterative(
                         }
                     }
                     // Conjunction: similar to SExpr
-                    MettaValue::Conjunction(goals) => {
+                    MettaValueInner::Conjunction(goals) => {
                         if goals.is_empty() {
                             result_stack.push(val.clone());
                         } else {
@@ -472,7 +469,9 @@ fn seal_variables_iterative(
         1,
         "seal_variables should produce exactly one result"
     );
-    result_stack.pop().expect("Result stack should not be empty")
+    result_stack
+        .pop()
+        .expect("Result stack should not be empty")
 }
 
 /// atom-subst: Variable substitution through pattern matching
@@ -495,7 +494,7 @@ pub(crate) fn eval_atom_subst(items: Vec<MettaValue>, env: Environment) -> EvalR
                 "atom-subst requires 3 arguments, got {}. Usage: (atom-subst value $var template)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return (vec![err], env);
     }

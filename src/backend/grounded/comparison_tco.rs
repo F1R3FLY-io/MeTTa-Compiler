@@ -10,6 +10,7 @@ use super::{
     find_error, friendly_type_name, ExecError, GroundedOperationTCO, GroundedState, GroundedWork,
     MettaValue,
 };
+use crate::backend::models::MettaValueInner;
 
 /// TCO Less than operation: (< a b)
 pub struct LessOpTCO;
@@ -127,20 +128,20 @@ fn eval_comparison_tco(state: &mut GroundedState, kind: CompareKind) -> Grounded
             let mut results = Vec::new();
             for a in a_results {
                 for b in b_results {
-                    match (a, b) {
-                        (MettaValue::Long(x), MettaValue::Long(y)) => {
+                    match (a.inner(), b.inner()) {
+                        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
                             results.push((MettaValue::Bool(kind.compare(x, y)), None));
                         }
-                        (MettaValue::Float(x), MettaValue::Float(y)) => {
+                        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
                             results.push((MettaValue::Bool(kind.compare(x, y)), None));
                         }
-                        (MettaValue::Long(x), MettaValue::Float(y)) => {
+                        (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
                             results.push((MettaValue::Bool(kind.compare(&(*x as f64), y)), None));
                         }
-                        (MettaValue::Float(x), MettaValue::Long(y)) => {
+                        (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
                             results.push((MettaValue::Bool(kind.compare(x, &(*y as f64))), None));
                         }
-                        (MettaValue::String(x), MettaValue::String(y)) => {
+                        (MettaValueInner::String(x), MettaValueInner::String(y)) => {
                             results.push((MettaValue::Bool(kind.compare(x, y)), None));
                         }
                         _ => {

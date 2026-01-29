@@ -8,7 +8,7 @@
 //! - get_element - Get element at a specific index
 
 use crate::backend::bytecode::jit::types::{JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_NIL};
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // S-Expression Operations (Stage 14: Head/Tail/Arity/Element)
@@ -60,8 +60,8 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
     }
 
     let metta_val = &*metta_ptr;
-    match metta_val {
-        MettaValue::SExpr(items) => {
+    match metta_val.inner() {
+        MettaValueInner::SExpr(items) => {
             if items.is_empty() {
                 TAG_NIL
             } else {
@@ -118,8 +118,8 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
     }
 
     let metta_val = &*metta_ptr;
-    match metta_val {
-        MettaValue::SExpr(items) => {
+    match metta_val.inner() {
+        MettaValueInner::SExpr(items) => {
             // Return tail (skip first element)
             let tail: Vec<MettaValue> = if items.len() > 1 {
                 items[1..].to_vec()
@@ -170,8 +170,8 @@ pub unsafe extern "C" fn jit_runtime_get_arity(_ctx: *mut JitContext, val: u64, 
     }
 
     let metta_val = &*metta_ptr;
-    match metta_val {
-        MettaValue::SExpr(items) => JitValue::from_long(items.len() as i64).to_bits(),
+    match metta_val.inner() {
+        MettaValueInner::SExpr(items) => JitValue::from_long(items.len() as i64).to_bits(),
         _ => JitValue::from_long(0).to_bits(),
     }
 }
@@ -213,8 +213,8 @@ pub unsafe extern "C" fn jit_runtime_get_element(
     let metta_val = &*metta_ptr;
     let idx = index as usize;
 
-    match metta_val {
-        MettaValue::SExpr(items) => {
+    match metta_val.inner() {
+        MettaValueInner::SExpr(items) => {
             if idx >= items.len() {
                 TAG_NIL
             } else {

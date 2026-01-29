@@ -10,7 +10,7 @@
 
 use super::helpers::{make_jit_error, make_jit_error_with_details, metta_to_jit_tracked};
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // Heap Tracking Runtime Functions
@@ -161,12 +161,13 @@ pub unsafe extern "C" fn jit_runtime_get_state(
     // Extract state ID from the handle
     let state_id = {
         let jit_val = JitValue::from_raw(state_handle);
-        match jit_val.to_metta() {
-            MettaValue::State(id) => id,
-            other => {
+        let metta_val = jit_val.to_metta();
+        match metta_val.inner() {
+            MettaValueInner::State(id) => *id,
+            _ => {
                 return make_jit_error_with_details(
                     "get-state: expected State",
-                    &format!("got {:?}", other),
+                    &format!("got {:?}", metta_val),
                 );
             }
         }
@@ -234,12 +235,13 @@ pub unsafe extern "C" fn jit_runtime_change_state(
     // Extract state ID from the handle
     let state_id = {
         let jit_val = JitValue::from_raw(state_handle);
-        match jit_val.to_metta() {
-            MettaValue::State(id) => id,
-            other => {
+        let metta_val = jit_val.to_metta();
+        match metta_val.inner() {
+            MettaValueInner::State(id) => *id,
+            _ => {
                 return make_jit_error_with_details(
                     "change-state!: expected State",
-                    &format!("got {:?}", other),
+                    &format!("got {:?}", metta_val),
                 );
             }
         }

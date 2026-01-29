@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use super::pattern::pattern_matches;
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
-use crate::backend::models::{MettaValue, SpaceHandle};
+use crate::backend::models::{MettaValue, MettaValueInner, SpaceHandle};
 
 impl BytecodeVM {
     // === Space Operations ===
@@ -22,15 +22,15 @@ impl BytecodeVM {
     pub(super) fn op_space_add(&mut self) -> VmResult<()> {
         let atom = self.pop()?;
         let space = self.pop()?;
-        match space {
-            MettaValue::Space(handle) => {
+        match space.inner() {
+            MettaValueInner::Space(handle) => {
                 handle.add_atom(atom);
-                self.push(MettaValue::Unit);
+                self.push(MettaValue::Unit());
                 Ok(())
             }
-            other => Err(VmError::TypeError {
+            _ => Err(VmError::TypeError {
                 expected: "Space",
-                got: other.type_name(),
+                got: space.type_name(),
             }),
         }
     }
@@ -40,15 +40,15 @@ impl BytecodeVM {
     pub(super) fn op_space_remove(&mut self) -> VmResult<()> {
         let atom = self.pop()?;
         let space = self.pop()?;
-        match space {
-            MettaValue::Space(handle) => {
+        match space.inner() {
+            MettaValueInner::Space(handle) => {
                 let removed = handle.remove_atom(&atom);
                 self.push(MettaValue::Bool(removed));
                 Ok(())
             }
-            other => Err(VmError::TypeError {
+            _ => Err(VmError::TypeError {
                 expected: "Space",
-                got: other.type_name(),
+                got: space.type_name(),
             }),
         }
     }
@@ -57,16 +57,16 @@ impl BytecodeVM {
     /// Stack: [space] -> [SExpr with atoms]
     pub(super) fn op_space_get_atoms(&mut self) -> VmResult<()> {
         let space = self.pop()?;
-        match space {
-            MettaValue::Space(handle) => {
+        match space.inner() {
+            MettaValueInner::Space(handle) => {
                 let atoms = handle.collapse();
                 // Return as an S-expression list
                 self.push(MettaValue::SExpr(atoms));
                 Ok(())
             }
-            other => Err(VmError::TypeError {
+            _ => Err(VmError::TypeError {
                 expected: "Space",
-                got: other.type_name(),
+                got: space.type_name(),
             }),
         }
     }
@@ -84,8 +84,8 @@ impl BytecodeVM {
         let pattern = self.pop()?;
         let space = self.pop()?;
 
-        match space {
-            MettaValue::Space(handle) => {
+        match space.inner() {
+            MettaValueInner::Space(handle) => {
                 let atoms = handle.collapse();
                 let mut results = Vec::new();
 
@@ -100,9 +100,9 @@ impl BytecodeVM {
                 self.push(MettaValue::SExpr(results));
                 Ok(())
             }
-            other => Err(VmError::TypeError {
+            _ => Err(VmError::TypeError {
                 expected: "Space",
-                got: other.type_name(),
+                got: space.type_name(),
             }),
         }
     }
@@ -119,8 +119,8 @@ impl BytecodeVM {
             .ok_or(VmError::InvalidConstant(const_idx))?
             .clone();
 
-        match name {
-            MettaValue::Atom(space_name) => {
+        match name.inner() {
+            MettaValueInner::Atom(space_name) => {
                 // Create a placeholder space with the given name
                 // In full integration, this would lookup from Environment
                 let handle = SpaceHandle::new(
@@ -128,14 +128,14 @@ impl BytecodeVM {
                         &std::collections::hash_map::RandomState::new(),
                     )
                     .finish(),
-                    space_name,
+                    space_name.clone(),
                 );
                 self.push(MettaValue::Space(handle));
                 Ok(())
             }
-            other => Err(VmError::TypeError {
+            _ => Err(VmError::TypeError {
                 expected: "Atom (space name)",
-                got: other.type_name(),
+                got: name.type_name(),
             }),
         }
     }

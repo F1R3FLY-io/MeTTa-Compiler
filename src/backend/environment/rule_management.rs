@@ -25,10 +25,11 @@ use pathmap::PathMap;
 use tracing::trace;
 
 use super::multiplicity::{
-    add_atom, decrement_multiplicity, get_multiplicity, increment_multiplicity, Multiplicity,
-    remove_atom, set_multiplicity,
+    add_atom, decrement_multiplicity, get_multiplicity, increment_multiplicity, set_multiplicity,
+    Multiplicity,
 };
 use super::{Environment, MettaValue, Rule};
+use crate::backend::models::MettaValueInner;
 use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 use crate::backend::symbol::Symbol;
 
@@ -131,9 +132,9 @@ impl<V: Clone + Default + Send + Sync + Unpin> RulesIter<V> {
 
         // Convert MORK expression to MettaValue
         if let Ok(value) = Environment::mork_expr_to_metta_value(&expr, &self.space) {
-            if let MettaValue::SExpr(items) = &value {
+            if let MettaValueInner::SExpr(items) = value.inner() {
                 if items.len() == 3 {
-                    if let MettaValue::Atom(op) = &items[0] {
+                    if let MettaValueInner::Atom(op) = items[0].inner() {
                         if op == "=" {
                             return Some(Rule::new(items[1].clone(), items[2].clone()));
                         }
@@ -201,10 +202,7 @@ pub struct MatchingRulesIter<'a> {
 
 /// Helper struct for iterating over wildcard rules
 struct WildcardRulesIter<'a> {
-    inner: OwningHandle<
-        RwLockReadGuard<'a, Vec<Rule>>,
-        Box<dyn Iterator<Item = &'a Rule> + 'a>,
-    >,
+    inner: OwningHandle<RwLockReadGuard<'a, Vec<Rule>>, Box<dyn Iterator<Item = &'a Rule> + 'a>>,
 }
 
 impl<'a> WildcardRulesIter<'a> {
@@ -470,11 +468,10 @@ impl Environment {
             .increment(idx);
 
         // Create a rule s-expression: (= lhs rhs)
-        // Dereference the Arc to get the MettaValue
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
-            (*rule.lhs).clone(),
-            (*rule.rhs).clone(),
+            rule.lhs.clone(),
+            rule.rhs.clone(),
         ]);
 
         // Compute MORK bytes ONCE and reuse for both PathMap and legacy multiplicity tracking
@@ -573,11 +570,10 @@ impl Environment {
 
         for rule in rules {
             // Create rule s-expression: (= lhs rhs)
-            // Dereference the Arc to get the MettaValue
             let rule_sexpr = MettaValue::SExpr(vec![
                 MettaValue::Atom("=".to_string()),
-                (*rule.lhs).clone(),
-                (*rule.rhs).clone(),
+                rule.lhs.clone(),
+                rule.rhs.clone(),
             ]);
 
             // Prepare rule index updates
@@ -680,8 +676,8 @@ impl Environment {
         // This path should rarely be hit after rules are added via add_rule()
         let rule_sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("=".to_string()),
-            (*rule.lhs).clone(),
-            (*rule.rhs).clone(),
+            rule.lhs.clone(),
+            rule.rhs.clone(),
         ]);
 
         // Compute MORK bytes and lookup multiplicity using efficient fixed-width encoding
@@ -697,7 +693,11 @@ impl Environment {
                 // Use efficient O(prefix_len) multiplicity lookup
                 let btm = self.shared.btm.read().expect("btm lock poisoned");
                 let count = get_multiplicity(&btm, &mork_bytes);
-                if count == 0 { 1 } else { count as usize } // Backward compatibility: return 1 if not tracked
+                if count == 0 {
+                    1
+                } else {
+                    count as usize
+                } // Backward compatibility: return 1 if not tracked
             }
             Err(_) => 1, // Fallback to 1 on conversion error
         }
@@ -811,9 +811,9 @@ impl Environment {
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // Extract LHS from (= lhs rhs) to find the rule in the index
-        let (head, arity, lhs) = if let MettaValue::SExpr(items) = rule_sexpr {
+        let (head, arity, lhs) = if let MettaValueInner::SExpr(items) = rule_sexpr.inner() {
             if items.len() == 3 {
-                if let MettaValue::Atom(op) = &items[0] {
+                if let MettaValueInner::Atom(op) = items[0].inner() {
                     if op == "=" {
                         let lhs = &items[1];
                         let head = lhs.get_head_symbol();
@@ -926,9 +926,9 @@ impl Environment {
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // Extract LHS from (= lhs rhs) to find the rule in the index
-        let (head, arity, lhs) = if let MettaValue::SExpr(items) = rule_sexpr {
+        let (head, arity, lhs) = if let MettaValueInner::SExpr(items) = rule_sexpr.inner() {
             if items.len() == 3 {
-                if let MettaValue::Atom(op) = &items[0] {
+                if let MettaValueInner::Atom(op) = items[0].inner() {
                     if op == "=" {
                         let lhs = &items[1];
                         let head = lhs.get_head_symbol();
@@ -1038,9 +1038,9 @@ impl Environment {
 
     /// Check if a MettaValue is a rule s-expression (= lhs rhs)
     pub fn is_rule_sexpr(value: &MettaValue) -> bool {
-        if let MettaValue::SExpr(items) = value {
+        if let MettaValueInner::SExpr(items) = value.inner() {
             if items.len() == 3 {
-                if let MettaValue::Atom(op) = &items[0] {
+                if let MettaValueInner::Atom(op) = items[0].inner() {
                     return op == "=";
                 }
             }
@@ -1167,7 +1167,11 @@ impl Environment {
                 let btm = self.shared.btm.read().expect("btm lock");
                 let count = get_multiplicity(&btm, &mork_bytes);
                 // Return at least 1 if count is 0 (for backward compatibility)
-                if count == 0 { 1 } else { count as usize }
+                if count == 0 {
+                    1
+                } else {
+                    count as usize
+                }
             }
             Err(_) => 1,
         }
@@ -1188,6 +1192,10 @@ impl Environment {
         let btm = self.shared.btm.read().expect("btm lock");
         let count = get_multiplicity(&btm, mork_bytes);
         // Return at least 1 if count is 0 (for backward compatibility)
-        if count == 0 { 1 } else { count as usize }
+        if count == 0 {
+            1
+        } else {
+            count as usize
+        }
     }
 }

@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::backend::environment::Environment;
-    use crate::backend::models::MettaValue;
+    use crate::backend::models::{MettaValue, MettaValueInner};
     use crate::eval;
 
     #[test]
@@ -15,8 +15,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("="));
                 assert!(msg.contains("requires exactly 2 arguments")); // Changed (note plural)
             }
@@ -36,8 +36,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("="));
                 assert!(msg.contains("requires exactly 2 arguments")); // Changed
             }
@@ -122,8 +122,8 @@ mod tests {
         ]);
         let (results, new_env2) = eval(test_same, new_env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items[0], MettaValue::Atom("duplicate".to_string()));
                 assert_eq!(items[1], MettaValue::Long(5));
             }
@@ -139,8 +139,8 @@ mod tests {
         let (results, _) = eval(test_different, new_env2);
         assert_eq!(results.len(), 1);
         // Should return the original expression as it doesn't match any rule
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items[0], MettaValue::Atom("same".to_string()));
                 assert_eq!(items[1], MettaValue::Long(5));
                 assert_eq!(items[2], MettaValue::Long(7));
@@ -361,8 +361,8 @@ mod tests {
 
         let (results, _) = eval(complex_match, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 6);
                 assert_eq!(items[0], MettaValue::Atom("result".to_string()));
                 assert_eq!(items[1], MettaValue::Atom("john".to_string()));
@@ -389,8 +389,8 @@ mod tests {
         ]);
         let (results, _) = eval(match_insufficient, env.clone());
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("match"), "Expected 'match' in: {}", msg);
                 assert!(
                     msg.contains("3 or 4 arguments"),
@@ -414,8 +414,8 @@ mod tests {
         ]);
         let (results, _) = eval(match_wrong_ref, env.clone());
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("match requires & as first argument"));
             }
             _ => panic!("Expected error for wrong space reference"),
@@ -432,8 +432,8 @@ mod tests {
         ]);
         let (results, _) = eval(match_wrong_space, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(
                     msg.contains("must be a space"),
                     "Expected 'must be a space' in: {}",
@@ -472,10 +472,10 @@ mod tests {
         ]);
         let (results, _) = eval(test_error, new_env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, details) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, details) => {
                 assert_eq!(msg, "always fails");
-                assert_eq!(**details, MettaValue::Long(42));
+                assert_eq!(*details, MettaValue::Long(42));
             }
             _ => panic!("Expected error from rule"),
         }
@@ -527,8 +527,8 @@ mod tests {
         ]);
         let (results, _) = eval(test_general, env3);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items[0], MettaValue::Atom("general".to_string()));
                 assert_eq!(items[1], MettaValue::Long(100));
             }
@@ -641,8 +641,8 @@ mod tests {
         ]);
         let (results, _) = eval(test_mixed, new_env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 4);
                 assert_eq!(items[0], MettaValue::Atom("result".to_string()));
                 assert_eq!(items[1], MettaValue::Long(1));
@@ -694,8 +694,8 @@ mod tests {
 
         let (results, _) = eval(match_expr, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 // New-style syntax produces different error (no suggestion)
                 assert!(
                     msg.contains("must be a space"),
@@ -722,8 +722,8 @@ mod tests {
 
         let (results, _) = eval(match_expr, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 // New-style syntax produces different error (no suggestion)
                 assert!(
                     msg.contains("must be a space"),
@@ -750,8 +750,8 @@ mod tests {
 
         let (results, _) = eval(match_expr, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 // Should NOT contain "Did you mean" for completely unrelated names
                 assert!(
                     !msg.contains("Did you mean"),
@@ -824,7 +824,7 @@ mod tests {
 
         let (results, _) = eval(guard_expr, env);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
     }
 
     #[test]
@@ -856,8 +856,8 @@ mod tests {
 
         let (results, _) = eval(guard_expr, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(
                     msg.contains("Bool"),
                     "Error should mention Bool type: {}",
@@ -877,7 +877,7 @@ mod tests {
 
         let (results, _) = eval(commit_expr, env);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
     }
 
     #[test]
@@ -932,7 +932,7 @@ mod tests {
 
         let (results, _) = eval(guard_true_expr, env.clone());
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
 
         // (guard (== 2 3)) should fail
         let guard_false_expr = MettaValue::SExpr(vec![

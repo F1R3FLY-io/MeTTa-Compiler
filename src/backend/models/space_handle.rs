@@ -142,7 +142,10 @@ impl SpaceData {
     }
 
     /// Create SpaceData with initial atoms.
-    pub fn with_atoms(symbols: Arc<SymbolTable>, atoms: impl IntoIterator<Item = MettaValue>) -> Self {
+    pub fn with_atoms(
+        symbols: Arc<SymbolTable>,
+        atoms: impl IntoIterator<Item = MettaValue>,
+    ) -> Self {
         let mut multiset = AtomMultisetSnapshot::new(symbols);
         for atom in atoms {
             multiset = multiset.insert(&atom);
@@ -293,9 +296,9 @@ impl SpaceHandle {
                                 atoms: current_atoms,
                                 rules: current_rules,
                             })),
-                            overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(
-                                Arc::clone(&self.symbols),
-                            )))),
+                            overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(Arc::clone(
+                                &self.symbols,
+                            ))))),
                         },
                     }
                 } else {
@@ -316,9 +319,9 @@ impl SpaceHandle {
                                 atoms: base_data.atoms.clone(),
                                 rules: base_data.rules.clone(),
                             })),
-                            overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(
-                                Arc::clone(&self.symbols),
-                            )))),
+                            overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(Arc::clone(
+                                &self.symbols,
+                            ))))),
                         },
                     }
                 }
@@ -336,9 +339,9 @@ impl SpaceHandle {
                             Arc::clone(&self.symbols),
                             atoms,
                         ))),
-                        overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(
-                            Arc::clone(&self.symbols),
-                        )))),
+                        overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(Arc::clone(
+                            &self.symbols,
+                        ))))),
                     },
                 }
             }
@@ -1100,11 +1103,17 @@ mod tests {
         assert_eq!(total_expanded, 4);
 
         // Find atom1's match and verify count is 3
-        let atom1_match = matches.iter().find(|m| m.value == atom1).expect("Should find atom1");
+        let atom1_match = matches
+            .iter()
+            .find(|m| m.value == atom1)
+            .expect("Should find atom1");
         assert_eq!(atom1_match.count, 3);
 
         // Find atom2's match and verify count is 1
-        let atom2_match = matches.iter().find(|m| m.value == atom2).expect("Should find atom2");
+        let atom2_match = matches
+            .iter()
+            .find(|m| m.value == atom2)
+            .expect("Should find atom2");
         assert_eq!(atom2_match.count, 1);
     }
 
@@ -1211,7 +1220,8 @@ mod tests {
         // This test verifies that adding the same atom many times
         // doesn't create N copies in memory
         let handle = SpaceHandle::new(1, "test".to_string());
-        let atom = MettaValue::String("large_string_that_would_waste_memory_if_duplicated".to_string());
+        let atom =
+            MettaValue::String("large_string_that_would_waste_memory_if_duplicated".to_string());
 
         // Add the same atom 10000 times
         for _ in 0..10000 {

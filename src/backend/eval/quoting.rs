@@ -1,5 +1,5 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use tracing::trace;
 
 /// Quote: return argument unevaluated
@@ -13,7 +13,6 @@ pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult
 mod tests {
     use super::*;
     use crate::eval;
-    use std::sync::Arc;
 
     #[test]
     fn test_quote_missing_argument() {
@@ -24,8 +23,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("quote"));
                 assert!(msg.contains("argument")); // Just check for "argument" - flexible
             }
@@ -52,8 +51,8 @@ mod tests {
         assert_eq!(results.len(), 1);
 
         // Should be the unevaluated s-expression with "+" not evaluated to 3
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3);
                 assert_eq!(items[0], MettaValue::Atom("+".to_string()));
             }
@@ -103,13 +102,13 @@ mod tests {
         assert_eq!(results.len(), 1);
 
         // Should return the exact structure without evaluation
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3); // +, 1, and the nested expression
                 assert_eq!(items[0], MettaValue::Atom("+".to_string()));
                 assert_eq!(items[1], MettaValue::Long(1));
-                match &items[2] {
-                    MettaValue::SExpr(inner) => {
+                match items[2].inner() {
+                    MettaValueInner::SExpr(inner) => {
                         assert_eq!(inner.len(), 3); // *, 2, and the inner nested expression
                         assert_eq!(inner[0], MettaValue::Atom("*".to_string()));
                     }
@@ -136,7 +135,7 @@ mod tests {
                 MettaValue::String("hello".to_string()),
             ),
             // (quote nil)
-            (MettaValue::Nil, MettaValue::Nil),
+            (MettaValue::Nil(), MettaValue::Nil()),
             // (quote foo)
             (
                 MettaValue::Atom("foo".to_string()),
@@ -200,13 +199,13 @@ mod tests {
 
         let (results, _) = eval(quote_if, env.clone());
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 4);
                 assert_eq!(items[0], MettaValue::Atom("if".to_string()));
                 // Should not be evaluated, so condition remains as-is
-                match &items[1] {
-                    MettaValue::SExpr(cond) => {
+                match items[1].inner() {
+                    MettaValueInner::SExpr(cond) => {
                         assert_eq!(cond[0], MettaValue::Atom(">".to_string()));
                         assert_eq!(cond[1], MettaValue::Long(5));
                         assert_eq!(cond[2], MettaValue::Long(3));
@@ -234,8 +233,8 @@ mod tests {
 
         let (results, _) = eval(quote_let, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 4);
                 assert_eq!(items[0], MettaValue::Atom("let".to_string()));
                 assert_eq!(items[1], MettaValue::Atom("$x".to_string()));
@@ -262,8 +261,8 @@ mod tests {
 
         let (results, _) = eval(quote_error, env.clone());
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3);
                 assert_eq!(items[0], MettaValue::Atom("error".to_string()));
                 assert_eq!(items[1], MettaValue::String("test".to_string()));
@@ -273,7 +272,7 @@ mod tests {
         }
 
         // Test quoting an actual error value
-        let actual_error = MettaValue::Error("real-error".to_string(), Arc::new(MettaValue::Nil));
+        let actual_error = MettaValue::Error("real-error".to_string(), MettaValue::Nil());
         let quote_actual_error = MettaValue::SExpr(vec![
             MettaValue::Atom("quote".to_string()),
             actual_error.clone(),
@@ -320,12 +319,12 @@ mod tests {
 
         let (results, _) = eval(nested_quotes, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(outer) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(outer) => {
                 assert_eq!(outer.len(), 2);
                 assert_eq!(outer[0], MettaValue::Atom("quote".to_string()));
-                match &outer[1] {
-                    MettaValue::SExpr(inner) => {
+                match outer[1].inner() {
+                    MettaValueInner::SExpr(inner) => {
                         assert_eq!(inner.len(), 3);
                         assert_eq!(inner[0], MettaValue::Atom("+".to_string()));
                         assert_eq!(inner[1], MettaValue::Long(1));
@@ -355,8 +354,8 @@ mod tests {
 
         let (results, _) = eval(quote_function_call, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3);
                 assert_eq!(items[0], MettaValue::Atom("foo".to_string()));
                 assert_eq!(items[1], MettaValue::Atom("bar".to_string()));
@@ -391,14 +390,14 @@ mod tests {
 
         let (results, _) = eval(quote_arithmetic, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3);
                 assert_eq!(items[0], MettaValue::Atom("*".to_string()));
 
                 // First sub-expression should remain unevaluated
-                match &items[1] {
-                    MettaValue::SExpr(add_expr) => {
+                match items[1].inner() {
+                    MettaValueInner::SExpr(add_expr) => {
                         assert_eq!(add_expr[0], MettaValue::Atom("+".to_string()));
                         assert_eq!(add_expr[1], MettaValue::Long(2));
                         assert_eq!(add_expr[2], MettaValue::Long(3));
@@ -407,8 +406,8 @@ mod tests {
                 }
 
                 // Second sub-expression should remain unevaluated
-                match &items[2] {
-                    MettaValue::SExpr(sub_expr) => {
+                match items[2].inner() {
+                    MettaValueInner::SExpr(sub_expr) => {
                         assert_eq!(sub_expr[0], MettaValue::Atom("-".to_string()));
                         assert_eq!(sub_expr[1], MettaValue::Long(10));
                         assert_eq!(sub_expr[2], MettaValue::Long(4));
@@ -445,8 +444,8 @@ mod tests {
 
         let (results, _) = eval(quote_comparison, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3);
                 assert_eq!(items[0], MettaValue::Atom("<".to_string()));
                 // Both operands should remain unevaluated
@@ -485,14 +484,14 @@ mod tests {
         // Test quoting Type values
         let quote_type = MettaValue::SExpr(vec![
             MettaValue::Atom("quote".to_string()),
-            MettaValue::Type(Arc::new(MettaValue::Atom("Number".to_string()))),
+            MettaValue::Type(MettaValue::Atom("Number".to_string())),
         ]);
 
         let (results, _) = eval(quote_type, env);
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0],
-            MettaValue::Type(Arc::new(MettaValue::Atom("Number".to_string())))
+            MettaValue::Type(MettaValue::Atom("Number".to_string()))
         );
     }
 
@@ -525,8 +524,8 @@ mod tests {
 
         let (results, _) = eval(quote_in_if, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3);
                 assert_eq!(items[0], MettaValue::Atom("+".to_string()));
                 assert_eq!(items[1], MettaValue::Long(1));
@@ -573,8 +572,8 @@ mod tests {
         let expected_atoms = vec!["a", "b", "c", "d", "e", "f"];
 
         for expected_atom in expected_atoms {
-            match current {
-                MettaValue::SExpr(items) => {
+            match current.inner() {
+                MettaValueInner::SExpr(items) => {
                     assert_eq!(items.len(), 2);
                     assert_eq!(items[0], MettaValue::Atom(expected_atom.to_string()));
                     current = &items[1];

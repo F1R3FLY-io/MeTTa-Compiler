@@ -6,7 +6,7 @@
 //! - Stress tests: many clones, deep chains, concurrent access
 
 use super::*;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc as StdArc, Barrier};
 use std::thread;
@@ -21,10 +21,10 @@ fn make_test_rule(lhs: &str, rhs: &str) -> Rule {
 
 /// Helper: Extract head symbol and arity from a MettaValue (for get_matching_rules)
 fn extract_head_arity(value: &MettaValue) -> (&str, usize) {
-    match value {
-        MettaValue::Atom(s) => (s.as_str(), 0),
-        MettaValue::SExpr(vec) if !vec.is_empty() => {
-            if let MettaValue::Atom(head) = &vec[0] {
+    match value.inner() {
+        MettaValueInner::Atom(s) => (s.as_str(), 0),
+        MettaValueInner::SExpr(vec) if !vec.is_empty() => {
+            if let MettaValueInner::Atom(head) = vec[0].inner() {
                 (head.as_str(), vec.len() - 1)
             } else {
                 ("", 0) // Fallback for non-atom head
@@ -624,8 +624,7 @@ mod all_atom_multiplicity {
         // All results should be the template
         for result in &results {
             assert_eq!(
-                result,
-                &template,
+                result, &template,
                 "Each result should be the instantiated template"
             );
         }
@@ -668,11 +667,7 @@ mod all_atom_multiplicity {
             .into_iter()
             .flat_map(|m| m.expand())
             .collect();
-        assert_eq!(
-            results.len(),
-            1,
-            "Should return 1 result after one removal"
-        );
+        assert_eq!(results.len(), 1, "Should return 1 result after one removal");
     }
 
     /// Test: Removing twice (count=0) removes atom from PathMap
@@ -925,7 +920,7 @@ mod all_atom_multiplicity {
 
         // Both results should be "Alice"
         for result in &results {
-            if let MettaValue::Atom(name) = result {
+            if let MettaValueInner::Atom(name) = result.inner() {
                 assert_eq!(name, "Alice", "Result should be Alice");
             } else {
                 panic!("Result should be an atom");
@@ -1485,9 +1480,9 @@ mod thread_safety {
         let rule = rules
             .iter()
             .find(|r| {
-                if let MettaValue::SExpr(lhs_elems) = r.lhs.as_ref() {
+                if let MettaValueInner::SExpr(lhs_elems) = r.lhs.inner() {
                     if lhs_elems.len() == 2 {
-                        if let MettaValue::Atom(head) = &lhs_elems[0] {
+                        if let MettaValueInner::Atom(head) = lhs_elems[0].inner() {
                             return head == "foo";
                         }
                     }

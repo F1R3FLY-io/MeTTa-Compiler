@@ -8,7 +8,7 @@
 
 use crate::backend::environment::Environment;
 use crate::backend::eval::priority::compare_priorities;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 /// Maximum number of fixed-point iterations to prevent infinite loops
 const DEFAULT_MAX_ITERATIONS: usize = 1000;
@@ -60,10 +60,10 @@ impl ExecRule {
 
     /// Parse an exec S-expression into an ExecRule
     pub fn from_sexpr(sexpr: &MettaValue) -> Option<Self> {
-        match sexpr {
-            MettaValue::SExpr(items) if items.len() == 4 => {
+        match sexpr.inner() {
+            MettaValueInner::SExpr(items) if items.len() == 4 => {
                 // Check if first element is "exec"
-                if let MettaValue::Atom(op) = &items[0] {
+                if let MettaValueInner::Atom(op) = items[0].inner() {
                     if op == "exec" {
                         return Some(ExecRule::new(
                             items[1].clone(),
@@ -274,8 +274,8 @@ mod tests {
         assert!(rule.is_some());
 
         let rule = rule.unwrap();
-        match &rule.priority {
-            MettaValue::SExpr(items) => {
+        match rule.priority.inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 2);
             }
             _ => panic!("Expected tuple priority"),
@@ -285,17 +285,26 @@ mod tests {
     #[test]
     fn test_sort_rules_by_priority() {
         // Create rules with different priorities
-        let r0 = ExecRule::new(MettaValue::Long(2), MettaValue::Nil, MettaValue::Nil);
-        let r1 = ExecRule::new(MettaValue::Long(0), MettaValue::Nil, MettaValue::Nil);
-        let r2 = ExecRule::new(MettaValue::Long(1), MettaValue::Nil, MettaValue::Nil);
+        let r0 = ExecRule::new(MettaValue::Long(2), MettaValue::Nil(), MettaValue::Nil());
+        let r1 = ExecRule::new(MettaValue::Long(0), MettaValue::Nil(), MettaValue::Nil());
+        let r2 = ExecRule::new(MettaValue::Long(1), MettaValue::Nil(), MettaValue::Nil());
 
         let mut rules = vec![r0, r1, r2];
         sort_rules_by_priority(&mut rules);
 
         // Should be sorted: 0, 1, 2
-        assert!(matches!(rules[0].priority, MettaValue::Long(0)));
-        assert!(matches!(rules[1].priority, MettaValue::Long(1)));
-        assert!(matches!(rules[2].priority, MettaValue::Long(2)));
+        assert!(matches!(
+            rules[0].priority.inner(),
+            MettaValueInner::Long(0)
+        ));
+        assert!(matches!(
+            rules[1].priority.inner(),
+            MettaValueInner::Long(1)
+        ));
+        assert!(matches!(
+            rules[2].priority.inner(),
+            MettaValueInner::Long(2)
+        ));
     }
 
     #[test]

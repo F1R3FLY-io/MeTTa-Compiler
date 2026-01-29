@@ -3,24 +3,19 @@
 //! This module handles the `match` operation which searches a space for
 //! atoms matching a pattern and returns instantiated templates.
 
-use std::sync::Arc;
 use tracing::debug;
 
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue, SpaceHandle};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner, SpaceHandle};
 
+use super::super::EvalStep;
 #[allow(unused_imports)]
 use super::super::{apply_bindings, eval, pattern_match};
-use super::super::EvalStep;
 use super::helpers::suggest_space_name;
 
 /// Step version of eval_match - defers evaluation to trampoline.
 /// Handles both 3-arg (match space pattern template) and 4-arg (match & self pattern template) syntaxes.
-pub(crate) fn eval_match_step(
-    items: Vec<MettaValue>,
-    env: Environment,
-    depth: usize,
-) -> EvalStep {
+pub(crate) fn eval_match_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     let args = &items[1..];
     debug!(target: "mettatron::eval::eval_match_step", ?args, ?items);
 
@@ -61,11 +56,11 @@ pub(crate) fn eval_match_step(
         let template = &args[3];
 
         // Check that first arg is & (space reference operator)
-        match space_ref {
-            MettaValue::Atom(s) if s == "&" => {
+        match space_ref.inner() {
+            MettaValueInner::Atom(s) if s == "&" => {
                 // Check space name (for now, only support "self")
-                match space_name {
-                    MettaValue::Atom(name) if name == "self" => {
+                match space_name.inner() {
+                    MettaValueInner::Atom(name) if name == "self" => {
                         // Use optimized match_space method that works directly with MORK
                         // Expand multiplicity matches to Vec<MettaValue> for API compatibility
                         let results: Vec<MettaValue> = env
@@ -77,8 +72,8 @@ pub(crate) fn eval_match_step(
                     }
                     _ => {
                         // Try to suggest a valid space name
-                        let name_str = match space_name {
-                            MettaValue::Atom(s) => s.as_str(),
+                        let name_str = match space_name.inner() {
+                            MettaValueInner::Atom(s) => s.as_str(),
                             _ => "",
                         };
 
@@ -94,8 +89,7 @@ pub(crate) fn eval_match_step(
                             ),
                         };
 
-                        let err =
-                            MettaValue::Error(msg, Arc::new(MettaValue::SExpr(args.to_vec())));
+                        let err = MettaValue::Error(msg, MettaValue::SExpr(args.to_vec()));
                         EvalStep::Done((vec![err], env))
                     }
                 }
@@ -106,7 +100,7 @@ pub(crate) fn eval_match_step(
                         "match requires & as first argument (legacy syntax), got: {}",
                         super::super::friendly_value_repr(space_ref)
                     ),
-                    Arc::new(MettaValue::SExpr(args.to_vec())),
+                    MettaValue::SExpr(args.to_vec()),
                 );
                 EvalStep::Done((vec![err], env))
             }
@@ -124,7 +118,7 @@ pub(crate) fn eval_match_step(
                 "match requires 3 or 4 arguments, got {}. Usage: (match space pattern template) or (match & self pattern template)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         EvalStep::Done((vec![err], env))
     }
@@ -171,23 +165,23 @@ pub(crate) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
         if space_results.is_empty() {
             let err = MettaValue::Error(
                 "match: space evaluated to empty".to_string(),
-                Arc::new(space_arg.clone()),
+                space_arg.clone(),
             );
             return (vec![err], env1);
         }
 
-        match &space_results[0] {
-            MettaValue::Space(handle) => {
+        match space_results[0].inner() {
+            MettaValueInner::Space(handle) => {
                 let results = match_with_space_handle(handle, pattern, template, &env1);
                 (results, env1)
             }
-            other => {
+            _ => {
                 let err = MettaValue::Error(
                     format!(
                         "match: first argument must be a space, got {}. Usage: (match space pattern template)",
-                        super::super::friendly_value_repr(other)
+                        super::super::friendly_value_repr(&space_results[0])
                     ),
-                    Arc::new(other.clone()),
+                    space_results[0].clone(),
                 );
                 (vec![err], env1)
             }
@@ -200,11 +194,11 @@ pub(crate) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
         let template = &args[3];
 
         // Check that first arg is & (space reference operator)
-        match space_ref {
-            MettaValue::Atom(s) if s == "&" => {
+        match space_ref.inner() {
+            MettaValueInner::Atom(s) if s == "&" => {
                 // Check space name (for now, only support "self")
-                match space_name {
-                    MettaValue::Atom(name) if name == "self" => {
+                match space_name.inner() {
+                    MettaValueInner::Atom(name) if name == "self" => {
                         // Use optimized match_space method that works directly with MORK
                         // Expand multiplicity matches to Vec<MettaValue> for API compatibility
                         let results: Vec<MettaValue> = env
@@ -216,8 +210,8 @@ pub(crate) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
                     }
                     _ => {
                         // Try to suggest a valid space name
-                        let name_str = match space_name {
-                            MettaValue::Atom(s) => s.as_str(),
+                        let name_str = match space_name.inner() {
+                            MettaValueInner::Atom(s) => s.as_str(),
                             _ => "",
                         };
 
@@ -233,8 +227,7 @@ pub(crate) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
                             ),
                         };
 
-                        let err =
-                            MettaValue::Error(msg, Arc::new(MettaValue::SExpr(args.to_vec())));
+                        let err = MettaValue::Error(msg, MettaValue::SExpr(args.to_vec()));
                         (vec![err], env)
                     }
                 }
@@ -245,7 +238,7 @@ pub(crate) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
                         "match requires & as first argument (legacy syntax), got: {}",
                         super::super::friendly_value_repr(space_ref)
                     ),
-                    Arc::new(MettaValue::SExpr(args.to_vec())),
+                    MettaValue::SExpr(args.to_vec()),
                 );
                 (vec![err], env)
             }
@@ -263,7 +256,7 @@ pub(crate) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult
                 "match requires 3 or 4 arguments, got {}. Usage: (match space pattern template) or (match & self pattern template)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         (vec![err], env)
     }

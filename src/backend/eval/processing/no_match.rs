@@ -9,7 +9,7 @@ use tracing::trace;
 use crate::backend::environment::Environment;
 #[cfg(feature = "fuzzy-suggestions")]
 use crate::backend::fuzzy_match::SuggestionConfidence;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 #[cfg(feature = "fuzzy-suggestions")]
 use super::super::suggest_special_form_with_context;
@@ -37,53 +37,55 @@ pub fn handle_no_rule_match(
     unified_env: &mut Environment,
 ) -> MettaValue {
     // Check for likely typos before falling back to ADD mode
-    if let Some(MettaValue::Atom(head)) = evaled_items.first() {
-        // Check for misspelled special form using context-aware heuristics
-        // The three-pillar validation filters out structurally incompatible suggestions
-        if let Some(suggestion) =
-            suggest_special_form_with_context(head, &evaled_items, unified_env)
-        {
-            trace!(
-                target: "mettatron::backend::eval::handle_no_rule_match",
-                head, ?suggestion, "Unknown special form"
-            );
-            // Always emit as a note/warning, never as an error
-            // This allows the expression to continue evaluating in ADD mode
-            match suggestion.confidence {
-                SuggestionConfidence::High => {
-                    eprintln!("Warning: '{}' is not defined. {}", head, suggestion.message);
+    if let Some(val) = evaled_items.first() {
+        if let MettaValueInner::Atom(head) = val.inner() {
+            // Check for misspelled special form using context-aware heuristics
+            // The three-pillar validation filters out structurally incompatible suggestions
+            if let Some(suggestion) =
+                suggest_special_form_with_context(head, &evaled_items, unified_env)
+            {
+                trace!(
+                    target: "mettatron::backend::eval::handle_no_rule_match",
+                    head, ?suggestion, "Unknown special form"
+                );
+                // Always emit as a note/warning, never as an error
+                // This allows the expression to continue evaluating in ADD mode
+                match suggestion.confidence {
+                    SuggestionConfidence::High => {
+                        eprintln!("Warning: '{}' is not defined. {}", head, suggestion.message);
+                    }
+                    SuggestionConfidence::Low => {
+                        eprintln!("Note: '{}' is not defined. {}", head, suggestion.message);
+                    }
+                    SuggestionConfidence::None => {
+                        // No suggestion - don't print anything
+                    }
                 }
-                SuggestionConfidence::Low => {
-                    eprintln!("Note: '{}' is not defined. {}", head, suggestion.message);
-                }
-                SuggestionConfidence::None => {
-                    // No suggestion - don't print anything
-                }
+                // Fall through to ADD mode (don't return error)
             }
-            // Fall through to ADD mode (don't return error)
-        }
 
-        // Check for misspelled rule head using smart heuristics
-        if let Some(suggestion) = unified_env.smart_did_you_mean(head, 2) {
-            trace!(
-                target: "mettatron::backend::eval::handle_no_rule_match",
-                head, ?suggestion, "No rule matches"
-            );
-            match suggestion.confidence {
-                SuggestionConfidence::High => {
-                    eprintln!(
-                        "Warning: No rule matches '{}'. {}",
-                        head, suggestion.message
-                    );
+            // Check for misspelled rule head using smart heuristics
+            if let Some(suggestion) = unified_env.smart_did_you_mean(head, 2) {
+                trace!(
+                    target: "mettatron::backend::eval::handle_no_rule_match",
+                    head, ?suggestion, "No rule matches"
+                );
+                match suggestion.confidence {
+                    SuggestionConfidence::High => {
+                        eprintln!(
+                            "Warning: No rule matches '{}'. {}",
+                            head, suggestion.message
+                        );
+                    }
+                    SuggestionConfidence::Low => {
+                        eprintln!("Note: No rule matches '{}'. {}", head, suggestion.message);
+                    }
+                    SuggestionConfidence::None => {
+                        // No suggestion - don't print anything
+                    }
                 }
-                SuggestionConfidence::Low => {
-                    eprintln!("Note: No rule matches '{}'. {}", head, suggestion.message);
-                }
-                SuggestionConfidence::None => {
-                    // No suggestion - don't print anything
-                }
+                // Fall through to ADD mode (don't return error)
             }
-            // Fall through to ADD mode (don't return error)
         }
     }
 

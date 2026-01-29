@@ -636,7 +636,7 @@ impl HybridExecutor {
             }
             results
         } else {
-            vec![MettaValue::Unit]
+            vec![MettaValue::Unit()]
         }
     }
 
@@ -678,7 +678,7 @@ impl HybridExecutor {
             }
             results
         } else {
-            vec![MettaValue::Unit]
+            vec![MettaValue::Unit()]
         }
     }
 

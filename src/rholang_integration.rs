@@ -11,7 +11,7 @@ use crate::backend::compile::compile;
 /// **Note**: For Rholang integration, use the PathMap Par functions in
 /// `pathmap_par_integration` module, not the JSON functions here.
 use crate::backend::fuzzy_match::FuzzyMatcher;
-use crate::backend::models::{MettaState, MettaValue};
+use crate::backend::models::{MettaState, MettaValue, MettaValueInner};
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 use std::sync::OnceLock;
 
@@ -194,56 +194,58 @@ fn matching_open(close: char) -> char {
 /// Convert MettaValue to a JSON-like string representation
 /// Used for debugging and human-readable output
 fn metta_value_to_json_string(value: &MettaValue) -> String {
-    match value {
-        MettaValue::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
-        MettaValue::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
-        MettaValue::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
-        MettaValue::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
-        MettaValue::String(s) => format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s)),
-        MettaValue::Nil => r#"{"type":"nil"}"#.to_string(),
-        MettaValue::SExpr(items) => {
+    match value.inner() {
+        MettaValueInner::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
+        MettaValueInner::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
+        MettaValueInner::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
+        MettaValueInner::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
+        MettaValueInner::String(s) => {
+            format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s))
+        }
+        MettaValueInner::Nil => r#"{"type":"nil"}"#.to_string(),
+        MettaValueInner::SExpr(items) => {
             let items_json: Vec<String> = items.iter().map(metta_value_to_json_string).collect();
             format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
         }
-        MettaValue::Error(msg, details) => {
+        MettaValueInner::Error(msg, details) => {
             format!(
                 r#"{{"type":"error","message":"{}","details":{}}}"#,
                 escape_json(msg),
                 metta_value_to_json_string(details)
             )
         }
-        MettaValue::Type(t) => {
+        MettaValueInner::Type(t) => {
             format!(
                 r#"{{"type":"metatype","value":{}}}"#,
                 metta_value_to_json_string(t)
             )
         }
-        MettaValue::Conjunction(goals) => {
+        MettaValueInner::Conjunction(goals) => {
             let goals_json: Vec<String> = goals.iter().map(metta_value_to_json_string).collect();
             format!(
                 r#"{{"type":"conjunction","goals":[{}]}}"#,
                 goals_json.join(",")
             )
         }
-        MettaValue::Space(handle) => {
+        MettaValueInner::Space(handle) => {
             format!(
                 r#"{{"type":"space","id":{},"name":"{}"}}"#,
                 handle.id,
                 escape_json(&handle.name)
             )
         }
-        MettaValue::State(id) => {
+        MettaValueInner::State(id) => {
             format!(r#"{{"type":"state","id":{}}}"#, id)
         }
-        MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
-        MettaValue::Memo(handle) => {
+        MettaValueInner::Unit => r#"{"type":"unit"}"#.to_string(),
+        MettaValueInner::Memo(handle) => {
             format!(
                 r#"{{"type":"memo","id":{},"name":"{}"}}"#,
                 handle.id,
                 escape_json(&handle.name)
             )
         }
-        MettaValue::Empty => r#"{"type":"empty"}"#.to_string(),
+        MettaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
     }
 }
 
@@ -422,7 +424,8 @@ pub async fn run_state_async(
         let is_rule_def = expr.is_rule_def();
 
         // Check if this is a ground fact (S-expression that's not a rule and not an eval)
-        let is_ground_fact = matches!(&expr, MettaValue::SExpr(_)) && !is_rule_def && !is_eval_expr;
+        let is_ground_fact =
+            matches!(expr.inner(), MettaValueInner::SExpr(_)) && !is_rule_def && !is_eval_expr;
 
         // If this is a rule definition or ground fact and we have a batch, evaluate the batch first
         if (is_rule_def || is_ground_fact) && !current_batch.is_empty() {
@@ -573,7 +576,7 @@ async fn evaluate_batch_parallel(
 mod tests {
     use super::*;
     use crate::backend::compile::compile;
-    use crate::backend::models::MettaValue;
+    use crate::backend::models::{MettaValue, MettaValueInner};
 
     #[test]
     fn test_metta_state_to_json() {
@@ -618,7 +621,7 @@ mod tests {
 
     #[test]
     fn test_metta_value_nil() {
-        let value = MettaValue::Nil;
+        let value = MettaValue::Nil();
         let json = value.to_json_string();
         assert_eq!(json, r#"{"type":"nil"}"#);
     }
@@ -648,8 +651,8 @@ mod tests {
         let state = compile_safe("(+ 1 2)");
         assert_eq!(state.source.len(), 1);
         // Should be a valid S-expression, not an error
-        match &state.source[0] {
-            MettaValue::SExpr(items) => {
+        match state.source[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3);
                 assert_eq!(items[0], MettaValue::Atom("+".to_string()));
             }
@@ -662,14 +665,14 @@ mod tests {
         let state = compile_safe("(+ 1 2");
         assert_eq!(state.source.len(), 1);
         // Should be an error s-expression
-        match &state.source[0] {
-            MettaValue::SExpr(items) => {
+        match state.source[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 2);
                 assert_eq!(items[0], MettaValue::Atom("error".to_string()));
                 // Error message should be a string
-                assert!(matches!(&items[1], MettaValue::String(_)));
+                assert!(matches!(items[1].inner(), MettaValueInner::String(_)));
                 // Error message should mention the syntax issue
-                if let MettaValue::String(msg) = &items[1] {
+                if let MettaValueInner::String(msg) = items[1].inner() {
                     assert!(msg.contains("Syntax error") || msg.contains("unexpected"));
                 }
             }
@@ -680,9 +683,9 @@ mod tests {
     #[test]
     fn test_compile_safe_improves_error_message() {
         let state = compile_safe("(+ 1 2");
-        match &state.source[0] {
-            MettaValue::SExpr(items) => {
-                if let MettaValue::String(msg) = &items[1] {
+        match state.source[0].inner() {
+            MettaValueInner::SExpr(items) => {
+                if let MettaValueInner::String(msg) = items[1].inner() {
                     // Should include hint about unclosed parenthesis
                     assert!(msg.contains("Hint") && msg.contains("unclosed"));
                 }
@@ -1077,7 +1080,7 @@ mod tests {
         assert!(!result.output.is_empty());
         // All results should be valid digits
         for output in &result.output {
-            if let MettaValue::Long(n) = output {
+            if let MettaValueInner::Long(n) = output.inner() {
                 assert!(*n >= 1 && *n <= 3);
             }
         }

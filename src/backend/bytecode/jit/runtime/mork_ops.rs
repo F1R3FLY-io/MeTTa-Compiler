@@ -10,7 +10,7 @@ use super::helpers::metta_to_jit;
 use super::space_ops::jit_runtime_space_match;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
 use crate::backend::bytecode::mork_bridge::MorkBridge;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // Phase H: MORK Bridge
@@ -43,7 +43,7 @@ pub unsafe extern "C" fn jit_runtime_mork_lookup(ctx: *mut JitContext, path: u64
         let env_guard = env_arc.read();
         if let Ok(env_read) = env_guard {
             // Check if this is an atom and it exists in the space
-            if let MettaValue::Atom(name) = &path_metta {
+            if let MettaValueInner::Atom(name) = path_metta.inner() {
                 if env_read.has_fact(name) {
                     return metta_to_jit(&path_metta).to_bits();
                 }

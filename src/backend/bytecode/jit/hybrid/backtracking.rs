@@ -288,7 +288,7 @@ impl HybridExecutor {
 
         // Return collected results or Unit if empty
         if all_results.is_empty() {
-            Ok(vec![MettaValue::Unit])
+            Ok(vec![MettaValue::Unit()])
         } else {
             Ok(all_results)
         }

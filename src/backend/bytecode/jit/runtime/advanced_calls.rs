@@ -6,12 +6,11 @@
 //! - call_cached - Call a function with memoization
 
 use super::helpers::metta_to_jit;
-use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::external_registry::{ExternalContext, ExternalRegistry};
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
 use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::bytecode::vm::BytecodeVM;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -132,9 +131,9 @@ pub unsafe extern "C" fn jit_runtime_call_external(
     }
 
     let name_constant = &*ctx_ref.constants.add(name_index);
-    let func_name = match name_constant {
-        MettaValue::Atom(s) => s.as_str(),
-        MettaValue::String(s) => s.as_str(),
+    let func_name = match name_constant.inner() {
+        MettaValueInner::Atom(s) => s.as_str(),
+        MettaValueInner::String(s) => s.as_str(),
         _ => {
             // Name must be an atom or string
             for _ in 0..arg_count {
@@ -192,7 +191,7 @@ pub unsafe extern "C" fn jit_runtime_call_external(
             warn!(target: "mettatron::jit::runtime::call", func_name, error = %e, "External call failed");
             let error = MettaValue::Error(
                 format!("external-call-failed: {}", e),
-                Arc::new(MettaValue::Atom(func_name.to_string())),
+                MettaValue::Atom(func_name.to_string()),
             );
             let boxed = Box::new(error);
             JitValue::from_heap_ptr(Box::into_raw(boxed)).to_bits()
@@ -239,8 +238,8 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
     }
 
     let head_constant = &*ctx_ref.constants.add(head_index);
-    let func_head = match head_constant {
-        MettaValue::Atom(s) => s.clone(),
+    let func_head = match head_constant.inner() {
+        MettaValueInner::Atom(s) => s.clone(),
         _ => {
             // Head must be an atom
             for _ in 0..arg_count {
@@ -317,7 +316,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
         // Execute and get result
         match vm.run() {
             Ok(results) => {
-                let result = results.into_iter().next().unwrap_or(MettaValue::Unit);
+                let result = results.into_iter().next().unwrap_or(MettaValue::Unit());
 
                 // Cache the result if memo cache is available
                 if !ctx_ref.memo_cache.is_null() {

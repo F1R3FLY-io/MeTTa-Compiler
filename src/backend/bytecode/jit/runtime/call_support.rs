@@ -15,7 +15,7 @@ use crate::backend::bytecode::jit::types::{
 };
 use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::bytecode::vm::BytecodeVM;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use std::sync::Arc;
 
 // =============================================================================
@@ -186,8 +186,8 @@ pub unsafe extern "C" fn jit_runtime_call(
     }
 
     let head_value = &*ctx_ref.constants.add(head_index);
-    let head = match head_value {
-        MettaValue::Atom(s) => s.clone(),
+    let head = match head_value.inner() {
+        MettaValueInner::Atom(s) => s.clone(),
         _ => {
             // Head must be an atom
             ctx_ref.bailout = true;
@@ -251,7 +251,10 @@ pub unsafe extern "C" fn jit_runtime_call(
             // Execute and return result
             match vm.run() {
                 Ok(results) => {
-                    let result = results.into_iter().next().unwrap_or(MettaValue::Unit);
+                    let result = results
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| MettaValue::Unit());
                     return metta_to_jit(&result).to_bits();
                 }
                 Err(_) => {
@@ -378,8 +381,8 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
     }
 
     let head_value = &*ctx_ref.constants.add(head_index);
-    let head = match head_value {
-        MettaValue::Atom(s) => s.clone(),
+    let head = match head_value.inner() {
+        MettaValueInner::Atom(s) => s.clone(),
         _ => {
             ctx_ref.bailout = true;
             ctx_ref.bailout_ip = ip as usize;
@@ -486,7 +489,7 @@ pub unsafe extern "C" fn jit_runtime_call_n(
 
     // Optimization 3.2: Fast path for grounded functions
     // Try to execute grounded ops directly without MorkBridge lookup
-    if let MettaValue::Atom(ref head_str) = head_metta {
+    if let MettaValueInner::Atom(ref head_str) = head_metta.inner() {
         if !args_ptr.is_null() {
             if let Some(result) = try_grounded_fast_path(head_str, args_ptr, arity) {
                 return result;
@@ -578,7 +581,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
 
     // Optimization 3.2: Fast path for grounded functions
     // Try to execute grounded ops directly without MorkBridge lookup
-    if let MettaValue::Atom(ref head_str) = head_metta {
+    if let MettaValueInner::Atom(ref head_str) = head_metta.inner() {
         if !args_ptr.is_null() {
             if let Some(result) = try_grounded_fast_path(head_str, args_ptr, arity) {
                 return result;

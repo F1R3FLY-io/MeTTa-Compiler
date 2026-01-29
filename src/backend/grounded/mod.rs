@@ -37,7 +37,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::environment::Environment;
-use super::models::MettaValue;
+use super::models::{MettaValue, MettaValueInner};
 
 // Re-export all public types
 pub use arithmetic::{AddOp, DivOp, ModOp, MulOp, SubOp};
@@ -93,27 +93,27 @@ impl std::error::Error for ExecError {}
 pub(crate) fn find_error(results: &[MettaValue]) -> Option<&MettaValue> {
     results
         .iter()
-        .find(|v| matches!(v, MettaValue::Error(_, _)))
+        .find(|v| matches!(v.inner(), MettaValueInner::Error(_, _)))
 }
 
 /// Helper function to get a friendly type name for error messages
 pub(crate) fn friendly_type_name(value: &MettaValue) -> &'static str {
-    match value {
-        MettaValue::Long(_) => "Number (integer)",
-        MettaValue::Float(_) => "Number (float)",
-        MettaValue::Bool(_) => "Bool",
-        MettaValue::String(_) => "String",
-        MettaValue::Atom(_) => "Symbol",
-        MettaValue::SExpr(_) => "Expression",
-        MettaValue::Nil => "Nil",
-        MettaValue::Unit => "Unit",
-        MettaValue::Error(_, _) => "Error",
-        MettaValue::Type(_) => "Type",
-        MettaValue::Conjunction(_) => "Conjunction",
-        MettaValue::Space(_) => "Space",
-        MettaValue::State(_) => "State",
-        MettaValue::Memo(_) => "Memo",
-        MettaValue::Empty => "Empty",
+    match value.inner() {
+        MettaValueInner::Long(_) => "Number (integer)",
+        MettaValueInner::Float(_) => "Number (float)",
+        MettaValueInner::Bool(_) => "Bool",
+        MettaValueInner::String(_) => "String",
+        MettaValueInner::Atom(_) => "Symbol",
+        MettaValueInner::SExpr(_) => "Expression",
+        MettaValueInner::Nil => "Nil",
+        MettaValueInner::Unit => "Unit",
+        MettaValueInner::Error(_, _) => "Error",
+        MettaValueInner::Type(_) => "Type",
+        MettaValueInner::Conjunction(_) => "Conjunction",
+        MettaValueInner::Space(_) => "Space",
+        MettaValueInner::State(_) => "State",
+        MettaValueInner::Memo(_) => "Memo",
+        MettaValueInner::Empty => "Empty",
     }
 }
 

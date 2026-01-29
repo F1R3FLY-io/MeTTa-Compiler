@@ -6,7 +6,7 @@
 //! - foldl-atom: Left fold with accumulator
 
 use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::error::{CompileError, CompileResult};
 use super::Compiler;
@@ -21,8 +21,8 @@ impl Compiler {
         let template = &args[2];
 
         // Extract variable name (must be $var format)
-        let var_name = match var {
-            MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+        let var_name = match var.inner() {
+            MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
             _ => {
                 return Err(CompileError::InvalidExpression(
                     "map-atom variable must be $var".to_string(),
@@ -51,8 +51,8 @@ impl Compiler {
         let predicate = &args[2];
 
         // Extract variable name
-        let var_name = match var {
-            MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+        let var_name = match var.inner() {
+            MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
             _ => {
                 return Err(CompileError::InvalidExpression(
                     "filter-atom variable must be $var".to_string(),
@@ -84,8 +84,8 @@ impl Compiler {
         let op = &args[4];
 
         // Extract variable names
-        let acc_name = match acc_var {
-            MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+        let acc_name = match acc_var.inner() {
+            MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
             _ => {
                 return Err(CompileError::InvalidExpression(
                     "foldl-atom accumulator must be $var".to_string(),
@@ -93,8 +93,8 @@ impl Compiler {
             }
         };
 
-        let item_name = match item_var {
-            MettaValue::Atom(s) if s.starts_with('$') => s[1..].to_string(),
+        let item_name = match item_var.inner() {
+            MettaValueInner::Atom(s) if s.starts_with('$') => s[1..].to_string(),
             _ => {
                 return Err(CompileError::InvalidExpression(
                     "foldl-atom item must be $var".to_string(),

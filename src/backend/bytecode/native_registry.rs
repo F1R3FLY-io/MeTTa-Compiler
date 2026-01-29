@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use crate::backend::Environment;
 
 /// Result type for native function calls
@@ -199,16 +199,16 @@ impl NativeRegistry {
                 print!("{:?}", arg);
             }
             println!();
-            Ok(vec![MettaValue::Unit])
+            Ok(vec![MettaValue::Unit()])
         });
 
         // String concatenation
         self.register("concat", |args, _ctx| {
             let mut result = String::new();
             for arg in args {
-                match arg {
-                    MettaValue::String(s) => result.push_str(s),
-                    other => result.push_str(&format!("{:?}", other)),
+                match arg.inner() {
+                    MettaValueInner::String(s) => result.push_str(s),
+                    _ => result.push_str(&format!("{:?}", arg)),
                 }
             }
             Ok(vec![MettaValue::String(result)])
@@ -222,11 +222,11 @@ impl NativeRegistry {
                     got: args.len(),
                 });
             }
-            match &args[0] {
-                MettaValue::String(s) => Ok(vec![MettaValue::Long(s.len() as i64)]),
-                other => Err(NativeError::TypeError {
+            match args[0].inner() {
+                MettaValueInner::String(s) => Ok(vec![MettaValue::Long(s.len() as i64)]),
+                _ => Err(NativeError::TypeError {
                     expected: "String",
-                    got: other.type_name().to_string(),
+                    got: args[0].type_name().to_string(),
                 }),
             }
         });
@@ -234,13 +234,15 @@ impl NativeRegistry {
         // Random number
         self.register("random", |args, _ctx| {
             let max = match args.first() {
-                Some(MettaValue::Long(n)) => *n,
-                Some(other) => {
-                    return Err(NativeError::TypeError {
-                        expected: "Long",
-                        got: other.type_name().to_string(),
-                    })
-                }
+                Some(v) => match v.inner() {
+                    MettaValueInner::Long(n) => *n,
+                    _ => {
+                        return Err(NativeError::TypeError {
+                            expected: "Long",
+                            got: v.type_name().to_string(),
+                        })
+                    }
+                },
                 None => 100, // Default max
             };
 
@@ -265,18 +267,18 @@ impl NativeRegistry {
                 });
             }
 
-            match &args[0] {
-                MettaValue::Bool(true) => Ok(vec![MettaValue::Unit]),
-                MettaValue::Bool(false) => {
+            match args[0].inner() {
+                MettaValueInner::Bool(true) => Ok(vec![MettaValue::Unit()]),
+                MettaValueInner::Bool(false) => {
                     let msg = args
                         .get(1)
                         .map(|v| format!("{:?}", v))
                         .unwrap_or_else(|| "assertion failed".to_string());
                     Err(NativeError::RuntimeError(msg))
                 }
-                other => Err(NativeError::TypeError {
+                _ => Err(NativeError::TypeError {
                     expected: "Bool",
-                    got: other.type_name().to_string(),
+                    got: args[0].type_name().to_string(),
                 }),
             }
         });
@@ -303,11 +305,11 @@ impl NativeRegistry {
                 });
             }
 
-            match &args[0] {
-                MettaValue::SExpr(items) => Ok(vec![MettaValue::Long(items.len() as i64)]),
-                other => Err(NativeError::TypeError {
+            match args[0].inner() {
+                MettaValueInner::SExpr(items) => Ok(vec![MettaValue::Long(items.len() as i64)]),
+                _ => Err(NativeError::TypeError {
                     expected: "Expression",
-                    got: other.type_name().to_string(),
+                    got: args[0].type_name().to_string(),
                 }),
             }
         });
@@ -321,22 +323,22 @@ impl NativeRegistry {
                 });
             }
 
-            let start = match &args[0] {
-                MettaValue::Long(n) => *n,
-                other => {
+            let start = match args[0].inner() {
+                MettaValueInner::Long(n) => *n,
+                _ => {
                     return Err(NativeError::TypeError {
                         expected: "Long",
-                        got: other.type_name().to_string(),
+                        got: args[0].type_name().to_string(),
                     })
                 }
             };
 
-            let end = match &args[1] {
-                MettaValue::Long(n) => *n,
-                other => {
+            let end = match args[1].inner() {
+                MettaValueInner::Long(n) => *n,
+                _ => {
                     return Err(NativeError::TypeError {
                         expected: "Long",
-                        got: other.type_name().to_string(),
+                        got: args[1].type_name().to_string(),
                     })
                 }
             };
@@ -357,11 +359,17 @@ mod tests {
 
         let id = registry.register("add2", |args, _ctx| {
             let a = match args.first() {
-                Some(MettaValue::Long(n)) => *n,
+                Some(v) => match v.inner() {
+                    MettaValueInner::Long(n) => *n,
+                    _ => 0,
+                },
                 _ => 0,
             };
             let b = match args.get(1) {
-                Some(MettaValue::Long(n)) => *n,
+                Some(v) => match v.inner() {
+                    MettaValueInner::Long(n) => *n,
+                    _ => 0,
+                },
                 _ => 0,
             };
             Ok(vec![MettaValue::Long(a + b)])

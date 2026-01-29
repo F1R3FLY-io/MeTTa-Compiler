@@ -1,7 +1,6 @@
-use std::sync::Arc;
-
 use super::cartesian::Combination;
 use super::*;
+use crate::backend::models::metta_value::MettaValueInner;
 use crate::backend::models::Rule;
 
 #[test]
@@ -164,7 +163,7 @@ fn test_eval_logical_type_error() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 
     // or with non-boolean FIRST arg should error
     // (With short-circuit, (or True "hello") returns True without checking second arg)
@@ -175,7 +174,7 @@ fn test_eval_logical_type_error() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 
     // not with non-boolean should error
     let value = MettaValue::SExpr(vec![
@@ -184,7 +183,7 @@ fn test_eval_logical_type_error() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 }
 
 #[test]
@@ -198,7 +197,7 @@ fn test_eval_logical_arity_error() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 
     // not with wrong arity
     let value = MettaValue::SExpr(vec![
@@ -208,7 +207,7 @@ fn test_eval_logical_arity_error() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 }
 
 #[test]
@@ -277,7 +276,7 @@ fn test_pattern_match_empty_sexpr_matches_empty_only() {
     assert!(bindings.is_none());
 
     // SHOULD match Nil
-    let value = MettaValue::Nil;
+    let value = MettaValue::Nil();
     let bindings = pattern_match(&pattern, &value);
     assert!(bindings.is_some());
     assert!(bindings.unwrap().is_empty());
@@ -289,7 +288,7 @@ fn test_pattern_match_empty_sexpr_matches_empty_only() {
     assert!(bindings.unwrap().is_empty());
 
     // SHOULD match Unit
-    let value = MettaValue::Unit;
+    let value = MettaValue::Unit();
     let bindings = pattern_match(&pattern, &value);
     assert!(bindings.is_some());
     assert!(bindings.unwrap().is_empty());
@@ -408,8 +407,8 @@ fn test_mvp_complete() {
         MettaValue::Long(0),
     ]);
     let (results2, _) = eval(value2, env1);
-    match &results2[0] {
-        MettaValue::Error(msg, _) => {
+    match results2[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert_eq!(msg, "division by zero");
         }
         other => panic!("Expected error, got {:?}", other),
@@ -797,9 +796,9 @@ fn test_boolean_values() {
 #[test]
 fn test_nil_value() {
     let env = Environment::new();
-    let value = MettaValue::Nil;
+    let value = MettaValue::Nil();
     let (results, _) = eval(value, env);
-    assert_eq!(results[0], MettaValue::Nil);
+    assert_eq!(results[0], MettaValue::Nil());
 }
 
 // === Fact Database Tests ===
@@ -1048,7 +1047,7 @@ fn test_empty_conjunction() {
 
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Nil);
+    assert_eq!(results[0], MettaValue::Nil());
 }
 
 #[test]
@@ -1169,13 +1168,13 @@ fn test_conjunction_with_error_propagation() {
     // Conjunction with error should propagate the error
     let value = MettaValue::Conjunction(vec![
         MettaValue::Long(42),
-        MettaValue::Error("test error".to_string(), Arc::new(MettaValue::Nil)),
+        MettaValue::Error("test error".to_string(), MettaValue::Nil()),
     ]);
 
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
     // Error should propagate from the conjunction
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 }
 
 #[test]
@@ -1216,8 +1215,8 @@ fn test_arithmetic_type_error_bool() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, _details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _details) => {
             assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
             assert!(
                 msg.contains("expected Number"),
@@ -1259,8 +1258,8 @@ fn test_comparison_mixed_type_error() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, _details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _details) => {
             // The error should indicate incompatible types
             assert!(
                 msg.contains("type") || msg.contains("Cannot compare"),
@@ -1282,8 +1281,8 @@ fn test_arithmetic_wrong_arity() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, _) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert!(msg.contains("2 arguments"));
         }
         other => panic!("Expected Error, got {:?}", other),
@@ -1313,13 +1312,13 @@ fn test_misspelled_special_form() {
 
     // Per issue #51: undefined symbols are treated as data (ADD mode)
     // A warning is printed to stderr, but the expression is returned as data
-    match &results[0] {
-        MettaValue::SExpr(items) => {
+    match results[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Atom("mach".to_string()));
             // &self is now resolved to a Space reference
             assert!(
-                matches!(items[1], MettaValue::Space(_)),
+                matches!(items[1].inner(), MettaValueInner::Space(_)),
                 "Expected &self to be resolved to Space, got {:?}",
                 items[1]
             );
@@ -1360,7 +1359,7 @@ fn test_undefined_symbol_with_rule_suggestion() {
 
     // Per issue #51: Should return the expression unchanged (ADD mode)
     // A warning is printed to stderr, but no error is returned
-    if let MettaValue::SExpr(items) = &results[0] {
+    if let MettaValueInner::SExpr(items) = results[0].inner() {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0], MettaValue::Atom("fibonaci".to_string()));
         assert_eq!(items[1], MettaValue::Long(5));
@@ -1512,7 +1511,7 @@ fn test_cartesian_product_iter_3x3x3() {
         vec![
             MettaValue::Bool(true),
             MettaValue::Bool(false),
-            MettaValue::Nil,
+            MettaValue::Nil(),
         ],
     ];
     let iter = CartesianProductIter::new(results).expect("Should create iterator");
@@ -1535,7 +1534,7 @@ fn test_cartesian_product_iter_3x3x3() {
         &[
             MettaValue::Long(3),
             MettaValue::Atom("c".into()),
-            MettaValue::Nil
+            MettaValue::Nil()
         ]
     );
 }
@@ -1684,8 +1683,8 @@ fn test_nondeterministic_cartesian_product() {
 
     let mut result_values: Vec<i64> = results
         .iter()
-        .filter_map(|v| match v {
-            MettaValue::Long(n) => Some(*n),
+        .filter_map(|v| match v.inner() {
+            MettaValueInner::Long(n) => Some(*n),
             _ => None,
         })
         .collect();

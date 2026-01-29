@@ -29,7 +29,7 @@ use super::memo_cache::{CacheStats, MemoCache};
 use super::mork_bridge::MorkBridge;
 use super::native_registry::NativeRegistry;
 use super::opcodes::Opcode;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use crate::backend::Environment;
 
 // === Submodules ===
@@ -288,7 +288,7 @@ impl BytecodeVM {
         // slots must exist before the first StoreLocal executes.
         let local_count = self.chunk.local_count() as usize;
         if local_count > 0 && self.value_stack.len() < local_count {
-            self.value_stack.resize(local_count, MettaValue::Nil);
+            self.value_stack.resize(local_count, MettaValue::Nil());
         }
 
         // JIT execution path
@@ -427,7 +427,7 @@ impl BytecodeVM {
             }
 
             if results.is_empty() {
-                results.push(MettaValue::Unit);
+                results.push(MettaValue::Unit());
             }
 
             return Ok(Some(results));
@@ -475,10 +475,10 @@ impl BytecodeVM {
             Opcode::PopN => self.op_pop_n()?,
 
             // Value creation
-            Opcode::PushNil => self.push(MettaValue::Nil),
+            Opcode::PushNil => self.push(MettaValue::Nil()),
             Opcode::PushTrue => self.push(MettaValue::Bool(true)),
             Opcode::PushFalse => self.push(MettaValue::Bool(false)),
-            Opcode::PushUnit => self.push(MettaValue::Unit),
+            Opcode::PushUnit => self.push(MettaValue::Unit()),
             Opcode::PushEmpty => self.push(MettaValue::sexpr(vec![])),
             Opcode::PushLongSmall => self.op_push_long_small()?,
             Opcode::PushLong => self.op_push_constant()?,
@@ -652,7 +652,7 @@ impl BytecodeVM {
     fn handle_chunk_end(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
         if let Some(frame) = self.call_stack.pop() {
             // Return to caller
-            let value = self.pop().unwrap_or(MettaValue::Nil);
+            let value = self.pop().unwrap_or(MettaValue::Nil());
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);

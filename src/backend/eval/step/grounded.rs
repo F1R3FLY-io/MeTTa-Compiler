@@ -4,7 +4,7 @@
 //! evaluation in a hybrid lazy/eager evaluation strategy.
 
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::super::is_grounded_op;
 
@@ -34,11 +34,13 @@ pub fn find_grounded_arg_indices(items: &[MettaValue], env: &Environment) -> Vec
 
     // Skip the first item (operator) - we only check arguments
     for (i, item) in items.iter().enumerate().skip(1) {
-        if let MettaValue::SExpr(sub_items) = item {
-            if let Some(MettaValue::Atom(op)) = sub_items.first() {
-                // Check if this is a grounded operation (built-in or TCO)
-                if is_grounded_op(op) || env.get_grounded_operation_tco(op).is_some() {
-                    indices.push(i); // Store actual index in items
+        if let MettaValueInner::SExpr(sub_items) = item.inner() {
+            if let Some(first) = sub_items.first() {
+                if let MettaValueInner::Atom(op) = first.inner() {
+                    // Check if this is a grounded operation (built-in or TCO)
+                    if is_grounded_op(op) || env.get_grounded_operation_tco(op).is_some() {
+                        indices.push(i); // Store actual index in items
+                    }
                 }
             }
         }

@@ -22,7 +22,7 @@ use super::output_parser::PathMapOutput;
 ///
 /// - `as_atom()`, `as_string()`, `as_i64()`, `as_bool()` - Extract typed values
 /// - `as_sexpr()` - Extract nested s-expression elements
-use mettatron::backend::models::MettaValue;
+use mettatron::backend::models::{MettaValue, MettaValueInner};
 
 /// Query result that can contain multiple values
 #[derive(Debug, Clone, PartialEq)]
@@ -71,8 +71,8 @@ impl QueryResult {
 
     /// XQuery-like: Extract atom/symbol value
     pub fn as_atom(&self) -> Option<String> {
-        match self.as_single()? {
-            MettaValue::Atom(s) | MettaValue::String(s) => Some(s.clone()),
+        match self.as_single()?.inner() {
+            MettaValueInner::Atom(s) | MettaValueInner::String(s) => Some(s.clone()),
             _ => None,
         }
     }
@@ -84,24 +84,24 @@ impl QueryResult {
 
     /// XQuery-like: Extract integer value
     pub fn as_i64(&self) -> Option<i64> {
-        match self.as_single()? {
-            MettaValue::Long(n) => Some(*n),
+        match self.as_single()?.inner() {
+            MettaValueInner::Long(n) => Some(*n),
             _ => None,
         }
     }
 
     /// XQuery-like: Extract boolean value
     pub fn as_bool(&self) -> Option<bool> {
-        match self.as_single()? {
-            MettaValue::Bool(b) => Some(*b),
+        match self.as_single()?.inner() {
+            MettaValueInner::Bool(b) => Some(*b),
             _ => None,
         }
     }
 
     /// XQuery-like: Extract s-expression elements
     pub fn as_sexpr(&self) -> Option<Vec<MettaValue>> {
-        match self.as_single()? {
-            MettaValue::SExpr(elements) => Some(elements.clone()),
+        match self.as_single()?.inner() {
+            MettaValueInner::SExpr(elements) => Some(elements.clone()),
             _ => None,
         }
     }
@@ -244,22 +244,31 @@ impl PathMapQuery for PathMapOutput {
 
     fn output_as_i64(&self, index: usize) -> Option<i64> {
         match self.query_output(index) {
-            QueryResult::Single(MettaValue::Long(n)) => Some(n),
+            QueryResult::Single(v) => match v.inner() {
+                MettaValueInner::Long(n) => Some(*n),
+                _ => None,
+            },
             _ => None,
         }
     }
 
     fn output_as_bool(&self, index: usize) -> Option<bool> {
         match self.query_output(index) {
-            QueryResult::Single(MettaValue::Bool(b)) => Some(b),
+            QueryResult::Single(v) => match v.inner() {
+                MettaValueInner::Bool(b) => Some(*b),
+                _ => None,
+            },
             _ => None,
         }
     }
 
     fn output_as_string(&self, index: usize) -> Option<String> {
         match self.query_output(index) {
-            QueryResult::Single(MettaValue::String(s)) => Some(s),
-            QueryResult::Single(MettaValue::Atom(s)) => Some(s),
+            QueryResult::Single(v) => match v.inner() {
+                MettaValueInner::String(s) => Some(s.clone()),
+                MettaValueInner::Atom(s) => Some(s.clone()),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -267,8 +276,8 @@ impl PathMapQuery for PathMapOutput {
     fn outputs_as_i64_seq(&self) -> Vec<i64> {
         self.output
             .iter()
-            .filter_map(|v| match v {
-                MettaValue::Long(n) => Some(*n),
+            .filter_map(|v| match v.inner() {
+                MettaValueInner::Long(n) => Some(*n),
                 _ => None,
             })
             .collect()
@@ -370,10 +379,10 @@ impl PathMapQuery for PathMapOutput {
 impl PathMapOutput {
     /// Check if a value is an s-expression with a specific head
     fn has_head(value: &MettaValue, head: &str) -> bool {
-        if let MettaValue::SExpr(elements) = value {
+        if let MettaValueInner::SExpr(elements) = value.inner() {
             if let Some(first) = elements.first() {
-                match first {
-                    MettaValue::String(s) | MettaValue::Atom(s) => s == head,
+                match first.inner() {
+                    MettaValueInner::String(s) | MettaValueInner::Atom(s) => s == head,
                     _ => false,
                 }
             } else {
@@ -392,7 +401,7 @@ impl PathMapOutput {
         }
 
         // Recursive search in nested s-expressions
-        if let MettaValue::SExpr(elements) = value {
+        if let MettaValueInner::SExpr(elements) = value.inner() {
             for element in elements {
                 if let Some(found) = Self::find_descendant(element, head) {
                     return Some(found);
@@ -411,7 +420,7 @@ impl PathMapOutput {
         }
 
         // Recursive search in nested s-expressions
-        if let MettaValue::SExpr(elements) = value {
+        if let MettaValueInner::SExpr(elements) = value.inner() {
             for element in elements {
                 Self::collect_descendants(element, head, results);
             }
@@ -435,7 +444,7 @@ impl PathMapOutput {
         }
 
         // Navigate deeper
-        if let MettaValue::SExpr(elements) = value {
+        if let MettaValueInner::SExpr(elements) = value.inner() {
             for element in elements.iter().skip(1) {
                 // Skip the head
                 if let Some(found) = Self::navigate_path(element, &path[1..]) {
@@ -449,9 +458,11 @@ impl PathMapOutput {
 
     /// Check if a value contains specific text (atom or string)
     fn contains_text(value: &MettaValue, text: &str) -> bool {
-        match value {
-            MettaValue::Atom(s) | MettaValue::String(s) => s.contains(text),
-            MettaValue::SExpr(elements) => elements.iter().any(|e| Self::contains_text(e, text)),
+        match value.inner() {
+            MettaValueInner::Atom(s) | MettaValueInner::String(s) => s.contains(text),
+            MettaValueInner::SExpr(elements) => {
+                elements.iter().any(|e| Self::contains_text(e, text))
+            }
             _ => false,
         }
     }
@@ -563,10 +574,10 @@ impl<'a> OutputMatcher<'a> {
 
     /// Check if a value is an s-expression with a specific head
     fn sexpr_has_head(value: &MettaValue, head: &str) -> bool {
-        if let MettaValue::SExpr(elements) = value {
+        if let MettaValueInner::SExpr(elements) = value.inner() {
             if let Some(first) = elements.first() {
-                match first {
-                    MettaValue::String(s) | MettaValue::Atom(s) => s == head,
+                match first.inner() {
+                    MettaValueInner::String(s) | MettaValueInner::Atom(s) => s == head,
                     _ => false,
                 }
             } else {
@@ -579,7 +590,7 @@ impl<'a> OutputMatcher<'a> {
 
     /// Extract the nth element from an s-expression
     fn sexpr_get(value: &MettaValue, index: usize) -> Option<&MettaValue> {
-        if let MettaValue::SExpr(elements) = value {
+        if let MettaValueInner::SExpr(elements) = value.inner() {
             elements.get(index)
         } else {
             None
@@ -598,12 +609,16 @@ impl<'a> OutputMatcher<'a> {
     /// Recursively search for a "steps" s-expression and match it
     fn contains_steps_match(value: &MettaValue, expected_steps: &[Vec<&str>]) -> bool {
         // Direct match: is this a "steps" s-expression?
-        if let MettaValue::SExpr(elements) = value {
-            if let Some(MettaValue::String(s)) | Some(MettaValue::Atom(s)) = elements.first() {
-                if s == "steps" {
-                    // Get the second element which should be the sequence of steps
-                    if let Some(MettaValue::SExpr(steps_list)) = elements.get(1) {
-                        return Self::match_steps_list(steps_list, expected_steps);
+        if let MettaValueInner::SExpr(elements) = value.inner() {
+            if let Some(first) = elements.first() {
+                if let MettaValueInner::String(s) | MettaValueInner::Atom(s) = first.inner() {
+                    if s == "steps" {
+                        // Get the second element which should be the sequence of steps
+                        if let Some(second) = elements.get(1) {
+                            if let MettaValueInner::SExpr(steps_list) = second.inner() {
+                                return Self::match_steps_list(steps_list, expected_steps);
+                            }
+                        }
                     }
                 }
             }
@@ -629,7 +644,7 @@ impl<'a> OutputMatcher<'a> {
             .iter()
             .zip(expected.iter())
             .all(|(actual_step, expected_step)| {
-                if let MettaValue::SExpr(step_elements) = actual_step {
+                if let MettaValueInner::SExpr(step_elements) = actual_step.inner() {
                     Self::match_step_tuple(step_elements, expected_step)
                 } else {
                     false
@@ -646,8 +661,8 @@ impl<'a> OutputMatcher<'a> {
         elements
             .iter()
             .zip(expected.iter())
-            .all(|(actual, expected_str)| match actual {
-                MettaValue::String(s) | MettaValue::Atom(s) => s == expected_str,
+            .all(|(actual, expected_str)| match actual.inner() {
+                MettaValueInner::String(s) | MettaValueInner::Atom(s) => s == expected_str,
                 _ => false,
             })
     }

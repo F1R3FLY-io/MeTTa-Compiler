@@ -28,7 +28,7 @@ fn main() {
 
     // Rule definition should return Nil
     println!("\nEval result: {:?}", result[0]);
-    assert_eq!(result[0], MettaValue::Nil);
+    assert_eq!(result[0], MettaValue::Nil());
 
     // Dump the space to see what's actually stored
     let space = new_env.create_space();

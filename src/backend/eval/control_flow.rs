@@ -1,6 +1,5 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
-use std::sync::Arc;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use tracing::{debug, trace};
 
 use super::{apply_bindings, eval, pattern_match, EvalStep};
@@ -22,7 +21,7 @@ pub(super) fn eval_if_step(items: Vec<MettaValue>, env: Environment, depth: usiz
                 "if requires exactly 3 arguments, got {}. Usage: (if condition then-branch else-branch)",
                 got
             ),
-            Arc::new(MettaValue::SExpr(args.to_vec())),
+            MettaValue::SExpr(args.to_vec()),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -56,7 +55,7 @@ pub(super) fn eval_case_step(items: Vec<MettaValue>, env: Environment, depth: us
                 "case requires exactly 2 arguments, got {}. Usage: (case expr ((pattern1 result1) ...))",
                 got
             ),
-            Arc::new(MettaValue::SExpr(items[1..].to_vec())),
+            MettaValue::SExpr(items[1..].to_vec()),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -84,7 +83,7 @@ pub(super) fn eval_switch_step(items: Vec<MettaValue>, env: Environment, depth: 
                 "switch requires exactly 2 arguments, got {}. Usage: (switch expr ((pattern1 result1) ...))",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -106,7 +105,7 @@ pub(super) fn eval_switch_minimal_step(
                 "switch-minimal requires exactly 2 arguments, got {}. Usage: (switch-minimal expr cases)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -128,7 +127,7 @@ pub(super) fn eval_switch_internal_step(
                 "switch-internal requires exactly 2 arguments, got {}. Usage: (switch-internal expr cases-data)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -136,7 +135,7 @@ pub(super) fn eval_switch_internal_step(
     let cases_data = items[2].clone();
 
     // Parse cases_data to extract first_case and remaining_cases
-    if let MettaValue::SExpr(cases_items) = cases_data {
+    if let MettaValueInner::SExpr(cases_items) = cases_data.inner() {
         if cases_items.len() != 2 {
             let err = MettaValue::Error(
                 format!(
@@ -144,24 +143,24 @@ pub(super) fn eval_switch_internal_step(
                      Usage: (switch-internal expr (first-case remaining-cases))",
                     cases_items.len()
                 ),
-                Arc::new(MettaValue::SExpr(cases_items)),
+                MettaValue::SExpr(cases_items.to_vec()),
             );
             return EvalStep::Done((vec![err], env));
         }
 
         let first_case = cases_items[0].clone();
         let remaining_cases = cases_items[1].clone();
-        return eval_switch_internal_trampoline(atom, first_case, remaining_cases, env, depth);
+        eval_switch_internal_trampoline(atom, first_case, remaining_cases, env, depth)
+    } else {
+        let err = MettaValue::Error(
+            format!(
+                "switch-internal expects expression argument, got: {}",
+                super::friendly_value_repr(&cases_data)
+            ),
+            cases_data,
+        );
+        EvalStep::Done((vec![err], env))
     }
-
-    let err = MettaValue::Error(
-        format!(
-            "switch-internal expects expression argument, got: {}",
-            super::friendly_value_repr(&cases_data)
-        ),
-        Arc::new(cases_data),
-    );
-    EvalStep::Done((vec![err], env))
 }
 
 /// Trampoline-aware version of eval_switch_minimal.
@@ -174,7 +173,7 @@ pub(crate) fn eval_switch_minimal_trampoline(
     depth: usize,
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_switch_minimal_trampoline", ?atom, ?cases);
-    if let MettaValue::SExpr(cases_items) = cases {
+    if let MettaValueInner::SExpr(cases_items) = cases.inner() {
         if cases_items.is_empty() {
             trace!(
                 target: "mettatron::eval::switch_minimal_trampoline",
@@ -190,18 +189,18 @@ pub(crate) fn eval_switch_minimal_trampoline(
             MettaValue::SExpr(vec![])
         };
 
-        return eval_switch_internal_trampoline(atom, first_case, remaining_cases, env, depth);
+        eval_switch_internal_trampoline(atom, first_case, remaining_cases, env, depth)
+    } else {
+        let err = MettaValue::Error(
+            format!(
+                "switch-minimal expects expression as second argument, got: {}",
+                super::friendly_value_repr(&cases)
+            ),
+            cases,
+        );
+        debug!(target: "mettatron::eval::switch_minimal_trampoline", ?err, "Invalid cases argument type");
+        EvalStep::Done((vec![err], env))
     }
-
-    let err = MettaValue::Error(
-        format!(
-            "switch-minimal expects expression as second argument, got: {}",
-            super::friendly_value_repr(&cases)
-        ),
-        Arc::new(cases),
-    );
-    debug!(target: "mettatron::eval::switch_minimal_trampoline", ?err, "Invalid cases argument type");
-    EvalStep::Done((vec![err], env))
 }
 
 /// Trampoline-aware helper for switch-internal logic.
@@ -215,7 +214,7 @@ fn eval_switch_internal_trampoline(
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_switch_internal_trampoline", ?atom, ?first_case, ?remaining_cases);
 
-    if let MettaValue::SExpr(case_items) = first_case {
+    if let MettaValueInner::SExpr(case_items) = first_case.inner() {
         if case_items.len() != 2 {
             let err = MettaValue::Error(
                 format!(
@@ -223,7 +222,7 @@ fn eval_switch_internal_trampoline(
 Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
                     case_items.len()
                 ),
-                Arc::new(MettaValue::SExpr(case_items)),
+                MettaValue::SExpr(case_items.to_vec()),
             );
             return EvalStep::Done((vec![err], env));
         }
@@ -241,18 +240,18 @@ Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
             };
         } else {
             // No match - try remaining cases
-            return eval_switch_minimal_trampoline(atom, remaining_cases, env, depth);
+            eval_switch_minimal_trampoline(atom, remaining_cases, env, depth)
         }
+    } else {
+        let err = MettaValue::Error(
+            format!(
+                "switch case should be an expression (pattern-template pair), got: {}",
+                super::friendly_value_repr(&first_case)
+            ),
+            first_case,
+        );
+        EvalStep::Done((vec![err], env))
     }
-
-    let err = MettaValue::Error(
-        format!(
-            "switch case should be an expression (pattern-template pair), got: {}",
-            super::friendly_value_repr(&first_case)
-        ),
-        Arc::new(first_case),
-    );
-    EvalStep::Done((vec![err], env))
 }
 
 #[cfg(test)]
@@ -648,8 +647,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("switch"));
                 assert!(msg.contains("requires exactly 2 arguments"));
             }
@@ -669,8 +668,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("case"));
                 assert!(msg.contains("requires exactly 2 arguments"));
             }
@@ -694,8 +693,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("pattern-template pair"));
             }
             other => panic!("Expected Error, got {:?}", other),

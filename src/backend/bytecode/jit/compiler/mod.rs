@@ -32,8 +32,8 @@ use init::{
     ArithmeticFuncIds, ArithmeticInit, BindingFuncIds, BindingsInit, CallFuncIds, CallsInit,
     DebugFuncIds, DebugInit, ErrorFuncIds, ErrorHandlingInit, GlobalsFuncIds, GlobalsInit,
     HigherOrderFuncIds, HigherOrderInit, NondetFuncIds, NondetInit, PatternMatchingFuncIds,
-    PatternMatchingInit, RulesFuncIds, RulesInit, SExprFuncIds, SExprInit, SpaceFuncIds,
-    SpaceInit, SpecialFormsFuncIds, SpecialFormsInit, TypeOpsFuncIds, TypeOpsInit,
+    PatternMatchingInit, RulesFuncIds, RulesInit, SExprFuncIds, SExprInit, SpaceFuncIds, SpaceInit,
+    SpecialFormsFuncIds, SpecialFormsInit, TypeOpsFuncIds, TypeOpsInit,
 };
 
 /// JIT Compiler for bytecode chunks
@@ -358,9 +358,9 @@ impl JitCompiler {
 
         let flags = settings::Flags::new(flag_builder);
 
-        isa_builder.finish(flags).map_err(|e| {
-            JitError::CompilationError(format!("Failed to create ISA: {}", e))
-        })
+        isa_builder
+            .finish(flags)
+            .map_err(|e| JitError::CompilationError(format!("Failed to create ISA: {}", e)))
     }
 
     /// Register runtime helper functions for use from JIT code

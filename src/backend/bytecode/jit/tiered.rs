@@ -14,10 +14,10 @@
 //! - Warm code gets bytecode compilation amortized over many runs
 //! - Hot code gets JIT compiled for maximum performance
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 use super::compiler::JitCompiler;
 use super::profile::{JitProfile, JitState, HOT_THRESHOLD, WARM_THRESHOLD};

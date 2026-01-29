@@ -145,31 +145,31 @@ fn write_output(output: Option<&str>, content: &str) -> Result<(), String> {
 }
 
 fn format_result(value: &MettaValue) -> String {
-    match value {
-        MettaValue::Atom(s) => s.clone(),
-        MettaValue::Bool(b) => b.to_string(),
-        MettaValue::Long(n) => n.to_string(),
-        MettaValue::Float(f) => f.to_string(),
-        MettaValue::String(s) => format!("\"{}\"", s),
-        MettaValue::Nil => "Nil".to_string(),
-        MettaValue::Error(msg, details) => {
+    match value.inner() {
+        MettaValueInner::Atom(s) => s.clone(),
+        MettaValueInner::Bool(b) => b.to_string(),
+        MettaValueInner::Long(n) => n.to_string(),
+        MettaValueInner::Float(f) => f.to_string(),
+        MettaValueInner::String(s) => format!("\"{}\"", s),
+        MettaValueInner::Nil => "Nil".to_string(),
+        MettaValueInner::Error(msg, details) => {
             // Format as (Error "msg" details) to match MeTTa spec
             format!("(Error {} {})", msg, format_result(details))
         }
-        MettaValue::Type(t) => format!("Type({})", format_result(t)),
-        MettaValue::SExpr(items) => {
+        MettaValueInner::Type(t) => format!("Type({})", format_result(t)),
+        MettaValueInner::SExpr(items) => {
             let formatted: Vec<String> = items.iter().map(format_result).collect();
             format!("({})", formatted.join(" "))
         }
-        MettaValue::Conjunction(goals) => {
+        MettaValueInner::Conjunction(goals) => {
             let formatted: Vec<String> = goals.iter().map(format_result).collect();
             format!("(, {})", formatted.join(" "))
         }
-        MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-        MettaValue::State(id) => format!("(State {})", id),
-        MettaValue::Unit => "()".to_string(),
-        MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
-        MettaValue::Empty => "Empty".to_string(),
+        MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+        MettaValueInner::State(id) => format!("(State {})", id),
+        MettaValueInner::Unit => "()".to_string(),
+        MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+        MettaValueInner::Empty => "Empty".to_string(),
     }
 }
 
@@ -228,7 +228,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     let mut output = String::new();
     for sexpr in state.source {
         // Only output results for S-expressions, not atoms or ground types
-        let should_output = matches!(sexpr, MettaValue::SExpr(_));
+        let should_output = matches!(sexpr.inner(), MettaValueInner::SExpr(_));
 
         let (results, new_env) = eval(sexpr, env);
         env = new_env;
@@ -236,7 +236,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
         let filtered_results: Vec<MettaValue> = results
             .into_iter()
-            .filter(|v| !matches!(v, MettaValue::Empty))
+            .filter(|v| !matches!(v.inner(), MettaValueInner::Empty))
             .collect();
 
         // Print results with list notation (only for S-expressions)
@@ -330,7 +330,7 @@ fn run_repl(options: &Options) {
 
                         for sexpr in state.source {
                             // Only output results for S-expressions, not atoms or ground types
-                            let should_output = matches!(sexpr, MettaValue::SExpr(_));
+                            let should_output = matches!(sexpr.inner(), MettaValueInner::SExpr(_));
 
                             let (results, updated_env) = eval(sexpr.clone(), env.clone());
                             env = updated_env;
@@ -338,7 +338,7 @@ fn run_repl(options: &Options) {
                             // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
                             let filtered_results: Vec<MettaValue> = results
                                 .into_iter()
-                                .filter(|v| !matches!(v, MettaValue::Empty))
+                                .filter(|v| !matches!(v.inner(), MettaValueInner::Empty))
                                 .collect();
 
                             // Print results with syntax highlighting (only for S-expressions)

@@ -11,7 +11,7 @@ use tracing::trace;
 
 use crate::backend::environment::{Environment, MultiplicityMatch};
 use crate::backend::grounded::{ExecError, GroundedWork};
-use crate::backend::models::{EvalResult, MemoHandle, MettaValue};
+use crate::backend::models::{EvalResult, MemoHandle, MettaValue, MettaValueInner};
 
 use super::super::{
     apply_bindings, eval_step, friendly_value_repr, pattern_match, process_collected_sexpr,
@@ -162,21 +162,19 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     let error_value = match e {
                                         ExecError::Runtime(msg) => MettaValue::Error(
                                             msg,
-                                            Arc::new(MettaValue::Atom("TypeError".to_string())),
+                                            MettaValue::Atom("TypeError".to_string()),
                                         ),
                                         ExecError::Arithmetic(msg) => MettaValue::Error(
                                             msg,
-                                            Arc::new(MettaValue::Atom(
-                                                "ArithmeticError".to_string(),
-                                            )),
+                                            MettaValue::Atom("ArithmeticError".to_string()),
                                         ),
                                         ExecError::IncorrectArgument(msg) => MettaValue::Error(
                                             msg,
-                                            Arc::new(MettaValue::Atom("ArityError".to_string())),
+                                            MettaValue::Atom("ArityError".to_string()),
                                         ),
                                         ExecError::NoReduce => MettaValue::Error(
                                             "NoReduce".to_string(),
-                                            Arc::new(MettaValue::Atom("EvalError".to_string())),
+                                            MettaValue::Atom("EvalError".to_string()),
                                         ),
                                     };
                                     work_stack.push(WorkItem::Resume {
@@ -189,7 +187,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             // TCO operation not found - shouldn't happen if we check first
                             let error_value = MettaValue::Error(
                                 format!("TCO operation '{}' not found", state.op_name),
-                                Arc::new(MettaValue::Atom("InternalError".to_string())),
+                                MettaValue::Atom("InternalError".to_string()),
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id,
@@ -360,10 +358,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             });
 
                             // Evaluate first element's template
-                            let instantiated =
-                                super::super::list_ops::helpers::substitute_variable(
-                                    &template, &var_name, &first,
-                                );
+                            let instantiated = super::super::list_ops::helpers::substitute_variable(
+                                &template, &var_name, &first,
+                            );
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env,
@@ -406,10 +403,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             });
 
                             // Evaluate predicate for first element
-                            let instantiated =
-                                super::super::list_ops::helpers::substitute_variable(
-                                    &predicate, &var_name, &first,
-                                );
+                            let instantiated = super::super::list_ops::helpers::substitute_variable(
+                                &predicate, &var_name, &first,
+                            );
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env,
@@ -529,7 +525,11 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                     }
 
                     // Evaluate switch result - defers template evaluation to trampoline
-                    EvalStep::EvalSwitchResult { template, env, depth } => {
+                    EvalStep::EvalSwitchResult {
+                        template,
+                        env,
+                        depth,
+                    } => {
                         // Push template evaluation - THIS IS TAIL CALL (TCO)
                         // The template inherits the continuation from the switch expression
                         work_stack.push(WorkItem::Eval {
@@ -682,7 +682,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             // Empty conjunction (,) succeeds with Nil
                             work_stack.push(WorkItem::Resume {
                                 cont_id,
-                                result: (vec![MettaValue::Nil], env),
+                                result: (vec![MettaValue::Nil()], env),
                             });
                         } else if goals.len() == 1 {
                             // Unary conjunction: just evaluate the single goal (tail call)
@@ -1432,7 +1432,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             state.step > 0,
                             "BUG: ProcessGroundedOp resumed with step=0! op_name={}, args={:?}, \
                              evaluated_args={:?}. This would cause underflow to usize::MAX.",
-                            state.op_name, state.args, state.evaluated_args
+                            state.op_name,
+                            state.args,
+                            state.evaluated_args
                         );
                         let arg_idx = state.step.checked_sub(1).unwrap_or_else(|| {
                             panic!(
@@ -1484,21 +1486,19 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     let error_value = match e {
                                         ExecError::Runtime(msg) => MettaValue::Error(
                                             msg,
-                                            Arc::new(MettaValue::Atom("TypeError".to_string())),
+                                            MettaValue::Atom("TypeError".to_string()),
                                         ),
                                         ExecError::Arithmetic(msg) => MettaValue::Error(
                                             msg,
-                                            Arc::new(MettaValue::Atom(
-                                                "ArithmeticError".to_string(),
-                                            )),
+                                            MettaValue::Atom("ArithmeticError".to_string()),
                                         ),
                                         ExecError::IncorrectArgument(msg) => MettaValue::Error(
                                             msg,
-                                            Arc::new(MettaValue::Atom("ArityError".to_string())),
+                                            MettaValue::Atom("ArityError".to_string()),
                                         ),
                                         ExecError::NoReduce => MettaValue::Error(
                                             "NoReduce".to_string(),
-                                            Arc::new(MettaValue::Atom("EvalError".to_string())),
+                                            MettaValue::Atom("EvalError".to_string()),
                                         ),
                                     };
                                     work_stack.push(WorkItem::Resume {
@@ -1511,7 +1511,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             // Operation not found - shouldn't happen
                             let error_value = MettaValue::Error(
                                 format!("TCO operation '{}' not found", state.op_name),
-                                Arc::new(MettaValue::Atom("InternalError".to_string())),
+                                MettaValue::Atom("InternalError".to_string()),
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -1570,29 +1570,34 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 Some(evaled_items) => {
                                     // Process this combination
                                     // Check if this is a grounded operation
-                                    if let Some(MettaValue::Atom(op)) = evaled_items.first() {
-                                        if let Some(builtin_result) =
-                                            super::super::try_eval_builtin(op, &evaled_items[1..])
-                                        {
-                                            results.push(builtin_result);
+                                    if let Some(first) = evaled_items.first() {
+                                        if let MettaValueInner::Atom(op) = first.inner() {
+                                            if let Some(builtin_result) =
+                                                super::super::try_eval_builtin(
+                                                    op,
+                                                    &evaled_items[1..],
+                                                )
+                                            {
+                                                results.push(builtin_result);
 
-                                            // Continue to next combination
-                                            continuations[cont_id] =
-                                                Continuation::ProcessCombinations {
-                                                    combinations,
-                                                    results,
-                                                    pending_rule_matches: VecDeque::new(),
-                                                    env: env.clone(),
-                                                    depth,
-                                                    parent_cont,
-                                                };
+                                                // Continue to next combination
+                                                continuations[cont_id] =
+                                                    Continuation::ProcessCombinations {
+                                                        combinations,
+                                                        results,
+                                                        pending_rule_matches: VecDeque::new(),
+                                                        env: env.clone(),
+                                                        depth,
+                                                        parent_cont,
+                                                    };
 
-                                            // Resume to process next combination
-                                            work_stack.push(WorkItem::Resume {
-                                                cont_id,
-                                                result: (vec![], env),
-                                            });
-                                            continue;
+                                                // Resume to process next combination
+                                                work_stack.push(WorkItem::Resume {
+                                                    cont_id,
+                                                    result: (vec![], env),
+                                                });
+                                                continue;
+                                            }
                                         }
                                     }
 
@@ -1850,8 +1855,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 });
 
                                 // Evaluate first rule RHS with bindings
-                                let instantiated_rhs =
-                                    apply_bindings(&rhs, &bindings).into_owned();
+                                let instantiated_rhs = apply_bindings(&rhs, &bindings).into_owned();
                                 work_stack.push(WorkItem::Eval {
                                     value: instantiated_rhs,
                                     env: result_env,
@@ -1887,13 +1891,13 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                         // Add first result from evaluation (move instead of clone)
                         if result_values.is_empty() {
-                            collected_results.push(MettaValue::Nil);
+                            collected_results.push(MettaValue::Nil());
                         } else {
                             // Move the first result out of the vector
                             let first_result = result_values.swap_remove(0);
 
                             // Check for error propagation
-                            if matches!(&first_result, MettaValue::Error(_, _)) {
+                            if matches!(first_result.inner(), MettaValueInner::Error(_, _)) {
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
                                     result: (vec![first_result], result_env),
@@ -1919,12 +1923,11 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                             // Evaluate template for next element
                             // Note: substitute_variable takes references, no clone needed
-                            let instantiated =
-                                super::super::list_ops::helpers::substitute_variable(
-                                    &template,
-                                    &var_name,
-                                    &next_element,
-                                );
+                            let instantiated = super::super::list_ops::helpers::substitute_variable(
+                                &template,
+                                &var_name,
+                                &next_element,
+                            );
 
                             // Update continuation in-place - move template and var_name
                             // instead of cloning to avoid allocation overhead
@@ -1967,7 +1970,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             let first_result = result_values.swap_remove(0);
 
                             // Check for error propagation
-                            if matches!(&first_result, MettaValue::Error(_, _)) {
+                            if matches!(first_result.inner(), MettaValueInner::Error(_, _)) {
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
                                     result: (vec![first_result], result_env),
@@ -1975,10 +1978,10 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 continue;
                             }
 
-                            let should_include = match &first_result {
-                                MettaValue::Bool(true) => true,
-                                MettaValue::Bool(false) => false,
-                                _ => !matches!(&first_result, MettaValue::Nil),
+                            let should_include = match first_result.inner() {
+                                MettaValueInner::Bool(true) => true,
+                                MettaValueInner::Bool(false) => false,
+                                _ => !matches!(first_result.inner(), MettaValueInner::Nil),
                             };
 
                             if should_include {
@@ -2004,19 +2007,18 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                             // Evaluate predicate for next element
                             // Note: substitute_variable takes references, no clone needed
-                            let instantiated =
-                                super::super::list_ops::helpers::substitute_variable(
-                                    &predicate,
-                                    &var_name,
-                                    &next_element,
-                                );
+                            let instantiated = super::super::list_ops::helpers::substitute_variable(
+                                &predicate,
+                                &var_name,
+                                &next_element,
+                            );
 
                             // Update continuation - move var_name, predicate, and next_element
                             // instead of cloning to avoid allocation overhead
                             continuations[cont_id] = Continuation::ProcessFilterAtom {
                                 current_element: Some(next_element), // move, not clone
                                 remaining_elements,
-                                var_name, // move, not clone
+                                var_name,  // move, not clone
                                 predicate, // move, not clone
                                 filtered_results,
                                 env: result_env.clone(),
@@ -2048,13 +2050,13 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                         // Get the new accumulator value from the result (move instead of clone)
                         let accumulator = if result_values.is_empty() {
-                            MettaValue::Nil
+                            MettaValue::Nil()
                         } else {
                             // Move the first result out of the vector
                             let first_result = result_values.swap_remove(0);
 
                             // Check for error propagation
-                            if matches!(&first_result, MettaValue::Error(_, _)) {
+                            if matches!(first_result.inner(), MettaValueInner::Error(_, _)) {
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
                                     result: (vec![first_result], result_env),
@@ -2094,9 +2096,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             // instead of cloning to avoid allocation overhead
                             continuations[cont_id] = Continuation::ProcessFoldlAtom {
                                 remaining_elements,
-                                acc_var_name, // move, not clone
+                                acc_var_name,  // move, not clone
                                 item_var_name, // move, not clone
-                                operation, // move, not clone
+                                operation,     // move, not clone
                                 env: result_env.clone(),
                                 depth,
                                 parent_cont,
@@ -2124,7 +2126,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                         // Check for error in condition
                         if let Some(first) = cond_results.first() {
-                            if matches!(first, MettaValue::Error(_, _)) {
+                            if matches!(first.inner(), MettaValueInner::Error(_, _)) {
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
                                     result: (vec![first.clone()], env_after_cond),
@@ -2133,11 +2135,11 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             }
 
                             // Check if condition is true
-                            let is_true = match first {
-                                MettaValue::Bool(true) => true,
-                                MettaValue::Bool(false) => false,
+                            let is_true = match first.inner() {
+                                MettaValueInner::Bool(true) => true,
+                                MettaValueInner::Bool(false) => false,
                                 // Non-boolean values: treat as true if not Nil
-                                MettaValue::Nil => false,
+                                MettaValueInner::Nil => false,
                                 _ => true,
                             };
 
@@ -2174,7 +2176,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         // Filter out Empty sentinels - they represent "no result to report"
                         let filtered_results: Vec<_> = atom_results
                             .into_iter()
-                            .filter(|v| !matches!(v, MettaValue::Empty))
+                            .filter(|v| !matches!(v.inner(), MettaValueInner::Empty))
                             .collect();
 
                         // Handle case when evaluation returns no results (empty) - treat as Empty
@@ -2193,7 +2195,11 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         result,
                                     });
                                 }
-                                EvalStep::EvalSwitchResult { template, env, depth } => {
+                                EvalStep::EvalSwitchResult {
+                                    template,
+                                    env,
+                                    depth,
+                                } => {
                                     work_stack.push(WorkItem::Eval {
                                         value: template,
                                         env,
@@ -2216,9 +2222,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         // Process each filtered result
                         let mut final_results = Vec::new();
                         for atom_result in filtered_results {
-                            let is_empty = match &atom_result {
-                                MettaValue::Nil => true,
-                                MettaValue::SExpr(items) if items.is_empty() => true,
+                            let is_empty = match atom_result.inner() {
+                                MettaValueInner::Nil => true,
+                                MettaValueInner::SExpr(items) if items.is_empty() => true,
                                 _ => false,
                             };
 
@@ -2240,7 +2246,11 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 EvalStep::Done((results, _)) => {
                                     final_results.extend(results);
                                 }
-                                EvalStep::EvalSwitchResult { template, env, depth: switch_depth } => {
+                                EvalStep::EvalSwitchResult {
+                                    template,
+                                    env,
+                                    depth: switch_depth,
+                                } => {
                                     // For now, evaluate synchronously for multiple results
                                     // This could be optimized further with a more complex continuation
                                     let (results, _) = super::super::eval(template, env);
@@ -2279,7 +2289,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             // No result from argument evaluation
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
-                                result: (vec![MettaValue::Nil], arg_env),
+                                result: (vec![MettaValue::Nil()], arg_env),
                             });
                         }
                     }
@@ -2293,7 +2303,10 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         let (arg_results, arg_env) = result;
 
                         // Check for errors first
-                        if let Some(err) = arg_results.iter().find(|r| matches!(r, MettaValue::Error(_, _))) {
+                        if let Some(err) = arg_results
+                            .iter()
+                            .find(|r| matches!(r.inner(), MettaValueInner::Error(_, _)))
+                        {
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err.clone()], arg_env),
@@ -2328,7 +2341,10 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         let (expr_results, current_env) = result;
 
                         // Check for errors first
-                        if let Some(err) = expr_results.iter().find(|r| matches!(r, MettaValue::Error(_, _))) {
+                        if let Some(err) = expr_results
+                            .iter()
+                            .find(|r| matches!(r.inner(), MettaValueInner::Error(_, _)))
+                        {
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err.clone()], current_env),
@@ -2345,8 +2361,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             let first_value = remaining.pop_front().unwrap();
 
                             // Try to match and evaluate first body
-                            if let Some(bindings) =
-                                super::super::pattern_match(&var, &first_value)
+                            if let Some(bindings) = super::super::pattern_match(&var, &first_value)
                             {
                                 let instantiated_body =
                                     super::super::apply_bindings(&body, &bindings).into_owned();
@@ -2426,9 +2441,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             // Process next value
                             let next_value = remaining_values.pop_front().unwrap();
 
-                            if let Some(bindings) =
-                                super::super::pattern_match(&var, &next_value)
-                            {
+                            if let Some(bindings) = super::super::pattern_match(&var, &next_value) {
                                 let instantiated_body =
                                     super::super::apply_bindings(&body, &bindings).into_owned();
 
@@ -2487,7 +2500,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if eval_results.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
-                                result: (vec![MettaValue::Nil], current_env),
+                                result: (vec![MettaValue::Nil()], current_env),
                             });
                             continue;
                         }
@@ -2496,8 +2509,8 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         let (final_results, continue_exprs): (Vec<_>, Vec<_>) =
                             eval_results.into_iter().partition(|r| {
                                 matches!(
-                                    r,
-                                    MettaValue::SExpr(items)
+                                    r.inner(),
+                                    MettaValueInner::SExpr(items)
                                     if items.len() == 2
                                         && items[0] == MettaValue::Atom("return".to_string())
                                 )
@@ -2507,8 +2520,8 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             // Extract return values
                             let returns: Vec<_> = final_results
                                 .into_iter()
-                                .map(|r| match r {
-                                    MettaValue::SExpr(items) => items[1].clone(),
+                                .map(|r| match r.inner() {
+                                    MettaValueInner::SExpr(items) => items[1].clone(),
                                     _ => unreachable!("partition guarantees return expressions"),
                                 })
                                 .collect();
@@ -2522,7 +2535,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if continue_exprs.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
-                                result: (vec![MettaValue::Nil], current_env),
+                                result: (vec![MettaValue::Nil()], current_env),
                             });
                             continue;
                         }
@@ -2537,7 +2550,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     "function exceeded maximum iterations ({})",
                                     MAX_ITERATIONS
                                 ),
-                                std::sync::Arc::new(continue_exprs[0].clone()),
+                                continue_exprs[0].clone(),
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -2573,9 +2586,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         parent_cont,
                     } => {
                         let (results, new_env) = result;
-                        let is_err = results.first().map_or(false, |r| {
-                            matches!(r, MettaValue::Error(_, _))
-                        });
+                        let is_err = results
+                            .first()
+                            .map_or(false, |r| matches!(r.inner(), MettaValueInner::Error(_, _)));
                         work_stack.push(WorkItem::Resume {
                             cont_id: parent_cont,
                             result: (vec![MettaValue::Bool(is_err)], new_env),
@@ -2594,7 +2607,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         // Partition results into errors and non-errors
                         let (_errors, non_errors): (Vec<_>, Vec<_>) = results
                             .into_iter()
-                            .partition(|r| matches!(r, MettaValue::Error(_, _)));
+                            .partition(|r| matches!(r.inner(), MettaValueInner::Error(_, _)));
 
                         if non_errors.is_empty() {
                             // All results were errors - evaluate default
@@ -2630,7 +2643,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         // Filter out errors from propagation (errors stop the goal chain)
                         let mut next_results = Vec::new();
                         for r in goal_results {
-                            if matches!(r, MettaValue::Error(_, _)) {
+                            if matches!(r.inner(), MettaValueInner::Error(_, _)) {
                                 // Error stops this branch of conjunction
                                 next_results.push(r);
                             } else {
@@ -2708,33 +2721,37 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             let first_val = remaining.pop_front().expect("non-empty");
 
                             // Check if first value is a Space
-                            if let MettaValue::Space(ref handle) = first_val {
+                            if let MettaValueInner::Space(ref handle) = first_val.inner() {
                                 // Space unification - compute matches synchronously
                                 let pattern = pattern2.clone();
 
                                 // Check for boolean optimization
-                                let is_boolean_check = match (&success_body, &failure_body) {
-                                    (MettaValue::Bool(true), MettaValue::Bool(false)) => true,
-                                    (MettaValue::Atom(s), MettaValue::Atom(f))
-                                        if s == "True" && f == "False" =>
-                                    {
-                                        true
-                                    }
-                                    _ => false,
-                                };
+                                let is_boolean_check =
+                                    match (success_body.inner(), failure_body.inner()) {
+                                        (
+                                            MettaValueInner::Bool(true),
+                                            MettaValueInner::Bool(false),
+                                        ) => true,
+                                        (MettaValueInner::Atom(s), MettaValueInner::Atom(f))
+                                            if s == "True" && f == "False" =>
+                                        {
+                                            true
+                                        }
+                                        _ => false,
+                                    };
 
                                 if is_boolean_check {
                                     // Boolean check - compute result synchronously
-                                    let exists = if handle.is_module_space() || handle.name == "self"
-                                    {
-                                        env_after_p1.match_space_exists(&pattern)
-                                    } else {
-                                        let atoms = handle.collapse();
-                                        atoms.iter().any(|atom| {
-                                            pattern_match(&pattern, atom).is_some()
-                                                || pattern_match(atom, &pattern).is_some()
-                                        })
-                                    };
+                                    let exists =
+                                        if handle.is_module_space() || handle.name == "self" {
+                                            env_after_p1.match_space_exists(&pattern)
+                                        } else {
+                                            let atoms = handle.collapse();
+                                            atoms.iter().any(|atom| {
+                                                pattern_match(&pattern, atom).is_some()
+                                                    || pattern_match(atom, &pattern).is_some()
+                                            })
+                                        };
 
                                     let bool_result = MettaValue::Bool(exists);
 
@@ -2774,43 +2791,41 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                             handle.collapse_with_multiplicity()
                                         };
 
-                                    let mut bodies_to_eval: VecDeque<Arc<MettaValue>> = VecDeque::new();
+                                    let mut bodies_to_eval: VecDeque<MettaValue> = VecDeque::new();
                                     let mut found_match = false;
 
                                     // Pattern match once per unique atom, expand by multiplicity
-                                    // Arc wrapping enables O(1) cloning for multiplicity expansion
+                                    // MettaValue clone is O(1) since it uses Arc internally
                                     for m in &matches {
                                         if let Some(bindings) = pattern_match(&pattern, &m.value) {
                                             found_match = true;
-                                            // Wrap instantiated body in Arc for O(1) cloning
-                                            let instantiated = Arc::new(
-                                                apply_bindings(&success_body, &bindings).into_owned()
-                                            );
-                                            // O(1) Arc clones for multiplicity expansion
+                                            // MettaValue clone is O(1) (just Arc reference count increment)
+                                            let instantiated =
+                                                apply_bindings(&success_body, &bindings)
+                                                    .into_owned();
+                                            // O(1) MettaValue clones for multiplicity expansion
                                             for _ in 0..m.count {
-                                                bodies_to_eval.push_back(Arc::clone(&instantiated));
+                                                bodies_to_eval.push_back(instantiated.clone());
                                             }
                                         } else if let Some(bindings) =
                                             pattern_match(&m.value, &pattern)
                                         {
                                             found_match = true;
-                                            let instantiated = Arc::new(
-                                                apply_bindings(&success_body, &bindings).into_owned()
-                                            );
+                                            let instantiated =
+                                                apply_bindings(&success_body, &bindings)
+                                                    .into_owned();
                                             for _ in 0..m.count {
-                                                bodies_to_eval.push_back(Arc::clone(&instantiated));
+                                                bodies_to_eval.push_back(instantiated.clone());
                                             }
                                         }
                                     }
 
                                     if !found_match {
-                                        bodies_to_eval.push_back(Arc::new(failure_body.clone()));
+                                        bodies_to_eval.push_back(failure_body.clone());
                                     }
 
                                     // Start evaluating bodies
-                                    if let Some(first_body_arc) = bodies_to_eval.pop_front() {
-                                        // Unwrap Arc: if refcount=1, returns owned value; else clones
-                                        let first_body = Arc::unwrap_or_clone(first_body_arc);
+                                    if let Some(first_body) = bodies_to_eval.pop_front() {
                                         let bodies_cont_id = continuations.len();
                                         continuations.push(Continuation::ProcessUnifyBodies {
                                             remaining_bodies: bodies_to_eval,
@@ -2878,33 +2893,30 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         let (results2, env_after_p2) = result;
 
                         // Perform unification for each pattern2 result
-                        // Arc-wrapped for O(1) cloning (consistent with multiplicity path)
-                        let mut bodies_to_eval: VecDeque<Arc<MettaValue>> = VecDeque::new();
+                        // MettaValue clone is O(1) since it uses Arc internally
+                        let mut bodies_to_eval: VecDeque<MettaValue> = VecDeque::new();
 
                         for val2 in results2 {
                             if let Some(bindings) = pattern_match(&val1, &val2) {
-                                let instantiated = Arc::new(
-                                    apply_bindings(&success_body, &bindings).into_owned()
-                                );
+                                let instantiated =
+                                    apply_bindings(&success_body, &bindings).into_owned();
                                 bodies_to_eval.push_back(instantiated);
                             } else if let Some(bindings) = pattern_match(&val2, &val1) {
-                                let instantiated = Arc::new(
-                                    apply_bindings(&success_body, &bindings).into_owned()
-                                );
+                                let instantiated =
+                                    apply_bindings(&success_body, &bindings).into_owned();
                                 bodies_to_eval.push_back(instantiated);
                             } else {
-                                bodies_to_eval.push_back(Arc::new(failure_body.clone()));
+                                bodies_to_eval.push_back(failure_body.clone());
                             }
                         }
 
                         // Start evaluating bodies
-                        if let Some(first_body_arc) = bodies_to_eval.pop_front() {
-                            let first_body = Arc::unwrap_or_clone(first_body_arc);
+                        if let Some(first_body) = bodies_to_eval.pop_front() {
                             let bodies_cont_id = continuations.len();
                             continuations.push(Continuation::ProcessUnifyBodies {
                                 remaining_bodies: bodies_to_eval,
                                 remaining_pattern1_results,
-                                pattern2: MettaValue::Nil, // Not needed anymore
+                                pattern2: MettaValue::Nil(), // Not needed anymore
                                 success_body,
                                 failure_body,
                                 all_results,
@@ -2944,7 +2956,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 let mut remaining = remaining_pattern1_results;
                                 let next_val = remaining.pop_front().expect("non-empty");
 
-                                if let MettaValue::Space(_) = next_val {
+                                if let MettaValueInner::Space(_) = next_val.inner() {
                                     // Space - would need complex handling, for now just return
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -2965,7 +2977,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     });
 
                                     work_stack.push(WorkItem::Eval {
-                                        value: MettaValue::Nil, // Need pattern2 here
+                                        value: MettaValue::Nil(), // Need pattern2 here
                                         env: env_after_p2,
                                         depth, // TCO: reuse depth for iteration
                                         cont_id: p2_cont_id,
@@ -2994,9 +3006,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         all_results.extend(body_results);
 
                         // More bodies to evaluate?
-                        if let Some(next_body_arc) = remaining_bodies.pop_front() {
-                            // Unwrap Arc: if refcount=1, returns owned value; else clones
-                            let next_body = Arc::unwrap_or_clone(next_body_arc);
+                        if let Some(next_body) = remaining_bodies.pop_front() {
                             let next_cont_id = continuations.len();
                             continuations.push(Continuation::ProcessUnifyBodies {
                                 remaining_bodies,
@@ -3022,7 +3032,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             let mut remaining = remaining_pattern1_results;
                             let next_val = remaining.pop_front().expect("non-empty");
 
-                            if let MettaValue::Space(ref handle) = next_val {
+                            if let MettaValueInner::Space(ref handle) = next_val.inner() {
                                 // Handle space - compute bodies synchronously
                                 // Get matches with multiplicity tracking for correct result counts
                                 let pattern = pattern2.clone();
@@ -3033,40 +3043,36 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         handle.collapse_with_multiplicity()
                                     };
 
-                                let mut new_bodies: VecDeque<Arc<MettaValue>> = VecDeque::new();
+                                let mut new_bodies: VecDeque<MettaValue> = VecDeque::new();
                                 let mut found_match = false;
 
                                 // Pattern match once per unique atom, expand by multiplicity
-                                // Arc wrapping enables O(1) cloning for multiplicity expansion
+                                // MettaValue clone is O(1) since it uses Arc internally
                                 for m in &matches {
                                     if let Some(bindings) = pattern_match(&pattern, &m.value) {
                                         found_match = true;
-                                        let instantiated = Arc::new(
-                                            apply_bindings(&success_body, &bindings).into_owned()
-                                        );
-                                        // O(1) Arc clones for multiplicity expansion
+                                        let instantiated =
+                                            apply_bindings(&success_body, &bindings).into_owned();
+                                        // O(1) MettaValue clones for multiplicity expansion
                                         for _ in 0..m.count {
-                                            new_bodies.push_back(Arc::clone(&instantiated));
+                                            new_bodies.push_back(instantiated.clone());
                                         }
-                                    } else if let Some(bindings) =
-                                        pattern_match(&m.value, &pattern)
+                                    } else if let Some(bindings) = pattern_match(&m.value, &pattern)
                                     {
                                         found_match = true;
-                                        let instantiated = Arc::new(
-                                            apply_bindings(&success_body, &bindings).into_owned()
-                                        );
+                                        let instantiated =
+                                            apply_bindings(&success_body, &bindings).into_owned();
                                         for _ in 0..m.count {
-                                            new_bodies.push_back(Arc::clone(&instantiated));
+                                            new_bodies.push_back(instantiated.clone());
                                         }
                                     }
                                 }
 
                                 if !found_match {
-                                    new_bodies.push_back(Arc::new(failure_body.clone()));
+                                    new_bodies.push_back(failure_body.clone());
                                 }
 
-                                if let Some(first_body_arc) = new_bodies.pop_front() {
-                                    let first_body = Arc::unwrap_or_clone(first_body_arc);
+                                if let Some(first_body) = new_bodies.pop_front() {
                                     let next_cont_id = continuations.len();
                                     continuations.push(Continuation::ProcessUnifyBodies {
                                         remaining_bodies: new_bodies,
@@ -3160,27 +3166,32 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             // Empty superposition returns Unit () (HE-compatible)
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
-                                result: (vec![MettaValue::Unit], env_after),
+                                result: (vec![MettaValue::Unit()], env_after),
                             });
                         } else {
                             // Filter out Empty sentinels and Nil values
                             let filtered: Vec<MettaValue> = results
                                 .into_iter()
-                                .filter(|v| !matches!(v, MettaValue::Empty | MettaValue::Nil))
+                                .filter(|v| {
+                                    !matches!(
+                                        v.inner(),
+                                        MettaValueInner::Empty | MettaValueInner::Nil
+                                    )
+                                })
                                 .collect();
 
                             if filtered.is_empty() {
                                 // All results were Empty/Nil → return Unit
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
-                                    result: (vec![MettaValue::Unit], env_after),
+                                    result: (vec![MettaValue::Unit()], env_after),
                                 });
                             } else if filtered.len() == 1 {
                                 // Check if single result is a space
-                                if let MettaValue::Space(handle) = &filtered[0] {
+                                if let MettaValueInner::Space(handle) = filtered[0].inner() {
                                     let atoms = handle.collapse();
                                     let result_val = if atoms.is_empty() {
-                                        MettaValue::Unit
+                                        MettaValue::Unit()
                                     } else {
                                         MettaValue::SExpr(atoms)
                                     };
@@ -3264,22 +3275,22 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                     } => {
                         let (cond_results, env_after) = result;
 
-                        match cond_results.first() {
-                            Some(MettaValue::Bool(true)) => {
+                        match cond_results.first().map(|v| v.inner()) {
+                            Some(MettaValueInner::Bool(true)) => {
                                 // Guard passes - return Unit
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
-                                    result: (vec![MettaValue::Unit], env_after),
+                                    result: (vec![MettaValue::Unit()], env_after),
                                 });
                             }
-                            Some(MettaValue::Bool(false)) => {
+                            Some(MettaValueInner::Bool(false)) => {
                                 // Guard fails - return empty (nondeterministic failure)
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
                                     result: (vec![], env_after),
                                 });
                             }
-                            Some(MettaValue::Error(msg, details)) => {
+                            Some(MettaValueInner::Error(msg, details)) => {
                                 // Error propagates
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
@@ -3289,14 +3300,15 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     ),
                                 });
                             }
-                            Some(other) => {
+                            Some(_) => {
                                 // Type error
+                                let other = cond_results.first().unwrap();
                                 let err = MettaValue::Error(
                                     format!(
                                         "guard: condition must evaluate to Bool, got {}",
                                         friendly_value_repr(other)
                                     ),
-                                    Arc::new(other.clone()),
+                                    other.clone(),
                                 );
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
@@ -3325,15 +3337,15 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if space_results.is_empty() {
                             let err = MettaValue::Error(
                                 "get-atoms: space evaluated to empty".to_string(),
-                                Arc::new(space_ref),
+                                space_ref,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err], env_after),
                             });
                         } else {
-                            match &space_results[0] {
-                                MettaValue::Space(handle) => {
+                            match space_results[0].inner() {
+                                MettaValueInner::Space(handle) => {
                                     let atoms = handle.collapse();
                                     if atoms.is_empty() {
                                         // Empty space returns empty results
@@ -3349,13 +3361,14 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         });
                                     }
                                 }
-                                other => {
+                                _ => {
+                                    let other = &space_results[0];
                                     let err = MettaValue::Error(
                                         format!(
                                             "get-atoms: argument must be a space, got {}. Usage: (get-atoms space)",
                                             friendly_value_repr(other)
                                         ),
-                                        Arc::new(other.clone()),
+                                        other.clone(),
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -3380,15 +3393,15 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if memo_results.is_empty() {
                             let err = MettaValue::Error(
                                 "memo: memo-table evaluated to empty".to_string(),
-                                Arc::new(memo_ref),
+                                memo_ref,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err], env_after),
                             });
                         } else {
-                            match &memo_results[0] {
-                                MettaValue::Memo(handle) => {
+                            match memo_results[0].inner() {
+                                MettaValueInner::Memo(handle) => {
                                     // Check cache first
                                     if let Some(cached) = handle.lookup(&expr) {
                                         work_stack.push(WorkItem::Resume {
@@ -3416,7 +3429,8 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         });
                                     }
                                 }
-                                other => {
+                                _ => {
+                                    let other = &memo_results[0];
                                     let op_name = if first_only { "memo-first" } else { "memo" };
                                     let err = MettaValue::Error(
                                         format!(
@@ -3425,7 +3439,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                             friendly_value_repr(other),
                                             op_name
                                         ),
-                                        Arc::new(other.clone()),
+                                        other.clone(),
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -3475,7 +3489,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if name_results.is_empty() {
                             let err = MettaValue::Error(
                                 "new-memo: name evaluated to empty".to_string(),
-                                Arc::new(name_arg),
+                                name_arg,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -3483,16 +3497,17 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             });
                         } else {
                             // Extract string name
-                            let name = match &name_results[0] {
-                                MettaValue::String(s) => s.clone(),
-                                MettaValue::Atom(s) => s.clone(),
-                                other => {
+                            let name = match name_results[0].inner() {
+                                MettaValueInner::String(s) => s.clone(),
+                                MettaValueInner::Atom(s) => s.clone(),
+                                _ => {
+                                    let other = &name_results[0];
                                     let err = MettaValue::Error(
                                         format!(
                                             "new-memo: name must be a string or atom, got {}",
                                             friendly_value_repr(other)
                                         ),
-                                        Arc::new(other.clone()),
+                                        other.clone(),
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -3544,28 +3559,29 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if size_results.is_empty() {
                             let err = MettaValue::Error(
                                 "new-memo: max-size evaluated to empty".to_string(),
-                                Arc::new(size_arg),
+                                size_arg,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err], env_after),
                             });
                         } else {
-                            match &size_results[0] {
-                                MettaValue::Long(n) if *n > 0 => {
+                            match size_results[0].inner() {
+                                MettaValueInner::Long(n) if *n > 0 => {
                                     let memo = MemoHandle::with_max_size(name, *n as usize);
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
                                         result: (vec![MettaValue::Memo(memo)], env_after),
                                     });
                                 }
-                                other => {
+                                _ => {
+                                    let other = &size_results[0];
                                     let err = MettaValue::Error(
                                         format!(
                                             "new-memo: max-size must be a positive integer, got {}",
                                             friendly_value_repr(other)
                                         ),
-                                        Arc::new(other.clone()),
+                                        other.clone(),
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -3587,18 +3603,22 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         let (memo_results, env_after) = result;
 
                         if memo_results.is_empty() {
-                            let op_name = if is_clear { "clear-memo!" } else { "memo-stats" };
+                            let op_name = if is_clear {
+                                "clear-memo!"
+                            } else {
+                                "memo-stats"
+                            };
                             let err = MettaValue::Error(
                                 format!("{}: memo-table evaluated to empty", op_name),
-                                Arc::new(memo_ref),
+                                memo_ref,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err], env_after),
                             });
                         } else {
-                            match &memo_results[0] {
-                                MettaValue::Memo(handle) => {
+                            match memo_results[0].inner() {
+                                MettaValueInner::Memo(handle) => {
                                     if is_clear {
                                         handle.clear();
                                         work_stack.push(WorkItem::Resume {
@@ -3626,8 +3646,13 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         });
                                     }
                                 }
-                                other => {
-                                    let op_name = if is_clear { "clear-memo!" } else { "memo-stats" };
+                                _ => {
+                                    let other = &memo_results[0];
+                                    let op_name = if is_clear {
+                                        "clear-memo!"
+                                    } else {
+                                        "memo-stats"
+                                    };
                                     let err = MettaValue::Error(
                                         format!(
                                             "{}: argument must be a memo table, got {}. Usage: ({} memo-table)",
@@ -3635,7 +3660,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                             friendly_value_repr(other),
                                             op_name
                                         ),
-                                        Arc::new(other.clone()),
+                                        other.clone(),
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -3660,15 +3685,15 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if space_results.is_empty() {
                             let err = MettaValue::Error(
                                 "match: space evaluated to empty".to_string(),
-                                Arc::new(space_arg),
+                                space_arg,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err], env_after),
                             });
                         } else {
-                            match &space_results[0] {
-                                MettaValue::Space(handle) => {
+                            match space_results[0].inner() {
+                                MettaValueInner::Space(handle) => {
                                     // For module-backed spaces or the global "self" space,
                                     // use Environment's MORK-based matching directly (no eval needed)
                                     if handle.is_module_space() || handle.name == "self" {
@@ -3687,11 +3712,13 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         let atoms = handle.collapse();
 
                                         // Collect all matching atoms and create instantiated templates
-                                        let mut instantiated_templates: Vec<MettaValue> = Vec::new();
+                                        let mut instantiated_templates: Vec<MettaValue> =
+                                            Vec::new();
                                         for atom in &atoms {
                                             if let Some(bindings) = pattern_match(&pattern, atom) {
                                                 let instantiated =
-                                                    apply_bindings(&template, &bindings).into_owned();
+                                                    apply_bindings(&template, &bindings)
+                                                        .into_owned();
                                                 instantiated_templates.push(instantiated);
                                             }
                                         }
@@ -3715,17 +3742,20 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                             // Multiple matches - queue template evaluations
                                             let mut templates_deque: VecDeque<MettaValue> =
                                                 instantiated_templates.into_iter().collect();
-                                            let first_template = templates_deque.pop_front().unwrap();
+                                            let first_template =
+                                                templates_deque.pop_front().unwrap();
 
                                             // Create continuation to collect template results
                                             let templates_cont_id = continuations.len();
-                                            continuations.push(Continuation::ProcessMatchTemplates {
-                                                remaining_templates: templates_deque,
-                                                results: vec![],
-                                                env: env_after.clone(),
-                                                depth,
-                                                parent_cont,
-                                            });
+                                            continuations.push(
+                                                Continuation::ProcessMatchTemplates {
+                                                    remaining_templates: templates_deque,
+                                                    results: vec![],
+                                                    env: env_after.clone(),
+                                                    depth,
+                                                    parent_cont,
+                                                },
+                                            );
 
                                             // Fork environment for first evaluation
                                             // (isolation for nondeterministic branches)
@@ -3740,13 +3770,14 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         }
                                     }
                                 }
-                                other => {
+                                _ => {
+                                    let other = &space_results[0];
                                     let err = MettaValue::Error(
                                         format!(
                                             "match: first argument must be a space, got {}. Usage: (match space pattern template)",
                                             friendly_value_repr(other)
                                         ),
-                                        Arc::new(other.clone()),
+                                        other.clone(),
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -3813,15 +3844,15 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if space_results.is_empty() {
                             let err = MettaValue::Error(
                                 "add-atom: space evaluated to empty".to_string(),
-                                Arc::new(space_ref),
+                                space_ref,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err], env_after),
                             });
                         } else {
-                            match &space_results[0] {
-                                MettaValue::Space(handle) => {
+                            match space_results[0].inner() {
+                                MettaValueInner::Space(handle) => {
                                     // Space evaluated - now evaluate the atom
                                     let add_atom_cont_id = continuations.len();
                                     continuations.push(Continuation::ProcessAddAtomAtom {
@@ -3840,13 +3871,14 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         is_tail_call: false,
                                     });
                                 }
-                                other => {
+                                _ => {
+                                    let other = &space_results[0];
                                     let err = MettaValue::Error(
                                         format!(
                                             "add-atom: first argument must be a space reference, got {}. Usage: (add-atom space atom)",
                                             friendly_value_repr(other)
                                         ),
-                                        Arc::new(other.clone()),
+                                        other.clone(),
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -3870,7 +3902,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if atom_results.is_empty() {
                             let err = MettaValue::Error(
                                 "add-atom: atom evaluated to empty".to_string(),
-                                Arc::new(atom),
+                                atom,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -3881,7 +3913,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             space_handle.add_atom(atom_results[0].clone());
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
-                                result: (vec![MettaValue::Unit], env_after),
+                                result: (vec![MettaValue::Unit()], env_after),
                             });
                         }
                     }
@@ -3899,15 +3931,15 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if space_results.is_empty() {
                             let err = MettaValue::Error(
                                 "remove-atom: space evaluated to empty".to_string(),
-                                Arc::new(space_ref),
+                                space_ref,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err], env_after),
                             });
                         } else {
-                            match &space_results[0] {
-                                MettaValue::Space(handle) => {
+                            match space_results[0].inner() {
+                                MettaValueInner::Space(handle) => {
                                     // Space evaluated - now evaluate the atom
                                     let remove_atom_cont_id = continuations.len();
                                     continuations.push(Continuation::ProcessRemoveAtomAtom {
@@ -3926,13 +3958,14 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         is_tail_call: false,
                                     });
                                 }
-                                other => {
+                                _ => {
+                                    let other = &space_results[0];
                                     let err = MettaValue::Error(
                                         format!(
                                             "remove-atom: first argument must be a space reference, got {}. Usage: (remove-atom space atom)",
                                             friendly_value_repr(other)
                                         ),
-                                        Arc::new(other.clone()),
+                                        other.clone(),
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -3956,7 +3989,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if atom_results.is_empty() {
                             let err = MettaValue::Error(
                                 "remove-atom: atom evaluated to empty".to_string(),
-                                Arc::new(atom),
+                                atom,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -3967,7 +4000,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             space_handle.remove_atom(&atom_results[0]);
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
-                                result: (vec![MettaValue::Unit], env_after),
+                                result: (vec![MettaValue::Unit()], env_after),
                             });
                         }
                     }
@@ -3984,7 +4017,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if value_results.is_empty() {
                             let err = MettaValue::Error(
                                 "new-state: initial value evaluated to empty".to_string(),
-                                Arc::new(initial_value),
+                                initial_value,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4012,15 +4045,15 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if state_results.is_empty() {
                             let err = MettaValue::Error(
                                 "get-state: state evaluated to empty".to_string(),
-                                Arc::new(state_ref),
+                                state_ref,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err], env_after),
                             });
                         } else {
-                            match &state_results[0] {
-                                MettaValue::State(state_id) => {
+                            match state_results[0].inner() {
+                                MettaValueInner::State(state_id) => {
                                     if let Some(value) = env.get_state(*state_id) {
                                         work_stack.push(WorkItem::Resume {
                                             cont_id: parent_cont,
@@ -4029,7 +4062,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     } else {
                                         let err = MettaValue::Error(
                                             format!("get-state: state {} not found", state_id),
-                                            Arc::new(state_results[0].clone()),
+                                            state_results[0].clone(),
                                         );
                                         work_stack.push(WorkItem::Resume {
                                             cont_id: parent_cont,
@@ -4037,13 +4070,14 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         });
                                     }
                                 }
-                                other => {
+                                _ => {
+                                    let other = &state_results[0];
                                     let err = MettaValue::Error(
                                         format!(
                                             "get-state: argument must be a state reference, got {}. Usage: (get-state state)",
                                             friendly_value_repr(other)
                                         ),
-                                        Arc::new(other.clone()),
+                                        other.clone(),
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -4067,7 +4101,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if state_results.is_empty() {
                             let err = MettaValue::Error(
                                 "change-state!: state evaluated to empty".to_string(),
-                                Arc::new(state_ref),
+                                state_ref,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4107,7 +4141,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if value_results.is_empty() {
                             let err = MettaValue::Error(
                                 "change-state!: new value evaluated to empty".to_string(),
-                                Arc::new(new_value),
+                                new_value,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4116,8 +4150,8 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         } else {
                             let value = value_results[0].clone();
 
-                            match &state_value {
-                                MettaValue::State(state_id) => {
+                            match state_value.inner() {
+                                MettaValueInner::State(state_id) => {
                                     if env_after.change_state(*state_id, value) {
                                         // Return the state reference for chaining
                                         work_stack.push(WorkItem::Resume {
@@ -4127,7 +4161,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     } else {
                                         let err = MettaValue::Error(
                                             format!("change-state!: state {} not found", state_id),
-                                            Arc::new(state_value),
+                                            state_value,
                                         );
                                         work_stack.push(WorkItem::Resume {
                                             cont_id: parent_cont,
@@ -4135,13 +4169,13 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         });
                                     }
                                 }
-                                other => {
+                                _ => {
                                     let err = MettaValue::Error(
                                         format!(
                                             "change-state!: first argument must be a state reference, got {}. Usage: (change-state! state new-value)",
-                                            friendly_value_repr(other)
+                                            friendly_value_repr(&state_value)
                                         ),
-                                        Arc::new(other.clone()),
+                                        state_value,
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -4164,7 +4198,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if results.is_empty() {
                             let err = MettaValue::Error(
                                 "repr: argument evaluated to empty".to_string(),
-                                Arc::new(atom),
+                                atom,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4194,7 +4228,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if format_results.is_empty() {
                             let err = MettaValue::Error(
                                 "format-args: format string evaluated to empty".to_string(),
-                                Arc::new(format_arg),
+                                format_arg,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4202,8 +4236,8 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             });
                         } else {
                             // Get the format string
-                            match &format_results[0] {
-                                MettaValue::String(s) => {
+                            match format_results[0].inner() {
+                                MettaValueInner::String(s) => {
                                     // Create continuation for args evaluation
                                     let args_cont_id = continuations.len();
                                     continuations.push(Continuation::ProcessFormatArgsArgs {
@@ -4223,13 +4257,14 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         is_tail_call: false,
                                     });
                                 }
-                                other => {
+                                _ => {
+                                    let other = &format_results[0];
                                     let err = MettaValue::Error(
                                         format!(
                                             "format-args: first argument must be a string, got {}",
                                             friendly_value_repr(other)
                                         ),
-                                        Arc::new(other.clone()),
+                                        other.clone(),
                                     );
                                     work_stack.push(WorkItem::Resume {
                                         cont_id: parent_cont,
@@ -4253,7 +4288,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if args_results.is_empty() {
                             let err = MettaValue::Error(
                                 "format-args: args evaluated to empty".to_string(),
-                                Arc::new(args_arg),
+                                args_arg,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4261,9 +4296,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             });
                         } else {
                             // Get the args as a list of values
-                            let args: Vec<&MettaValue> = match &args_results[0] {
-                                MettaValue::SExpr(items) => items.iter().collect(),
-                                other => vec![other],
+                            let args: Vec<&MettaValue> = match args_results[0].inner() {
+                                MettaValueInner::SExpr(items) => items.iter().collect(),
+                                _ => vec![&args_results[0]],
                             };
 
                             // Perform the formatting
@@ -4287,7 +4322,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if results.is_empty() {
                             let err = MettaValue::Error(
                                 "println!: argument evaluated to empty".to_string(),
-                                Arc::new(atom),
+                                atom,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4300,7 +4335,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
-                                result: (vec![MettaValue::Unit], env_after),
+                                result: (vec![MettaValue::Unit()], env_after),
                             });
                         }
                     }
@@ -4318,7 +4353,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if msg_results.is_empty() {
                             let err = MettaValue::Error(
                                 "trace!: message evaluated to empty".to_string(),
-                                Arc::new(message),
+                                message,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4360,7 +4395,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         if value_results.is_empty() {
                             let err = MettaValue::Error(
                                 "trace!: value evaluated to empty".to_string(),
-                                Arc::new(value_expr),
+                                value_expr,
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4417,13 +4452,13 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             // Atom evaluated to empty - return error
                             let err = MettaValue::Error(
                                 "bind!: atom evaluated to empty".to_string(),
-                                Arc::new(MettaValue::Atom(token)),
+                                MettaValue::Atom(token),
                             );
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
                                 result: (vec![err], env_after),
                             });
-                        } else if let MettaValue::Error(_, _) = &results[0] {
+                        } else if let MettaValueInner::Error(_, _) = results[0].inner() {
                             // Error in evaluation - propagate it
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4435,7 +4470,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             env_after.register_token(&token, atom);
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
-                                result: (vec![MettaValue::Unit], env_after),
+                                result: (vec![MettaValue::Unit()], env_after),
                             });
                         }
                     }
@@ -4449,67 +4484,67 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
 /// Convert a MettaValue to its repr string (MeTTa representation)
 fn atom_repr(value: &MettaValue) -> String {
-    match value {
-        MettaValue::Long(n) => n.to_string(),
-        MettaValue::Float(f) => f.to_string(),
-        MettaValue::Bool(b) => {
+    match value.inner() {
+        MettaValueInner::Long(n) => n.to_string(),
+        MettaValueInner::Float(f) => f.to_string(),
+        MettaValueInner::Bool(b) => {
             if *b {
                 "True".to_string()
             } else {
                 "False".to_string()
             }
         }
-        MettaValue::String(s) => format!("\"{}\"", s), // Include quotes for string repr
-        MettaValue::Atom(a) => a.clone(),
-        MettaValue::Nil => "Nil".to_string(),
-        MettaValue::SExpr(items) => {
+        MettaValueInner::String(s) => format!("\"{}\"", s), // Include quotes for string repr
+        MettaValueInner::Atom(a) => a.clone(),
+        MettaValueInner::Nil => "Nil".to_string(),
+        MettaValueInner::SExpr(items) => {
             let inner: Vec<String> = items.iter().map(atom_repr).collect();
             format!("({})", inner.join(" "))
         }
-        MettaValue::Error(msg, _) => format!("(Error \"{}\")", msg),
-        MettaValue::Type(t) => format!("(: {})", atom_repr(t)),
-        MettaValue::Conjunction(goals) => {
+        MettaValueInner::Error(msg, _) => format!("(Error \"{}\")", msg),
+        MettaValueInner::Type(t) => format!("(: {})", atom_repr(t)),
+        MettaValueInner::Conjunction(goals) => {
             let inner: Vec<String> = goals.iter().map(atom_repr).collect();
             format!("(, {})", inner.join(" "))
         }
-        MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-        MettaValue::State(id) => format!("(State {})", id),
-        MettaValue::Unit => "()".to_string(),
-        MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
-        MettaValue::Empty => "Empty".to_string(),
+        MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+        MettaValueInner::State(id) => format!("(State {})", id),
+        MettaValueInner::Unit => "()".to_string(),
+        MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+        MettaValueInner::Empty => "Empty".to_string(),
     }
 }
 
 /// Convert a MettaValue to a string for formatting (without quotes)
 fn atom_to_string(value: &MettaValue) -> String {
-    match value {
-        MettaValue::Long(n) => n.to_string(),
-        MettaValue::Float(f) => f.to_string(),
-        MettaValue::Bool(b) => {
+    match value.inner() {
+        MettaValueInner::Long(n) => n.to_string(),
+        MettaValueInner::Float(f) => f.to_string(),
+        MettaValueInner::Bool(b) => {
             if *b {
                 "True".to_string()
             } else {
                 "False".to_string()
             }
         }
-        MettaValue::String(s) => s.clone(), // No quotes for formatting
-        MettaValue::Atom(a) => a.clone(),
-        MettaValue::Nil => "Nil".to_string(),
-        MettaValue::SExpr(items) => {
+        MettaValueInner::String(s) => s.clone(), // No quotes for formatting
+        MettaValueInner::Atom(a) => a.clone(),
+        MettaValueInner::Nil => "Nil".to_string(),
+        MettaValueInner::SExpr(items) => {
             let inner: Vec<String> = items.iter().map(atom_to_string).collect();
             format!("({})", inner.join(" "))
         }
-        MettaValue::Error(msg, _) => format!("(Error \"{}\")", msg),
-        MettaValue::Type(t) => format!("(: {})", atom_to_string(t)),
-        MettaValue::Conjunction(goals) => {
+        MettaValueInner::Error(msg, _) => format!("(Error \"{}\")", msg),
+        MettaValueInner::Type(t) => format!("(: {})", atom_to_string(t)),
+        MettaValueInner::Conjunction(goals) => {
             let inner: Vec<String> = goals.iter().map(atom_to_string).collect();
             format!("(, {})", inner.join(" "))
         }
-        MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-        MettaValue::State(id) => format!("(State {})", id),
-        MettaValue::Unit => "()".to_string(),
-        MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
-        MettaValue::Empty => "Empty".to_string(),
+        MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+        MettaValueInner::State(id) => format!("(State {})", id),
+        MettaValueInner::Unit => "()".to_string(),
+        MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+        MettaValueInner::Empty => "Empty".to_string(),
     }
 }
 
@@ -4552,9 +4587,9 @@ fn format_string(format_str: &str, args: &[&MettaValue]) -> String {
 
 /// Get the meta-type of a MettaValue
 fn get_metatype_util(value: &MettaValue) -> &'static str {
-    match value {
+    match value.inner() {
         // Atoms (symbols) are the basic named entities
-        MettaValue::Atom(s) => {
+        MettaValueInner::Atom(s) => {
             if s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') {
                 "Variable"
             } else {
@@ -4562,21 +4597,21 @@ fn get_metatype_util(value: &MettaValue) -> &'static str {
             }
         }
         // S-expressions are compound expressions
-        MettaValue::SExpr(_) => "Expression",
+        MettaValueInner::SExpr(_) => "Expression",
         // All grounded values (numbers, strings, bools, etc.)
-        MettaValue::Long(_)
-        | MettaValue::Float(_)
-        | MettaValue::Bool(_)
-        | MettaValue::String(_) => "Grounded",
+        MettaValueInner::Long(_)
+        | MettaValueInner::Float(_)
+        | MettaValueInner::Bool(_)
+        | MettaValueInner::String(_) => "Grounded",
         // Special types
-        MettaValue::Nil => "Symbol",
-        MettaValue::Unit => "Expression", // () is an empty expression
-        MettaValue::Type(_) => "Expression",
-        MettaValue::Conjunction(_) => "Expression",
-        MettaValue::Space(_) => "Grounded",
-        MettaValue::State(_) => "Grounded",
-        MettaValue::Error(_, _) => "Expression",
-        MettaValue::Memo(_) => "Grounded",
-        MettaValue::Empty => "Symbol", // Empty is treated as a symbol for meta-type purposes
+        MettaValueInner::Nil => "Symbol",
+        MettaValueInner::Unit => "Expression", // () is an empty expression
+        MettaValueInner::Type(_) => "Expression",
+        MettaValueInner::Conjunction(_) => "Expression",
+        MettaValueInner::Space(_) => "Grounded",
+        MettaValueInner::State(_) => "Grounded",
+        MettaValueInner::Error(_, _) => "Expression",
+        MettaValueInner::Memo(_) => "Grounded",
+        MettaValueInner::Empty => "Symbol", // Empty is treated as a symbol for meta-type purposes
     }
 }

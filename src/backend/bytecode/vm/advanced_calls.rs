@@ -5,14 +5,13 @@
 //! - CallExternal: Call external FFI functions
 //! - CallCached: Call with memoization
 
-use std::sync::Arc;
 use tracing::trace;
 
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
 use crate::backend::bytecode::external_registry::ExternalContext;
 use crate::backend::bytecode::native_registry::NativeContext;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use crate::backend::Environment;
 
 impl BytecodeVM {
@@ -45,7 +44,7 @@ impl BytecodeVM {
         if result.len() == 1 {
             self.push(result.into_iter().next().expect("result has 1 element"));
         } else if result.is_empty() {
-            self.push(MettaValue::Unit);
+            self.push(MettaValue::Unit());
         } else {
             // Multiple results - push as S-expression
             self.push(MettaValue::SExpr(result));
@@ -66,7 +65,7 @@ impl BytecodeVM {
             .chunk
             .get_constant(symbol_idx)
             .and_then(|v| {
-                if let MettaValue::Atom(s) = v {
+                if let MettaValueInner::Atom(s) = v.inner() {
                     Some(s.clone())
                 } else {
                     None
@@ -124,8 +123,8 @@ impl BytecodeVM {
             .ok_or_else(|| VmError::InvalidConstant(head_idx))?;
 
         // Extract head as string for cache key
-        let head_str = match &head {
-            MettaValue::Atom(s) => s.clone(),
+        let head_str = match head.inner() {
+            MettaValueInner::Atom(s) => s.clone(),
             _ => format!("{:?}", head),
         };
 

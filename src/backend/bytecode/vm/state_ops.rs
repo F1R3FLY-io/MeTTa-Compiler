@@ -7,7 +7,7 @@
 
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 impl BytecodeVM {
     // === State Operations ===
@@ -32,13 +32,13 @@ impl BytecodeVM {
     pub(super) fn op_get_state(&mut self) -> VmResult<()> {
         let state_ref = self.pop()?;
 
-        match state_ref {
-            MettaValue::State(state_id) => {
+        match state_ref.inner() {
+            MettaValueInner::State(state_id) => {
                 let env = self.env.as_ref().ok_or_else(|| {
                     VmError::Runtime("get-state requires environment".to_string())
                 })?;
 
-                if let Some(value) = env.get_state(state_id) {
+                if let Some(value) = env.get_state(*state_id) {
                     self.push(value);
                     Ok(())
                 } else {
@@ -48,9 +48,9 @@ impl BytecodeVM {
                     )))
                 }
             }
-            other => Err(VmError::TypeError {
+            _ => Err(VmError::TypeError {
                 expected: "State",
-                got: other.type_name(),
+                got: state_ref.type_name(),
             }),
         }
     }
@@ -62,15 +62,15 @@ impl BytecodeVM {
         let new_value = self.pop()?;
         let state_ref = self.pop()?;
 
-        match state_ref {
-            MettaValue::State(state_id) => {
+        match state_ref.inner() {
+            MettaValueInner::State(state_id) => {
                 let env = self.env.as_mut().ok_or_else(|| {
                     VmError::Runtime("change-state! requires environment".to_string())
                 })?;
 
-                if env.change_state(state_id, new_value) {
+                if env.change_state(*state_id, new_value) {
                     // Return the state reference for chaining
-                    self.push(MettaValue::State(state_id));
+                    self.push(MettaValue::State(*state_id));
                     Ok(())
                 } else {
                     Err(VmError::Runtime(format!(
@@ -79,9 +79,9 @@ impl BytecodeVM {
                     )))
                 }
             }
-            other => Err(VmError::TypeError {
+            _ => Err(VmError::TypeError {
                 expected: "State",
-                got: other.type_name(),
+                got: state_ref.type_name(),
             }),
         }
     }

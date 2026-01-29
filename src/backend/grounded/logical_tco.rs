@@ -9,6 +9,7 @@ use super::{
     find_error, friendly_type_name, ExecError, GroundedOperationTCO, GroundedState, GroundedWork,
     MettaValue,
 };
+use crate::backend::models::MettaValueInner;
 
 /// TCO Logical AND operation: (and a b)
 /// Preserves short-circuit semantics: False AND _ = False without evaluating second arg
@@ -50,14 +51,14 @@ impl GroundedOperationTCO for AndOpTCO {
 
                 let mut need_second_arg = false;
                 for a in &a_results {
-                    match a {
-                        MettaValue::Bool(false) => {
+                    match a.inner() {
+                        MettaValueInner::Bool(false) => {
                             // SHORT-CIRCUIT: False and _ = False
                             state
                                 .accumulated_results
                                 .push((MettaValue::Bool(false), None));
                         }
-                        MettaValue::Bool(true) => {
+                        MettaValueInner::Bool(true) => {
                             // Need to evaluate second argument for this branch
                             need_second_arg = true;
                         }
@@ -104,10 +105,10 @@ impl GroundedOperationTCO for AndOpTCO {
 
                 // For each True in first arg, add second arg's results
                 for a in &a_results {
-                    if matches!(a, MettaValue::Bool(true)) {
+                    if matches!(a.inner(), MettaValueInner::Bool(true)) {
                         for b in &b_results {
-                            match b {
-                                MettaValue::Bool(val) => {
+                            match b.inner() {
+                                MettaValueInner::Bool(val) => {
                                     state
                                         .accumulated_results
                                         .push((MettaValue::Bool(*val), None));
@@ -168,14 +169,14 @@ impl GroundedOperationTCO for OrOpTCO {
 
                 let mut need_second_arg = false;
                 for a in &a_results {
-                    match a {
-                        MettaValue::Bool(true) => {
+                    match a.inner() {
+                        MettaValueInner::Bool(true) => {
                             // SHORT-CIRCUIT: True or _ = True
                             state
                                 .accumulated_results
                                 .push((MettaValue::Bool(true), None));
                         }
-                        MettaValue::Bool(false) => {
+                        MettaValueInner::Bool(false) => {
                             // Need to evaluate second argument for this branch
                             need_second_arg = true;
                         }
@@ -220,10 +221,10 @@ impl GroundedOperationTCO for OrOpTCO {
 
                 // For each False in first arg, add second arg's results
                 for a in &a_results {
-                    if matches!(a, MettaValue::Bool(false)) {
+                    if matches!(a.inner(), MettaValueInner::Bool(false)) {
                         for b in &b_results {
-                            match b {
-                                MettaValue::Bool(val) => {
+                            match b.inner() {
+                                MettaValueInner::Bool(val) => {
                                     state
                                         .accumulated_results
                                         .push((MettaValue::Bool(*val), None));
@@ -277,9 +278,9 @@ impl GroundedOperationTCO for NotOpTCO {
 
                 let mut results = Vec::new();
                 for a in a_results {
-                    match a {
-                        MettaValue::Bool(v) => {
-                            results.push((MettaValue::Bool(!v), None));
+                    match a.inner() {
+                        MettaValueInner::Bool(v) => {
+                            results.push((MettaValue::Bool(!*v), None));
                         }
                         _ => {
                             return GroundedWork::Error(ExecError::Runtime(format!(

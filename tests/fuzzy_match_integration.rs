@@ -517,10 +517,11 @@ fn test_eval_arithmetic() {
         MettaValue::Long(2),
     ]);
 
+    use mettatron::backend::models::MettaValueInner;
     let (results, _) = eval(expr, env);
     assert!(!results.is_empty(), "Should have results");
 
-    if let Some(MettaValue::Long(n)) = results.first() {
+    if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
         assert_eq!(*n, 3, "1 + 2 should be 3");
     }
 }
@@ -535,10 +536,11 @@ fn test_eval_if_true() {
         MettaValue::Long(2),
     ]);
 
+    use mettatron::backend::models::MettaValueInner;
     let (results, _) = eval(expr, env);
     assert!(!results.is_empty());
 
-    if let Some(MettaValue::Long(n)) = results.first() {
+    if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
         assert_eq!(*n, 1, "if True should return then branch");
     }
 }
@@ -553,10 +555,11 @@ fn test_eval_if_false() {
         MettaValue::Long(2),
     ]);
 
+    use mettatron::backend::models::MettaValueInner;
     let (results, _) = eval(expr, env);
     assert!(!results.is_empty());
 
-    if let Some(MettaValue::Long(n)) = results.first() {
+    if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
         assert_eq!(*n, 2, "if False should return else branch");
     }
 }

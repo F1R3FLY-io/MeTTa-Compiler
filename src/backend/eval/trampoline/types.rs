@@ -4,7 +4,6 @@
 //! of recursive function calls. This prevents stack overflow for large expressions.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
 
 use crate::backend::environment::Environment;
 use crate::backend::grounded::GroundedState;
@@ -56,8 +55,8 @@ pub enum Continuation {
     /// Processing rule match results
     ProcessRuleMatches {
         /// Remaining (rhs, bindings) pairs to evaluate (VecDeque for O(1) pop_front)
-        /// RHS is Arc-wrapped for O(1) cloning
-        remaining_matches: VecDeque<(Arc<MettaValue>, Bindings)>,
+        /// MettaValue clone is O(1) since it uses Arc internally
+        remaining_matches: VecDeque<(MettaValue, Bindings)>,
         /// Results accumulated so far
         results: Vec<MettaValue>,
         /// Environment
@@ -87,8 +86,8 @@ pub enum Continuation {
         /// Results accumulated so far from processing combinations
         results: Vec<MettaValue>,
         /// Pending rule matches for the current combination (VecDeque for O(1) pop_front)
-        /// RHS is Arc-wrapped for O(1) cloning
-        pending_rule_matches: VecDeque<(Arc<MettaValue>, Bindings)>,
+        /// MettaValue clone is O(1) since it uses Arc internally
+        pending_rule_matches: VecDeque<(MettaValue, Bindings)>,
         /// Environment for evaluation
         env: Environment,
         /// Evaluation depth
@@ -357,8 +356,8 @@ pub enum Continuation {
     /// Accumulates results from success/failure body evaluations.
     ProcessUnifyBodies {
         /// Remaining bodies to evaluate (VecDeque for O(1) pop_front)
-        /// Arc-wrapped for O(1) cloning during multiplicity expansion
-        remaining_bodies: VecDeque<Arc<MettaValue>>,
+        /// MettaValue clone is O(1) since it uses Arc internally
+        remaining_bodies: VecDeque<MettaValue>,
         /// Remaining pattern1 results to process after bodies done
         remaining_pattern1_results: VecDeque<MettaValue>,
         /// Pattern2 for non-space unification

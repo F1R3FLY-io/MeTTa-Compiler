@@ -12,7 +12,7 @@ macro_rules! require_args_with_usage {
                     got,
                     $usage
                 ),
-                std::sync::Arc::new(MettaValue::SExpr($items.to_vec())),
+                MettaValue::SExpr($items.to_vec()),
             );
             return (vec![err], $env);
         }
@@ -34,7 +34,7 @@ macro_rules! require_builtin_args {
                     $args.len(),
                     $usage
                 ),
-                std::sync::Arc::new(MettaValue::Atom("ArityError".to_string())),
+                MettaValue::Atom("ArityError".to_string()),
             );
         }
     };
@@ -49,7 +49,7 @@ macro_rules! require_builtin_args {
                     if $expected == 1 { "" } else { "s" },
                     $args.len()
                 ),
-                std::sync::Arc::new(MettaValue::Nil),
+                MettaValue::Nil(),
             );
         }
     };

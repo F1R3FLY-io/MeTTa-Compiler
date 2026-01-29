@@ -11,8 +11,8 @@ use mork_expr::Expr;
 use pathmap::PathMap;
 use tracing::trace;
 
-use super::multiplicity::{add_atom, get_multiplicity, Multiplicity, remove_atom};
-use super::{Environment, MettaValue};
+use super::multiplicity::{add_atom, get_multiplicity, remove_atom, Multiplicity};
+use super::{Environment, MettaValue, MettaValueInner};
 
 impl Environment {
     /// Check if an atom fact exists (queries MORK Space)
@@ -192,17 +192,17 @@ impl Environment {
     /// Check if a MettaValue contains variables ($x, &y, 'z, or _)
     /// Space references like &self, &kb, &stack are NOT variables
     pub(crate) fn contains_variables(value: &MettaValue) -> bool {
-        match value {
-            MettaValue::Atom(s) => {
+        match value.inner() {
+            MettaValueInner::Atom(s) => {
                 // Space references are NOT variables
                 if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
                     return false;
                 }
                 s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
             }
-            MettaValue::SExpr(items) => items.iter().any(Self::contains_variables),
-            MettaValue::Error(_, details) => Self::contains_variables(details),
-            MettaValue::Type(t) => Self::contains_variables(t),
+            MettaValueInner::SExpr(items) => items.iter().any(Self::contains_variables),
+            MettaValueInner::Error(_, details) => Self::contains_variables(details),
+            MettaValueInner::Type(t) => Self::contains_variables(t),
             _ => false, // Ground types: Bool, Long, Float, String, Nil
         }
     }
@@ -221,8 +221,8 @@ impl Environment {
     /// - n = total entries in space
     #[allow(dead_code)]
     pub(crate) fn extract_pattern_prefix(pattern: &MettaValue) -> (Vec<MettaValue>, bool) {
-        match pattern {
-            MettaValue::SExpr(items) => {
+        match pattern.inner() {
+            MettaValueInner::SExpr(items) => {
                 let mut prefix = Vec::new();
                 let mut has_variables = false;
 
@@ -579,8 +579,8 @@ impl Environment {
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // OPTIMIZATION: Use direct MORK byte conversion
-        use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
         use super::multiplicity::Multiplicity;
+        use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 
         // Create shared temporary space for MORK conversion
         let temp_space: Space<Multiplicity> = Space {

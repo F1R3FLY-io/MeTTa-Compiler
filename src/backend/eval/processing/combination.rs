@@ -4,7 +4,7 @@
 //! for deterministic evaluation.
 
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::super::step::ProcessedSExpr;
 use super::super::{try_eval_builtin, try_match_all_rules};
@@ -24,9 +24,11 @@ pub fn process_single_combination(
     depth: usize,
 ) -> ProcessedSExpr {
     // Check if this is a grounded operation
-    if let Some(MettaValue::Atom(op)) = evaled_items.first() {
-        if let Some(result) = try_eval_builtin(op, &evaled_items[1..]) {
-            return ProcessedSExpr::Done((vec![result], unified_env));
+    if let Some(first) = evaled_items.first() {
+        if let MettaValueInner::Atom(op) = first.inner() {
+            if let Some(result) = try_eval_builtin(op, &evaled_items[1..]) {
+                return ProcessedSExpr::Done((vec![result], unified_env));
+            }
         }
     }
 

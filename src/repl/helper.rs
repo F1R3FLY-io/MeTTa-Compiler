@@ -92,7 +92,7 @@ impl MettaHelper {
     /// internal variable names ($a, $b, etc.) and don't preserve their original names.
     /// Only function names (symbols) remain unchanged after compilation.
     pub fn update_from_environment(&mut self, env: &crate::backend::Environment) {
-        use crate::backend::MettaValue;
+        use crate::backend::MettaValueInner;
 
         // Clear previous definitions
         self.defined_functions.clear();
@@ -100,11 +100,11 @@ impl MettaHelper {
 
         // Extract function names from rules
         for rule in env.iter_rules() {
-            // Extract function name from lhs (dereference Arc)
-            match rule.lhs.as_ref() {
-                MettaValue::SExpr(items) if !items.is_empty() => {
+            // Extract function name from lhs (use .inner() to pattern match)
+            match rule.lhs.inner() {
+                MettaValueInner::SExpr(items) if !items.is_empty() => {
                     // Pattern like (fibonacci $n) -> extract "fibonacci"
-                    if let MettaValue::Atom(name) = &items[0] {
+                    if let MettaValueInner::Atom(name) = items[0].inner() {
                         if !name.starts_with('$')
                             && !name.starts_with('&')
                             && !name.starts_with('\'')
@@ -116,7 +116,7 @@ impl MettaHelper {
                         }
                     }
                 }
-                MettaValue::Atom(name) => {
+                MettaValueInner::Atom(name) => {
                     // Simple constant like (= my-const 42) -> extract "my-const"
                     // Variable names like $global-var get normalized to $a, $b, etc.
                     // so we can't reliably complete them. Only constants/functions work.

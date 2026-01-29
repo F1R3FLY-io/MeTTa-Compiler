@@ -5,7 +5,7 @@
 
 use super::types::{BindingFrame, VmError, VmResult};
 use super::BytecodeVM;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 impl BytecodeVM {
     // === Value Creation ===
@@ -40,7 +40,7 @@ impl BytecodeVM {
             .ok_or(VmError::InvalidConstant(index))?;
 
         // Check if it's a pattern variable that should be resolved from bindings
-        if let MettaValue::Atom(name) = value {
+        if let MettaValueInner::Atom(name) = value.inner() {
             if name.starts_with('$') {
                 // Search bindings from innermost to outermost
                 for frame in self.bindings_stack.iter().rev() {
@@ -85,7 +85,7 @@ impl BytecodeVM {
         }
         let elements: Vec<MettaValue> = self.value_stack.drain((len - arity)..).collect();
         // Build proper list
-        let mut list = MettaValue::Nil;
+        let mut list = MettaValue::Nil();
         for elem in elements.into_iter().rev() {
             list = MettaValue::sexpr(vec![MettaValue::sym("Cons"), elem, list]);
         }
@@ -145,8 +145,9 @@ impl BytecodeVM {
 
     pub(super) fn op_load_binding(&mut self) -> VmResult<()> {
         let index = self.read_u16()?;
-        let name = match self.chunk.get_constant(index) {
-            Some(MettaValue::Atom(s)) => s.clone(),
+        let constant = self.chunk.get_constant(index);
+        let name = match constant.map(|c| c.inner()) {
+            Some(MettaValueInner::Atom(s)) => s.clone(),
             _ => return Err(VmError::InvalidConstant(index)),
         };
         // Search bindings from innermost to outermost
@@ -162,8 +163,9 @@ impl BytecodeVM {
     pub(super) fn op_store_binding(&mut self) -> VmResult<()> {
         let index = self.read_u16()?;
         let value = self.pop()?;
-        let name = match self.chunk.get_constant(index) {
-            Some(MettaValue::Atom(s)) => s.clone(),
+        let constant = self.chunk.get_constant(index);
+        let name = match constant.map(|c| c.inner()) {
+            Some(MettaValueInner::Atom(s)) => s.clone(),
             _ => return Err(VmError::InvalidConstant(index)),
         };
         if let Some(frame) = self.bindings_stack.last_mut() {
@@ -174,8 +176,9 @@ impl BytecodeVM {
 
     pub(super) fn op_has_binding(&mut self) -> VmResult<()> {
         let index = self.read_u16()?;
-        let name = match self.chunk.get_constant(index) {
-            Some(MettaValue::Atom(s)) => s.clone(),
+        let constant = self.chunk.get_constant(index);
+        let name = match constant.map(|c| c.inner()) {
+            Some(MettaValueInner::Atom(s)) => s.clone(),
             _ => return Err(VmError::InvalidConstant(index)),
         };
         let exists = self

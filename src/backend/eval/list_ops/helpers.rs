@@ -3,9 +3,7 @@
 //! This module provides utility functions for list operations including
 //! variable substitution and variable format suggestions.
 
-use std::sync::Arc;
-
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 /// Suggest variable format when user provides a plain atom instead of `$var`
 /// Returns a suggestion string if the atom looks like it should be a variable
@@ -47,22 +45,24 @@ pub(crate) fn substitute_variable(
     value: &MettaValue,
 ) -> MettaValue {
     // Fast path for leaf nodes
-    match expr {
-        MettaValue::Atom(name) if name == var_name => return value.clone(),
-        MettaValue::Atom(_)
-        | MettaValue::Long(_)
-        | MettaValue::Float(_)
-        | MettaValue::Bool(_)
-        | MettaValue::String(_)
-        | MettaValue::Nil
-        | MettaValue::Unit
-        | MettaValue::Space(_)
-        | MettaValue::State(_)
-        | MettaValue::Type(_)
-        | MettaValue::Memo(_)
-        | MettaValue::Empty => return expr.clone(),
+    match expr.inner() {
+        MettaValueInner::Atom(name) if name == var_name => return value.clone(),
+        MettaValueInner::Atom(_)
+        | MettaValueInner::Long(_)
+        | MettaValueInner::Float(_)
+        | MettaValueInner::Bool(_)
+        | MettaValueInner::String(_)
+        | MettaValueInner::Nil
+        | MettaValueInner::Unit
+        | MettaValueInner::Space(_)
+        | MettaValueInner::State(_)
+        | MettaValueInner::Type(_)
+        | MettaValueInner::Memo(_)
+        | MettaValueInner::Empty => return expr.clone(),
         // Compound types need iterative processing
-        MettaValue::SExpr(_) | MettaValue::Conjunction(_) | MettaValue::Error(_, _) => {}
+        MettaValueInner::SExpr(_)
+        | MettaValueInner::Conjunction(_)
+        | MettaValueInner::Error(_, _) => {}
     }
 
     // Iterative implementation using explicit work stack
@@ -97,13 +97,13 @@ fn substitute_variable_iterative(
     while let Some(work) = work_stack.pop() {
         match work {
             SubstituteWork::Process(val) => {
-                match val {
+                match val.inner() {
                     // Variable substitution
-                    MettaValue::Atom(name) if name == var_name => {
+                    MettaValueInner::Atom(name) if name == var_name => {
                         result_stack.push(value.clone());
                     }
                     // S-expression: push build marker, then push children in reverse order
-                    MettaValue::SExpr(items) => {
+                    MettaValueInner::SExpr(items) => {
                         if items.is_empty() {
                             result_stack.push(val.clone());
                         } else {
@@ -114,7 +114,7 @@ fn substitute_variable_iterative(
                         }
                     }
                     // Conjunction: similar to SExpr
-                    MettaValue::Conjunction(goals) => {
+                    MettaValueInner::Conjunction(goals) => {
                         if goals.is_empty() {
                             result_stack.push(val.clone());
                         } else {
@@ -125,7 +125,7 @@ fn substitute_variable_iterative(
                         }
                     }
                     // Error: push build marker, then push details
-                    MettaValue::Error(msg, details) => {
+                    MettaValueInner::Error(msg, details) => {
                         work_stack.push(SubstituteWork::BuildError(msg.clone()));
                         work_stack.push(SubstituteWork::Process(details));
                     }
@@ -149,7 +149,7 @@ fn substitute_variable_iterative(
                 let details = result_stack
                     .pop()
                     .expect("BuildError should have details on result stack");
-                result_stack.push(MettaValue::Error(msg, Arc::new(details)));
+                result_stack.push(MettaValue::Error(msg, details));
             }
         }
     }
@@ -160,5 +160,7 @@ fn substitute_variable_iterative(
         1,
         "substitute_variable should produce exactly one result"
     );
-    result_stack.pop().expect("Result stack should not be empty")
+    result_stack
+        .pop()
+        .expect("Result stack should not be empty")
 }

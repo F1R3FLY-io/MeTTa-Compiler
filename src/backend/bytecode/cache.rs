@@ -12,16 +12,16 @@
 //!
 //! Both caches use LRU eviction for bounded memory usage.
 
-use xxhash_rust::xxh3::Xxh3;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, RwLock};
+use xxhash_rust::xxh3::Xxh3;
 
 use lru::LruCache;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 use std::sync::Arc;
 
 /// Statistics for bytecode cache monitoring (lock-free atomics).
@@ -94,8 +94,7 @@ static BYTECODE_CACHE: LazyLock<RwLock<LruCache<u64, Arc<BytecodeChunk>>>> = Laz
 });
 
 /// Global statistics (lock-free atomics, no RwLock needed)
-static CACHE_STATS: LazyLock<BytecodeCacheStats> =
-    LazyLock::new(BytecodeCacheStats::default);
+static CACHE_STATS: LazyLock<BytecodeCacheStats> = LazyLock::new(BytecodeCacheStats::default);
 
 fn get_can_compile_cache_size() -> NonZeroUsize {
     std::env::var("METTA_CAN_COMPILE_CACHE_SIZE")
@@ -132,15 +131,15 @@ pub fn hash_metta_value(expr: &MettaValue) -> u64 {
     const NIL_HASH: u64 = 0x6e696c5f_68617368; // "nil_hash" as bytes
     const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
 
-    match expr {
-        MettaValue::Long(n) => {
+    match expr.inner() {
+        MettaValueInner::Long(n) => {
             // FxHash-style mixing with type-specific seed
             let x = (*n as u64)
                 .wrapping_add(LONG_SEED)
                 .wrapping_mul(GOLDEN_RATIO);
             x ^ (x >> 32)
         }
-        MettaValue::Bool(b) => {
+        MettaValueInner::Bool(b) => {
             // Distinct well-distributed values for true/false with type seed
             if *b {
                 BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
@@ -148,8 +147,8 @@ pub fn hash_metta_value(expr: &MettaValue) -> u64 {
                 BOOL_SEED
             }
         }
-        MettaValue::Nil => NIL_HASH,
-        MettaValue::Float(f) => {
+        MettaValueInner::Nil => NIL_HASH,
+        MettaValueInner::Float(f) => {
             // Use bit representation with type-specific seed and mixing
             let bits = f.to_bits();
             let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
@@ -232,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_hash_stability() {
-        let expr = MettaValue::SExpr(vec![
+        let expr = MettaValue::sexpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(2),
@@ -244,12 +243,12 @@ mod tests {
 
     #[test]
     fn test_hash_different_exprs() {
-        let expr1 = MettaValue::SExpr(vec![
+        let expr1 = MettaValue::sexpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(2),
         ]);
-        let expr2 = MettaValue::SExpr(vec![
+        let expr2 = MettaValue::sexpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(3),
@@ -321,8 +320,8 @@ mod tests {
         assert_ne!(h_true1, h_false, "Bool(true) and Bool(false) should differ");
 
         // Nil hashing
-        let h_nil1 = hash_metta_value(&MettaValue::Nil);
-        let h_nil2 = hash_metta_value(&MettaValue::Nil);
+        let h_nil1 = hash_metta_value(&MettaValue::Nil());
+        let h_nil2 = hash_metta_value(&MettaValue::Nil());
         assert_eq!(h_nil1, h_nil2, "Nil hash should be stable");
 
         // Float hashing
@@ -338,7 +337,7 @@ mod tests {
         // Different types should produce different hashes
         let h_long = hash_metta_value(&MettaValue::Long(0));
         let h_false = hash_metta_value(&MettaValue::Bool(false));
-        let h_nil = hash_metta_value(&MettaValue::Nil);
+        let h_nil = hash_metta_value(&MettaValue::Nil());
         let h_float = hash_metta_value(&MettaValue::Float(0.0));
 
         // All should be distinct

@@ -237,7 +237,7 @@ impl super::Environment {
                 Tag::Arity(arity) => {
                     if arity == 0 {
                         // Empty s-expression
-                        MettaValue::Nil
+                        MettaValue::Nil()
                     } else {
                         // Push new frame for this s-expression
                         stack.push(StackFrame::Arity {

@@ -9,8 +9,7 @@
 //! - Varints encode lengths with no upper limit
 //! - Strings/bytes follow length-prefixed format
 
-use crate::backend::models::MettaValue;
-use std::sync::Arc;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 /// Tag bytes for different MettaValue variants
 mod tags {
@@ -44,76 +43,76 @@ pub fn metta_to_varint_key(value: &MettaValue) -> Vec<u8> {
 
 /// Encode a MettaValue recursively into the buffer
 fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
-    match value {
-        MettaValue::SExpr(items) => {
+    match value.inner() {
+        MettaValueInner::SExpr(items) => {
             buf.push(tags::SEXPR);
             encode_varint(buf, items.len() as u64); // No 63 limit!
             for item in items {
                 encode_metta(buf, item);
             }
         }
-        MettaValue::Atom(s) => {
+        MettaValueInner::Atom(s) => {
             buf.push(tags::ATOM);
             encode_string(buf, s);
         }
-        MettaValue::Long(n) => {
+        MettaValueInner::Long(n) => {
             buf.push(tags::LONG);
             buf.extend_from_slice(&n.to_le_bytes());
         }
-        MettaValue::Float(f) => {
+        MettaValueInner::Float(f) => {
             buf.push(tags::FLOAT);
             buf.extend_from_slice(&f.to_le_bytes());
         }
-        MettaValue::Bool(true) => {
+        MettaValueInner::Bool(true) => {
             buf.push(tags::BOOL_TRUE);
         }
-        MettaValue::Bool(false) => {
+        MettaValueInner::Bool(false) => {
             buf.push(tags::BOOL_FALSE);
         }
-        MettaValue::String(s) => {
+        MettaValueInner::String(s) => {
             buf.push(tags::STRING);
             encode_string(buf, s);
         }
-        MettaValue::Nil => {
+        MettaValueInner::Nil => {
             buf.push(tags::NIL);
         }
-        MettaValue::Unit => {
+        MettaValueInner::Unit => {
             buf.push(tags::UNIT);
         }
-        MettaValue::Error(msg, details) => {
+        MettaValueInner::Error(msg, details) => {
             buf.push(tags::ERROR);
             encode_string(buf, msg);
             encode_metta(buf, details);
         }
-        MettaValue::Type(inner) => {
+        MettaValueInner::Type(inner) => {
             buf.push(tags::TYPE);
             encode_metta(buf, inner);
         }
-        MettaValue::Conjunction(goals) => {
+        MettaValueInner::Conjunction(goals) => {
             buf.push(tags::CONJUNCTION);
             encode_varint(buf, goals.len() as u64);
             for goal in goals {
                 encode_metta(buf, goal);
             }
         }
-        MettaValue::Space(handle) => {
+        MettaValueInner::Space(handle) => {
             // For spaces, encode the id and name as a proxy
             buf.push(tags::SPACE);
             encode_varint(buf, handle.id);
             encode_string(buf, &handle.name);
         }
-        MettaValue::State(id) => {
+        MettaValueInner::State(id) => {
             // For state cells, encode the id
             buf.push(tags::STATE);
             encode_varint(buf, *id);
         }
-        MettaValue::Memo(handle) => {
+        MettaValueInner::Memo(handle) => {
             // For memo tables, encode the id and name
             buf.push(tags::MEMO);
             encode_varint(buf, handle.id);
             encode_string(buf, &handle.name);
         }
-        MettaValue::Empty => {
+        MettaValueInner::Empty => {
             // Empty sentinel - simple tag byte
             buf.push(tags::EMPTY);
         }
@@ -204,20 +203,17 @@ pub fn varint_key_to_metta(bytes: &[u8]) -> Option<(MettaValue, usize)> {
             let (s, consumed) = decode_string(&bytes[offset..])?;
             Some((MettaValue::String(s), offset + consumed))
         }
-        tags::NIL => Some((MettaValue::Nil, offset)),
-        tags::UNIT => Some((MettaValue::Unit, offset)),
+        tags::NIL => Some((MettaValue::Nil(), offset)),
+        tags::UNIT => Some((MettaValue::Unit(), offset)),
         tags::ERROR => {
             let (msg, consumed1) = decode_string(&bytes[offset..])?;
             offset += consumed1;
             let (details, consumed2) = varint_key_to_metta(&bytes[offset..])?;
-            Some((
-                MettaValue::Error(msg, Arc::new(details)),
-                offset + consumed2,
-            ))
+            Some((MettaValue::Error(msg, details), offset + consumed2))
         }
         tags::TYPE => {
             let (inner, consumed) = varint_key_to_metta(&bytes[offset..])?;
-            Some((MettaValue::Type(Arc::new(inner)), offset + consumed))
+            Some((MettaValue::Type(inner), offset + consumed))
         }
         tags::CONJUNCTION => {
             let (count, consumed) = decode_varint(&bytes[offset..])?;
@@ -254,7 +250,7 @@ pub fn varint_key_to_metta(bytes: &[u8]) -> Option<(MettaValue, usize)> {
                 offset + consumed2,
             ))
         }
-        tags::EMPTY => Some((MettaValue::Empty, offset)),
+        tags::EMPTY => Some((MettaValue::Empty(), offset)),
         _ => None, // Unknown tag
     }
 }
@@ -314,8 +310,8 @@ mod tests {
             MettaValue::Long(-1),
             MettaValue::Bool(true),
             MettaValue::Bool(false),
-            MettaValue::Nil,
-            MettaValue::Unit,
+            MettaValue::Nil(),
+            MettaValue::Unit(),
             MettaValue::Atom("hello".to_string()),
             MettaValue::String("world".to_string()),
             MettaValue::Float(3.14),
@@ -373,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_error_value() {
-        let error = MettaValue::Error("test error".to_string(), Arc::new(MettaValue::Long(42)));
+        let error = MettaValue::Error("test error".to_string(), MettaValue::Long(42));
 
         let key = metta_to_varint_key(&error);
         let (decoded, consumed) = varint_key_to_metta(&key).unwrap();

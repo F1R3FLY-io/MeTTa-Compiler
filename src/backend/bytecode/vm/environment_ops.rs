@@ -12,7 +12,7 @@ use tracing::trace;
 use super::pattern::pattern_match_bind;
 use super::types::{Alternative, ChoicePoint, VmError, VmResult};
 use super::BytecodeVM;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 impl BytecodeVM {
     // === Environment Operations ===
@@ -43,7 +43,7 @@ impl BytecodeVM {
         env.add_rule(rule);
 
         // Push Unit to indicate success
-        self.push(MettaValue::Unit);
+        self.push(MettaValue::Unit());
         Ok(())
     }
 
@@ -105,9 +105,9 @@ impl BytecodeVM {
         let expr = self.pop()?;
 
         // Extract head symbol and arity for indexed rule lookup
-        let (head, arity) = match &expr {
-            MettaValue::SExpr(items) if !items.is_empty() => {
-                if let MettaValue::Atom(name) = &items[0] {
+        let (head, arity) = match expr.inner() {
+            MettaValueInner::SExpr(items) if !items.is_empty() => {
+                if let MettaValueInner::Atom(name) = items[0].inner() {
                     (name.as_str(), items.len() - 1)
                 } else {
                     // Head is not an atom - return expression unchanged
@@ -115,7 +115,7 @@ impl BytecodeVM {
                     return Ok(());
                 }
             }
-            MettaValue::Atom(name) => (name.as_str(), 0),
+            MettaValueInner::Atom(name) => (name.as_str(), 0),
             _ => {
                 // Not a callable expression - return unchanged
                 self.push(expr);

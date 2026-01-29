@@ -6,7 +6,7 @@
 use tracing::trace;
 
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 use super::super::step::ProcessedSExpr;
 use super::super::{cartesian_product_lazy, CartesianProductResult};
@@ -25,7 +25,7 @@ pub fn process_collected_sexpr(
     // Check for errors in sub-expression results
     for (results, new_env) in &collected {
         if let Some(first) = results.first() {
-            if matches!(first, MettaValue::Error(_, _)) {
+            if matches!(first.inner(), MettaValueInner::Error(_, _)) {
                 return ProcessedSExpr::Done((vec![first.clone()], new_env.clone()));
             }
         }

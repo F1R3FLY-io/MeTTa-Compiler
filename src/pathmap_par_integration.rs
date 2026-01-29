@@ -4,10 +4,9 @@ use crate::backend::environment::Environment;
 ///
 /// Provides conversion between MeTTa types and Rholang PathMap-based Par types.
 /// This module enables MettaState to be represented as Rholang EPathMap structures.
-use crate::backend::models::{MettaState, MettaValue};
+use crate::backend::models::{MettaState, MettaValue, MettaValueInner};
 use models::rhoapi::{expr::ExprInstance, EList, EPathMap, ETuple, Expr, Par};
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
-use std::sync::Arc;
 use tracing::{debug, trace};
 
 /// Helper function to create a Par with a string value
@@ -34,28 +33,28 @@ const METTA_LARGE_EXPRS_MAGIC: &[u8] = b"MTTL"; // MeTTa Large Expressions (arit
 pub fn metta_value_to_par(value: &MettaValue) -> Par {
     trace!(target: "mettatron::rholang_integration::metta_value_to_par", ?value, "MeTTa value");
 
-    let par = match value {
-        MettaValue::Atom(s) => {
+    let par = match value.inner() {
+        MettaValueInner::Atom(s) => {
             // Atoms are plain strings (no quotes)
             create_string_par(s.clone())
         }
-        MettaValue::Bool(b) => Par::default().with_exprs(vec![Expr {
+        MettaValueInner::Bool(b) => Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GBool(*b)),
         }]),
-        MettaValue::Long(n) => create_int_par(*n),
-        MettaValue::Float(f) => create_string_par(f.to_string()),
-        MettaValue::String(s) => {
+        MettaValueInner::Long(n) => create_int_par(*n),
+        MettaValueInner::Float(f) => create_string_par(f.to_string()),
+        MettaValueInner::String(s) => {
             // Strings are quoted with escaped quotes to distinguish from atoms
             create_string_par(format!(
                 "\"{}\"",
                 s.replace("\\", "\\\\").replace("\"", "\\\"")
             ))
         }
-        MettaValue::Nil => {
+        MettaValueInner::Nil => {
             // Represent Nil as empty Par
             Par::default()
         }
-        MettaValue::SExpr(items) => {
+        MettaValueInner::SExpr(items) => {
             // Convert S-expressions to Rholang tuples (more semantically appropriate than lists)
             let item_pars: Vec<Par> = items.iter().map(metta_value_to_par).collect();
 
@@ -67,7 +66,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValue::Error(msg, details) => {
+        MettaValueInner::Error(msg, details) => {
             // Represent errors as tuples: ("error", msg, details)
             let tag_par = create_string_par("error".to_string());
             let msg_par = create_string_par(msg.clone());
@@ -81,7 +80,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValue::Type(t) => {
+        MettaValueInner::Type(t) => {
             // Represent types as tagged tuples: ("type", <inner_value>)
             let tag_par = create_string_par("type".to_string());
             let value_par = metta_value_to_par(t);
@@ -94,7 +93,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValue::Conjunction(goals) => {
+        MettaValueInner::Conjunction(goals) => {
             // Represent conjunctions as tagged tuples: ("conjunction", goal1, goal2, ...)
             let mut ps = vec![create_string_par("conjunction".to_string())];
             ps.extend(goals.iter().map(metta_value_to_par));
@@ -107,7 +106,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValue::Space(handle) => {
+        MettaValueInner::Space(handle) => {
             // Represent spaces as tagged tuples: ("space", id, name)
             let ps = vec![
                 create_string_par("space".to_string()),
@@ -123,7 +122,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValue::State(id) => {
+        MettaValueInner::State(id) => {
             // Represent states as tagged tuples: ("state", id)
             let ps = vec![
                 create_string_par("state".to_string()),
@@ -138,7 +137,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValue::Unit => {
+        MettaValueInner::Unit => {
             // Represent unit as empty tuple
             Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple {
@@ -148,7 +147,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValue::Memo(handle) => {
+        MettaValueInner::Memo(handle) => {
             // Represent memos as tagged tuples: ("memo", id, name)
             let ps = vec![
                 create_string_par("memo".to_string()),
@@ -164,7 +163,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValue::Empty => {
+        MettaValueInner::Empty => {
             // Empty sentinel - represent as tagged tuple: ("empty",)
             let ps = vec![create_string_par("empty".to_string())];
 
@@ -477,7 +476,7 @@ pub fn metta_state_to_pathmap_par(state: &MettaState) -> Par {
 /// Returns a PathMap containing the error (to maintain consistent type)
 pub fn metta_error_to_par(error_msg: &str) -> Par {
     // Create an error MettaValue
-    let error_value = MettaValue::Error(error_msg.to_string(), Arc::new(MettaValue::Nil));
+    let error_value = MettaValue::Error(error_msg.to_string(), MettaValue::Nil());
 
     // Create a MettaState with the error in output
     let error_state = MettaState {
@@ -495,7 +494,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
     trace!(target: "mettatron::rholang_integration::par_to_metta_value", ?par, "Par value");
     // Handle empty Par (Nil)
     if par.exprs.is_empty() && par.unforgeables.is_empty() && par.sends.is_empty() {
-        return Ok(MettaValue::Nil);
+        return Ok(MettaValue::Nil());
     }
 
     // Get the first expression
@@ -540,8 +539,8 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
                                     if tuple.ps.len() >= 3 {
                                         let msg = par_to_metta_value(&tuple.ps[1])?;
                                         let details = par_to_metta_value(&tuple.ps[2])?;
-                                        if let MettaValue::String(msg_str) = msg {
-                                            Ok(MettaValue::Error(msg_str, Arc::new(details)))
+                                        if let MettaValueInner::String(msg_str) = msg.inner() {
+                                            Ok(MettaValue::Error(msg_str.clone(), details))
                                         } else {
                                             Err("Error message must be a string".to_string())
                                         }
@@ -552,7 +551,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
                                 "type" => {
                                     // Type tuple: (tag, inner_value)
                                     let inner = par_to_metta_value(&tuple.ps[1])?;
-                                    Ok(MettaValue::Type(Arc::new(inner)))
+                                    Ok(MettaValue::Type(inner))
                                 }
                                 _ => {
                                     // Unknown tag, treat as regular S-expr
@@ -1176,7 +1175,7 @@ mod tests {
 
         // Test round-trip
         let roundtrip = par_to_metta_value(&par).unwrap();
-        if let MettaValue::String(s) = roundtrip {
+        if let MettaValueInner::String(s) = roundtrip.inner() {
             assert_eq!(s, "hello world");
         } else {
             panic!("Expected MettaValue::String");
@@ -1210,8 +1209,11 @@ mod tests {
         let atom_roundtrip = par_to_metta_value(&atom_par).unwrap();
         let string_roundtrip = par_to_metta_value(&string_par).unwrap();
 
-        assert!(matches!(atom_roundtrip, MettaValue::Atom(_)));
-        assert!(matches!(string_roundtrip, MettaValue::String(_)));
+        assert!(matches!(atom_roundtrip.inner(), MettaValueInner::Atom(_)));
+        assert!(matches!(
+            string_roundtrip.inner(),
+            MettaValueInner::String(_)
+        ));
     }
 
     #[test]
@@ -1245,7 +1247,7 @@ mod tests {
 
         // Test round-trip
         let roundtrip = par_to_metta_value(&par).unwrap();
-        if let MettaValue::SExpr(items) = roundtrip {
+        if let MettaValueInner::SExpr(items) = roundtrip.inner() {
             assert_eq!(items.len(), 3);
         } else {
             panic!("Expected MettaValue::SExpr");

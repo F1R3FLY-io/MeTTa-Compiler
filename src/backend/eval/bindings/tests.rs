@@ -2,7 +2,7 @@
 
 use super::super::eval;
 use crate::backend::environment::Environment;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 #[test]
 fn test_let_simple_binding() {
@@ -315,8 +315,8 @@ fn test_let_missing_arguments() {
     ]);
     let (results, _) = eval(let_two_args, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Error(msg, _) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert!(msg.contains("let"), "Expected 'let' in: {}", msg);
             assert!(
                 msg.contains("3 arguments"),
@@ -336,8 +336,8 @@ fn test_let_missing_arguments() {
     ]);
     let (results, _) = eval(let_one_arg, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Error(msg, _) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert!(msg.contains("let"), "Expected 'let' in: {}", msg);
             assert!(
                 msg.contains("3 arguments"),
@@ -353,8 +353,8 @@ fn test_let_missing_arguments() {
     let let_no_args = MettaValue::SExpr(vec![MettaValue::Atom("let".to_string())]);
     let (results, _) = eval(let_no_args, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Error(msg, _) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert!(msg.contains("let"), "Expected 'let' in: {}", msg);
             assert!(
                 msg.contains("3 arguments"),
@@ -414,15 +414,15 @@ fn test_let_with_error_in_value() {
         MettaValue::SExpr(vec![
             MettaValue::Atom("error".to_string()),
             MettaValue::String("value-error".to_string()),
-            MettaValue::Nil,
+            MettaValue::Nil(),
         ]),
         MettaValue::Atom("$x".to_string()),
     ]);
 
     let (results, _) = eval(error_value, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Error(msg, _) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert_eq!(msg, "value-error");
         }
         _ => panic!("Expected error to be bound and returned"),

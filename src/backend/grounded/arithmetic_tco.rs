@@ -11,6 +11,7 @@ use super::{
     find_error, friendly_type_name, ExecError, GroundedOperationTCO, GroundedState, GroundedWork,
     MettaValue,
 };
+use crate::backend::models::MettaValueInner;
 
 /// TCO Addition operation: (+ a b)
 pub struct AddOpTCO;
@@ -60,31 +61,35 @@ impl GroundedOperationTCO for AddOpTCO {
                 let mut results = Vec::new();
                 for a in a_results {
                     for b in b_results {
-                        match (a, b) {
-                            (MettaValue::Long(x), MettaValue::Long(y)) => match x.checked_add(*y) {
-                                Some(sum) => results.push((MettaValue::Long(sum), None)),
-                                None => {
-                                    return GroundedWork::Error(ExecError::Runtime(format!(
-                                        "Integer overflow: {} + {}",
-                                        x, y
-                                    )))
+                        match (a.inner(), b.inner()) {
+                            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
+                                match x.checked_add(*y) {
+                                    Some(sum) => results.push((MettaValue::Long(sum), None)),
+                                    None => {
+                                        return GroundedWork::Error(ExecError::Runtime(format!(
+                                            "Integer overflow: {} + {}",
+                                            x, y
+                                        )))
+                                    }
                                 }
-                            },
-                            (MettaValue::Float(x), MettaValue::Float(y)) => {
+                            }
+                            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
                                 results.push((MettaValue::Float(x + y), None));
                             }
-                            (MettaValue::Long(x), MettaValue::Float(y)) => {
+                            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
                                 results.push((MettaValue::Float(*x as f64 + y), None));
                             }
-                            (MettaValue::Float(x), MettaValue::Long(y)) => {
+                            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
                                 results.push((MettaValue::Float(x + *y as f64), None));
                             }
                             _ => {
                                 return GroundedWork::Error(ExecError::Runtime(format!(
                                     "Cannot perform '+': expected Number (integer), got {}",
                                     friendly_type_name(
-                                        if !matches!(a, MettaValue::Long(_) | MettaValue::Float(_))
-                                        {
+                                        if !matches!(
+                                            a.inner(),
+                                            MettaValueInner::Long(_) | MettaValueInner::Float(_)
+                                        ) {
                                             a
                                         } else {
                                             b
@@ -147,31 +152,35 @@ impl GroundedOperationTCO for SubOpTCO {
                 let mut results = Vec::new();
                 for a in a_results {
                     for b in b_results {
-                        match (a, b) {
-                            (MettaValue::Long(x), MettaValue::Long(y)) => match x.checked_sub(*y) {
-                                Some(diff) => results.push((MettaValue::Long(diff), None)),
-                                None => {
-                                    return GroundedWork::Error(ExecError::Runtime(format!(
-                                        "Integer overflow: {} - {}",
-                                        x, y
-                                    )))
+                        match (a.inner(), b.inner()) {
+                            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
+                                match x.checked_sub(*y) {
+                                    Some(diff) => results.push((MettaValue::Long(diff), None)),
+                                    None => {
+                                        return GroundedWork::Error(ExecError::Runtime(format!(
+                                            "Integer overflow: {} - {}",
+                                            x, y
+                                        )))
+                                    }
                                 }
-                            },
-                            (MettaValue::Float(x), MettaValue::Float(y)) => {
+                            }
+                            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
                                 results.push((MettaValue::Float(x - y), None));
                             }
-                            (MettaValue::Long(x), MettaValue::Float(y)) => {
+                            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
                                 results.push((MettaValue::Float(*x as f64 - y), None));
                             }
-                            (MettaValue::Float(x), MettaValue::Long(y)) => {
+                            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
                                 results.push((MettaValue::Float(x - *y as f64), None));
                             }
                             _ => {
                                 return GroundedWork::Error(ExecError::Runtime(format!(
                                     "Cannot perform '-': expected Number (integer), got {}",
                                     friendly_type_name(
-                                        if !matches!(a, MettaValue::Long(_) | MettaValue::Float(_))
-                                        {
+                                        if !matches!(
+                                            a.inner(),
+                                            MettaValueInner::Long(_) | MettaValueInner::Float(_)
+                                        ) {
                                             a
                                         } else {
                                             b
@@ -234,31 +243,35 @@ impl GroundedOperationTCO for MulOpTCO {
                 let mut results = Vec::new();
                 for a in a_results {
                     for b in b_results {
-                        match (a, b) {
-                            (MettaValue::Long(x), MettaValue::Long(y)) => match x.checked_mul(*y) {
-                                Some(prod) => results.push((MettaValue::Long(prod), None)),
-                                None => {
-                                    return GroundedWork::Error(ExecError::Runtime(format!(
-                                        "Integer overflow: {} * {}",
-                                        x, y
-                                    )))
+                        match (a.inner(), b.inner()) {
+                            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
+                                match x.checked_mul(*y) {
+                                    Some(prod) => results.push((MettaValue::Long(prod), None)),
+                                    None => {
+                                        return GroundedWork::Error(ExecError::Runtime(format!(
+                                            "Integer overflow: {} * {}",
+                                            x, y
+                                        )))
+                                    }
                                 }
-                            },
-                            (MettaValue::Float(x), MettaValue::Float(y)) => {
+                            }
+                            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
                                 results.push((MettaValue::Float(x * y), None));
                             }
-                            (MettaValue::Long(x), MettaValue::Float(y)) => {
+                            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
                                 results.push((MettaValue::Float(*x as f64 * y), None));
                             }
-                            (MettaValue::Float(x), MettaValue::Long(y)) => {
+                            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
                                 results.push((MettaValue::Float(x * *y as f64), None));
                             }
                             _ => {
                                 return GroundedWork::Error(ExecError::Runtime(format!(
                                     "Cannot perform '*': expected Number (integer), got {}",
                                     friendly_type_name(
-                                        if !matches!(a, MettaValue::Long(_) | MettaValue::Float(_))
-                                        {
+                                        if !matches!(
+                                            a.inner(),
+                                            MettaValueInner::Long(_) | MettaValueInner::Float(_)
+                                        ) {
                                             a
                                         } else {
                                             b
@@ -321,8 +334,8 @@ impl GroundedOperationTCO for DivOpTCO {
                 let mut results = Vec::new();
                 for a in a_results {
                     for b in b_results {
-                        match (a, b) {
-                            (MettaValue::Long(x), MettaValue::Long(y)) => {
+                        match (a.inner(), b.inner()) {
+                            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
                                 if *y == 0 {
                                     return GroundedWork::Error(ExecError::Arithmetic(
                                         "Division by zero".to_string(),
@@ -330,7 +343,7 @@ impl GroundedOperationTCO for DivOpTCO {
                                 }
                                 results.push((MettaValue::Long(x / y), None));
                             }
-                            (MettaValue::Float(x), MettaValue::Float(y)) => {
+                            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
                                 if *y == 0.0 {
                                     return GroundedWork::Error(ExecError::Arithmetic(
                                         "Division by zero".to_string(),
@@ -338,7 +351,7 @@ impl GroundedOperationTCO for DivOpTCO {
                                 }
                                 results.push((MettaValue::Float(x / y), None));
                             }
-                            (MettaValue::Long(x), MettaValue::Float(y)) => {
+                            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
                                 if *y == 0.0 {
                                     return GroundedWork::Error(ExecError::Arithmetic(
                                         "Division by zero".to_string(),
@@ -346,7 +359,7 @@ impl GroundedOperationTCO for DivOpTCO {
                                 }
                                 results.push((MettaValue::Float(*x as f64 / y), None));
                             }
-                            (MettaValue::Float(x), MettaValue::Long(y)) => {
+                            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
                                 if *y == 0 {
                                     return GroundedWork::Error(ExecError::Arithmetic(
                                         "Division by zero".to_string(),
@@ -358,8 +371,10 @@ impl GroundedOperationTCO for DivOpTCO {
                                 return GroundedWork::Error(ExecError::Runtime(format!(
                                     "Cannot perform '/': expected Number (integer), got {}",
                                     friendly_type_name(
-                                        if !matches!(a, MettaValue::Long(_) | MettaValue::Float(_))
-                                        {
+                                        if !matches!(
+                                            a.inner(),
+                                            MettaValueInner::Long(_) | MettaValueInner::Float(_)
+                                        ) {
                                             a
                                         } else {
                                             b
@@ -422,8 +437,8 @@ impl GroundedOperationTCO for ModOpTCO {
                 let mut results = Vec::new();
                 for a in a_results {
                     for b in b_results {
-                        match (a, b) {
-                            (MettaValue::Long(x), MettaValue::Long(y)) => {
+                        match (a.inner(), b.inner()) {
+                            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
                                 if *y == 0 {
                                     return GroundedWork::Error(ExecError::Arithmetic(
                                         "Modulo by zero".to_string(),
@@ -441,11 +456,13 @@ impl GroundedOperationTCO for ModOpTCO {
                             _ => {
                                 return GroundedWork::Error(ExecError::Runtime(format!(
                                     "Cannot perform '%': expected Number (integer), got {}",
-                                    friendly_type_name(if !matches!(a, MettaValue::Long(_)) {
-                                        a
-                                    } else {
-                                        b
-                                    })
+                                    friendly_type_name(
+                                        if !matches!(a.inner(), MettaValueInner::Long(_)) {
+                                            a
+                                        } else {
+                                            b
+                                        }
+                                    )
                                 )))
                             }
                         }

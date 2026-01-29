@@ -1,5 +1,5 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
 use super::eval;
@@ -22,7 +22,7 @@ pub(crate) fn eval_get_metatype_step(
                 "get-metatype requires exactly 1 argument, got {}. Usage: (get-metatype atom)",
                 items.len() - 1
             ),
-            std::sync::Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -40,7 +40,7 @@ pub(crate) fn eval_get_metatype_step(
 /// - Unit (()) - a valid result representing "success with no value"
 pub(super) fn eval_empty(_items: Vec<MettaValue>, env: Environment) -> EvalResult {
     // Return Empty sentinel - will be filtered at result collection
-    (vec![MettaValue::Empty], env)
+    (vec![MettaValue::Empty()], env)
 }
 
 /// get-metatype: Returns the meta-type of an atom
@@ -69,9 +69,9 @@ pub(super) fn eval_get_metatype(items: Vec<MettaValue>, env: Environment) -> Eva
 
 /// Get the meta-type of a MettaValue
 fn get_metatype(value: &MettaValue) -> &'static str {
-    match value {
+    match value.inner() {
         // Atoms (symbols) are the basic named entities
-        MettaValue::Atom(s) => {
+        MettaValueInner::Atom(s) => {
             if s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') {
                 "Variable"
             } else {
@@ -79,22 +79,22 @@ fn get_metatype(value: &MettaValue) -> &'static str {
             }
         }
         // S-expressions are compound expressions
-        MettaValue::SExpr(_) => "Expression",
+        MettaValueInner::SExpr(_) => "Expression",
         // All grounded values (numbers, strings, bools, etc.)
-        MettaValue::Long(_)
-        | MettaValue::Float(_)
-        | MettaValue::Bool(_)
-        | MettaValue::String(_) => "Grounded",
+        MettaValueInner::Long(_)
+        | MettaValueInner::Float(_)
+        | MettaValueInner::Bool(_)
+        | MettaValueInner::String(_) => "Grounded",
         // Special types
-        MettaValue::Nil => "Symbol",
-        MettaValue::Unit => "Expression", // () is an empty expression
-        MettaValue::Type(_) => "Expression",
-        MettaValue::Conjunction(_) => "Expression",
-        MettaValue::Space(_) => "Grounded",
-        MettaValue::State(_) => "Grounded",
-        MettaValue::Error(_, _) => "Expression",
-        MettaValue::Memo(_) => "Grounded",
-        MettaValue::Empty => "Symbol", // Empty is treated as a symbol for meta-type purposes
+        MettaValueInner::Nil => "Symbol",
+        MettaValueInner::Unit => "Expression", // () is an empty expression
+        MettaValueInner::Type(_) => "Expression",
+        MettaValueInner::Conjunction(_) => "Expression",
+        MettaValueInner::Space(_) => "Grounded",
+        MettaValueInner::State(_) => "Grounded",
+        MettaValueInner::Error(_, _) => "Expression",
+        MettaValueInner::Memo(_) => "Grounded",
+        MettaValueInner::Empty => "Symbol", // Empty is treated as a symbol for meta-type purposes
     }
 }
 
@@ -111,7 +111,7 @@ mod tests {
 
         // empty returns Empty sentinel (HE-compatible)
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Empty));
+        assert!(matches!(results[0].inner(), MettaValueInner::Empty));
     }
 
     #[test]
@@ -144,7 +144,7 @@ mod tests {
             MettaValue::Long(2),
         ]);
         assert_eq!(get_metatype(&expr), "Expression");
-        assert_eq!(get_metatype(&MettaValue::Unit), "Expression");
+        assert_eq!(get_metatype(&MettaValue::Unit()), "Expression");
     }
 
     #[test]
@@ -178,7 +178,7 @@ mod tests {
 
         // Still returns Empty sentinel (arguments ignored)
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Empty));
+        assert!(matches!(results[0].inner(), MettaValueInner::Empty));
     }
 
     #[test]
@@ -190,7 +190,7 @@ mod tests {
 
         // empty returns Empty sentinel and doesn't modify the environment
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Empty));
+        assert!(matches!(results[0].inner(), MettaValueInner::Empty));
     }
 
     // ============================================================
@@ -262,8 +262,8 @@ mod tests {
         let (results, _) = eval_get_metatype(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("requires exactly 1 argument"));
             }
             _ => panic!("Expected error"),
@@ -272,12 +272,12 @@ mod tests {
 
     #[test]
     fn test_get_metatype_nil() {
-        assert_eq!(get_metatype(&MettaValue::Nil), "Symbol");
+        assert_eq!(get_metatype(&MettaValue::Nil()), "Symbol");
     }
 
     #[test]
     fn test_get_metatype_type() {
-        let typ = MettaValue::Type(std::sync::Arc::new(MettaValue::Atom("Int".to_string())));
+        let typ = MettaValue::Type(MettaValue::Atom("Int".to_string()));
         assert_eq!(get_metatype(&typ), "Expression");
     }
 
@@ -292,10 +292,7 @@ mod tests {
 
     #[test]
     fn test_get_metatype_error() {
-        let err = MettaValue::Error(
-            "test error".to_string(),
-            std::sync::Arc::new(MettaValue::Nil),
-        );
+        let err = MettaValue::Error("test error".to_string(), MettaValue::Nil());
         assert_eq!(get_metatype(&err), "Expression");
     }
 

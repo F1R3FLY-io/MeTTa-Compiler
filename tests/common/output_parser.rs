@@ -2,7 +2,7 @@
 ///
 /// Parses PathMap structures from Rholang output and extracts
 /// the `source`, `environment`, and `output` fields.
-use mettatron::backend::models::MettaValue;
+use mettatron::backend::models::{MettaValue, MettaValueInner};
 use nom::{
     branch::alt,
     bytes::complete::{escaped, is_not, tag, take_while1},
@@ -24,53 +24,53 @@ pub trait MettaValueTestExt {
 
 impl MettaValueTestExt for MettaValue {
     fn to_display_string(&self) -> String {
-        match self {
-            MettaValue::Long(n) => n.to_string(),
-            MettaValue::Float(f) => f.to_string(),
-            MettaValue::Bool(b) => b.to_string(),
-            MettaValue::String(s) => format!("\"{}\"", s),
-            MettaValue::Atom(s) => s.clone(),
-            MettaValue::SExpr(exprs) => {
+        match self.inner() {
+            MettaValueInner::Long(n) => n.to_string(),
+            MettaValueInner::Float(f) => f.to_string(),
+            MettaValueInner::Bool(b) => b.to_string(),
+            MettaValueInner::String(s) => format!("\"{}\"", s),
+            MettaValueInner::Atom(s) => s.clone(),
+            MettaValueInner::SExpr(exprs) => {
                 let inner: Vec<String> = exprs.iter().map(|e| e.to_display_string()).collect();
                 format!("({})", inner.join(" "))
             }
-            MettaValue::Error(msg, details) => {
+            MettaValueInner::Error(msg, details) => {
                 format!("(error \"{}\" {})", msg, details.to_display_string())
             }
-            MettaValue::Nil => "()".to_string(),
-            MettaValue::Type(t) => format!("Type({})", t.to_display_string()),
-            MettaValue::Conjunction(goals) => {
+            MettaValueInner::Nil => "()".to_string(),
+            MettaValueInner::Type(t) => format!("Type({})", t.to_display_string()),
+            MettaValueInner::Conjunction(goals) => {
                 let inner: Vec<String> = goals.iter().map(|g| g.to_display_string()).collect();
                 format!("(, {})", inner.join(" "))
             }
-            MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-            MettaValue::State(id) => format!("(State {})", id),
-            MettaValue::Unit => "()".to_string(),
-            MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
-            MettaValue::Empty => "Empty".to_string(),
+            MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+            MettaValueInner::State(id) => format!("(State {})", id),
+            MettaValueInner::Unit => "()".to_string(),
+            MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+            MettaValueInner::Empty => "Empty".to_string(),
         }
     }
 
     fn matches_str(&self, s: &str) -> bool {
-        match self {
-            MettaValue::Long(n) => n.to_string() == s,
-            MettaValue::Float(f) => f.to_string() == s,
-            MettaValue::Bool(b) => b.to_string() == s,
-            MettaValue::String(inner) => {
+        match self.inner() {
+            MettaValueInner::Long(n) => n.to_string() == s,
+            MettaValueInner::Float(f) => f.to_string() == s,
+            MettaValueInner::Bool(b) => b.to_string() == s,
+            MettaValueInner::String(inner) => {
                 // Match with or without quotes
                 inner == s || format!("\"{}\"", inner) == s
             }
-            MettaValue::Atom(sym) => sym == s,
-            MettaValue::SExpr(_) => self.to_display_string() == s,
-            MettaValue::Error(_, _) => self.to_display_string() == s,
-            MettaValue::Nil => s == "()" || s == "Nil",
-            MettaValue::Type(_) => self.to_display_string() == s,
-            MettaValue::Conjunction(_) => self.to_display_string() == s,
-            MettaValue::Space(_) => self.to_display_string() == s,
-            MettaValue::State(_) => self.to_display_string() == s,
-            MettaValue::Unit => s == "()",
-            MettaValue::Memo(_) => self.to_display_string() == s,
-            MettaValue::Empty => s == "Empty",
+            MettaValueInner::Atom(sym) => sym == s,
+            MettaValueInner::SExpr(_) => self.to_display_string() == s,
+            MettaValueInner::Error(_, _) => self.to_display_string() == s,
+            MettaValueInner::Nil => s == "()" || s == "Nil",
+            MettaValueInner::Type(_) => self.to_display_string() == s,
+            MettaValueInner::Conjunction(_) => self.to_display_string() == s,
+            MettaValueInner::Space(_) => self.to_display_string() == s,
+            MettaValueInner::State(_) => self.to_display_string() == s,
+            MettaValueInner::Unit => s == "()",
+            MettaValueInner::Memo(_) => self.to_display_string() == s,
+            MettaValueInner::Empty => s == "Empty",
         }
     }
 }
@@ -154,8 +154,8 @@ fn parse_string_literal(input: &str) -> IResult<&str, MettaValue> {
 /// Parse Nil literal
 fn parse_nil(input: &str) -> IResult<&str, MettaValue> {
     alt((
-        value(MettaValue::Nil, tag("()")),
-        value(MettaValue::Nil, tag("Nil")),
+        value(MettaValue::Nil(), tag("()")),
+        value(MettaValue::Nil(), tag("Nil")),
     ))(input)
 }
 
@@ -189,7 +189,7 @@ fn parse_tuple(input: &str) -> IResult<&str, MettaValue> {
         ),
         |elements| {
             if elements.is_empty() {
-                MettaValue::Nil
+                MettaValue::Nil()
             } else {
                 MettaValue::SExpr(elements)
             }
@@ -534,8 +534,12 @@ mod tests {
     fn test_parse_string_literal() {
         let result = parse_string_literal("\"hello\"");
         assert!(result.is_ok());
-        if let Ok((_, MettaValue::String(s))) = result {
-            assert_eq!(s, "hello");
+        if let Ok((_, value)) = result {
+            if let MettaValueInner::String(s) = value.inner() {
+                assert_eq!(s, "hello");
+            } else {
+                panic!("Expected MettaValueInner::String");
+            }
         }
     }
 
@@ -578,7 +582,10 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert!(result[0].has_source());
         // S-expressions are stored as Atoms (strings) for now
-        assert!(matches!(result[0].output[0], MettaValue::Atom(_)));
+        assert!(matches!(
+            result[0].output[0].inner(),
+            MettaValueInner::Atom(_)
+        ));
     }
 
     #[test]

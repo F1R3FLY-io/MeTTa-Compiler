@@ -115,13 +115,13 @@ impl<T> ErrorHandlingInit for T {
         type_error_sig.params.push(AbiParam::new(types::I64)); // ctx
         type_error_sig.params.push(AbiParam::new(types::I64)); // ip
         type_error_sig.params.push(AbiParam::new(types::I64)); // expected
-        // No return value - function sets bailout flag and returns
+                                                               // No return value - function sets bailout flag and returns
 
         // Binary error signature: fn(ctx: *mut, ip: u64) -> ()
         let mut binary_error_sig = module.make_signature();
         binary_error_sig.params.push(AbiParam::new(types::I64)); // ctx
         binary_error_sig.params.push(AbiParam::new(types::I64)); // ip
-        // No return value
+                                                                 // No return value
 
         // Declare type error function
         let type_error_func_id = module

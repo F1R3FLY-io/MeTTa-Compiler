@@ -83,7 +83,12 @@ fn bench_rule_count_lookup(c: &mut Criterion) {
         for rule in &rules {
             env.add_rule(rule.clone());
             // Add some rules twice to create multiplicities > 1
-            if rule.lhs.get_head_symbol().unwrap_or("").starts_with("rule0") {
+            if rule
+                .lhs
+                .get_head_symbol()
+                .unwrap_or("")
+                .starts_with("rule0")
+            {
                 env.add_rule(rule.clone());
             }
         }

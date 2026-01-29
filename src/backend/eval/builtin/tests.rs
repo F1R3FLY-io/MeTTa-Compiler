@@ -2,7 +2,7 @@
 
 use crate::backend::environment::Environment;
 use crate::backend::eval::eval;
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // Helper macro to evaluate and assert result
 macro_rules! assert_eval {
@@ -20,9 +20,12 @@ macro_rules! assert_error {
         let env = Environment::new();
         let (results, _) = eval($expr, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(_, details) => {
-                assert_eq!(**details, MettaValue::Atom($error_type.to_string()));
+        match results[0].inner() {
+            MettaValueInner::Error(_, details) => {
+                assert_eq!(
+                    *details.inner(),
+                    MettaValueInner::Atom($error_type.to_string())
+                );
             }
             other => panic!("Expected Error({}), got {:?}", $error_type, other),
         }
@@ -174,7 +177,7 @@ fn test_eval_logical_type_error() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 
     // or with non-boolean FIRST arg should error
     // (With short-circuit, (or True "hello") returns True without checking second arg)
@@ -185,7 +188,7 @@ fn test_eval_logical_type_error() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 
     // not with non-boolean should error
     let value = MettaValue::SExpr(vec![
@@ -194,7 +197,7 @@ fn test_eval_logical_type_error() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 }
 
 #[test]
@@ -208,7 +211,7 @@ fn test_eval_logical_arity_error() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 
     // not with wrong arity
     let value = MettaValue::SExpr(vec![
@@ -218,7 +221,7 @@ fn test_eval_logical_arity_error() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], MettaValue::Error(_, _)));
+    assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
 }
 
 #[test]
@@ -235,8 +238,8 @@ fn test_arithmetic_type_error_string() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             // Error message should contain the friendly type name
             assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
             assert!(
@@ -245,7 +248,10 @@ fn test_arithmetic_type_error_string() {
                 msg
             );
             // Error details should be TypeError
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -265,15 +271,18 @@ fn test_arithmetic_type_error_first_arg() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
             assert!(
                 msg.contains("expected Number (integer)"),
                 "Expected type info in: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -293,15 +302,18 @@ fn test_arithmetic_type_error_bool() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
             assert!(
                 msg.contains("expected Number (integer)"),
                 "Expected type info in: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -342,8 +354,8 @@ fn test_comparison_type_mismatch() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, _) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert!(
                 msg.contains("type mismatch") || msg.contains("Cannot compare"),
                 "Expected type mismatch error in: {}",
@@ -364,8 +376,8 @@ fn test_arithmetic_wrong_arity() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, _) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             assert!(msg.contains("2 arguments"));
         }
         other => panic!("Expected Error, got {:?}", other),
@@ -522,14 +534,17 @@ fn test_power_negative_exponent() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("Negative exponent"),
                 "Expected negative exponent error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -543,14 +558,17 @@ fn test_power_negative_exponent() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("Negative exponent"),
                 "Expected negative exponent error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -569,15 +587,18 @@ fn test_power_type_error() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
             assert!(
                 msg.contains("expected Number (integer)"),
                 "Expected type info in: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -591,10 +612,13 @@ fn test_power_type_error() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -614,14 +638,17 @@ fn test_power_overflow_edge_case() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("Arithmetic overflow"),
                 "Expected overflow error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -635,14 +662,17 @@ fn test_power_overflow_edge_case() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("Arithmetic overflow"),
                 "Expected overflow error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -818,14 +848,17 @@ fn test_log_invalid_base() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("base must be positive"),
                 "Expected base error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -839,14 +872,17 @@ fn test_log_invalid_base() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("base must be positive"),
                 "Expected base error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -860,14 +896,17 @@ fn test_log_invalid_base() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("base cannot be 1"),
                 "Expected base == 1 error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -886,14 +925,17 @@ fn test_log_invalid_input() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("input must be positive"),
                 "Expected input error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -907,14 +949,17 @@ fn test_log_invalid_input() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("input must be positive"),
                 "Expected input error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -933,15 +978,18 @@ fn test_log_type_error() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
             assert!(
                 msg.contains("expected Number (integer)"),
                 "Expected type info in: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -955,10 +1003,13 @@ fn test_log_type_error() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -972,10 +1023,13 @@ fn test_log_type_error() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -1034,8 +1088,8 @@ fn test_sin_basic() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!((f - 0.0).abs() < 1e-10, "sin(0) should be 0, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1048,8 +1102,8 @@ fn test_sin_basic() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!((f - 1.0).abs() < 1e-10, "sin(π/2) should be 1, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1062,8 +1116,8 @@ fn test_sin_basic() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!((f - 0.0).abs() < 1e-10, "sin(0) should be 0, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1081,8 +1135,8 @@ fn test_asin_basic() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!((f - 0.0).abs() < 1e-10, "asin(0) should be 0, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1095,8 +1149,8 @@ fn test_asin_basic() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             let expected = std::f64::consts::PI / 2.0;
             assert!(
                 (f - expected).abs() < 1e-10,
@@ -1114,8 +1168,8 @@ fn test_asin_basic() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             let expected = -std::f64::consts::PI / 2.0;
             assert!(
                 (f - expected).abs() < 1e-10,
@@ -1139,14 +1193,17 @@ fn test_asin_out_of_range() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("range [-1, 1]"),
                 "Expected range error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -1159,14 +1216,17 @@ fn test_asin_out_of_range() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("range [-1, 1]"),
                 "Expected range error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -1183,8 +1243,8 @@ fn test_cos_basic() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!((f - 1.0).abs() < 1e-10, "cos(0) should be 1, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1197,8 +1257,8 @@ fn test_cos_basic() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => assert!(f.abs() < 1e-10, "cos(π/2) should be 0, got {}", f),
+    match results[0].inner() {
+        MettaValueInner::Float(f) => assert!(f.abs() < 1e-10, "cos(π/2) should be 0, got {}", f),
         other => panic!("Expected Float, got {:?}", other),
     }
 
@@ -1209,8 +1269,8 @@ fn test_cos_basic() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!((f - (-1.0)).abs() < 1e-10, "cos(π) should be -1, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1228,8 +1288,8 @@ fn test_acos_basic() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!((f - 0.0).abs() < 1e-10, "acos(1) should be 0, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1242,8 +1302,8 @@ fn test_acos_basic() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             let expected = std::f64::consts::PI / 2.0;
             assert!(
                 (f - expected).abs() < 1e-10,
@@ -1261,8 +1321,8 @@ fn test_acos_basic() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             let expected = std::f64::consts::PI;
             assert!(
                 (f - expected).abs() < 1e-10,
@@ -1286,14 +1346,17 @@ fn test_acos_out_of_range() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("range [-1, 1]"),
                 "Expected range error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -1306,14 +1369,17 @@ fn test_acos_out_of_range() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(
                 msg.contains("range [-1, 1]"),
                 "Expected range error: {}",
                 msg
             );
-            assert_eq!(**details, MettaValue::Atom("ArithmeticError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("ArithmeticError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -1330,8 +1396,8 @@ fn test_tan_basic() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!((f - 0.0).abs() < 1e-10, "tan(0) should be 0, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1344,8 +1410,8 @@ fn test_tan_basic() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!((f - 1.0).abs() < 1e-10, "tan(π/4) should be 1, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1363,8 +1429,8 @@ fn test_atan_basic() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!((f - 0.0).abs() < 1e-10, "atan(0) should be 0, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1377,8 +1443,8 @@ fn test_atan_basic() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             let expected = std::f64::consts::PI / 4.0;
             assert!(
                 (f - expected).abs() < 1e-10,
@@ -1403,10 +1469,13 @@ fn test_trigonometric_type_error() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -1420,10 +1489,13 @@ fn test_trigonometric_type_error() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -1559,10 +1631,13 @@ fn test_isnan_isinf_type_error() {
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("String"), "Expected 'String' in: {}", msg);
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -1575,10 +1650,13 @@ fn test_isnan_isinf_type_error() {
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
 
-    match &results[0] {
-        MettaValue::Error(msg, details) => {
+    match results[0].inner() {
+        MettaValueInner::Error(msg, details) => {
             assert!(msg.contains("Bool"), "Expected 'Bool' in: {}", msg);
-            assert_eq!(**details, MettaValue::Atom("TypeError".to_string()));
+            assert_eq!(
+                *details.inner(),
+                MettaValueInner::Atom("TypeError".to_string())
+            );
         }
         other => panic!("Expected Error, got {:?}", other),
     }
@@ -1714,8 +1792,8 @@ fn test_mixed_trigonometric_operations() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!(
                 (f - 1.0).abs() < 1e-10,
                 "sin(acos(0)) should be 1, got {}",
@@ -1735,8 +1813,8 @@ fn test_mixed_trigonometric_operations() {
     ]);
     let (results, _) = eval(value, env.clone());
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!(f.abs() < 1e-10, "cos(asin(1)) should be 0, got {}", f)
         }
         other => panic!("Expected Float, got {:?}", other),
@@ -1752,8 +1830,8 @@ fn test_mixed_trigonometric_operations() {
     ]);
     let (results, _) = eval(value, env);
     assert_eq!(results.len(), 1);
-    match &results[0] {
-        MettaValue::Float(f) => {
+    match results[0].inner() {
+        MettaValueInner::Float(f) => {
             assert!(
                 (f - 1.0).abs() < 1e-10,
                 "tan(atan(1)) should be 1, got {}",

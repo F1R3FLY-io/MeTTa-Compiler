@@ -139,10 +139,7 @@ pub enum CompileWork {
     },
 
     /// Compile quoted expression (no evaluation)
-    CompileQuoted {
-        expr: MettaValue,
-        cont_id: usize,
-    },
+    CompileQuoted { expr: MettaValue, cont_id: usize },
 
     /// Compile quoted S-expression elements
     CompileQuotedSExprElements {
@@ -211,10 +208,7 @@ pub enum CompileWork {
     },
 
     /// Emit an opcode (continuation action)
-    EmitOpcode {
-        opcode: Opcode,
-        cont_id: usize,
-    },
+    EmitOpcode { opcode: Opcode, cont_id: usize },
 
     /// Emit opcode with u8 operand
     EmitOpcodeU8 {

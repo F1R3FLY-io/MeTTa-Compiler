@@ -13,6 +13,7 @@ use tracing::trace;
 
 use super::multiplicity::Multiplicity;
 use super::{Environment, MettaValue};
+use crate::backend::models::MettaValueInner;
 
 impl Environment {
     /// Add a type assertion
@@ -151,7 +152,7 @@ impl Environment {
 
             if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
                 // Extract TYPE from (: name TYPE)
-                if let MettaValue::SExpr(items) = value {
+                if let MettaValueInner::SExpr(items) = value.inner() {
                     if items.len() >= 3 {
                         // items[0] = ":", items[1] = name, items[2] = TYPE
                         return Some(items[2].clone());
@@ -188,13 +189,13 @@ impl Environment {
             #[allow(clippy::collapsible_match)]
             if let Ok(value) = Self::mork_expr_to_metta_value(&expr, &space) {
                 // Check if this is a type assertion: (: name type)
-                if let MettaValue::SExpr(items) = &value {
+                if let MettaValueInner::SExpr(items) = value.inner() {
                     if items.len() == 3 {
-                        if let (MettaValue::Atom(op), MettaValue::Atom(atom_name), typ) =
-                            (&items[0], &items[1], &items[2])
+                        if let (MettaValueInner::Atom(op), MettaValueInner::Atom(atom_name)) =
+                            (items[0].inner(), items[1].inner())
                         {
                             if op == ":" && atom_name == name {
-                                return Some(typ.clone());
+                                return Some(items[2].clone());
                             }
                         }
                     }

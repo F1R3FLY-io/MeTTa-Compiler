@@ -72,7 +72,7 @@ pub use backend::{
     compile,
     environment::Environment,
     eval,
-    models::{MettaState, MettaValue, Rule},
+    models::{MettaState, MettaValue, MettaValueInner, Rule},
 };
 pub use ir::{MettaExpr, Position, SExpr, Span};
 pub use rholang_integration::run_state;
@@ -111,7 +111,7 @@ mod tests {
 
         let (results, _env) = eval(state.source[0].clone(), state.environment);
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Long(30)));
+        assert!(matches!(results[0].inner(), MettaValueInner::Long(30)));
     }
 
     #[test]
@@ -134,7 +134,7 @@ mod tests {
         // Second expression: evaluation
         let (results, _env) = eval(state.source[1].clone(), env);
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Long(42)));
+        assert!(matches!(results[0].inner(), MettaValueInner::Long(42)));
     }
 
     #[test]
@@ -205,7 +205,7 @@ mod tests {
         let (results, _env) = eval(state.source[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::String(ref s) if s == "yes"));
+        assert!(matches!(results[0].inner(), MettaValueInner::String(ref s) if s == "yes"));
     }
 
     #[test]
@@ -391,7 +391,7 @@ mod tests {
         let (results, _env) = eval(state.source[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::SExpr(_)));
+        assert!(matches!(results[0].inner(), MettaValueInner::SExpr(_)));
     }
 
     #[test]
@@ -401,7 +401,7 @@ mod tests {
         let (results, _env) = eval(state.source[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0], MettaValue::Error(_, _)));
+        assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
     }
 
     #[test]
@@ -414,7 +414,7 @@ mod tests {
         let (results, _env) = eval(state.source[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
-        if let MettaValue::Error(msg, _) = &results[0] {
+        if let MettaValueInner::Error(msg, _) = results[0].inner() {
             assert_eq!(msg, "deep error");
         } else {
             panic!("Expected error propagation from nested expression");
@@ -443,9 +443,13 @@ mod tests {
             }
         }
 
-        if let Some(MettaValue::Error(msg, details)) = result {
-            assert_eq!(msg, "negative value");
-            assert_eq!(*details, MettaValue::Long(-5));
+        if let Some(ref r) = result {
+            if let MettaValueInner::Error(msg, details) = r.inner() {
+                assert_eq!(msg, "negative value");
+                assert_eq!(*details, MettaValue::Long(-5));
+            } else {
+                panic!("Expected error from function call");
+            }
         } else {
             panic!("Expected error from function call");
         }
@@ -476,8 +480,12 @@ mod tests {
             }
         }
 
-        if let Some(MettaValue::Error(msg, _)) = result {
-            assert_eq!(msg, "division by zero");
+        if let Some(ref r) = result {
+            if let MettaValueInner::Error(msg, _) = r.inner() {
+                assert_eq!(msg, "division by zero");
+            } else {
+                panic!("Expected error from recursive function");
+            }
         } else {
             panic!("Expected error from recursive function");
         }
@@ -537,7 +545,7 @@ mod tests {
         let (results, _env) = eval(state.source[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
-        if let MettaValue::Error(msg, _) = &results[0] {
+        if let MettaValueInner::Error(msg, _) = results[0].inner() {
             assert_eq!(msg, "condition failed");
         } else {
             panic!("Expected error from condition evaluation");
@@ -620,8 +628,10 @@ mod tests {
         for expr in state.source {
             let (expr_results, new_env) = eval(expr, env);
             env = new_env;
-            if let Some(MettaValue::Error(msg, _)) = expr_results.first() {
-                errors.push(msg.clone());
+            if let Some(r) = expr_results.first() {
+                if let MettaValueInner::Error(msg, _) = r.inner() {
+                    errors.push(msg.clone());
+                }
             }
         }
 
@@ -653,8 +663,12 @@ mod tests {
             }
         }
 
-        if let Some(MettaValue::Error(msg, _)) = result {
-            assert_eq!(msg, "first-error");
+        if let Some(ref r) = result {
+            if let MettaValueInner::Error(msg, _) = r.inner() {
+                assert_eq!(msg, "first-error");
+            } else {
+                panic!("Expected first error to propagate");
+            }
         } else {
             panic!("Expected first error to propagate");
         }
@@ -670,9 +684,9 @@ mod tests {
         let (results, _env) = eval(state.source[0].clone(), state.environment);
 
         assert_eq!(results.len(), 1);
-        if let MettaValue::Error(msg, details) = &results[0] {
+        if let MettaValueInner::Error(msg, details) = results[0].inner() {
             assert_eq!(msg, "complex");
-            assert!(matches!(**details, MettaValue::SExpr(_)));
+            assert!(matches!(details.inner(), MettaValueInner::SExpr(_)));
         } else {
             panic!("Expected error with complex details");
         }
@@ -870,11 +884,15 @@ mod tests {
             }
         }
 
-        if let Some(MettaValue::SExpr(outer)) = result {
-            assert_eq!(outer[0], MettaValue::Long(1));
-            if let MettaValue::SExpr(inner) = &outer[1] {
-                assert_eq!(inner[0], MettaValue::Long(1));
-                assert_eq!(inner[1], MettaValue::Long(2));
+        if let Some(ref r) = result {
+            if let MettaValueInner::SExpr(outer) = r.inner() {
+                assert_eq!(outer[0], MettaValue::Long(1));
+                if let MettaValueInner::SExpr(inner) = outer[1].inner() {
+                    assert_eq!(inner[0], MettaValue::Long(1));
+                    assert_eq!(inner[1], MettaValue::Long(2));
+                }
+            } else {
+                panic!("Expected SExpr result");
             }
         } else {
             panic!("Expected SExpr result");
@@ -958,18 +976,22 @@ mod tests {
             }
         }
 
-        if let Some(MettaValue::SExpr(items)) = result {
-            assert_eq!(items[0], MettaValue::Atom("cons".to_string()));
-            assert_eq!(items[1], MettaValue::Long(1));
+        if let Some(ref r) = result {
+            if let MettaValueInner::SExpr(items) = r.inner() {
+                assert_eq!(items[0], MettaValue::Atom("cons".to_string()));
+                assert_eq!(items[1], MettaValue::Long(1));
 
-            if let MettaValue::SExpr(rest1) = &items[2] {
-                assert_eq!(rest1[0], MettaValue::Atom("cons".to_string()));
-                assert_eq!(rest1[1], MettaValue::Long(4));
+                if let MettaValueInner::SExpr(rest1) = items[2].inner() {
+                    assert_eq!(rest1[0], MettaValue::Atom("cons".to_string()));
+                    assert_eq!(rest1[1], MettaValue::Long(4));
 
-                if let MettaValue::SExpr(rest2) = &rest1[2] {
-                    assert_eq!(rest2[0], MettaValue::Atom("cons".to_string()));
-                    assert_eq!(rest2[1], MettaValue::Long(9));
+                    if let MettaValueInner::SExpr(rest2) = rest1[2].inner() {
+                        assert_eq!(rest2[0], MettaValue::Atom("cons".to_string()));
+                        assert_eq!(rest2[1], MettaValue::Long(9));
+                    }
                 }
+            } else {
+                panic!("Expected SExpr result");
             }
         } else {
             panic!("Expected SExpr result");
@@ -1004,13 +1026,17 @@ mod tests {
         }
 
         // Should keep only 5 and 7: (cons 5 (cons 7 nil))
-        if let Some(MettaValue::SExpr(items)) = result {
-            assert_eq!(items[0], MettaValue::Atom("cons".to_string()));
-            assert_eq!(items[1], MettaValue::Long(5));
+        if let Some(ref r) = result {
+            if let MettaValueInner::SExpr(items) = r.inner() {
+                assert_eq!(items[0], MettaValue::Atom("cons".to_string()));
+                assert_eq!(items[1], MettaValue::Long(5));
 
-            if let MettaValue::SExpr(rest) = &items[2] {
-                assert_eq!(rest[0], MettaValue::Atom("cons".to_string()));
-                assert_eq!(rest[1], MettaValue::Long(7));
+                if let MettaValueInner::SExpr(rest) = items[2].inner() {
+                    assert_eq!(rest[0], MettaValue::Atom("cons".to_string()));
+                    assert_eq!(rest[1], MettaValue::Long(7));
+                }
+            } else {
+                panic!("Expected SExpr result");
             }
         } else {
             panic!("Expected SExpr result");
@@ -1068,9 +1094,13 @@ mod tests {
             }
         }
 
-        if let Some(MettaValue::SExpr(items)) = result {
-            assert_eq!(items[0], MettaValue::Atom("cons".to_string()));
-            assert_eq!(items[1], MettaValue::Long(1));
+        if let Some(ref r) = result {
+            if let MettaValueInner::SExpr(items) = r.inner() {
+                assert_eq!(items[0], MettaValue::Atom("cons".to_string()));
+                assert_eq!(items[1], MettaValue::Long(1));
+            } else {
+                panic!("Expected SExpr result");
+            }
         } else {
             panic!("Expected SExpr result");
         }
@@ -1107,13 +1137,13 @@ mod tests {
         let src = "(a (b (c d)))";
         let state = compile(src).unwrap();
 
-        if let MettaValue::SExpr(outer) = &state.source[0] {
+        if let MettaValueInner::SExpr(outer) = state.source[0].inner() {
             assert_eq!(outer[0], MettaValue::Atom("a".to_string()));
 
-            if let MettaValue::SExpr(middle) = &outer[1] {
+            if let MettaValueInner::SExpr(middle) = outer[1].inner() {
                 assert_eq!(middle[0], MettaValue::Atom("b".to_string()));
 
-                if let MettaValue::SExpr(inner) = &middle[1] {
+                if let MettaValueInner::SExpr(inner) = middle[1].inner() {
                     assert_eq!(inner[0], MettaValue::Atom("c".to_string()));
                     assert_eq!(inner[1], MettaValue::Atom("d".to_string()));
                 } else {
@@ -1650,12 +1680,12 @@ mod tests {
         );
         assert!(last_result
             .iter()
-            .any(|r| matches!(r, MettaValue::SExpr(items)
+            .any(|r| matches!(r.inner(), MettaValueInner::SExpr(items)
             if items.len() == 2 && items[0] == MettaValue::Atom("middle".to_string())
             && items[1] == MettaValue::Atom("b".to_string()))));
         assert!(last_result
             .iter()
-            .any(|r| matches!(r, MettaValue::SExpr(items)
+            .any(|r| matches!(r.inner(), MettaValueInner::SExpr(items)
             if items.len() == 2 && items[0] == MettaValue::Atom("middle".to_string())
             && items[1] == MettaValue::Atom("y".to_string()))));
     }

@@ -13,10 +13,8 @@
 //! - (cons-atom (+ 1 2) (a b)) returns ((+ 1 2) a b), NOT (3 a b)
 //! - This prevents infinite loops in recursive MeTTa programs
 
-use std::sync::Arc;
-
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 /// car-atom: (car-atom expr) -> first element
 /// Returns the first element of an expression (head)
@@ -28,14 +26,14 @@ pub(crate) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
     let expr = &items[1];
 
-    match expr {
-        MettaValue::SExpr(elements) if !elements.is_empty() => {
+    match expr.inner() {
+        MettaValueInner::SExpr(elements) if !elements.is_empty() => {
             (vec![elements[0].clone()], env)
         }
-        MettaValue::SExpr(_) | MettaValue::Nil => {
+        MettaValueInner::SExpr(_) | MettaValueInner::Nil => {
             let err = MettaValue::Error(
                 "car-atom expects a non-empty expression as argument".to_string(),
-                Arc::new(expr.clone()),
+                expr.clone(),
             );
             (vec![err], env)
         }
@@ -45,7 +43,7 @@ pub(crate) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
                     "car-atom: expected expression, got {}. Usage: (car-atom expr)",
                     super::super::friendly_value_repr(expr)
                 ),
-                Arc::new(expr.clone()),
+                expr.clone(),
             );
             (vec![err], env)
         }
@@ -62,8 +60,8 @@ pub(crate) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
     let expr = &items[1];
 
-    match expr {
-        MettaValue::SExpr(elements) if !elements.is_empty() => {
+    match expr.inner() {
+        MettaValueInner::SExpr(elements) if !elements.is_empty() => {
             let tail = elements[1..].to_vec();
             (
                 vec![if tail.is_empty() {
@@ -74,10 +72,10 @@ pub(crate) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
                 env,
             )
         }
-        MettaValue::SExpr(_) | MettaValue::Nil => {
+        MettaValueInner::SExpr(_) | MettaValueInner::Nil => {
             let err = MettaValue::Error(
                 "cdr-atom expects a non-empty expression as argument".to_string(),
-                Arc::new(expr.clone()),
+                expr.clone(),
             );
             (vec![err], env)
         }
@@ -87,7 +85,7 @@ pub(crate) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
                     "cdr-atom: expected expression, got {}. Usage: (cdr-atom expr)",
                     super::super::friendly_value_repr(expr)
                 ),
-                Arc::new(expr.clone()),
+                expr.clone(),
             );
             (vec![err], env)
         }
@@ -106,20 +104,20 @@ pub(crate) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
     let head = &items[1];
     let tail = &items[2];
 
-    match tail {
-        MettaValue::SExpr(elements) => {
+    match tail.inner() {
+        MettaValueInner::SExpr(elements) => {
             let mut result = vec![head.clone()];
             result.extend(elements.iter().cloned());
             (vec![MettaValue::SExpr(result)], env)
         }
-        MettaValue::Nil => (vec![MettaValue::SExpr(vec![head.clone()])], env),
+        MettaValueInner::Nil => (vec![MettaValue::SExpr(vec![head.clone()])], env),
         _ => {
             let err = MettaValue::Error(
                 format!(
                     "cons-atom expected Expression as tail, got {}. Usage: (cons-atom head tail)",
                     super::super::friendly_value_repr(tail)
                 ),
-                Arc::new(tail.clone()),
+                tail.clone(),
             );
             (vec![err], env)
         }
@@ -136,13 +134,13 @@ pub(crate) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 
     let expr = &items[1];
 
-    match expr {
-        MettaValue::SExpr(elements) if !elements.is_empty() => {
+    match expr.inner() {
+        MettaValueInner::SExpr(elements) if !elements.is_empty() => {
             let head = elements[0].clone();
             let tail = MettaValue::SExpr(elements[1..].to_vec());
             (vec![MettaValue::SExpr(vec![head, tail])], env)
         }
-        MettaValue::SExpr(_) | MettaValue::Nil | MettaValue::Unit => {
+        MettaValueInner::SExpr(_) | MettaValueInner::Nil | MettaValueInner::Unit => {
             // Empty expression/Unit - nondeterministic failure (return nothing)
             // HE-compatible: silent failure, not Error
             (vec![], env)
@@ -153,7 +151,7 @@ pub(crate) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> Eval
                     "decons-atom: expected expression, got {}. Usage: (decons-atom expr)",
                     super::super::friendly_value_repr(expr)
                 ),
-                Arc::new(expr.clone()),
+                expr.clone(),
             );
             (vec![err], env)
         }
@@ -170,16 +168,16 @@ pub(crate) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
 
     let expr = &items[1];
 
-    match expr {
-        MettaValue::SExpr(elements) => (vec![MettaValue::Long(elements.len() as i64)], env),
-        MettaValue::Nil => (vec![MettaValue::Long(0)], env),
+    match expr.inner() {
+        MettaValueInner::SExpr(elements) => (vec![MettaValue::Long(elements.len() as i64)], env),
+        MettaValueInner::Nil => (vec![MettaValue::Long(0)], env),
         _ => {
             let err = MettaValue::Error(
                 format!(
                     "size-atom: expected expression, got {}. Usage: (size-atom expr)",
                     super::super::friendly_value_repr(expr)
                 ),
-                Arc::new(expr.clone()),
+                expr.clone(),
             );
             (vec![err], env)
         }
@@ -196,14 +194,14 @@ pub(crate) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
     let expr = &items[1];
 
-    match expr {
-        MettaValue::SExpr(elements) if !elements.is_empty() => {
+    match expr.inner() {
+        MettaValueInner::SExpr(elements) if !elements.is_empty() => {
             let mut max_val: Option<i64> = None;
             let mut error_result = None;
 
             for elem in elements {
-                match elem {
-                    MettaValue::Long(n) => {
+                match elem.inner() {
+                    MettaValueInner::Long(n) => {
                         max_val = Some(max_val.map_or(*n, |m| m.max(*n)));
                     }
                     _ => {
@@ -212,7 +210,7 @@ pub(crate) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
                                 "max-atom: found non-numeric value {}",
                                 super::super::friendly_value_repr(elem)
                             ),
-                            Arc::new(elem.clone()),
+                            elem.clone(),
                         ));
                         break;
                     }
@@ -222,13 +220,16 @@ pub(crate) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
             if let Some(err) = error_result {
                 (vec![err], env)
             } else {
-                (vec![MettaValue::Long(max_val.expect("non-empty expression"))], env)
+                (
+                    vec![MettaValue::Long(max_val.expect("non-empty expression"))],
+                    env,
+                )
             }
         }
-        MettaValue::SExpr(_) | MettaValue::Nil => {
+        MettaValueInner::SExpr(_) | MettaValueInner::Nil => {
             let err = MettaValue::Error(
                 "max-atom expects a non-empty expression of numbers".to_string(),
-                Arc::new(expr.clone()),
+                expr.clone(),
             );
             (vec![err], env)
         }
@@ -238,7 +239,7 @@ pub(crate) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
                     "max-atom: expected expression of numbers, got {}. Usage: (max-atom expr)",
                     super::super::friendly_value_repr(expr)
                 ),
-                Arc::new(expr.clone()),
+                expr.clone(),
             );
             (vec![err], env)
         }

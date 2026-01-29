@@ -1,6 +1,5 @@
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
-use std::sync::Arc;
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use tracing::{trace, warn};
 
 use super::{apply_bindings, eval, pattern_match, EvalStep};
@@ -20,7 +19,7 @@ pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult 
         // Then evaluate the result
         eval(expr.clone(), arg_env)
     } else {
-        (vec![MettaValue::Nil], arg_env)
+        (vec![MettaValue::Nil()], arg_env)
     }
 }
 
@@ -33,7 +32,7 @@ pub(super) fn eval_eval_step(items: Vec<MettaValue>, env: Environment, depth: us
                 "eval requires exactly 1 argument, got {}. Usage: (eval expr)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -79,14 +78,14 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalRes
         current_env = new_env;
 
         if results.is_empty() {
-            return (vec![MettaValue::Nil], current_env);
+            return (vec![MettaValue::Nil()], current_env);
         }
 
         let (final_results, continue_exprs): (Vec<_>, Vec<_>) =
             results.into_iter().partition(|result| {
                 matches!(
-                  result,
-                  MettaValue::SExpr(items)
+                  result.inner(),
+                  MettaValueInner::SExpr(items)
                   if items.len() == 2 && items[0] == MettaValue::Atom("return".to_string())
                 )
             });
@@ -94,8 +93,8 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalRes
         if !final_results.is_empty() {
             let returns: Vec<_> = final_results
                 .into_iter()
-                .map(|r| match r {
-                    MettaValue::SExpr(items) => items[1].clone(),
+                .map(|r| match r.inner() {
+                    MettaValueInner::SExpr(items) => items[1].clone(),
                     _ => unreachable!("partition guarantees return expressions"),
                 })
                 .collect();
@@ -103,7 +102,7 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalRes
         }
 
         if continue_exprs.is_empty() {
-            return (vec![MettaValue::Nil], current_env);
+            return (vec![MettaValue::Nil()], current_env);
         }
 
         let next_expr = &continue_exprs[0];
@@ -122,7 +121,7 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalRes
             return (
                 vec![MettaValue::Error(
                     format!("function exceeded maximum iterations ({})", MAX_ITERATIONS),
-                    Arc::new(current_expr),
+                    current_expr,
                 )],
                 current_env,
             );
@@ -145,7 +144,7 @@ pub(super) fn eval_function_step(
                 "function requires exactly 1 argument, got {}. Usage: (function expr)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -167,7 +166,7 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResul
 
     let (arg_results, arg_env) = eval(items[1].clone(), env);
     for result in &arg_results {
-        if matches!(result, MettaValue::Error(_, _)) {
+        if matches!(result.inner(), MettaValueInner::Error(_, _)) {
             return (vec![result.clone()], arg_env);
         }
     }
@@ -181,11 +180,7 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResul
 }
 
 /// Step version of eval_return that defers evaluation to trampoline.
-pub(super) fn eval_return_step(
-    items: Vec<MettaValue>,
-    env: Environment,
-    depth: usize,
-) -> EvalStep {
+pub(super) fn eval_return_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::eval::eval_return_step", ?items);
     if items.len() != 2 {
         let err = MettaValue::Error(
@@ -193,7 +188,7 @@ pub(super) fn eval_return_step(
                 "return requires exactly 1 argument, got {}. Usage: (return value)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -223,7 +218,7 @@ pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult
 
     let (expr_results, mut current_env) = eval(expr.clone(), env);
     for result in &expr_results {
-        if matches!(result, MettaValue::Error(_, _)) {
+        if matches!(result.inner(), MettaValueInner::Error(_, _)) {
             return (vec![result.clone()], current_env);
         }
     }
@@ -243,11 +238,7 @@ pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult
 }
 
 /// Step version of eval_chain that defers evaluation to trampoline.
-pub(super) fn eval_chain_step(
-    items: Vec<MettaValue>,
-    env: Environment,
-    depth: usize,
-) -> EvalStep {
+pub(super) fn eval_chain_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::eval::eval_chain_step", ?items);
     if items.len() != 4 {
         let err = MettaValue::Error(
@@ -255,7 +246,7 @@ pub(super) fn eval_chain_step(
                 "chain requires exactly 3 arguments, got {}. Usage: (chain expr $var body)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -283,8 +274,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("!"));
                 assert!(msg.contains("requires exactly 1 argument")); // Changed
             }
@@ -301,8 +292,8 @@ mod tests {
 
         let (results, _) = eval(value, env);
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("eval"));
                 assert!(msg.contains("requires exactly 1 argument")); // Changed
             }
@@ -663,8 +654,8 @@ mod tests {
         assert_eq!(results.len(), 1);
 
         // Should return a return expression: (return 126)
-        match &results[0] {
-            MettaValue::SExpr(items) => {
+        match results[0].inner() {
+            MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 2);
                 assert_eq!(items[0], MettaValue::Atom("return".to_string()));
                 assert_eq!(items[1], MettaValue::Long(126));

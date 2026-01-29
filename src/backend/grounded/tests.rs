@@ -1,6 +1,7 @@
 //! Tests for grounded operations.
 
 use super::*;
+use crate::backend::models::MettaValueInner;
 
 // Mock eval function for testing
 fn mock_eval(value: MettaValue, env: Environment) -> (Vec<MettaValue>, Environment) {
@@ -29,7 +30,7 @@ fn test_add_float() {
     let result = add.execute_raw(&args, &env, &mock_eval).unwrap();
 
     assert_eq!(result.len(), 1);
-    if let MettaValue::Float(f) = result[0].0 {
+    if let MettaValueInner::Float(f) = result[0].0.inner() {
         assert!((f - 6.0).abs() < f64::EPSILON);
     } else {
         panic!("Expected Float");
@@ -70,7 +71,7 @@ fn test_equality() {
     let env = Environment::new();
 
     // Test Nil == ()
-    let args = vec![MettaValue::Nil, MettaValue::SExpr(vec![])];
+    let args = vec![MettaValue::Nil(), MettaValue::SExpr(vec![])];
     let result = eq.execute_raw(&args, &env, &mock_eval).unwrap();
 
     assert_eq!(result.len(), 1);

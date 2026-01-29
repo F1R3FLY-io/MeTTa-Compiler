@@ -5,12 +5,25 @@ use std::sync::Arc;
 use super::MemoHandle;
 use super::SpaceHandle;
 
-/// Represents a MeTTa value as an s-expression
-/// S-expressions are nested lists with textual operator names
+// Re-import String to avoid shadowing by MettaValue::String associated function
+use std::string::String as StdString;
+
+/// Reference-counted MettaValue with O(1) clone.
+/// Clone increments Arc reference count; drop decrements it.
+///
+/// This wrapper provides:
+/// - O(1) clone operations (just Arc reference count increment)
+/// - Efficient sharing of immutable values
+/// - Transparent construction via associated functions (MettaValue::Atom(), etc.)
+#[derive(Clone)]
+pub struct MettaValue(Arc<MettaValueInner>);
+
+/// Internal enum containing the actual value variants.
+/// All the MeTTa value types are represented here.
 #[derive(Debug, Clone, PartialEq)]
-pub enum MettaValue {
+pub enum MettaValueInner {
     /// An atom (symbol, variable, or literal)
-    Atom(String),
+    Atom(StdString),
     /// A boolean literal
     Bool(bool),
     /// An integer literal
@@ -18,15 +31,15 @@ pub enum MettaValue {
     /// A floating point literal
     Float(f64),
     /// A string literal
-    String(String),
+    String(StdString),
     /// An s-expression (list of values)
     SExpr(Vec<MettaValue>),
     /// Nil/empty
     Nil,
-    /// An error with message and details (Arc for O(1) clone)
-    Error(String, Arc<MettaValue>),
-    /// A type (first-class types as atoms, Arc for O(1) clone)
-    Type(Arc<MettaValue>),
+    /// An error with message and details
+    Error(StdString, MettaValue),
+    /// A type (first-class types as atoms)
+    Type(MettaValue),
     /// A conjunction of goals (MORK-style logical AND)
     /// Represents (,), (, expr), or (, expr1 expr2 ...)
     /// Goals are evaluated left-to-right with variable binding threading
@@ -52,11 +65,147 @@ pub enum MettaValue {
 }
 
 /// Arc-wrapped MettaValue for O(1) cloning in evaluation hot paths.
-/// Use this type when passing MettaValue through continuations, rule matches,
-/// or other locations where cloning is frequent but modification is rare.
-pub type ArcValue = Arc<MettaValue>;
+/// Note: With the new MettaValue wrapper, this is now redundant since
+/// MettaValue itself is already O(1) to clone. Kept for API compatibility.
+pub type ArcValue = MettaValue;
+
+// ============================================================================
+// MettaValue wrapper implementation - Associated functions for construction
+// ============================================================================
 
 impl MettaValue {
+    /// Access the inner enum for pattern matching
+    #[inline]
+    pub fn inner(&self) -> &MettaValueInner {
+        &self.0
+    }
+
+    /// Get the raw Arc for advanced use cases
+    #[inline]
+    pub fn arc(&self) -> &Arc<MettaValueInner> {
+        &self.0
+    }
+
+    /// Check if two MettaValues point to the same Arc (pointer equality)
+    #[inline]
+    pub fn ptr_eq(&self, other: &MettaValue) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    // ========================================================================
+    // Associated functions to preserve construction syntax
+    // These allow: MettaValue::Atom("foo".to_string()) to continue working
+    // ========================================================================
+
+    /// Create an Atom variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Atom(s: StdString) -> Self {
+        MettaValue(Arc::new(MettaValueInner::Atom(s)))
+    }
+
+    /// Create a Bool variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Bool(b: bool) -> Self {
+        MettaValue(Arc::new(MettaValueInner::Bool(b)))
+    }
+
+    /// Create a Long variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Long(n: i64) -> Self {
+        MettaValue(Arc::new(MettaValueInner::Long(n)))
+    }
+
+    /// Create a Float variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Float(f: f64) -> Self {
+        MettaValue(Arc::new(MettaValueInner::Float(f)))
+    }
+
+    /// Create a String variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn String(s: StdString) -> Self {
+        MettaValue(Arc::new(MettaValueInner::String(s)))
+    }
+
+    /// Create an SExpr variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn SExpr(items: Vec<MettaValue>) -> Self {
+        MettaValue(Arc::new(MettaValueInner::SExpr(items)))
+    }
+
+    /// Create a Nil variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Nil() -> Self {
+        MettaValue(Arc::new(MettaValueInner::Nil))
+    }
+
+    /// Create an Error variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Error(msg: StdString, details: MettaValue) -> Self {
+        MettaValue(Arc::new(MettaValueInner::Error(msg, details)))
+    }
+
+    /// Create a Type variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Type(inner: MettaValue) -> Self {
+        MettaValue(Arc::new(MettaValueInner::Type(inner)))
+    }
+
+    /// Create a Conjunction variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Conjunction(goals: Vec<MettaValue>) -> Self {
+        MettaValue(Arc::new(MettaValueInner::Conjunction(goals)))
+    }
+
+    /// Create a Space variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Space(handle: SpaceHandle) -> Self {
+        MettaValue(Arc::new(MettaValueInner::Space(handle)))
+    }
+
+    /// Create a State variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn State(id: u64) -> Self {
+        MettaValue(Arc::new(MettaValueInner::State(id)))
+    }
+
+    /// Create a Unit variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Unit() -> Self {
+        MettaValue(Arc::new(MettaValueInner::Unit))
+    }
+
+    /// Create a Memo variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Memo(handle: MemoHandle) -> Self {
+        MettaValue(Arc::new(MettaValueInner::Memo(handle)))
+    }
+
+    /// Create an Empty variant
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Empty() -> Self {
+        MettaValue(Arc::new(MettaValueInner::Empty))
+    }
+
+    // ========================================================================
+    // Helper constructors
+    // ========================================================================
+
     /// Create a symbol atom from a string slice
     ///
     /// # Example
@@ -97,34 +246,244 @@ impl MettaValue {
         MettaValue::SExpr(items)
     }
 
+    // ========================================================================
+    // Type checking and inspection methods
+    // ========================================================================
+
+    /// Check if this is an Atom variant
+    #[inline]
+    pub fn is_atom(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Atom(_))
+    }
+
+    /// Check if this is a Bool variant
+    #[inline]
+    pub fn is_bool(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Bool(_))
+    }
+
+    /// Check if this is a Long variant
+    #[inline]
+    pub fn is_long(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Long(_))
+    }
+
+    /// Check if this is a Float variant
+    #[inline]
+    pub fn is_float(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Float(_))
+    }
+
+    /// Check if this is a String variant
+    #[inline]
+    pub fn is_string(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::String(_))
+    }
+
+    /// Check if this is an SExpr variant
+    #[inline]
+    pub fn is_sexpr(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::SExpr(_))
+    }
+
+    /// Check if this is a Nil variant
+    #[inline]
+    pub fn is_nil(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Nil)
+    }
+
+    /// Check if this is an Error variant
+    #[inline]
+    pub fn is_error(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Error(_, _))
+    }
+
+    /// Check if this is a Type variant
+    #[inline]
+    pub fn is_type(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Type(_))
+    }
+
+    /// Check if this is a Conjunction variant
+    #[inline]
+    pub fn is_conjunction(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Conjunction(_))
+    }
+
+    /// Check if this is a Space variant
+    #[inline]
+    pub fn is_space(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Space(_))
+    }
+
+    /// Check if this is a State variant
+    #[inline]
+    pub fn is_state(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::State(_))
+    }
+
+    /// Check if this is a Unit variant
+    #[inline]
+    pub fn is_unit(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Unit)
+    }
+
+    /// Check if this is a Memo variant
+    #[inline]
+    pub fn is_memo(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Memo(_))
+    }
+
+    /// Check if this is an Empty variant
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Empty)
+    }
+
+    // ========================================================================
+    // Accessor methods for extracting inner values
+    // ========================================================================
+
+    /// Try to extract as atom string
+    #[inline]
+    pub fn as_atom(&self) -> Option<&str> {
+        match self.inner() {
+            MettaValueInner::Atom(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as bool
+    #[inline]
+    pub fn as_bool(&self) -> Option<bool> {
+        match self.inner() {
+            MettaValueInner::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as i64
+    #[inline]
+    pub fn as_long(&self) -> Option<i64> {
+        match self.inner() {
+            MettaValueInner::Long(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as f64
+    #[inline]
+    pub fn as_float(&self) -> Option<f64> {
+        match self.inner() {
+            MettaValueInner::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as string
+    #[inline]
+    pub fn as_string(&self) -> Option<&str> {
+        match self.inner() {
+            MettaValueInner::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as sexpr items
+    #[inline]
+    pub fn as_sexpr(&self) -> Option<&[MettaValue]> {
+        match self.inner() {
+            MettaValueInner::SExpr(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as error (message, details)
+    #[inline]
+    pub fn as_error(&self) -> Option<(&str, &MettaValue)> {
+        match self.inner() {
+            MettaValueInner::Error(msg, details) => Some((msg, details)),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as type inner value
+    #[inline]
+    pub fn as_type(&self) -> Option<&MettaValue> {
+        match self.inner() {
+            MettaValueInner::Type(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as conjunction goals
+    #[inline]
+    pub fn as_conjunction(&self) -> Option<&[MettaValue]> {
+        match self.inner() {
+            MettaValueInner::Conjunction(goals) => Some(goals),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as space handle
+    #[inline]
+    pub fn as_space(&self) -> Option<&SpaceHandle> {
+        match self.inner() {
+            MettaValueInner::Space(handle) => Some(handle),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as state id
+    #[inline]
+    pub fn as_state(&self) -> Option<u64> {
+        match self.inner() {
+            MettaValueInner::State(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as memo handle
+    #[inline]
+    pub fn as_memo(&self) -> Option<&MemoHandle> {
+        match self.inner() {
+            MettaValueInner::Memo(handle) => Some(handle),
+            _ => None,
+        }
+    }
+
+    // ========================================================================
+    // Type name and classification methods
+    // ========================================================================
+
     /// Get the type name of this value as a string slice
     ///
     /// Returns the MeTTa type name for this value variant.
     pub fn type_name(&self) -> &'static str {
-        match self {
-            MettaValue::Atom(s) if s.starts_with('$') => "Variable",
-            MettaValue::Atom(_) => "Symbol",
-            MettaValue::Bool(_) => "Bool",
-            MettaValue::Long(_) => "Number",
-            MettaValue::Float(_) => "Number",
-            MettaValue::String(_) => "String",
-            MettaValue::SExpr(_) => "Expression",
-            MettaValue::Nil => "Nil",
-            MettaValue::Error(_, _) => "Error",
-            MettaValue::Type(_) => "Type",
-            MettaValue::Conjunction(_) => "Conjunction",
-            MettaValue::Space(_) => "Space",
-            MettaValue::State(_) => "State",
-            MettaValue::Unit => "Unit",
-            MettaValue::Memo(_) => "Memo",
-            MettaValue::Empty => "Empty",
+        match self.inner() {
+            MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
+            MettaValueInner::Atom(_) => "Symbol",
+            MettaValueInner::Bool(_) => "Bool",
+            MettaValueInner::Long(_) => "Number",
+            MettaValueInner::Float(_) => "Number",
+            MettaValueInner::String(_) => "String",
+            MettaValueInner::SExpr(_) => "Expression",
+            MettaValueInner::Nil => "Nil",
+            MettaValueInner::Error(_, _) => "Error",
+            MettaValueInner::Type(_) => "Type",
+            MettaValueInner::Conjunction(_) => "Conjunction",
+            MettaValueInner::Space(_) => "Space",
+            MettaValueInner::State(_) => "State",
+            MettaValueInner::Unit => "Unit",
+            MettaValueInner::Memo(_) => "Memo",
+            MettaValueInner::Empty => "Empty",
         }
     }
 
     /// Check if this value is a variable (Atom starting with $)
     #[inline]
     pub fn is_variable(&self) -> bool {
-        matches!(self, MettaValue::Atom(s) if s.starts_with('$'))
+        matches!(self.inner(), MettaValueInner::Atom(s) if s.starts_with('$'))
     }
 
     /// Create a quoted expression: (quote inner)
@@ -147,49 +506,59 @@ impl MettaValue {
     /// Returns true if the value doesn't require further evaluation
     pub fn is_ground_type(&self) -> bool {
         matches!(
-            self,
-            MettaValue::Bool(_)
-                | MettaValue::Long(_)
-                | MettaValue::Float(_)
-                | MettaValue::String(_)
-                | MettaValue::Nil
+            self.inner(),
+            MettaValueInner::Bool(_)
+                | MettaValueInner::Long(_)
+                | MettaValueInner::Float(_)
+                | MettaValueInner::String(_)
+                | MettaValueInner::Nil
         )
     }
 
     /// Convert MettaValue to a friendly type name for error messages
     /// This provides user-friendly type names instead of debug format like "Long(5)"
     pub fn friendly_type_name(&self) -> &'static str {
-        match self {
-            MettaValue::Long(_) => "Number (integer)",
-            MettaValue::Float(_) => "Number (float)",
-            MettaValue::Bool(_) => "Bool",
-            MettaValue::String(_) => "String",
-            MettaValue::Atom(_) => "Atom",
-            MettaValue::Nil => "Nil",
-            MettaValue::SExpr(_) => "S-expression",
-            MettaValue::Error(_, _) => "Error",
-            MettaValue::Type(_) => "Type",
-            MettaValue::Conjunction(_) => "Conjunction",
-            MettaValue::Space(_) => "Space",
-            MettaValue::State(_) => "State",
-            MettaValue::Unit => "Unit",
-            MettaValue::Memo(_) => "Memo",
-            MettaValue::Empty => "Empty",
+        match self.inner() {
+            MettaValueInner::Long(_) => "Number (integer)",
+            MettaValueInner::Float(_) => "Number (float)",
+            MettaValueInner::Bool(_) => "Bool",
+            MettaValueInner::String(_) => "String",
+            MettaValueInner::Atom(_) => "Atom",
+            MettaValueInner::Nil => "Nil",
+            MettaValueInner::SExpr(_) => "S-expression",
+            MettaValueInner::Error(_, _) => "Error",
+            MettaValueInner::Type(_) => "Type",
+            MettaValueInner::Conjunction(_) => "Conjunction",
+            MettaValueInner::Space(_) => "Space",
+            MettaValueInner::State(_) => "State",
+            MettaValueInner::Unit => "Unit",
+            MettaValueInner::Memo(_) => "Memo",
+            MettaValueInner::Empty => "Empty",
         }
     }
 
     /// Check if this is an evaluation expression (starts with "!")
     /// Evaluation expressions like `!(+ 1 2)` should produce output
     pub fn is_eval_expr(&self) -> bool {
-        matches!(self, MettaValue::SExpr(items)
-            if items.first().map(|v| matches!(v, MettaValue::Atom(s) if s == "!")).unwrap_or(false))
+        match self.inner() {
+            MettaValueInner::SExpr(items) => items
+                .first()
+                .map(|v| matches!(v.inner(), MettaValueInner::Atom(s) if s == "!"))
+                .unwrap_or(false),
+            _ => false,
+        }
     }
 
     /// Check if this is a rule definition (starts with "=")
     /// Rule definitions like `(= (double $x) (* $x 2))` add rules to the environment
     pub fn is_rule_def(&self) -> bool {
-        matches!(self, MettaValue::SExpr(items)
-            if items.first().map(|v| matches!(v, MettaValue::Atom(s) if s == "=")).unwrap_or(false))
+        match self.inner() {
+            MettaValueInner::SExpr(items) => items
+                .first()
+                .map(|v| matches!(v.inner(), MettaValueInner::Atom(s) if s == "="))
+                .unwrap_or(false),
+            _ => false,
+        }
     }
 
     /// Check structural equivalence (ignoring variable names)
@@ -204,26 +573,30 @@ impl MettaValue {
             s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
         }
 
-        match (self, other) {
+        match (self.inner(), other.inner()) {
             // Variables match any other variable (names don't matter)
             // EXCEPT: space references like "&self" must match exactly
-            (MettaValue::Atom(a), MettaValue::Atom(b)) if is_variable(a) && is_variable(b) => true,
+            (MettaValueInner::Atom(a), MettaValueInner::Atom(b))
+                if is_variable(a) && is_variable(b) =>
+            {
+                true
+            }
 
             // Wildcards match wildcards
-            (MettaValue::Atom(a), MettaValue::Atom(b)) if a == "_" && b == "_" => true,
+            (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) if a == "_" && b == "_" => true,
 
             // Non-variable atoms must match exactly (including standalone "&")
-            (MettaValue::Atom(a), MettaValue::Atom(b)) => a == b,
+            (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
 
             // Other ground types must match exactly
-            (MettaValue::Bool(a), MettaValue::Bool(b)) => a == b,
-            (MettaValue::Long(a), MettaValue::Long(b)) => a == b,
-            (MettaValue::Float(a), MettaValue::Float(b)) => a == b,
-            (MettaValue::String(a), MettaValue::String(b)) => a == b,
-            (MettaValue::Nil, MettaValue::Nil) => true,
+            (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
+            (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
+            (MettaValueInner::Float(a), MettaValueInner::Float(b)) => a == b,
+            (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
+            (MettaValueInner::Nil, MettaValueInner::Nil) => true,
 
             // S-expressions must have same structure
-            (MettaValue::SExpr(a_items), MettaValue::SExpr(b_items)) => {
+            (MettaValueInner::SExpr(a_items), MettaValueInner::SExpr(b_items)) => {
                 if a_items.len() != b_items.len() {
                     return false;
                 }
@@ -234,15 +607,16 @@ impl MettaValue {
             }
 
             // Errors must have same message and equivalent details
-            (MettaValue::Error(a_msg, a_details), MettaValue::Error(b_msg, b_details)) => {
-                a_msg == b_msg && a_details.structurally_equivalent(b_details)
-            }
+            (
+                MettaValueInner::Error(a_msg, a_details),
+                MettaValueInner::Error(b_msg, b_details),
+            ) => a_msg == b_msg && a_details.structurally_equivalent(b_details),
 
             // Types must be structurally equivalent
-            (MettaValue::Type(a), MettaValue::Type(b)) => a.structurally_equivalent(b),
+            (MettaValueInner::Type(a), MettaValueInner::Type(b)) => a.structurally_equivalent(b),
 
             // Conjunctions must have same structure
-            (MettaValue::Conjunction(a_goals), MettaValue::Conjunction(b_goals)) => {
+            (MettaValueInner::Conjunction(a_goals), MettaValueInner::Conjunction(b_goals)) => {
                 if a_goals.len() != b_goals.len() {
                     return false;
                 }
@@ -253,16 +627,16 @@ impl MettaValue {
             }
 
             // Spaces are equal if they have the same id
-            (MettaValue::Space(a), MettaValue::Space(b)) => a.id == b.id,
+            (MettaValueInner::Space(a), MettaValueInner::Space(b)) => a.id == b.id,
 
             // States must have same id
-            (MettaValue::State(a_id), MettaValue::State(b_id)) => a_id == b_id,
+            (MettaValueInner::State(a_id), MettaValueInner::State(b_id)) => a_id == b_id,
 
             // Unit matches unit
-            (MettaValue::Unit, MettaValue::Unit) => true,
+            (MettaValueInner::Unit, MettaValueInner::Unit) => true,
 
             // Empty matches empty
-            (MettaValue::Empty, MettaValue::Empty) => true,
+            (MettaValueInner::Empty, MettaValueInner::Empty) => true,
 
             _ => false,
         }
@@ -276,11 +650,11 @@ impl MettaValue {
             s == "&" || s == "&self" || s == "&kb" || s == "&stack"
         }
 
-        match self {
+        match self.inner() {
             // For s-expressions like (double $x), extract "double"
             // Space references like "&self" are allowed as head symbols
-            MettaValue::SExpr(items) if !items.is_empty() => match &items[0] {
-                MettaValue::Atom(head)
+            MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner() {
+                MettaValueInner::Atom(head)
                     if !head.starts_with('$')
                         && (!head.starts_with('&') || is_space_ref(head))
                         && !head.starts_with('\'')
@@ -292,7 +666,7 @@ impl MettaValue {
             },
             // For bare atoms like foo, use the atom itself
             // Space references like "&self" are allowed as head symbols
-            MettaValue::Atom(head)
+            MettaValueInner::Atom(head)
                 if !head.starts_with('$')
                     && (!head.starts_with('&') || is_space_ref(head))
                     && !head.starts_with('\'')
@@ -308,17 +682,17 @@ impl MettaValue {
     /// For (head arg1 arg2 arg3), arity is 3
     /// For bare atoms, arity is 0
     pub fn get_arity(&self) -> usize {
-        match self {
-            MettaValue::SExpr(items) if !items.is_empty() => items.len() - 1, // Exclude head
+        match self.inner() {
+            MettaValueInner::SExpr(items) if !items.is_empty() => items.len() - 1, // Exclude head
             _ => 0,
         }
     }
 
     /// Convert MettaValue to MORK s-expression string format
     /// This format can be parsed by MORK's parser
-    pub fn to_mork_string(&self) -> String {
-        match self {
-            MettaValue::Atom(s) => {
+    pub fn to_mork_string(&self) -> StdString {
+        match self.inner() {
+            MettaValueInner::Atom(s) => {
                 // Variables need to start with $ in MORK format
                 // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
                 // EXCEPT: "&self" and other space references should be preserved as-is
@@ -333,11 +707,11 @@ impl MettaValue {
                     s.clone()
                 }
             }
-            MettaValue::Bool(b) => b.to_string(),
-            MettaValue::Long(n) => n.to_string(),
-            MettaValue::Float(f) => f.to_string(),
-            MettaValue::String(s) => format!("\"{}\"", s),
-            MettaValue::SExpr(items) => {
+            MettaValueInner::Bool(b) => b.to_string(),
+            MettaValueInner::Long(n) => n.to_string(),
+            MettaValueInner::Float(f) => f.to_string(),
+            MettaValueInner::String(s) => format!("\"{}\"", s),
+            MettaValueInner::SExpr(items) => {
                 let inner = items
                     .iter()
                     .map(|v| v.to_mork_string())
@@ -345,12 +719,12 @@ impl MettaValue {
                     .join(" ");
                 format!("({})", inner)
             }
-            MettaValue::Nil => "()".to_string(),
-            MettaValue::Error(msg, details) => {
+            MettaValueInner::Nil => "()".to_string(),
+            MettaValueInner::Error(msg, details) => {
                 format!("(error \"{}\" {})", msg, details.to_mork_string())
             }
-            MettaValue::Type(t) => t.to_mork_string(),
-            MettaValue::Conjunction(goals) => {
+            MettaValueInner::Type(t) => t.to_mork_string(),
+            MettaValueInner::Conjunction(goals) => {
                 let inner = goals
                     .iter()
                     .map(|v| v.to_mork_string())
@@ -358,71 +732,75 @@ impl MettaValue {
                     .join(" ");
                 format!("(, {})", inner)
             }
-            MettaValue::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-            MettaValue::State(id) => format!("(State {})", id),
-            MettaValue::Unit => "()".to_string(),
-            MettaValue::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
-            MettaValue::Empty => "Empty".to_string(),
+            MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+            MettaValueInner::State(id) => format!("(State {})", id),
+            MettaValueInner::Unit => "()".to_string(),
+            MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+            MettaValueInner::Empty => "Empty".to_string(),
         }
     }
 
     /// Convert MettaValue to a JSON-like string representation
     /// Used for debugging and human-readable output
-    pub fn to_json_string(&self) -> String {
-        match self {
-            MettaValue::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
-            MettaValue::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
-            MettaValue::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
-            MettaValue::Float(f) => format!(r#"{{"type":"float","value":{}}}"#, f),
-            MettaValue::String(s) => format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s)),
-            MettaValue::Nil => r#"{"type":"nil"}"#.to_string(),
-            MettaValue::SExpr(items) => {
-                let items_json: Vec<String> =
+    pub fn to_json_string(&self) -> StdString {
+        match self.inner() {
+            MettaValueInner::Atom(s) => {
+                format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s))
+            }
+            MettaValueInner::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
+            MettaValueInner::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
+            MettaValueInner::Float(f) => format!(r#"{{"type":"float","value":{}}}"#, f),
+            MettaValueInner::String(s) => {
+                format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s))
+            }
+            MettaValueInner::Nil => r#"{"type":"nil"}"#.to_string(),
+            MettaValueInner::SExpr(items) => {
+                let items_json: Vec<StdString> =
                     items.iter().map(|value| value.to_json_string()).collect();
                 format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
             }
-            MettaValue::Error(msg, details) => {
+            MettaValueInner::Error(msg, details) => {
                 format!(
                     r#"{{"type":"error","message":"{}","details":{}}}"#,
                     escape_json(msg),
                     details.to_json_string()
                 )
             }
-            MettaValue::Type(t) => {
+            MettaValueInner::Type(t) => {
                 format!(r#"{{"type":"metatype","value":{}}}"#, t.to_json_string())
             }
-            MettaValue::Conjunction(goals) => {
-                let goals_json: Vec<String> =
+            MettaValueInner::Conjunction(goals) => {
+                let goals_json: Vec<StdString> =
                     goals.iter().map(|value| value.to_json_string()).collect();
                 format!(
                     r#"{{"type":"conjunction","goals":[{}]}}"#,
                     goals_json.join(",")
                 )
             }
-            MettaValue::Space(handle) => {
+            MettaValueInner::Space(handle) => {
                 format!(
                     r#"{{"type":"space","id":{},"name":"{}"}}"#,
                     handle.id,
                     escape_json(&handle.name)
                 )
             }
-            MettaValue::State(id) => {
+            MettaValueInner::State(id) => {
                 format!(r#"{{"type":"state","id":{}}}"#, id)
             }
-            MettaValue::Unit => r#"{"type":"unit"}"#.to_string(),
-            MettaValue::Memo(handle) => {
+            MettaValueInner::Unit => r#"{"type":"unit"}"#.to_string(),
+            MettaValueInner::Memo(handle) => {
                 format!(
                     r#"{{"type":"memo","id":{},"name":"{}"}}"#,
                     handle.id,
                     escape_json(&handle.name)
                 )
             }
-            MettaValue::Empty => r#"{"type":"empty"}"#.to_string(),
+            MettaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
         }
     }
 }
 
-pub fn escape_json(s: &str) -> String {
+pub fn escape_json(s: &str) -> StdString {
     s.replace('\\', r"\\")
         .replace('"', r#"\""#)
         .replace('\n', r"\n")
@@ -430,78 +808,142 @@ pub fn escape_json(s: &str) -> String {
         .replace('\t', r"\t")
 }
 
-// Implement Eq for MettaValue (required for HashMap keys)
-// Note: Float uses bit-level comparison for hashing purposes
+// ============================================================================
+// Trait implementations for MettaValue wrapper
+// ============================================================================
+
+impl PartialEq for MettaValue {
+    fn eq(&self, other: &Self) -> bool {
+        // Fast path: check if same Arc
+        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
 impl Eq for MettaValue {}
 
-// Implement Hash for MettaValue to enable use as HashMap key
 impl std::hash::Hash for MettaValue {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl std::fmt::Debug for MettaValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::fmt::Display for MettaValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.inner() {
+            MettaValueInner::Atom(s) => write!(f, "{}", s),
+            MettaValueInner::Bool(b) => write!(f, "{}", if *b { "True" } else { "False" }),
+            MettaValueInner::Long(n) => write!(f, "{}", n),
+            MettaValueInner::Float(v) => write!(f, "{}", v),
+            MettaValueInner::String(s) => write!(f, "\"{}\"", s),
+            MettaValueInner::SExpr(items) => {
+                write!(f, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, ")")
+            }
+            MettaValueInner::Nil => write!(f, "Nil"),
+            MettaValueInner::Error(msg, details) => write!(f, "(Error {} {})", msg, details),
+            MettaValueInner::Type(inner) => write!(f, "(: {})", inner),
+            MettaValueInner::Conjunction(goals) => {
+                write!(f, "(,")?;
+                for goal in goals {
+                    write!(f, " {}", goal)?;
+                }
+                write!(f, ")")
+            }
+            MettaValueInner::Space(handle) => write!(f, "<Space:{}>", handle.name),
+            MettaValueInner::State(id) => write!(f, "<State:{}>", id),
+            MettaValueInner::Unit => write!(f, "()"),
+            MettaValueInner::Memo(handle) => write!(f, "<Memo:{}>", handle.name),
+            MettaValueInner::Empty => write!(f, "Empty"),
+        }
+    }
+}
+
+// ============================================================================
+// Hash implementation for MettaValueInner
+// ============================================================================
+
+impl std::hash::Hash for MettaValueInner {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
-            MettaValue::Atom(s) => {
+            MettaValueInner::Atom(s) => {
                 0u8.hash(state);
                 s.hash(state);
             }
-            MettaValue::Bool(b) => {
+            MettaValueInner::Bool(b) => {
                 1u8.hash(state);
                 b.hash(state);
             }
-            MettaValue::Long(n) => {
+            MettaValueInner::Long(n) => {
                 2u8.hash(state);
                 n.hash(state);
             }
-            MettaValue::Float(f) => {
+            MettaValueInner::Float(f) => {
                 3u8.hash(state);
                 // Hash float as its bit representation for deterministic hashing
                 f.to_bits().hash(state);
             }
-            MettaValue::String(s) => {
+            MettaValueInner::String(s) => {
                 4u8.hash(state);
                 s.hash(state);
             }
-            MettaValue::SExpr(items) => {
+            MettaValueInner::SExpr(items) => {
                 5u8.hash(state);
                 items.hash(state);
             }
-            MettaValue::Nil => {
+            MettaValueInner::Nil => {
                 6u8.hash(state);
             }
-            MettaValue::Error(msg, details) => {
+            MettaValueInner::Error(msg, details) => {
                 7u8.hash(state);
                 msg.hash(state);
                 details.hash(state);
             }
-            MettaValue::Type(t) => {
+            MettaValueInner::Type(t) => {
                 8u8.hash(state);
                 t.hash(state);
             }
-            MettaValue::Conjunction(goals) => {
+            MettaValueInner::Conjunction(goals) => {
                 10u8.hash(state);
                 goals.hash(state);
             }
-            MettaValue::Space(handle) => {
+            MettaValueInner::Space(handle) => {
                 11u8.hash(state);
                 handle.hash(state);
             }
-            MettaValue::State(id) => {
+            MettaValueInner::State(id) => {
                 13u8.hash(state);
                 id.hash(state);
             }
-            MettaValue::Unit => {
+            MettaValueInner::Unit => {
                 12u8.hash(state);
             }
-            MettaValue::Memo(handle) => {
+            MettaValueInner::Memo(handle) => {
                 14u8.hash(state);
                 handle.hash(state);
             }
-            MettaValue::Empty => {
+            MettaValueInner::Empty => {
                 15u8.hash(state);
             }
         }
     }
 }
 
-// Idiomatic From trait implementations for convenient MettaValue construction
+// ============================================================================
+// From trait implementations for convenient MettaValue construction
+// ============================================================================
+
 impl From<bool> for MettaValue {
     fn from(b: bool) -> Self {
         MettaValue::Bool(b)
@@ -520,8 +962,8 @@ impl From<f64> for MettaValue {
     }
 }
 
-impl From<String> for MettaValue {
-    fn from(s: String) -> Self {
+impl From<StdString> for MettaValue {
+    fn from(s: StdString) -> Self {
         MettaValue::String(s)
     }
 }
@@ -535,12 +977,18 @@ impl From<&str> for MettaValue {
 impl From<Vec<MettaValue>> for MettaValue {
     fn from(items: Vec<MettaValue>) -> Self {
         if items.is_empty() {
-            MettaValue::Nil
+            MettaValue::Nil()
         } else {
             MettaValue::SExpr(items)
         }
     }
 }
+
+// ============================================================================
+// Export MettaValueInner for pattern matching
+// ============================================================================
+
+pub use MettaValueInner::*;
 
 #[cfg(test)]
 mod tests {
@@ -568,7 +1016,7 @@ mod tests {
 
     #[test]
     fn test_is_ground_type_nil() {
-        assert!(MettaValue::Nil.is_ground_type());
+        assert!(MettaValue::Nil().is_ground_type());
     }
 
     #[test]
@@ -583,12 +1031,12 @@ mod tests {
 
     #[test]
     fn test_is_ground_type_error() {
-        assert!(!MettaValue::Error("msg".to_string(), Arc::new(MettaValue::Nil)).is_ground_type());
+        assert!(!MettaValue::Error("msg".to_string(), MettaValue::Nil()).is_ground_type());
     }
 
     #[test]
     fn test_is_ground_type_type() {
-        assert!(!MettaValue::Type(Arc::new(MettaValue::Atom("Int".to_string()))).is_ground_type());
+        assert!(!MettaValue::Type(MettaValue::Atom("Int".to_string())).is_ground_type());
     }
 
     // Tests for is_eval_expr
@@ -648,7 +1096,7 @@ mod tests {
         assert!(!MettaValue::Bool(true).is_eval_expr());
         assert!(!MettaValue::Long(42).is_eval_expr());
         assert!(!MettaValue::String("!".to_string()).is_eval_expr());
-        assert!(!MettaValue::Nil.is_eval_expr());
+        assert!(!MettaValue::Nil().is_eval_expr());
     }
 
     #[test]
@@ -719,7 +1167,7 @@ mod tests {
         assert!(!MettaValue::Bool(true).is_rule_def());
         assert!(!MettaValue::Long(42).is_rule_def());
         assert!(!MettaValue::String("=".to_string()).is_rule_def());
-        assert!(!MettaValue::Nil.is_rule_def());
+        assert!(!MettaValue::Nil().is_rule_def());
     }
 
     #[test]
@@ -821,7 +1269,7 @@ mod tests {
         assert!(!MettaValue::String("hello".to_string())
             .structurally_equivalent(&MettaValue::String("world".to_string())));
 
-        assert!(MettaValue::Nil.structurally_equivalent(&MettaValue::Nil));
+        assert!(MettaValue::Nil().structurally_equivalent(&MettaValue::Nil()));
     }
 
     #[test]
@@ -860,24 +1308,24 @@ mod tests {
 
     #[test]
     fn test_structurally_equivalent_errors() {
-        let e1 = MettaValue::Error("msg".to_string(), Arc::new(MettaValue::Long(1)));
-        let e2 = MettaValue::Error("msg".to_string(), Arc::new(MettaValue::Long(1)));
+        let e1 = MettaValue::Error("msg".to_string(), MettaValue::Long(1));
+        let e2 = MettaValue::Error("msg".to_string(), MettaValue::Long(1));
         assert!(e1.structurally_equivalent(&e2));
 
-        let e3 = MettaValue::Error("msg".to_string(), Arc::new(MettaValue::Long(2)));
+        let e3 = MettaValue::Error("msg".to_string(), MettaValue::Long(2));
         assert!(!e1.structurally_equivalent(&e3));
 
-        let e4 = MettaValue::Error("other".to_string(), Arc::new(MettaValue::Long(1)));
+        let e4 = MettaValue::Error("other".to_string(), MettaValue::Long(1));
         assert!(!e1.structurally_equivalent(&e4));
     }
 
     #[test]
     fn test_structurally_equivalent_types() {
-        let t1 = MettaValue::Type(Arc::new(MettaValue::Atom("Int".to_string())));
-        let t2 = MettaValue::Type(Arc::new(MettaValue::Atom("Int".to_string())));
+        let t1 = MettaValue::Type(MettaValue::Atom("Int".to_string()));
+        let t2 = MettaValue::Type(MettaValue::Atom("Int".to_string()));
         assert!(t1.structurally_equivalent(&t2));
 
-        let t3 = MettaValue::Type(Arc::new(MettaValue::Atom("String".to_string())));
+        let t3 = MettaValue::Type(MettaValue::Atom("String".to_string()));
         assert!(!t1.structurally_equivalent(&t3));
     }
 
@@ -886,7 +1334,7 @@ mod tests {
         // Different enum variants are not equivalent
         assert!(!MettaValue::Bool(true).structurally_equivalent(&MettaValue::Long(1)));
         assert!(!MettaValue::Atom("x".to_string()).structurally_equivalent(&MettaValue::Long(1)));
-        assert!(!MettaValue::Nil.structurally_equivalent(&MettaValue::Long(0)));
+        assert!(!MettaValue::Nil().structurally_equivalent(&MettaValue::Long(0)));
     }
 
     // Tests for get_head_symbol
@@ -977,7 +1425,7 @@ mod tests {
             MettaValue::String("test".to_string()).get_head_symbol(),
             None
         );
-        assert_eq!(MettaValue::Nil.get_head_symbol(), None);
+        assert_eq!(MettaValue::Nil().get_head_symbol(), None);
     }
 
     // Tests for to_mork_string
@@ -1060,7 +1508,7 @@ mod tests {
 
     #[test]
     fn test_to_mork_string_nil() {
-        assert_eq!(MettaValue::Nil.to_mork_string(), "()");
+        assert_eq!(MettaValue::Nil().to_mork_string(), "()");
     }
 
     #[test]
@@ -1107,13 +1555,13 @@ mod tests {
 
     #[test]
     fn test_to_mork_string_error() {
-        let value = MettaValue::Error("test error".to_string(), Arc::new(MettaValue::Long(42)));
+        let value = MettaValue::Error("test error".to_string(), MettaValue::Long(42));
         assert_eq!(value.to_mork_string(), "(error \"test error\" 42)");
     }
 
     #[test]
     fn test_to_mork_string_type() {
-        let value = MettaValue::Type(Arc::new(MettaValue::Atom("Int".to_string())));
+        let value = MettaValue::Type(MettaValue::Atom("Int".to_string()));
         assert_eq!(value.to_mork_string(), "Int");
     }
 
@@ -1153,7 +1601,7 @@ mod tests {
 
     #[test]
     fn test_to_json_string_nil() {
-        let value = MettaValue::Nil;
+        let value = MettaValue::Nil();
         let json = value.to_json_string();
         assert_eq!(json, r#"{"type":"nil"}"#);
     }
@@ -1179,5 +1627,42 @@ mod tests {
         assert!(json.contains(r#"\n"#));
         assert!(json.contains(r#"\""#));
         assert!(json.contains(r#"\\"#));
+    }
+
+    // Tests for O(1) clone
+    #[test]
+    fn test_clone_is_o1() {
+        // Create a large nested structure
+        let large = MettaValue::SExpr(vec![
+            MettaValue::Atom("root".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("nested".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ]),
+        ]);
+
+        // Clone should just increment reference count
+        let cloned = large.clone();
+
+        // Both should point to the same Arc
+        assert!(large.ptr_eq(&cloned));
+    }
+
+    #[test]
+    fn test_accessor_methods() {
+        assert_eq!(MettaValue::Atom("foo".to_string()).as_atom(), Some("foo"));
+        assert_eq!(MettaValue::Bool(true).as_bool(), Some(true));
+        assert_eq!(MettaValue::Long(42).as_long(), Some(42));
+        assert_eq!(MettaValue::Float(3.14).as_float(), Some(3.14));
+        assert_eq!(
+            MettaValue::String("bar".to_string()).as_string(),
+            Some("bar")
+        );
+
+        // Cross-type access returns None
+        assert_eq!(MettaValue::Long(42).as_atom(), None);
+        assert_eq!(MettaValue::Atom("foo".to_string()).as_long(), None);
     }
 }

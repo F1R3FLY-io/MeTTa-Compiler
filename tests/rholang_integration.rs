@@ -23,6 +23,7 @@ use common::{
     ToMettaValue,
     ValidationResult,
 };
+use mettatron::backend::models::MettaValueInner;
 use std::process::Command;
 
 /// Helper to run a Rholang test file
@@ -721,11 +722,11 @@ fn test_edge_cases() {
     let has_syntax_error = pathmaps.iter().any(|pm| {
         pm.output.iter().any(|v| {
             // Check for MettaValue::Error OR SExpr with "error" as first element
-            match v {
-                MettaValue::Error(_, _) => true,
-                MettaValue::SExpr(items) => {
+            match v.inner() {
+                MettaValueInner::Error(_, _) => true,
+                MettaValueInner::SExpr(items) => {
                     items.first().is_some_and(|first| {
-                        matches!(first, MettaValue::Atom(s) | MettaValue::String(s) if s == "error")
+                        matches!(first.inner(), MettaValueInner::Atom(s) | MettaValueInner::String(s) if s == "error")
                     })
                 }
                 _ => false
@@ -771,9 +772,14 @@ fn test_edge_cases() {
     // Validation 6: Error resilience → Final output should be [10]
     // Test shows evaluation continues after error by producing final output [10]
     // Only the final state is printed, so we just check for [10]
-    let has_final_output = pathmaps
-        .iter()
-        .any(|pm| pm.output.len() == 1 && matches!(pm.output.first(), Some(MettaValue::Long(10))));
+    let has_final_output = pathmaps.iter().any(|pm| {
+        pm.output.len() == 1
+            && pm
+                .output
+                .first()
+                .map(|v| matches!(v.inner(), MettaValueInner::Long(10)))
+                .unwrap_or(false)
+    });
     report.add_result(
         "Error resilience: evaluation continues after error, final output [10]",
         if has_final_output {
@@ -1057,16 +1063,18 @@ fn test_example_robot_planning() {
     // Exact output: two String values in any order
     let demo1_neighbors = pathmaps.iter().find(|pm| {
         pm.output.len() == 2
-            && pm
-                .output
-                .iter()
-                .all(|v| matches!(v, MettaValue::String(_) | MettaValue::Atom(_)))
-            && pm.output.iter().any(|v| match v {
-                MettaValue::String(s) | MettaValue::Atom(s) => s == "room_b",
+            && pm.output.iter().all(|v| {
+                matches!(
+                    v.inner(),
+                    MettaValueInner::String(_) | MettaValueInner::Atom(_)
+                )
+            })
+            && pm.output.iter().any(|v| match v.inner() {
+                MettaValueInner::String(s) | MettaValueInner::Atom(s) => s == "room_b",
                 _ => false,
             })
-            && pm.output.iter().any(|v| match v {
-                MettaValue::String(s) | MettaValue::Atom(s) => s == "room_e",
+            && pm.output.iter().any(|v| match v.inner() {
+                MettaValueInner::String(s) | MettaValueInner::Atom(s) => s == "room_e",
                 _ => false,
             })
     });
@@ -1098,12 +1106,12 @@ fn test_example_robot_planning() {
     // Exact output: (path room_c room_b room_a) and possibly errors
     let demo3_path = pathmaps.iter().find(|pm| {
         pm.output.iter().any(|v| {
-            if let MettaValue::SExpr(exprs) = v {
+            if let MettaValueInner::SExpr(exprs) = v.inner() {
                 exprs.len() == 4
-                    && matches!(&exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "path")
-                    && matches!(&exprs[1], MettaValue::String(s) | MettaValue::Atom(s) if s == "room_c")
-                    && matches!(&exprs[2], MettaValue::String(s) | MettaValue::Atom(s) if s == "room_b")
-                    && matches!(&exprs[3], MettaValue::String(s) | MettaValue::Atom(s) if s == "room_a")
+                    && matches!(exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "path")
+                    && matches!(exprs[1].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "room_c")
+                    && matches!(exprs[2].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "room_b")
+                    && matches!(exprs[3].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "room_a")
             } else {
                 false
             }
@@ -1143,29 +1151,29 @@ fn test_example_robot_planning() {
     //                        (steps (...)))
     let demo4_plan = pathmaps.iter().find(|pm| {
         pm.output.iter().any(|v| {
-            if let MettaValue::SExpr(plan_exprs) = v {
+            if let MettaValueInner::SExpr(plan_exprs) = v.inner() {
                 plan_exprs.len() == 4
-                    && matches!(&plan_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "plan")
-                    && matches!(&plan_exprs[1], MettaValue::SExpr(obj_exprs) if
+                    && matches!(plan_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "plan")
+                    && matches!(plan_exprs[1].inner(), MettaValueInner::SExpr(obj_exprs) if
                         obj_exprs.len() >= 2 &&
-                        matches!(&obj_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "objective") &&
-                        matches!(&obj_exprs[1], MettaValue::SExpr(trans_exprs) if
+                        matches!(obj_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "objective") &&
+                        matches!(obj_exprs[1].inner(), MettaValueInner::SExpr(trans_exprs) if
                             trans_exprs.len() >= 6 &&
-                            matches!(&trans_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "transport") &&
-                            matches!(&trans_exprs[1], MettaValue::String(s) | MettaValue::Atom(s) if s == "ball1")
+                            matches!(trans_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "transport") &&
+                            matches!(trans_exprs[1].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "ball1")
                         )
                     )
-                    && matches!(&plan_exprs[2], MettaValue::SExpr(route_exprs) if
+                    && matches!(plan_exprs[2].inner(), MettaValueInner::SExpr(route_exprs) if
                         route_exprs.len() >= 2 &&
-                        matches!(&route_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "route") &&
-                        matches!(&route_exprs[1], MettaValue::SExpr(waypoint_exprs) if
+                        matches!(route_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "route") &&
+                        matches!(route_exprs[1].inner(), MettaValueInner::SExpr(waypoint_exprs) if
                             !waypoint_exprs.is_empty() &&
-                            matches!(&waypoint_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "waypoints")
+                            matches!(waypoint_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "waypoints")
                         )
                     )
-                    && matches!(&plan_exprs[3], MettaValue::SExpr(step_exprs) if
+                    && matches!(plan_exprs[3].inner(), MettaValueInner::SExpr(step_exprs) if
                         step_exprs.len() >= 2 &&
-                        matches!(&step_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "steps")
+                        matches!(step_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "steps")
                     )
             } else {
                 false
@@ -1185,14 +1193,14 @@ fn test_example_robot_planning() {
     // Exact structure: (validated (plan ...) multihop_required)
     let demo4_validated = pathmaps.iter().find(|pm| {
         pm.output.iter().any(|v| {
-            if let MettaValue::SExpr(val_exprs) = v {
+            if let MettaValueInner::SExpr(val_exprs) = v.inner() {
                 val_exprs.len() == 3
-                    && matches!(&val_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "validated")
-                    && matches!(&val_exprs[1], MettaValue::SExpr(plan_exprs) if
+                    && matches!(val_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "validated")
+                    && matches!(val_exprs[1].inner(), MettaValueInner::SExpr(plan_exprs) if
                         !plan_exprs.is_empty() &&
-                        matches!(&plan_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "plan")
+                        matches!(plan_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "plan")
                     )
-                    && matches!(&val_exprs[2], MettaValue::String(s) | MettaValue::Atom(s) if s == "multihop_required")
+                    && matches!(val_exprs[2].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "multihop_required")
             } else {
                 false
             }
@@ -1237,12 +1245,18 @@ fn test_example_robot_planning() {
     // - No valid distance < 2 exists (excluding sentinel 999)
     let demo5_distance = pathmaps.iter().find(|pm| {
         !pm.output.is_empty()
-            && pm.output.iter().all(|v| matches!(v, MettaValue::Long(_)))
-            && pm.output.iter().any(|v| matches!(v, MettaValue::Long(2)))
+            && pm
+                .output
+                .iter()
+                .all(|v| matches!(v.inner(), MettaValueInner::Long(_)))
+            && pm
+                .output
+                .iter()
+                .any(|v| matches!(v.inner(), MettaValueInner::Long(2)))
             && !pm
                 .output
                 .iter()
-                .any(|v| matches!(v, MettaValue::Long(n) if *n < 2 && *n != 999))
+                .any(|v| matches!(v.inner(), MettaValueInner::Long(n) if *n < 2 && *n != 999))
     });
     report.add_result(
         "Demo 5: array of Long values with minimum distance 2",
@@ -1261,27 +1275,27 @@ fn test_example_robot_planning() {
     //                        (steps (...)))
     let demo6_box2 = pathmaps.iter().find(|pm| {
         pm.output.iter().any(|v| {
-            if let MettaValue::SExpr(plan_exprs) = v {
+            if let MettaValueInner::SExpr(plan_exprs) = v.inner() {
                 plan_exprs.len() == 4
-                    && matches!(&plan_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "plan")
-                    && matches!(&plan_exprs[1], MettaValue::SExpr(obj_exprs) if
+                    && matches!(plan_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "plan")
+                    && matches!(plan_exprs[1].inner(), MettaValueInner::SExpr(obj_exprs) if
                         obj_exprs.len() >= 2 &&
-                        matches!(&obj_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "objective") &&
-                        matches!(&obj_exprs[1], MettaValue::SExpr(trans_exprs) if
+                        matches!(obj_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "objective") &&
+                        matches!(obj_exprs[1].inner(), MettaValueInner::SExpr(trans_exprs) if
                             trans_exprs.len() >= 6 &&
-                            matches!(&trans_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "transport") &&
-                            matches!(&trans_exprs[1], MettaValue::String(s) | MettaValue::Atom(s) if s == "box2") &&
-                            matches!(&trans_exprs[3], MettaValue::String(s) | MettaValue::Atom(s) if s == "room_b") &&
-                            matches!(&trans_exprs[5], MettaValue::String(s) | MettaValue::Atom(s) if s == "room_d")
+                            matches!(trans_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "transport") &&
+                            matches!(trans_exprs[1].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "box2") &&
+                            matches!(trans_exprs[3].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "room_b") &&
+                            matches!(trans_exprs[5].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "room_d")
                         )
                     )
-                    && matches!(&plan_exprs[2], MettaValue::SExpr(route_exprs) if
+                    && matches!(plan_exprs[2].inner(), MettaValueInner::SExpr(route_exprs) if
                         route_exprs.len() >= 2 &&
-                        matches!(&route_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "route")
+                        matches!(route_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "route")
                     )
-                    && matches!(&plan_exprs[3], MettaValue::SExpr(step_exprs) if
+                    && matches!(plan_exprs[3].inner(), MettaValueInner::SExpr(step_exprs) if
                         step_exprs.len() >= 2 &&
-                        matches!(&step_exprs[0], MettaValue::String(s) | MettaValue::Atom(s) if s == "steps")
+                        matches!(step_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "steps")
                     )
             } else {
                 false
@@ -1341,7 +1355,7 @@ fn test_example_robot_planning() {
         !pm.output.iter().any(|v| {
             // Check for Error variant with messages indicating actual failures
             // (as opposed to expected control-flow errors like no_1hop_path)
-            matches!(v, MettaValue::Error(msg, _) if
+            matches!(v.inner(), MettaValueInner::Error(msg, _) if
                 !msg.contains("no_1hop_path") &&
                 !msg.contains("no_2hop_path") &&
                 !msg.contains("no_3hop_path") &&

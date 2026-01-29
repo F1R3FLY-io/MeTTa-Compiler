@@ -176,8 +176,9 @@ fn test_evaluation_order() {
     println!("(quote (+ 1 2)) = {:?}", result[0]);
 
     // Should be unevaluated
-    match &result[0] {
-        MettaValue::SExpr(items) => {
+    use mettatron::backend::models::MettaValueInner;
+    match result[0].inner() {
+        MettaValueInner::SExpr(items) => {
             assert_eq!(items[0], MettaValue::Atom("add".to_string()));
             println!("✓ Quote prevents evaluation\n");
         }
@@ -260,9 +261,10 @@ fn test_error_termination() {
         MettaValue::Long(0),
     ]);
 
+    use mettatron::backend::models::MettaValueInner;
     let (result, _) = eval(expr, env.clone());
-    match &result[0] {
-        MettaValue::Error(msg, _) => {
+    match result[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             println!("(safe-div 10 0) = Error: {}", msg);
             assert_eq!(msg, "division by zero");
         }
@@ -281,8 +283,8 @@ fn test_error_termination() {
     ]);
 
     let (result2, _) = eval(expr2, env);
-    match &result2[0] {
-        MettaValue::Error(msg, _) => {
+    match result2[0].inner() {
+        MettaValueInner::Error(msg, _) => {
             println!("(+ (safe-div 10 0) 5) = Error: {}", msg);
             println!("✓ Errors propagate and terminate early\n");
         }

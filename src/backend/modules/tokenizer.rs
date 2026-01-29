@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use regex::Regex;
 
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 /// A function that constructs an atom from a matched token string.
 pub type TokenConstructor = Arc<dyn Fn(&str) -> MettaValue + Send + Sync>;
@@ -433,10 +433,14 @@ mod tests {
         tok.register_token("PI", |_| MettaValue::Float(3.14159));
 
         assert!(tok.has_token("PI"));
-        if let Some(MettaValue::Float(f)) = tok.lookup("PI") {
-            assert!((f - 3.14159).abs() < 0.0001);
+        if let Some(val) = tok.lookup("PI") {
+            if let MettaValueInner::Float(f) = val.inner() {
+                assert!((f - 3.14159).abs() < 0.0001);
+            } else {
+                panic!("Expected Float");
+            }
         } else {
-            panic!("Expected Float");
+            panic!("Expected Some");
         }
     }
 
@@ -623,7 +627,7 @@ mod tests {
         let mut tok = Tokenizer::new();
 
         // Invalid regex should return error
-        let result = tok.register_token_value_regex(r"[invalid(", MettaValue::Unit);
+        let result = tok.register_token_value_regex(r"[invalid(", MettaValue::Unit());
         assert!(result.is_err());
 
         // Tokenizer should still work after failed registration

@@ -5,10 +5,8 @@
 //! - get-state: Get the current value from a state cell
 //! - change-state!: Change the value in a state cell
 
-use std::sync::Arc;
-
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
 use super::super::eval;
@@ -27,7 +25,7 @@ pub(crate) fn eval_new_state_step(
                 "new-state requires 1 argument, got {}. Usage: (new-state initial-value)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -54,7 +52,7 @@ pub(crate) fn eval_get_state_step(
                 "get-state requires 1 argument, got {}. Usage: (get-state state)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -81,7 +79,7 @@ pub(crate) fn eval_change_state_step(
                 "change-state! requires 2 arguments, got {}. Usage: (change-state! state new-value)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
@@ -112,7 +110,7 @@ pub(crate) fn eval_new_state(items: Vec<MettaValue>, env: Environment) -> EvalRe
     if value_results.is_empty() {
         let err = MettaValue::Error(
             "new-state: initial value evaluated to empty".to_string(),
-            Arc::new(initial_value.clone()),
+            initial_value.clone(),
         );
         return (vec![err], env1);
     }
@@ -137,21 +135,21 @@ pub(crate) fn eval_get_state(items: Vec<MettaValue>, env: Environment) -> EvalRe
     if state_results.is_empty() {
         let err = MettaValue::Error(
             "get-state: state evaluated to empty".to_string(),
-            Arc::new(state_ref.clone()),
+            state_ref.clone(),
         );
         return (vec![err], env1);
     }
 
     let state_value = &state_results[0];
 
-    match state_value {
-        MettaValue::State(state_id) => {
+    match state_value.inner() {
+        MettaValueInner::State(state_id) => {
             if let Some(value) = env1.get_state(*state_id) {
                 (vec![value], env1)
             } else {
                 let err = MettaValue::Error(
                     format!("get-state: state {} not found", state_id),
-                    Arc::new(state_value.clone()),
+                    state_value.clone(),
                 );
                 (vec![err], env1)
             }
@@ -162,7 +160,7 @@ pub(crate) fn eval_get_state(items: Vec<MettaValue>, env: Environment) -> EvalRe
                     "get-state: argument must be a state reference, got {}. Usage: (get-state state)",
                     super::super::friendly_value_repr(state_value)
                 ),
-                Arc::new(state_value.clone()),
+                state_value.clone(),
             );
             (vec![err], env1)
         }
@@ -192,7 +190,7 @@ pub(crate) fn eval_change_state(items: Vec<MettaValue>, env: Environment) -> Eva
     if state_results.is_empty() {
         let err = MettaValue::Error(
             "change-state!: state evaluated to empty".to_string(),
-            Arc::new(state_ref.clone()),
+            state_ref.clone(),
         );
         return (vec![err], env1);
     }
@@ -202,7 +200,7 @@ pub(crate) fn eval_change_state(items: Vec<MettaValue>, env: Environment) -> Eva
     if value_results.is_empty() {
         let err = MettaValue::Error(
             "change-state!: new value evaluated to empty".to_string(),
-            Arc::new(new_value.clone()),
+            new_value.clone(),
         );
         return (vec![err], env2);
     }
@@ -210,15 +208,15 @@ pub(crate) fn eval_change_state(items: Vec<MettaValue>, env: Environment) -> Eva
     let state_value = &state_results[0];
     let value = value_results[0].clone();
 
-    match state_value {
-        MettaValue::State(state_id) => {
+    match state_value.inner() {
+        MettaValueInner::State(state_id) => {
             if env2.change_state(*state_id, value) {
                 // Return the state reference for chaining
                 (vec![state_value.clone()], env2)
             } else {
                 let err = MettaValue::Error(
                     format!("change-state!: state {} not found", state_id),
-                    Arc::new(state_value.clone()),
+                    state_value.clone(),
                 );
                 (vec![err], env2)
             }
@@ -229,7 +227,7 @@ pub(crate) fn eval_change_state(items: Vec<MettaValue>, env: Environment) -> Eva
                     "change-state!: first argument must be a state reference, got {}. Usage: (change-state! state new-value)",
                     super::super::friendly_value_repr(state_value)
                 ),
-                Arc::new(state_value.clone()),
+                state_value.clone(),
             );
             (vec![err], env2)
         }

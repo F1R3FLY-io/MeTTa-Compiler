@@ -793,15 +793,15 @@ fn test_context_arity_unify_wrong_arity() {
 #[test]
 fn test_type_matches_unit() {
     let env = Environment::new();
-    assert!(type_matches(&MettaValue::Unit, &TypeExpr::Unit, &env));
+    assert!(type_matches(&MettaValue::Unit(), &TypeExpr::Unit, &env));
     assert!(!type_matches(&MettaValue::Long(0), &TypeExpr::Unit, &env));
 }
 
 #[test]
 fn test_type_matches_nil() {
     let env = Environment::new();
-    assert!(type_matches(&MettaValue::Nil, &TypeExpr::Nil, &env));
-    assert!(!type_matches(&MettaValue::Unit, &TypeExpr::Nil, &env));
+    assert!(type_matches(&MettaValue::Nil(), &TypeExpr::Nil, &env));
+    assert!(!type_matches(&MettaValue::Unit(), &TypeExpr::Nil, &env));
 }
 
 #[test]
@@ -809,7 +809,7 @@ fn test_type_matches_error() {
     let env = Environment::new();
     let error_val = MettaValue::Error(
         "test error".to_string(),
-        std::sync::Arc::new(MettaValue::String("error msg".to_string())),
+        MettaValue::String("error msg".to_string()),
     );
     assert!(type_matches(&error_val, &TypeExpr::Error, &env));
     assert!(!type_matches(

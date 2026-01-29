@@ -7,7 +7,7 @@
 
 use super::{
     friendly_type_name, Environment, EvalFn, ExecError, GroundedOperation, GroundedResult,
-    MettaValue,
+    MettaValue, MettaValueInner,
 };
 
 /// Logical AND operation: (and a b)
@@ -36,17 +36,17 @@ impl GroundedOperation for AndOp {
 
         let mut results = Vec::new();
         for a in &a_results {
-            match a {
-                MettaValue::Bool(false) => {
+            match a.inner() {
+                MettaValueInner::Bool(false) => {
                     // Short-circuit: false AND anything = false
                     results.push((MettaValue::Bool(false), None));
                 }
-                MettaValue::Bool(true) => {
+                MettaValueInner::Bool(true) => {
                     // Need to evaluate second argument
                     let (b_results, _) = eval_fn(args[1].clone(), env1.clone());
                     for b in &b_results {
-                        match b {
-                            MettaValue::Bool(bv) => {
+                        match b.inner() {
+                            MettaValueInner::Bool(bv) => {
                                 results.push((MettaValue::Bool(*bv), None));
                             }
                             _ => {
@@ -96,17 +96,17 @@ impl GroundedOperation for OrOp {
 
         let mut results = Vec::new();
         for a in &a_results {
-            match a {
-                MettaValue::Bool(true) => {
+            match a.inner() {
+                MettaValueInner::Bool(true) => {
                     // Short-circuit: true OR anything = true
                     results.push((MettaValue::Bool(true), None));
                 }
-                MettaValue::Bool(false) => {
+                MettaValueInner::Bool(false) => {
                     // Need to evaluate second argument
                     let (b_results, _) = eval_fn(args[1].clone(), env1.clone());
                     for b in &b_results {
-                        match b {
-                            MettaValue::Bool(bv) => {
+                        match b.inner() {
+                            MettaValueInner::Bool(bv) => {
                                 results.push((MettaValue::Bool(*bv), None));
                             }
                             _ => {
@@ -155,8 +155,8 @@ impl GroundedOperation for NotOp {
 
         let mut results = Vec::new();
         for a in &a_results {
-            match a {
-                MettaValue::Bool(v) => {
+            match a.inner() {
+                MettaValueInner::Bool(v) => {
                     results.push((MettaValue::Bool(!v), None));
                 }
                 _ => {

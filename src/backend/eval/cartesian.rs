@@ -187,7 +187,7 @@ pub fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaVal
                  Consider simplifying the expression or adding constraints.",
                 total_size, MAX_CARTESIAN_RESULTS
             ),
-            Arc::new(MettaValue::Atom("LimitExceeded".to_string())),
+            MettaValue::Atom("LimitExceeded".to_string()),
         ));
     }
 
@@ -208,7 +208,7 @@ pub fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaVal
             .ok_or_else(|| {
                 MettaValue::Error(
                     "Combinatorial explosion: integer overflow in cartesian product".to_string(),
-                    Arc::new(MettaValue::Atom("Overflow".to_string())),
+                    MettaValue::Atom("Overflow".to_string()),
                 )
             })?;
         let mut new_product = Vec::with_capacity(new_capacity);

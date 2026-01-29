@@ -19,7 +19,7 @@ mod tests {
         JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, PAYLOAD_MASK, TAG_HEAP,
         TAG_MASK,
     };
-    use crate::backend::models::MettaValue;
+    use crate::backend::models::{MettaValue, MettaValueInner};
 
     #[test]
     fn test_pow_positive() {
@@ -421,7 +421,7 @@ mod tests {
         // Verify the SExpr contents
         let ptr = (result & PAYLOAD_MASK) as *const MettaValue;
         let metta_val = unsafe { &*ptr };
-        if let MettaValue::SExpr(items) = metta_val {
+        if let MettaValueInner::SExpr(items) = metta_val.inner() {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Long(1));
             assert_eq!(items[1], MettaValue::Long(2));
@@ -783,7 +783,7 @@ mod tests {
         let ptr = (collected_raw & PAYLOAD_MASK) as *const MettaValue;
         let metta_val = unsafe { &*ptr };
 
-        if let MettaValue::SExpr(items) = metta_val {
+        if let MettaValueInner::SExpr(items) = metta_val.inner() {
             assert_eq!(items.len(), 3, "Expected 3 collected results");
             assert_eq!(items[0], MettaValue::Long(1), "First result should be 1");
             assert_eq!(items[1], MettaValue::Long(2), "Second result should be 2");
@@ -849,8 +849,8 @@ mod tests {
 
             // Extract atom name (to_metta() returns MettaValue directly)
             let metta = unsafe { outer_val.to_metta() };
-            let outer_name = if let MettaValue::Atom(name) = metta {
-                name
+            let outer_name = if let MettaValueInner::Atom(name) = metta.inner() {
+                name.clone()
             } else {
                 panic!("Expected Atom for outer, got {:?}", metta);
             };
@@ -904,7 +904,7 @@ mod tests {
         let ptr = (collected_raw & PAYLOAD_MASK) as *const MettaValue;
         let metta_val = unsafe { &*ptr };
 
-        if let MettaValue::SExpr(items) = metta_val {
+        if let MettaValueInner::SExpr(items) = metta_val.inner() {
             assert_eq!(items.len(), 4, "Expected 4 collected results");
             // Results should be: 1 (A,1), 2 (A,2), 11 (B,1), 12 (B,2)
             assert_eq!(items[0], MettaValue::Long(1)); // A*10 + 1 = 0*10 + 1 = 1

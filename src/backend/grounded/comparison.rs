@@ -9,6 +9,7 @@ use super::{
     friendly_type_name, Environment, EvalFn, ExecError, GroundedOperation, GroundedResult,
     MettaValue,
 };
+use crate::backend::models::MettaValueInner;
 
 /// Less than operation: (< a b)
 pub struct LessOp;
@@ -158,21 +159,21 @@ fn eval_comparison(
     let mut results = Vec::new();
     for a in &a_results {
         for b in &b_results {
-            match (a, b) {
-                (MettaValue::Long(x), MettaValue::Long(y)) => {
+            match (a.inner(), b.inner()) {
+                (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
                     results.push((MettaValue::Bool(kind.compare(x, y)), None));
                 }
-                (MettaValue::Float(x), MettaValue::Float(y)) => {
+                (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
                     results.push((MettaValue::Bool(kind.compare(x, y)), None));
                 }
-                (MettaValue::Long(x), MettaValue::Float(y)) => {
+                (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
                     results.push((MettaValue::Bool(kind.compare(&(*x as f64), y)), None));
                 }
-                (MettaValue::Float(x), MettaValue::Long(y)) => {
+                (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
                     results.push((MettaValue::Bool(kind.compare(x, &(*y as f64))), None));
                 }
                 // String comparison (lexicographic)
-                (MettaValue::String(x), MettaValue::String(y)) => {
+                (MettaValueInner::String(x), MettaValueInner::String(y)) => {
                     results.push((MettaValue::Bool(kind.compare(x, y)), None));
                 }
                 _ => {
@@ -219,20 +220,21 @@ fn eval_equality(
 
 /// Check if two MettaValues are equal
 pub(crate) fn values_equal(a: &MettaValue, b: &MettaValue) -> bool {
-    match (a, b) {
-        (MettaValue::Long(x), MettaValue::Long(y)) => x == y,
-        (MettaValue::Float(x), MettaValue::Float(y)) => (x - y).abs() < f64::EPSILON,
-        (MettaValue::Bool(x), MettaValue::Bool(y)) => x == y,
-        (MettaValue::String(x), MettaValue::String(y)) => x == y,
-        (MettaValue::Atom(x), MettaValue::Atom(y)) => x == y,
-        (MettaValue::Nil, MettaValue::Nil) => true,
-        (MettaValue::Unit, MettaValue::Unit) => true,
+    match (a.inner(), b.inner()) {
+        (MettaValueInner::Long(x), MettaValueInner::Long(y)) => x == y,
+        (MettaValueInner::Float(x), MettaValueInner::Float(y)) => (x - y).abs() < f64::EPSILON,
+        (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => x == y,
+        (MettaValueInner::String(x), MettaValueInner::String(y)) => x == y,
+        (MettaValueInner::Atom(x), MettaValueInner::Atom(y)) => x == y,
+        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
+        (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         // HE compatibility: Nil equals empty SExpr
-        (MettaValue::Nil, MettaValue::SExpr(items))
-        | (MettaValue::SExpr(items), MettaValue::Nil) => items.is_empty(),
+        (MettaValueInner::Nil, MettaValueInner::SExpr(items))
+        | (MettaValueInner::SExpr(items), MettaValueInner::Nil) => items.is_empty(),
         // HE compatibility: Nil equals Unit
-        (MettaValue::Nil, MettaValue::Unit) | (MettaValue::Unit, MettaValue::Nil) => true,
-        (MettaValue::SExpr(x), MettaValue::SExpr(y)) => {
+        (MettaValueInner::Nil, MettaValueInner::Unit)
+        | (MettaValueInner::Unit, MettaValueInner::Nil) => true,
+        (MettaValueInner::SExpr(x), MettaValueInner::SExpr(y)) => {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
         }
         // Different types are not equal

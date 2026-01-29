@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
 use crate::backend::compile::compile;
 use crate::backend::environment::Environment;
-use crate::backend::models::{EvalResult, MettaValue, Rule};
+use crate::backend::models::{EvalResult, MettaValue, MettaValueInner, Rule};
 use crate::backend::modules::{hash_content, resolve_module_path};
 
 #[allow(unused_imports)]
@@ -28,16 +26,16 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
     let path_arg = &items[1];
 
     // Get the path string
-    let path_str = match path_arg {
-        MettaValue::String(s) => s.clone(),
-        MettaValue::Atom(s) => s.clone(),
-        other => {
+    let path_str = match path_arg.inner() {
+        MettaValueInner::String(s) => s.clone(),
+        MettaValueInner::Atom(s) => s.clone(),
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "include: expected string or symbol path, got {}",
-                    super::friendly_type_name(other)
+                    super::friendly_type_name(path_arg)
                 ),
-                Arc::new(other.clone()),
+                path_arg.clone(),
             );
             return (vec![err], env);
         }
@@ -50,7 +48,7 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
     if let Some(_mod_id) = env.get_module_by_path(&resolved_path) {
         // Module already loaded - just return Unit
         // (The rules are already in the environment from the first load)
-        return (vec![MettaValue::Unit], env);
+        return (vec![MettaValue::Unit()], env);
     }
 
     // Read the file contents
@@ -63,7 +61,7 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
                     resolved_path.display(),
                     e
                 ),
-                Arc::new(MettaValue::Atom(path_str)),
+                MettaValue::Atom(path_str),
             );
             return (vec![err], env);
         }
@@ -77,14 +75,14 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
         // Cycle detected - but this is OK because we use two-pass loading
         // The rules are already indexed (Pass 1), so forward references work
         // Just return Unit without re-evaluating
-        return (vec![MettaValue::Unit], env);
+        return (vec![MettaValue::Unit()], env);
     }
 
     // Check if same content already loaded at different path
     if let Some(mod_id) = env.get_module_by_content(content_hash) {
         // Content already loaded - add path alias and return
         env.add_module_path_alias(&resolved_path, mod_id);
-        return (vec![MettaValue::Unit], env);
+        return (vec![MettaValue::Unit()], env);
     }
 
     // Mark as loading (for cycle detection)
@@ -101,7 +99,7 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
                     resolved_path.display(),
                     e
                 ),
-                Arc::new(MettaValue::Atom(path_str)),
+                MettaValue::Atom(path_str),
             );
             return (vec![err], env);
         }
@@ -114,9 +112,9 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
 
     for expr in expressions {
         // Check if it's a rule definition (= pattern body)
-        if let MettaValue::SExpr(ref sexpr_items) = expr {
+        if let MettaValueInner::SExpr(ref sexpr_items) = expr.inner() {
             if sexpr_items.len() == 3 {
-                if let MettaValue::Atom(ref op) = sexpr_items[0] {
+                if let MettaValueInner::Atom(ref op) = sexpr_items[0].inner() {
                     if op == "=" {
                         // Collect the rule for bulk addition
                         let rule = Rule::new(sexpr_items[1].clone(), sexpr_items[2].clone());
@@ -143,7 +141,7 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
             current_env.unmark_module_loading(content_hash);
             let err = MettaValue::Error(
                 format!("include: failed to add rules: {}", e),
-                Arc::new(MettaValue::Atom(path_str)),
+                MettaValue::Atom(path_str),
             );
             return (vec![err], current_env);
         }
@@ -160,7 +158,7 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
     current_env.set_current_module_path(resource_dir);
 
     // === PASS 2: Evaluate expressions ===
-    let mut last_results = vec![MettaValue::Unit];
+    let mut last_results = vec![MettaValue::Unit()];
     for expr in expressions_to_eval {
         let (results, new_env) = eval(expr, current_env);
         current_env = new_env;
@@ -200,7 +198,7 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
     if items.len() < 3 {
         let err = MettaValue::Error(
             "import!: expected at least 2 arguments. Usage: (import! dest module [item [as alias]])".to_string(),
-            Arc::new(MettaValue::Nil),
+            MettaValue::Nil(),
         );
         return (vec![err], env);
     }
@@ -210,15 +208,15 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
 
     // Check for selective import: (import! &self module item [as alias])
     // item is at index 3, "as" at index 4, alias at index 5
-    let selective_import = if items.len() >= 4 {
+    let selective_import: Option<(String, Option<String>)> = if items.len() >= 4 {
         let potential_item = &items[3];
         // Check if it's an option (starts with :) or an item to import
-        match potential_item {
-            MettaValue::Atom(name) if !name.starts_with(':') => {
+        match potential_item.inner() {
+            MettaValueInner::Atom(name) if !name.starts_with(':') => {
                 // Check for "as alias" syntax
-                let alias = if items.len() >= 6 {
-                    match (&items[4], &items[5]) {
-                        (MettaValue::Atom(as_kw), MettaValue::Atom(alias_name))
+                let alias: Option<String> = if items.len() >= 6 {
+                    match (items[4].inner(), items[5].inner()) {
+                        (MettaValueInner::Atom(as_kw), MettaValueInner::Atom(alias_name))
                             if as_kw == "as" =>
                         {
                             Some(alias_name.clone())
@@ -237,31 +235,34 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
     };
 
     // Get module path string
-    let _module_path_str = match module_arg {
-        MettaValue::String(s) => s.clone(),
-        MettaValue::Atom(s) => s.clone(),
-        other => {
+    let _module_path_str = match module_arg.inner() {
+        MettaValueInner::String(s) => s.clone(),
+        MettaValueInner::Atom(s) => s.clone(),
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "import!: expected string or symbol for module path, got {}",
-                    super::friendly_type_name(other)
+                    super::friendly_type_name(module_arg)
                 ),
-                Arc::new(other.clone()),
+                module_arg.clone(),
             );
             return (vec![err], env);
         }
     };
 
     // Check destination
-    match dest {
-        MettaValue::Atom(name) if name == "&self" => {
+    match dest.inner() {
+        MettaValueInner::Atom(name) if name == "&self" => {
             // Import into current space
             // First, load the module
             let include_items = vec![MettaValue::Atom("include".to_string()), module_arg.clone()];
             let (results, new_env) = eval_include(include_items, env);
 
             // Check for errors
-            if results.iter().any(|r| matches!(r, MettaValue::Error(_, _))) {
+            if results
+                .iter()
+                .any(|r| matches!(r.inner(), MettaValueInner::Error(_, _)))
+            {
                 return (results, new_env);
             }
 
@@ -279,13 +280,13 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
                     if lookup_results.is_empty()
                         || lookup_results
                             .iter()
-                            .any(|r| matches!(r, MettaValue::Error(_, _)))
+                            .any(|r| matches!(r.inner(), MettaValueInner::Error(_, _)))
                     {
                         // Item not found or error - return what we got
                         if lookup_results.is_empty() {
                             let err = MettaValue::Error(
                                 format!("import!: item '{}' not found in module", item_name),
-                                Arc::new(MettaValue::Atom(item_name)),
+                                MettaValue::Atom(item_name),
                             );
                             return (vec![err], final_env);
                         }
@@ -294,37 +295,40 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
 
                     // Bind the result to the alias
                     final_env.register_token(&alias_name, lookup_results[0].clone());
-                    (vec![MettaValue::Unit], final_env)
+                    (vec![MettaValue::Unit()], final_env)
                 } else {
                     // No alias - selective import without renaming
                     // The item is already available from include, just return success
-                    (vec![MettaValue::Unit], new_env)
+                    (vec![MettaValue::Unit()], new_env)
                 }
             } else {
                 // Full import (no selective)
-                (vec![MettaValue::Unit], new_env)
+                (vec![MettaValue::Unit()], new_env)
             }
         }
-        MettaValue::Atom(_alias) => {
+        MettaValueInner::Atom(_alias) => {
             // Import with alias - load module and bind alias to module reference
             let include_items = vec![MettaValue::Atom("include".to_string()), module_arg.clone()];
             let (results, new_env) = eval_include(include_items, env);
 
             // If successful, we could bind the module reference here
-            if !results.iter().any(|r| matches!(r, MettaValue::Error(_, _))) {
+            if !results
+                .iter()
+                .any(|r| matches!(r.inner(), MettaValueInner::Error(_, _)))
+            {
                 // Successfully loaded - in future, would bind alias to module's space
-                (vec![MettaValue::Unit], new_env)
+                (vec![MettaValue::Unit()], new_env)
             } else {
                 (results, new_env)
             }
         }
-        other => {
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "import!: destination must be &self or a symbol alias, got {}",
-                    super::friendly_type_name(other)
+                    super::friendly_type_name(dest)
                 ),
-                Arc::new(other.clone()),
+                dest.clone(),
             );
             (vec![err], env)
         }
@@ -350,16 +354,16 @@ pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: Environment) -> EvalRe
     let module_arg = &items[1];
 
     // Get module path string
-    let module_path_str = match module_arg {
-        MettaValue::String(s) => s.clone(),
-        MettaValue::Atom(s) => s.clone(),
-        other => {
+    let module_path_str = match module_arg.inner() {
+        MettaValueInner::String(s) => s.clone(),
+        MettaValueInner::Atom(s) => s.clone(),
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "mod-space!: expected string or symbol for module path, got {}",
-                    super::friendly_type_name(other)
+                    super::friendly_type_name(module_arg)
                 ),
-                Arc::new(other.clone()),
+                module_arg.clone(),
             );
             return (vec![err], env);
         }
@@ -387,7 +391,7 @@ pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: Environment) -> EvalRe
                     "mod-space!: module '{}' exists but space not accessible",
                     module_path_str
                 ),
-                Arc::new(MettaValue::Atom(module_path_str)),
+                MettaValue::Atom(module_path_str),
             );
             (vec![err], env)
         }
@@ -406,14 +410,14 @@ pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: Environment) -> EvalRe
                         "mod-space!: module '{}' loaded but space not accessible",
                         module_path_str
                     ),
-                    Arc::new(MettaValue::Atom(module_path_str)),
+                    MettaValue::Atom(module_path_str),
                 );
                 (vec![err], new_env)
             }
         } else {
             let err = MettaValue::Error(
                 format!("mod-space!: failed to load module '{}'", module_path_str),
-                Arc::new(MettaValue::Atom(module_path_str)),
+                MettaValue::Atom(module_path_str),
             );
             (vec![err], new_env)
         }
@@ -428,7 +432,7 @@ pub(super) fn eval_print_mods(items: Vec<MettaValue>, env: Environment) -> EvalR
     if items.len() > 1 {
         let err = MettaValue::Error(
             "print-mods!: takes no arguments".to_string(),
-            Arc::new(MettaValue::Nil),
+            MettaValue::Nil(),
         );
         return (vec![err], env);
     }
@@ -436,7 +440,7 @@ pub(super) fn eval_print_mods(items: Vec<MettaValue>, env: Environment) -> EvalR
     let count = env.module_count();
     println!("Loaded modules: {}", count);
 
-    (vec![MettaValue::Unit], env)
+    (vec![MettaValue::Unit()], env)
 }
 
 // ============================================================
@@ -452,20 +456,20 @@ pub(crate) fn eval_bind_step(items: Vec<MettaValue>, env: Environment, depth: us
                 "bind! requires exactly 2 arguments, got {}. Usage: (bind! token atom)",
                 items.len() - 1
             ),
-            Arc::new(MettaValue::SExpr(items)),
+            MettaValue::SExpr(items),
         );
         return EvalStep::Done((vec![err], env));
     }
 
-    let token = match &items[1] {
-        MettaValue::Atom(s) => s.clone(),
-        other => {
+    let token = match items[1].inner() {
+        MettaValueInner::Atom(s) => s.clone(),
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "bind!: expected symbol for token, got {}",
-                    super::friendly_type_name(other)
+                    super::friendly_type_name(&items[1])
                 ),
-                Arc::new(other.clone()),
+                items[1].clone(),
             );
             return EvalStep::Done((vec![err], env));
         }
@@ -501,15 +505,15 @@ pub(crate) fn eval_bind_step(items: Vec<MettaValue>, env: Environment, depth: us
 pub(super) fn eval_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("bind!", items, 2, env, "(bind! token atom)");
 
-    let token = match &items[1] {
-        MettaValue::Atom(s) => s.clone(),
-        other => {
+    let token = match items[1].inner() {
+        MettaValueInner::Atom(s) => s.clone(),
+        _ => {
             let err = MettaValue::Error(
                 format!(
                     "bind!: expected symbol for token, got {}",
-                    super::friendly_type_name(other)
+                    super::friendly_type_name(&items[1])
                 ),
-                Arc::new(other.clone()),
+                items[1].clone(),
             );
             return (vec![err], env);
         }
@@ -521,14 +525,14 @@ pub(super) fn eval_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult 
         return (
             vec![MettaValue::Error(
                 "bind!: atom evaluated to empty".to_string(),
-                Arc::new(items[2].clone()),
+                items[2].clone(),
             )],
             new_env,
         );
     }
 
     // Check for errors in evaluation
-    if let MettaValue::Error(_, _) = &results[0] {
+    if let MettaValueInner::Error(_, _) = results[0].inner() {
         return (results, new_env);
     }
 
@@ -537,7 +541,7 @@ pub(super) fn eval_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult 
     // Register in the tokenizer for subsequent atom resolution
     new_env.register_token(&token, atom);
 
-    (vec![MettaValue::Unit], new_env)
+    (vec![MettaValue::Unit()], new_env)
 }
 
 #[cfg(test)]
@@ -555,8 +559,8 @@ mod tests {
         let (results, _) = eval_include(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("failed to read file"));
             }
             _ => panic!("Expected error"),
@@ -575,8 +579,8 @@ mod tests {
 
         // Should fail with file not found (the path is resolved but file doesn't exist)
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("failed to read file"));
             }
             _ => panic!("Expected error"),
@@ -591,7 +595,7 @@ mod tests {
         let (results, env) = eval_print_mods(items, env);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
         assert_eq!(env.module_count(), 0);
     }
 
@@ -612,7 +616,7 @@ mod tests {
 
         // bind! returns Unit
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
 
         // Token should be registered
         assert!(new_env.has_token("&my-value"));
@@ -664,7 +668,7 @@ mod tests {
 
         // bind! returns Unit
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
 
         // Token should resolve to the evaluated result (5)
         assert_eq!(new_env.lookup_token("&sum"), Some(MettaValue::Long(5)));
@@ -690,8 +694,8 @@ mod tests {
         let (results, _) = eval_bind(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("expected symbol for token"));
             }
             _ => panic!("Expected error"),
@@ -739,8 +743,8 @@ mod tests {
         let (results, _) = eval_import(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("expected at least 2 arguments"));
             }
             _ => panic!("Expected error"),
@@ -761,8 +765,8 @@ mod tests {
         let (results, _) = eval_import(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("destination must be &self or a symbol alias"));
             }
             _ => panic!("Expected error"),
@@ -783,8 +787,8 @@ mod tests {
         let (results, _) = eval_import(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("expected string or symbol for module path"));
             }
             _ => panic!("Expected error"),
@@ -805,8 +809,8 @@ mod tests {
         let (results, _) = eval_import(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("failed to read file"));
             }
             _ => panic!("Expected error"),
@@ -828,8 +832,8 @@ mod tests {
 
         // Should fail with file not found
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("failed to read file"));
             }
             _ => panic!("Expected error for nonexistent file"),
@@ -854,8 +858,8 @@ mod tests {
 
         // Should fail with file not found (can't test item lookup without real file)
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("failed to read file"));
             }
             _ => panic!("Expected error"),
@@ -881,8 +885,8 @@ mod tests {
 
         // Should fail with file not found
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("failed to read file"));
             }
             _ => panic!("Expected error"),
@@ -902,8 +906,8 @@ mod tests {
         let (results, _) = eval_mod_space(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("requires exactly 1 argument"));
             }
             _ => panic!("Expected error"),
@@ -922,8 +926,8 @@ mod tests {
         let (results, _) = eval_mod_space(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("expected string or symbol for module path"));
             }
             _ => panic!("Expected error"),
@@ -943,8 +947,8 @@ mod tests {
 
         // Should fail because module doesn't exist
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("failed to load module") || msg.contains("failed to read"));
             }
             _ => panic!("Expected error"),
@@ -967,8 +971,8 @@ mod tests {
         let (results, _) = eval_print_mods(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("takes no arguments"));
             }
             _ => panic!("Expected error"),
@@ -984,7 +988,7 @@ mod tests {
         let (results, _) = eval_print_mods(items, env);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], MettaValue::Unit);
+        assert_eq!(results[0], MettaValue::Unit());
     }
 
     // ============================================================
@@ -1000,8 +1004,8 @@ mod tests {
         let (results, _) = eval_include(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("requires exactly 1 argument"));
             }
             _ => panic!("Expected error"),
@@ -1020,8 +1024,8 @@ mod tests {
         let (results, _) = eval_include(items, env);
 
         assert_eq!(results.len(), 1);
-        match &results[0] {
-            MettaValue::Error(msg, _) => {
+        match results[0].inner() {
+            MettaValueInner::Error(msg, _) => {
                 assert!(msg.contains("expected string or symbol path"));
             }
             _ => panic!("Expected error"),

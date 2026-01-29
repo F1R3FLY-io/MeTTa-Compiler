@@ -3,8 +3,6 @@
 //! These types represent the results of a single evaluation step in the
 //! trampoline-based evaluator.
 
-use std::sync::Arc;
-
 use crate::backend::environment::Environment;
 use crate::backend::grounded::GroundedState;
 use crate::backend::models::{Bindings, EvalResult, MettaValue};
@@ -59,8 +57,8 @@ pub enum EvalStep {
     /// MeTTa HE uses normal-order (lazy) evaluation for rule arguments.
     EvalRuleMatchesLazy {
         /// Matched rules: (RHS expression, bindings from pattern match)
-        /// RHS is Arc-wrapped for O(1) cloning
-        matches: Vec<(Arc<MettaValue>, Bindings)>,
+        /// MettaValue clone is O(1) since it uses Arc internally
+        matches: Vec<(MettaValue, Bindings)>,
         /// Environment for evaluation
         env: Environment,
         /// Evaluation depth
@@ -476,9 +474,9 @@ pub enum ProcessedSExpr {
     /// Processing complete, return this result
     Done(EvalResult),
     /// Need to evaluate rule matches
-    /// RHS is Arc-wrapped for O(1) cloning
+    /// MettaValue clone is O(1) since it uses Arc internally
     EvalRuleMatches {
-        matches: Vec<(Arc<MettaValue>, Bindings)>,
+        matches: Vec<(MettaValue, Bindings)>,
         env: Environment,
         depth: usize,
         base_results: Vec<MettaValue>,

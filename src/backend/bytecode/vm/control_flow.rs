@@ -10,7 +10,7 @@ use tracing::trace;
 use super::types::{Alternative, BindingFrame, CallFrame, ChoicePoint, VmError, VmResult};
 use super::BytecodeVM;
 use crate::backend::bytecode::chunk::BytecodeChunk;
-use crate::backend::models::{Bindings, MettaValue};
+use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 
 impl BytecodeVM {
     // === Jump Operations ===
@@ -24,7 +24,7 @@ impl BytecodeVM {
     pub(super) fn op_jump_if_false(&mut self) -> VmResult<()> {
         let offset = self.read_i16()?;
         let cond = self.pop()?;
-        if matches!(cond, MettaValue::Bool(false)) {
+        if matches!(cond.inner(), MettaValueInner::Bool(false)) {
             self.ip = (self.ip as isize + offset as isize) as usize;
         }
         Ok(())
@@ -33,7 +33,7 @@ impl BytecodeVM {
     pub(super) fn op_jump_if_true(&mut self) -> VmResult<()> {
         let offset = self.read_i16()?;
         let cond = self.pop()?;
-        if matches!(cond, MettaValue::Bool(true)) {
+        if matches!(cond.inner(), MettaValueInner::Bool(true)) {
             self.ip = (self.ip as isize + offset as isize) as usize;
         }
         Ok(())
@@ -42,7 +42,7 @@ impl BytecodeVM {
     pub(super) fn op_jump_if_nil(&mut self) -> VmResult<()> {
         let offset = self.read_i16()?;
         let cond = self.pop()?;
-        if matches!(cond, MettaValue::Nil) {
+        if matches!(cond.inner(), MettaValueInner::Nil) {
             self.ip = (self.ip as isize + offset as isize) as usize;
         }
         Ok(())
@@ -51,7 +51,7 @@ impl BytecodeVM {
     pub(super) fn op_jump_if_error(&mut self) -> VmResult<()> {
         let offset = self.read_i16()?;
         let cond = self.peek()?;
-        if matches!(cond, MettaValue::Error { .. }) {
+        if matches!(cond.inner(), MettaValueInner::Error(..)) {
             self.ip = (self.ip as isize + offset as isize) as usize;
         }
         Ok(())
@@ -66,7 +66,7 @@ impl BytecodeVM {
     pub(super) fn op_jump_if_false_short(&mut self) -> VmResult<()> {
         let offset = self.read_i8()?;
         let cond = self.pop()?;
-        if matches!(cond, MettaValue::Bool(false)) {
+        if matches!(cond.inner(), MettaValueInner::Bool(false)) {
             self.ip = (self.ip as isize + offset as isize) as usize;
         }
         Ok(())
@@ -75,7 +75,7 @@ impl BytecodeVM {
     pub(super) fn op_jump_if_true_short(&mut self) -> VmResult<()> {
         let offset = self.read_i8()?;
         let cond = self.pop()?;
-        if matches!(cond, MettaValue::Bool(true)) {
+        if matches!(cond.inner(), MettaValueInner::Bool(true)) {
             self.ip = (self.ip as isize + offset as isize) as usize;
         }
         Ok(())
@@ -103,13 +103,15 @@ impl BytecodeVM {
 
         // Get head symbol from constant pool
         let head_symbol = match self.chunk.get_constant(head_index) {
-            Some(MettaValue::Atom(s)) => s.clone(),
-            Some(other) => {
-                return Err(VmError::Runtime(format!(
-                    "Call head must be atom, got {:?}",
-                    other
-                )));
-            }
+            Some(val) => match val.inner() {
+                MettaValueInner::Atom(s) => s.clone(),
+                other => {
+                    return Err(VmError::Runtime(format!(
+                        "Call head must be atom, got {:?}",
+                        other
+                    )));
+                }
+            },
             None => return Err(VmError::InvalidConstant(head_index)),
         };
 
@@ -185,13 +187,15 @@ impl BytecodeVM {
 
         // Get head symbol from constant pool
         let head_symbol = match self.chunk.get_constant(head_index) {
-            Some(MettaValue::Atom(s)) => s.clone(),
-            Some(other) => {
-                return Err(VmError::Runtime(format!(
-                    "TailCall head must be atom, got {:?}",
-                    other
-                )));
-            }
+            Some(val) => match val.inner() {
+                MettaValueInner::Atom(s) => s.clone(),
+                other => {
+                    return Err(VmError::Runtime(format!(
+                        "TailCall head must be atom, got {:?}",
+                        other
+                    )));
+                }
+            },
             None => return Err(VmError::InvalidConstant(head_index)),
         };
 

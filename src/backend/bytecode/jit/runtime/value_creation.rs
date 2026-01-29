@@ -11,7 +11,7 @@ use super::stack_ops::jit_runtime_load_constant;
 use crate::backend::bytecode::jit::types::{
     JitBailoutReason, JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_MASK, TAG_NIL,
 };
-use crate::backend::models::MettaValue;
+use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
 // Phase 2a: Value Creation Runtime (MakeSExpr, ConsAtom)
@@ -162,8 +162,8 @@ pub unsafe extern "C" fn jit_runtime_cons_atom(
     }
 
     // Check if tail is an S-expression
-    match &*tail_ptr {
-        MettaValue::SExpr(elements) => {
+    match (*tail_ptr).inner() {
+        MettaValueInner::SExpr(elements) => {
             // Prepend head to the elements
             let mut new_elements = Vec::with_capacity(elements.len() + 1);
             new_elements.push(head_metta);
@@ -173,7 +173,7 @@ pub unsafe extern "C" fn jit_runtime_cons_atom(
             let ptr = Box::into_raw(sexpr);
             TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
         }
-        MettaValue::Nil => {
+        MettaValueInner::Nil => {
             // Treat Nil as empty S-expression
             let sexpr = Box::new(MettaValue::SExpr(vec![head_metta]));
             let ptr = Box::into_raw(sexpr);
@@ -261,7 +261,7 @@ pub unsafe extern "C" fn jit_runtime_make_list(
 
     // Build the list from the end (reverse order to get proper Cons structure)
     // Start with Nil, then Cons each element from the end
-    let mut list = MettaValue::Nil;
+    let mut list = MettaValue::Nil();
 
     for i in (0..count).rev() {
         let raw_val = *values_ptr.add(i);

@@ -19,13 +19,13 @@ fn compile_and_disasm(expr: &MettaValue) -> String {
 
 #[test]
 fn test_compile_nil() {
-    let chunk = compile("test", &MettaValue::Nil).unwrap();
+    let chunk = compile("test", &MettaValue::Nil()).unwrap();
     assert_eq!(chunk.read_opcode(0), Some(Opcode::PushNil));
 }
 
 #[test]
 fn test_compile_unit() {
-    let chunk = compile("test", &MettaValue::Unit).unwrap();
+    let chunk = compile("test", &MettaValue::Unit()).unwrap();
     assert_eq!(chunk.read_opcode(0), Some(Opcode::PushUnit));
 }
 

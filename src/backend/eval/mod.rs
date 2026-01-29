@@ -65,7 +65,7 @@ use helpers::{
 use rules::{try_match_all_rules, try_match_all_rules_iterative, try_match_all_rules_query_multi};
 
 // Re-export from trampoline module
-use trampoline::{eval_trampoline, Continuation, WorkItem, MAX_EVAL_DEPTH};
+use trampoline::eval_trampoline;
 
 // Re-export from step module
 pub(crate) use step::{eval_sexpr_step, eval_step, EvalStep, MemoOpType, ProcessedSExpr};

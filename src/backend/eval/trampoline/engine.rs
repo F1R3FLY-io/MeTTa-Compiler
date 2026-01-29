@@ -17,7 +17,7 @@ use super::super::{
     apply_bindings, eval_step, friendly_value_repr, pattern_match, process_collected_sexpr,
     EvalStep, MemoOpType, ProcessedSExpr,
 };
-use super::types::{Continuation, WorkItem, MAX_EVAL_DEPTH};
+use super::types::{Continuation, WorkItem};
 
 /// Iterative evaluation using a trampoline pattern with explicit work stack.
 /// This prevents stack overflow by using heap-allocated work items instead of
@@ -1883,21 +1883,24 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         depth,
                         parent_cont,
                     } => {
-                        let (result_values, result_env) = result;
+                        let (mut result_values, result_env) = result;
 
-                        // Add first result from evaluation
-                        if let Some(first_result) = result_values.first() {
+                        // Add first result from evaluation (move instead of clone)
+                        if result_values.is_empty() {
+                            collected_results.push(MettaValue::Nil);
+                        } else {
+                            // Move the first result out of the vector
+                            let first_result = result_values.swap_remove(0);
+
                             // Check for error propagation
-                            if matches!(first_result, MettaValue::Error(_, _)) {
+                            if matches!(&first_result, MettaValue::Error(_, _)) {
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
-                                    result: (vec![first_result.clone()], result_env),
+                                    result: (vec![first_result], result_env),
                                 });
                                 continue;
                             }
-                            collected_results.push(first_result.clone());
-                        } else {
-                            collected_results.push(MettaValue::Nil);
+                            collected_results.push(first_result);
                         }
 
                         if remaining_elements.is_empty() {
@@ -1914,24 +1917,27 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 .pop_front()
                                 .expect("remaining_elements is non-empty");
 
-                            // Update continuation with remaining elements and collected results
-                            continuations[cont_id] = Continuation::ProcessMapAtom {
-                                remaining_elements,
-                                var_name: var_name.clone(),
-                                template: template.clone(),
-                                collected_results,
-                                env: result_env.clone(),
-                                depth,
-                                parent_cont,
-                            };
-
                             // Evaluate template for next element
+                            // Note: substitute_variable takes references, no clone needed
                             let instantiated =
                                 super::super::list_ops::helpers::substitute_variable(
                                     &template,
                                     &var_name,
                                     &next_element,
                                 );
+
+                            // Update continuation in-place - move template and var_name
+                            // instead of cloning to avoid allocation overhead
+                            continuations[cont_id] = Continuation::ProcessMapAtom {
+                                remaining_elements,
+                                var_name, // move, not clone
+                                template, // move, not clone
+                                collected_results,
+                                env: result_env.clone(),
+                                depth,
+                                parent_cont,
+                            };
+
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env: result_env,
@@ -1953,23 +1959,26 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         depth,
                         parent_cont,
                     } => {
-                        let (result_values, result_env) = result;
+                        let (mut result_values, result_env) = result;
 
                         // Check predicate result and optionally include current element
-                        if let Some(first_result) = result_values.first() {
+                        if !result_values.is_empty() {
+                            // Move the first result out of the vector
+                            let first_result = result_values.swap_remove(0);
+
                             // Check for error propagation
-                            if matches!(first_result, MettaValue::Error(_, _)) {
+                            if matches!(&first_result, MettaValue::Error(_, _)) {
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
-                                    result: (vec![first_result.clone()], result_env),
+                                    result: (vec![first_result], result_env),
                                 });
                                 continue;
                             }
 
-                            let should_include = match first_result {
+                            let should_include = match &first_result {
                                 MettaValue::Bool(true) => true,
                                 MettaValue::Bool(false) => false,
-                                _ => !matches!(first_result, MettaValue::Nil),
+                                _ => !matches!(&first_result, MettaValue::Nil),
                             };
 
                             if should_include {
@@ -1993,25 +2002,28 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 .pop_front()
                                 .expect("remaining_elements is non-empty");
 
-                            // Update continuation with remaining elements and filtered results
-                            continuations[cont_id] = Continuation::ProcessFilterAtom {
-                                current_element: Some(next_element.clone()),
-                                remaining_elements,
-                                var_name: var_name.clone(),
-                                predicate: predicate.clone(),
-                                filtered_results,
-                                env: result_env.clone(),
-                                depth,
-                                parent_cont,
-                            };
-
                             // Evaluate predicate for next element
+                            // Note: substitute_variable takes references, no clone needed
                             let instantiated =
                                 super::super::list_ops::helpers::substitute_variable(
                                     &predicate,
                                     &var_name,
                                     &next_element,
                                 );
+
+                            // Update continuation - move var_name, predicate, and next_element
+                            // instead of cloning to avoid allocation overhead
+                            continuations[cont_id] = Continuation::ProcessFilterAtom {
+                                current_element: Some(next_element), // move, not clone
+                                remaining_elements,
+                                var_name, // move, not clone
+                                predicate, // move, not clone
+                                filtered_results,
+                                env: result_env.clone(),
+                                depth,
+                                parent_cont,
+                            };
+
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env: result_env,
@@ -2032,21 +2044,24 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         depth,
                         parent_cont,
                     } => {
-                        let (result_values, result_env) = result;
+                        let (mut result_values, result_env) = result;
 
-                        // Get the new accumulator value from the result
-                        let accumulator = if let Some(first_result) = result_values.first() {
+                        // Get the new accumulator value from the result (move instead of clone)
+                        let accumulator = if result_values.is_empty() {
+                            MettaValue::Nil
+                        } else {
+                            // Move the first result out of the vector
+                            let first_result = result_values.swap_remove(0);
+
                             // Check for error propagation
-                            if matches!(first_result, MettaValue::Error(_, _)) {
+                            if matches!(&first_result, MettaValue::Error(_, _)) {
                                 work_stack.push(WorkItem::Resume {
                                     cont_id: parent_cont,
-                                    result: (vec![first_result.clone()], result_env),
+                                    result: (vec![first_result], result_env),
                                 });
                                 continue;
                             }
-                            first_result.clone()
-                        } else {
-                            MettaValue::Nil
+                            first_result
                         };
 
                         if remaining_elements.is_empty() {
@@ -2061,18 +2076,8 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 .pop_front()
                                 .expect("remaining_elements is non-empty");
 
-                            // Update continuation with remaining elements
-                            continuations[cont_id] = Continuation::ProcessFoldlAtom {
-                                remaining_elements,
-                                acc_var_name: acc_var_name.clone(),
-                                item_var_name: item_var_name.clone(),
-                                operation: operation.clone(),
-                                env: result_env.clone(),
-                                depth,
-                                parent_cont,
-                            };
-
                             // Evaluate operation with current accumulator and next element
+                            // Note: substitute_variable takes references, no clone needed
                             let mut instantiated =
                                 super::super::list_ops::helpers::substitute_variable(
                                     &operation,
@@ -2084,6 +2089,19 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 &item_var_name,
                                 &next_element,
                             );
+
+                            // Update continuation - move var names and operation
+                            // instead of cloning to avoid allocation overhead
+                            continuations[cont_id] = Continuation::ProcessFoldlAtom {
+                                remaining_elements,
+                                acc_var_name, // move, not clone
+                                item_var_name, // move, not clone
+                                operation, // move, not clone
+                                env: result_env.clone(),
+                                depth,
+                                parent_cont,
+                            };
+
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env: result_env,
@@ -2640,14 +2658,13 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     result: (vec![], env_after_goal),
                                 });
                             } else {
-                                // Accumulate current results and continue to next goal
-                                accumulated_results = next_results;
-
                                 // Create continuation for next goal
+                                // Note: We move next_results directly into the continuation
+                                // to avoid an unnecessary clone
                                 let next_cont_id = continuations.len();
                                 continuations.push(Continuation::ProcessConjunction {
                                     remaining_goals,
-                                    accumulated_results: accumulated_results.clone(),
+                                    accumulated_results: next_results,
                                     env: env_after_goal.clone(),
                                     depth,
                                     parent_cont,

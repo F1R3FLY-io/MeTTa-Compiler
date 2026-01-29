@@ -11,43 +11,24 @@ pub use grounded::find_grounded_arg_indices;
 pub use sexpr_step::eval_sexpr_step;
 pub use types::{EvalStep, MemoOpType, ProcessedSExpr};
 
-use std::sync::Arc;
-
-use tracing::{trace, warn};
+use tracing::trace;
 
 use crate::backend::environment::Environment;
 use crate::backend::models::MettaValue;
 
 use super::conjunction::eval_conjunction_step;
-use super::trampoline::MAX_EVAL_DEPTH;
 
 /// Perform a single step of evaluation.
 /// Returns either a final result or indicates more work is needed.
+///
+/// Note: The `depth` parameter is retained for debugging/metrics but no longer
+/// enforces a limit. In a trampoline-based evaluator, the Rust stack is bounded
+/// by design (work items are heap-allocated), so depth limits are unnecessary
+/// for preventing stack overflow. The previous MAX_EVAL_DEPTH check was incorrectly
+/// tracking work item count rather than recursion depth, causing legitimate
+/// iterative workloads (map-atom, filter-atom, foldl-atom over lists) to fail.
 pub fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::backend::eval::eval_step", ?value, depth);
-
-    // Check depth limit
-    if depth > MAX_EVAL_DEPTH {
-        warn!(
-            depth = depth,
-            max_depth = MAX_EVAL_DEPTH,
-            "Maximum evaluation depth exceeded - possible infinite recursion or combinatorial explosion"
-        );
-
-        return EvalStep::Done((
-            vec![MettaValue::Error(
-                format!(
-                    "Maximum evaluation depth ({}) exceeded. Possible causes:\n\
-                     - Infinite recursion: check for missing base case in recursive rules\n\
-                     - Combinatorial explosion: rule produces too many branches\n\
-                     Hint: Use (function ...) and (return ...) for tail-recursive evaluation",
-                    MAX_EVAL_DEPTH
-                ),
-                Arc::new(value),
-            )],
-            env,
-        ));
-    }
 
     match value {
         // Errors propagate immediately

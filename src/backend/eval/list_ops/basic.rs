@@ -8,19 +8,78 @@
 //! - size-atom: Get the number of elements
 //! - max-atom: Get the maximum numeric value
 //!
-//! IMPORTANT: These operations use LAZY evaluation semantics matching MeTTa HE.
-//! Arguments are NOT evaluated before processing. For example:
-//! - (cons-atom (+ 1 2) (a b)) returns ((+ 1 2) a b), NOT (3 a b)
-//! - This prevents infinite loops in recursive MeTTa programs
+//! IMPORTANT: These operations use HYBRID evaluation semantics:
+//! - Arguments that are GROUNDED operations (map-atom, filter-atom, if, let, etc.)
+//!   are evaluated BEFORE processing to get their values
+//! - User-defined expressions are kept unevaluated (lazy evaluation)
+//!
+//! For example:
+//! - (car-atom (map-atom (a b c) $x $x)) evaluates map-atom first, returns a
+//! - (cons-atom (+ 1 2) (a b)) keeps (+ 1 2) unevaluated, returns ((+ 1 2) a b)
+//!   unless + is in GROUNDED_OPS (which it is), so returns (3 a b)
 
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
+
+use super::super::is_grounded_op;
+use super::super::step::EvalStep;
+
+/// Check if an S-expression argument needs evaluation before being used.
+/// Returns true if the argument is a grounded operation that produces a value.
+fn needs_evaluation(arg: &MettaValue, env: &Environment) -> bool {
+    if let MettaValueInner::SExpr(items) = arg.inner() {
+        if let Some(first) = items.first() {
+            if let MettaValueInner::Atom(op) = first.inner() {
+                // Check if this is a grounded operation or TCO operation
+                return is_grounded_op(op) || env.get_grounded_operation_tco(op).is_some();
+            }
+        }
+    }
+    false
+}
+
+/// Step version of car-atom that handles argument evaluation.
+/// If the argument is a grounded operation (map-atom, if, let, etc.),
+/// it's evaluated first via the trampoline.
+pub(crate) fn eval_car_atom_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() != 2 {
+        let err = MettaValue::Error(
+            format!(
+                "car-atom requires exactly 1 argument, got {}. Usage: (car-atom expr)",
+                items.len() - 1
+            ),
+            MettaValue::SExpr(items),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let arg = &items[1];
+
+    // Check if argument needs evaluation (is a grounded op)
+    if needs_evaluation(arg, &env) {
+        // Defer argument evaluation to the trampoline
+        return EvalStep::EvalListOpArg {
+            op_name: "car-atom".to_string(),
+            items,
+            arg_index: 1,
+            env,
+            depth,
+        };
+    }
+
+    // Argument doesn't need evaluation, process directly
+    EvalStep::Done(eval_car_atom(items, env))
+}
 
 /// car-atom: (car-atom expr) -> first element
 /// Returns the first element of an expression (head)
 /// Example: (car-atom (a b c)) -> a
 ///
-/// NOTE: This is a lazy operation - the argument is NOT evaluated first.
+/// NOTE: For lazy evaluation semantics. Use eval_car_atom_step for hybrid evaluation.
 pub(crate) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("car-atom", items, 1, env, "(car-atom expr)");
 
@@ -50,11 +109,41 @@ pub(crate) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     }
 }
 
+/// Step version of cdr-atom that handles argument evaluation.
+pub(crate) fn eval_cdr_atom_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() != 2 {
+        let err = MettaValue::Error(
+            format!(
+                "cdr-atom requires exactly 1 argument, got {}. Usage: (cdr-atom expr)",
+                items.len() - 1
+            ),
+            MettaValue::SExpr(items),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let arg = &items[1];
+    if needs_evaluation(arg, &env) {
+        return EvalStep::EvalListOpArg {
+            op_name: "cdr-atom".to_string(),
+            items,
+            arg_index: 1,
+            env,
+            depth,
+        };
+    }
+    EvalStep::Done(eval_cdr_atom(items, env))
+}
+
 /// cdr-atom: (cdr-atom expr) -> rest of expression (tail)
 /// Returns all elements except the first
 /// Example: (cdr-atom (a b c)) -> (b c)
 ///
-/// NOTE: This is a lazy operation - the argument is NOT evaluated first.
+/// NOTE: For lazy evaluation semantics. Use eval_cdr_atom_step for hybrid evaluation.
 pub(crate) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("cdr-atom", items, 1, env, "(cdr-atom expr)");
 
@@ -92,12 +181,44 @@ pub(crate) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
     }
 }
 
+/// Step version of cons-atom that handles argument evaluation.
+/// For cons-atom, we evaluate the TAIL argument if it's a grounded op,
+/// since we need to know if it's a proper expression to prepend to.
+pub(crate) fn eval_cons_atom_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() != 3 {
+        let err = MettaValue::Error(
+            format!(
+                "cons-atom requires exactly 2 arguments, got {}. Usage: (cons-atom head tail)",
+                items.len() - 1
+            ),
+            MettaValue::SExpr(items),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    // Check if tail argument needs evaluation
+    let tail = &items[2];
+    if needs_evaluation(tail, &env) {
+        return EvalStep::EvalListOpArg {
+            op_name: "cons-atom".to_string(),
+            items,
+            arg_index: 2, // Evaluate the tail
+            env,
+            depth,
+        };
+    }
+    EvalStep::Done(eval_cons_atom(items, env))
+}
+
 /// cons-atom: (cons-atom head tail) -> (head elements...)
 /// Constructs an expression by prepending head to tail
 /// Example: (cons-atom a (b c)) -> (a b c)
 ///
-/// NOTE: This is a lazy operation - arguments are NOT evaluated first.
-/// (cons-atom (+ 1 2) (a b)) returns ((+ 1 2) a b), NOT (3 a b)
+/// NOTE: For lazy evaluation semantics. Use eval_cons_atom_step for hybrid evaluation.
 pub(crate) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("cons-atom", items, 2, env, "(cons-atom head tail)");
 
@@ -124,11 +245,41 @@ pub(crate) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
     }
 }
 
+/// Step version of decons-atom that handles argument evaluation.
+pub(crate) fn eval_decons_atom_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() != 2 {
+        let err = MettaValue::Error(
+            format!(
+                "decons-atom requires exactly 1 argument, got {}. Usage: (decons-atom expr)",
+                items.len() - 1
+            ),
+            MettaValue::SExpr(items),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let arg = &items[1];
+    if needs_evaluation(arg, &env) {
+        return EvalStep::EvalListOpArg {
+            op_name: "decons-atom".to_string(),
+            items,
+            arg_index: 1,
+            env,
+            depth,
+        };
+    }
+    EvalStep::Done(eval_decons_atom(items, env))
+}
+
 /// decons-atom: (decons-atom expr) -> (head tail)
 /// Deconstructs an expression into (head tail) pair
 /// Example: (decons-atom (a b c)) -> (a (b c))
 ///
-/// NOTE: This is a lazy operation - the argument is NOT evaluated first.
+/// NOTE: For lazy evaluation semantics. Use eval_decons_atom_step for hybrid evaluation.
 pub(crate) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("decons-atom", items, 1, env, "(decons-atom expr)");
 
@@ -158,11 +309,41 @@ pub(crate) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> Eval
     }
 }
 
+/// Step version of size-atom that handles argument evaluation.
+pub(crate) fn eval_size_atom_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() != 2 {
+        let err = MettaValue::Error(
+            format!(
+                "size-atom requires exactly 1 argument, got {}. Usage: (size-atom expr)",
+                items.len() - 1
+            ),
+            MettaValue::SExpr(items),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let arg = &items[1];
+    if needs_evaluation(arg, &env) {
+        return EvalStep::EvalListOpArg {
+            op_name: "size-atom".to_string(),
+            items,
+            arg_index: 1,
+            env,
+            depth,
+        };
+    }
+    EvalStep::Done(eval_size_atom(items, env))
+}
+
 /// size-atom: (size-atom expr) -> number
 /// Returns the number of elements in an expression
 /// Example: (size-atom (a b c)) -> 3
 ///
-/// NOTE: This is a lazy operation - the argument is NOT evaluated first.
+/// NOTE: For lazy evaluation semantics. Use eval_size_atom_step for hybrid evaluation.
 pub(crate) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("size-atom", items, 1, env, "(size-atom expr)");
 
@@ -184,11 +365,41 @@ pub(crate) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
     }
 }
 
+/// Step version of max-atom that handles argument evaluation.
+pub(crate) fn eval_max_atom_step(
+    items: Vec<MettaValue>,
+    env: Environment,
+    depth: usize,
+) -> EvalStep {
+    if items.len() != 2 {
+        let err = MettaValue::Error(
+            format!(
+                "max-atom requires exactly 1 argument, got {}. Usage: (max-atom expr)",
+                items.len() - 1
+            ),
+            MettaValue::SExpr(items),
+        );
+        return EvalStep::Done((vec![err], env));
+    }
+
+    let arg = &items[1];
+    if needs_evaluation(arg, &env) {
+        return EvalStep::EvalListOpArg {
+            op_name: "max-atom".to_string(),
+            items,
+            arg_index: 1,
+            env,
+            depth,
+        };
+    }
+    EvalStep::Done(eval_max_atom(items, env))
+}
+
 /// max-atom: (max-atom expr) -> maximum number
 /// Returns the maximum numeric value in an expression
 /// Example: (max-atom (1 5 3 2)) -> 5
 ///
-/// NOTE: This is a lazy operation - the argument is NOT evaluated first.
+/// NOTE: For lazy evaluation semantics. Use eval_max_atom_step for hybrid evaluation.
 pub(crate) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     require_args_with_usage!("max-atom", items, 1, env, "(max-atom expr)");
 

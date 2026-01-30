@@ -1,8 +1,6 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
-#[allow(unused_imports)]
-use super::eval;
 use super::EvalStep;
 
 // ============================================================
@@ -57,73 +55,6 @@ pub(crate) fn eval_trace_step(items: Vec<MettaValue>, env: Environment, depth: u
     }
 }
 
-/// println!: Print an atom to stdout
-/// Usage: (println! atom)
-/// Returns Unit after printing
-///
-/// DEPRECATED: Use eval_println_step for trampoline-based evaluation.
-#[allow(dead_code)]
-pub(super) fn eval_println(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_args_with_usage!("println!", items, 1, env, "(println! atom)");
-
-    let atom = &items[1];
-
-    // Evaluate the argument
-    let (results, env1) = eval(atom.clone(), env);
-    if results.is_empty() {
-        let err = MettaValue::Error(
-            "println!: argument evaluated to empty".to_string(),
-            atom.clone(),
-        );
-        return (vec![err], env1);
-    }
-
-    // Print the first result to stdout
-    let value = &results[0];
-    println!("{}", atom_to_string(value));
-
-    (vec![MettaValue::Unit()], env1)
-}
-
-/// trace!: Debug trace - prints message to stderr and returns the value
-/// Usage: (trace! message value)
-/// Prints message to stderr, returns value unchanged
-///
-/// DEPRECATED: Use eval_trace_step for trampoline-based evaluation.
-#[allow(dead_code)]
-pub(super) fn eval_trace(items: Vec<MettaValue>, env: Environment) -> EvalResult {
-    require_args_with_usage!("trace!", items, 2, env, "(trace! message value)");
-
-    let message = &items[1];
-    let value_expr = &items[2];
-
-    // Evaluate the message
-    let (msg_results, env1) = eval(message.clone(), env);
-    if msg_results.is_empty() {
-        let err = MettaValue::Error(
-            "trace!: message evaluated to empty".to_string(),
-            message.clone(),
-        );
-        return (vec![err], env1);
-    }
-
-    // Evaluate the value
-    let (value_results, env2) = eval(value_expr.clone(), env1);
-    if value_results.is_empty() {
-        let err = MettaValue::Error(
-            "trace!: value evaluated to empty".to_string(),
-            value_expr.clone(),
-        );
-        return (vec![err], env2);
-    }
-
-    // Print message to stderr
-    let msg = &msg_results[0];
-    eprintln!("{}", atom_to_string(msg));
-
-    // Return the value (first result)
-    (vec![value_results[0].clone()], env2)
-}
 
 /// nop: No operation - returns Unit immediately
 /// Usage: (nop) or (nop ...) - any arguments are ignored
@@ -230,14 +161,15 @@ mod tests {
 
     #[test]
     fn test_println_basic_value() {
+        use super::super::eval;
         let env = Environment::new();
 
         // (println! 42) - basic value printing
-        let items = vec![
+        let value = MettaValue::SExpr(vec![
             MettaValue::Atom("println!".to_string()),
             MettaValue::Long(42),
-        ];
-        let (results, _) = eval_println(items, env);
+        ]);
+        let (results, _) = eval(value, env);
 
         // println! returns Unit
         assert_eq!(results.len(), 1);
@@ -246,14 +178,15 @@ mod tests {
 
     #[test]
     fn test_println_string() {
+        use super::super::eval;
         let env = Environment::new();
 
         // (println! "Hello, World!")
-        let items = vec![
+        let value = MettaValue::SExpr(vec![
             MettaValue::Atom("println!".to_string()),
             MettaValue::String("Hello, World!".to_string()),
-        ];
-        let (results, _) = eval_println(items, env);
+        ]);
+        let (results, _) = eval(value, env);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Unit());
@@ -261,14 +194,15 @@ mod tests {
 
     #[test]
     fn test_println_atom() {
+        use super::super::eval;
         let env = Environment::new();
 
         // (println! foo)
-        let items = vec![
+        let value = MettaValue::SExpr(vec![
             MettaValue::Atom("println!".to_string()),
             MettaValue::Atom("foo".to_string()),
-        ];
-        let (results, _) = eval_println(items, env);
+        ]);
+        let (results, _) = eval(value, env);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Unit());
@@ -276,17 +210,18 @@ mod tests {
 
     #[test]
     fn test_println_sexpr() {
+        use super::super::eval;
         let env = Environment::new();
 
         // (println! (foo bar))
-        let items = vec![
+        let value = MettaValue::SExpr(vec![
             MettaValue::Atom("println!".to_string()),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("foo".to_string()),
                 MettaValue::Atom("bar".to_string()),
             ]),
-        ];
-        let (results, _) = eval_println(items, env);
+        ]);
+        let (results, _) = eval(value, env);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Unit());
@@ -294,11 +229,12 @@ mod tests {
 
     #[test]
     fn test_println_missing_args() {
+        use super::super::eval;
         let env = Environment::new();
 
         // (println!) - missing argument
-        let items = vec![MettaValue::Atom("println!".to_string())];
-        let (results, _) = eval_println(items, env);
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("println!".to_string())]);
+        let (results, _) = eval(value, env);
 
         assert_eq!(results.len(), 1);
         match results[0].inner() {
@@ -311,18 +247,19 @@ mod tests {
 
     #[test]
     fn test_println_with_expression() {
+        use super::super::eval;
         let env = Environment::new();
 
         // (println! (+ 2 3)) - prints the result of the expression
-        let items = vec![
+        let value = MettaValue::SExpr(vec![
             MettaValue::Atom("println!".to_string()),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("+".to_string()),
                 MettaValue::Long(2),
                 MettaValue::Long(3),
             ]),
-        ];
-        let (results, _) = eval_println(items, env);
+        ]);
+        let (results, _) = eval(value, env);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Unit());
@@ -334,15 +271,16 @@ mod tests {
 
     #[test]
     fn test_trace_returns_value() {
+        use super::super::eval;
         let env = Environment::new();
 
         // (trace! "debug" 42) - should return 42
-        let items = vec![
+        let value = MettaValue::SExpr(vec![
             MettaValue::Atom("trace!".to_string()),
             MettaValue::String("debug".to_string()),
             MettaValue::Long(42),
-        ];
-        let (results, _) = eval_trace(items, env);
+        ]);
+        let (results, _) = eval(value, env);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Long(42));
@@ -350,34 +288,36 @@ mod tests {
 
     #[test]
     fn test_trace_with_complex_value() {
+        use super::super::eval;
         let env = Environment::new();
 
         // (trace! "msg" (foo bar)) - should return (foo bar)
-        let value = MettaValue::SExpr(vec![
+        let inner_value = MettaValue::SExpr(vec![
             MettaValue::Atom("foo".to_string()),
             MettaValue::Atom("bar".to_string()),
         ]);
-        let items = vec![
+        let value = MettaValue::SExpr(vec![
             MettaValue::Atom("trace!".to_string()),
             MettaValue::String("checking value".to_string()),
-            value.clone(),
-        ];
-        let (results, _) = eval_trace(items, env);
+            inner_value.clone(),
+        ]);
+        let (results, _) = eval(value, env);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], value);
+        assert_eq!(results[0], inner_value);
     }
 
     #[test]
     fn test_trace_missing_args() {
+        use super::super::eval;
         let env = Environment::new();
 
         // (trace! "msg") - missing value
-        let items = vec![
+        let value = MettaValue::SExpr(vec![
             MettaValue::Atom("trace!".to_string()),
             MettaValue::String("msg".to_string()),
-        ];
-        let (results, _) = eval_trace(items, env);
+        ]);
+        let (results, _) = eval(value, env);
 
         assert_eq!(results.len(), 1);
         match results[0].inner() {
@@ -390,11 +330,12 @@ mod tests {
 
     #[test]
     fn test_trace_no_args() {
+        use super::super::eval;
         let env = Environment::new();
 
         // (trace!) - missing both args
-        let items = vec![MettaValue::Atom("trace!".to_string())];
-        let (results, _) = eval_trace(items, env);
+        let value = MettaValue::SExpr(vec![MettaValue::Atom("trace!".to_string())]);
+        let (results, _) = eval(value, env);
 
         assert_eq!(results.len(), 1);
         match results[0].inner() {

@@ -2153,6 +2153,7 @@ dependencies = [
  "either",
  "hex",
  "im",
+ "indexmap",
  "itertools 0.14.0",
  "lasso",
  "liblevenshtein",

@@ -40,6 +40,7 @@ pub use pattern_matching::MultiplicityMatch;
 pub use rule_management::{MatchingRulesIter, RuleHeadsIter, RulesIter};
 pub use scope::ScopeTracker;
 
+use indexmap::IndexSet;
 use lru::LruCache;
 use mork::space::Space;
 use mork_interning::SharedMappingHandle;
@@ -70,13 +71,15 @@ pub(crate) struct EnvironmentShared {
     /// PathMap trie for fact storage (value = atom multiplicity)
     pub(crate) btm: RwLock<PathMap<Multiplicity>>,
 
-    /// Rule index: Maps (head_symbol, arity) -> Vec<Rule> for O(1) rule lookup
-    /// Uses Symbol for O(1) comparison when symbol-interning feature is enabled
+    /// Rule index: Maps (head_symbol, arity) -> IndexSet<Rule> for O(1) rule lookup
+    /// Uses IndexSet for O(1) deduplication while preserving rule ordering (important for specificity).
+    /// Uses Symbol for O(1) comparison when symbol-interning feature is enabled.
     #[allow(clippy::type_complexity)]
-    pub(crate) rule_index: RwLock<HashMap<(Symbol, usize), Vec<Rule>>>,
+    pub(crate) rule_index: RwLock<HashMap<(Symbol, usize), IndexSet<Rule>>>,
 
     /// Wildcard rules: Rules without a clear head symbol
-    pub(crate) wildcard_rules: RwLock<Vec<Rule>>,
+    /// Uses IndexSet for O(1) deduplication while preserving rule ordering.
+    pub(crate) wildcard_rules: RwLock<IndexSet<Rule>>,
 
     /// Fast flag: true if any wildcard rules exist (avoids lock acquisition when empty)
     pub(crate) has_wildcard_rules: AtomicBool,
@@ -215,7 +218,7 @@ impl Environment {
         let shared = Arc::new(EnvironmentShared {
             btm: RwLock::new(PathMap::new()),
             rule_index: RwLock::new(HashMap::with_capacity(128)),
-            wildcard_rules: RwLock::new(Vec::new()),
+            wildcard_rules: RwLock::new(IndexSet::new()),
             has_wildcard_rules: AtomicBool::new(false),
             symbols,
             multiplicities: RwLock::new(IndexedMultiset::new()),
@@ -681,18 +684,205 @@ impl Environment {
     }
 
     /// Union two environments (monotonic merge)
-    /// PathMap and shared_mapping are shared via Arc, so facts (including type assertions) are automatically merged
-    /// Multiplicities and rule indices are also merged via shared Arc
-    pub fn union(&self, _other: &Environment) -> Environment {
+    ///
+    /// Creates a new environment containing data from both self and other.
+    /// For conflicting keys, `other` takes precedence (bindings) or values are merged
+    /// (multiplicities are added, rules are appended).
+    ///
+    /// # Merge Strategy
+    ///
+    /// | Field | Strategy |
+    /// |-------|----------|
+    /// | `btm` (PathMap) | Join via Lattice (additive multiplicities) |
+    /// | `rule_index` | Append rules from `other` |
+    /// | `wildcard_rules` | Append from `other` |
+    /// | `bindings` | Merge (`other` wins on conflict) |
+    /// | `has_wildcard_rules` | OR both values |
+    /// | `total_atoms` | Sum counts |
+    ///
+    /// Infrastructure fields (symbols, caches, registries) are shared from `self`.
+    pub fn union(&self, other: &Environment) -> Environment {
+        use pathmap::ring::Lattice;
+
+        // Fast path: Same Arc means identical data, no merge needed.
+        // This handles the common case where the same environment is passed to
+        // multiple sub-expressions and then unioned back together.
+        if Arc::ptr_eq(&self.shared, &other.shared) {
+            return self.clone();
+        }
+
         trace!(target: "mettatron::environment::union", "Unioning environments");
 
-        // All shared state is now consolidated into single Arc<EnvironmentShared>
-        // Clone is O(1) - just one atomic increment instead of 17
+        // Merge PathMaps using Lattice join (additive multiplicities)
+        let merged_btm = {
+            let self_btm = self.shared.btm.read().expect("btm lock poisoned");
+            let other_btm = other.shared.btm.read().expect("other btm lock poisoned");
+            self_btm.join(&other_btm)
+        };
+
+        // Merge rule_index: append rules from other
+        // IndexSet handles deduplication automatically via Rule's Hash+Eq implementation,
+        // preventing exponential rule multiplication when the same environment
+        // is passed to multiple sub-expressions and then unioned back together.
+        let merged_rule_index = {
+            let self_rules = self.shared.rule_index.read().expect("rule_index lock poisoned");
+            let other_rules = other.shared.rule_index.read().expect("other rule_index lock poisoned");
+            let mut merged = self_rules.clone();
+            for (key, other_rule_set) in other_rules.iter() {
+                let entry = merged.entry(key.clone()).or_default();
+                // IndexSet::extend automatically deduplicates
+                entry.extend(other_rule_set.iter().cloned());
+            }
+            merged
+        };
+
+        // Merge wildcard_rules: append from other
+        let merged_wildcard_rules = {
+            let self_wc = self.shared.wildcard_rules.read().expect("wildcard_rules lock poisoned");
+            let other_wc = other.shared.wildcard_rules.read().expect("other wildcard_rules lock poisoned");
+            let mut merged = self_wc.clone();
+            merged.extend(other_wc.iter().cloned());
+            merged
+        };
+
+        // Merge bindings: other wins on conflict
+        let merged_bindings = {
+            let self_bindings = self.shared.bindings.read().expect("bindings lock poisoned");
+            let other_bindings = other.shared.bindings.read().expect("other bindings lock poisoned");
+            let mut merged = self_bindings.clone();
+            for (k, v) in other_bindings.iter() {
+                merged.insert(k.clone(), v.clone());
+            }
+            merged
+        };
+
+        // Merge multiplicities: fork from self
+        let merged_multiplicities = self
+            .shared
+            .multiplicities
+            .read()
+            .expect("multiplicities lock poisoned")
+            .fork();
+
+        // Create new shared state with merged data
+        let new_shared = Arc::new(EnvironmentShared {
+            // Merged data fields
+            btm: RwLock::new(merged_btm),
+            rule_index: RwLock::new(merged_rule_index),
+            wildcard_rules: RwLock::new(merged_wildcard_rules),
+            bindings: RwLock::new(merged_bindings),
+            multiplicities: RwLock::new(merged_multiplicities),
+
+            // OR both has_wildcard_rules flags
+            has_wildcard_rules: AtomicBool::new(
+                self.shared.has_wildcard_rules.load(Ordering::Relaxed)
+                    || other.shared.has_wildcard_rules.load(Ordering::Relaxed),
+            ),
+
+            // Sum total_atoms counts
+            total_atoms: AtomicUsize::new(
+                self.shared.total_atoms.load(Ordering::Relaxed)
+                    + other.shared.total_atoms.load(Ordering::Relaxed),
+            ),
+
+            // Share infrastructure from self (not merged)
+            symbols: Arc::clone(&self.shared.symbols),
+            pattern_cache: RwLock::new(LruCache::new(
+                NonZeroUsize::new(1000).expect("1000 is non-zero"),
+            )),
+            type_index: RwLock::new(None), // Will rebuild lazily
+            type_index_dirty: RwLock::new(true),
+            named_spaces: RwLock::new(
+                self.shared
+                    .named_spaces
+                    .read()
+                    .expect("named_spaces lock poisoned")
+                    .clone(),
+            ),
+            next_space_id: RwLock::new(
+                *self
+                    .shared
+                    .next_space_id
+                    .read()
+                    .expect("next_space_id lock poisoned"),
+            ),
+            states: RwLock::new(
+                self.shared
+                    .states
+                    .read()
+                    .expect("states lock poisoned")
+                    .clone(),
+            ),
+            next_state_id: RwLock::new(
+                *self
+                    .shared
+                    .next_state_id
+                    .read()
+                    .expect("next_state_id lock poisoned"),
+            ),
+            module_registry: RwLock::new(
+                self.shared
+                    .module_registry
+                    .read()
+                    .expect("module_registry lock poisoned")
+                    .clone(),
+            ),
+            tokenizer: RwLock::new(
+                self.shared
+                    .tokenizer
+                    .read()
+                    .expect("tokenizer lock poisoned")
+                    .clone(),
+            ),
+            grounded_registry: RwLock::new(
+                self.shared
+                    .grounded_registry
+                    .read()
+                    .expect("grounded_registry lock poisoned")
+                    .clone(),
+            ),
+            grounded_registry_tco: RwLock::new(
+                self.shared
+                    .grounded_registry_tco
+                    .read()
+                    .expect("grounded_registry_tco lock poisoned")
+                    .clone(),
+            ),
+            large_expr_pathmap: RwLock::new(
+                self.shared
+                    .large_expr_pathmap
+                    .read()
+                    .expect("large_expr_pathmap lock poisoned")
+                    .clone(),
+            ),
+            fuzzy_matcher: RwLock::new(
+                self.shared
+                    .fuzzy_matcher
+                    .read()
+                    .expect("fuzzy_matcher lock poisoned")
+                    .clone(),
+            ),
+            scope_tracker: RwLock::new(
+                self.shared
+                    .scope_tracker
+                    .read()
+                    .expect("scope_tracker lock poisoned")
+                    .clone(),
+            ),
+            head_arity_bloom: RwLock::new(
+                self.shared
+                    .head_arity_bloom
+                    .read()
+                    .expect("head_arity_bloom lock poisoned")
+                    .clone(),
+            ),
+        });
+
         Environment {
-            shared: Arc::clone(&self.shared),
+            shared: new_shared,
             shared_mapping: self.shared_mapping.clone(),
-            owns_data: false, // CoW: union creates a new shared environment
-            modified: Arc::new(AtomicBool::new(false)), // CoW: fresh modification tracker
+            owns_data: true, // Union result owns its data
+            modified: Arc::new(AtomicBool::new(false)),
             current_module_path: self.current_module_path.clone(),
         }
     }

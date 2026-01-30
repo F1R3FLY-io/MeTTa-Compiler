@@ -16,6 +16,8 @@ mod tests;
 
 // Re-export all public functions
 pub(crate) use basic::{
-    eval_car_atom, eval_cdr_atom, eval_cons_atom, eval_decons_atom, eval_max_atom, eval_size_atom,
+    eval_car_atom, eval_car_atom_step, eval_cdr_atom, eval_cdr_atom_step, eval_cons_atom,
+    eval_cons_atom_step, eval_decons_atom, eval_decons_atom_step, eval_max_atom, eval_max_atom_step,
+    eval_size_atom, eval_size_atom_step,
 };
 pub(crate) use higher_order::{eval_filter_atom_step, eval_foldl_atom_step, eval_map_atom_step};

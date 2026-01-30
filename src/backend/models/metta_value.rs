@@ -985,6 +985,81 @@ impl From<Vec<MettaValue>> for MettaValue {
 }
 
 // ============================================================================
+// Custom Drop implementation for MettaValue
+// ============================================================================
+
+/// Custom Drop implementation that handles deeply nested structures iteratively
+/// to avoid stack overflow.
+///
+/// The problem: When a deeply nested MettaValue is dropped, the default Drop
+/// implementation recursively drops inner values. For example, dropping
+/// `SExpr([a, SExpr([b, SExpr([c, ...])])])` would create a recursive call chain:
+/// 1. Drop MettaValue (outer)
+/// 2. Drop Arc<MettaValueInner>
+/// 3. If refcount → 0, drop MettaValueInner::SExpr
+/// 4. Drop Vec<MettaValue>
+/// 5. Drop each MettaValue in vec (back to step 1)
+///
+/// For 10,000 levels of nesting with refcount=1 at each level, this causes
+/// 10,000 recursive Drop calls → stack overflow.
+///
+/// Solution: Use an iterative work stack on the heap instead of recursion.
+impl Drop for MettaValue {
+    fn drop(&mut self) {
+        // Use a work stack to avoid recursive drops.
+        // We collect Arcs that need to be dropped and process them iteratively.
+        let mut work_stack: Vec<Arc<MettaValueInner>> = Vec::new();
+
+        // Take our Arc out (replace with a dummy that will be immediately dropped).
+        // We use Nil as the dummy since it's cheap to create and has no children.
+        let arc = std::mem::replace(&mut self.0, Arc::new(MettaValueInner::Nil));
+        work_stack.push(arc);
+
+        while let Some(arc) = work_stack.pop() {
+            // Try to get unique ownership. This succeeds if refcount == 1.
+            if let Ok(inner) = Arc::try_unwrap(arc) {
+                // We have unique ownership - extract children to process iteratively.
+                match inner {
+                    MettaValueInner::SExpr(items) => {
+                        // Process all items in the S-expression
+                        for item in items {
+                            // Push the item's Arc onto the work stack
+                            work_stack.push(Arc::clone(&item.0));
+                            // Forget the MettaValue wrapper to prevent its Drop from running
+                            // (which would cause the recursive drop we're trying to avoid)
+                            std::mem::forget(item);
+                        }
+                    }
+                    MettaValueInner::Conjunction(goals) => {
+                        // Process all goals in the conjunction
+                        for goal in goals {
+                            work_stack.push(Arc::clone(&goal.0));
+                            std::mem::forget(goal);
+                        }
+                    }
+                    MettaValueInner::Error(_msg, details) => {
+                        // Process the error details
+                        work_stack.push(Arc::clone(&details.0));
+                        std::mem::forget(details);
+                    }
+                    MettaValueInner::Type(inner_val) => {
+                        // Process the type's inner value
+                        work_stack.push(Arc::clone(&inner_val.0));
+                        std::mem::forget(inner_val);
+                    }
+                    // Non-compound types: nothing to do, `inner` drops normally here
+                    // at the end of this match arm (Atom, Bool, Long, Float, String,
+                    // Nil, Space, State, Unit, Memo, Empty)
+                    _ => {}
+                }
+            }
+            // If try_unwrap failed, other references exist and will handle the drop later.
+            // The Arc's refcount was just decremented and nothing more needs to be done.
+        }
+    }
+}
+
+// ============================================================================
 // Export MettaValueInner for pattern matching
 // ============================================================================
 
@@ -1664,5 +1739,82 @@ mod tests {
         // Cross-type access returns None
         assert_eq!(MettaValue::Long(42).as_atom(), None);
         assert_eq!(MettaValue::Atom("foo".to_string()).as_long(), None);
+    }
+
+    // Tests for iterative Drop implementation
+    #[test]
+    fn test_deeply_nested_drop_no_stack_overflow() {
+        // Build a deeply nested structure: (a (a (a ... (a nil)...)))
+        // 10,000 levels of nesting would cause stack overflow with recursive Drop
+        // (typical stack is ~8MB, each frame ~100-200 bytes, so ~40,000-80,000 max depth)
+        const DEPTH: usize = 10_000;
+
+        let mut value = MettaValue::Nil();
+        for _ in 0..DEPTH {
+            value = MettaValue::SExpr(vec![MettaValue::Atom("a".to_string()), value]);
+        }
+
+        // This should NOT cause stack overflow when value is dropped
+        // The custom Drop implementation uses an iterative work stack
+        drop(value);
+    }
+
+    #[test]
+    fn test_deeply_nested_conjunction_drop() {
+        // Test that Conjunction variant also uses iterative drop
+        const DEPTH: usize = 5_000;
+
+        let mut value = MettaValue::Nil();
+        for _ in 0..DEPTH {
+            value = MettaValue::Conjunction(vec![MettaValue::Atom("g".to_string()), value]);
+        }
+
+        drop(value);
+    }
+
+    #[test]
+    fn test_deeply_nested_error_drop() {
+        // Test that Error variant also uses iterative drop
+        const DEPTH: usize = 5_000;
+
+        let mut value = MettaValue::Nil();
+        for _ in 0..DEPTH {
+            value = MettaValue::Error("test".to_string(), value);
+        }
+
+        drop(value);
+    }
+
+    #[test]
+    fn test_deeply_nested_type_drop() {
+        // Test that Type variant also uses iterative drop
+        const DEPTH: usize = 5_000;
+
+        let mut value = MettaValue::Atom("base".to_string());
+        for _ in 0..DEPTH {
+            value = MettaValue::Type(value);
+        }
+
+        drop(value);
+    }
+
+    #[test]
+    fn test_shared_reference_drop() {
+        // When references are shared, try_unwrap fails and normal Arc drop happens
+        // This should not cause issues
+        let inner = MettaValue::SExpr(vec![MettaValue::Long(1), MettaValue::Long(2)]);
+        let clone1 = inner.clone();
+        let clone2 = inner.clone();
+
+        // All three point to same Arc
+        assert!(inner.ptr_eq(&clone1));
+        assert!(inner.ptr_eq(&clone2));
+
+        // Dropping one doesn't affect others
+        drop(inner);
+
+        // clone1 and clone2 should still be valid
+        assert_eq!(clone1.as_sexpr().map(|v| v.len()), Some(2));
+        assert_eq!(clone2.as_sexpr().map(|v| v.len()), Some(2));
     }
 }

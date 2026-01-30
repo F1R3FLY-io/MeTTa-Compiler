@@ -377,8 +377,10 @@ impl Compiler {
                 if let Some(folded) = self.try_fold_comparison("==", &args[0], &args[1]) {
                     return self.compile(&folded).map(Some);
                 }
-                self.compile(&args[0])?;
-                self.compile(&args[1])?;
+                // IMPORTANT: Push arguments WITHOUT evaluation - == performs structural
+                // comparison, not comparison of evaluated values. This matches HE semantics.
+                self.compile_quoted(&args[0])?;
+                self.compile_quoted(&args[1])?;
                 self.builder.emit(Opcode::Eq);
                 Ok(Some(()))
             }
@@ -387,8 +389,10 @@ impl Compiler {
                 if let Some(folded) = self.try_fold_comparison("!=", &args[0], &args[1]) {
                     return self.compile(&folded).map(Some);
                 }
-                self.compile(&args[0])?;
-                self.compile(&args[1])?;
+                // IMPORTANT: Push arguments WITHOUT evaluation - != performs structural
+                // comparison, not comparison of evaluated values. This matches HE semantics.
+                self.compile_quoted(&args[0])?;
+                self.compile_quoted(&args[1])?;
                 self.builder.emit(Opcode::Ne);
                 Ok(Some(()))
             }
@@ -560,7 +564,9 @@ impl Compiler {
             }
             "get-metatype" => {
                 self.check_arity("get-metatype", args.len(), 1)?;
-                self.compile(&args[0])?;
+                // IMPORTANT: Push argument WITHOUT evaluation - get-metatype inspects
+                // the syntactic structure, not the evaluated value
+                self.compile_quoted(&args[0])?;
                 self.builder.emit(Opcode::GetMetaType);
                 Ok(Some(()))
             }

@@ -247,13 +247,11 @@ pub enum BinaryOp {
     FloorDiv,
     Log,
 
-    // Comparison
+    // Comparison (note: == and != are handled specially with non-evaluating semantics)
     Lt,
     Le,
     Gt,
     Ge,
-    Eq,
-    Ne,
 
     // Boolean
     And,
@@ -284,8 +282,6 @@ impl BinaryOp {
             BinaryOp::Le => Opcode::Le,
             BinaryOp::Gt => Opcode::Gt,
             BinaryOp::Ge => Opcode::Ge,
-            BinaryOp::Eq => Opcode::Eq,
-            BinaryOp::Ne => Opcode::Ne,
             BinaryOp::And => Opcode::And,
             BinaryOp::Or => Opcode::Or,
             BinaryOp::Xor => Opcode::Xor,
@@ -298,6 +294,7 @@ impl BinaryOp {
     }
 
     /// Get the operation name for error messages
+    #[allow(dead_code)]
     pub fn name(self) -> &'static str {
         match self {
             BinaryOp::Add => "+",
@@ -312,8 +309,6 @@ impl BinaryOp {
             BinaryOp::Le => "<=",
             BinaryOp::Gt => ">",
             BinaryOp::Ge => ">=",
-            BinaryOp::Eq => "==",
-            BinaryOp::Ne => "!=",
             BinaryOp::And => "and",
             BinaryOp::Or => "or",
             BinaryOp::Xor => "xor",
@@ -359,9 +354,8 @@ pub enum UnaryOp {
     MinAtom,
     MaxAtom,
 
-    // Type operations
+    // Type operations (note: get-metatype is handled specially with non-evaluating semantics)
     GetType,
-    GetMetaType,
     Repr,
 
     // State operations
@@ -404,7 +398,6 @@ impl UnaryOp {
             UnaryOp::MinAtom => Opcode::MinAtom,
             UnaryOp::MaxAtom => Opcode::MaxAtom,
             UnaryOp::GetType => Opcode::GetType,
-            UnaryOp::GetMetaType => Opcode::GetMetaType,
             UnaryOp::Repr => Opcode::Repr,
             UnaryOp::NewState => Opcode::NewState,
             UnaryOp::GetState => Opcode::GetState,
@@ -416,6 +409,7 @@ impl UnaryOp {
     }
 
     /// Get the operation name for error messages
+    #[allow(dead_code)]
     pub fn name(self) -> &'static str {
         match self {
             UnaryOp::Abs => "abs",
@@ -441,7 +435,6 @@ impl UnaryOp {
             UnaryOp::MinAtom => "min-atom",
             UnaryOp::MaxAtom => "max-atom",
             UnaryOp::GetType => "get-type",
-            UnaryOp::GetMetaType => "get-metatype",
             UnaryOp::Repr => "repr",
             UnaryOp::NewState => "new-state",
             UnaryOp::GetState => "get-state",
@@ -481,6 +474,7 @@ pub enum HigherOrderOp {
 
 /// State for if/then/else compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum IfState {
     CompileCondition,
     CompileThen,
@@ -490,6 +484,7 @@ pub enum IfState {
 
 /// State for let binding compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum LetState {
     CompileValue,
     BindPattern,
@@ -500,6 +495,7 @@ pub enum LetState {
 
 /// State for let* binding compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Some states are part of state machine design, matched but not constructed
 pub enum LetStarState {
     CompileNextBinding,
     BindPattern,
@@ -510,6 +506,7 @@ pub enum LetStarState {
 
 /// State for unify compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum UnifyState {
     CompileLeft,
     CompileRight,
@@ -521,6 +518,7 @@ pub enum UnifyState {
 
 /// State for case compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum CaseState {
     CompileScrutinee,
     CompilingCase { index: usize },
@@ -529,6 +527,7 @@ pub enum CaseState {
 
 /// State for chain compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum ChainState {
     CompileExpr,
     BindPattern,
@@ -539,6 +538,7 @@ pub enum ChainState {
 
 /// State for superpose compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum SuperposeState {
     Analyzing,
     Done,
@@ -546,6 +546,7 @@ pub enum SuperposeState {
 
 /// State for conjunction compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum ConjunctionState {
     Analyzing,
     Done,
@@ -553,6 +554,7 @@ pub enum ConjunctionState {
 
 /// State for pattern binding compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum PatternBindingState {
     Binding,
     DestructuringElement,
@@ -561,6 +563,7 @@ pub enum PatternBindingState {
 
 /// State for match compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum MatchState {
     CompileSpace,
     CompilePattern,
@@ -572,6 +575,7 @@ pub enum MatchState {
 
 /// State for higher-order operation compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum HigherOrderState {
     CompileList,
     /// For foldl: compile init expression before template
@@ -582,6 +586,7 @@ pub enum HigherOrderState {
 
 /// State for catch compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum CatchState {
     CompileExpr,
     CompileDefault,
@@ -590,6 +595,7 @@ pub enum CatchState {
 
 /// State for is-error compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Done state is part of state machine design, matched but not constructed
 pub enum IsErrorState {
     CompileExpr,
     Done,
@@ -601,6 +607,7 @@ pub enum IsErrorState {
 
 /// Information about scope state for cleanup after body evaluation
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields are part of the design, used for debugging
 pub struct ScopeInfo {
     /// Scope depth when we began
     pub depth: u16,
@@ -617,6 +624,7 @@ pub struct ScopeInfo {
 /// Continuation representing what to do after a sub-compilation completes.
 /// Index 0 is always Done (no more work).
 #[derive(Debug)]
+#[allow(dead_code)] // Parent variant is part of the design, matched but not constructed
 pub enum Continuation {
     /// Final result - compilation complete
     Done,

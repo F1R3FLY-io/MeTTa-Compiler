@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::RwLockReadGuard;
 
-use indexmap::IndexSet;
 use mork::space::Space;
 use mork_expr::Expr;
 use owning_ref::OwningHandle;
@@ -48,14 +47,14 @@ pub struct RuleHeadsIter<'a> {
     /// OwningHandle owns the guard and contains an iterator that borrows from it.
     /// The type is: OwningHandle<Guard, Box<dyn Iterator + 'a>>
     inner: OwningHandle<
-        RwLockReadGuard<'a, HashMap<(Symbol, usize), IndexSet<Rule>>>,
+        RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>,
         Box<dyn Iterator<Item = (String, usize, usize)> + 'a>,
     >,
 }
 
 impl<'a> RuleHeadsIter<'a> {
     /// Create a new lazy iterator from a lock guard.
-    pub fn new(guard: RwLockReadGuard<'a, HashMap<(Symbol, usize), IndexSet<Rule>>>) -> Self {
+    pub fn new(guard: RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>) -> Self {
         // SAFETY: OwningHandle ensures the guard outlives the iterator.
         // The iterator only borrows from the owned guard, so the reference is valid.
         let inner = OwningHandle::new_with_fn(guard, |index_ptr| {
@@ -192,7 +191,7 @@ impl<V: Clone + Default + Send + Sync + Unpin> Iterator for RulesIter<V> {
 pub struct MatchingRulesIter<'a> {
     /// OwningHandle holds the rule_index guard and provides the iterator.
     inner: OwningHandle<
-        RwLockReadGuard<'a, HashMap<(Symbol, usize), IndexSet<Rule>>>,
+        RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>,
         Box<dyn Iterator<Item = &'a Rule> + 'a>,
     >,
     /// Wildcard rules iterator (if any)
@@ -203,12 +202,11 @@ pub struct MatchingRulesIter<'a> {
 
 /// Helper struct for iterating over wildcard rules
 struct WildcardRulesIter<'a> {
-    inner:
-        OwningHandle<RwLockReadGuard<'a, IndexSet<Rule>>, Box<dyn Iterator<Item = &'a Rule> + 'a>>,
+    inner: OwningHandle<RwLockReadGuard<'a, Vec<Rule>>, Box<dyn Iterator<Item = &'a Rule> + 'a>>,
 }
 
 impl<'a> WildcardRulesIter<'a> {
-    fn new(guard: RwLockReadGuard<'a, IndexSet<Rule>>) -> Self {
+    fn new(guard: RwLockReadGuard<'a, Vec<Rule>>) -> Self {
         let inner = OwningHandle::new_with_fn(guard, |rules_ptr| {
             let rules = unsafe { &*rules_ptr };
             Box::new(rules.iter()) as Box<dyn Iterator<Item = &'a Rule> + 'a>
@@ -229,9 +227,9 @@ impl<'a> Iterator for WildcardRulesIter<'a> {
 impl<'a> MatchingRulesIter<'a> {
     /// Create a new lazy iterator for matching rules.
     pub fn new(
-        rule_index_guard: RwLockReadGuard<'a, HashMap<(Symbol, usize), IndexSet<Rule>>>,
+        rule_index_guard: RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>,
         key: (Symbol, usize),
-        wildcard_guard: Option<RwLockReadGuard<'a, IndexSet<Rule>>>,
+        wildcard_guard: Option<RwLockReadGuard<'a, Vec<Rule>>>,
     ) -> Self {
         // Create indexed rules iterator
         let inner = OwningHandle::new_with_fn(rule_index_guard, move |index_ptr| {
@@ -425,7 +423,7 @@ impl Environment {
                     .rule_index
                     .write()
                     .expect("rule_index lock poisoned");
-                index.entry((head_sym, arity)).or_default().insert(rule);
+                index.entry((head_sym, arity)).or_default().push(rule);
             } else {
                 // Rules without head symbol (wildcards, variables) go to wildcard list
                 let mut wildcards = self
@@ -433,7 +431,7 @@ impl Environment {
                     .wildcard_rules
                     .write()
                     .expect("wildcard_rules lock poisoned");
-                wildcards.insert(rule);
+                wildcards.push(rule);
                 // Mark that we have wildcard rules
                 self.shared
                     .has_wildcard_rules
@@ -505,7 +503,7 @@ impl Environment {
                 .rule_index
                 .write()
                 .expect("rule_index lock poisoned");
-            index.entry((head_sym, arity)).or_default().insert(rule); // Move instead of clone
+            index.entry((head_sym, arity)).or_default().push(rule); // Move instead of clone
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
             let mut wildcards = self
@@ -513,8 +511,8 @@ impl Environment {
                 .wildcard_rules
                 .write()
                 .expect("wildcard_rules lock poisoned");
-            wildcards.insert(rule); // Move instead of clone
-                                    // Mark that we have wildcard rules (for fast-path in get_matching_rules)
+            wildcards.push(rule); // Move instead of clone
+                                  // Mark that we have wildcard rules (for fast-path in get_matching_rules)
             self.shared
                 .has_wildcard_rules
                 .store(true, Ordering::Release);
@@ -567,8 +565,8 @@ impl Environment {
 
         // Track rule metadata while building trie
         // Use Symbol for O(1) comparison when symbol-interning is enabled
-        let mut rule_index_updates: HashMap<(Symbol, usize), IndexSet<Rule>> = HashMap::new();
-        let mut wildcard_updates: IndexSet<Rule> = IndexSet::new();
+        let mut rule_index_updates: HashMap<(Symbol, usize), Vec<Rule>> = HashMap::new();
+        let mut wildcard_updates: Vec<Rule> = Vec::new();
 
         for rule in rules {
             // Create rule s-expression: (= lhs rhs)
@@ -592,9 +590,9 @@ impl Environment {
                 rule_index_updates
                     .entry((head_sym, arity))
                     .or_default()
-                    .insert(rule);
+                    .push(rule);
             } else {
-                wildcard_updates.insert(rule);
+                wildcard_updates.push(rule);
             }
 
             // Compute MORK bytes for PathMap insertion
@@ -625,8 +623,8 @@ impl Environment {
                 .rule_index
                 .write()
                 .expect("rule_index lock poisoned");
-            for ((head, arity), rules) in rule_index_updates {
-                index.entry((head, arity)).or_default().extend(rules);
+            for ((head, arity), mut rules) in rule_index_updates {
+                index.entry((head, arity)).or_default().append(&mut rules);
             }
         }
 

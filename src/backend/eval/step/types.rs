@@ -437,69 +437,21 @@ pub enum EvalStep {
         /// Evaluation depth
         depth: usize,
     },
+    /// Start get-metatype evaluation - evaluates atom then returns its meta-type.
+    StartGetMetatype {
+        /// Atom expression to evaluate
+        atom: MettaValue,
+        /// Environment for evaluation
+        env: Environment,
+        /// Evaluation depth
+        depth: usize,
+    },
     /// Start bind! evaluation - evaluates atom expression then registers token.
     StartBind {
         /// Token name to bind (e.g., "&kb")
         token: String,
         /// Atom expression to evaluate
         atom_expr: MettaValue,
-        /// Environment for evaluation
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-    },
-    /// Start include evaluation - loads and evaluates a MeTTa file.
-    /// Expressions are evaluated iteratively via the trampoline to prevent stack overflow.
-    StartInclude {
-        /// Expressions to evaluate (after parsing and rule extraction)
-        expressions: Vec<MettaValue>,
-        /// Previous module path to restore after include completes
-        prev_module_path: Option<std::path::PathBuf>,
-        /// Content hash for cycle detection cleanup
-        content_hash: u64,
-        /// Environment for evaluation
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-    },
-    /// Start import! evaluation - loads a module and optionally imports specific items.
-    /// This defers to eval_include_step for the module loading, then handles selective imports.
-    StartImport {
-        /// Module path argument to include
-        module_arg: MettaValue,
-        /// Destination (e.g., "&self" or an alias)
-        dest: MettaValue,
-        /// Optional selective import: (item_name, optional_alias)
-        selective_import: Option<(String, Option<String>)>,
-        /// Environment for evaluation
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-    },
-    /// Start lookup evaluation (MORK form) - conditional execution based on pattern lookup.
-    /// Evaluates the success or failure branch based on whether pattern exists in space.
-    StartLookup {
-        /// Pattern to search for in space
-        pattern: MettaValue,
-        /// Success goals (conjunction) to evaluate if pattern found
-        success_goals: Vec<MettaValue>,
-        /// Failure goals (conjunction) to evaluate if pattern not found
-        failure_goals: Vec<MettaValue>,
-        /// Environment for evaluation
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-    },
-    /// Evaluate a list operation argument that needs evaluation first.
-    /// Used by car-atom, cdr-atom, size-atom, etc. when their argument is a grounded op.
-    /// Example: (car-atom (map-atom ...)) - evaluates map-atom first, then takes car.
-    EvalListOpArg {
-        /// The operation name (e.g., "car-atom")
-        op_name: String,
-        /// The full operation items (e.g., [car-atom, (map-atom ...)])
-        items: Vec<MettaValue>,
-        /// Index of the argument to evaluate (usually 1)
-        arg_index: usize,
         /// Environment for evaluation
         env: Environment,
         /// Evaluation depth

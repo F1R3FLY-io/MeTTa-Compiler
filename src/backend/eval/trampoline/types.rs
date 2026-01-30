@@ -339,8 +339,6 @@ pub enum Continuation {
         val1: MettaValue,
         /// Remaining pattern1 results to process
         remaining_pattern1_results: VecDeque<MettaValue>,
-        /// Pattern2 expression (needed for re-evaluation with remaining pattern1 results)
-        pattern2: MettaValue,
         /// Success body template
         success_body: MettaValue,
         /// Failure body template
@@ -701,103 +699,21 @@ pub enum Continuation {
         /// Parent continuation
         parent_cont: usize,
     },
+    /// Processing get-metatype atom evaluation result.
+    ProcessGetMetatype {
+        /// Original atom for error messages
+        atom: MettaValue,
+        /// Environment for evaluation
+        env: Environment,
+        /// Evaluation depth
+        depth: usize,
+        /// Parent continuation
+        parent_cont: usize,
+    },
     /// Processing bind! atom expression result.
     ProcessBind {
         /// Token name to bind (e.g., "&kb")
         token: String,
-        /// Environment for evaluation
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-        /// Parent continuation
-        parent_cont: usize,
-    },
-    /// Processing case template evaluations - collects results from multiple switch matches.
-    /// This enables case-atom to evaluate templates iteratively through the trampoline
-    /// instead of direct eval() calls that cause stack overflow.
-    ProcessCaseTemplates {
-        /// Remaining atoms to process through switch-minimal
-        remaining_atoms: VecDeque<MettaValue>,
-        /// Cases expression for switch-minimal
-        cases: MettaValue,
-        /// Accumulated results so far
-        results: Vec<MettaValue>,
-        /// Environment for evaluation
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-        /// Parent continuation
-        parent_cont: usize,
-    },
-    /// Processing include - evaluates expressions from an included file iteratively.
-    /// This enables include to work with deeply nested code without stack overflow.
-    ProcessInclude {
-        /// Remaining expressions to evaluate (VecDeque for O(1) pop_front)
-        remaining_expressions: VecDeque<MettaValue>,
-        /// Last results from expression evaluation
-        last_results: Vec<MettaValue>,
-        /// Previous module path to restore after include completes
-        prev_module_path: Option<std::path::PathBuf>,
-        /// Content hash for cycle detection cleanup
-        content_hash: u64,
-        /// Environment for evaluation
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-        /// Parent continuation
-        parent_cont: usize,
-    },
-    /// Processing import! - handles include result and optional selective import.
-    /// Phase 1: After include completes, check for selective import.
-    ProcessImport {
-        /// Destination (e.g., "&self" or an alias)
-        dest: MettaValue,
-        /// Optional selective import: (item_name, optional_alias)
-        selective_import: Option<(String, Option<String>)>,
-        /// Environment for evaluation
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-        /// Parent continuation
-        parent_cont: usize,
-    },
-    /// Processing import! selective lookup - handles item lookup result for aliasing.
-    /// Phase 2: After item lookup, register alias if specified.
-    ProcessImportSelective {
-        /// Alias name to register
-        alias_name: String,
-        /// Item name (for error messages)
-        item_name: String,
-        /// Environment for evaluation
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-        /// Parent continuation
-        parent_cont: usize,
-    },
-    /// Processing lookup (MORK form) - evaluates success or failure branch.
-    /// This is handled by StartConjunction after determining which branch to take.
-    ProcessLookup {
-        /// Success goals (conjunction) to evaluate if pattern found
-        success_goals: Vec<MettaValue>,
-        /// Failure goals (conjunction) to evaluate if pattern not found
-        failure_goals: Vec<MettaValue>,
-        /// Environment for evaluation
-        env: Environment,
-        /// Evaluation depth
-        depth: usize,
-        /// Parent continuation
-        parent_cont: usize,
-    },
-    /// Processing list operation argument evaluation (car-atom, cdr-atom, size-atom, etc.)
-    /// Awaits argument evaluation, then re-calls the list operation with evaluated arg.
-    ProcessListOpArg {
-        /// The operation name (e.g., "car-atom")
-        op_name: String,
-        /// The full operation items with unevaluated arg
-        items: Vec<MettaValue>,
-        /// Index of the argument being evaluated
-        arg_index: usize,
         /// Environment for evaluation
         env: Environment,
         /// Evaluation depth

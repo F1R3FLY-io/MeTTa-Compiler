@@ -1042,57 +1042,25 @@ impl Compiler {
             "==" => {
                 self.check_arity("==", args.len(), 2)?;
                 let folded = self.try_fold_comparison("==", &args[0], &args[1]);
-                if let Some(value) = folded {
-                    // Constant folded - compile the result directly
-                    work_stack.push(CompileWork::CompileExpr {
-                        expr: value,
-                        in_tail_position: false,
-                        cont_id,
-                    });
-                } else {
-                    // IMPORTANT: Push arguments WITHOUT evaluation - == performs structural
-                    // comparison, not comparison of evaluated values. This matches HE semantics.
-                    work_stack.push(CompileWork::EmitOpcode {
-                        opcode: Opcode::Eq,
-                        cont_id,
-                    });
-                    work_stack.push(CompileWork::CompileQuoted {
-                        expr: args[1].clone(),
-                        cont_id: 0,
-                    });
-                    work_stack.push(CompileWork::CompileQuoted {
-                        expr: args[0].clone(),
-                        cont_id: 0,
-                    });
-                }
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::Eq,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded,
+                    cont_id,
+                });
                 Ok(Some(()))
             }
             "!=" => {
                 self.check_arity("!=", args.len(), 2)?;
                 let folded = self.try_fold_comparison("!=", &args[0], &args[1]);
-                if let Some(value) = folded {
-                    // Constant folded - compile the result directly
-                    work_stack.push(CompileWork::CompileExpr {
-                        expr: value,
-                        in_tail_position: false,
-                        cont_id,
-                    });
-                } else {
-                    // IMPORTANT: Push arguments WITHOUT evaluation - != performs structural
-                    // comparison, not comparison of evaluated values. This matches HE semantics.
-                    work_stack.push(CompileWork::EmitOpcode {
-                        opcode: Opcode::Ne,
-                        cont_id,
-                    });
-                    work_stack.push(CompileWork::CompileQuoted {
-                        expr: args[1].clone(),
-                        cont_id: 0,
-                    });
-                    work_stack.push(CompileWork::CompileQuoted {
-                        expr: args[0].clone(),
-                        cont_id: 0,
-                    });
-                }
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::Ne,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded,
+                    cont_id,
+                });
                 Ok(Some(()))
             }
 
@@ -1290,16 +1258,11 @@ impl Compiler {
             }
             "get-metatype" => {
                 self.check_arity("get-metatype", args.len(), 1)?;
-                // IMPORTANT: Push argument WITHOUT evaluation - get-metatype inspects
-                // the syntactic structure, not the evaluated value.
-                // Use CompileQuoted to push unevaluated, then emit GetMetaType opcode.
-                work_stack.push(CompileWork::EmitOpcode {
-                    opcode: Opcode::GetMetaType,
+                work_stack.push(CompileWork::CompileUnaryOp {
+                    op: UnaryOp::GetMetaType,
+                    arg: args[0].clone(),
+                    folded: None,
                     cont_id,
-                });
-                work_stack.push(CompileWork::CompileQuoted {
-                    expr: args[0].clone(),
-                    cont_id: 0,
                 });
                 Ok(Some(()))
             }

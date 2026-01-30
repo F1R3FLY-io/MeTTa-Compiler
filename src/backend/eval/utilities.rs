@@ -1,23 +1,20 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
+#[allow(unused_imports)]
+use super::eval;
 use super::EvalStep;
 
 // ============================================================
-// Utility Operations (empty, get-metatype, ==, !=)
+// Utility Operations (empty, get-metatype)
 // ============================================================
 
-/// Step version of eval_get_metatype - NON-EVALUATING structural inspection.
+/// Step version of eval_get_metatype - defers evaluation to trampoline.
 /// Usage: (get-metatype atom)
-///
-/// IMPORTANT: This function does NOT evaluate its argument. It inspects the
-/// syntactic structure of the atom to determine its metatype. This is consistent
-/// with hyperon-experimental behavior where get-metatype is a pure structural
-/// operation.
 pub(crate) fn eval_get_metatype_step(
     items: Vec<MettaValue>,
     env: Environment,
-    _depth: usize,
+    depth: usize,
 ) -> EvalStep {
     if items.len() < 2 {
         let err = MettaValue::Error(
@@ -30,57 +27,9 @@ pub(crate) fn eval_get_metatype_step(
         return EvalStep::Done((vec![err], env));
     }
 
-    // Get metatype of the UNEVALUATED argument directly - NO evaluation!
-    let atom = &items[1];
-    let meta_type = get_metatype(atom);
+    let atom = items[1].clone();
 
-    EvalStep::Done((vec![MettaValue::Atom(meta_type.to_string())], env))
-}
-
-/// Step version of eval_eq - NON-EVALUATING structural comparison.
-/// Usage: (== atom1 atom2)
-///
-/// IMPORTANT: This function does NOT evaluate its arguments. It performs
-/// structural comparison of atoms without evaluation. This is consistent
-/// with hyperon-experimental behavior where == compares atoms structurally.
-pub(crate) fn eval_eq_step(items: Vec<MettaValue>, env: Environment, _depth: usize) -> EvalStep {
-    if items.len() != 3 {
-        let err = MettaValue::Error(
-            format!(
-                "== requires exactly 2 arguments, got {}. Usage: (== atom1 atom2)",
-                items.len() - 1
-            ),
-            MettaValue::SExpr(items),
-        );
-        return EvalStep::Done((vec![err], env));
-    }
-
-    // Compare arguments STRUCTURALLY - NO evaluation!
-    let result = items[1] == items[2];
-    EvalStep::Done((vec![MettaValue::Bool(result)], env))
-}
-
-/// Step version of eval_neq - NON-EVALUATING structural comparison.
-/// Usage: (!= atom1 atom2)
-///
-/// IMPORTANT: This function does NOT evaluate its arguments. It performs
-/// structural comparison of atoms without evaluation. This is consistent
-/// with hyperon-experimental behavior where != compares atoms structurally.
-pub(crate) fn eval_neq_step(items: Vec<MettaValue>, env: Environment, _depth: usize) -> EvalStep {
-    if items.len() != 3 {
-        let err = MettaValue::Error(
-            format!(
-                "!= requires exactly 2 arguments, got {}. Usage: (!= atom1 atom2)",
-                items.len() - 1
-            ),
-            MettaValue::SExpr(items),
-        );
-        return EvalStep::Done((vec![err], env));
-    }
-
-    // Compare arguments STRUCTURALLY - NO evaluation!
-    let result = items[1] != items[2];
-    EvalStep::Done((vec![MettaValue::Bool(result)], env))
+    EvalStep::StartGetMetatype { atom, env, depth }
 }
 
 /// empty: Returns the Empty sentinel atom
@@ -94,6 +43,29 @@ pub(super) fn eval_empty(_items: Vec<MettaValue>, env: Environment) -> EvalResul
     (vec![MettaValue::Empty()], env)
 }
 
+/// get-metatype: Returns the meta-type of an atom
+/// Usage: (get-metatype atom)
+/// Returns: Symbol, Variable, Expression, or Grounded
+///
+/// DEPRECATED: Use eval_get_metatype_step for trampoline-based evaluation.
+#[allow(dead_code)]
+pub(super) fn eval_get_metatype(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("get-metatype", items, 1, env, "(get-metatype atom)");
+
+    let atom = &items[1];
+
+    // Evaluate the argument
+    let (results, env1) = eval(atom.clone(), env);
+    if results.is_empty() {
+        // If evaluation returns empty, that's valid - return empty
+        return (vec![], env1);
+    }
+
+    // Get the meta-type of the first result
+    let value = &results[0];
+    let meta_type = get_metatype(value);
+    (vec![MettaValue::Atom(meta_type.to_string())], env1)
+}
 
 /// Get the meta-type of a MettaValue
 fn get_metatype(value: &MettaValue) -> &'static str {
@@ -227,14 +199,13 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_symbol() {
-        use super::super::eval;
         let env = Environment::new();
 
-        let value = MettaValue::SExpr(vec![
+        let items = vec![
             MettaValue::Atom("get-metatype".to_string()),
             MettaValue::Atom("my-symbol".to_string()),
-        ]);
-        let (results, _) = eval(value, env);
+        ];
+        let (results, _) = eval_get_metatype(items, env);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Atom("Symbol".to_string()));
@@ -242,14 +213,13 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_variable() {
-        use super::super::eval;
         let env = Environment::new();
 
-        let value = MettaValue::SExpr(vec![
+        let items = vec![
             MettaValue::Atom("get-metatype".to_string()),
             MettaValue::Atom("$x".to_string()),
-        ]);
-        let (results, _) = eval(value, env);
+        ];
+        let (results, _) = eval_get_metatype(items, env);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Atom("Variable".to_string()));
@@ -257,40 +227,28 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_grounded() {
-        use super::super::eval;
         let env = Environment::new();
 
-        let value = MettaValue::SExpr(vec![
+        let items = vec![
             MettaValue::Atom("get-metatype".to_string()),
             MettaValue::Long(42),
-        ]);
-        let (results, _) = eval(value, env);
+        ];
+        let (results, _) = eval_get_metatype(items, env);
 
         assert_eq!(results.len(), 1);
-        // Bytecode path returns "Number", trampoline returns "Grounded"
-        // Both are valid - bytecode is more specific
-        let result_str = match results[0].inner() {
-            MettaValueInner::Atom(s) => s.as_str(),
-            _ => panic!("Expected Atom"),
-        };
-        assert!(
-            result_str == "Number" || result_str == "Grounded",
-            "Expected 'Number' or 'Grounded', got '{}'",
-            result_str
-        );
+        assert_eq!(results[0], MettaValue::Atom("Grounded".to_string()));
     }
 
     #[test]
     fn test_eval_get_metatype_expression() {
-        use super::super::eval;
         let env = Environment::new();
 
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("foo".to_string()),
             MettaValue::Atom("bar".to_string()),
         ]);
-        let value = MettaValue::SExpr(vec![MettaValue::Atom("get-metatype".to_string()), expr]);
-        let (results, _) = eval(value, env);
+        let items = vec![MettaValue::Atom("get-metatype".to_string()), expr];
+        let (results, _) = eval_get_metatype(items, env);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], MettaValue::Atom("Expression".to_string()));
@@ -298,11 +256,10 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_missing_args() {
-        use super::super::eval;
         let env = Environment::new();
 
-        let value = MettaValue::SExpr(vec![MettaValue::Atom("get-metatype".to_string())]);
-        let (results, _) = eval(value, env);
+        let items = vec![MettaValue::Atom("get-metatype".to_string())];
+        let (results, _) = eval_get_metatype(items, env);
 
         assert_eq!(results.len(), 1);
         match results[0].inner() {

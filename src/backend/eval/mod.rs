@@ -75,8 +75,9 @@ pub(crate) use processing::{
     handle_no_rule_match, process_collected_sexpr, process_single_combination,
 };
 
-// Re-export from conjunction module
-pub use conjunction::eval_conjunction_step;
+// Re-export from conjunction module (deprecated - use conjunction::eval_conjunction_step instead)
+#[allow(unused_imports)]
+use conjunction::eval_conjunction;
 
 // Re-export from control_flow module for trampoline access
 pub(crate) use control_flow::eval_switch_minimal_trampoline;

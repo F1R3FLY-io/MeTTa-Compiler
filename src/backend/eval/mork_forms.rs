@@ -9,7 +9,7 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 
-use super::EvalResult;
+use super::{eval, EvalResult};
 
 /// Evaluate exec special form: (exec <priority> <antecedent> <consequent>)
 ///
@@ -438,20 +438,17 @@ pub(super) fn eval_coalg(items: Vec<MettaValue>, env: Environment) -> EvalResult
     (vec![coalg_expr], env)
 }
 
-use super::EvalStep;
-
-/// Step version of lookup that defers evaluation to trampoline.
-/// This prevents stack overflow for nested lookup expressions.
+/// Evaluate lookup special form: (lookup <pattern> <success-goals> <failure-goals>)
 ///
 /// Conditional execution based on space queries:
 /// - pattern: Pattern to search for in space
 /// - success-goals: Conjunction executed if pattern found
 /// - failure-goals: Conjunction executed if pattern not found
-pub(crate) fn eval_lookup_step(
-    items: Vec<MettaValue>,
-    env: Environment,
-    depth: usize,
-) -> EvalStep {
+///
+/// Examples:
+/// - (lookup $y (, T) (, $cy))  ; If $y exists, return T, else execute $cy
+/// - (lookup $p (, (lookup $t $px $tx)) (, (exec (0 $t) $px $tx)))  ; Nested lookup
+pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResult {
     let args = &items[1..]; // Skip "lookup" operator
 
     if args.len() < 3 {
@@ -459,57 +456,68 @@ pub(crate) fn eval_lookup_step(
             "lookup requires 3 arguments: pattern, success-goals, and failure-goals".to_string(),
             MettaValue::SExpr(args.to_vec()),
         );
-        return EvalStep::Done((vec![err], env));
+        return (vec![err], env);
     }
 
-    let pattern = args[0].clone();
+    let pattern = &args[0];
     let success_goals = &args[1];
     let failure_goals = &args[2];
 
-    // Extract success goals from conjunction
-    let success_conj = match success_goals.inner() {
-        MettaValueInner::Conjunction(goals) => goals.clone(),
-        MettaValueInner::SExpr(items)
-            if !items.is_empty()
-                && matches!(items[0].inner(), MettaValueInner::Atom(op) if op == ",") =>
-        {
-            items[1..].to_vec()
-        }
+    // Both branches must be conjunctions
+    let _success_conj = match success_goals.inner() {
+        MettaValueInner::Conjunction(_) => success_goals,
         _ => {
             let err = MettaValue::Error(
                 "lookup success branch must be a conjunction (,)".to_string(),
                 success_goals.clone(),
             );
-            return EvalStep::Done((vec![err], env));
+            return (vec![err], env);
         }
     };
 
-    // Extract failure goals from conjunction
-    let failure_conj = match failure_goals.inner() {
-        MettaValueInner::Conjunction(goals) => goals.clone(),
-        MettaValueInner::SExpr(items)
-            if !items.is_empty()
-                && matches!(items[0].inner(), MettaValueInner::Atom(op) if op == ",") =>
-        {
-            items[1..].to_vec()
-        }
+    let _failure_conj = match failure_goals.inner() {
+        MettaValueInner::Conjunction(_) => failure_goals,
         _ => {
             let err = MettaValue::Error(
                 "lookup failure branch must be a conjunction (,)".to_string(),
                 failure_goals.clone(),
             );
-            return EvalStep::Done((vec![err], env));
+            return (vec![err], env);
         }
     };
 
-    // Return StartLookup to defer branch selection and evaluation to trampoline
-    EvalStep::StartLookup {
-        pattern,
-        success_goals: success_conj,
-        failure_goals: failure_conj,
-        env,
-        depth,
+    // Try to find pattern in space
+    // For now, we'll use a simple heuristic: if pattern is a variable, assume not found
+    // In a full implementation, this would query the MORK space
+
+    let pattern_found = !matches!(pattern.inner(), MettaValueInner::Atom(s) if s.starts_with('$'));
+
+    if pattern_found {
+        // Evaluate success branch
+        match success_goals.inner() {
+            MettaValueInner::Conjunction(goals) => eval_conjunction_goals(goals.clone(), env),
+            _ => unreachable!(), // Already checked above
+        }
+    } else {
+        // Evaluate failure branch
+        match failure_goals.inner() {
+            MettaValueInner::Conjunction(goals) => eval_conjunction_goals(goals.clone(), env),
+            _ => unreachable!(), // Already checked above
+        }
     }
+}
+
+/// Helper to evaluate conjunction goals sequentially (for lookup branches, not exec antecedents)
+fn eval_conjunction_goals(goals: Vec<MettaValue>, mut env: Environment) -> EvalResult {
+    let mut all_results = Vec::new();
+
+    for goal in goals {
+        let (results, new_env) = eval(goal, env);
+        all_results.extend(results);
+        env = new_env;
+    }
+
+    (all_results, env)
 }
 
 /// Evaluate rulify meta-program: (rulify $name (, $p0) (, $t0 ...) <antecedent> <consequent>)
@@ -657,39 +665,39 @@ mod tests {
 
     #[test]
     fn test_lookup_success_branch() {
-        use crate::backend::eval::eval;
-
         let env = Environment::new();
 
         // (lookup foo (, T) (, F))
-        let expr = MettaValue::SExpr(vec![
-            MettaValue::Atom("lookup".to_string()),
-            MettaValue::Atom("foo".to_string()), // Not a variable, so "found"
-            MettaValue::Conjunction(vec![MettaValue::Atom("T".to_string())]),
-            MettaValue::Conjunction(vec![MettaValue::Atom("F".to_string())]),
-        ]);
-        let (results, _) = eval(expr, env);
+        let value = eval_lookup(
+            vec![
+                MettaValue::Atom("lookup".to_string()),
+                MettaValue::Atom("foo".to_string()), // Not a variable, so "found"
+                MettaValue::Conjunction(vec![MettaValue::Atom("T".to_string())]),
+                MettaValue::Conjunction(vec![MettaValue::Atom("F".to_string())]),
+            ],
+            env,
+        );
 
-        assert!(!results.is_empty());
+        assert!(!value.0.is_empty());
         // Should execute success branch
     }
 
     #[test]
     fn test_lookup_failure_branch() {
-        use crate::backend::eval::eval;
-
         let env = Environment::new();
 
         // (lookup $x (, T) (, F))
-        let expr = MettaValue::SExpr(vec![
-            MettaValue::Atom("lookup".to_string()),
-            MettaValue::Atom("$x".to_string()), // Variable, so "not found"
-            MettaValue::Conjunction(vec![MettaValue::Atom("T".to_string())]),
-            MettaValue::Conjunction(vec![MettaValue::Atom("F".to_string())]),
-        ]);
-        let (results, _) = eval(expr, env);
+        let value = eval_lookup(
+            vec![
+                MettaValue::Atom("lookup".to_string()),
+                MettaValue::Atom("$x".to_string()), // Variable, so "not found"
+                MettaValue::Conjunction(vec![MettaValue::Atom("T".to_string())]),
+                MettaValue::Conjunction(vec![MettaValue::Atom("F".to_string())]),
+            ],
+            env,
+        );
 
-        assert!(!results.is_empty());
+        assert!(!value.0.is_empty());
         // Should execute failure branch
     }
 }

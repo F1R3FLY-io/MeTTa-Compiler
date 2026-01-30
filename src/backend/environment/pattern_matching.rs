@@ -22,6 +22,7 @@ use tracing::trace;
 use super::multiplicity::get_multiplicity;
 use super::{Environment, MettaValue};
 use crate::backend::eval::{apply_bindings, pattern_match};
+use crate::backend::mork_convert::{metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext};
 
 /// A lazy match result with deferred multiplicity expansion.
 ///
@@ -188,6 +189,108 @@ impl Environment {
         }
 
         results
+    }
+
+    /// Match pattern against atoms using MORK's native query_multi (O(k) where k = matches).
+    ///
+    /// This is an optimized version of `match_space()` that uses MORK's trie-based pattern
+    /// matching instead of iterating through all atoms. This is O(k) where k = number of
+    /// matching atoms, compared to O(n) for the iteration-based approach where n = total atoms.
+    ///
+    /// # Performance
+    ///
+    /// For sparse matches (k << n), this can be orders of magnitude faster than iteration.
+    /// For dense matches (k ≈ n), performance is similar.
+    ///
+    /// # Limitations
+    ///
+    /// - Returns `None` for patterns with arity >= 64 (MORK limitation) - caller should fallback
+    /// - May not work correctly with certain pattern structures
+    ///
+    /// # Arguments
+    /// * `pattern` - The MeTTa pattern to match against
+    /// * `template` - The template to instantiate for each match
+    ///
+    /// # Returns
+    /// - `Some(results)` if query_multi was used successfully (even if no matches found)
+    /// - `None` if query_multi couldn't be used (caller should fall back to `match_space()`)
+    pub fn match_space_query_multi(
+        &self,
+        pattern: &MettaValue,
+        template: &MettaValue,
+    ) -> Option<Vec<MultiplicityMatch>> {
+        trace!(target: "mettatron::environment::match_space_query_multi", ?pattern, ?template);
+
+        // BLOOM FILTER CHECK: O(1) rejection if (head, arity) definitely doesn't exist
+        if let Some(expected_head) = pattern.get_head_symbol() {
+            let pattern_arity = pattern.get_arity() as u8;
+            let bloom_result = self
+                .shared
+                .head_arity_bloom
+                .read()
+                .expect("head_arity_bloom lock poisoned")
+                .may_contain(expected_head.as_bytes(), pattern_arity);
+            if !bloom_result {
+                return Some(Vec::new()); // Definitely no matches - return empty, not None
+            }
+        }
+
+        let space = self.create_space();
+
+        // Create conversion context to track variable mappings
+        let mut ctx = ConversionContext::new();
+
+        // Convert pattern to MORK bytes
+        let pattern_bytes = match metta_to_mork_bytes(pattern, &space, &mut ctx) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                // Conversion failed (e.g., arity too high) - return None to trigger fallback
+                return None;
+            }
+        };
+
+
+        let pattern_expr = Expr {
+            ptr: pattern_bytes.as_ptr().cast_mut(),
+        };
+
+        // Collect matches using MORK's native query_multi
+        let mut results: Vec<MultiplicityMatch> = Vec::new();
+
+        mork::space::Space::query_multi(&space.btm, pattern_expr, |result, _matched_expr| {
+            if let Err(mork_bindings) = result {
+                // Convert MORK bindings to our format
+                if let Ok(bindings) = mork_bindings_to_metta(&mork_bindings, &ctx, &space) {
+                    // Apply bindings to template
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
+
+                    // TODO: Get actual multiplicity from matched expression
+                    // For now, use count=1 since query_multi doesn't expose multiplicity directly
+                    results.push(MultiplicityMatch::new(instantiated, 1));
+                }
+            }
+            true // Continue searching for ALL matches
+        });
+
+        // Also check large expression fallback PathMap
+        let guard = self
+            .shared
+            .large_expr_pathmap
+            .read()
+            .expect("large_expr_pathmap lock poisoned");
+        if let Some(ref fallback) = *guard {
+            let btm = self.shared.btm.read().expect("btm lock poisoned");
+
+            for (key, stored_value) in fallback.iter() {
+                if let Some(bindings) = pattern_match(pattern, stored_value) {
+                    let instantiated = apply_bindings(template, &bindings).into_owned();
+                    let multiplicity = get_multiplicity(&btm, &key).max(1) as usize;
+                    results.push(MultiplicityMatch::new(instantiated, multiplicity));
+                }
+            }
+        }
+
+        Some(results)
     }
 
     /// Match pattern against atoms in the Space, returning first match only (early exit)

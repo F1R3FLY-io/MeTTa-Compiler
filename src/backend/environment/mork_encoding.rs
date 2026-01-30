@@ -180,7 +180,7 @@ impl super::Environment {
                                 .to_be_bytes();
                                 if let Some(actual_bytes) = space.sm.get_bytes(symbol_id) {
                                     // Found in symbol table - use actual symbol string
-                                    String::from_utf8_lossy(actual_bytes).to_string()
+                                    String::from_utf8_lossy(actual_bytes).into_owned()
                                 } else {
                                     // Symbol ID not in table - fall back to treating as raw bytes
                                     trace!(
@@ -188,17 +188,17 @@ impl super::Environment {
                                         symbol_id = ?symbol_id,
                                         "Symbol ID not found in symbol table, using raw bytes"
                                     );
-                                    String::from_utf8_lossy(symbol_bytes).to_string()
+                                    String::from_utf8_lossy(symbol_bytes).into_owned()
                                 }
                             } else {
                                 // Not 8 bytes - treat as raw symbol string
-                                String::from_utf8_lossy(symbol_bytes).to_string()
+                                String::from_utf8_lossy(symbol_bytes).into_owned()
                             }
                         }
                         #[cfg(not(feature = "interning"))]
                         {
                             // Without interning, symbols are stored as raw UTF-8 bytes
-                            String::from_utf8_lossy(symbol_bytes).to_string()
+                            String::from_utf8_lossy(symbol_bytes).into_owned()
                         }
                     };
 

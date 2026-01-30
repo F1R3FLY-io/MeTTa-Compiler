@@ -85,12 +85,12 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
             "map-atom" => return list_ops::eval_map_atom_step(items, env, depth),
             "filter-atom" => return list_ops::eval_filter_atom_step(items, env, depth),
             "foldl-atom" => return list_ops::eval_foldl_atom_step(items, env, depth),
-            "car-atom" => return list_ops::eval_car_atom_step(items, env, depth),
-            "cdr-atom" => return list_ops::eval_cdr_atom_step(items, env, depth),
-            "cons-atom" => return list_ops::eval_cons_atom_step(items, env, depth),
-            "decons-atom" => return list_ops::eval_decons_atom_step(items, env, depth),
-            "size-atom" => return list_ops::eval_size_atom_step(items, env, depth),
-            "max-atom" => return list_ops::eval_max_atom_step(items, env, depth),
+            "car-atom" => return EvalStep::Done(list_ops::eval_car_atom(items, env)),
+            "cdr-atom" => return EvalStep::Done(list_ops::eval_cdr_atom(items, env)),
+            "cons-atom" => return EvalStep::Done(list_ops::eval_cons_atom(items, env)),
+            "decons-atom" => return EvalStep::Done(list_ops::eval_decons_atom(items, env)),
+            "size-atom" => return EvalStep::Done(list_ops::eval_size_atom(items, env)),
+            "max-atom" => return EvalStep::Done(list_ops::eval_max_atom(items, env)),
             // Additional expression operations from main
             "index-atom" => return EvalStep::Done(expression::eval_index_atom(items, env)),
             "min-atom" => return EvalStep::Done(expression::eval_min_atom(items, env)),
@@ -129,18 +129,15 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
             // Utility Operations
             "empty" => return EvalStep::Done(utilities::eval_empty(items, env)),
             "get-metatype" => return utilities::eval_get_metatype_step(items, env, depth),
-            // Structural comparison (non-evaluating) - matches HE semantics
-            "==" => return utilities::eval_eq_step(items, env, depth),
-            "!=" => return utilities::eval_neq_step(items, env, depth),
             // Module Operations
-            "include" => return modules::eval_include_step(items, env, depth),
-            "import!" => return modules::eval_import_step(items, env, depth),
+            "include" => return EvalStep::Done(modules::eval_include(items, env)),
+            "import!" => return EvalStep::Done(modules::eval_import(items, env)),
             "mod-space!" => return EvalStep::Done(modules::eval_mod_space(items, env)),
             "print-mods!" => return EvalStep::Done(modules::eval_print_mods(items, env)),
             // MORK Special Forms
             "exec" => return EvalStep::Done(mork_forms::eval_exec(items, env)),
             "coalg" => return EvalStep::Done(mork_forms::eval_coalg(items, env)),
-            "lookup" => return mork_forms::eval_lookup_step(items, env, depth),
+            "lookup" => return EvalStep::Done(mork_forms::eval_lookup(items, env)),
             "rulify" => return EvalStep::Done(mork_forms::eval_rulify(items, env)),
             _ => {}
         }

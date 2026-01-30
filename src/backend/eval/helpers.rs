@@ -77,34 +77,13 @@ pub const SPECIAL_FORMS: &[&str] = &[
 ];
 
 /// Grounded operations that should be evaluated eagerly (before pattern matching)
-/// NOTE: == and != are NOT included because they perform STRUCTURAL comparison
-/// without evaluating their arguments (matching hyperon-experimental semantics).
 const GROUNDED_OPS: &[&str] = &[
     // Arithmetic operations
     "+", "-", "*", "/", "%", "pow", "abs", "floor", "ceil", "round", "sqrt",
-    // Numeric comparison operations (these need evaluated arguments)
-    "<", "<=", ">", ">=",
-    // Boolean operations
-    "not", "and", "or",
-    // Type operations that return concrete values
+    // Comparison operations
+    "<", "<=", ">", ">=", "==", "!=", // Boolean operations
+    "not", "and", "or", // Type operations that return concrete values
     "get-type",
-    // List/atom operations that return concrete values
-    // These must be evaluated before pattern matching for recursion to work
-    "car-atom", "cdr-atom", "cons-atom", "decons-atom", "size-atom",
-    // Higher-order list operations that produce values
-    // These need to be evaluated when used as arguments to grounded operations
-    // Example: (car-atom (map-atom ...)) - map-atom must be evaluated first
-    "map-atom", "filter-atom", "foldl-atom",
-    // Control flow special forms that produce values
-    // Example: (car-atom (if True (a b c) (x y z))) - if must be evaluated first
-    "if", "case", "switch", "switch-minimal", "switch-internal",
-    // Binding forms that produce values
-    // Example: (car-atom (let $x (a b c) $x)) - let must be evaluated first
-    "let", "let*", "unify",
-    // Space operations that produce values
-    "match", "collapse", "superpose",
-    // Evaluation forms
-    "eval", "chain",
 ];
 
 /// Convert MettaValue to a friendly type name for error messages

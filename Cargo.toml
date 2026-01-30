@@ -146,10 +146,6 @@ lasso = { version = "0.7", features = ["multi-threaded"], optional = true }
 # Itertools - Lazy iterator combinators for cartesian products and nondeterminism
 itertools = "0.14"
 
-# IndexMap/IndexSet - Hash map/set with insertion order preservation
-# Used for rule_index to enable O(1) deduplication while preserving rule ordering
-indexmap = "2"
-
 # liblevenshtein - Fuzzy string matching for "Did you mean?" suggestions
 # liblevenshtein = { path = "../liblevenshtein-rust", features = ["pathmap-backend"] }
 liblevenshtein = { version = "^0.7", features = ["pathmap-backend", "simd"] }

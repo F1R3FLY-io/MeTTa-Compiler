@@ -34,23 +34,6 @@ pub struct Rule {
     pub(crate) multiplicity_idx: Option<u32>,
 }
 
-impl std::hash::Hash for Rule {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.lhs.hash(state);
-        self.rhs.hash(state);
-        // Note: multiplicity_idx is excluded as it's a cache, not part of rule identity
-    }
-}
-
-impl PartialEq for Rule {
-    fn eq(&self, other: &Self) -> bool {
-        self.lhs == other.lhs && self.rhs == other.rhs
-        // Note: multiplicity_idx is excluded as it's a cache, not part of rule identity
-    }
-}
-
-impl Eq for Rule {}
-
 impl Rule {
     /// Create a new rule from MettaValues
     pub fn new(lhs: MettaValue, rhs: MettaValue) -> Self {

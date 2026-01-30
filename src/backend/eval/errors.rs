@@ -2,7 +2,7 @@ use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use tracing::trace;
 
-use super::EvalStep;
+use super::{eval, EvalStep};
 
 /// Error construction: (error msg details)
 pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
@@ -51,6 +51,22 @@ pub(super) fn eval_error_he(items: Vec<MettaValue>, env: Environment) -> EvalRes
     (vec![MettaValue::Error(msg, details)], env)
 }
 
+/// Is-error: check if value is an error (for error recovery)
+///
+/// DEPRECATED: Use eval_if_error_step for trampoline-based evaluation.
+#[allow(dead_code)]
+pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    trace!(target: "mettatron::eval::eval_if_error", ?items);
+    require_args_with_usage!("is-error", items, 1, env, "(is-error expr)");
+
+    let (results, new_env) = eval(items[1].clone(), env);
+    if let Some(first) = results.first() {
+        let is_err = matches!(first.inner(), MettaValueInner::Error(_, _));
+        (vec![MettaValue::Bool(is_err)], new_env)
+    } else {
+        (vec![MettaValue::Bool(false)], new_env)
+    }
+}
 
 /// Step version of eval_if_error that defers evaluation to trampoline.
 pub(super) fn eval_if_error_step(
@@ -98,11 +114,49 @@ pub(super) fn eval_catch_step(items: Vec<MettaValue>, env: Environment, depth: u
     }
 }
 
+/// Evaluate catch: error recovery mechanism
+/// (catch expr default) - if expr returns error, evaluate and return default
+/// This prevents error propagation (reduction prevention)
+///
+/// DEPRECATED: Use eval_catch_step for trampoline-based evaluation.
+#[allow(dead_code)]
+pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    let args = &items[1..];
+    trace!(target: "mettatron::eval::eval_catch", ?items, ?args);
+
+    if args.len() < 2 {
+        let err = MettaValue::Error(
+            "catch requires 2 arguments: expr and default".to_string(),
+            MettaValue::SExpr(args.to_vec()),
+        );
+        return (vec![err], env);
+    }
+
+    let expr = &args[0];
+    let default = &args[1];
+
+    // Evaluate the expression
+    let (results, env_after_eval) = eval(expr.clone(), env);
+
+    // Handle nondeterministic evaluation: filter results into errors and non-errors
+    let (_errors, non_errors): (Vec<_>, Vec<_>) = results
+        .into_iter()
+        .partition(|r| matches!(r.inner(), MettaValueInner::Error(_, _)));
+
+    if non_errors.is_empty() {
+        // All results were errors - evaluate and return default instead
+        // This PREVENTS the errors from propagating further
+        eval(default.clone(), env_after_eval)
+    } else {
+        // Some non-error results exist - return only those, filtering out errors
+        // This handles nondeterministic evaluation where some branches fail
+        (non_errors, env_after_eval)
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::eval;
 
     #[test]
     fn test_is_error_missing_argument() {

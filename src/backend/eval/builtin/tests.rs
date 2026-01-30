@@ -1916,9 +1916,7 @@ fn test_mixed_with_comparisons() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], MettaValue::Bool(true));
 
-    // Test structural comparison: == performs STRUCTURAL comparison without evaluating args
-    // (== (pow 2 3) 8) compares (pow 2 3) expression with 8 number → false
-    // This matches hyperon-experimental semantics where == is structural equality
+    // Test: == (pow 2 3) 8 = == 8 8 = True
     let value = MettaValue::SExpr(vec![
         MettaValue::Atom("==".to_string()),
         MettaValue::SExpr(vec![
@@ -1926,16 +1924,6 @@ fn test_mixed_with_comparisons() {
             MettaValue::Long(2),
             MettaValue::Long(3),
         ]),
-        MettaValue::Long(8),
-    ]);
-    let (results, _) = eval(value, env.clone());
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Bool(false)); // Structural mismatch
-
-    // Test structural equality with identical values: (== 8 8) = True
-    let value = MettaValue::SExpr(vec![
-        MettaValue::Atom("==".to_string()),
-        MettaValue::Long(8),
         MettaValue::Long(8),
     ]);
     let (results, _) = eval(value, env);

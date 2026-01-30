@@ -8,6 +8,8 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner, SpaceHandle};
 
+#[allow(unused_imports)]
+use super::super::eval;
 use super::super::EvalStep;
 
 /// Step version of eval_add_atom - defers evaluation to trampoline.
@@ -100,3 +102,108 @@ pub(crate) fn eval_new_space(items: Vec<MettaValue>, mut env: Environment) -> Ev
     (vec![MettaValue::Space(handle)], env)
 }
 
+/// add-atom: Add an atom to a space
+/// Usage: (add-atom space-ref atom)
+///
+/// DEPRECATED: Use eval_add_atom_step for trampoline-based evaluation.
+#[allow(dead_code)]
+pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("add-atom", items, 2, env, "(add-atom space atom)");
+
+    let space_ref = &items[1];
+    let atom = &items[2];
+
+    // Evaluate both arguments
+    let (space_results, env1) = eval(space_ref.clone(), env);
+    if space_results.is_empty() {
+        let err = MettaValue::Error(
+            "add-atom: space evaluated to empty".to_string(),
+            space_ref.clone(),
+        );
+        return (vec![err], env1);
+    }
+
+    let (atom_results, mut env2) = eval(atom.clone(), env1);
+    if atom_results.is_empty() {
+        let err = MettaValue::Error(
+            "add-atom: atom evaluated to empty".to_string(),
+            atom.clone(),
+        );
+        return (vec![err], env2);
+    }
+
+    // Get the space ID
+    let space_value = &space_results[0];
+    let atom_value = &atom_results[0];
+
+    match space_value.inner() {
+        MettaValueInner::Space(handle) => {
+            // Use SpaceHandle's add_atom method directly (it has its own backing store)
+            handle.add_atom(atom_value.clone());
+            (vec![MettaValue::Unit()], env2)
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "add-atom: first argument must be a space reference, got {}. Usage: (add-atom space atom)",
+                    super::super::friendly_value_repr(space_value)
+                ),
+                space_value.clone(),
+            );
+            (vec![err], env2)
+        }
+    }
+}
+
+/// remove-atom: Remove an atom from a space
+/// Usage: (remove-atom space-ref atom)
+///
+/// DEPRECATED: Use eval_remove_atom_step for trampoline-based evaluation.
+#[allow(dead_code)]
+pub(crate) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+    require_args_with_usage!("remove-atom", items, 2, env, "(remove-atom space atom)");
+
+    let space_ref = &items[1];
+    let atom = &items[2];
+
+    // Evaluate both arguments
+    let (space_results, env1) = eval(space_ref.clone(), env);
+    if space_results.is_empty() {
+        let err = MettaValue::Error(
+            "remove-atom: space evaluated to empty".to_string(),
+            space_ref.clone(),
+        );
+        return (vec![err], env1);
+    }
+
+    let (atom_results, mut env2) = eval(atom.clone(), env1);
+    if atom_results.is_empty() {
+        let err = MettaValue::Error(
+            "remove-atom: atom evaluated to empty".to_string(),
+            atom.clone(),
+        );
+        return (vec![err], env2);
+    }
+
+    // Get the space ID
+    let space_value = &space_results[0];
+    let atom_value = &atom_results[0];
+
+    match space_value.inner() {
+        MettaValueInner::Space(handle) => {
+            // Use SpaceHandle's remove_atom method directly (it has its own backing store)
+            handle.remove_atom(atom_value);
+            (vec![MettaValue::Unit()], env2)
+        }
+        _ => {
+            let err = MettaValue::Error(
+                format!(
+                    "remove-atom: first argument must be a space reference, got {}. Usage: (remove-atom space atom)",
+                    super::super::friendly_value_repr(space_value)
+                ),
+                space_value.clone(),
+            );
+            (vec![err], env2)
+        }
+    }
+}

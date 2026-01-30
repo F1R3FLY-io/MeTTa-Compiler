@@ -2219,22 +2219,23 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             continue;
                         }
 
-                        // Process each filtered result
-                        let mut final_results = Vec::new();
-                        for atom_result in filtered_results {
-                            let is_empty = match atom_result.inner() {
+                        // Convert to VecDeque for continuation-based processing
+                        let mut remaining_atoms: VecDeque<MettaValue> =
+                            filtered_results.into_iter().collect();
+
+                        // Process first atom, queue rest for continuation
+                        if let Some(first_atom) = remaining_atoms.pop_front() {
+                            let is_empty = match first_atom.inner() {
                                 MettaValueInner::Nil => true,
                                 MettaValueInner::SExpr(items) if items.is_empty() => true,
                                 _ => false,
                             };
-
                             let switch_atom = if is_empty {
                                 MettaValue::Atom("Empty".to_string())
                             } else {
-                                atom_result
+                                first_atom
                             };
 
-                            // Use switch-minimal logic for each result
                             let switch_result = super::super::eval_switch_minimal_trampoline(
                                 switch_atom,
                                 cases.clone(),
@@ -2244,29 +2245,159 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                             match switch_result {
                                 EvalStep::Done((results, _)) => {
-                                    final_results.extend(results);
+                                    // Create continuation to process remaining atoms
+                                    let multi_cont_id = continuations.len();
+                                    continuations.push(Continuation::ProcessCaseMultiResults {
+                                        remaining_atoms,
+                                        cases,
+                                        collected: results,
+                                        env: atom_env.clone(),
+                                        depth,
+                                        parent_cont,
+                                    });
+                                    // Resume immediately with empty result to trigger continuation
+                                    work_stack.push(WorkItem::Resume {
+                                        cont_id: multi_cont_id,
+                                        result: (vec![], atom_env),
+                                    });
                                 }
                                 EvalStep::EvalSwitchResult {
                                     template,
-                                    env,
+                                    env: switch_env,
                                     depth: switch_depth,
                                 } => {
-                                    // For now, evaluate synchronously for multiple results
-                                    // This could be optimized further with a more complex continuation
-                                    let (results, _) = super::super::eval(template, env);
-                                    let _ = switch_depth; // Unused in sync path
-                                    final_results.extend(results);
+                                    // Create continuation FIRST, then push eval
+                                    let multi_cont_id = continuations.len();
+                                    continuations.push(Continuation::ProcessCaseMultiResults {
+                                        remaining_atoms,
+                                        cases,
+                                        collected: vec![],
+                                        env: atom_env,
+                                        depth,
+                                        parent_cont,
+                                    });
+                                    // Evaluate template - continuation will collect result
+                                    work_stack.push(WorkItem::Eval {
+                                        value: template,
+                                        env: switch_env,
+                                        depth: switch_depth,
+                                        cont_id: multi_cont_id,
+                                        is_tail_call: false,
+                                    });
                                 }
                                 _ => {
-                                    // Unexpected step type - shouldn't happen
+                                    work_stack.push(WorkItem::Resume {
+                                        cont_id: parent_cont,
+                                        result: (vec![], atom_env),
+                                    });
                                 }
                             }
+                        } else {
+                            // No atoms to process
+                            work_stack.push(WorkItem::Resume {
+                                cont_id: parent_cont,
+                                result: (vec![], atom_env),
+                            });
                         }
+                    }
 
-                        work_stack.push(WorkItem::Resume {
-                            cont_id: parent_cont,
-                            result: (final_results, atom_env),
-                        });
+                    // Handle multi-result case continuation
+                    Continuation::ProcessCaseMultiResults {
+                        mut remaining_atoms,
+                        cases,
+                        mut collected,
+                        env,
+                        depth,
+                        parent_cont,
+                    } => {
+                        // Collect results from previous evaluation
+                        let (results, _result_env) = result;
+                        collected.extend(results);
+
+                        // Process next atom if any
+                        if let Some(next_atom) = remaining_atoms.pop_front() {
+                            let is_empty = match next_atom.inner() {
+                                MettaValueInner::Nil => true,
+                                MettaValueInner::SExpr(items) if items.is_empty() => true,
+                                _ => false,
+                            };
+                            let switch_atom = if is_empty {
+                                MettaValue::Atom("Empty".to_string())
+                            } else {
+                                next_atom
+                            };
+
+                            let switch_result = super::super::eval_switch_minimal_trampoline(
+                                switch_atom,
+                                cases.clone(),
+                                env.clone(),
+                                depth,
+                            );
+
+                            match switch_result {
+                                EvalStep::Done((results, _)) => {
+                                    collected.extend(results);
+                                    // Create new continuation for remaining
+                                    let multi_cont_id = continuations.len();
+                                    continuations.push(Continuation::ProcessCaseMultiResults {
+                                        remaining_atoms,
+                                        cases,
+                                        collected,
+                                        env: env.clone(),
+                                        depth,
+                                        parent_cont,
+                                    });
+                                    work_stack.push(WorkItem::Resume {
+                                        cont_id: multi_cont_id,
+                                        result: (vec![], env),
+                                    });
+                                }
+                                EvalStep::EvalSwitchResult {
+                                    template,
+                                    env: switch_env,
+                                    depth: switch_depth,
+                                } => {
+                                    let multi_cont_id = continuations.len();
+                                    continuations.push(Continuation::ProcessCaseMultiResults {
+                                        remaining_atoms,
+                                        cases,
+                                        collected,
+                                        env,
+                                        depth,
+                                        parent_cont,
+                                    });
+                                    work_stack.push(WorkItem::Eval {
+                                        value: template,
+                                        env: switch_env,
+                                        depth: switch_depth,
+                                        cont_id: multi_cont_id,
+                                        is_tail_call: false,
+                                    });
+                                }
+                                _ => {
+                                    // Continue with remaining
+                                    let multi_cont_id = continuations.len();
+                                    continuations.push(Continuation::ProcessCaseMultiResults {
+                                        remaining_atoms,
+                                        cases,
+                                        collected,
+                                        env: env.clone(),
+                                        depth,
+                                        parent_cont,
+                                    });
+                                    work_stack.push(WorkItem::Resume {
+                                        cont_id: multi_cont_id,
+                                        result: (vec![], env),
+                                    });
+                                }
+                            }
+                        } else {
+                            // All atoms processed - return collected results
+                            work_stack.push(WorkItem::Resume {
+                                cont_id: parent_cont,
+                                result: (collected, env),
+                            });
+                        }
                     }
 
                     // Handle (eval expr) continuation - evaluate result of argument
@@ -2860,6 +2991,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 continuations.push(Continuation::ProcessUnifyPattern2 {
                                     val1: first_val,
                                     remaining_pattern1_results: remaining,
+                                    pattern2: pattern2.clone(),
                                     success_body,
                                     failure_body,
                                     all_results: Vec::new(),
@@ -2883,6 +3015,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                     Continuation::ProcessUnifyPattern2 {
                         val1,
                         remaining_pattern1_results,
+                        pattern2,
                         success_body,
                         failure_body,
                         mut all_results,
@@ -2916,7 +3049,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             continuations.push(Continuation::ProcessUnifyBodies {
                                 remaining_bodies: bodies_to_eval,
                                 remaining_pattern1_results,
-                                pattern2: MettaValue::Nil(), // Not needed anymore
+                                pattern2: pattern2.clone(),
                                 success_body,
                                 failure_body,
                                 all_results,
@@ -2968,6 +3101,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     continuations.push(Continuation::ProcessUnifyPattern2 {
                                         val1: next_val,
                                         remaining_pattern1_results: remaining,
+                                        pattern2: pattern2.clone(),
                                         success_body,
                                         failure_body,
                                         all_results,
@@ -2977,7 +3111,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     });
 
                                     work_stack.push(WorkItem::Eval {
-                                        value: MettaValue::Nil(), // Need pattern2 here
+                                        value: pattern2,
                                         env: env_after_p2,
                                         depth, // TCO: reuse depth for iteration
                                         cont_id: p2_cont_id,
@@ -3118,6 +3252,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 continuations.push(Continuation::ProcessUnifyPattern2 {
                                     val1: next_val,
                                     remaining_pattern1_results: remaining,
+                                    pattern2: pattern2.clone(),
                                     success_body,
                                     failure_body,
                                     all_results,
@@ -3697,23 +3832,14 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     // For module-backed spaces or the global "self" space,
                                     // use Environment's MORK-based matching directly (no eval needed)
                                     if handle.is_module_space() || handle.name == "self" {
-                                        // Try O(k) query_multi first, fall back to O(n) iteration if unavailable
-                                        let results: Vec<MettaValue> = match env.match_space_query_multi(&pattern, &template) {
-                                            Some(query_multi_results) => {
-                                                // query_multi succeeded - use its results
-                                                query_multi_results
-                                                    .into_iter()
-                                                    .flat_map(|m| m.expand())
-                                                    .collect()
-                                            }
-                                            None => {
-                                                // query_multi unavailable - fall back to iteration
-                                                env.match_space(&pattern, &template)
-                                                    .into_iter()
-                                                    .flat_map(|m| m.expand())
-                                                    .collect()
-                                            }
-                                        };
+                                        // Always use match_space for now - query_multi returns Some([])
+                                        // instead of None when no matches found, preventing proper fallback.
+                                        // The query_multi optimization can be investigated separately.
+                                        let results: Vec<MettaValue> = env
+                                            .match_space(&pattern, &template)
+                                            .into_iter()
+                                            .flat_map(|m| m.expand())
+                                            .collect();
                                         work_stack.push(WorkItem::Resume {
                                             cont_id: parent_cont,
                                             result: (results, env_after),

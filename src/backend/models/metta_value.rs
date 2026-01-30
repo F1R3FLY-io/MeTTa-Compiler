@@ -812,6 +812,80 @@ pub fn escape_json(s: &str) -> StdString {
 // Trait implementations for MettaValue wrapper
 // ============================================================================
 
+/// Iteratively drop a collection of MettaValues to avoid stack overflow.
+/// This is used by the Drop implementation to handle deeply nested structures.
+fn drop_iterative(initial: Vec<MettaValue>) {
+    let mut work_stack: Vec<MettaValue> = initial;
+
+    while let Some(mut value) = work_stack.pop() {
+        // Only process if we're the last reference
+        if Arc::strong_count(&value.0) > 1 {
+            continue; // Just drop the Arc reference normally
+        }
+
+        if let Some(inner) = Arc::get_mut(&mut value.0) {
+            match inner {
+                MettaValueInner::SExpr(items) => {
+                    work_stack.extend(std::mem::take(items));
+                }
+                MettaValueInner::Conjunction(goals) => {
+                    work_stack.extend(std::mem::take(goals));
+                }
+                MettaValueInner::Error(_, details) => {
+                    let d = std::mem::replace(details, MettaValue::Nil());
+                    work_stack.push(d);
+                }
+                MettaValueInner::Type(inner_type) => {
+                    let t = std::mem::replace(inner_type, MettaValue::Nil());
+                    work_stack.push(t);
+                }
+                _ => {}
+            }
+        }
+        // value goes out of scope here - now it contains empty/Nil so drop is trivial
+    }
+}
+
+impl Drop for MettaValue {
+    fn drop(&mut self) {
+        // Fast path: if Arc has other references, just decrement
+        // This avoids the iterative logic for shared values
+        if Arc::strong_count(&self.0) > 1 {
+            return; // Normal Arc drop will just decrement
+        }
+
+        // Only do iterative drop when we're the last reference
+        // and the inner value contains nested MettaValues
+        let inner = match Arc::get_mut(&mut self.0) {
+            Some(inner) => inner,
+            None => return, // Another thread took a reference, let normal drop handle it
+        };
+
+        // Check if we need iterative drop
+        match inner {
+            MettaValueInner::SExpr(items) if !items.is_empty() => {
+                // Take ownership of items to drop iteratively
+                let items = std::mem::take(items);
+                drop_iterative(items);
+            }
+            MettaValueInner::Conjunction(goals) if !goals.is_empty() => {
+                let goals = std::mem::take(goals);
+                drop_iterative(goals);
+            }
+            MettaValueInner::Error(_, details) => {
+                // Take ownership of details
+                let details = std::mem::replace(details, MettaValue::Nil());
+                drop_iterative(vec![details]);
+            }
+            MettaValueInner::Type(inner_type) => {
+                let inner_type = std::mem::replace(inner_type, MettaValue::Nil());
+                drop_iterative(vec![inner_type]);
+            }
+            _ => {} // Non-compound types: normal drop is fine
+        }
+    }
+}
+
 impl PartialEq for MettaValue {
     fn eq(&self, other: &Self) -> bool {
         // Fast path: check if same Arc

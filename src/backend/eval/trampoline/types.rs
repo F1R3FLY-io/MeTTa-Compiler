@@ -339,6 +339,8 @@ pub enum Continuation {
         val1: MettaValue,
         /// Remaining pattern1 results to process
         remaining_pattern1_results: VecDeque<MettaValue>,
+        /// Original pattern2 expression for re-evaluation with remaining pattern1 results
+        pattern2: MettaValue,
         /// Success body template
         success_body: MettaValue,
         /// Failure body template
@@ -714,6 +716,23 @@ pub enum Continuation {
     ProcessBind {
         /// Token name to bind (e.g., "&kb")
         token: String,
+        /// Environment for evaluation
+        env: Environment,
+        /// Evaluation depth
+        depth: usize,
+        /// Parent continuation
+        parent_cont: usize,
+    },
+    /// Processing multiple case results - processes switch for each atom result.
+    /// This continuation enables multi-result case evaluation without recursive
+    /// eval() calls that would cause stack overflow.
+    ProcessCaseMultiResults {
+        /// Remaining atoms to process (VecDeque for O(1) pop_front)
+        remaining_atoms: VecDeque<MettaValue>,
+        /// Cases to match against (cloned for each iteration)
+        cases: MettaValue,
+        /// Accumulated results so far
+        collected: Vec<MettaValue>,
         /// Environment for evaluation
         env: Environment,
         /// Evaluation depth

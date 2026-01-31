@@ -204,6 +204,9 @@ owning_ref = "0.4"
 # either - Left/Right iterator pattern for optional iteration paths
 either = "1.13"
 
+# phf - Compile-time perfect hash sets for O(1) lookup
+phf = { version = "0.11", features = ["macros"] }
+
 # num_cpus - CPU count detection for thread pool sizing
 num_cpus = "1.16"
 

@@ -332,20 +332,20 @@ pub enum Continuation {
         /// Parent continuation
         parent_cont: usize,
     },
-    /// Processing unify pattern2 evaluation (for non-space case).
-    /// Receives pattern2 results, performs unification, evaluates bodies.
-    ProcessUnifyPattern2 {
-        /// Evaluated pattern1 value being unified
-        val1: MettaValue,
-        /// Remaining pattern1 results to process
+    /// Iterator over pattern1 results - processes one at a time to avoid O(N²) memory.
+    /// This continuation holds the remaining pattern1 values and spawns processing
+    /// for one value at a time, collecting results sequentially.
+    /// MEMORY FIX: This is the ONLY place remaining pattern1 results are stored.
+    ProcessUnifyPattern1Iter {
+        /// Remaining pattern1 results to process (one at a time)
         remaining_pattern1_results: VecDeque<MettaValue>,
-        /// Original pattern2 expression for re-evaluation with remaining pattern1 results
+        /// Original pattern2 expression for evaluation with each pattern1 result
         pattern2: MettaValue,
         /// Success body template
         success_body: MettaValue,
         /// Failure body template
         failure_body: MettaValue,
-        /// Accumulated results so far
+        /// Accumulated results from all pattern1 values processed so far
         all_results: Vec<MettaValue>,
         /// Environment for evaluation
         env: Environment,
@@ -354,27 +354,41 @@ pub enum Continuation {
         /// Parent continuation
         parent_cont: usize,
     },
-    /// Processing unify body evaluations - iterates through bodies.
-    /// Accumulates results from success/failure body evaluations.
-    ProcessUnifyBodies {
-        /// Remaining bodies to evaluate (VecDeque for O(1) pop_front)
-        /// MettaValue clone is O(1) since it uses Arc internally
-        remaining_bodies: VecDeque<MettaValue>,
-        /// Remaining pattern1 results to process after bodies done
-        remaining_pattern1_results: VecDeque<MettaValue>,
-        /// Pattern2 for non-space unification
+    /// Processing unify for a single pattern1 value (non-space case).
+    /// Awaits pattern2 evaluation, then performs unification and evaluates bodies.
+    /// MEMORY FIX: No longer carries remaining_pattern1_results - those stay in
+    /// ProcessUnifyPattern1Iter to avoid cloning into every continuation.
+    ProcessUnifyPattern2 {
+        /// Evaluated pattern1 value being unified
+        val1: MettaValue,
+        /// Original pattern2 expression (stored for error messages, not re-evaluation)
         pattern2: MettaValue,
         /// Success body template
         success_body: MettaValue,
         /// Failure body template
         failure_body: MettaValue,
-        /// Accumulated results so far
-        all_results: Vec<MettaValue>,
         /// Environment for evaluation
         env: Environment,
         /// Evaluation depth
         depth: usize,
-        /// Parent continuation
+        /// Parent continuation (should be ProcessUnifyPattern1Iter)
+        parent_cont: usize,
+    },
+    /// Processing unify body evaluations for a single pattern1 value.
+    /// Accumulates results from success/failure body evaluations.
+    /// MEMORY FIX: No longer carries remaining_pattern1_results - those stay in
+    /// ProcessUnifyPattern1Iter to avoid cloning into every continuation.
+    ProcessUnifyBodies {
+        /// Remaining bodies to evaluate (VecDeque for O(1) pop_front)
+        /// MettaValue clone is O(1) since it uses Arc internally
+        remaining_bodies: VecDeque<MettaValue>,
+        /// Accumulated results from bodies evaluated so far (for this pattern1 value)
+        results: Vec<MettaValue>,
+        /// Environment for evaluation
+        env: Environment,
+        /// Evaluation depth
+        depth: usize,
+        /// Parent continuation (should be ProcessUnifyPattern1Iter)
         parent_cont: usize,
     },
     /// Processing collapse expression result - collects into list.

@@ -56,9 +56,9 @@ use pattern::pattern_match_impl;
 pub use helpers::apply_bindings;
 pub(crate) use helpers::friendly_value_repr;
 use helpers::{
-    friendly_type_name, get_head_symbol, is_grounded_op, pattern_specificity,
-    preprocess_space_refs, resolve_tokens_shallow, suggest_special_form_with_context,
-    try_eval_builtin, values_equal, SPECIAL_FORMS,
+    friendly_type_name, get_head_symbol, is_eager_special_form, is_grounded_op,
+    pattern_specificity, preprocess_space_refs, resolve_tokens_shallow,
+    suggest_special_form_with_context, try_eval_builtin, values_equal, SPECIAL_FORMS,
 };
 
 // Re-export from rules module

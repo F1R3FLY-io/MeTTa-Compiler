@@ -1344,6 +1344,23 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         result: (vec![], env),
                                     });
                                 }
+                                ProcessedSExpr::RedispatchSExpr {
+                                    items,
+                                    env,
+                                    depth: redispatch_depth,
+                                } => {
+                                    // Re-dispatch special forms through eval_step.
+                                    // This ensures map-atom, if, let, etc. get proper handling
+                                    // after their arguments have been evaluated.
+                                    let sexpr = MettaValue::SExpr(items);
+                                    work_stack.push(WorkItem::Eval {
+                                        value: sexpr,
+                                        env,
+                                        depth: redispatch_depth,
+                                        cont_id: parent_cont,
+                                        is_tail_call: false,
+                                    });
+                                }
                             }
                         } else {
                             // More items to evaluate - O(1) pop from VecDeque front
@@ -1595,6 +1612,39 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                                 work_stack.push(WorkItem::Resume {
                                                     cont_id,
                                                     result: (vec![], env),
+                                                });
+                                                continue;
+                                            }
+
+                                            // Check for special forms that need re-dispatch.
+                                            // This ensures map-atom, if, let, etc. get proper handling
+                                            // after their arguments have been evaluated via Cartesian product.
+                                            if super::super::helpers::needs_special_form_redispatch(op)
+                                            {
+                                                // Re-dispatch by pushing Eval work item.
+                                                // This goes through eval_step -> eval_sexpr_step -> proper dispatch
+                                                let evaled_vec: Vec<MettaValue> =
+                                                    evaled_items.into_vec();
+                                                let sexpr = MettaValue::SExpr(evaled_vec);
+
+                                                // Update continuation for next combination
+                                                continuations[cont_id] =
+                                                    Continuation::ProcessCombinations {
+                                                        combinations,
+                                                        results,
+                                                        pending_rule_matches: VecDeque::new(),
+                                                        env: env.clone(),
+                                                        depth,
+                                                        parent_cont,
+                                                    };
+
+                                                // Push eval work item - result will come back to this continuation
+                                                work_stack.push(WorkItem::Eval {
+                                                    value: sexpr,
+                                                    env,
+                                                    depth,
+                                                    cont_id,
+                                                    is_tail_call: false,
                                                 });
                                                 continue;
                                             }
@@ -2827,6 +2877,9 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                     }
 
                     // Handle unify pattern1 evaluation - process results and queue body evals
+                    // MEMORY FIX: Processes pattern1 results SEQUENTIALLY using the
+                    // ProcessUnifyPattern1Iter continuation. We DON'T pass remaining pattern1
+                    // results to child continuations - they stay only in the iterator.
                     Continuation::ProcessUnifyPattern1 {
                         pattern2,
                         success_body,
@@ -2847,16 +2900,30 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 is_tail_call: true,
                             });
                         } else {
-                            // Process pattern1 results - convert to VecDeque for iteration
+                            // MEMORY FIX: Process results ONE AT A TIME.
+                            // Pop first, keep rest in iterator continuation.
                             let mut remaining = VecDeque::from(results1);
-                            let first_val = remaining.pop_front().expect("non-empty");
+                            let first_val = remaining.pop_front().expect("non-empty results");
 
-                            // Check if first value is a Space
+                            // Create iterator to process remaining pattern1 values AFTER
+                            // we finish processing the first one
+                            let iter_cont_id = continuations.len();
+                            continuations.push(Continuation::ProcessUnifyPattern1Iter {
+                                remaining_pattern1_results: remaining,
+                                pattern2: pattern2.clone(),
+                                success_body: success_body.clone(),
+                                failure_body: failure_body.clone(),
+                                all_results: Vec::new(),
+                                env: env_after_p1.clone(),
+                                depth,
+                                parent_cont,
+                            });
+
+                            // Process first pattern1 value - results go to the iterator
+                            // which will then process the next pattern1 value
                             if let MettaValueInner::Space(ref handle) = first_val.inner() {
-                                // Space unification - compute matches synchronously
+                                // Space unification - process synchronously
                                 let pattern = pattern2.clone();
-
-                                // Check for boolean optimization
                                 let is_boolean_check =
                                     match (success_body.inner(), failure_body.inner()) {
                                         (
@@ -2872,7 +2939,6 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     };
 
                                 if is_boolean_check {
-                                    // Boolean check - compute result synchronously
                                     let exists =
                                         if handle.is_module_space() || handle.name == "self" {
                                             env_after_p1.match_space_exists(&pattern)
@@ -2883,38 +2949,13 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                                     || pattern_match(atom, &pattern).is_some()
                                             })
                                         };
-
-                                    let bool_result = MettaValue::Bool(exists);
-
-                                    // Continue with remaining pattern1 results
-                                    if remaining.is_empty() {
-                                        work_stack.push(WorkItem::Resume {
-                                            cont_id: parent_cont,
-                                            result: (vec![bool_result], env_after_p1),
-                                        });
-                                    } else {
-                                        // More pattern1 results to process
-                                        let next_cont_id = continuations.len();
-                                        continuations.push(Continuation::ProcessUnifyBodies {
-                                            remaining_bodies: VecDeque::new(),
-                                            remaining_pattern1_results: remaining,
-                                            pattern2,
-                                            success_body,
-                                            failure_body,
-                                            all_results: vec![bool_result],
-                                            env: env_after_p1.clone(),
-                                            depth,
-                                            parent_cont,
-                                        });
-                                        // Resume to process next pattern1 result
-                                        work_stack.push(WorkItem::Resume {
-                                            cont_id: next_cont_id,
-                                            result: (vec![], env_after_p1),
-                                        });
-                                    }
+                                    // Send result to iterator
+                                    work_stack.push(WorkItem::Resume {
+                                        cont_id: iter_cont_id,
+                                        result: (vec![MettaValue::Bool(exists)], env_after_p1),
+                                    });
                                 } else {
-                                    // Non-boolean space match - collect bodies to evaluate
-                                    // Get matches with multiplicity tracking for correct result counts
+                                    // Space match with bodies
                                     let matches: Vec<MultiplicityMatch> =
                                         if handle.is_module_space() || handle.name == "self" {
                                             env_after_p1.match_space(&pattern, &pattern)
@@ -2924,17 +2965,12 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                                     let mut bodies_to_eval: VecDeque<MettaValue> = VecDeque::new();
                                     let mut found_match = false;
-
-                                    // Pattern match once per unique atom, expand by multiplicity
-                                    // MettaValue clone is O(1) since it uses Arc internally
                                     for m in &matches {
                                         if let Some(bindings) = pattern_match(&pattern, &m.value) {
                                             found_match = true;
-                                            // MettaValue clone is O(1) (just Arc reference count increment)
                                             let instantiated =
                                                 apply_bindings(&success_body, &bindings)
                                                     .into_owned();
-                                            // O(1) MettaValue clones for multiplicity expansion
                                             for _ in 0..m.count {
                                                 bodies_to_eval.push_back(instantiated.clone());
                                             }
@@ -2950,26 +2986,19 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                             }
                                         }
                                     }
-
                                     if !found_match {
                                         bodies_to_eval.push_back(failure_body.clone());
                                     }
 
-                                    // Start evaluating bodies
                                     if let Some(first_body) = bodies_to_eval.pop_front() {
                                         let bodies_cont_id = continuations.len();
                                         continuations.push(Continuation::ProcessUnifyBodies {
                                             remaining_bodies: bodies_to_eval,
-                                            remaining_pattern1_results: remaining,
-                                            pattern2,
-                                            success_body,
-                                            failure_body,
-                                            all_results: Vec::new(),
+                                            results: Vec::new(),
                                             env: env_after_p1.clone(),
                                             depth,
-                                            parent_cont,
+                                            parent_cont: iter_cont_id,
                                         });
-
                                         work_stack.push(WorkItem::Eval {
                                             value: first_body,
                                             env: env_after_p1,
@@ -2978,28 +3007,24 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                             is_tail_call: false,
                                         });
                                     } else {
-                                        // No bodies - continue with remaining pattern1 results
                                         work_stack.push(WorkItem::Resume {
-                                            cont_id: parent_cont,
+                                            cont_id: iter_cont_id,
                                             result: (vec![], env_after_p1),
                                         });
                                     }
                                 }
                             } else {
-                                // Non-space value - need to evaluate pattern2
+                                // Non-space: evaluate pattern2
                                 let p2_cont_id = continuations.len();
                                 continuations.push(Continuation::ProcessUnifyPattern2 {
                                     val1: first_val,
-                                    remaining_pattern1_results: remaining,
                                     pattern2: pattern2.clone(),
                                     success_body,
                                     failure_body,
-                                    all_results: Vec::new(),
                                     env: env_after_p1.clone(),
                                     depth,
-                                    parent_cont,
+                                    parent_cont: iter_cont_id,
                                 });
-
                                 work_stack.push(WorkItem::Eval {
                                     value: pattern2,
                                     env: env_after_p1,
@@ -3011,24 +3036,183 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                         }
                     }
 
-                    // Handle unify pattern2 evaluation (for non-space case)
-                    Continuation::ProcessUnifyPattern2 {
-                        val1,
-                        remaining_pattern1_results,
+                    // Iterator over pattern1 results - accumulates results and processes next
+                    // MEMORY FIX: This continuation is the ONLY place remaining pattern1 results
+                    // are stored. Child continuations don't carry copies, preventing O(N²) memory.
+                    Continuation::ProcessUnifyPattern1Iter {
+                        mut remaining_pattern1_results,
                         pattern2,
                         success_body,
                         failure_body,
                         mut all_results,
+                        env: _iter_env,
+                        depth,
+                        parent_cont,
+                    } => {
+                        let (body_results, env_after) = result;
+
+                        // Accumulate results from the pattern1 value we just processed
+                        all_results.extend(body_results);
+
+                        // Get next pattern1 value to process
+                        if let Some(val1) = remaining_pattern1_results.pop_front() {
+                            // Create new iterator continuation for the REMAINING values
+                            // (after this one we're about to process)
+                            let iter_cont_id = continuations.len();
+                            continuations.push(Continuation::ProcessUnifyPattern1Iter {
+                                remaining_pattern1_results,
+                                pattern2: pattern2.clone(),
+                                success_body: success_body.clone(),
+                                failure_body: failure_body.clone(),
+                                all_results,
+                                env: env_after.clone(),
+                                depth,
+                                parent_cont,
+                            });
+
+                            // Process this pattern1 value
+                            if let MettaValueInner::Space(ref handle) = val1.inner() {
+                                let pattern = pattern2.clone();
+                                let is_boolean_check =
+                                    match (success_body.inner(), failure_body.inner()) {
+                                        (
+                                            MettaValueInner::Bool(true),
+                                            MettaValueInner::Bool(false),
+                                        ) => true,
+                                        (MettaValueInner::Atom(s), MettaValueInner::Atom(f))
+                                            if s == "True" && f == "False" =>
+                                        {
+                                            true
+                                        }
+                                        _ => false,
+                                    };
+
+                                if is_boolean_check {
+                                    let exists =
+                                        if handle.is_module_space() || handle.name == "self" {
+                                            env_after.match_space_exists(&pattern)
+                                        } else {
+                                            let atoms = handle.collapse();
+                                            atoms.iter().any(|atom| {
+                                                pattern_match(&pattern, atom).is_some()
+                                                    || pattern_match(atom, &pattern).is_some()
+                                            })
+                                        };
+                                    work_stack.push(WorkItem::Resume {
+                                        cont_id: iter_cont_id,
+                                        result: (vec![MettaValue::Bool(exists)], env_after),
+                                    });
+                                } else {
+                                    let matches: Vec<MultiplicityMatch> =
+                                        if handle.is_module_space() || handle.name == "self" {
+                                            env_after.match_space(&pattern, &pattern)
+                                        } else {
+                                            handle.collapse_with_multiplicity()
+                                        };
+
+                                    let mut bodies_to_eval: VecDeque<MettaValue> = VecDeque::new();
+                                    let mut found_match = false;
+                                    for m in &matches {
+                                        if let Some(bindings) = pattern_match(&pattern, &m.value) {
+                                            found_match = true;
+                                            let instantiated =
+                                                apply_bindings(&success_body, &bindings)
+                                                    .into_owned();
+                                            for _ in 0..m.count {
+                                                bodies_to_eval.push_back(instantiated.clone());
+                                            }
+                                        } else if let Some(bindings) =
+                                            pattern_match(&m.value, &pattern)
+                                        {
+                                            found_match = true;
+                                            let instantiated =
+                                                apply_bindings(&success_body, &bindings)
+                                                    .into_owned();
+                                            for _ in 0..m.count {
+                                                bodies_to_eval.push_back(instantiated.clone());
+                                            }
+                                        }
+                                    }
+                                    if !found_match {
+                                        bodies_to_eval.push_back(failure_body.clone());
+                                    }
+
+                                    if let Some(first_body) = bodies_to_eval.pop_front() {
+                                        let bodies_cont_id = continuations.len();
+                                        continuations.push(Continuation::ProcessUnifyBodies {
+                                            remaining_bodies: bodies_to_eval,
+                                            results: Vec::new(),
+                                            env: env_after.clone(),
+                                            depth,
+                                            parent_cont: iter_cont_id,
+                                        });
+                                        work_stack.push(WorkItem::Eval {
+                                            value: first_body,
+                                            env: env_after,
+                                            depth: depth + 1,
+                                            cont_id: bodies_cont_id,
+                                            is_tail_call: false,
+                                        });
+                                    } else {
+                                        work_stack.push(WorkItem::Resume {
+                                            cont_id: iter_cont_id,
+                                            result: (vec![], env_after),
+                                        });
+                                    }
+                                }
+                            } else {
+                                // Non-space: evaluate pattern2
+                                let p2_cont_id = continuations.len();
+                                continuations.push(Continuation::ProcessUnifyPattern2 {
+                                    val1,
+                                    pattern2: pattern2.clone(),
+                                    success_body,
+                                    failure_body,
+                                    env: env_after.clone(),
+                                    depth,
+                                    parent_cont: iter_cont_id,
+                                });
+                                work_stack.push(WorkItem::Eval {
+                                    value: pattern2,
+                                    env: env_after,
+                                    depth: depth + 1,
+                                    cont_id: p2_cont_id,
+                                    is_tail_call: false,
+                                });
+                            }
+                        } else {
+                            // No more pattern1 values - return all accumulated results
+                            if all_results.is_empty() {
+                                work_stack.push(WorkItem::Eval {
+                                    value: failure_body,
+                                    env: env_after,
+                                    depth,
+                                    cont_id: parent_cont,
+                                    is_tail_call: true,
+                                });
+                            } else {
+                                work_stack.push(WorkItem::Resume {
+                                    cont_id: parent_cont,
+                                    result: (all_results, env_after),
+                                });
+                            }
+                        }
+                    }
+
+                    // Handle unify pattern2 evaluation for a SINGLE pattern1 value
+                    // MEMORY FIX: No remaining_pattern1_results - those stay in iterator
+                    Continuation::ProcessUnifyPattern2 {
+                        val1,
+                        pattern2: _pattern2,
+                        success_body,
+                        failure_body,
                         env: _p2_env,
                         depth,
                         parent_cont,
                     } => {
                         let (results2, env_after_p2) = result;
 
-                        // Perform unification for each pattern2 result
-                        // MettaValue clone is O(1) since it uses Arc internally
                         let mut bodies_to_eval: VecDeque<MettaValue> = VecDeque::new();
-
                         for val2 in results2 {
                             if let Some(bindings) = pattern_match(&val1, &val2) {
                                 let instantiated =
@@ -3043,21 +3227,15 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                             }
                         }
 
-                        // Start evaluating bodies
                         if let Some(first_body) = bodies_to_eval.pop_front() {
                             let bodies_cont_id = continuations.len();
                             continuations.push(Continuation::ProcessUnifyBodies {
                                 remaining_bodies: bodies_to_eval,
-                                remaining_pattern1_results,
-                                pattern2: pattern2.clone(),
-                                success_body,
-                                failure_body,
-                                all_results,
+                                results: Vec::new(),
                                 env: env_after_p2.clone(),
                                 depth,
                                 parent_cont,
                             });
-
                             work_stack.push(WorkItem::Eval {
                                 value: first_body,
                                 env: env_after_p2,
@@ -3066,226 +3244,47 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 is_tail_call: false,
                             });
                         } else {
-                            // No bodies to evaluate - continue with remaining pattern1 results
-                            if remaining_pattern1_results.is_empty() {
-                                if all_results.is_empty() {
-                                    // No results at all - evaluate failure body
-                                    work_stack.push(WorkItem::Eval {
-                                        value: failure_body,
-                                        env: env_after_p2,
-                                        depth,
-                                        cont_id: parent_cont,
-                                        is_tail_call: true,
-                                    });
-                                } else {
-                                    work_stack.push(WorkItem::Resume {
-                                        cont_id: parent_cont,
-                                        result: (all_results, env_after_p2),
-                                    });
-                                }
-                            } else {
-                                // More pattern1 results - create new ProcessUnifyPattern1
-                                // to handle them (simplified - just process next one)
-                                let mut remaining = remaining_pattern1_results;
-                                let next_val = remaining.pop_front().expect("non-empty");
-
-                                if let MettaValueInner::Space(_) = next_val.inner() {
-                                    // Space - would need complex handling, for now just return
-                                    work_stack.push(WorkItem::Resume {
-                                        cont_id: parent_cont,
-                                        result: (all_results, env_after_p2),
-                                    });
-                                } else {
-                                    // Evaluate pattern2 again for next val1
-                                    let p2_cont_id = continuations.len();
-                                    continuations.push(Continuation::ProcessUnifyPattern2 {
-                                        val1: next_val,
-                                        remaining_pattern1_results: remaining,
-                                        pattern2: pattern2.clone(),
-                                        success_body,
-                                        failure_body,
-                                        all_results,
-                                        env: env_after_p2.clone(),
-                                        depth,
-                                        parent_cont,
-                                    });
-
-                                    work_stack.push(WorkItem::Eval {
-                                        value: pattern2,
-                                        env: env_after_p2,
-                                        depth, // TCO: reuse depth for iteration
-                                        cont_id: p2_cont_id,
-                                        is_tail_call: false,
-                                    });
-                                }
-                            }
+                            work_stack.push(WorkItem::Resume {
+                                cont_id: parent_cont,
+                                result: (vec![], env_after_p2),
+                            });
                         }
                     }
 
-                    // Handle unify body evaluations - accumulate and continue
+                    // Handle unify body evaluations for a SINGLE pattern1 value
+                    // MEMORY FIX: No remaining_pattern1_results - those stay in iterator
                     Continuation::ProcessUnifyBodies {
                         mut remaining_bodies,
-                        remaining_pattern1_results,
-                        pattern2,
-                        success_body,
-                        failure_body,
-                        mut all_results,
+                        mut results,
                         env: _bodies_env,
                         depth,
                         parent_cont,
                     } => {
                         let (body_results, env_after_body) = result;
+                        results.extend(body_results);
 
-                        // Accumulate results
-                        all_results.extend(body_results);
-
-                        // More bodies to evaluate?
                         if let Some(next_body) = remaining_bodies.pop_front() {
                             let next_cont_id = continuations.len();
                             continuations.push(Continuation::ProcessUnifyBodies {
                                 remaining_bodies,
-                                remaining_pattern1_results,
-                                pattern2,
-                                success_body,
-                                failure_body,
-                                all_results,
+                                results,
                                 env: env_after_body.clone(),
                                 depth,
                                 parent_cont,
                             });
-
                             work_stack.push(WorkItem::Eval {
                                 value: next_body,
                                 env: env_after_body,
-                                depth, // TCO: reuse depth for iteration
+                                depth,
                                 cont_id: next_cont_id,
                                 is_tail_call: false,
                             });
-                        } else if !remaining_pattern1_results.is_empty() {
-                            // Process next pattern1 result
-                            let mut remaining = remaining_pattern1_results;
-                            let next_val = remaining.pop_front().expect("non-empty");
-
-                            if let MettaValueInner::Space(ref handle) = next_val.inner() {
-                                // Handle space - compute bodies synchronously
-                                // Get matches with multiplicity tracking for correct result counts
-                                let pattern = pattern2.clone();
-                                let matches: Vec<MultiplicityMatch> =
-                                    if handle.is_module_space() || handle.name == "self" {
-                                        env_after_body.match_space(&pattern, &pattern)
-                                    } else {
-                                        handle.collapse_with_multiplicity()
-                                    };
-
-                                let mut new_bodies: VecDeque<MettaValue> = VecDeque::new();
-                                let mut found_match = false;
-
-                                // Pattern match once per unique atom, expand by multiplicity
-                                // MettaValue clone is O(1) since it uses Arc internally
-                                for m in &matches {
-                                    if let Some(bindings) = pattern_match(&pattern, &m.value) {
-                                        found_match = true;
-                                        let instantiated =
-                                            apply_bindings(&success_body, &bindings).into_owned();
-                                        // O(1) MettaValue clones for multiplicity expansion
-                                        for _ in 0..m.count {
-                                            new_bodies.push_back(instantiated.clone());
-                                        }
-                                    } else if let Some(bindings) = pattern_match(&m.value, &pattern)
-                                    {
-                                        found_match = true;
-                                        let instantiated =
-                                            apply_bindings(&success_body, &bindings).into_owned();
-                                        for _ in 0..m.count {
-                                            new_bodies.push_back(instantiated.clone());
-                                        }
-                                    }
-                                }
-
-                                if !found_match {
-                                    new_bodies.push_back(failure_body.clone());
-                                }
-
-                                if let Some(first_body) = new_bodies.pop_front() {
-                                    let next_cont_id = continuations.len();
-                                    continuations.push(Continuation::ProcessUnifyBodies {
-                                        remaining_bodies: new_bodies,
-                                        remaining_pattern1_results: remaining,
-                                        pattern2,
-                                        success_body,
-                                        failure_body,
-                                        all_results,
-                                        env: env_after_body.clone(),
-                                        depth,
-                                        parent_cont,
-                                    });
-
-                                    work_stack.push(WorkItem::Eval {
-                                        value: first_body,
-                                        env: env_after_body,
-                                        depth, // TCO: reuse depth for iteration
-                                        cont_id: next_cont_id,
-                                        is_tail_call: false,
-                                    });
-                                } else {
-                                    // No bodies - continue with remaining
-                                    let next_cont_id = continuations.len();
-                                    continuations.push(Continuation::ProcessUnifyBodies {
-                                        remaining_bodies: VecDeque::new(),
-                                        remaining_pattern1_results: remaining,
-                                        pattern2,
-                                        success_body,
-                                        failure_body,
-                                        all_results,
-                                        env: env_after_body.clone(),
-                                        depth,
-                                        parent_cont,
-                                    });
-                                    work_stack.push(WorkItem::Resume {
-                                        cont_id: next_cont_id,
-                                        result: (vec![], env_after_body),
-                                    });
-                                }
-                            } else {
-                                // Non-space - evaluate pattern2
-                                let p2_cont_id = continuations.len();
-                                continuations.push(Continuation::ProcessUnifyPattern2 {
-                                    val1: next_val,
-                                    remaining_pattern1_results: remaining,
-                                    pattern2: pattern2.clone(),
-                                    success_body,
-                                    failure_body,
-                                    all_results,
-                                    env: env_after_body.clone(),
-                                    depth,
-                                    parent_cont,
-                                });
-
-                                work_stack.push(WorkItem::Eval {
-                                    value: pattern2,
-                                    env: env_after_body,
-                                    depth, // TCO: reuse depth for iteration
-                                    cont_id: p2_cont_id,
-                                    is_tail_call: false,
-                                });
-                            }
                         } else {
-                            // All done - return accumulated results
-                            if all_results.is_empty() {
-                                // No results - evaluate failure body
-                                work_stack.push(WorkItem::Eval {
-                                    value: failure_body,
-                                    env: env_after_body,
-                                    depth,
-                                    cont_id: parent_cont,
-                                    is_tail_call: true,
-                                });
-                            } else {
-                                work_stack.push(WorkItem::Resume {
-                                    cont_id: parent_cont,
-                                    result: (all_results, env_after_body),
-                                });
-                            }
+                            // Return results to parent (the iterator)
+                            work_stack.push(WorkItem::Resume {
+                                cont_id: parent_cont,
+                                result: (results, env_after_body),
+                            });
                         }
                     }
 

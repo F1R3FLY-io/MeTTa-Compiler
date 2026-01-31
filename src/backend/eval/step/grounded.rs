@@ -6,24 +6,30 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{MettaValue, MettaValueInner};
 
-use super::super::is_grounded_op;
+use super::super::{is_eager_special_form, is_grounded_op};
 
-/// Find indices of arguments that are grounded operations needing evaluation.
+/// Find indices of arguments that need eager evaluation.
 ///
 /// This function identifies which arguments in an S-expression should be
 /// evaluated eagerly (before pattern matching) vs lazily (after pattern matching).
 ///
-/// Returns empty vec if no grounded args (can proceed directly to rule matching).
+/// Returns empty vec if no arguments need eager evaluation (can proceed directly to rule matching).
 ///
 /// ## Why This Exists
 ///
 /// MeTTa uses hybrid lazy/eager evaluation:
 /// - Grounded operations (like arithmetic) should be evaluated BEFORE pattern matching
+/// - Special forms that produce values (like map-atom) should also be evaluated BEFORE
+///   being passed to user-defined rules (for MeTTa HE semantic alignment)
 /// - User-defined expressions should remain unevaluated for lazy pattern matching
 ///
 /// Example: For `(countdown (- 3 1))`:
 /// - The argument `(- 3 1)` is a grounded operation, so it needs evaluation to `2`
 /// - Result: `(countdown 2)` - now pattern matching works correctly
+///
+/// Example: For `(get-expr-size (map-atom (a b) $v ($v x)))`:
+/// - The argument `(map-atom ...)` is an eager special form, needs evaluation
+/// - Result: `(get-expr-size ((a x) (b x)))` - now pattern matching receives the result
 ///
 /// Example: For `(wrapper $a (add-atom &stack x))`:
 /// - The argument `(add-atom &stack x)` is NOT grounded (user-defined side effect)
@@ -38,7 +44,11 @@ pub fn find_grounded_arg_indices(items: &[MettaValue], env: &Environment) -> Vec
             if let Some(first) = sub_items.first() {
                 if let MettaValueInner::Atom(op) = first.inner() {
                     // Check if this is a grounded operation (built-in or TCO)
-                    if is_grounded_op(op) || env.get_grounded_operation_tco(op).is_some() {
+                    // OR a special form that produces values and needs eager evaluation
+                    if is_grounded_op(op)
+                        || is_eager_special_form(op)
+                        || env.get_grounded_operation_tco(op).is_some()
+                    {
                         indices.push(i); // Store actual index in items
                     }
                 }

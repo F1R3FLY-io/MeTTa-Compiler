@@ -27,7 +27,7 @@ pub(crate) fn eval_map_atom_step(
     env: Environment,
     depth: usize,
 ) -> EvalStep {
-    trace!(target: "mettatron::eval::eval_map_atom", ?items);
+    trace!(target: "mettatron::eval::eval_map_atom", ?items, items_len = items.len());
 
     // Validate argument count
     if items.len() != 4 {

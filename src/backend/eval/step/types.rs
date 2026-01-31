@@ -487,4 +487,13 @@ pub enum ProcessedSExpr {
         env: Environment,
         depth: usize,
     },
+    /// Need to re-dispatch through eval_sexpr_step for special form handling.
+    /// This is used when special forms like map-atom, if, let, etc. have
+    /// their arguments evaluated via Cartesian product and need to be
+    /// re-evaluated through the normal dispatch path.
+    RedispatchSExpr {
+        items: Vec<MettaValue>,
+        env: Environment,
+        depth: usize,
+    },
 }

@@ -6,6 +6,7 @@
 use crate::backend::environment::Environment;
 use crate::backend::models::{MettaValue, MettaValueInner};
 
+use super::super::helpers::needs_special_form_redispatch;
 use super::super::step::ProcessedSExpr;
 use super::super::{try_eval_builtin, try_match_all_rules};
 use super::no_match::handle_no_rule_match;
@@ -23,11 +24,23 @@ pub fn process_single_combination(
     unified_env: Environment,
     depth: usize,
 ) -> ProcessedSExpr {
-    // Check if this is a grounded operation
+    // Check if this is a grounded operation or special form
     if let Some(first) = evaled_items.first() {
         if let MettaValueInner::Atom(op) = first.inner() {
+            // First, check for grounded operations (arithmetic, etc.)
             if let Some(result) = try_eval_builtin(op, &evaled_items[1..]) {
                 return ProcessedSExpr::Done((vec![result], unified_env));
+            }
+
+            // Re-dispatch special forms through eval_sexpr_step.
+            // This ensures map-atom, if, let, etc. get proper handling after
+            // their arguments have been evaluated via Cartesian product.
+            if needs_special_form_redispatch(op) {
+                return ProcessedSExpr::RedispatchSExpr {
+                    items: evaled_items,
+                    env: unified_env,
+                    depth,
+                };
             }
         }
     }

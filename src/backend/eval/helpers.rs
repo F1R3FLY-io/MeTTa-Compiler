@@ -8,6 +8,8 @@
 //! remain in mod.rs to avoid circular dependencies.
 
 use std::borrow::Cow;
+
+use phf::phf_set;
 use tracing::trace;
 
 use crate::backend::environment::Environment;
@@ -76,15 +78,112 @@ pub const SPECIAL_FORMS: &[&str] = &[
     "include",
 ];
 
-/// Grounded operations that should be evaluated eagerly (before pattern matching)
-const GROUNDED_OPS: &[&str] = &[
-    // Arithmetic operations
-    "+", "-", "*", "/", "%", "pow", "abs", "floor", "ceil", "round", "sqrt",
+/// Grounded operations that should be evaluated eagerly (before pattern matching).
+/// Uses compile-time perfect hash for O(1) lookup.
+static GROUNDED_OPS: phf::Set<&'static str> = phf_set! {
+    // Basic arithmetic
+    "+", "-", "*", "/", "%",
+    // Math functions (short names)
+    "pow", "abs", "floor", "ceil", "round", "sqrt",
+    // Math functions (full names from try_eval_builtin)
+    "floor-div",
+    "pow-math", "sqrt-math", "abs-math", "log-math", "trunc-math",
+    "ceil-math", "floor-math", "round-math",
+    // Trigonometric functions
+    "sin-math", "asin-math", "cos-math", "acos-math",
+    "tan-math", "atan-math",
+    // Float classification
+    "isnan-math", "isinf-math",
     // Comparison operations
-    "<", "<=", ">", ">=", "==", "!=", // Boolean operations
-    "not", "and", "or", // Type operations that return concrete values
-    "get-type",
-];
+    "<", "<=", ">", ">=", "==", "!=",
+    // Boolean operations
+    "not", "and", "or",
+    // Type operations that return concrete values
+    "get-type", "get-metatype",
+    // Atom/expression manipulation operations (all return immediate values)
+    "car-atom", "cdr-atom", "cons-atom", "decons-atom", "size-atom",
+    "max-atom", "min-atom", "index-atom",
+};
+
+/// Set of operations that need re-dispatch through eval_sexpr_step after
+/// Cartesian product argument evaluation. Uses compile-time perfect hash
+/// for O(1) lookup.
+///
+/// These are special forms that:
+/// 1. Have dedicated dispatch in eval_sexpr_step
+/// 2. Are NOT already handled by try_eval_builtin (arithmetic ops)
+/// 3. Need special argument handling (lazy args, iteration, etc.)
+static SPECIAL_FORMS_REDISPATCH: phf::Set<&'static str> = phf_set! {
+    // Higher-order list operations (iterate over elements)
+    "map-atom", "filter-atom", "foldl-atom",
+    // Control flow (lazy branch evaluation)
+    "if", "case", "switch", "switch-minimal", "switch-internal",
+    // Binding forms (special scoping)
+    "let", "let*", "unify",
+    // Sequencing/continuation forms
+    "chain", "function", "return",
+    // Pattern/substitution forms
+    "sealed", "atom-subst", "match",
+    // Error handling (special flow)
+    "catch", "is-error",
+    // Evaluation control
+    "eval", "quote",
+    // Space operations that need special handling
+    "collapse", "collapse-bind", "amb", "guard",
+    // State operations
+    "new-state", "get-state", "change-state!",
+    // I/O operations
+    "println!", "trace!",
+};
+
+/// Special forms that should be evaluated BEFORE being passed to user-defined rules.
+/// These are special forms that produce values and need eager evaluation when used
+/// as arguments to other expressions.
+///
+/// This is critical for MeTTa HE semantic alignment. In MeTTa HE, map-atom is a
+/// regular rule that gets evaluated through normal rule application. In MeTTaTron,
+/// it's a special form. To maintain semantic equivalence, we need to evaluate these
+/// special forms eagerly when they appear as arguments.
+///
+/// Example: For `(get-expr-size (map-atom (a b) $v ($v x)))`:
+/// - MeTTa HE: map-atom is a rule, evaluated as part of normal rule application
+/// - MeTTaTron: Without eager evaluation, map-atom would be passed unevaluated
+///   to get-expr-size, causing semantic mismatch
+static EAGER_SPECIAL_FORMS: phf::Set<&'static str> = phf_set! {
+    // Higher-order list operations (produce list values)
+    "map-atom", "filter-atom", "foldl-atom",
+    // Evaluation control that produces values
+    "eval",
+    // Space operations that produce values
+    "collapse", "collapse-bind", "superpose",
+    // State operations that produce values
+    "get-state",
+    // Error handling that produces values
+    "catch",
+    // Other value-producing special forms
+    "get-metatype",
+    // String operations
+    "repr", "format-args",
+};
+
+/// Check if an operation needs re-dispatch through eval_sexpr_step after
+/// Cartesian product argument evaluation.
+///
+/// Inlined to eliminate function call overhead - compiles to just the phf hash lookup.
+#[inline(always)]
+pub fn needs_special_form_redispatch(op: &str) -> bool {
+    SPECIAL_FORMS_REDISPATCH.contains(op)
+}
+
+/// Check if an operation is a special form that should be evaluated eagerly
+/// when appearing as an argument to other expressions.
+///
+/// This ensures MeTTa HE semantic alignment: special forms that produce values
+/// (like map-atom) are evaluated before being passed to user-defined rules.
+#[inline(always)]
+pub fn is_eager_special_form(op: &str) -> bool {
+    EAGER_SPECIAL_FORMS.contains(op)
+}
 
 /// Convert MettaValue to a friendly type name for error messages
 /// This provides user-friendly type names instead of debug format like "Long(5)"
@@ -254,8 +353,11 @@ pub fn suggest_special_form_with_context(
 }
 
 /// Check if an atom name is a grounded operation that should be eagerly evaluated.
+///
+/// Inlined to eliminate function call overhead - compiles to just the phf hash lookup.
+#[inline(always)]
 pub fn is_grounded_op(name: &str) -> bool {
-    GROUNDED_OPS.contains(&name)
+    GROUNDED_OPS.contains(name)
 }
 
 /// Resolve registered tokens (like &stack → Space) at the top level only.

@@ -1,0 +1,528 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 122K of event 'cycles:Pu'
+# Event count (approx.): 401335043120
+#
+# Overhead  Command    Shared Object         Symbol                                                                                                                                                                                                                                                                           
+# ........  .........  ....................  .................................................................................................................................................................................................................................................................................
+#
+    15.57%  mettatron  mettatron             [.] pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          
+            |--2.88%--pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          |          
+            |           --0.87%--0x7
+            |          
+            |--2.69%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global>>::get_both_keys (inlined)
+            |          |          
+            |          |--1.81%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::iter_token_for_path (inlined)
+            |          |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::iter_token_for_path (inlined)
+            |          |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          |          |          
+            |          |           --0.92%--0x7
+            |          |          
+            |           --0.87%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::next_items (inlined)
+            |                     <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::next_items (inlined)
+            |                     <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |                     <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |                     pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |                     |          
+            |                      --0.46%--0x7
+            |          
+            |--1.26%--<u8 as core::slice::cmp::SliceOrd>::compare (inlined)
+            |          <u8 as core::slice::cmp::SliceChain>::chaining_lt (inlined)
+            |          <[u8] as core::cmp::PartialOrd>::__chaining_lt (inlined)
+            |          <[u8] as core::cmp::PartialOrd>::lt (inlined)
+            |          <&[u8] as core::cmp::PartialOrd>::lt (inlined)
+            |          <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::iter_token_for_path (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::iter_token_for_path (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          |          
+            |           --0.47%--0x7
+            |          
+            |--0.92%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::next_items (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::next_items (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          |          
+            |           --0.51%--0x7
+            |          
+            |--0.91%--<pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          
+            |--0.87%--<core::ops::range::RangeFrom<usize> as core::slice::index::SliceIndex<[u8]>>::index (inlined)
+            |          <[u8] as core::ops::index::Index<core::ops::range::RangeFrom<usize>>>::index (inlined)
+            |          <alloc::vec::Vec<u8> as core::ops::index::Index<core::ops::range::RangeFrom<usize>>>::index (inlined)
+            |          |          
+            |           --0.59%--<pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::path (inlined)
+            |                     <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::path (inlined)
+            |                     pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |                     |          
+            |                      --0.50%--0x7
+            |          
+            |--0.75%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::iter_token_for_path (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::iter_token_for_path (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          |          
+            |           --0.41%--0x7
+            |          
+            |--0.66%--<[(pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>, u128, usize)]>::last (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key_start (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          |          
+            |           --0.35%--0x7
+            |          
+            |--0.62%--<alloc::raw_vec::RawVecInner>::non_null::<u8> (inlined)
+            |          <alloc::raw_vec::RawVecInner>::ptr::<u8> (inlined)
+            |          <alloc::raw_vec::RawVec<u8>>::ptr (inlined)
+            |          <alloc::vec::Vec<u8>>::as_mut_ptr (inlined)
+            |          <alloc::vec::Vec<u8>>::push_mut (inlined)
+            |          <alloc::vec::Vec<u8>>::push (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          
+            |--0.58%--<pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::iter_token_for_path (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          
+            |--0.47%--<alloc::vec::Vec<u8>>::push_mut (inlined)
+            |          <alloc::vec::Vec<u8>>::push (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          
+            |--0.46%--<pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          
+            |--0.41%--<pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+            |          pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+            |          
+             --0.39%--<pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::path (inlined)
+                       <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::path (inlined)
+                       pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+
+    13.16%  mettatron  mettatron             [.] <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+            |--2.46%--<mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+            |--1.01%--<pathmap::utils::ByteMask>::index_of (inlined)
+            |          <pathmap::dense_byte_node::ByteNode<pathmap::dense_byte_node::OrdinaryCoFree<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>, alloc::alloc::Global>>::get (inlined)
+            |          <pathmap::dense_byte_node::ByteNode<pathmap::dense_byte_node::OrdinaryCoFree<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>, alloc::alloc::Global> as pathmap::trie_node::TrieNode<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::node_get_child (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::node_get_child (inlined)
+            |          |          
+            |          |--0.65%--pathmap::zipper::node_along_path::<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global> (inlined)
+            |          |          <pathmap::zipper::read_zipper_core::ReadZipperCore<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::new_with_node_and_path_in (inlined)
+            |          |          <pathmap::zipper::ReadZipperUntracked<mork_interning::symbol_backing::ThinBytes>>::new_with_node_and_path_in (inlined)
+            |          |          <pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>::read_zipper_at_borrowed_path (inlined)
+            |          |          <pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>::get_val_at::<[u8; 8]> (inlined)
+            |          |          <mork_interning::SharedMapping>::get_bytes (inlined)
+            |          |          <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          |          
+            |           --0.36%--<pathmap::zipper::read_zipper_core::ReadZipperCore<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::new_with_node_and_path_internal_in (inlined)
+            |                     <pathmap::zipper::read_zipper_core::ReadZipperCore<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::new_with_node_and_path_in (inlined)
+            |                     <pathmap::zipper::ReadZipperUntracked<mork_interning::symbol_backing::ThinBytes>>::new_with_node_and_path_in (inlined)
+            |                     <pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>::read_zipper_at_borrowed_path (inlined)
+            |                     <pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>::get_val_at::<[u8; 8]> (inlined)
+            |                     <mork_interning::SharedMapping>::get_bytes (inlined)
+            |                     <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+            |--0.57%--core::ptr::write::<mettatron::backend::models::metta_value::MettaValue> (inlined)
+            |          <alloc::vec::Vec<mettatron::backend::models::metta_value::MettaValue>>::push_mut (inlined)
+            |          <alloc::vec::Vec<mettatron::backend::models::metta_value::MettaValue>>::push (inlined)
+            |          <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+            |--0.56%--mork_expr::maybe_byte_item (inlined)
+            |          <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+            |--0.41%--<[u8] as core::slice::cmp::SlicePartialEq<u8>>::equal (inlined)
+            |          <[u8] as core::cmp::PartialEq>::eq (inlined)
+            |          <&[u8] as core::cmp::PartialEq>::eq (inlined)
+            |          
+            |--0.41%--<mork_interning::SharedMapping>::get_bytes (inlined)
+            |          <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+            |--0.38%--<pathmap::trie_node::tagged_node_ref::TaggedNodeRef<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::from_slim_ptr (inlined)
+            |          <pathmap::trie_node::slim_node_ptr::SlimNodePtr<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::as_tagged (inlined)
+            |          <pathmap::trie_node::opaque_dyn_rc_trie_node::TrieNodeODRc<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::as_tagged (inlined)
+            |          |          
+            |           --0.33%--pathmap::zipper::node_along_path::<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global> (inlined)
+            |                     <pathmap::zipper::read_zipper_core::ReadZipperCore<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::new_with_node_and_path_in (inlined)
+            |                     <pathmap::zipper::ReadZipperUntracked<mork_interning::symbol_backing::ThinBytes>>::new_with_node_and_path_in (inlined)
+            |                     <pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>::read_zipper_at_borrowed_path (inlined)
+            |                     <pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>::get_val_at::<[u8; 8]> (inlined)
+            |                     <mork_interning::SharedMapping>::get_bytes (inlined)
+            |                     <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+            |--0.37%--<pathmap::trie_node::slim_node_ptr::SlimNodePtr<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::get_raw_parts (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::from_slim_ptr (inlined)
+            |          <pathmap::trie_node::slim_node_ptr::SlimNodePtr<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::as_tagged (inlined)
+            |          <pathmap::trie_node::opaque_dyn_rc_trie_node::TrieNodeODRc<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::as_tagged (inlined)
+            |          |          
+            |           --0.35%--pathmap::zipper::node_along_path::<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global> (inlined)
+            |                     <pathmap::zipper::read_zipper_core::ReadZipperCore<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::new_with_node_and_path_in (inlined)
+            |                     <pathmap::zipper::ReadZipperUntracked<mork_interning::symbol_backing::ThinBytes>>::new_with_node_and_path_in (inlined)
+            |                     <pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>::read_zipper_at_borrowed_path (inlined)
+            |                     <pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>::get_val_at::<[u8; 8]> (inlined)
+            |                     <mork_interning::SharedMapping>::get_bytes (inlined)
+            |                     <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+            |--0.37%--core::ptr::read::<<mettatron::backend::environment::Environment>::mork_expr_to_metta_value::StackFrame> (inlined)
+            |          <alloc::vec::Vec<<mettatron::backend::environment::Environment>::mork_expr_to_metta_value::StackFrame>>::pop (inlined)
+            |          <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+            |--0.37%--<pathmap::trie_node::tagged_node_ref::TaggedNodeRef<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::node_get_child (inlined)
+            |          |          
+            |           --0.35%--pathmap::zipper::node_along_path::<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global> (inlined)
+            |                     <pathmap::zipper::read_zipper_core::ReadZipperCore<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::new_with_node_and_path_in (inlined)
+            |                     <pathmap::zipper::ReadZipperUntracked<mork_interning::symbol_backing::ThinBytes>>::new_with_node_and_path_in (inlined)
+            |                     <pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>::read_zipper_at_borrowed_path (inlined)
+            |                     <pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>::get_val_at::<[u8; 8]> (inlined)
+            |                     <mork_interning::SharedMapping>::get_bytes (inlined)
+            |                     <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+            |--0.36%--<i64>::from_ascii_radix (inlined)
+            |          <i64>::from_str_radix (inlined)
+            |          <i64 as core::str::traits::FromStr>::from_str (inlined)
+            |          <str>::parse::<i64> (inlined)
+            |          <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+            |          
+             --0.31%--core::sync::atomic::atomic_compare_exchange_weak::<u32> (inlined)
+                       <core::sync::atomic::AtomicU32>::compare_exchange_weak (inlined)
+                       <std::sys::sync::rwlock::futex::RwLock>::read (inlined)
+                       <std::sync::poison::rwlock::RwLock<pathmap::trie_map::PathMap<mork_interning::symbol_backing::ThinBytes>>>::read (inlined)
+                       <mork_interning::SharedMapping>::get_bytes (inlined)
+                       <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+
+     9.90%  mettatron  mettatron             [.] <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--1.36%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global>>::get_both_keys (inlined)
+            |          <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--1.06%--fast_slice_utils::count_shared_avx2 (inlined)
+            |          fast_slice_utils::find_prefix_overlap (inlined)
+            |          fast_slice_utils::starts_with (inlined)
+            |          <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--1.06%--<[(pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>, u128, usize)]>::last (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key_start (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--0.90%--<alloc::vec::Vec<(pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>, u128, usize)>>::as_slice (inlined)
+            |          <alloc::vec::Vec<(pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>, u128, usize)> as core::ops::deref::Deref>::deref (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key_start (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--0.79%--<pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--0.72%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--0.50%--<&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--0.49%--fast_slice_utils::starts_with (inlined)
+            |          <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--0.43%--<pathmap::utils::ByteMask as core::convert::From<[u64; 4]>>::from (inlined)
+            |          <[u64; 4] as core::convert::Into<pathmap::utils::ByteMask>>::into (inlined)
+            |          <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--0.41%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global>>::is_used::<0> (inlined)
+            |          <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global>>::get_both_keys (inlined)
+            |          <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+            |--0.34%--<core::ops::range::RangeFrom<usize> as core::slice::index::SliceIndex<[u8]>>::index (inlined)
+            |          <[u8] as core::ops::index::Index<core::ops::range::RangeFrom<usize>>>::index (inlined)
+            |          <alloc::vec::Vec<u8> as core::ops::index::Index<core::ops::range::RangeFrom<usize>>>::index (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+            |          
+             --0.32%--core::core_arch::x86::avx2::_mm256_movemask_epi8 (inlined)
+                       fast_slice_utils::count_shared_avx2 (inlined)
+                       fast_slice_utils::find_prefix_overlap (inlined)
+                       fast_slice_utils::starts_with (inlined)
+                       <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+                       <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_branches_mask (inlined)
+                       <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::Zipper>::child_mask (inlined)
+                       <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+                       <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask
+
+     9.39%  mettatron  mettatron             [.] mork::space::coreferential_transition::<&mut pathmap::product_zipper::ProductZipper<()>, <mork::space::Space>::query_multi_raw<pathmap::product_zipper::ProductZipper<()>, mettatron::backend::eval::try_match_all_rules_query_multi::{closure#0}>::{closure#0}::{closure#0}>
+            |          
+            |--3.77%--<pathmap::utils::ByteMaskIter as core::iter::traits::iterator::Iterator>::next (inlined)
+            |          mork::space::coreferential_transition::<&mut pathmap::product_zipper::ProductZipper<()>, <mork::space::Space>::query_multi_raw<pathmap::product_zipper::ProductZipper<()>, mettatron::backend::eval::try_match_all_rules_query_multi::{closure#0}>::{closure#0}::{closure#0}>
+            |          |          
+            |           --1.94%--0x7
+            |          
+            |--2.35%--mork::space::coreferential_transition::<&mut pathmap::product_zipper::ProductZipper<()>, <mork::space::Space>::query_multi_raw<pathmap::product_zipper::ProductZipper<()>, mettatron::backend::eval::try_match_all_rules_query_multi::{closure#0}>::{closure#0}::{closure#0}>
+            |          |          
+            |           --0.95%--0x7
+            |          
+            |--0.62%--<&mut &mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::Zipper>::child_mask (inlined)
+            |          mork::space::coreferential_transition::<&mut pathmap::product_zipper::ProductZipper<()>, <mork::space::Space>::query_multi_raw<pathmap::product_zipper::ProductZipper<()>, mettatron::backend::eval::try_match_all_rules_query_multi::{closure#0}>::{closure#0}::{closure#0}>
+            |          
+            |--0.56%--<pathmap::utils::ByteMaskIter>::new (inlined)
+            |          <pathmap::utils::ByteMaskIter as core::convert::From<[u64; 4]>>::from (inlined)
+            |          <pathmap::utils::ByteMask>::iter (inlined)
+            |          mork::space::coreferential_transition::<&mut pathmap::product_zipper::ProductZipper<()>, <mork::space::Space>::query_multi_raw<pathmap::product_zipper::ProductZipper<()>, mettatron::backend::eval::try_match_all_rules_query_multi::{closure#0}>::{closure#0}::{closure#0}>
+            |          |          
+            |           --0.32%--0x7
+            |          
+            |--0.43%--<[u64; 4] as pathmap::utils::BitMask>::and (inlined)
+            |          <pathmap::utils::ByteMask as pathmap::utils::BitMask>::and (inlined)
+            |          mork::space::coreferential_transition::<&mut pathmap::product_zipper::ProductZipper<()>, <mork::space::Space>::query_multi_raw<pathmap::product_zipper::ProductZipper<()>, mettatron::backend::eval::try_match_all_rules_query_multi::{closure#0}>::{closure#0}::{closure#0}>
+            |          
+             --0.40%--<alloc::vec::Vec<mork_expr::ExprEnv>>::push_mut (inlined)
+                       <alloc::vec::Vec<mork_expr::ExprEnv>>::push (inlined)
+                       mork::space::coreferential_transition::<&mut pathmap::product_zipper::ProductZipper<()>, <mork::space::Space>::query_multi_raw<pathmap::product_zipper::ProductZipper<()>, mettatron::backend::eval::try_match_all_rules_query_multi::{closure#0}>::{closure#0}::{closure#0}>
+
+     7.45%  mettatron  mettatron             [.] <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::to_next_sibling_byte
+            |          
+            |--3.08%--<pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::to_next_sibling_byte
+            |          |          
+            |           --0.70%--0x7
+            |          
+            |--1.61%--<pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::to_next_sibling_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::to_next_sibling_byte
+            |          
+             --1.19%--<[(pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>, u128, usize)]>::last (inlined)
+                       <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key_start (inlined)
+                       |          
+                        --1.19%--<pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::deregularize (inlined)
+                                  <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::to_next_sibling_byte (inlined)
+                                  <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::to_next_sibling_byte
+
+     5.14%  mettatron  mettatron             [.] <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::regularize
+            |          
+            |--0.99%--<pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::regularize
+            |          
+            |--0.83%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::node_get_child (inlined)
+            |          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_get_child (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::regularize
+            |          
+            |--0.72%--<[(pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>, u128, usize)]>::last (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key_start (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::regularize
+            |          
+            |--0.66%--<alloc::vec::Vec<(pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>, u128, usize)>>::as_slice (inlined)
+            |          <alloc::vec::Vec<(pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>, u128, usize)> as core::ops::deref::Deref>::deref (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key_start (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::regularize
+            |          
+             --0.46%--<pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_get_child (inlined)
+                       <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::regularize
+
+     4.48%  mettatron  mettatron             [.] <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::ascend_byte
+            |          
+            |--1.63%--<pathmap::product_zipper::ProductZipper<()>>::fix_after_ascend (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::ascend_byte
+            |          
+            |--1.24%--<[(pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>, u128, usize)]>::last (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::excess_key_len (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::ascend_byte (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::ascend_byte
+            |          
+            |--0.86%--<pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::ascend_byte
+            |          
+             --0.41%--<pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::ascend_byte (inlined)
+                       <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::ascend_byte
+
+     3.12%  mettatron  mettatron             [.] <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_to_byte
+            |          
+            |--0.68%--<&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_to_byte
+            |          
+            |--0.49%--<[(pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>, u128, usize)]>::last (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key_start (inlined)
+            |          <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global>>::node_key (inlined)
+            |          |          
+            |           --0.36%--<pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_to_byte (inlined)
+            |                     <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_to_byte (inlined)
+            |                     <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_to_byte
+            |          
+             --0.39%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::node_get_child (inlined)
+                       <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::node_get_child (inlined)
+                       <pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_to_byte (inlined)
+                       <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_to_byte (inlined)
+                       <&mut pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_to_byte
+
+     1.97%  mettatron  mettatron             [.] _rjem_sdallocx
+            |          
+            |--0.61%--free_fastpath (inlined)
+            |          _rjem_sdallocx
+            |          
+             --0.53%--cache_bin_dalloc_easy (inlined)
+                       free_fastpath (inlined)
+                       _rjem_sdallocx
+
+     1.76%  mettatron  mettatron             [.] _rjem_malloc
+            |          
+            |--0.76%--cache_bin_alloc_impl (inlined)
+            |          |          
+            |           --0.76%--cache_bin_alloc_easy (inlined)
+            |                     imalloc_fastpath (inlined)
+            |                     _rjem_malloc
+            |          
+             --0.48%--imalloc_fastpath (inlined)
+                       _rjem_malloc
+
+     1.68%  mettatron  mettatron             [.] <pathmap::product_zipper::ProductZipper<()>>::ensure_descend_next_factor
+            |          
+            |--0.97%--<alloc::vec::Vec<usize>>::len (inlined)
+            |          <pathmap::product_zipper::ProductZipper<()>>::ensure_descend_next_factor
+            |          
+             --0.70%--<pathmap::product_zipper::ProductZipper<()>>::ensure_descend_next_factor
+
+     1.62%  mettatron  mettatron             [.] <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::count_branches
+            |          
+            |--0.35%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global>>::get_both_keys (inlined)
+            |          <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::count_branches
+            |          
+            |--0.33%--fast_slice_utils::count_shared_avx2 (inlined)
+            |          fast_slice_utils::find_prefix_overlap (inlined)
+            |          fast_slice_utils::starts_with (inlined)
+            |          <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::count_branches
+            |          
+             --0.32%--<pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::count_branches
+
+     1.62%  mettatron  mettatron             [.] <core::str::lossy::Utf8Chunks as core::iter::traits::iterator::Iterator>::next
+            |          
+             --1.55%--<core::str::lossy::Utf8Chunks as core::iter::traits::iterator::Iterator>::next
+                       <mettatron::backend::environment::Environment>::mork_expr_to_metta_value
+
+     1.61%  mettatron  mettatron             [.] core::ptr::drop_in_place::<mettatron::backend::models::metta_value::MettaValue>
+            |          
+             --1.20%--core::ptr::drop_in_place::<mettatron::backend::models::metta_value::MettaValue>
+
+     1.13%  mettatron  mettatron             [.] <alloc::raw_vec::RawVecInner>::finish_grow
+            |          
+             --0.35%--<alloc::raw_vec::RawVecInner>::finish_grow
+
+     1.05%  mettatron  mettatron             [.] do_rallocx
+            |          
+             --0.33%--do_rallocx
+
+     0.97%  mettatron  mettatron             [.] mork_expr::unify
+            |          
+             --0.49%--mork_expr::unify
+
+     0.92%  mettatron  mettatron             [.] <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<mork_interning::symbol_backing::ThinBytes, alloc::alloc::Global>>::node_get_val
+     0.91%  mettatron  mettatron             [.] <alloc::string::String>::from_utf8_lossy
+            |          
+             --0.83%--<alloc::string::String>::from_utf8_lossy
+
+     0.87%  mettatron  mettatron             [.] _rjem_je_arena_ralloc
+            |          
+             --0.61%--_rjem_je_arena_ralloc
+                       |          
+                        --0.54%--iralloct (inlined)
+                                  do_rallocx
+
+     0.85%  mettatron  mettatron             [.] <std::hash::random::DefaultHasher as core::hash::Hasher>::write.1051
+            |          
+            |--0.32%--<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write (inlined)
+            |          <core::hash::sip::SipHasher13 as core::hash::Hasher>::write (inlined)
+            |          <std::hash::random::DefaultHasher as core::hash::Hasher>::write (inlined)
+            |          mork_expr::match2::<mork_expr::unify::{closure#1}, (), (), mork_expr::TraverseSide, (), (), mork_expr::TraverseSide>
+            |          
+             --0.31%--core::hash::sip::u8to64_le (inlined)
+                       <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write (inlined)
+                       <core::hash::sip::SipHasher13 as core::hash::Hasher>::write (inlined)
+                       <std::hash::random::DefaultHasher as core::hash::Hasher>::write (inlined)
+                       mork_expr::match2::<mork_expr::unify::{closure#1}, (), (), mork_expr::TraverseSide, (), (), mork_expr::TraverseSide>
+
+     0.81%  mettatron  mettatron             [.] mork_expr::execute_loop::<(), (), mork_expr::TraverseSide>
+     0.78%  mettatron  mettatron             [.] <mork::space::Space>::query_multi_raw::<pathmap::product_zipper::ProductZipper<()>, mettatron::backend::eval::try_match_all_rules_query_multi::{closure#0}>::{closure#0}::{closure#0}
+     0.69%  mettatron  [unknown]             [k] 0xffffffff97201968
+     0.65%  mettatron  mettatron             [.] mork_expr::match2::<mork_expr::unify::{closure#1}, (), (), mork_expr::TraverseSide, (), (), mork_expr::TraverseSide>
+            |          
+             --0.46%--mork_expr::match2::<mork_expr::unify::{closure#1}, (), (), mork_expr::TraverseSide, (), (), mork_expr::TraverseSide>
+
+     0.61%  mettatron  mettatron             [.] _rjem_je_arena_ralloc_no_move
+            |          
+             --0.30%--_rjem_je_arena_ralloc_no_move
+
+     0.54%  mettatron  mettatron             [.] <std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&(mork_expr::ExprEnv, mork_expr::ExprEnv)>
+     0.53%  mettatron  libc.so.6             [.] 0x000000000016cb9d
+            |
+            ---0x7f6f7c56cb9d
+               |          
+                --0.45%--<u8 as core::slice::cmp::SliceOrd>::compare (inlined)
+                          <u8 as core::slice::cmp::SliceChain>::chaining_lt (inlined)
+                          <[u8] as core::cmp::PartialOrd>::__chaining_lt (inlined)
+                          <[u8] as core::cmp::PartialOrd>::lt (inlined)
+                          <&[u8] as core::cmp::PartialOrd>::lt (inlined)
+                          <pathmap::line_list_node::LineListNode<(), alloc::alloc::Global> as pathmap::trie_node::TrieNode<(), alloc::alloc::Global>>::iter_token_for_path (inlined)
+                          <pathmap::trie_node::tagged_node_ref::TaggedNodeRef<(), alloc::alloc::Global>>::iter_token_for_path (inlined)
+                          |          
+                           --0.45%--<pathmap::zipper::read_zipper_core::ReadZipperCore<(), alloc::alloc::Global> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+                                     <pathmap::product_zipper::ProductZipper<()> as pathmap::zipper::ZipperMoving>::descend_first_byte (inlined)
+                                     pathmap::zipper::k_path_default_internal::<pathmap::product_zipper::ProductZipper<()>>
+
+     0.49%  mettatron  mettatron             [.] mork_expr::unify::{closure#1}
+     0.49%  mettatron  mettatron             [.] alloc::fmt::format::format_inner
+     0.46%  mettatron  libc.so.6             [.] 0x000000000016cb99
+            |
+            ---0x7f6f7c56cb99
+
+     0.41%  mettatron  mettatron             [.] core::fmt::write
+     0.33%  mettatron  mettatron             [.] <alloc::collections::btree::map::BTreeMap<(u8, u8), mork_expr::ExprEnv>>::insert
+     0.32%  mettatron  mettatron             [.] <mettatron::backend::models::bindings::SmartBindings>::insert
+     0.31%  mettatron  mettatron             [.] <alloc::raw_vec::RawVec<alloc::borrow::Cow<mettatron::backend::models::metta_value::MettaValue>>>::grow_one
+     0.31%  mettatron  mettatron             [.] <alloc::string::String as core::fmt::Write>::write_str.307
+
+
+#
+# (Tip: To show IPC for sampling periods use perf record -e '{cycles,instructions}:S' and then browse context)
+#

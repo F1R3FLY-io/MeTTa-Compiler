@@ -46,7 +46,7 @@ fn bench_rule_matching(c: &mut Criterion) {
             rule_count,
             |b, _| {
                 b.iter(|| {
-                    let env = Environment::new();
+                    let env = Environment::default();
 
                     // Load rules
                     for rule_str in rules_src.lines() {
@@ -80,7 +80,7 @@ fn bench_pattern_complexity(c: &mut Criterion) {
 
     // Pre-compile rule and query once, share environment
     let simple_env = {
-        let env = Environment::new();
+        let env = Environment::default();
         let rule_state = compile(simple_rule).expect("Failed to compile");
         let rule = rule_state.source.into_iter().next().expect("No rule");
         eval(rule, env.clone());
@@ -104,7 +104,7 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     let nested_query = "(nested (1 (2 3)))";
 
     let nested_env = {
-        let env = Environment::new();
+        let env = Environment::default();
         let rule_state = compile(nested_rule).expect("Failed to compile");
         let rule = rule_state.source.into_iter().next().expect("No rule");
         eval(rule, env.clone());
@@ -127,7 +127,7 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     let multi_arg_query = "(multi 1 2 3 4)";
 
     let multi_env = {
-        let env = Environment::new();
+        let env = Environment::default();
         let rule_state = compile(multi_arg_rule).expect("Failed to compile");
         let rule = rule_state.source.into_iter().next().expect("No rule");
         eval(rule, env.clone());
@@ -162,7 +162,7 @@ fn bench_full_evaluation(c: &mut Criterion) {
 
     group.bench_function("fibonacci_10", |b| {
         b.iter(|| {
-            let env = Environment::new();
+            let env = Environment::default();
             let lines: Vec<&str> = fib_program
                 .lines()
                 .map(|l| l.trim())
@@ -188,7 +188,7 @@ fn bench_full_evaluation(c: &mut Criterion) {
 
     group.bench_function("nested_let", |b| {
         b.iter(|| {
-            let env = Environment::new();
+            let env = Environment::default();
             let state = compile(let_program).expect("Failed to compile");
             let expr = state.source.into_iter().next().expect("No expr");
             let result = eval(black_box(expr), env);
@@ -206,7 +206,7 @@ fn bench_full_evaluation(c: &mut Criterion) {
 
     group.bench_function("type_inference", |b| {
         b.iter(|| {
-            let env = Environment::new();
+            let env = Environment::default();
             let lines: Vec<&str> = type_program
                 .lines()
                 .map(|l| l.trim())
@@ -239,7 +239,7 @@ fn bench_large_rule_sets(c: &mut Criterion) {
             rule_count,
             |b, _| {
                 b.iter(|| {
-                    let env = Environment::new();
+                    let env = Environment::default();
 
                     // Load all rules
                     for rule_str in rules_src.lines() {
@@ -269,7 +269,7 @@ fn bench_has_sexpr_fact(c: &mut Criterion) {
 
     for fact_count in [100, 500, 1000, 5000].iter() {
         // Pre-populate environment with facts
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Add facts to the Space
         for i in 0..*fact_count {

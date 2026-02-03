@@ -849,7 +849,7 @@ fn bench_state_operations(c: &mut Criterion) {
                     let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_config_and_env(
                         Arc::clone(&chunk),
                         mettatron::backend::bytecode::vm::VmConfig::default(),
-                        Environment::new(),
+                        Environment::default(),
                     );
                     black_box(vm.run())
                 })
@@ -862,7 +862,7 @@ fn bench_state_operations(c: &mut Criterion) {
             if let Ok(code_ptr) = compiler.compile(&chunk) {
                 let constants = chunk.constants();
                 let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
-                let mut env = Environment::new();
+                let mut env = Environment::default();
 
                 b.iter(|| {
                     let mut ctx = unsafe {
@@ -898,7 +898,7 @@ fn bench_state_operations(c: &mut Criterion) {
                     let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_config_and_env(
                         Arc::clone(&chunk),
                         mettatron::backend::bytecode::vm::VmConfig::default(),
-                        Environment::new(),
+                        Environment::default(),
                     );
                     black_box(vm.run())
                 })
@@ -914,7 +914,7 @@ fn bench_state_operations(c: &mut Criterion) {
                 if let Ok(code_ptr) = compiler.compile(&chunk) {
                     let constants = chunk.constants();
                     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
 
                     b.iter(|| {
                         let mut ctx = unsafe {
@@ -951,7 +951,7 @@ fn bench_state_operations(c: &mut Criterion) {
                     let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_config_and_env(
                         Arc::clone(&chunk),
                         mettatron::backend::bytecode::vm::VmConfig::default(),
-                        Environment::new(),
+                        Environment::default(),
                     );
                     black_box(vm.run())
                 })
@@ -967,7 +967,7 @@ fn bench_state_operations(c: &mut Criterion) {
                 if let Ok(code_ptr) = compiler.compile(&chunk) {
                     let constants = chunk.constants();
                     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
 
                     b.iter(|| {
                         let mut ctx = unsafe {
@@ -1008,7 +1008,7 @@ fn bench_state_operations(c: &mut Criterion) {
                     let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_config_and_env(
                         Arc::clone(&chunk),
                         mettatron::backend::bytecode::vm::VmConfig::default(),
-                        Environment::new(),
+                        Environment::default(),
                     );
                     black_box(vm.run())
                 })
@@ -1024,7 +1024,7 @@ fn bench_state_operations(c: &mut Criterion) {
                 if let Ok(code_ptr) = compiler.compile(&chunk) {
                     let constants = chunk.constants();
                     let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
 
                     b.iter(|| {
                         let mut ctx = unsafe {

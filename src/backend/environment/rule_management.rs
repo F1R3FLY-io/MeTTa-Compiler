@@ -9,67 +9,56 @@
 //! using MORK bytes as keys. This avoids the overhead of symbol interning since
 //! MORK bytes are already computed for PathMap storage.
 //!
-//! # Lazy Iteration
+//! # Iteration
 //!
-//! Rule iterators use `owning_ref` to keep lock guards alive for iterator lifetimes,
-//! enabling true lazy iteration without upfront Vec allocation.
+//! Rule iterators collect data from DashMap/RwLock and iterate over the collected
+//! data, releasing locks quickly to maximize concurrency.
+//!
+//! # Generic Rule Storage
+//!
+//! Rules are stored directly as `GenericRule<MettaValue>` in the rule index.
+//! This eliminates the need for RuleBytes serialization/deserialization.
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::RwLockReadGuard;
 
 use mork::space::Space;
 use mork_expr::Expr;
-use owning_ref::OwningHandle;
 use pathmap::PathMap;
 use tracing::trace;
 
+use super::generic::GenericEnvironment;
 use super::multiplicity::{
     add_atom, decrement_multiplicity, get_multiplicity, increment_multiplicity, set_multiplicity,
     Multiplicity,
 };
 use super::{Environment, MettaValue, Rule};
-use crate::backend::models::MettaValueInner;
+use crate::backend::models::{GenericRule, MettaValueFactory, MettaValueInner, MettaValueTrait};
 use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 use crate::backend::symbol::Symbol;
 
-/// Lazy iterator over rule heads that owns its lock guard.
+/// Iterator over rule heads with their arities and counts.
 ///
-/// Uses `owning_ref::OwningHandle` to safely hold a `RwLockReadGuard` alongside
-/// an iterator that borrows from it. This enables true lazy iteration without
-/// collecting to a Vec first.
+/// With DashMap, we collect the data into a Vec for iteration since DashMap
+/// doesn't support the OwningHandle pattern. The data is collected during creation.
 ///
 /// # Performance
-/// - Zero Vec allocation
-/// - Lock held for iterator lifetime
-/// - Items produced on-demand
-pub struct RuleHeadsIter<'a> {
-    /// OwningHandle owns the guard and contains an iterator that borrows from it.
-    /// The type is: OwningHandle<Guard, Box<dyn Iterator + 'a>>
-    inner: OwningHandle<
-        RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>,
-        Box<dyn Iterator<Item = (String, usize, usize)> + 'a>,
-    >,
+/// - Memory overhead: O(k) where k = number of distinct (head, arity) pairs
+/// - Data collected: O(k) during creation
+pub struct RuleHeadsIter {
+    inner: std::vec::IntoIter<(String, usize, usize)>,
 }
 
-impl<'a> RuleHeadsIter<'a> {
-    /// Create a new lazy iterator from a lock guard.
-    pub fn new(guard: RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>) -> Self {
-        // SAFETY: OwningHandle ensures the guard outlives the iterator.
-        // The iterator only borrows from the owned guard, so the reference is valid.
-        let inner = OwningHandle::new_with_fn(guard, |index_ptr| {
-            // SAFETY: index_ptr is valid for the lifetime of the OwningHandle
-            let index = unsafe { &*index_ptr };
-            let iter = index
-                .iter()
-                .map(|((head, arity), rules)| (head.to_string(), *arity, rules.len()));
-            Box::new(iter) as Box<dyn Iterator<Item = (String, usize, usize)> + 'a>
-        });
-        Self { inner }
+impl RuleHeadsIter {
+    /// Create a new iterator from collected rule heads.
+    pub fn new(items: Vec<(String, usize, usize)>) -> Self {
+        Self {
+            inner: items.into_iter(),
+        }
     }
 }
 
-impl<'a> Iterator for RuleHeadsIter<'a> {
+impl Iterator for RuleHeadsIter {
     type Item = (String, usize, usize);
 
     #[inline]
@@ -77,10 +66,8 @@ impl<'a> Iterator for RuleHeadsIter<'a> {
         self.inner.next()
     }
 
-    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        // We can't easily get size_hint from the boxed iterator
-        (0, None)
+        self.inner.size_hint()
     }
 }
 
@@ -166,121 +153,134 @@ impl<V: Clone + Default + Send + Sync + Unpin> Iterator for RulesIter<V> {
     }
 }
 
-/// Lazy iterator over matching rules for a given head symbol and arity.
+/// Iterator over matching rules for a given head symbol and arity.
 ///
-/// Chains together indexed rules and wildcard rules without collecting to Vec.
-/// The iterator yields references to rules (no cloning until caller requests it).
+/// With DashMap for rule_index, we collect the rules into a Vec for iteration.
+/// This yields owned Rules rather than references.
 ///
 /// # Performance
-/// - Zero Vec allocation
-/// - Rules are yielded as references (caller decides when to clone)
-/// - Lock guards held for iterator lifetime
+/// - Memory overhead: O(k) where k = number of matching rules
+/// - Rules cloned: O(k) during creation
 ///
 /// # Usage
 /// ```ignore
-/// // Get references (no cloning)
+/// // Iterate over owned rules
 /// for rule in env.get_matching_rules_iter("foo", 2) {
-///     // rule is &Rule
+///     // rule is Rule (owned)
 /// }
-///
-/// // Clone when needed
-/// let owned_rules: Vec<Rule> = env.get_matching_rules_iter("foo", 2)
-///     .cloned()
-///     .collect();
 /// ```
-pub struct MatchingRulesIter<'a> {
-    /// OwningHandle holds the rule_index guard and provides the iterator.
-    inner: OwningHandle<
-        RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>,
-        Box<dyn Iterator<Item = &'a Rule> + 'a>,
-    >,
-    /// Wildcard rules iterator (if any)
-    wildcard_iter: Option<WildcardRulesIter<'a>>,
-    /// Phase: 0 = indexed rules, 1 = wildcard rules
-    phase: u8,
+pub struct MatchingRulesIter {
+    inner: std::vec::IntoIter<Rule>,
 }
 
-/// Helper struct for iterating over wildcard rules
-struct WildcardRulesIter<'a> {
-    inner: OwningHandle<RwLockReadGuard<'a, Vec<Rule>>, Box<dyn Iterator<Item = &'a Rule> + 'a>>,
-}
-
-impl<'a> WildcardRulesIter<'a> {
-    fn new(guard: RwLockReadGuard<'a, Vec<Rule>>) -> Self {
-        let inner = OwningHandle::new_with_fn(guard, |rules_ptr| {
-            let rules = unsafe { &*rules_ptr };
-            Box::new(rules.iter()) as Box<dyn Iterator<Item = &'a Rule> + 'a>
-        });
-        Self { inner }
+impl MatchingRulesIter {
+    /// Create a new iterator from collected rules.
+    pub fn new(rules: Vec<Rule>) -> Self {
+        Self {
+            inner: rules.into_iter(),
+        }
     }
 }
 
-impl<'a> Iterator for WildcardRulesIter<'a> {
-    type Item = &'a Rule;
+impl Iterator for MatchingRulesIter {
+    type Item = Rule;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
     }
-}
 
-impl<'a> MatchingRulesIter<'a> {
-    /// Create a new lazy iterator for matching rules.
-    pub fn new(
-        rule_index_guard: RwLockReadGuard<'a, HashMap<(Symbol, usize), Vec<Rule>>>,
-        key: (Symbol, usize),
-        wildcard_guard: Option<RwLockReadGuard<'a, Vec<Rule>>>,
-    ) -> Self {
-        // Create indexed rules iterator
-        let inner = OwningHandle::new_with_fn(rule_index_guard, move |index_ptr| {
-            let index = unsafe { &*index_ptr };
-            let iter: Box<dyn Iterator<Item = &'a Rule> + 'a> = if let Some(rules) = index.get(&key)
-            {
-                Box::new(rules.iter())
-            } else {
-                Box::new(std::iter::empty())
-            };
-            iter
-        });
-
-        // Create wildcard iterator if we have wildcard rules
-        let wildcard_iter = wildcard_guard.map(WildcardRulesIter::new);
-
-        Self {
-            inner,
-            wildcard_iter,
-            phase: 0,
-        }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
     }
 }
 
-impl<'a> Iterator for MatchingRulesIter<'a> {
-    type Item = &'a Rule;
+// ============================================================================
+// Generic Rule Operations (for GenericEnvironment<V, F>)
+// ============================================================================
 
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.phase {
-                0 => {
-                    // Phase 0: Yield indexed rules
-                    if let Some(rule) = self.inner.next() {
-                        return Some(rule);
-                    }
-                    // Indexed rules exhausted, move to wildcards
-                    self.phase = 1;
-                }
-                1 => {
-                    // Phase 1: Yield wildcard rules
-                    if let Some(ref mut wildcard_iter) = self.wildcard_iter {
-                        if let Some(rule) = wildcard_iter.next() {
-                            return Some(rule);
-                        }
-                    }
-                    // All done
-                    return None;
-                }
-                _ => return None,
-            }
+impl<V, F> GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    /// Add a generic rule to the environment.
+    ///
+    /// This is the generic version that stores `GenericRule<V>` directly in the rule_index.
+    /// It does NOT store in MORK PathMap (use `Environment::add_rule` for MettaValue rules
+    /// that need MORK persistence).
+    ///
+    /// # Arguments
+    /// - `rule`: The generic rule to add
+    pub fn add_generic_rule(&mut self, rule: GenericRule<V>) {
+        trace!(target: "mettatron::environment::add_rule_generic", "Adding generic rule");
+        self.make_owned(); // CoW: ensure we own data before modifying
+
+        // Get head symbol and arity for indexing
+        if let Some(head) = rule.lhs.get_head_symbol() {
+            let arity = rule.lhs.get_arity();
+            // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
+            self.shared.fuzzy_matcher.write().insert(&head);
+            // Use Symbol for O(1) comparison when symbol-interning is enabled
+            let head_sym = Symbol::new(&head);
+
+            // Store in rule index - DashMap entry API
+            self.shared
+                .rule_index
+                .entry((head_sym, arity))
+                .or_default()
+                .push(rule);
+        } else {
+            // Rules without head symbol (wildcards, variables) go to wildcard list
+            self.shared.wildcard_rules.write().push(rule);
+            // Mark that we have wildcard rules (for fast-path in get_matching_rules)
+            self.shared
+                .has_wildcard_rules
+                .store(true, Ordering::Release);
         }
+
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Get rules matching a specific head symbol and arity as a Vec.
+    ///
+    /// This returns cloned rules from the rule_index. For iterator access,
+    /// use `get_matching_rules_iter`.
+    pub fn get_matching_rules_vec(&self, head: &str, arity: usize) -> Vec<GenericRule<V>> {
+        let key = (Symbol::new(head), arity);
+
+        // Collect indexed rules from DashMap
+        let mut rules: Vec<GenericRule<V>> = self
+            .shared
+            .rule_index
+            .get(&key)
+            .map(|entry| entry.value().clone())
+            .unwrap_or_default();
+
+        // Fast-path: Check if we have any wildcard rules
+        let has_wildcards = self.shared.has_wildcard_rules.load(Ordering::Acquire);
+
+        // Add wildcard rules if they exist
+        if has_wildcards {
+            let wildcard_rules = self.shared.wildcard_rules.read();
+            rules.extend(wildcard_rules.iter().cloned());
+        }
+
+        rules
+    }
+
+    /// Get rule count by multiplicity index.
+    ///
+    /// Returns the multiplicity count for a rule with the given index.
+    pub fn get_rule_count_by_index(&self, idx: u32) -> usize {
+        self.shared.multiplicities.read().count(idx)
+    }
+
+    /// Get rules matching a specific head symbol and arity.
+    ///
+    /// Returns an iterator over GenericRule<V>.
+    pub fn get_matching_rules(&self, head: &str, arity: usize) -> impl Iterator<Item = GenericRule<V>> {
+        self.get_matching_rules_vec(head, arity).into_iter()
     }
 }
 
@@ -288,23 +288,16 @@ impl Environment {
     /// Get the number of rules in the environment
     /// Counts rules from the rule_index and wildcard_rules (thread-safe, avoids PathMap iteration)
     pub fn rule_count(&self) -> usize {
-        // Count rules from the indexed rules
+        // Count rules from the indexed rules - DashMap iteration
         let index_count: usize = self
             .shared
             .rule_index
-            .read()
-            .expect("rule_index lock poisoned")
-            .values()
-            .map(|rules| rules.len())
+            .iter()
+            .map(|entry| entry.value().len())
             .sum();
 
-        // Count wildcard rules
-        let wildcard_count = self
-            .shared
-            .wildcard_rules
-            .read()
-            .expect("wildcard_rules lock poisoned")
-            .len();
+        // Count wildcard rules - parking_lot::RwLock - no .expect()
+        let wildcard_count = self.shared.wildcard_rules.read().len();
 
         index_count + wildcard_count
     }
@@ -324,11 +317,6 @@ impl Environment {
     /// - Rule statistics and introspection
     /// - Pattern matching optimization hints
     ///
-    /// # Performance
-    /// - Zero Vec allocation (lazy evaluation)
-    /// - Holds read lock for entire iteration lifetime
-    /// - Best for streaming/pipelining large results
-    ///
     /// # Example
     /// ```ignore
     /// for (head, arity, count) in env.iter_rule_heads() {
@@ -338,15 +326,19 @@ impl Environment {
     /// // Or collect if needed:
     /// let heads: Vec<_> = env.iter_rule_heads().collect();
     /// ```
-    pub fn iter_rule_heads(&self) -> RuleHeadsIter<'_> {
-        // Acquire the lock - it will be held for the iterator's lifetime
-        let guard = self
+    pub fn iter_rule_heads(&self) -> RuleHeadsIter {
+        // Collect from DashMap - iteration is lock-free per-shard
+        let items: Vec<(String, usize, usize)> = self
             .shared
             .rule_index
-            .read()
-            .expect("rule_index lock poisoned");
+            .iter()
+            .map(|entry| {
+                let (head, arity) = entry.key();
+                (head.to_string(), *arity, entry.value().len())
+            })
+            .collect();
 
-        RuleHeadsIter::new(guard)
+        RuleHeadsIter::new(items)
     }
 
     /// Iterator over all rules in the Space.
@@ -384,23 +376,9 @@ impl Environment {
         trace!(target: "mettatron::environment::rebuild_rule_index", "Rebuilding rule index");
         self.make_owned(); // CoW: ensure we own data before modifying
 
-        // Clear existing indices
-        {
-            let mut index = self
-                .shared
-                .rule_index
-                .write()
-                .expect("rule_index lock poisoned");
-            index.clear();
-        }
-        {
-            let mut wildcards = self
-                .shared
-                .wildcard_rules
-                .write()
-                .expect("wildcard_rules lock poisoned");
-            wildcards.clear();
-        }
+        // Clear existing indices - DashMap and RwLock
+        self.shared.rule_index.clear();
+        self.shared.wildcard_rules.write().clear();
         // Reset wildcard flag - will be set again if wildcards are added
         self.shared
             .has_wildcard_rules
@@ -408,30 +386,28 @@ impl Environment {
 
         // Rebuild from MORK Space
         for rule in self.iter_rules() {
+            // Create GenericRule for storage
+            let generic_rule: GenericRule<MettaValue> = GenericRule::new(
+                rule.lhs.clone(),
+                rule.rhs.clone(),
+            );
+
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
                 // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-                self.shared
-                    .fuzzy_matcher
-                    .write()
-                    .expect("fuzzy_matcher lock poisoned")
-                    .insert(head);
+                self.shared.fuzzy_matcher.write().insert(head);
                 // Use Symbol for O(1) comparison when symbol-interning is enabled
                 let head_sym = Symbol::new(head);
-                let mut index = self
-                    .shared
+
+                // Store in rule index - DashMap entry API
+                self.shared
                     .rule_index
-                    .write()
-                    .expect("rule_index lock poisoned");
-                index.entry((head_sym, arity)).or_default().push(rule);
+                    .entry((head_sym, arity))
+                    .or_default()
+                    .push(generic_rule);
             } else {
                 // Rules without head symbol (wildcards, variables) go to wildcard list
-                let mut wildcards = self
-                    .shared
-                    .wildcard_rules
-                    .write()
-                    .expect("wildcard_rules lock poisoned");
-                wildcards.push(rule);
+                self.shared.wildcard_rules.write().push(generic_rule);
                 // Mark that we have wildcard rules
                 self.shared
                     .has_wildcard_rules
@@ -452,20 +428,12 @@ impl Environment {
 
         // Allocate multiplicity index if not already set
         let idx = rule.multiplicity_idx.unwrap_or_else(|| {
-            self.shared
-                .multiplicities
-                .read()
-                .expect("multiplicities lock poisoned")
-                .allocate_index()
+            self.shared.multiplicities.read().allocate_index()
         });
         rule.multiplicity_idx = Some(idx);
 
         // Increment count using O(1) array access
-        self.shared
-            .multiplicities
-            .read()
-            .expect("multiplicities lock poisoned")
-            .increment(idx);
+        self.shared.multiplicities.read().increment(idx);
 
         // Create a rule s-expression: (= lhs rhs)
         let rule_sexpr = MettaValue::SExpr(vec![
@@ -485,34 +453,33 @@ impl Environment {
         // Convert to MORK bytes and store for PathMap insertion
         let mork_bytes_result = metta_to_mork_bytes(&rule_sexpr, &temp_space, &mut ctx);
 
+        // Create GenericRule for storage (directly in heap, no serialization)
+        let generic_rule: GenericRule<MettaValue> = GenericRule::with_index(
+            rule.lhs.clone(),
+            rule.rhs.clone(),
+            idx,
+        );
+
         // Add to rule index for O(k) lookup
         // Note: We store the rule only ONCE (in either index or wildcard list)
         // to avoid unnecessary clones. The rule is already in MORK Space.
         if let Some(head) = rule.lhs.get_head_symbol() {
             let arity = rule.lhs.get_arity();
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-            self.shared
-                .fuzzy_matcher
-                .write()
-                .expect("fuzzy_matcher lock poisoned")
-                .insert(head);
+            self.shared.fuzzy_matcher.write().insert(head);
             // Use Symbol for O(1) comparison when symbol-interning is enabled
             let head_sym = Symbol::new(head);
-            let mut index = self
-                .shared
+
+            // Store in rule index - DashMap entry API
+            self.shared
                 .rule_index
-                .write()
-                .expect("rule_index lock poisoned");
-            index.entry((head_sym, arity)).or_default().push(rule); // Move instead of clone
+                .entry((head_sym, arity))
+                .or_default()
+                .push(generic_rule);
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
-            let mut wildcards = self
-                .shared
-                .wildcard_rules
-                .write()
-                .expect("wildcard_rules lock poisoned");
-            wildcards.push(rule); // Move instead of clone
-                                  // Mark that we have wildcard rules (for fast-path in get_matching_rules)
+            self.shared.wildcard_rules.write().push(generic_rule);
+            // Mark that we have wildcard rules (for fast-path in get_matching_rules)
             self.shared
                 .has_wildcard_rules
                 .store(true, Ordering::Release);
@@ -522,7 +489,7 @@ impl Environment {
         // Single entry: mork_bytes → Multiplicity(count)
         if let Ok(mork_bytes) = mork_bytes_result {
             // Get write lock on btm
-            let mut btm = self.shared.btm.write().expect("btm lock poisoned");
+            let mut btm = self.shared.btm.write();
 
             // Add atom with multiplicity tracking (single entry design)
             add_atom(&mut btm, &mork_bytes);
@@ -536,7 +503,6 @@ impl Environment {
                 self.shared
                     .head_arity_bloom
                     .write()
-                    .expect("head_arity_bloom lock poisoned")
                     .insert(head.as_bytes(), arity);
             }
         }
@@ -565,8 +531,8 @@ impl Environment {
 
         // Track rule metadata while building trie
         // Use Symbol for O(1) comparison when symbol-interning is enabled
-        let mut rule_index_updates: HashMap<(Symbol, usize), Vec<Rule>> = HashMap::new();
-        let mut wildcard_updates: Vec<Rule> = Vec::new();
+        let mut rule_index_updates: HashMap<(Symbol, usize), Vec<GenericRule<MettaValue>>> = HashMap::new();
+        let mut wildcard_updates: Vec<GenericRule<MettaValue>> = Vec::new();
 
         for rule in rules {
             // Create rule s-expression: (= lhs rhs)
@@ -576,23 +542,25 @@ impl Environment {
                 rule.rhs.clone(),
             ]);
 
+            // Create GenericRule for storage (directly in heap, no serialization)
+            let generic_rule: GenericRule<MettaValue> = GenericRule::new(
+                rule.lhs.clone(),
+                rule.rhs.clone(),
+            );
+
             // Prepare rule index updates
             if let Some(head) = rule.lhs.get_head_symbol() {
                 let arity = rule.lhs.get_arity();
                 // Track symbol for fuzzy matching
-                self.shared
-                    .fuzzy_matcher
-                    .write()
-                    .expect("fuzzy_matcher lock poisoned")
-                    .insert(head);
+                self.shared.fuzzy_matcher.write().insert(head);
                 // Use Symbol for O(1) comparison when symbol-interning is enabled
                 let head_sym = Symbol::new(head);
                 rule_index_updates
                     .entry((head_sym, arity))
                     .or_default()
-                    .push(rule);
+                    .push(generic_rule);
             } else {
-                wildcard_updates.push(rule);
+                wildcard_updates.push(generic_rule);
             }
 
             // Compute MORK bytes for PathMap insertion
@@ -616,28 +584,18 @@ impl Environment {
         // Apply all updates in batch (minimize critical sections)
         // Note: With value-based multiplicity, PathMap's join uses pjoin which adds multiplicities
 
-        // Update rule index
-        {
-            let mut index = self
-                .shared
+        // Update rule index - DashMap entry API
+        for ((head, arity), mut rules) in rule_index_updates {
+            self.shared
                 .rule_index
-                .write()
-                .expect("rule_index lock poisoned");
-            for ((head, arity), mut rules) in rule_index_updates {
-                index.entry((head, arity)).or_default().append(&mut rules);
-            }
+                .entry((head, arity))
+                .or_default()
+                .append(&mut rules);
         }
 
         // Update wildcard rules
         let has_new_wildcards = !wildcard_updates.is_empty();
-        {
-            let mut wildcards = self
-                .shared
-                .wildcard_rules
-                .write()
-                .expect("wildcard_rules lock poisoned");
-            wildcards.extend(wildcard_updates);
-        }
+        self.shared.wildcard_rules.write().extend(wildcard_updates);
         if has_new_wildcards {
             self.shared
                 .has_wildcard_rules
@@ -647,7 +605,7 @@ impl Environment {
         // Single PathMap union (minimal critical section)
         // Note: With value-based multiplicity, join uses pjoin which adds multiplicities together
         {
-            let mut btm = self.shared.btm.write().expect("btm lock poisoned");
+            let mut btm = self.shared.btm.write();
             *btm = btm.join(&rule_trie);
         }
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
@@ -662,12 +620,7 @@ impl Environment {
     pub fn get_rule_count(&self, rule: &Rule) -> usize {
         // Fast path: Use cached multiplicity_idx for O(1) lookup
         if let Some(idx) = rule.multiplicity_idx {
-            let count = self
-                .shared
-                .multiplicities
-                .read()
-                .expect("multiplicities lock poisoned")
-                .count(idx);
+            let count = self.shared.multiplicities.read().count(idx);
             // Backward compatibility: return 1 if count is 0 (rule exists but not tracked)
             return if count == 0 { 1 } else { count };
         }
@@ -691,7 +644,7 @@ impl Environment {
         match metta_to_mork_bytes(&rule_sexpr, &temp_space, &mut ctx) {
             Ok(mork_bytes) => {
                 // Use efficient O(prefix_len) multiplicity lookup
-                let btm = self.shared.btm.read().expect("btm lock poisoned");
+                let btm = self.shared.btm.read();
                 let count = get_multiplicity(&btm, &mork_bytes);
                 if count == 0 {
                     1
@@ -707,7 +660,7 @@ impl Environment {
     /// Iterates through PathMap and reads multiplicity values directly.
     /// The keys are hex-encoded MORK bytes for serialization stability.
     pub fn get_multiplicities(&self) -> HashMap<String, usize> {
-        let btm = self.shared.btm.read().expect("btm lock poisoned");
+        let btm = self.shared.btm.read();
         let mut result = HashMap::new();
 
         // With value-based multiplicity, every entry is an atom with its count as the value
@@ -728,7 +681,7 @@ impl Environment {
     pub fn set_multiplicities(&mut self, counts: HashMap<String, usize>) {
         self.make_owned(); // CoW: ensure we own data before modifying
 
-        let mut btm = self.shared.btm.write().expect("btm lock poisoned");
+        let mut btm = self.shared.btm.write();
 
         // For each atom with count N, set the multiplicity directly
         for (hex_key, count) in counts {
@@ -744,55 +697,119 @@ impl Environment {
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
-    /// Get rules matching a specific head symbol and arity (lazy version).
+    /// Get rules matching a specific head symbol and arity.
     ///
-    /// Returns an iterator that yields references to matching rules without
-    /// allocating a Vec. Rules are yielded in order: indexed rules first,
-    /// then wildcard rules.
+    /// Returns an iterator over owned Rules. With DashMap, we collect
+    /// the rules into a Vec for iteration.
     ///
     /// # Performance
-    /// - Zero Vec allocation
-    /// - Rules yielded as references (caller decides when to clone)
-    /// - Lock guards held for iterator lifetime
+    /// - Data collected from DashMap
+    /// - Rules cloned during iteration
     ///
     /// # Example
     /// ```ignore
-    /// // Process rules without cloning
+    /// // Iterate over rules
     /// for rule in env.get_matching_rules_iter("foo", 2) {
-    ///     process(rule);  // rule is &Rule
+    ///     process(&rule);  // rule is Rule (owned)
     /// }
-    ///
-    /// // Clone when needed
-    /// let owned: Vec<Rule> = env.get_matching_rules_iter("foo", 2)
-    ///     .cloned()
-    ///     .collect();
     /// ```
-    pub fn get_matching_rules_iter(&self, head: &str, arity: usize) -> MatchingRulesIter<'_> {
+    pub fn get_matching_rules_iter(&self, head: &str, arity: usize) -> MatchingRulesIter {
         let key = (Symbol::new(head), arity);
 
-        // Acquire rule_index lock
-        let rule_index_guard = self
+        // Collect indexed rules from DashMap
+        let mut rules: Vec<Rule> = self
             .shared
             .rule_index
-            .read()
-            .expect("rule_index lock poisoned");
+            .get(&key)
+            .map(|entry| {
+                entry.value().iter().map(|gr| Rule {
+                    lhs: gr.lhs.clone(),
+                    rhs: gr.rhs.clone(),
+                    multiplicity_idx: gr.multiplicity_idx,
+                }).collect()
+            })
+            .unwrap_or_default();
 
         // Fast-path: Check if we have any wildcard rules
         let has_wildcards = self.shared.has_wildcard_rules.load(Ordering::Acquire);
 
-        // Only acquire wildcard lock if wildcards exist
-        let wildcard_guard = if has_wildcards {
-            Some(
-                self.shared
-                    .wildcard_rules
-                    .read()
-                    .expect("wildcard_rules lock poisoned"),
-            )
+        // Add wildcard rules if they exist
+        if has_wildcards {
+            let wildcard_rules = self.shared.wildcard_rules.read();
+            rules.extend(wildcard_rules.iter().map(|gr| Rule {
+                lhs: gr.lhs.clone(),
+                rhs: gr.rhs.clone(),
+                multiplicity_idx: gr.multiplicity_idx,
+            }));
+        }
+
+        MatchingRulesIter::new(rules)
+    }
+
+    /// Get rules matching a specific head symbol and arity as generic rules.
+    ///
+    /// This is the zero-conversion path for arena mode evaluation. Rules are
+    /// stored directly as `GenericRule<MettaValue>` and returned without
+    /// any serialization/deserialization.
+    ///
+    /// For heap mode, this method is the canonical path - rules are stored
+    /// directly in the rule_index as `GenericRule<MettaValue>`.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `V`: The value type (MettaValue or ArenaValue)
+    /// - `F`: The factory for creating values of type V
+    ///
+    /// # Performance
+    ///
+    /// - Heap mode: O(1) clone of Arc-wrapped rules
+    /// - Arena mode: Clone of rules (arena values are cheap to clone)
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Get generic rules (zero-conversion)
+    /// let rules: Vec<GenericRule<MettaValue>> = env
+    ///     .get_matching_rules_generic("foo", 2, &factory)
+    ///     .collect();
+    /// ```
+    pub fn get_matching_rules_generic<V, F>(
+        &self,
+        head: &str,
+        arity: usize,
+        _factory: F,
+    ) -> Vec<GenericRule<V>>
+    where
+        V: MettaValueTrait + Clone + From<MettaValue>,
+        F: crate::backend::models::MettaValueFactory<V> + Copy,
+    {
+        let key = (Symbol::new(head), arity);
+
+        // Collect rules from rule_index (canonical storage) - DashMap
+        let indexed_rules: Vec<GenericRule<MettaValue>> = self
+            .shared
+            .rule_index
+            .get(&key)
+            .map(|entry| entry.value().clone())
+            .unwrap_or_default();
+
+        // Also get wildcard rules if they exist
+        let has_wildcards = self.shared.has_wildcard_rules.load(Ordering::Acquire);
+        let wildcard_rules: Vec<GenericRule<MettaValue>> = if has_wildcards {
+            self.shared.wildcard_rules.read().clone()
         } else {
-            None
+            Vec::new()
         };
 
-        MatchingRulesIter::new(rule_index_guard, key, wildcard_guard)
+        // Convert to the target type V
+        indexed_rules
+            .into_iter()
+            .chain(wildcard_rules)
+            .map(|rule| GenericRule {
+                lhs: V::from(rule.lhs),
+                rhs: V::from(rule.rhs),
+                multiplicity_idx: rule.multiplicity_idx,
+            })
+            .collect()
     }
 
     /// Increment the multiplicity count for a rule.
@@ -836,32 +853,21 @@ impl Environment {
         if let (Some(head), Some(lhs_val)) = (head, lhs) {
             let key = (Symbol::new(&head), arity);
 
-            // Find the rule with matching LHS to get its multiplicity_idx
+            // Find the rule with matching LHS to get its multiplicity_idx - DashMap
             let mut found_idx: Option<u32> = None;
-            {
-                let index = self
-                    .shared
-                    .rule_index
-                    .read()
-                    .expect("rule_index lock poisoned");
-                if let Some(rules) = index.get(&key) {
-                    for rule in rules {
-                        // Check if this rule's LHS matches
-                        if rule.lhs.structurally_equivalent(lhs_val) {
-                            found_idx = rule.multiplicity_idx;
-                            break;
-                        }
+            if let Some(entry) = self.shared.rule_index.get(&key) {
+                for rule in entry.value() {
+                    // Check if this rule's LHS matches
+                    if rule.lhs.structurally_equivalent(lhs_val) {
+                        found_idx = rule.multiplicity_idx;
+                        break;
                     }
                 }
             }
 
             // Also check wildcard rules if not found
             if found_idx.is_none() {
-                let wildcards = self
-                    .shared
-                    .wildcard_rules
-                    .read()
-                    .expect("wildcard_rules lock poisoned");
+                let wildcards = self.shared.wildcard_rules.read();
                 for rule in wildcards.iter() {
                     if rule.lhs.structurally_equivalent(lhs_val) {
                         found_idx = rule.multiplicity_idx;
@@ -872,11 +878,7 @@ impl Environment {
 
             // Increment IndexedMultiset if we found the index
             if let Some(idx) = found_idx {
-                self.shared
-                    .multiplicities
-                    .read()
-                    .expect("multiplicities lock poisoned")
-                    .increment(idx);
+                self.shared.multiplicities.read().increment(idx);
             }
         }
 
@@ -891,11 +893,7 @@ impl Environment {
         match metta_to_mork_bytes(rule_sexpr, &temp_space, &mut ctx) {
             Ok(mork_bytes) => {
                 // Use the efficient multiplicity module functions
-                let mut btm = self
-                    .shared
-                    .btm
-                    .write()
-                    .expect("btm lock poisoned in increment_rule_multiplicity");
+                let mut btm = self.shared.btm.write();
                 let new_count = increment_multiplicity(&mut btm, &mork_bytes);
                 drop(btm);
 
@@ -951,32 +949,21 @@ impl Environment {
         if let (Some(head), Some(lhs_val)) = (head, lhs) {
             let key = (Symbol::new(&head), arity);
 
-            // Find the rule with matching LHS to get its multiplicity_idx
+            // Find the rule with matching LHS to get its multiplicity_idx - DashMap
             let mut found_idx: Option<u32> = None;
-            {
-                let index = self
-                    .shared
-                    .rule_index
-                    .read()
-                    .expect("rule_index lock poisoned");
-                if let Some(rules) = index.get(&key) {
-                    for rule in rules {
-                        // Check if this rule's LHS matches
-                        if rule.lhs.structurally_equivalent(lhs_val) {
-                            found_idx = rule.multiplicity_idx;
-                            break;
-                        }
+            if let Some(entry) = self.shared.rule_index.get(&key) {
+                for rule in entry.value() {
+                    // Check if this rule's LHS matches
+                    if rule.lhs.structurally_equivalent(lhs_val) {
+                        found_idx = rule.multiplicity_idx;
+                        break;
                     }
                 }
             }
 
             // Also check wildcard rules if not found
             if found_idx.is_none() {
-                let wildcards = self
-                    .shared
-                    .wildcard_rules
-                    .read()
-                    .expect("wildcard_rules lock poisoned");
+                let wildcards = self.shared.wildcard_rules.read();
                 for rule in wildcards.iter() {
                     if rule.lhs.structurally_equivalent(lhs_val) {
                         found_idx = rule.multiplicity_idx;
@@ -987,11 +974,7 @@ impl Environment {
 
             // Decrement IndexedMultiset if we found the index
             if let Some(idx) = found_idx {
-                self.shared
-                    .multiplicities
-                    .write()
-                    .expect("multiplicities lock poisoned")
-                    .decrement(idx);
+                self.shared.multiplicities.write().decrement(idx);
             }
         }
 
@@ -1007,7 +990,7 @@ impl Environment {
             Ok(mork_bytes) => {
                 // Check current count first to know if decrement will happen
                 let old_count = {
-                    let btm = self.shared.btm.read().expect("btm lock");
+                    let btm = self.shared.btm.read();
                     get_multiplicity(&btm, &mork_bytes)
                 };
 
@@ -1017,11 +1000,7 @@ impl Environment {
                 }
 
                 // Use the efficient multiplicity module functions
-                let mut btm = self
-                    .shared
-                    .btm
-                    .write()
-                    .expect("btm lock poisoned in decrement_rule_multiplicity");
+                let mut btm = self.shared.btm.write();
                 let new_count = decrement_multiplicity(&mut btm, &mork_bytes);
                 drop(btm);
 
@@ -1075,11 +1054,7 @@ impl Environment {
         match metta_to_mork_bytes(value, &temp_space, &mut ctx) {
             Ok(mork_bytes) => {
                 // Use the efficient multiplicity module functions
-                let mut btm = self
-                    .shared
-                    .btm
-                    .write()
-                    .expect("btm lock poisoned in increment_atom_multiplicity");
+                let mut btm = self.shared.btm.write();
                 let new_count = increment_multiplicity(&mut btm, &mork_bytes);
                 drop(btm);
 
@@ -1118,7 +1093,7 @@ impl Environment {
             Ok(mork_bytes) => {
                 // Check current count first to know if decrement will happen
                 let old_count = {
-                    let btm = self.shared.btm.read().expect("btm lock");
+                    let btm = self.shared.btm.read();
                     get_multiplicity(&btm, &mork_bytes)
                 };
 
@@ -1127,11 +1102,7 @@ impl Environment {
                 }
 
                 // Use the efficient multiplicity module functions
-                let mut btm = self
-                    .shared
-                    .btm
-                    .write()
-                    .expect("btm lock poisoned in decrement_atom_multiplicity");
+                let mut btm = self.shared.btm.write();
                 let new_count = decrement_multiplicity(&mut btm, &mork_bytes);
                 drop(btm);
 
@@ -1164,7 +1135,7 @@ impl Environment {
         match metta_to_mork_bytes(value, &temp_space, &mut ctx) {
             Ok(mork_bytes) => {
                 // Use efficient O(prefix_len) lookup
-                let btm = self.shared.btm.read().expect("btm lock");
+                let btm = self.shared.btm.read();
                 let count = get_multiplicity(&btm, &mork_bytes);
                 // Return at least 1 if count is 0 (for backward compatibility)
                 if count == 0 {
@@ -1189,7 +1160,7 @@ impl Environment {
     /// The multiplicity count (at least 1 if the atom exists).
     pub fn get_multiplicity_from_mork_bytes(&self, mork_bytes: &[u8]) -> usize {
         // Use efficient O(prefix_len) lookup
-        let btm = self.shared.btm.read().expect("btm lock");
+        let btm = self.shared.btm.read();
         let count = get_multiplicity(&btm, mork_bytes);
         // Return at least 1 if count is 0 (for backward compatibility)
         if count == 0 {

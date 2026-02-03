@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_type_assertion_missing_arguments() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (:) - missing both arguments
         let value = MettaValue::SExpr(vec![MettaValue::Atom(":".to_string())]);
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_get_type_missing_argument() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (get-type) - missing argument
         let value = MettaValue::SExpr(vec![MettaValue::Atom("get-type".to_string())]);
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_check_type_missing_arguments() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (check-type x) - missing type argument
         let value = MettaValue::SExpr(vec![
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_type_assertion() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (: x Number)
         let type_assertion = MettaValue::SExpr(vec![
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_get_type_ground_types() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (get-type 42) -> Number
         let get_type_long = MettaValue::SExpr(vec![
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_get_type_with_assertion() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add type assertion: (: foo Number)
         env.add_type("foo".to_string(), MettaValue::Atom("Number".to_string()));
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_get_type_builtin_operations() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (get-type (add 1 2)) -> Number
         let get_type_add = MettaValue::SExpr(vec![
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn test_check_type() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add type assertion: (: x Number)
         env.add_type("x".to_string(), MettaValue::Atom("Number".to_string()));
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn test_check_type_with_type_variables() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (check-type 42 $t) -> true (type variable matches anything)
         let check_type_var = MettaValue::SExpr(vec![
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn test_arrow_type_assertion() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // (: add (-> Number Number Number))
         // Using a user-defined function name instead of builtin "+"
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_integration_with_rules_and_types() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add type assertion: (: double (-> Number Number))
         let type_assertion = MettaValue::SExpr(vec![
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn test_type_assertion_added_to_fact_database() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Define a type assertion: (: x Number)
         let type_assertion = MettaValue::SExpr(vec![
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn test_type_error_propagation() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Test: !(+ 1 (+ 2 "bad")) - error should propagate from inner expression
         let value = MettaValue::SExpr(vec![

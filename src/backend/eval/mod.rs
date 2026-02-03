@@ -10,6 +10,7 @@
 mod macros;
 
 mod bindings;
+pub(crate) mod bindings_generic;
 mod builtin;
 mod cartesian;
 mod conjunction;
@@ -22,7 +23,9 @@ mod helpers;
 mod io;
 mod list_ops;
 mod modules;
+pub(crate) mod modules_generic;
 mod mork_forms;
+pub(crate) mod mork_forms_generic;
 mod pattern;
 pub mod priority;
 mod processing;
@@ -31,8 +34,9 @@ mod rules;
 mod space;
 mod step;
 mod strings;
-mod trampoline;
+pub mod trampoline;
 mod types;
+pub(crate) mod types_generic;
 mod utilities;
 
 #[cfg(test)]
@@ -50,27 +54,37 @@ pub(crate) use cartesian::CartesianProductIter;
 
 // Re-export from pattern module
 pub use pattern::pattern_match;
+#[allow(unused_imports)]
 use pattern::pattern_match_impl;
+
+// Re-export from io module
+#[allow(unused_imports)]
+pub(crate) use io::atom_to_string;
 
 // Re-export from helpers module
 pub use helpers::apply_bindings;
 pub(crate) use helpers::friendly_value_repr;
+#[allow(unused_imports)]
 use helpers::{
     friendly_type_name, get_head_symbol, is_eager_special_form, is_grounded_op,
     pattern_specificity, preprocess_space_refs, resolve_tokens_shallow,
-    suggest_special_form_with_context, try_eval_builtin, values_equal, SPECIAL_FORMS,
+    resolve_tokens_shallow_generic, suggest_special_form_with_context, try_eval_builtin,
+    values_equal, SPECIAL_FORMS,
 };
 
 // Re-export from rules module
+#[allow(unused_imports)]
 use rules::{try_match_all_rules, try_match_all_rules_iterative, try_match_all_rules_query_multi};
 
 // Re-export from trampoline module
-use trampoline::eval_trampoline;
+pub use trampoline::{eval_trampoline, eval_trampoline_arena, create_arena_context};
 
 // Re-export from step module
+#[allow(unused_imports)]
 pub(crate) use step::{eval_sexpr_step, eval_step, EvalStep, MemoOpType, ProcessedSExpr};
 
 // Re-export from processing module
+#[allow(unused_imports)]
 pub(crate) use processing::{
     handle_no_rule_match, process_collected_sexpr, process_single_combination,
 };
@@ -165,7 +179,16 @@ pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
 
     // Tier 0: Tree-walker interpreter (cold code or fallback)
     global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
+
+    // This function takes MettaValue, so always use heap-based evaluation.
+    // For zero-conversion arena evaluation, use the arena-specific functions:
+    // - compile_arena() → ArenaValue<'static>
+    // - eval_trampoline_arena() → ArenaValue<'static>
+    //
+    // The METTA_USE_ARENA switch should be handled at the main.rs level
+    // to choose between the heap and arena pipelines.
     let result = eval_trampoline(value, env);
+
     #[cfg(feature = "hybrid-p2-priority-scheduler")]
     {
         use crate::backend::bytecode::exit_eval;

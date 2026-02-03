@@ -180,7 +180,7 @@ fn bench_trampoline_workstack(c: &mut Criterion) {
     // Wide arithmetic expressions (many siblings)
     for width in [5, 10, 20, 50, 100].iter() {
         let expr = generate_wide_arithmetic(*width);
-        let env = Environment::new();
+        let env = Environment::default();
 
         group.throughput(Throughput::Elements(*width as u64));
         group.bench_with_input(BenchmarkId::new("wide_arithmetic", width), width, |b, _| {
@@ -191,7 +191,7 @@ fn bench_trampoline_workstack(c: &mut Criterion) {
     // Deep nested arithmetic (binary tree shape)
     for depth in [5, 10, 15, 20, 25].iter() {
         let expr = generate_deep_arithmetic(*depth);
-        let env = Environment::new();
+        let env = Environment::default();
 
         group.throughput(Throughput::Elements(*depth as u64));
         group.bench_with_input(BenchmarkId::new("deep_arithmetic", depth), depth, |b, _| {
@@ -271,7 +271,7 @@ fn bench_grounded_tco(c: &mut Criterion) {
                 MettaValue::Long(i),
             ]);
         }
-        let env = Environment::new();
+        let env = Environment::default();
 
         group.throughput(Throughput::Elements(*chain_len as u64));
         group.bench_with_input(
@@ -301,7 +301,7 @@ fn bench_grounded_tco(c: &mut Criterion) {
             expr = MettaValue::SExpr(vec![MettaValue::Atom("and".to_string()), cmp, expr]);
         }
 
-        let env = Environment::new();
+        let env = Environment::default();
 
         group.throughput(Throughput::Elements(*chain_len as u64));
         group.bench_with_input(

@@ -38,7 +38,7 @@ impl MettaState {
     pub fn new_compiled(source: Vec<MettaValue>) -> Self {
         MettaState {
             source,
-            environment: Environment::new(),
+            environment: Environment::default(),
             output: Vec::new(),
         }
     }
@@ -47,7 +47,7 @@ impl MettaState {
     pub fn new_empty() -> Self {
         MettaState {
             source: Vec::new(),
-            environment: Environment::new(),
+            environment: Environment::default(),
             output: Vec::new(),
         }
     }
@@ -106,7 +106,7 @@ impl From<MettaValue> for MettaState {
     fn from(error_sexpr: MettaValue) -> Self {
         MettaState {
             source: vec![error_sexpr],
-            environment: Environment::new(),
+            environment: Environment::default(),
             output: Vec::new(),
         }
     }
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn test_to_json_with_output() {
         let state = MettaState::new_accumulated(
-            Environment::new(),
+            Environment::default(),
             vec![
                 MettaValue::Bool(true),
                 MettaValue::String("result".to_string()),
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn test_to_json_with_environment() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         env.add_rule(Rule::new(
             MettaValue::Atom("x".to_string()),
             MettaValue::Long(1),
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_to_json_complete() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         env.add_rule(Rule::new(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
@@ -223,7 +223,7 @@ mod tests {
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ])],
-            environment: Environment::new(),
+            environment: Environment::default(),
             output: vec![MettaValue::SExpr(vec![
                 MettaValue::Atom("result".to_string()),
                 MettaValue::Long(3),

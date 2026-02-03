@@ -1354,7 +1354,7 @@ fn test_vm_collect_filters_nil() {
 #[test]
 fn test_vm_call_no_rules() {
     // Test Call opcode with no matching rules - should return expression unchanged
-    let env = Environment::new();
+    let env = Environment::default();
     let bridge = Arc::new(MorkBridge::from_env(env));
 
     // Build bytecode for (unknown 42)
@@ -1386,7 +1386,7 @@ fn test_vm_call_simple_rule() {
     use crate::backend::models::Rule;
 
     // Test Call opcode with a simple rule: (double $x) -> (+ $x $x)
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     let rule = Rule::new(
         MettaValue::SExpr(vec![MettaValue::sym("double"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
@@ -1445,7 +1445,7 @@ fn test_vm_call_no_bridge() {
 #[test]
 fn test_vm_tail_call_no_rules() {
     // Test TailCall opcode with no matching rules
-    let env = Environment::new();
+    let env = Environment::default();
     let bridge = Arc::new(MorkBridge::from_env(env));
 
     // Build bytecode for (unknown 42) using TailCall
@@ -1477,7 +1477,7 @@ fn test_vm_tail_call_simple_rule() {
     use crate::backend::models::Rule;
 
     // Test TailCall opcode with a simple rule: (inc $x) -> (+ $x 1)
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     let rule = Rule::new(
         MettaValue::SExpr(vec![MettaValue::sym("inc"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
@@ -1511,7 +1511,7 @@ fn test_vm_call_with_multiple_args() {
     use crate::backend::models::Rule;
 
     // Test Call with multiple arguments: (add3 $a $b $c) -> (+ (+ $a $b) $c)
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     let rule = Rule::new(
         MettaValue::SExpr(vec![
             MettaValue::sym("add3"),
@@ -1561,7 +1561,7 @@ fn test_vm_call_multiple_rules_creates_choice_point() {
 
     // Set up environment with multiple rules for (choose)
     // This tests that op_call creates choice points for multiple matching rules
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Rule 1: (= (choose) a)
     let rule1 = Rule::new(
@@ -1625,7 +1625,7 @@ fn test_vm_call_single_rule_no_choice_point() {
     use crate::backend::models::Rule;
 
     // Set up environment with a single rule
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     let rule = Rule::new(
         MettaValue::SExpr(vec![MettaValue::sym("single"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
@@ -1704,7 +1704,7 @@ fn test_vm_fork_nested_choice_points() {
     // When (outer) is called, it matches the rule and calls (inner).
     // (inner) has two matching rules, so a choice point is created.
     // Each result flows back through (outer) via Yield.
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     env.add_rule(Rule::new(
         MettaValue::SExpr(vec![MettaValue::sym("outer")]),
@@ -1758,7 +1758,7 @@ fn test_vm_alternative_rulematch() {
     // Test that Alternative::RuleMatch properly handles multiple matching rules
     // (= (pair $x) (cons $x $x))
     // (= (pair $x) (dup $x))
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     env.add_rule(Rule::new(
         MettaValue::SExpr(vec![MettaValue::sym("pair"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![

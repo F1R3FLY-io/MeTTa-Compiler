@@ -2,13 +2,38 @@
 //!
 //! Provides methods for converting between MORK expressions and MettaValues.
 //! Handles the low-level byte encoding used by PathMap trie storage.
+//!
+//! ## Optimization: Arena-based Conversion
+//!
+//! The `mork_expr_to_arena_value` function converts MORK expressions directly to
+//! arena-allocated values, avoiding individual heap allocations. This is 2-3x
+//! faster than converting to heap-allocated MettaValue for transient values.
+//!
+//! ## Static Variable Names
+//!
+//! Variable names ("$a", "$b", etc.) use static string references instead of
+//! allocating new strings for each variable encountered.
 
+use bumpalo::collections::Vec as BumpVec;
+use bumpalo::Bump;
 use mork::space::Space;
 use mork_expr::{maybe_byte_item, Expr, Tag};
 use std::slice::from_raw_parts;
 use tracing::{trace, warn};
 
 use super::MettaValue;
+use crate::backend::models::{ArenaValue, MettaValueFactory, MettaValueTrait};
+
+/// Static variable names for MORK variables.
+/// Using static strings eliminates allocation for the common case of <64 variables.
+pub(crate) static VARNAMES: [&str; 64] = [
+    "$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "$k", "$l",
+    "$m", "$n", "$o", "$p", "$q", "$r", "$s", "$t", "$u", "$v", "$w", "$x",
+    "$y", "$z", "$a1", "$b1", "$c1", "$d1", "$e1", "$f1", "$g1", "$h1",
+    "$i1", "$j1", "$k1", "$l1", "$m1", "$n1", "$o1", "$p1", "$q1", "$r1",
+    "$s1", "$t1", "$u1", "$v1", "$w1", "$x1", "$y1", "$z1", "$a2", "$b2",
+    "$c2", "$d2", "$e2", "$f2", "$g2", "$h2", "$i2", "$j2", "$k2", "$l2",
+];
 
 impl super::Environment {
     /// Extract (head_symbol_bytes, arity) from MORK expression bytes in O(1).
@@ -125,16 +150,7 @@ impl super::Environment {
             let value = match tag {
                 Tag::NewVar => {
                     // De Bruijn index - NewVar introduces a new variable with the next index
-                    // Use MORK's VARNAMES for proper variable names
-                    const VARNAMES: [&str; 64] = [
-                        "$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", "x11",
-                        "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21",
-                        "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31",
-                        "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41",
-                        "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51",
-                        "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61",
-                        "x62", "x63",
-                    ];
+                    // Use static VARNAMES to avoid allocation
                     let var_name = if (newvar_count as usize) < VARNAMES.len() {
                         VARNAMES[newvar_count as usize].to_string()
                     } else {
@@ -144,17 +160,7 @@ impl super::Environment {
                     MettaValue::Atom(var_name)
                 }
                 Tag::VarRef(i) => {
-                    // Variable reference - use MORK's VARNAMES for proper variable names
-                    // VARNAMES: ["$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", ...]
-                    const VARNAMES: [&str; 64] = [
-                        "$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", "x11",
-                        "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21",
-                        "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31",
-                        "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41",
-                        "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51",
-                        "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61",
-                        "x62", "x63",
-                    ];
+                    // Variable reference - use static VARNAMES to avoid allocation
                     if (i as usize) < VARNAMES.len() {
                         MettaValue::Atom(VARNAMES[i as usize].to_string())
                     } else {
@@ -319,5 +325,430 @@ impl super::Environment {
         );
 
         String::from_utf8_lossy(&buffer).to_string()
+    }
+
+    /// Convert a MORK Expr directly to ArenaValue (arena-allocated).
+    ///
+    /// This is an optimized version that allocates all values from the provided
+    /// arena, avoiding individual heap allocations. Use this for transient values
+    /// that don't need to outlive the arena.
+    ///
+    /// ## Performance Benefits
+    ///
+    /// - No individual Arc wrapping for each value
+    /// - No reference counting overhead
+    /// - O(1) bulk deallocation when arena drops
+    /// - Better cache locality
+    #[allow(unused_variables)]
+    pub(crate) fn mork_expr_to_arena_value<'a, V: Clone + Default + Send + Sync + Unpin>(
+        arena: &'a Bump,
+        expr: &Expr,
+        space: &Space<V>,
+    ) -> Result<ArenaValue<'a>, String> {
+        // Stack-based traversal to avoid recursion limits
+        #[derive(Debug)]
+        enum StackFrame<'a> {
+            Arity {
+                remaining: u8,
+                items: BumpVec<'a, ArenaValue<'a>>,
+            },
+        }
+
+        let mut stack: Vec<StackFrame<'a>> = Vec::new();
+        let mut offset = 0usize;
+        let ptr = expr.ptr;
+        let mut newvar_count = 0u8;
+
+        'parsing: loop {
+            let byte = unsafe { *ptr.byte_add(offset) };
+            let tag = match maybe_byte_item(byte) {
+                Ok(t) => t,
+                Err(reserved_byte) => {
+                    warn!(
+                        target: "mettatron::environment::mork_expr_to_arena_value",
+                        reserved_byte, offset,
+                        "Reserved byte encountered during MORK conversion"
+                    );
+                    return Err(format!(
+                        "Reserved byte {} at offset {}",
+                        reserved_byte, offset
+                    ));
+                }
+            };
+
+            offset += 1;
+
+            let value = match tag {
+                Tag::NewVar => {
+                    // Use static VARNAMES - allocate in arena only if needed
+                    if (newvar_count as usize) < VARNAMES.len() {
+                        let var_name = VARNAMES[newvar_count as usize];
+                        newvar_count += 1;
+                        ArenaValue::atom(arena, var_name)
+                    } else {
+                        let var_name = arena.alloc_str(&format!("$var{}", newvar_count));
+                        newvar_count += 1;
+                        ArenaValue::atom(arena, var_name)
+                    }
+                }
+                Tag::VarRef(i) => {
+                    if (i as usize) < VARNAMES.len() {
+                        ArenaValue::atom(arena, VARNAMES[i as usize])
+                    } else {
+                        let var_name = arena.alloc_str(&format!("$var{}", i));
+                        ArenaValue::atom(arena, var_name)
+                    }
+                }
+                Tag::SymbolSize(size) => {
+                    let symbol_bytes =
+                        unsafe { from_raw_parts(ptr.byte_add(offset), size as usize) };
+                    offset += size as usize;
+
+                    // Look up symbol in symbol table if interning is enabled
+                    let symbol_str: &str = {
+                        #[cfg(feature = "interning")]
+                        {
+                            if symbol_bytes.len() == 8 {
+                                let symbol_id = i64::from_be_bytes(
+                                    symbol_bytes.try_into().expect("8 bytes expected"),
+                                )
+                                .to_be_bytes();
+                                if let Some(actual_bytes) = space.sm.get_bytes(symbol_id) {
+                                    let s = std::str::from_utf8(actual_bytes).unwrap_or("");
+                                    arena.alloc_str(s)
+                                } else {
+                                    let s = std::str::from_utf8(symbol_bytes).unwrap_or("");
+                                    arena.alloc_str(s)
+                                }
+                            } else {
+                                let s = std::str::from_utf8(symbol_bytes).unwrap_or("");
+                                arena.alloc_str(s)
+                            }
+                        }
+                        #[cfg(not(feature = "interning"))]
+                        {
+                            let s = std::str::from_utf8(symbol_bytes).unwrap_or("");
+                            arena.alloc_str(s)
+                        }
+                    };
+
+                    // Parse the symbol to check if it's a number or string literal
+                    let first_byte = symbol_str.as_bytes().first().copied().unwrap_or(0);
+                    let could_be_number = first_byte.is_ascii_digit()
+                        || (first_byte == b'-'
+                            && symbol_str.len() > 1
+                            && symbol_str
+                                .as_bytes()
+                                .get(1)
+                                .is_some_and(|b| b.is_ascii_digit()));
+
+                    if could_be_number {
+                        if let Ok(n) = symbol_str.parse::<i64>() {
+                            ArenaValue::long(arena, n)
+                        } else {
+                            ArenaValue::atom(arena, symbol_str)
+                        }
+                    } else if symbol_str == "true" {
+                        ArenaValue::bool(arena, true)
+                    } else if symbol_str == "false" {
+                        ArenaValue::bool(arena, false)
+                    } else if symbol_str.starts_with('"')
+                        && symbol_str.ends_with('"')
+                        && symbol_str.len() >= 2
+                    {
+                        // String literal - strip quotes and allocate in arena
+                        let content = &symbol_str[1..symbol_str.len() - 1];
+                        ArenaValue::string(arena, content)
+                    } else {
+                        ArenaValue::atom(arena, symbol_str)
+                    }
+                }
+                Tag::Arity(arity) => {
+                    if arity == 0 {
+                        ArenaValue::nil(arena)
+                    } else {
+                        // Push new frame for this s-expression
+                        stack.push(StackFrame::Arity {
+                            remaining: arity,
+                            items: BumpVec::with_capacity_in(arity as usize, arena),
+                        });
+                        continue 'parsing;
+                    }
+                }
+            };
+
+            // Value is complete - add to parent or return
+            let mut current_value = Some(value);
+            'popping: loop {
+                let v = current_value
+                    .take()
+                    .expect("value must be Some at start of popping loop");
+
+                if stack.is_empty() {
+                    return Ok(v);
+                }
+
+                let should_pop = match stack.last_mut() {
+                    None => unreachable!(),
+                    Some(StackFrame::Arity { remaining, items }) => {
+                        items.push(v);
+                        *remaining -= 1;
+                        *remaining == 0
+                    }
+                };
+
+                if should_pop {
+                    if let Some(StackFrame::Arity { items, .. }) = stack.pop() {
+                        current_value = Some(ArenaValue::sexpr(arena, items));
+                        continue 'popping;
+                    }
+                } else {
+                    continue 'parsing;
+                }
+            }
+        }
+    }
+}
+
+/// Convert MORK Expr to generic value V using factory.
+///
+/// This enables direct PathMap ↔ V conversion without MettaValue intermediate.
+/// Uses factory methods to construct V values from MORK bytes.
+///
+/// ## Zero-Conversion Design
+///
+/// The factory-based approach means:
+/// - `HeapMettaValueFactory` constructs `MettaValue` directly
+/// - `ArenaValueFactory` constructs `ArenaValue` directly
+/// - No intermediate type conversion needed
+///
+/// ## Performance
+///
+/// Stack-based traversal to avoid recursion limits on deeply nested expressions.
+/// Uses static `VARNAMES` array to avoid allocation for the common case.
+#[allow(unused_variables)]
+pub(crate) fn mork_expr_to_generic_value<V, F, M>(
+    expr: &Expr,
+    space: &Space<M>,
+    factory: &F,
+) -> Result<V, String>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+    M: Clone + Default + Send + Sync + Unpin,
+{
+    // Delegate to the bytes-based implementation
+    // SAFETY: expr.ptr points to valid MORK bytes in PathMap memory
+    let bytes = unsafe { std::slice::from_raw_parts(expr.ptr, mork_expr_len(expr.ptr)) };
+    mork_bytes_to_generic_value(bytes, space, factory)
+}
+
+/// Get the length of a MORK expression by traversing it.
+///
+/// # Safety
+/// The ptr must point to valid MORK expression bytes.
+#[inline]
+unsafe fn mork_expr_len(ptr: *const u8) -> usize {
+    let mut offset = 0usize;
+    let mut depth = 1u32; // Count of values we need to parse
+
+    while depth > 0 {
+        let byte = *ptr.add(offset);
+        let tag = match maybe_byte_item(byte) {
+            Ok(t) => t,
+            Err(_) => return offset + 1, // Include the reserved byte
+        };
+        offset += 1;
+        depth -= 1;
+
+        match tag {
+            Tag::NewVar | Tag::VarRef(_) => {}
+            Tag::SymbolSize(size) => {
+                offset += size as usize;
+            }
+            Tag::Arity(arity) => {
+                depth += arity as u32;
+            }
+        }
+    }
+    offset
+}
+
+/// Convert MORK bytes directly to a generic value V without Expr wrapper.
+///
+/// This is the zero-wrapper version that operates directly on byte slices.
+/// Use this when you have the path bytes from a PathMap zipper.
+///
+/// ## Performance
+///
+/// Stack-based traversal to avoid recursion limits on deeply nested expressions.
+/// Uses static `VARNAMES` array to avoid allocation for the common case.
+#[allow(unused_variables)]
+pub(crate) fn mork_bytes_to_generic_value<V, F, M>(
+    bytes: &[u8],
+    space: &Space<M>,
+    factory: &F,
+) -> Result<V, String>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+    M: Clone + Default + Send + Sync + Unpin,
+{
+    // Stack-based traversal to avoid recursion limits
+    enum StackFrame<V> {
+        Arity { remaining: u8, items: Vec<V> },
+    }
+
+    let mut stack: Vec<StackFrame<V>> = Vec::new();
+    let mut offset = 0usize;
+    let mut newvar_count = 0u8;
+
+    'parsing: loop {
+        if offset >= bytes.len() {
+            return Err("Unexpected end of MORK bytes".to_string());
+        }
+        let byte = bytes[offset];
+        let tag = match maybe_byte_item(byte) {
+            Ok(t) => t,
+            Err(reserved_byte) => {
+                warn!(
+                    target: "mettatron::environment::mork_expr_to_generic_value",
+                    reserved_byte, offset,
+                    "Reserved byte encountered during MORK conversion"
+                );
+                return Err(format!(
+                    "Reserved byte {} at offset {}",
+                    reserved_byte, offset
+                ));
+            }
+        };
+
+        offset += 1;
+
+        let value = match tag {
+            Tag::NewVar => {
+                // De Bruijn index - NewVar introduces a new variable with the next index
+                // Use static VARNAMES to avoid allocation
+                let var_name = if (newvar_count as usize) < VARNAMES.len() {
+                    VARNAMES[newvar_count as usize]
+                } else {
+                    // Fallback for large variable counts
+                    return Err(format!("Too many variables: {}", newvar_count));
+                };
+                newvar_count += 1;
+                factory.atom(var_name)
+            }
+            Tag::VarRef(i) => {
+                if (i as usize) < VARNAMES.len() {
+                    factory.atom(VARNAMES[i as usize])
+                } else {
+                    return Err(format!("Variable reference out of range: {}", i));
+                }
+            }
+            Tag::SymbolSize(size) => {
+                let end = offset + size as usize;
+                if end > bytes.len() {
+                    return Err(format!("Symbol size {} exceeds available bytes at offset {}", size, offset));
+                }
+                let symbol_bytes = &bytes[offset..end];
+                offset = end;
+
+                // Symbol table lookup (same logic as existing decoders)
+                let symbol_str: &str = {
+                    #[cfg(feature = "interning")]
+                    {
+                        if symbol_bytes.len() == 8 {
+                            let symbol_id = i64::from_be_bytes(
+                                symbol_bytes.try_into().expect("8 bytes expected"),
+                            )
+                            .to_be_bytes();
+                            if let Some(actual_bytes) = space.sm.get_bytes(symbol_id) {
+                                // Found in symbol table - use actual symbol string
+                                // SAFETY: MORK stores valid UTF-8 symbols
+                                std::str::from_utf8(actual_bytes).unwrap_or("")
+                            } else {
+                                std::str::from_utf8(symbol_bytes).unwrap_or("")
+                            }
+                        } else {
+                            std::str::from_utf8(symbol_bytes).unwrap_or("")
+                        }
+                    }
+                    #[cfg(not(feature = "interning"))]
+                    {
+                        std::str::from_utf8(symbol_bytes).unwrap_or("")
+                    }
+                };
+
+                // Parse as number, bool, or string
+                let first_byte = symbol_str.as_bytes().first().copied().unwrap_or(0);
+                let could_be_number = first_byte.is_ascii_digit()
+                    || (first_byte == b'-'
+                        && symbol_str.len() > 1
+                        && symbol_str
+                            .as_bytes()
+                            .get(1)
+                            .is_some_and(|b| b.is_ascii_digit()));
+
+                if could_be_number {
+                    if let Ok(n) = symbol_str.parse::<i64>() {
+                        factory.long(n)
+                    } else {
+                        factory.atom(symbol_str)
+                    }
+                } else if symbol_str == "true" {
+                    factory.bool(true)
+                } else if symbol_str == "false" {
+                    factory.bool(false)
+                } else if symbol_str.starts_with('"')
+                    && symbol_str.ends_with('"')
+                    && symbol_str.len() >= 2
+                {
+                    factory.string(&symbol_str[1..symbol_str.len() - 1])
+                } else {
+                    factory.atom(symbol_str)
+                }
+            }
+            Tag::Arity(arity) => {
+                if arity == 0 {
+                    factory.nil()
+                } else {
+                    stack.push(StackFrame::Arity {
+                        remaining: arity,
+                        items: Vec::with_capacity(arity as usize),
+                    });
+                    continue 'parsing;
+                }
+            }
+        };
+
+        // Value complete - add to parent or return
+        let mut current_value = Some(value);
+        'popping: loop {
+            let v = current_value
+                .take()
+                .expect("value must be Some at start of popping loop");
+
+            if stack.is_empty() {
+                return Ok(v);
+            }
+
+            let should_pop = match stack.last_mut() {
+                None => unreachable!(),
+                Some(StackFrame::Arity { remaining, items }) => {
+                    items.push(v);
+                    *remaining -= 1;
+                    *remaining == 0
+                }
+            };
+
+            if should_pop {
+                if let Some(StackFrame::Arity { items, .. }) = stack.pop() {
+                    current_value = Some(factory.sexpr(items));
+                    continue 'popping;
+                }
+            } else {
+                continue 'parsing;
+            }
+        }
     }
 }

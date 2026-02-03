@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn test_empty_returns_empty_sentinel() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![MettaValue::Atom("empty".to_string())];
         let (results, _) = eval_empty(items, env);
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_empty_with_arguments() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (empty 1 2 3) - arguments should be ignored
         let items = vec![
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_empty_environment_unchanged() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![MettaValue::Atom("empty".to_string())];
         let (results, _) = eval_empty(items, env);
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_symbol() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![
             MettaValue::Atom("get-metatype".to_string()),
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_variable() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![
             MettaValue::Atom("get-metatype".to_string()),
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_grounded() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![
             MettaValue::Atom("get-metatype".to_string()),
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_expression() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("foo".to_string()),
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_missing_args() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![MettaValue::Atom("get-metatype".to_string())];
         let (results, _) = eval_get_metatype(items, env);

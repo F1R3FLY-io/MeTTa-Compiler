@@ -6,7 +6,7 @@ use crate::backend::models::{MettaValue, MettaValueInner};
 
 #[test]
 fn test_let_simple_binding() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let $x 42 $x)
     let value = MettaValue::SExpr(vec![
@@ -23,7 +23,7 @@ fn test_let_simple_binding() {
 
 #[test]
 fn test_let_with_expression() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let $y (+ 10 5) (* $y 2))
     let value = MettaValue::SExpr(vec![
@@ -48,7 +48,7 @@ fn test_let_with_expression() {
 
 #[test]
 fn test_let_with_pattern_matching() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let (tuple $a $b) (tuple 1 2) (+ $a $b))
     let value = MettaValue::SExpr(vec![
@@ -77,7 +77,7 @@ fn test_let_with_pattern_matching() {
 
 #[test]
 fn test_let_nested() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let $z 3 (let $w 4 (+ $z $w)))
     let value = MettaValue::SExpr(vec![
@@ -103,7 +103,7 @@ fn test_let_nested() {
 
 #[test]
 fn test_let_with_if() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let $base 10 (if (> $base 5) (* $base 2) $base))
     let value = MettaValue::SExpr(vec![
@@ -133,7 +133,7 @@ fn test_let_with_if() {
 
 #[test]
 fn test_let_pattern_mismatch() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let (foo $x) (bar 42) $x) - pattern mismatch returns Empty (HE-compatible)
     let value = MettaValue::SExpr(vec![
@@ -156,7 +156,7 @@ fn test_let_pattern_mismatch() {
 
 #[test]
 fn test_let_with_wildcard_pattern() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let _ 42 "ignored")
     // Wildcard should match anything but not bind
@@ -174,7 +174,7 @@ fn test_let_with_wildcard_pattern() {
 
 #[test]
 fn test_let_with_complex_pattern_structures() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let (nested (inner $x $y) $z) (nested (inner 1 2) 3) (+ $x (+ $y $z)))
     let complex_pattern = MettaValue::SExpr(vec![
@@ -215,7 +215,7 @@ fn test_let_with_complex_pattern_structures() {
 
 #[test]
 fn test_let_with_variable_consistency() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test that same variable in pattern must match same value
     // (let (same $x $x) (same 5 5) (* $x 2))
@@ -270,7 +270,7 @@ fn test_let_with_variable_consistency() {
 
 #[test]
 fn test_let_with_different_variable_types() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test different variable prefixes: $, &, '
     let mixed_vars = MettaValue::SExpr(vec![
@@ -305,7 +305,7 @@ fn test_let_with_different_variable_types() {
 
 #[test]
 fn test_let_missing_arguments() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test let with only 2 arguments
     let let_two_args = MettaValue::SExpr(vec![
@@ -369,7 +369,7 @@ fn test_let_missing_arguments() {
 
 #[test]
 fn test_let_with_evaluated_value_expression() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test let where value needs evaluation
     // (let $result (+ (* 3 4) 5) (if (> $result 10) "big" "small"))
@@ -404,7 +404,7 @@ fn test_let_with_evaluated_value_expression() {
 
 #[test]
 fn test_let_with_error_in_value() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test let where value expression produces error
     // (let $x (error "value-error" nil) $x)
@@ -434,7 +434,7 @@ fn test_let_with_error_in_value() {
 
 #[test]
 fn test_pattern_mismatch_arity_hint() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let ($a $b) (tuple 1 2 3) ...) - pattern has 2 elements, value has 4
     // Pattern mismatch returns Empty (HE-compatible)
@@ -459,7 +459,7 @@ fn test_pattern_mismatch_arity_hint() {
 
 #[test]
 fn test_pattern_mismatch_head_hint() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let (foo $x) (bar 42) $x) - head atoms don't match
     // Pattern mismatch returns Empty (HE-compatible)
@@ -482,7 +482,7 @@ fn test_pattern_mismatch_head_hint() {
 
 #[test]
 fn test_pattern_mismatch_literal_hint() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let (pair 42 $x) (pair 99 hello) $x) - literal 42 doesn't match 99
     // Pattern mismatch returns Empty (HE-compatible)
@@ -507,7 +507,7 @@ fn test_pattern_mismatch_literal_hint() {
 
 #[test]
 fn test_let_with_mixed_pattern_elements() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Pattern with mix of literals and variables
     // (let (mixed 42 $x "literal" $y) (mixed 42 100 "literal" 200) (+ $x $y))
@@ -570,7 +570,7 @@ fn test_let_with_mixed_pattern_elements() {
 
 #[test]
 fn test_let_with_complex_body_expressions() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test let with complex body containing multiple operations
     // (let $base 5
@@ -616,7 +616,7 @@ fn test_let_with_complex_body_expressions() {
 fn test_let_star_with_discard_pattern() {
     // Test that wildcard _ works as a discard pattern in let*
     // This is the proper way to discard values
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (let* ((_ 42)) "success") should succeed, discarding 42
     let discard_binding = MettaValue::SExpr(vec![
@@ -636,7 +636,7 @@ fn test_let_star_with_discard_pattern() {
 #[test]
 fn test_let_star_with_discard_and_binding() {
     // (let* ((_ (+ 1 2)) ($x 5)) $x) should return 5
-    let env = Environment::new();
+    let env = Environment::default();
 
     let mixed_bindings = MettaValue::SExpr(vec![
         MettaValue::Atom("let*".to_string()),
@@ -667,7 +667,7 @@ fn test_let_star_with_discard_and_binding() {
 #[test]
 fn test_let_with_discard_pattern() {
     // (let _ "any-value" "ok") should succeed
-    let env = Environment::new();
+    let env = Environment::default();
 
     let discard_let = MettaValue::SExpr(vec![
         MettaValue::Atom("let".to_string()),
@@ -684,7 +684,7 @@ fn test_let_with_discard_pattern() {
 #[test]
 fn test_let_star_wildcard_matches_any_type() {
     // Test that _ wildcard matches different types in let*
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Discard a string
     let discard_string = MettaValue::SExpr(vec![

@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_include_nonexistent_file() {
-        let env = Environment::new();
+        let env = Environment::default();
         let items = vec![
             MettaValue::Atom("include".to_string()),
             MettaValue::String("/nonexistent/path/file.metta".to_string()),
@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_include_with_module_notation() {
-        let env = Environment::new();
+        let env = Environment::default();
         let items = vec![
             MettaValue::Atom("include".to_string()),
             MettaValue::Atom("nonexistent:module".to_string()),
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_print_mods_no_modules() {
-        let env = Environment::new();
+        let env = Environment::default();
         let items = vec![MettaValue::Atom("print-mods!".to_string())];
 
         let (results, env) = eval_print_mods(items, env);
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_bind_simple_value() {
-        let env = Environment::new();
+        let env = Environment::default();
         let items = vec![
             MettaValue::Atom("bind!".to_string()),
             MettaValue::Atom("&my-value".to_string()),
@@ -630,7 +630,7 @@ mod tests {
     fn test_bind_atom_resolution() {
         use crate::backend::eval::eval;
 
-        let env = Environment::new();
+        let env = Environment::default();
 
         // First, bind a value
         let bind_items = vec![
@@ -652,7 +652,7 @@ mod tests {
     fn test_bind_with_expression() {
         use crate::backend::eval::eval;
 
-        let env = Environment::new();
+        let env = Environment::default();
 
         // bind! with an expression that gets evaluated: (bind! &sum (+ 2 3))
         let bind_items = vec![
@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_bind_error_non_symbol() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Try to bind with a non-symbol token
         let items = vec![
@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn test_bind_shadowing() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Bind &x to 1
         let bind1 = vec![
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_import_missing_args() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Only one argument - missing module path
         let items = vec![
@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_import_invalid_destination() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Invalid destination type
         let items = vec![
@@ -775,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_import_invalid_module_path() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Invalid module path type (Long instead of String/Atom)
         let items = vec![
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_import_nonexistent_module() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Try to import a module that doesn't exist
         let items = vec![
@@ -819,7 +819,7 @@ mod tests {
 
     #[test]
     fn test_import_with_alias_destination() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Import with alias - should fail since module doesn't exist
         let items = vec![
@@ -844,7 +844,7 @@ mod tests {
     fn test_import_selective_item_not_found() {
         // This tests the selective import path - trying to import a specific item
         // Since we can't create real files in unit tests, we test the error handling
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Try selective import (import! &self module item)
         let items = vec![
@@ -869,7 +869,7 @@ mod tests {
     #[test]
     fn test_import_selective_with_as_alias() {
         // Test selective import with "as" syntax
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (import! &self module item as new-name)
         let items = vec![
@@ -899,7 +899,7 @@ mod tests {
 
     #[test]
     fn test_mod_space_missing_args() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![MettaValue::Atom("mod-space!".to_string())];
 
@@ -916,7 +916,7 @@ mod tests {
 
     #[test]
     fn test_mod_space_invalid_path_type() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![
             MettaValue::Atom("mod-space!".to_string()),
@@ -936,7 +936,7 @@ mod tests {
 
     #[test]
     fn test_mod_space_nonexistent_module() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![
             MettaValue::Atom("mod-space!".to_string()),
@@ -961,7 +961,7 @@ mod tests {
 
     #[test]
     fn test_print_mods_with_extra_args() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![
             MettaValue::Atom("print-mods!".to_string()),
@@ -981,7 +981,7 @@ mod tests {
 
     #[test]
     fn test_print_mods_returns_unit() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![MettaValue::Atom("print-mods!".to_string())];
 
@@ -997,7 +997,7 @@ mod tests {
 
     #[test]
     fn test_include_missing_args() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![MettaValue::Atom("include".to_string())];
 
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[test]
     fn test_include_invalid_path_type() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         let items = vec![
             MettaValue::Atom("include".to_string()),
@@ -1038,7 +1038,7 @@ mod tests {
 
     #[test]
     fn test_strict_mode_default_is_permissive() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Default should be permissive (not strict)
         assert!(!env.is_strict_mode());
@@ -1046,7 +1046,7 @@ mod tests {
 
     #[test]
     fn test_strict_mode_can_be_enabled() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         env.set_strict_mode(true);
 
         assert!(env.is_strict_mode());
@@ -1054,7 +1054,7 @@ mod tests {
 
     #[test]
     fn test_strict_mode_toggle() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Default is false
         assert!(!env.is_strict_mode());

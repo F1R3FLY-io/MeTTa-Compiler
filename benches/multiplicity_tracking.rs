@@ -68,7 +68,7 @@ fn bench_rule_insertion_with_multiplicity(c: &mut Criterion) {
             rule_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     for rule in &rules {
                         env.add_rule(black_box(rule.clone()));
                     }
@@ -89,7 +89,7 @@ fn bench_rule_count_lookup(c: &mut Criterion) {
         let rules = generate_rules(*rule_count);
 
         // Pre-populate environment with rules
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         for rule in &rules {
             env.add_rule(rule.clone());
             // Add some rules twice to create multiplicities > 1
@@ -179,7 +179,7 @@ fn bench_mixed_workload(c: &mut Criterion) {
             op_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     // Insert phase
                     for rule in &rules {
                         env.add_rule(rule.clone());
@@ -198,7 +198,7 @@ fn bench_mixed_workload(c: &mut Criterion) {
             op_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     // Interleaved pattern
                     for rule in &rules {
                         env.add_rule(rule.clone());
@@ -221,7 +221,7 @@ fn bench_environment_fork(c: &mut Criterion) {
         let rules = generate_rules(*rule_count);
 
         // Pre-populate environment
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         for rule in &rules {
             env.add_rule(rule.clone());
         }

@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_exec_empty_antecedent() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (exec P0 (,) (, 42))
         // let value = MettaValue::SExpr(vec![
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_exec_simple_consequent() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (exec P1 (,) (, (+ 1 2)))
         let value = eval_exec(
@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_coalg_structure() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (coalg (tree $t) (, (ctx $t nil)))
         let value = eval_coalg(
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn test_lookup_success_branch() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (lookup foo (, T) (, F))
         let value = eval_lookup(
@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn test_lookup_failure_branch() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (lookup $x (, T) (, F))
         let value = eval_lookup(

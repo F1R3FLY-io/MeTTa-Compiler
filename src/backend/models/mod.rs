@@ -1,20 +1,28 @@
+pub mod arena_value;
 pub mod atom_id;
 pub mod bindings;
+pub mod generic_bindings;
+pub mod generic_rule;
 pub mod indexed_multiset;
 pub mod memo_handle;
 pub mod metta_state;
 pub mod metta_value;
+pub mod metta_value_trait;
 pub mod multiset;
 pub mod space_handle;
 
+pub use arena_value::{ArenaValue, ArenaValueFactory, ArenaValueInner};
 pub use atom_id::{AtomId, SymbolTable};
 pub use bindings::SmartBindings as Bindings;
+pub use generic_bindings::{GenericBindings, GenericBindingsIter};
+pub use generic_rule::{GenericRule, RuleBytes};
 pub use indexed_multiset::IndexedMultiset;
 pub use memo_handle::MemoHandle;
 pub use metta_state::MettaState;
-pub use metta_value::{ArcValue, MettaValue, MettaValueInner};
+pub use metta_value::{ArcValue, HeapMettaValueFactory, MettaValue, MettaValueInner};
+pub use metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
 pub use multiset::{AtomMultiset, AtomMultisetSnapshot};
-pub use space_handle::SpaceHandle;
+pub use space_handle::{GenericMultiplicityMatch, SpaceHandle};
 
 use crate::backend::environment::Environment;
 
@@ -52,6 +60,7 @@ impl Rule {
     }
 
     /// Create rule with pre-assigned index (for bulk operations)
+    #[allow(dead_code)]
     pub(crate) fn with_index(lhs: MettaValue, rhs: MettaValue, idx: u32) -> Self {
         Rule {
             lhs,
@@ -62,6 +71,7 @@ impl Rule {
 
     /// Create rule from MettaValues with pre-assigned index (alias for API compatibility)
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn from_arc_with_index(lhs: MettaValue, rhs: MettaValue, idx: u32) -> Self {
         Rule::with_index(lhs, rhs, idx)
     }

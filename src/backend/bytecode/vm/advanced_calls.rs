@@ -32,7 +32,7 @@ impl BytecodeVM {
         args.reverse();
 
         // Create context for native function
-        let ctx = NativeContext::new(Environment::new());
+        let ctx = NativeContext::new(Environment::default());
 
         // Call through registry
         let result = self
@@ -81,7 +81,7 @@ impl BytecodeVM {
         args.reverse();
 
         // Try to call through external registry
-        let ctx = ExternalContext::new(Environment::new());
+        let ctx = ExternalContext::new(Environment::default());
         match self.external_registry.call(&func_name, &args, &ctx) {
             Ok(results) => {
                 // Push result (single value or s-expression for multiple)

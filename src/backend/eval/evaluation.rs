@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_force_eval_missing_argument() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (!) - missing argument
         let value = MettaValue::SExpr(vec![MettaValue::Atom("!".to_string())]);
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_eval_missing_argument() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (eval) - missing argument
         let value = MettaValue::SExpr(vec![MettaValue::Atom("eval".to_string())]);
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_evaluation_with_exclaim() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // First define a rule: (= (f) 42)
         let rule_def = MettaValue::SExpr(vec![
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_function_factorial_with_return() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Define factorial rule that only uses return for base case
         let factorial_rule = Rule::new(
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_function_fibonacci_with_return() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Use tail-recursive fibonacci with accumulator
         // (= (fib $n) (fib-helper $n 0 1))
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_function_power_with_return() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Use tail-recursive power with accumulator
         // (= (power $base $exp) (power-helper $base $exp 1))
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn test_chain_basic() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (chain (+ 1 2) $x (* $x 2)) should bind 3 to $x, then evaluate (* 3 2) = 6
         let value = MettaValue::SExpr(vec![
@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn test_chain_with_return() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (chain 42 $x (return (* $x 3))) should bind 42 to $x, then return (* 42 3) = 126 wrapped in return
         let value = MettaValue::SExpr(vec![
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn test_chain_with_function_and_return() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Define a simple increment rule: (= (inc $x) (+ $x 1))
         let inc_rule = Rule::new(
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn test_chain_variable_scoping() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (chain 10 $x (chain 20 $y (+ $x $y))) - nested chains with different variables
         let value = MettaValue::SExpr(vec![
@@ -745,7 +745,7 @@ mod tests {
 
     #[test]
     fn test_chain_complex_computation_pipeline() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Define helper functions for computation pipeline
         // (= (double $x) (* $x 2))
@@ -839,7 +839,7 @@ mod tests {
 
     #[test]
     fn test_chain_conditional_branching_with_function() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Define conditional computation with early termination
         // (= (process-number $n)

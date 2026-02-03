@@ -1,7 +1,9 @@
+#[allow(unused_imports)]
 use crate::ir::MettaExpr;
 
 use std::sync::Arc;
 
+use super::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
 use super::MemoHandle;
 use super::SpaceHandle;
 
@@ -1063,6 +1065,865 @@ impl From<Vec<MettaValue>> for MettaValue {
 // ============================================================================
 
 pub use MettaValueInner::*;
+
+// ============================================================================
+// MettaValue trait implementation
+// ============================================================================
+
+impl MettaValueTrait for MettaValue {
+    type SExprSlice = [MettaValue];
+
+    #[inline]
+    fn is_atom(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Atom(_))
+    }
+
+    #[inline]
+    fn is_bool(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Bool(_))
+    }
+
+    #[inline]
+    fn is_long(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Long(_))
+    }
+
+    #[inline]
+    fn is_float(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Float(_))
+    }
+
+    #[inline]
+    fn is_string(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::String(_))
+    }
+
+    #[inline]
+    fn is_sexpr(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::SExpr(_))
+    }
+
+    #[inline]
+    fn is_nil(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Nil)
+    }
+
+    #[inline]
+    fn is_error(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Error(_, _))
+    }
+
+    #[inline]
+    fn is_type(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Type(_))
+    }
+
+    #[inline]
+    fn is_conjunction(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Conjunction(_))
+    }
+
+    #[inline]
+    fn is_space(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Space(_))
+    }
+
+    #[inline]
+    fn is_state(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::State(_))
+    }
+
+    #[inline]
+    fn is_unit(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Unit)
+    }
+
+    #[inline]
+    fn is_memo(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Memo(_))
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Empty)
+    }
+
+    #[inline]
+    fn is_variable(&self) -> bool {
+        matches!(self.inner(), MettaValueInner::Atom(s) if s.starts_with('$'))
+    }
+
+    #[inline]
+    fn is_ground_type(&self) -> bool {
+        matches!(
+            self.inner(),
+            MettaValueInner::Bool(_)
+                | MettaValueInner::Long(_)
+                | MettaValueInner::Float(_)
+                | MettaValueInner::String(_)
+                | MettaValueInner::Nil
+        )
+    }
+
+    #[inline]
+    fn as_atom(&self) -> Option<&str> {
+        match self.inner() {
+            MettaValueInner::Atom(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_bool(&self) -> Option<bool> {
+        match self.inner() {
+            MettaValueInner::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_long(&self) -> Option<i64> {
+        match self.inner() {
+            MettaValueInner::Long(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_float(&self) -> Option<f64> {
+        match self.inner() {
+            MettaValueInner::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_string(&self) -> Option<&str> {
+        match self.inner() {
+            MettaValueInner::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_sexpr(&self) -> Option<&[Self]> {
+        match self.inner() {
+            MettaValueInner::SExpr(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_error(&self) -> Option<(&str, &Self)> {
+        match self.inner() {
+            MettaValueInner::Error(msg, details) => Some((msg, details)),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_type(&self) -> Option<&Self> {
+        match self.inner() {
+            MettaValueInner::Type(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_conjunction(&self) -> Option<&[Self]> {
+        match self.inner() {
+            MettaValueInner::Conjunction(goals) => Some(goals),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_space(&self) -> Option<&SpaceHandle> {
+        match self.inner() {
+            MettaValueInner::Space(handle) => Some(handle),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_state(&self) -> Option<u64> {
+        match self.inner() {
+            MettaValueInner::State(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_memo(&self) -> Option<&MemoHandle> {
+        match self.inner() {
+            MettaValueInner::Memo(handle) => Some(handle),
+            _ => None,
+        }
+    }
+
+    fn type_name(&self) -> &'static str {
+        match self.inner() {
+            MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
+            MettaValueInner::Atom(_) => "Symbol",
+            MettaValueInner::Bool(_) => "Bool",
+            MettaValueInner::Long(_) => "Number",
+            MettaValueInner::Float(_) => "Number",
+            MettaValueInner::String(_) => "String",
+            MettaValueInner::SExpr(_) => "Expression",
+            MettaValueInner::Nil => "Nil",
+            MettaValueInner::Error(_, _) => "Error",
+            MettaValueInner::Type(_) => "Type",
+            MettaValueInner::Conjunction(_) => "Conjunction",
+            MettaValueInner::Space(_) => "Space",
+            MettaValueInner::State(_) => "State",
+            MettaValueInner::Unit => "Unit",
+            MettaValueInner::Memo(_) => "Memo",
+            MettaValueInner::Empty => "Empty",
+        }
+    }
+
+    fn friendly_type_name(&self) -> &'static str {
+        match self.inner() {
+            MettaValueInner::Long(_) => "Number (integer)",
+            MettaValueInner::Float(_) => "Number (float)",
+            MettaValueInner::Bool(_) => "Bool",
+            MettaValueInner::String(_) => "String",
+            MettaValueInner::Atom(_) => "Atom",
+            MettaValueInner::Nil => "Nil",
+            MettaValueInner::SExpr(_) => "S-expression",
+            MettaValueInner::Error(_, _) => "Error",
+            MettaValueInner::Type(_) => "Type",
+            MettaValueInner::Conjunction(_) => "Conjunction",
+            MettaValueInner::Space(_) => "Space",
+            MettaValueInner::State(_) => "State",
+            MettaValueInner::Unit => "Unit",
+            MettaValueInner::Memo(_) => "Memo",
+            MettaValueInner::Empty => "Empty",
+        }
+    }
+
+    fn get_head_symbol(&self) -> Option<&str> {
+        // Helper to check if an atom is a space reference (not a variable)
+        fn is_space_ref(s: &str) -> bool {
+            s == "&" || s == "&self" || s == "&kb" || s == "&stack"
+        }
+
+        match self.inner() {
+            // For s-expressions like (double $x), extract "double"
+            // Space references like "&self" are allowed as head symbols
+            MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner() {
+                MettaValueInner::Atom(head)
+                    if !head.starts_with('$')
+                        && (!head.starts_with('&') || is_space_ref(head))
+                        && !head.starts_with('\'')
+                        && head != "_" =>
+                {
+                    Some(head.as_str())
+                }
+                _ => None,
+            },
+            // For bare atoms like foo, use the atom itself
+            // Space references like "&self" are allowed as head symbols
+            MettaValueInner::Atom(head)
+                if !head.starts_with('$')
+                    && (!head.starts_with('&') || is_space_ref(head))
+                    && !head.starts_with('\'')
+                    && head != "_" =>
+            {
+                Some(head.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    fn get_arity(&self) -> usize {
+        match self.inner() {
+            MettaValueInner::SExpr(items) if !items.is_empty() => items.len() - 1, // Exclude head
+            _ => 0,
+        }
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        serialize_value(self, &mut buf);
+        buf
+    }
+
+    fn friendly_repr(&self) -> std::string::String {
+        // Stack-based implementation to avoid recursion on deeply nested structures
+        enum ReprWork<'a> {
+            Process(&'a MettaValue),
+            Join {
+                count: usize,
+                prefix: &'static str,
+                suffix: &'static str,
+                separator: &'static str,
+            },
+        }
+
+        let mut work_stack: Vec<ReprWork<'_>> = Vec::with_capacity(16);
+        let mut result_stack: Vec<std::string::String> = Vec::with_capacity(16);
+
+        work_stack.push(ReprWork::Process(self));
+
+        while let Some(work) = work_stack.pop() {
+            match work {
+                ReprWork::Process(val) => match val.inner() {
+                    MettaValueInner::Long(n) => result_stack.push(n.to_string()),
+                    MettaValueInner::Float(f) => result_stack.push(f.to_string()),
+                    MettaValueInner::Bool(b) => {
+                        result_stack.push(if *b { "True" } else { "False" }.to_string());
+                    }
+                    MettaValueInner::String(s) => result_stack.push(format!("\"{}\"", s)),
+                    MettaValueInner::Atom(a) => result_stack.push(a.clone()),
+                    MettaValueInner::Nil => result_stack.push("Nil".to_string()),
+                    MettaValueInner::Unit => result_stack.push("()".to_string()),
+                    MettaValueInner::Empty => result_stack.push("Empty".to_string()),
+                    MettaValueInner::Space(handle) => {
+                        result_stack.push(format!("(Space {} \"{}\")", handle.id, handle.name));
+                    }
+                    MettaValueInner::State(id) => {
+                        result_stack.push(format!("(State {})", id));
+                    }
+                    MettaValueInner::Memo(handle) => {
+                        result_stack.push(format!("(Memo {} \"{}\")", handle.id, handle.name));
+                    }
+                    MettaValueInner::Error(msg, _) => {
+                        result_stack.push(format!("(error \"{}\")", msg));
+                    }
+                    MettaValueInner::Type(t) => {
+                        work_stack.push(ReprWork::Join {
+                            count: 1,
+                            prefix: "(: ",
+                            suffix: ")",
+                            separator: "",
+                        });
+                        work_stack.push(ReprWork::Process(t));
+                    }
+                    MettaValueInner::SExpr(items) => {
+                        if items.is_empty() {
+                            result_stack.push("()".to_string());
+                        } else {
+                            work_stack.push(ReprWork::Join {
+                                count: items.len(),
+                                prefix: "(",
+                                suffix: ")",
+                                separator: " ",
+                            });
+                            for item in items.iter().rev() {
+                                work_stack.push(ReprWork::Process(item));
+                            }
+                        }
+                    }
+                    MettaValueInner::Conjunction(goals) => {
+                        if goals.is_empty() {
+                            result_stack.push("(,)".to_string());
+                        } else {
+                            work_stack.push(ReprWork::Join {
+                                count: goals.len(),
+                                prefix: "(, ",
+                                suffix: ")",
+                                separator: " ",
+                            });
+                            for goal in goals.iter().rev() {
+                                work_stack.push(ReprWork::Process(goal));
+                            }
+                        }
+                    }
+                },
+                ReprWork::Join {
+                    count,
+                    prefix,
+                    suffix,
+                    separator,
+                } => {
+                    let start = result_stack.len() - count;
+                    let parts: Vec<std::string::String> = result_stack.drain(start..).collect();
+                    result_stack.push(format!("{}{}{}", prefix, parts.join(separator), suffix));
+                }
+            }
+        }
+
+        result_stack.pop().unwrap_or_default()
+    }
+
+    fn to_display_string(&self) -> std::string::String {
+        // Stack-based implementation to avoid recursion on deeply nested structures
+        // Similar to friendly_repr but strings are printed WITHOUT quotes
+        enum ReprWork<'a> {
+            Process(&'a MettaValue),
+            Join {
+                count: usize,
+                prefix: &'static str,
+                suffix: &'static str,
+                separator: &'static str,
+            },
+        }
+
+        let mut work_stack: Vec<ReprWork<'_>> = Vec::with_capacity(16);
+        let mut result_stack: Vec<std::string::String> = Vec::with_capacity(16);
+
+        work_stack.push(ReprWork::Process(self));
+
+        while let Some(work) = work_stack.pop() {
+            match work {
+                ReprWork::Process(val) => match val.inner() {
+                    MettaValueInner::Long(n) => result_stack.push(n.to_string()),
+                    MettaValueInner::Float(f) => result_stack.push(f.to_string()),
+                    MettaValueInner::Bool(b) => {
+                        result_stack.push(if *b { "True" } else { "False" }.to_string());
+                    }
+                    // Key difference: strings printed without quotes for display
+                    MettaValueInner::String(s) => result_stack.push(s.clone()),
+                    MettaValueInner::Atom(a) => result_stack.push(a.clone()),
+                    MettaValueInner::Nil => result_stack.push("Nil".to_string()),
+                    MettaValueInner::Unit => result_stack.push("()".to_string()),
+                    MettaValueInner::Empty => result_stack.push("Empty".to_string()),
+                    MettaValueInner::Space(handle) => {
+                        result_stack.push(format!("(Space {} \"{}\")", handle.id, handle.name));
+                    }
+                    MettaValueInner::State(id) => {
+                        result_stack.push(format!("(State {})", id));
+                    }
+                    MettaValueInner::Memo(handle) => {
+                        result_stack.push(format!("(Memo {} \"{}\")", handle.id, handle.name));
+                    }
+                    MettaValueInner::Error(msg, _) => {
+                        result_stack.push(format!("(Error \"{}\")", msg));
+                    }
+                    MettaValueInner::Type(t) => {
+                        work_stack.push(ReprWork::Join {
+                            count: 1,
+                            prefix: "(: ",
+                            suffix: ")",
+                            separator: "",
+                        });
+                        work_stack.push(ReprWork::Process(t));
+                    }
+                    MettaValueInner::SExpr(items) => {
+                        if items.is_empty() {
+                            result_stack.push("()".to_string());
+                        } else {
+                            work_stack.push(ReprWork::Join {
+                                count: items.len(),
+                                prefix: "(",
+                                suffix: ")",
+                                separator: " ",
+                            });
+                            for item in items.iter().rev() {
+                                work_stack.push(ReprWork::Process(item));
+                            }
+                        }
+                    }
+                    MettaValueInner::Conjunction(goals) => {
+                        if goals.is_empty() {
+                            result_stack.push("(,)".to_string());
+                        } else {
+                            work_stack.push(ReprWork::Join {
+                                count: goals.len(),
+                                prefix: "(, ",
+                                suffix: ")",
+                                separator: " ",
+                            });
+                            for goal in goals.iter().rev() {
+                                work_stack.push(ReprWork::Process(goal));
+                            }
+                        }
+                    }
+                },
+                ReprWork::Join {
+                    count,
+                    prefix,
+                    suffix,
+                    separator,
+                } => {
+                    let start = result_stack.len() - count;
+                    let parts: Vec<std::string::String> = result_stack.drain(start..).collect();
+                    result_stack.push(format!("{}{}{}", prefix, parts.join(separator), suffix));
+                }
+            }
+        }
+
+        result_stack.pop().unwrap_or_default()
+    }
+}
+
+// ============================================================================
+// Serialization helpers
+// ============================================================================
+
+/// Tag bytes for serialization format
+mod serialize_tags {
+    pub const ATOM: u8 = 0x01;
+    pub const BOOL: u8 = 0x02;
+    pub const LONG: u8 = 0x03;
+    pub const FLOAT: u8 = 0x04;
+    pub const STRING: u8 = 0x05;
+    pub const SEXPR: u8 = 0x06;
+    pub const NIL: u8 = 0x07;
+    pub const ERROR: u8 = 0x08;
+    pub const TYPE: u8 = 0x09;
+    pub const CONJUNCTION: u8 = 0x0A;
+    pub const UNIT: u8 = 0x0B;
+    pub const EMPTY: u8 = 0x0C;
+    pub const SPACE: u8 = 0x0D;
+    pub const STATE: u8 = 0x0E;
+    pub const MEMO: u8 = 0x0F;
+}
+
+/// Write a varint (variable-length integer) to buffer
+fn write_varint(buf: &mut Vec<u8>, mut n: usize) {
+    loop {
+        let byte = (n & 0x7F) as u8;
+        n >>= 7;
+        if n == 0 {
+            buf.push(byte);
+            break;
+        } else {
+            buf.push(byte | 0x80);
+        }
+    }
+}
+
+/// Read a varint from bytes, returning (value, bytes_consumed)
+fn read_varint(bytes: &[u8]) -> Result<(usize, usize), std::string::String> {
+    let mut result: usize = 0;
+    let mut shift = 0;
+    for (i, &byte) in bytes.iter().enumerate() {
+        result |= ((byte & 0x7F) as usize) << shift;
+        if byte & 0x80 == 0 {
+            return Ok((result, i + 1));
+        }
+        shift += 7;
+        if shift > 63 {
+            return Err("varint overflow".to_string());
+        }
+    }
+    Err("unexpected end of varint".to_string())
+}
+
+/// Serialize a MettaValue to bytes
+fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
+    use serialize_tags::*;
+    match value.inner() {
+        MettaValueInner::Atom(s) => {
+            buf.push(ATOM);
+            write_varint(buf, s.len());
+            buf.extend_from_slice(s.as_bytes());
+        }
+        MettaValueInner::Bool(b) => {
+            buf.push(BOOL);
+            buf.push(if *b { 1 } else { 0 });
+        }
+        MettaValueInner::Long(n) => {
+            buf.push(LONG);
+            buf.extend_from_slice(&n.to_le_bytes());
+        }
+        MettaValueInner::Float(f) => {
+            buf.push(FLOAT);
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        MettaValueInner::String(s) => {
+            buf.push(STRING);
+            write_varint(buf, s.len());
+            buf.extend_from_slice(s.as_bytes());
+        }
+        MettaValueInner::SExpr(items) => {
+            buf.push(SEXPR);
+            write_varint(buf, items.len());
+            for item in items.iter() {
+                serialize_value(item, buf);
+            }
+        }
+        MettaValueInner::Nil => {
+            buf.push(NIL);
+        }
+        MettaValueInner::Error(msg, details) => {
+            buf.push(ERROR);
+            write_varint(buf, msg.len());
+            buf.extend_from_slice(msg.as_bytes());
+            serialize_value(details, buf);
+        }
+        MettaValueInner::Type(inner) => {
+            buf.push(TYPE);
+            serialize_value(inner, buf);
+        }
+        MettaValueInner::Conjunction(goals) => {
+            buf.push(CONJUNCTION);
+            write_varint(buf, goals.len());
+            for goal in goals.iter() {
+                serialize_value(goal, buf);
+            }
+        }
+        MettaValueInner::Unit => {
+            buf.push(UNIT);
+        }
+        MettaValueInner::Empty => {
+            buf.push(EMPTY);
+        }
+        MettaValueInner::Space(handle) => {
+            buf.push(SPACE);
+            buf.extend_from_slice(&handle.id.to_le_bytes());
+            // Serialize name length and name bytes
+            let name_bytes = handle.name.as_bytes();
+            write_varint(buf, name_bytes.len());
+            buf.extend_from_slice(name_bytes);
+            // Serialize is_module_space flag
+            buf.push(if handle.is_module_space() { 1 } else { 0 });
+        }
+        MettaValueInner::State(id) => {
+            buf.push(STATE);
+            buf.extend_from_slice(&id.to_le_bytes());
+        }
+        MettaValueInner::Memo(handle) => {
+            buf.push(MEMO);
+            buf.extend_from_slice(&handle.id.to_le_bytes());
+        }
+    }
+}
+
+// ============================================================================
+// HeapMettaValueFactory - Zero-sized factory for heap-allocated values
+// ============================================================================
+
+/// Factory for creating heap-allocated MettaValue instances.
+///
+/// This is a zero-sized type (no fields), so passing it around has no runtime cost.
+/// All methods simply delegate to MettaValue's associated functions.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeapMettaValueFactory;
+
+impl MettaValueFactory<MettaValue> for HeapMettaValueFactory {
+    #[inline]
+    fn atom(&self, s: &str) -> MettaValue {
+        MettaValue::Atom(s.to_string())
+    }
+
+    #[inline]
+    fn bool(&self, b: bool) -> MettaValue {
+        MettaValue::Bool(b)
+    }
+
+    #[inline]
+    fn long(&self, n: i64) -> MettaValue {
+        MettaValue::Long(n)
+    }
+
+    #[inline]
+    fn float(&self, f: f64) -> MettaValue {
+        MettaValue::Float(f)
+    }
+
+    #[inline]
+    fn string(&self, s: &str) -> MettaValue {
+        MettaValue::String(s.to_string())
+    }
+
+    #[inline]
+    fn sexpr(&self, items: Vec<MettaValue>) -> MettaValue {
+        MettaValue::SExpr(items)
+    }
+
+    #[inline]
+    fn sexpr_from_slice(&self, items: &[MettaValue]) -> MettaValue {
+        MettaValue::SExpr(items.to_vec())
+    }
+
+    #[inline]
+    fn nil(&self) -> MettaValue {
+        MettaValue::Nil()
+    }
+
+    #[inline]
+    fn error(&self, msg: &str, details: MettaValue) -> MettaValue {
+        MettaValue::Error(msg.to_string(), details)
+    }
+
+    #[inline]
+    fn type_value(&self, inner: MettaValue) -> MettaValue {
+        MettaValue::Type(inner)
+    }
+
+    #[inline]
+    fn conjunction(&self, goals: Vec<MettaValue>) -> MettaValue {
+        MettaValue::Conjunction(goals)
+    }
+
+    #[inline]
+    fn space(&self, handle: SpaceHandle) -> MettaValue {
+        MettaValue::Space(handle)
+    }
+
+    #[inline]
+    fn state(&self, id: u64) -> MettaValue {
+        MettaValue::State(id)
+    }
+
+    #[inline]
+    fn unit(&self) -> MettaValue {
+        MettaValue::Unit()
+    }
+
+    #[inline]
+    fn memo(&self, handle: MemoHandle) -> MettaValue {
+        MettaValue::Memo(handle)
+    }
+
+    #[inline]
+    fn empty(&self) -> MettaValue {
+        MettaValue::Empty()
+    }
+
+    fn deserialize(&self, bytes: &[u8]) -> Result<(MettaValue, usize), std::string::String> {
+        deserialize_metta_value(bytes)
+    }
+}
+
+/// Deserialize a MettaValue from bytes
+fn deserialize_metta_value(bytes: &[u8]) -> Result<(MettaValue, usize), std::string::String> {
+    use serialize_tags::*;
+
+    if bytes.is_empty() {
+        return Err("unexpected end of input".to_string());
+    }
+
+    let tag = bytes[0];
+    let rest = &bytes[1..];
+
+    match tag {
+        ATOM => {
+            let (len, varint_size) = read_varint(rest)?;
+            let start = varint_size;
+            let end = start + len;
+            if rest.len() < end {
+                return Err("unexpected end of atom data".to_string());
+            }
+            let s = std::str::from_utf8(&rest[start..end])
+                .map_err(|e| format!("invalid UTF-8 in atom: {}", e))?;
+            Ok((MettaValue::Atom(s.to_string()), 1 + end))
+        }
+        BOOL => {
+            if rest.is_empty() {
+                return Err("unexpected end of bool data".to_string());
+            }
+            Ok((MettaValue::Bool(rest[0] != 0), 2))
+        }
+        LONG => {
+            if rest.len() < 8 {
+                return Err("unexpected end of long data".to_string());
+            }
+            let n = i64::from_le_bytes(rest[..8].try_into().unwrap());
+            Ok((MettaValue::Long(n), 9))
+        }
+        FLOAT => {
+            if rest.len() < 8 {
+                return Err("unexpected end of float data".to_string());
+            }
+            let f = f64::from_le_bytes(rest[..8].try_into().unwrap());
+            Ok((MettaValue::Float(f), 9))
+        }
+        STRING => {
+            let (len, varint_size) = read_varint(rest)?;
+            let start = varint_size;
+            let end = start + len;
+            if rest.len() < end {
+                return Err("unexpected end of string data".to_string());
+            }
+            let s = std::str::from_utf8(&rest[start..end])
+                .map_err(|e| format!("invalid UTF-8 in string: {}", e))?;
+            Ok((MettaValue::String(s.to_string()), 1 + end))
+        }
+        SEXPR => {
+            let (count, varint_size) = read_varint(rest)?;
+            let mut items = Vec::with_capacity(count);
+            let mut offset = 1 + varint_size;
+            for _ in 0..count {
+                let (item, consumed) = deserialize_metta_value(&bytes[offset..])?;
+                items.push(item);
+                offset += consumed;
+            }
+            Ok((MettaValue::SExpr(items), offset))
+        }
+        NIL => Ok((MettaValue::Nil(), 1)),
+        ERROR => {
+            let (msg_len, varint_size) = read_varint(rest)?;
+            let msg_start = varint_size;
+            let msg_end = msg_start + msg_len;
+            if rest.len() < msg_end {
+                return Err("unexpected end of error message".to_string());
+            }
+            let msg = std::str::from_utf8(&rest[msg_start..msg_end])
+                .map_err(|e| format!("invalid UTF-8 in error message: {}", e))?
+                .to_string();
+            let (details, details_consumed) = deserialize_metta_value(&bytes[1 + msg_end..])?;
+            Ok((MettaValue::Error(msg, details), 1 + msg_end + details_consumed))
+        }
+        TYPE => {
+            let (inner, consumed) = deserialize_metta_value(rest)?;
+            Ok((MettaValue::Type(inner), 1 + consumed))
+        }
+        CONJUNCTION => {
+            let (count, varint_size) = read_varint(rest)?;
+            let mut goals = Vec::with_capacity(count);
+            let mut offset = 1 + varint_size;
+            for _ in 0..count {
+                let (goal, consumed) = deserialize_metta_value(&bytes[offset..])?;
+                goals.push(goal);
+                offset += consumed;
+            }
+            Ok((MettaValue::Conjunction(goals), offset))
+        }
+        UNIT => Ok((MettaValue::Unit(), 1)),
+        EMPTY => Ok((MettaValue::Empty(), 1)),
+        SPACE => {
+            if rest.len() < 8 {
+                return Err("unexpected end of space id".to_string());
+            }
+            let id = u64::from_le_bytes(rest[..8].try_into().unwrap());
+            let mut offset = 9; // 1 (tag) + 8 (id)
+
+            // Read name length and name bytes
+            let (name_len, consumed) = read_varint(&rest[8..])?;
+            offset += consumed;
+            let name_start = 8 + consumed;
+            if rest.len() < name_start + name_len {
+                return Err("unexpected end of space name".to_string());
+            }
+            let name = std::str::from_utf8(&rest[name_start..name_start + name_len])
+                .map_err(|e| format!("invalid UTF-8 in space name: {}", e))?
+                .to_string();
+            offset += name_len;
+
+            // Read is_module_space flag
+            if rest.len() < name_start + name_len + 1 {
+                return Err("unexpected end of space is_module_space flag".to_string());
+            }
+            let is_module = rest[name_start + name_len] != 0;
+            offset += 1;
+
+            // Reconstruct SpaceHandle with available info
+            let handle = SpaceHandle::new_from_serialized(id, name, is_module);
+            Ok((MettaValue::Space(handle), offset))
+        }
+        STATE => {
+            if rest.len() < 8 {
+                return Err("unexpected end of state id".to_string());
+            }
+            let id = u64::from_le_bytes(rest[..8].try_into().unwrap());
+            Ok((MettaValue::State(id), 9))
+        }
+        MEMO => {
+            if rest.len() < 8 {
+                return Err("unexpected end of memo id".to_string());
+            }
+            let _id = u64::from_le_bytes(rest[..8].try_into().unwrap());
+            // Note: We can only deserialize the ID, not the full MemoHandle
+            // The caller needs to resolve this ID to an actual handle
+            Ok((MettaValue::Unit(), 9)) // Placeholder - real impl needs handle registry
+        }
+        _ => Err(format!("unknown tag byte: 0x{:02X}", tag)),
+    }
+}
 
 #[cfg(test)]
 mod tests {

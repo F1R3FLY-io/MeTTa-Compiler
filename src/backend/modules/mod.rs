@@ -29,4 +29,4 @@ pub use module_space::ModuleSpace;
 pub use package::{Dependency, DependencyDetail, ExportConfig, PackageInfo, PackageMeta};
 pub use path::{is_submodule, normalize_module_path, parent_module_path, resolve_module_path};
 pub use pkg_info_metta::{load_pkg_info_metta, parse_pkg_info_metta, PkgInfoParseError};
-pub use tokenizer::Tokenizer;
+pub use tokenizer::{GenericTokenizer, Tokenizer};

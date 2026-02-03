@@ -135,7 +135,8 @@ impl BytecodeVM {
 
         // Look up matching rules by head symbol and arity
         // Collect to Vec to release the lock before potentially mutating self
-        let candidate_rules: Vec<_> = env.get_matching_rules_iter(head, arity).cloned().collect();
+        // Note: MatchingRulesIter yields owned Rule, no .cloned() needed
+        let candidate_rules: Vec<_> = env.get_matching_rules_iter(head, arity).collect();
 
         if candidate_rules.is_empty() {
             // No rules match - return expression unchanged

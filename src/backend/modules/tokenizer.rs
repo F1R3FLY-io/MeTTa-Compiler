@@ -19,10 +19,13 @@ use std::sync::Arc;
 
 use regex::Regex;
 
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, MettaValueTrait};
 
-/// A function that constructs an atom from a matched token string.
-pub type TokenConstructor = Arc<dyn Fn(&str) -> MettaValue + Send + Sync>;
+/// A function that constructs a value from a matched token string.
+pub type GenericTokenConstructor<V> = Arc<dyn Fn(&str) -> V + Send + Sync>;
+
+/// Legacy type alias for MettaValue tokenizer.
+pub type TokenConstructor = GenericTokenConstructor<MettaValue>;
 
 /// Token pattern type - exact string or regex.
 #[derive(Clone)]
@@ -107,19 +110,27 @@ impl std::fmt::Debug for TokenPattern {
     }
 }
 
-/// A registered token pattern and its constructor.
-#[derive(Clone)]
-pub struct TokenEntry {
+/// A registered token pattern and its constructor (generic over value type).
+pub struct GenericTokenEntry<V> {
     /// The token pattern (exact or regex).
     pattern: TokenPattern,
 
-    /// Function to construct the atom when this token is matched.
-    constructor: TokenConstructor,
+    /// Function to construct the value when this token is matched.
+    constructor: GenericTokenConstructor<V>,
 }
 
-impl TokenEntry {
+impl<V> Clone for GenericTokenEntry<V> {
+    fn clone(&self) -> Self {
+        Self {
+            pattern: self.pattern.clone(),
+            constructor: Arc::clone(&self.constructor),
+        }
+    }
+}
+
+impl<V> GenericTokenEntry<V> {
     /// Create a new token entry with exact match.
-    pub fn new(pattern: String, constructor: TokenConstructor) -> Self {
+    pub fn new(pattern: String, constructor: GenericTokenConstructor<V>) -> Self {
         Self {
             pattern: TokenPattern::exact(&pattern),
             constructor,
@@ -127,7 +138,7 @@ impl TokenEntry {
     }
 
     /// Create a new token entry with a regex pattern.
-    pub fn new_regex(pattern: &str, constructor: TokenConstructor) -> Result<Self, regex::Error> {
+    pub fn new_regex(pattern: &str, constructor: GenericTokenConstructor<V>) -> Result<Self, regex::Error> {
         Ok(Self {
             pattern: TokenPattern::regex(pattern)?,
             constructor,
@@ -136,7 +147,7 @@ impl TokenEntry {
 
     /// Create a new token entry with a pre-built pattern.
     #[allow(dead_code)]
-    pub fn with_pattern(pattern: TokenPattern, constructor: TokenConstructor) -> Self {
+    pub fn with_pattern(pattern: TokenPattern, constructor: GenericTokenConstructor<V>) -> Self {
         Self {
             pattern,
             constructor,
@@ -153,22 +164,25 @@ impl TokenEntry {
         &self.pattern
     }
 
-    /// Construct an atom for this token.
+    /// Construct a value for this token.
     #[allow(dead_code)]
-    pub fn construct(&self, matched: &str) -> MettaValue {
+    pub fn construct(&self, matched: &str) -> V {
         (self.constructor)(matched)
     }
 }
 
-impl std::fmt::Debug for TokenEntry {
+impl<V> std::fmt::Debug for GenericTokenEntry<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TokenEntry")
+        f.debug_struct("GenericTokenEntry")
             .field("pattern", &self.pattern)
             .finish()
     }
 }
 
-/// Per-module tokenizer for dynamic token registration.
+/// Legacy type alias.
+pub type TokenEntry = GenericTokenEntry<MettaValue>;
+
+/// Generic per-module tokenizer for dynamic token registration.
 ///
 /// Each module has its own tokenizer that can:
 /// - Register tokens via `bind!` (exact match or regex)
@@ -181,13 +195,13 @@ impl std::fmt::Debug for TokenEntry {
 /// - **Regex match**: Regular expression patterns for advanced matching
 ///
 /// Token lookup searches from most recently registered to oldest (shadowing).
-pub struct Tokenizer {
+pub struct GenericTokenizer<V> {
     /// Registered token entries.
     /// Stored in insertion order; later entries shadow earlier ones.
-    tokens: Vec<TokenEntry>,
+    tokens: Vec<GenericTokenEntry<V>>,
 }
 
-impl Tokenizer {
+impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
     /// Create a new empty tokenizer.
     pub fn new() -> Self {
         Self { tokens: Vec::new() }
@@ -197,9 +211,9 @@ impl Tokenizer {
     ///
     /// When `pattern` is encountered, it will be replaced with `value`.
     /// This is the default behavior for `bind!`.
-    pub fn register_token_value(&mut self, pattern: &str, value: MettaValue) {
+    pub fn register_token_value(&mut self, pattern: &str, value: V) {
         let value_clone = value.clone();
-        self.tokens.push(TokenEntry::new(
+        self.tokens.push(GenericTokenEntry::new(
             pattern.to_string(),
             Arc::new(move |_| value_clone.clone()),
         ));
@@ -209,20 +223,13 @@ impl Tokenizer {
     ///
     /// When input matches the regex pattern, it will be replaced with `value`.
     /// Returns an error if the regex pattern is invalid.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Match any identifier starting with '$'
-    /// tokenizer.register_token_value_regex(r"^\$[a-zA-Z_][a-zA-Z0-9_]*$", value)?;
-    /// ```
     pub fn register_token_value_regex(
         &mut self,
         pattern: &str,
-        value: MettaValue,
+        value: V,
     ) -> Result<(), regex::Error> {
         let value_clone = value.clone();
-        let entry = TokenEntry::new_regex(pattern, Arc::new(move |_| value_clone.clone()))?;
+        let entry = GenericTokenEntry::new_regex(pattern, Arc::new(move |_| value_clone.clone()))?;
         self.tokens.push(entry);
         Ok(())
     }
@@ -230,35 +237,28 @@ impl Tokenizer {
     /// Register a token with a constructor function using exact match.
     ///
     /// When `pattern` is encountered, `constructor` will be called
-    /// with the matched string to produce the atom.
+    /// with the matched string to produce the value.
     pub fn register_token<F>(&mut self, pattern: &str, constructor: F)
     where
-        F: Fn(&str) -> MettaValue + Send + Sync + 'static,
+        F: Fn(&str) -> V + Send + Sync + 'static,
     {
         self.tokens
-            .push(TokenEntry::new(pattern.to_string(), Arc::new(constructor)));
+            .push(GenericTokenEntry::new(pattern.to_string(), Arc::new(constructor)));
     }
 
     /// Register a token with a regex pattern and constructor function.
     ///
     /// When input matches the regex pattern, `constructor` will be called
-    /// with the matched string to produce the atom.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Parse numeric literals matching a pattern
-    /// tokenizer.register_token_regex(r"^-?\d+", |s| MettaValue::Long(s.parse().unwrap()))?;
-    /// ```
+    /// with the matched string to produce the value.
     pub fn register_token_regex<F>(
         &mut self,
         pattern: &str,
         constructor: F,
     ) -> Result<(), regex::Error>
     where
-        F: Fn(&str) -> MettaValue + Send + Sync + 'static,
+        F: Fn(&str) -> V + Send + Sync + 'static,
     {
-        let entry = TokenEntry::new_regex(pattern, Arc::new(constructor))?;
+        let entry = GenericTokenEntry::new_regex(pattern, Arc::new(constructor))?;
         self.tokens.push(entry);
         Ok(())
     }
@@ -267,19 +267,19 @@ impl Tokenizer {
     pub fn register_token_with_constructor(
         &mut self,
         pattern: &str,
-        constructor: TokenConstructor,
+        constructor: GenericTokenConstructor<V>,
     ) {
         self.tokens
-            .push(TokenEntry::new(pattern.to_string(), constructor));
+            .push(GenericTokenEntry::new(pattern.to_string(), constructor));
     }
 
     /// Register a token with an existing constructor using regex pattern.
     pub fn register_token_with_constructor_regex(
         &mut self,
         pattern: &str,
-        constructor: TokenConstructor,
+        constructor: GenericTokenConstructor<V>,
     ) -> Result<(), regex::Error> {
-        let entry = TokenEntry::new_regex(pattern, constructor)?;
+        let entry = GenericTokenEntry::new_regex(pattern, constructor)?;
         self.tokens.push(entry);
         Ok(())
     }
@@ -291,7 +291,7 @@ impl Tokenizer {
     ///
     /// For exact patterns: requires string equality.
     /// For regex patterns: requires full match.
-    pub fn find_match(&self, name: &str) -> Option<&TokenConstructor> {
+    pub fn find_match(&self, name: &str) -> Option<&GenericTokenConstructor<V>> {
         // Search in reverse order (most recent first) for shadowing
         for entry in self.tokens.iter().rev() {
             if entry.pattern_ref().matches(name) {
@@ -305,10 +305,8 @@ impl Tokenizer {
     ///
     /// Returns the matched string and constructor if found.
     /// Useful for tokenizer scanning where we want longest prefix match.
-    pub fn find_prefix_match<'a>(&self, input: &'a str) -> Option<(&'a str, &TokenConstructor)> {
+    pub fn find_prefix_match<'a>(&self, input: &'a str) -> Option<(&'a str, &GenericTokenConstructor<V>)> {
         // Search in reverse order (most recent first) for shadowing
-        // Note: For true longest-match semantics, we'd need to check all patterns
-        // and return the longest. Current implementation returns first match.
         for entry in self.tokens.iter().rev() {
             if let Some(matched) = entry.pattern_ref().match_prefix(input) {
                 return Some((matched, &entry.constructor));
@@ -317,19 +315,10 @@ impl Tokenizer {
         None
     }
 
-    /// Find an exact match for a token name (legacy API).
-    ///
-    /// This is equivalent to `find_match` for exact patterns.
-    /// Kept for backward compatibility.
-    #[deprecated(since = "0.3.0", note = "Use find_match instead")]
-    pub fn find_exact(&self, name: &str) -> Option<&TokenConstructor> {
-        self.find_match(name)
-    }
-
     /// Look up a token and construct its value.
     ///
     /// Returns `Some(value)` if the token is registered, `None` otherwise.
-    pub fn lookup(&self, name: &str) -> Option<MettaValue> {
+    pub fn lookup(&self, name: &str) -> Option<V> {
         self.find_match(name).map(|constructor| constructor(name))
     }
 
@@ -349,7 +338,7 @@ impl Tokenizer {
     ///
     /// Entries from `other` are appended, so they shadow existing entries
     /// with the same pattern.
-    pub fn merge_from(&mut self, other: &Tokenizer) {
+    pub fn merge_from(&mut self, other: &GenericTokenizer<V>) {
         for entry in &other.tokens {
             self.tokens.push(entry.clone());
         }
@@ -379,13 +368,13 @@ impl Tokenizer {
     }
 }
 
-impl Default for Tokenizer {
+impl<V: Clone + Send + Sync + 'static> Default for GenericTokenizer<V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Clone for Tokenizer {
+impl<V: Clone + Send + Sync + 'static> Clone for GenericTokenizer<V> {
     fn clone(&self) -> Self {
         Self {
             tokens: self.tokens.clone(),
@@ -393,18 +382,22 @@ impl Clone for Tokenizer {
     }
 }
 
-impl std::fmt::Debug for Tokenizer {
+impl<V: Clone + Send + Sync + 'static> std::fmt::Debug for GenericTokenizer<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Tokenizer")
+        f.debug_struct("GenericTokenizer")
             .field("token_count", &self.tokens.len())
             .field("patterns", &self.patterns())
             .finish()
     }
 }
 
+/// Legacy type alias for MettaValue tokenizer.
+pub type Tokenizer = GenericTokenizer<MettaValue>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::models::MettaValueInner;
 
     #[test]
     fn test_new_tokenizer() {

@@ -14,7 +14,7 @@ fn bench_simple_derivation(c: &mut Criterion) {
             fact_count,
             |b, &count| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
 
                     // Add parent facts
                     for i in 0..count {
@@ -46,7 +46,7 @@ fn bench_multi_generation(c: &mut Criterion) {
     for depth in [3, 5, 10].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(depth), depth, |b, &d| {
             b.iter(|| {
-                let mut env = Environment::new();
+                let mut env = Environment::default();
 
                 // Create linear family tree
                 for i in 0..d {
@@ -91,7 +91,7 @@ fn bench_multi_generation(c: &mut Criterion) {
 fn bench_full_ancestor_mm2(c: &mut Criterion) {
     c.bench_function("mork_full_ancestor_mm2", |b| {
         b.iter(|| {
-            let mut env = Environment::new();
+            let mut env = Environment::default();
 
             // Family tree (12 parent relationships)
             let parents = [
@@ -179,7 +179,7 @@ fn bench_operations(c: &mut Criterion) {
             op_count,
             |b, &count| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
 
                     // Add initial facts
                     for i in 0..count {
@@ -212,7 +212,7 @@ fn bench_operations(c: &mut Criterion) {
 fn bench_priority_ordering(c: &mut Criterion) {
     c.bench_function("mork_priority_ordering", |b| {
         b.iter(|| {
-            let mut env = Environment::new();
+            let mut env = Environment::default();
 
             // Add facts
             env.add_to_space(&compile("(trigger A)").unwrap().source[0]);
@@ -264,7 +264,7 @@ fn bench_conjunction_goals(c: &mut Criterion) {
             goal_count,
             |b, &count| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
 
                     // Add chain of facts
                     for i in 0..count {
@@ -307,7 +307,7 @@ fn bench_convergence(c: &mut Criterion) {
             max_depth,
             |b, &depth| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
 
                     // Add base fact
                     env.add_to_space(&compile("(counter 0)").unwrap().source[0]);
@@ -342,7 +342,7 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     for nesting in [1, 2, 3, 4].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(nesting), nesting, |b, &n| {
             b.iter(|| {
-                let mut env = Environment::new();
+                let mut env = Environment::default();
 
                 // Create nested structure
                 let mut nested = String::from("value");

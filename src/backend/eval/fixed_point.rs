@@ -113,7 +113,7 @@ pub fn sort_rules_by_priority(rules: &mut [ExecRule]) {
 /// use mettatron::backend::eval::fixed_point::{ExecRule, eval_to_fixed_point};
 /// use mettatron::backend::models::MettaValue;
 ///
-/// let mut env = Environment::new();
+/// let mut env = Environment::default();
 /// let rules = vec![]; // Add exec rules here
 ///
 /// let result = eval_to_fixed_point(rules, env, 100);
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_empty_rules() {
-        let env = Environment::new();
+        let env = Environment::default();
         let rules = vec![];
 
         let result = eval_to_fixed_point(rules, env, 10);
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_count_facts() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Initially no facts
         assert_eq!(count_facts(&env), 0);
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_extract_exec_rules() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add an exec rule as a fact
         let exec = compile("(exec (0 0) (, (parent $p $c)) (, (child $c $p)))").unwrap();
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn test_fixed_point_no_rules() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add initial facts
         let fact = compile("(parent Alice Bob)").unwrap();
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_iteration_limit() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Create a rule that generates infinite facts (if it fired)
         // For now, we just test that iteration limit works

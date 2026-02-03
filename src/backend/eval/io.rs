@@ -135,7 +135,7 @@ pub(super) fn eval_nop(_items: Vec<MettaValue>, env: Environment) -> EvalResult 
 
 /// Convert a MettaValue to a string for printing
 /// This converts the value to its MeTTa representation
-fn atom_to_string(value: &MettaValue) -> String {
+pub fn atom_to_string(value: &MettaValue) -> String {
     match value.inner() {
         MettaValueInner::Long(n) => n.to_string(),
         MettaValueInner::Float(f) => f.to_string(),
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_nop_returns_unit() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (nop)
         let items = vec![MettaValue::Atom("nop".to_string())];
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_nop_ignores_arguments() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (nop 1 2 3) - arguments should be ignored
         let items = vec![
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_println_basic_value() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (println! 42) - basic value printing
         let items = vec![
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_println_string() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (println! "Hello, World!")
         let items = vec![
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_println_atom() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (println! foo)
         let items = vec![
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_println_sexpr() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (println! (foo bar))
         let items = vec![
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_println_missing_args() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (println!) - missing argument
         let items = vec![MettaValue::Atom("println!".to_string())];
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_println_with_expression() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (println! (+ 2 3)) - prints the result of the expression
         let items = vec![
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_trace_returns_value() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (trace! "debug" 42) - should return 42
         let items = vec![
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn test_trace_with_complex_value() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (trace! "msg" (foo bar)) - should return (foo bar)
         let value = MettaValue::SExpr(vec![
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_trace_missing_args() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (trace! "msg") - missing value
         let items = vec![
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_trace_no_args() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (trace!) - missing both args
         let items = vec![MettaValue::Atom("trace!".to_string())];

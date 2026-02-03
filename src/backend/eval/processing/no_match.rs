@@ -9,6 +9,7 @@ use tracing::trace;
 use crate::backend::environment::Environment;
 #[cfg(feature = "fuzzy-suggestions")]
 use crate::backend::fuzzy_match::SuggestionConfidence;
+#[allow(unused_imports)]
 use crate::backend::models::{MettaValue, MettaValueInner};
 
 #[cfg(feature = "fuzzy-suggestions")]
@@ -30,11 +31,15 @@ use super::super::suggest_special_form_with_context;
 /// **Performance Note**: Fuzzy suggestions are disabled by default because
 /// they add 10-20% overhead (DynamicDawgChar query operations).
 /// Enable with `--features fuzzy-suggestions` if you need typo detection.
+///
+/// **ADD Mode Semantics**: Only top-level expressions (depth == 0) are added to space.
+/// Nested sub-expressions evaluated as arguments are NOT added to space.
 #[cfg(feature = "fuzzy-suggestions")]
 pub fn handle_no_rule_match(
     evaled_items: Vec<MettaValue>,
     sexpr: &MettaValue,
     unified_env: &mut Environment,
+    depth: usize,
 ) -> MettaValue {
     // Check for likely typos before falling back to ADD mode
     if let Some(val) = evaled_items.first() {
@@ -91,7 +96,10 @@ pub fn handle_no_rule_match(
 
     // ADD mode: add to space and return unreduced s-expression
     // In official MeTTa's default ADD mode, bare expressions are automatically added to &self
-    unified_env.add_to_space(sexpr);
+    // Only add top-level expressions (depth == 0) to space, not nested sub-expressions
+    if depth == 0 {
+        unified_env.add_to_space(sexpr);
+    }
     sexpr.clone()
 }
 
@@ -99,15 +107,22 @@ pub fn handle_no_rule_match(
 ///
 /// This is the optimized version without fuzzy suggestions.
 /// For typo detection, enable the `fuzzy-suggestions` feature.
+///
+/// **ADD Mode Semantics**: Only top-level expressions (depth == 0) are added to space.
+/// Nested sub-expressions evaluated as arguments are NOT added to space.
 #[cfg(not(feature = "fuzzy-suggestions"))]
 #[inline]
 pub fn handle_no_rule_match(
     _evaled_items: Vec<MettaValue>,
     sexpr: &MettaValue,
     unified_env: &mut Environment,
+    depth: usize,
 ) -> MettaValue {
     // ADD mode: add to space and return unreduced s-expression
     // In official MeTTa's default ADD mode, bare expressions are automatically added to &self
-    unified_env.add_to_space(sexpr);
+    // Only add top-level expressions (depth == 0) to space, not nested sub-expressions
+    if depth == 0 {
+        unified_env.add_to_space(sexpr);
+    }
     sexpr.clone()
 }

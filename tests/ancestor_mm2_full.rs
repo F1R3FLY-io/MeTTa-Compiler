@@ -31,7 +31,7 @@ use mettatron::backend::eval::fixed_point::eval_env_to_fixed_point;
 
 #[test]
 fn test_full_ancestor_mm2() {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // ========== FACTS (lines 8-19) ==========
 
@@ -219,7 +219,7 @@ fn test_ancestor_mm2_with_incest_detection() {
     // This test adds the additional family relationships mentioned in
     // ancestor.mm2 lines 41-45 to test incest detection rules
 
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Base family (subset for faster test)
     env.add_to_space(&compile("(parent Bob Ann)").unwrap().source[0]);
@@ -313,7 +313,7 @@ fn test_ancestor_mm2_meta_rule_execution() {
     // Focus on testing the meta-programming pattern (lines 33-36)
     // where exec rules generate new exec rules
 
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Simple family: Ann -> Bob -> Carol
     env.add_to_space(&compile("(parent Bob Ann)").unwrap().source[0]);

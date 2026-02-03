@@ -25,6 +25,12 @@ mod arithmetic;
 mod arithmetic_tco;
 mod comparison;
 mod comparison_tco;
+pub mod generic_arithmetic;
+pub mod generic_comparison;
+pub mod generic_logical;
+pub mod generic_registry;
+pub mod generic_state;
+pub mod generic_traits;
 mod logical;
 mod logical_tco;
 mod state;
@@ -48,6 +54,22 @@ pub use comparison_tco::{
 };
 pub use logical::{AndOp, NotOp, OrOp};
 pub use logical_tco::{AndOpTCO, NotOpTCO, OrOpTCO};
+pub use generic_arithmetic::{
+    AddOpGeneric, DivOpGeneric, ModOpGeneric, MulOpGeneric, SubOpGeneric,
+};
+pub use generic_comparison::{
+    EqualOpGeneric, GreaterEqOpGeneric, GreaterOpGeneric, LessEqOpGeneric, LessOpGeneric,
+    NotEqualOpGeneric,
+};
+pub use generic_logical::{AndOpGeneric, NotOpGeneric, OrOpGeneric};
+pub use generic_registry::{
+    execute_generic_grounded_op, get_generic_registry, has_generic_grounded_op,
+    GenericGroundedRegistry,
+};
+pub use generic_state::{
+    find_error_generic, friendly_type_name_generic, GenericGroundedState, GenericGroundedWork,
+};
+pub use generic_traits::GenericGroundedOperationTCO;
 pub use state::{GroundedState, GroundedWork};
 pub use traits::{EvalFn, GroundedOperation, GroundedOperationTCO};
 

@@ -42,7 +42,7 @@ fn bench_individual_facts(c: &mut Criterion) {
             fact_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     for fact in &facts {
                         env.add_to_space(black_box(fact));
                     }
@@ -67,7 +67,7 @@ fn bench_bulk_facts(c: &mut Criterion) {
             fact_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     env.add_facts_bulk(black_box(&facts)).unwrap();
                     black_box(env);
                 });
@@ -90,7 +90,7 @@ fn bench_individual_rules(c: &mut Criterion) {
             rule_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     for rule in &rules {
                         env.add_rule(black_box(rule.clone()));
                     }
@@ -115,7 +115,7 @@ fn bench_bulk_rules(c: &mut Criterion) {
             rule_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     env.add_rules_bulk(black_box(rules.clone())).unwrap();
                     black_box(env);
                 });
@@ -139,7 +139,7 @@ fn bench_fact_speedup_comparison(c: &mut Criterion) {
             fact_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     for fact in &facts {
                         env.add_to_space(black_box(fact));
                     }
@@ -154,7 +154,7 @@ fn bench_fact_speedup_comparison(c: &mut Criterion) {
             fact_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     env.add_facts_bulk(black_box(&facts)).unwrap();
                     black_box(env);
                 });
@@ -178,7 +178,7 @@ fn bench_rule_speedup_comparison(c: &mut Criterion) {
             rule_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     for rule in &rules {
                         env.add_rule(black_box(rule.clone()));
                     }
@@ -193,7 +193,7 @@ fn bench_rule_speedup_comparison(c: &mut Criterion) {
             rule_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     env.add_rules_bulk(black_box(rules.clone())).unwrap();
                     black_box(env);
                 });

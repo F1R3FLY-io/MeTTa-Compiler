@@ -22,7 +22,7 @@ impl BytecodeVM {
             .as_mut()
             .ok_or_else(|| VmError::Runtime("new-state requires environment".to_string()))?;
 
-        let state_id = env.create_state(initial_value);
+        let state_id = env.create_state(&initial_value);
         self.push(MettaValue::State(state_id));
         Ok(())
     }
@@ -68,7 +68,7 @@ impl BytecodeVM {
                     VmError::Runtime("change-state! requires environment".to_string())
                 })?;
 
-                if env.change_state(*state_id, new_value) {
+                if env.change_state(*state_id, &new_value) {
                     // Return the state reference for chaining
                     self.push(MettaValue::State(*state_id));
                     Ok(())

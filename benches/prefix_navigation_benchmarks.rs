@@ -7,7 +7,7 @@ use mettatron::backend::{Environment, MettaValue};
 /// Generate test environment with N type assertions and M rules
 #[allow(dead_code)]
 fn generate_test_env(num_types: usize, num_rules: usize) -> Environment {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Add type assertions (: name type)
     for i in 0..num_types {
@@ -85,7 +85,7 @@ fn bench_get_type_baseline_mixed_large(b: &mut Bencher) {
 
 #[bench]
 fn bench_match_space_baseline_10_facts(b: &mut Bencher) {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Add facts
     for i in 0..10 {
@@ -108,7 +108,7 @@ fn bench_match_space_baseline_10_facts(b: &mut Bencher) {
 
 #[bench]
 fn bench_match_space_baseline_100_facts(b: &mut Bencher) {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     for i in 0..100 {
         let fact = MettaValue::SExpr(vec![
@@ -130,7 +130,7 @@ fn bench_match_space_baseline_100_facts(b: &mut Bencher) {
 
 #[bench]
 fn bench_match_space_baseline_1000_facts(b: &mut Bencher) {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     for i in 0..1000 {
         let fact = MettaValue::SExpr(vec![
@@ -187,7 +187,7 @@ fn bench_get_type_sparse_1_in_10000(b: &mut Bencher) {
 
 #[bench]
 fn bench_has_fact_baseline_10_facts(b: &mut Bencher) {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     for i in 0..10 {
         let fact = MettaValue::SExpr(vec![
@@ -202,7 +202,7 @@ fn bench_has_fact_baseline_10_facts(b: &mut Bencher) {
 
 #[bench]
 fn bench_has_fact_baseline_100_facts(b: &mut Bencher) {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     for i in 0..100 {
         let fact = MettaValue::SExpr(vec![
@@ -217,7 +217,7 @@ fn bench_has_fact_baseline_100_facts(b: &mut Bencher) {
 
 #[bench]
 fn bench_has_fact_baseline_1000_facts(b: &mut Bencher) {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     for i in 0..1000 {
         let fact = MettaValue::SExpr(vec![

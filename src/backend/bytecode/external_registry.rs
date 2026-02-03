@@ -83,7 +83,7 @@ impl ExternalContext {
     /// Create a default context with empty environment
     pub fn default() -> Self {
         Self {
-            env: Environment::new(),
+            env: Environment::default(),
         }
     }
 }

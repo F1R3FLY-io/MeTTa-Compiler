@@ -7,7 +7,7 @@ use crate::backend::models::{MettaValue, MettaValueInner};
 // Helper macro to evaluate and assert result
 macro_rules! assert_eval {
     ($expr:expr, $expected:expr) => {{
-        let env = Environment::new();
+        let env = Environment::default();
         let (results, _) = eval($expr, env);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], $expected);
@@ -17,7 +17,7 @@ macro_rules! assert_eval {
 // Helper to check for error with specific type
 macro_rules! assert_error {
     ($expr:expr, $error_type:expr) => {{
-        let env = Environment::new();
+        let env = Environment::default();
         let (results, _) = eval($expr, env);
         assert_eq!(results.len(), 1);
         match results[0].inner() {
@@ -54,7 +54,7 @@ fn test_basic_operations() {
 
 #[test]
 fn test_eval_logical_and() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // True and True = True
     let value = MettaValue::SExpr(vec![
@@ -99,7 +99,7 @@ fn test_eval_logical_and() {
 
 #[test]
 fn test_eval_logical_or() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // True or True = True
     let value = MettaValue::SExpr(vec![
@@ -144,7 +144,7 @@ fn test_eval_logical_or() {
 
 #[test]
 fn test_eval_logical_not() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // not True = False
     let value = MettaValue::SExpr(vec![
@@ -167,7 +167,7 @@ fn test_eval_logical_not() {
 
 #[test]
 fn test_eval_logical_type_error() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // and with non-boolean should error
     let value = MettaValue::SExpr(vec![
@@ -202,7 +202,7 @@ fn test_eval_logical_type_error() {
 
 #[test]
 fn test_eval_logical_arity_error() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // and with wrong arity
     let value = MettaValue::SExpr(vec![
@@ -226,7 +226,7 @@ fn test_eval_logical_arity_error() {
 
 #[test]
 fn test_arithmetic_type_error_string() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: !(+ 1 "a") should produce TypeError with friendly message
     let value = MettaValue::SExpr(vec![
@@ -259,7 +259,7 @@ fn test_arithmetic_type_error_string() {
 
 #[test]
 fn test_arithmetic_type_error_first_arg() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: !(+ "a" 1) - first argument wrong type
     let value = MettaValue::SExpr(vec![
@@ -290,7 +290,7 @@ fn test_arithmetic_type_error_first_arg() {
 
 #[test]
 fn test_arithmetic_type_error_bool() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: !(* true false) - booleans not valid for arithmetic
     let value = MettaValue::SExpr(vec![
@@ -321,7 +321,7 @@ fn test_arithmetic_type_error_bool() {
 
 #[test]
 fn test_comparison_strings_lexicographic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: !(< "a" "b") - strings support lexicographic comparison
     // "a" < "b" should be true
@@ -342,7 +342,7 @@ fn test_comparison_strings_lexicographic() {
 
 #[test]
 fn test_comparison_type_mismatch() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: !(< 1 "b") - mixing types should produce type error
     let value = MettaValue::SExpr(vec![
@@ -368,7 +368,7 @@ fn test_comparison_type_mismatch() {
 
 #[test]
 fn test_arithmetic_wrong_arity() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: !(+ 1) - wrong number of arguments
     let value = MettaValue::SExpr(vec![MettaValue::Atom("+".to_string()), MettaValue::Long(1)]);
@@ -443,7 +443,7 @@ fn test_modulo() {
 
 #[test]
 fn test_power_basic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: 2^3 = 8
     let value = MettaValue::SExpr(vec![
@@ -488,7 +488,7 @@ fn test_power_basic() {
 
 #[test]
 fn test_power_negative_base() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: (-2)^3 = -8
     let value = MettaValue::SExpr(vec![
@@ -523,7 +523,7 @@ fn test_power_negative_base() {
 
 #[test]
 fn test_power_negative_exponent() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: 2^-3 should produce error (negative exponents not supported for integers)
     let value = MettaValue::SExpr(vec![
@@ -576,7 +576,7 @@ fn test_power_negative_exponent() {
 
 #[test]
 fn test_power_type_error() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: pow-math with string argument should produce TypeError
     let value = MettaValue::SExpr(vec![
@@ -626,7 +626,7 @@ fn test_power_type_error() {
 
 #[test]
 fn test_power_overflow_edge_case() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: 2^63 should produce overflow error (exceeds i64::MAX)
     // 2^63 = 9223372036854775808, which exceeds i64::MAX (9223372036854775807)
@@ -757,7 +757,7 @@ fn test_abs() {
 
 #[test]
 fn test_log_basic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: log_2(8) = 3 (2^3 = 8)
     let value = MettaValue::SExpr(vec![
@@ -802,7 +802,7 @@ fn test_log_basic() {
 
 #[test]
 fn test_log_non_integer_results() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: log_2(10) = 3 (floor of log_2(10) ≈ 3.32)
     let value = MettaValue::SExpr(vec![
@@ -837,7 +837,7 @@ fn test_log_non_integer_results() {
 
 #[test]
 fn test_log_invalid_base() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: log_0(10) should produce error (base <= 0)
     let value = MettaValue::SExpr(vec![
@@ -914,7 +914,7 @@ fn test_log_invalid_base() {
 
 #[test]
 fn test_log_invalid_input() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: log_2(0) should produce error (input <= 0)
     let value = MettaValue::SExpr(vec![
@@ -967,7 +967,7 @@ fn test_log_invalid_input() {
 
 #[test]
 fn test_log_type_error() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: log-math with string base should produce TypeError
     let value = MettaValue::SExpr(vec![
@@ -1079,7 +1079,7 @@ fn test_rounding_functions() {
 
 #[test]
 fn test_sin_basic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: sin(0) = 0
     let value = MettaValue::SExpr(vec![
@@ -1126,7 +1126,7 @@ fn test_sin_basic() {
 
 #[test]
 fn test_asin_basic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: asin(0) = 0
     let value = MettaValue::SExpr(vec![
@@ -1183,7 +1183,7 @@ fn test_asin_basic() {
 
 #[test]
 fn test_asin_out_of_range() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: asin(2) should produce error (out of range)
     let value = MettaValue::SExpr(vec![
@@ -1234,7 +1234,7 @@ fn test_asin_out_of_range() {
 
 #[test]
 fn test_cos_basic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: cos(0) = 1
     let value = MettaValue::SExpr(vec![
@@ -1279,7 +1279,7 @@ fn test_cos_basic() {
 
 #[test]
 fn test_acos_basic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: acos(1) = 0
     let value = MettaValue::SExpr(vec![
@@ -1336,7 +1336,7 @@ fn test_acos_basic() {
 
 #[test]
 fn test_acos_out_of_range() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: acos(2) should produce error (out of range)
     let value = MettaValue::SExpr(vec![
@@ -1387,7 +1387,7 @@ fn test_acos_out_of_range() {
 
 #[test]
 fn test_tan_basic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: tan(0) = 0
     let value = MettaValue::SExpr(vec![
@@ -1420,7 +1420,7 @@ fn test_tan_basic() {
 
 #[test]
 fn test_atan_basic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: atan(0) = 0
     let value = MettaValue::SExpr(vec![
@@ -1458,7 +1458,7 @@ fn test_atan_basic() {
 
 #[test]
 fn test_trigonometric_type_error() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: sin-math with string argument should produce TypeError
     // (All trig functions use the same extract_float helper, so one test is sufficient)
@@ -1503,7 +1503,7 @@ fn test_trigonometric_type_error() {
 
 #[test]
 fn test_isnan_basic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: isnan(NaN) = True
     let value = MettaValue::SExpr(vec![
@@ -1562,7 +1562,7 @@ fn test_isnan_basic() {
 
 #[test]
 fn test_isinf_basic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: isinf(infinity) = True
     let value = MettaValue::SExpr(vec![
@@ -1621,7 +1621,7 @@ fn test_isinf_basic() {
 
 #[test]
 fn test_isnan_isinf_type_error() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: isnan-math with string argument should produce TypeError
     let value = MettaValue::SExpr(vec![
@@ -1664,7 +1664,7 @@ fn test_isnan_isinf_type_error() {
 
 #[test]
 fn test_mixed_arithmetic_and_power() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: sqrt(pow(2, 4)) = sqrt(16) = 4
     let value = MettaValue::SExpr(vec![
@@ -1708,7 +1708,7 @@ fn test_mixed_arithmetic_and_power() {
 
 #[test]
 fn test_mixed_logarithm_and_power() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: log(2, pow(2, 3)) = log(2, 8) = 3
     let value = MettaValue::SExpr(vec![
@@ -1741,7 +1741,7 @@ fn test_mixed_logarithm_and_power() {
 
 #[test]
 fn test_mixed_rounding_and_arithmetic() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: floor(sqrt(10)) = floor(3.16...) = 3
     let value = MettaValue::SExpr(vec![
@@ -1780,7 +1780,7 @@ fn test_mixed_rounding_and_arithmetic() {
 
 #[test]
 fn test_mixed_trigonometric_operations() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: sin(acos(0)) = sin(π/2) = 1
     let value = MettaValue::SExpr(vec![
@@ -1844,7 +1844,7 @@ fn test_mixed_trigonometric_operations() {
 
 #[test]
 fn test_mixed_complex_expressions() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: abs(-5) * 2 + 3 = 5 * 2 + 3 = 13
     let value = MettaValue::SExpr(vec![
@@ -1901,7 +1901,7 @@ fn test_mixed_complex_expressions() {
 
 #[test]
 fn test_mixed_with_comparisons() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: < (sqrt 16) 5 = < 4 5 = True
     let value = MettaValue::SExpr(vec![
@@ -1933,7 +1933,7 @@ fn test_mixed_with_comparisons() {
 
 #[test]
 fn test_mixed_with_logical_operators() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: and (< (abs -5) 10) (> (sqrt 9) 2) = and (< 5 10) (> 3 2) = and True True = True
     let value = MettaValue::SExpr(vec![

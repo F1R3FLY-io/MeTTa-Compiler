@@ -115,7 +115,7 @@ pub(crate) fn eval_new_state(items: Vec<MettaValue>, env: Environment) -> EvalRe
         return (vec![err], env1);
     }
 
-    let value = value_results[0].clone();
+    let value = &value_results[0];
     let state_id = env1.create_state(value);
     (vec![MettaValue::State(state_id)], env1)
 }
@@ -206,7 +206,7 @@ pub(crate) fn eval_change_state(items: Vec<MettaValue>, env: Environment) -> Eva
     }
 
     let state_value = &state_results[0];
-    let value = value_results[0].clone();
+    let value = &value_results[0];
 
     match state_value.inner() {
         MettaValueInner::State(state_id) => {

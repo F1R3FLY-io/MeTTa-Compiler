@@ -10,6 +10,7 @@ use tracing::trace;
 use crate::backend::models::MettaValue;
 
 /// Maximum number of results from cartesian product to prevent combinatorial explosion
+#[allow(dead_code)]
 pub const MAX_CARTESIAN_RESULTS: usize = 10_000;
 
 /// SmallVec type for Cartesian product combinations.
@@ -55,6 +56,7 @@ impl CartesianProductIter {
     }
 
     /// Create from pre-wrapped Arc results (avoids re-wrapping).
+    #[allow(dead_code)]
     pub fn from_arc(results: Vec<Arc<Vec<MettaValue>>>) -> Option<Self> {
         // Check for empty result lists - no combinations possible
         if results.iter().any(|r| r.is_empty()) {
@@ -156,6 +158,7 @@ pub fn cartesian_product_lazy(results: Vec<Vec<MettaValue>>) -> CartesianProduct
 ///
 /// This function has a built-in limit (MAX_CARTESIAN_RESULTS) to prevent combinatorial explosion.
 /// Returns Err with an error message if the limit is exceeded.
+#[allow(dead_code)]
 pub fn cartesian_product(results: &[Vec<MettaValue>]) -> Result<Vec<Vec<MettaValue>>, MettaValue> {
     trace!(target: "mettatron::backend::eval::cartesian_product", ?results);
     if results.is_empty() {

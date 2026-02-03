@@ -44,7 +44,7 @@ fn would_suggest_for_arity(typo: &str, target: &str, arity: usize) -> bool {
 /// including type compatibility checking.
 fn would_suggest_with_context(typo: &str, target: &str, args: &[MettaValue]) -> bool {
     let matcher = matcher_with_builtins();
-    let env = Environment::new();
+    let env = Environment::default();
 
     let ctx = SuggestionContext::for_head(args, &env);
     let result = matcher.smart_suggest_with_context(typo, 3, &ctx);
@@ -289,7 +289,7 @@ fn test_fuzzy_matcher_did_you_mean() {
 
 #[test]
 fn test_suggestion_context_for_head() {
-    let env = Environment::new();
+    let env = Environment::default();
     let args = vec![
         MettaValue::Atom("unknown".to_string()),
         MettaValue::Long(1),
@@ -307,7 +307,7 @@ fn test_suggestion_context_for_head() {
 
 #[test]
 fn test_suggestion_context_for_arg() {
-    let env = Environment::new();
+    let env = Environment::default();
     let args = vec![
         MettaValue::Atom("match".to_string()),
         MettaValue::Atom("unknown".to_string()),
@@ -321,7 +321,7 @@ fn test_suggestion_context_for_arg() {
 
 #[test]
 fn test_suggestion_context_arity() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Zero arity (just the head)
     let args = vec![MettaValue::Atom("nop".to_string())];
@@ -346,7 +346,7 @@ fn test_suggestion_context_arity() {
 #[test]
 fn test_smart_suggest_respects_arity() {
     let matcher = matcher_with_builtins();
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (lett x 1 x) - arity 3, should suggest let
     let args = vec![
@@ -380,7 +380,7 @@ fn test_smart_suggest_respects_arity() {
 #[test]
 fn test_smart_suggest_confidence_levels() {
     let matcher = matcher_with_builtins();
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Long word with small edit distance should have higher confidence
     let args = vec![
@@ -510,7 +510,7 @@ fn test_compile_multiple_expressions() {
 
 #[test]
 fn test_eval_arithmetic() {
-    let env = Environment::new();
+    let env = Environment::default();
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("+".to_string()),
         MettaValue::Long(1),
@@ -528,7 +528,7 @@ fn test_eval_arithmetic() {
 
 #[test]
 fn test_eval_if_true() {
-    let env = Environment::new();
+    let env = Environment::default();
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("if".to_string()),
         MettaValue::Bool(true),
@@ -547,7 +547,7 @@ fn test_eval_if_true() {
 
 #[test]
 fn test_eval_if_false() {
-    let env = Environment::new();
+    let env = Environment::default();
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("if".to_string()),
         MettaValue::Bool(false),
@@ -570,14 +570,14 @@ fn test_eval_if_false() {
 
 #[test]
 fn test_environment_new() {
-    let env = Environment::new();
+    let env = Environment::default();
     // New environment should be valid
     assert_eq!(env.rule_count(), 0, "New environment should have no rules");
 }
 
 #[test]
 fn test_environment_clone() {
-    let env1 = Environment::new();
+    let env1 = Environment::default();
     let env2 = env1.clone();
 
     // Both should be valid and independent

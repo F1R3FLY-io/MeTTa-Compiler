@@ -25,14 +25,45 @@
 //! - O(1) cloning via structural sharing (`im::HashMap`)
 //! - Proper multiplicity tracking (count per unique atom)
 //! - Memory-efficient storage (one atom + count, not N copies)
+//!
+//! ## Generic Value Support
+//!
+//! SpaceHandle stores atoms via `AtomMultisetSnapshot` which uses byte-based
+//! storage via `SymbolTable`. This enables generic operations:
+//! - `add_atom_generic<V>(&self, atom: &V)` - Serializes V to bytes, interns in SymbolTable
+//! - `collapse_generic<V, F>(&self, factory: &F) -> Vec<V>` - Deserializes bytes to V
+//!
+//! This design eliminates conversions at evaluation boundaries - atoms are stored
+//! once as bytes and deserialized only when needed.
 
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use super::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
 use super::{AtomMultisetSnapshot, MettaValue, Rule, SymbolTable};
 use crate::backend::environment::MultiplicityMatch;
 use crate::backend::modules::{ModId, ModuleSpace};
+
+/// Generic version of MultiplicityMatch that works with any value type.
+///
+/// This enables generic evaluation to work with space multiplicities
+/// without requiring conversions at boundaries.
+#[derive(Debug, Clone)]
+pub struct GenericMultiplicityMatch<V> {
+    /// The matched value
+    pub value: V,
+    /// The number of times this value appears in the space
+    pub count: usize,
+}
+
+impl<V> GenericMultiplicityMatch<V> {
+    /// Create a new generic multiplicity match.
+    #[inline]
+    pub fn new(value: V, count: usize) -> Self {
+        Self { value, count }
+    }
+}
 
 /// Local modifications overlay for Copy-on-Write semantics.
 ///
@@ -251,6 +282,36 @@ impl SpaceHandle {
             name,
             symbols,
             backing: SpaceBacking::Module { mod_id, space },
+        }
+    }
+
+    /// Create a space handle from serialized data.
+    ///
+    /// This is used when deserializing Space values from bytes. The resulting
+    /// handle has minimal backing data - it's essentially a reference that must
+    /// be resolved against the actual Environment to access atoms.
+    ///
+    /// # Arguments
+    /// - `id` - The space's unique identifier
+    /// - `name` - Human-readable name for the space
+    /// - `is_module` - Whether this is a module-backed space
+    pub fn new_from_serialized(id: u64, name: String, is_module: bool) -> Self {
+        let symbols = Arc::new(SymbolTable::new());
+        // Create minimal backing - the Environment will need to be consulted for actual data
+        if is_module {
+            // For module spaces, we create a stub - actual data must come from Environment
+            // Create empty owned backing since we don't have the actual module reference
+            Self {
+                id,
+                name,
+                symbols: Arc::clone(&symbols),
+                backing: SpaceBacking::Owned {
+                    base: Arc::new(RwLock::new(SpaceData::new(symbols))),
+                    overlay: None,
+                },
+            }
+        } else {
+            Self::new(id, name)
         }
     }
 
@@ -554,7 +615,7 @@ impl SpaceHandle {
     /// Unlike the previous implementation that always returned count=1, this
     /// returns the actual multiplicities, enabling efficient handling of
     /// high-multiplicity atoms.
-    pub fn collapse_with_multiplicity(&self) -> Vec<MultiplicityMatch> {
+    pub fn collapse_with_multiplicity(&self) -> Vec<MultiplicityMatch<MettaValue>> {
         match &self.backing {
             SpaceBacking::Owned { base, overlay } => {
                 let base_data = base.read();
@@ -751,6 +812,165 @@ impl SpaceHandle {
             }
         }
     }
+
+    // ========================================================================
+    // Generic Value Operations
+    // ========================================================================
+    // These methods work with any value type implementing MettaValueTrait.
+    // Atoms are stored as bytes via SymbolTable, enabling zero-conversion
+    // evaluation at semantic boundaries.
+    // ========================================================================
+
+    /// Add an atom of any type implementing MettaValueTrait.
+    ///
+    /// The value is serialized to bytes and interned in the SymbolTable.
+    /// This enables generic evaluation without conversion at boundaries.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Works with both MettaValue and ArenaValue
+    /// handle.add_atom_generic(&my_value);
+    /// ```
+    pub fn add_atom_generic<V: MettaValueTrait>(&self, atom: &V) {
+        // Serialize to bytes - this is the canonical byte representation
+        let bytes = atom.serialize();
+
+        match &self.backing {
+            SpaceBacking::Owned { base, overlay } => {
+                if let Some(overlay) = overlay {
+                    // Forked: add to overlay via deserialization to MettaValue
+                    // (AtomMultisetSnapshot currently works with MettaValue)
+                    let heap_atom = self.deserialize_to_metta(&bytes);
+                    let mut overlay_lock = overlay.write();
+                    // If this atom was previously removed, decrement removal count
+                    if overlay_lock.removed.contains(&heap_atom) {
+                        if let Some(new_removed) = overlay_lock.removed.remove(&heap_atom) {
+                            overlay_lock.removed = new_removed;
+                        }
+                    }
+                    overlay_lock.added = overlay_lock.added.insert(&heap_atom);
+                } else {
+                    // Not forked: add directly to base
+                    let heap_atom = self.deserialize_to_metta(&bytes);
+                    let mut data = base.write();
+                    data.atoms = data.atoms.insert(&heap_atom);
+                }
+            }
+            SpaceBacking::Module { space, .. } => {
+                // Module spaces need MettaValue - deserialize from bytes
+                let heap_atom = self.deserialize_to_metta(&bytes);
+                let mut space = space.write();
+                space.add_atom(heap_atom);
+            }
+        }
+    }
+
+    /// Remove an atom of any type implementing MettaValueTrait.
+    ///
+    /// Returns true if the atom was found and removed.
+    pub fn remove_atom_generic<V: MettaValueTrait>(&self, atom: &V) -> bool {
+        // Serialize to bytes for lookup
+        let bytes = atom.serialize();
+        let heap_atom = self.deserialize_to_metta(&bytes);
+
+        // Delegate to existing remove_atom
+        self.remove_atom(&heap_atom)
+    }
+
+    /// Check if the space contains a specific atom (generic version).
+    pub fn contains_generic<V: MettaValueTrait>(&self, atom: &V) -> bool {
+        let bytes = atom.serialize();
+        let heap_atom = self.deserialize_to_metta(&bytes);
+        self.contains(&heap_atom)
+    }
+
+    /// Get all atoms in this space as generic values.
+    ///
+    /// This is the generic version of `collapse()` that returns values
+    /// of any type implementing MettaValueTrait.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `V`: The output value type (must implement `MettaValueTrait + Clone`)
+    /// - `F`: The factory type (must implement `MettaValueFactory<V>`)
+    ///
+    /// # Arguments
+    ///
+    /// - `factory`: Factory for constructing output values
+    pub fn collapse_generic<V, F>(&self, factory: &F) -> Vec<V>
+    where
+        V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+        F: MettaValueFactory<V>,
+    {
+        // Get heap values and convert each to the target type
+        let heap_atoms = self.collapse();
+        heap_atoms
+            .iter()
+            .map(|atom| {
+                // Serialize the MettaValue to bytes
+                let bytes = atom.serialize();
+                // Deserialize to the target type
+                match factory.deserialize(&bytes) {
+                    Ok((value, _)) => value,
+                    Err(_) => {
+                        // Fallback: create an error atom
+                        factory.atom("?deserialization_error?")
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Get atoms as MultiplicityMatch with their actual counts (generic version).
+    ///
+    /// This provides type consistency with `Environment::match_space()` and
+    /// returns values in the requested generic type.
+    pub fn collapse_with_multiplicity_generic<V, F>(&self, factory: &F) -> Vec<GenericMultiplicityMatch<V>>
+    where
+        V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+        F: MettaValueFactory<V>,
+    {
+        let heap_matches = self.collapse_with_multiplicity();
+        heap_matches
+            .into_iter()
+            .map(|m| {
+                let bytes = m.value.serialize();
+                let value = match factory.deserialize(&bytes) {
+                    Ok((v, _)) => v,
+                    Err(_) => factory.atom("?deserialization_error?"),
+                };
+                GenericMultiplicityMatch {
+                    value,
+                    count: m.count,
+                }
+            })
+            .collect()
+    }
+
+    /// Get the multiplicity (count) of a specific atom (generic version).
+    pub fn atom_multiplicity_generic<V: MettaValueTrait>(&self, atom: &V) -> usize {
+        let bytes = atom.serialize();
+        let heap_atom = self.deserialize_to_metta(&bytes);
+        self.atom_multiplicity(&heap_atom)
+    }
+
+    // ========================================================================
+    // Internal Helpers
+    // ========================================================================
+
+    /// Deserialize bytes to MettaValue using the built-in deserializer.
+    fn deserialize_to_metta(&self, bytes: &[u8]) -> MettaValue {
+        use super::HeapMettaValueFactory;
+        let factory = HeapMettaValueFactory;
+        match factory.deserialize(bytes) {
+            Ok((value, _)) => value,
+            Err(_) => MettaValue::Atom("?deserialization_error?".to_string()),
+        }
+    }
+
+    // ========================================================================
+    // End Generic Value Operations
+    // ========================================================================
 
     /// Check if two space handles point to the same underlying data.
     ///
@@ -1262,5 +1482,184 @@ mod tests {
         let multiset2 = multiset.insert(&MettaValue::Long(8));
         assert_eq!(multiset2.total(), 101);
         assert_eq!(multiset.total(), 100); // Original unchanged
+    }
+
+    // ============================================================
+    // Generic Value Operations Tests
+    // ============================================================
+
+    #[test]
+    fn test_add_atom_generic() {
+        use crate::backend::models::HeapMettaValueFactory;
+
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::Long(42);
+
+        // Add via generic method
+        handle.add_atom_generic(&atom);
+
+        assert_eq!(handle.atom_count(), 1);
+        assert!(handle.contains(&MettaValue::Long(42)));
+    }
+
+    #[test]
+    fn test_remove_atom_generic() {
+        use crate::backend::models::HeapMettaValueFactory;
+
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::Long(42);
+
+        handle.add_atom(MettaValue::Long(42));
+        assert_eq!(handle.atom_count(), 1);
+
+        // Remove via generic method
+        assert!(handle.remove_atom_generic(&atom));
+        assert_eq!(handle.atom_count(), 0);
+    }
+
+    #[test]
+    fn test_contains_generic() {
+        use crate::backend::models::HeapMettaValueFactory;
+
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::Long(42);
+
+        handle.add_atom(MettaValue::Long(42));
+
+        assert!(handle.contains_generic(&atom));
+        assert!(!handle.contains_generic(&MettaValue::Long(99)));
+    }
+
+    #[test]
+    fn test_collapse_generic() {
+        use crate::backend::models::HeapMettaValueFactory;
+
+        let handle = SpaceHandle::new(1, "test".to_string());
+        handle.add_atom(MettaValue::Long(1));
+        handle.add_atom(MettaValue::Long(2));
+        handle.add_atom(MettaValue::Long(3));
+
+        let factory = HeapMettaValueFactory;
+        let collapsed: Vec<MettaValue> = handle.collapse_generic(&factory);
+
+        assert_eq!(collapsed.len(), 3);
+
+        // Verify all values are present
+        let has_1 = collapsed.iter().any(|v| v.as_long() == Some(1));
+        let has_2 = collapsed.iter().any(|v| v.as_long() == Some(2));
+        let has_3 = collapsed.iter().any(|v| v.as_long() == Some(3));
+        assert!(has_1 && has_2 && has_3);
+    }
+
+    #[test]
+    fn test_collapse_with_multiplicity_generic() {
+        use crate::backend::models::HeapMettaValueFactory;
+
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::Long(42);
+
+        // Add the same atom 5 times
+        for _ in 0..5 {
+            handle.add_atom(atom.clone());
+        }
+
+        let factory = HeapMettaValueFactory;
+        let matches: Vec<GenericMultiplicityMatch<MettaValue>> =
+            handle.collapse_with_multiplicity_generic(&factory);
+
+        // Should have 1 distinct match
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].count, 5);
+        assert_eq!(matches[0].value.as_long(), Some(42));
+    }
+
+    #[test]
+    fn test_atom_multiplicity_generic() {
+        #[allow(unused_imports)]
+        use crate::backend::models::HeapMettaValueFactory;
+
+        let handle = SpaceHandle::new(1, "test".to_string());
+        let atom = MettaValue::Atom("foo".to_string());
+
+        for _ in 0..7 {
+            handle.add_atom(atom.clone());
+        }
+
+        assert_eq!(handle.atom_multiplicity_generic(&atom), 7);
+    }
+
+    #[test]
+    fn test_generic_operations_roundtrip() {
+        // Test that add_atom_generic and collapse_generic are semantically equivalent
+        // to add_atom and collapse
+        use crate::backend::models::HeapMettaValueFactory;
+
+        let handle1 = SpaceHandle::new(1, "test1".to_string());
+        let handle2 = SpaceHandle::new(2, "test2".to_string());
+
+        let atoms = vec![
+            MettaValue::Long(1),
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Bool(true),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+            ]),
+        ];
+
+        // Add via normal method
+        for atom in &atoms {
+            handle1.add_atom(atom.clone());
+        }
+
+        // Add via generic method
+        for atom in &atoms {
+            handle2.add_atom_generic(atom);
+        }
+
+        // Both should have same counts
+        assert_eq!(handle1.atom_count(), handle2.atom_count());
+
+        // Collapse via normal vs generic should produce same results
+        let factory = HeapMettaValueFactory;
+        let collapsed1 = handle1.collapse();
+        let collapsed2: Vec<MettaValue> = handle2.collapse_generic(&factory);
+
+        assert_eq!(collapsed1.len(), collapsed2.len());
+
+        // Each atom should be present in both
+        for atom in &atoms {
+            assert!(handle1.contains(atom));
+            assert!(handle2.contains_generic(atom));
+        }
+    }
+
+    #[test]
+    fn test_generic_operations_with_forked_space() {
+        use crate::backend::models::HeapMettaValueFactory;
+
+        let original = SpaceHandle::new(1, "test".to_string());
+        original.add_atom(MettaValue::Long(1));
+
+        let forked = original.fork();
+
+        // Add to forked via generic method
+        forked.add_atom_generic(&MettaValue::Long(2));
+
+        // Forked should see both
+        assert_eq!(forked.atom_count(), 2);
+        assert!(forked.contains_generic(&MettaValue::Long(1)));
+        assert!(forked.contains_generic(&MettaValue::Long(2)));
+
+        // Original should only see the original atom
+        assert_eq!(original.atom_count(), 1);
+        assert!(original.contains_generic(&MettaValue::Long(1)));
+        assert!(!original.contains_generic(&MettaValue::Long(2)));
+
+        // Collapse forked via generic
+        let factory = HeapMettaValueFactory;
+        let forked_atoms: Vec<MettaValue> = forked.collapse_generic(&factory);
+        assert_eq!(forked_atoms.len(), 2);
     }
 }

@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn test_is_error_missing_argument() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (is-error) - missing argument
         let value = MettaValue::SExpr(vec![MettaValue::Atom("is-error".to_string())]);
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_error_propagation() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Create an error
         let error = MettaValue::Error("test error".to_string(), MettaValue::Long(42));
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_error_in_subexpression() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (+ (error "fail" 42) 10)
         let value = MettaValue::SExpr(vec![
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_error_construction() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (error "my error" (+ 1 2))
         let value = MettaValue::SExpr(vec![
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_is_error_with_error() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (is-error (error "test" 42))
         // Should return true
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_is_error_with_normal_value() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (is-error (+ 1 2))
         // Should return false
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_catch_with_successful_expression() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Test catch where expression succeeds (no error)
         // (catch (+ 2 3) (error "should not reach" nil))
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_error_propagation_through_complex_nested_expressions() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Test error propagation through deeply nested arithmetic
         // (+ 1 (* 2 (/ 6 (- 4 (error "deep" nil)))))
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_multiple_errors_in_expression() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Test expression with multiple errors - first one should win
         // (+ (error "first" nil) (error "second" nil))
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_is_error_with_catch_combinations() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Test is-error applied to catch results
         // (is-error (catch (+ 1 2) "default"))
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_error_in_conditional_expressions() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Test error in if condition
         // (if (error "condition-error" nil) "then" "else")
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_catch_with_error() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (catch (error "fail" 42) "recovered")
         // Should return "recovered" instead of propagating error
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_catch_without_error() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (catch (+ 1 2) "default")
         // Should return 3 (no error occurred)
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn test_catch_prevents_error_propagation() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // (+ 10 (catch (error "fail" 0) 5))
         // The error should be caught and replaced with 5, so result is 15
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_error_construction_variants() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Test error with just a message (no details)
         let error_msg_only = MettaValue::SExpr(vec![
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_is_error_with_various_types() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Test is-error with different MettaValue types
         let test_cases = vec![
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_is_error_with_empty_results() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Create a rule that returns empty: (= (returns-empty) ())
         use crate::backend::models::Rule;
@@ -657,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_catch_with_nested_errors() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Test catch with nested error construction
         // (catch (error "outer" (error "inner" 42)) "recovered")
@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_catch_missing_arguments() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Test catch with only one argument
         let catch_one_arg = MettaValue::SExpr(vec![
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_reduction_prevention_combo() {
-        let env = Environment::new();
+        let env = Environment::default();
 
         // Complex reduction prevention:
         // (if (is-error (catch (/ 10 0) (error "caught" 0)))

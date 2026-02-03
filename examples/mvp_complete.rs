@@ -21,7 +21,7 @@ fn main() {
 fn test_variable_binding() {
     println!("--- 1. Variable Binding in Subexpressions ---");
 
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Rule: (= (double $x) (mul $x 2))
     env.add_rule(Rule::new(
@@ -56,7 +56,7 @@ fn test_variable_binding() {
 fn test_multivalued_results() {
     println!("--- 2. Multivalued Results ---");
 
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Multiple rules with same pattern
     env.add_rule(Rule::new(
@@ -90,7 +90,7 @@ fn test_multivalued_results() {
 fn test_control_flow() {
     println!("--- 3. Control Flow (if) ---");
 
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (if (< 5 10) "less" "greater")
     let expr = MettaValue::SExpr(vec![
@@ -109,7 +109,7 @@ fn test_control_flow() {
     assert_eq!(result[0], MettaValue::String("less".to_string()));
 
     // Test that unused branch is not evaluated
-    let env2 = Environment::new();
+    let env2 = Environment::default();
     let expr2 = MettaValue::SExpr(vec![
         MettaValue::Atom("if".to_string()),
         MettaValue::Bool(true),
@@ -130,7 +130,7 @@ fn test_control_flow() {
 fn test_grounded_functions() {
     println!("--- 4. Grounded Functions ---");
 
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Arithmetic
     let (result, _) = eval(
@@ -163,7 +163,7 @@ fn test_grounded_functions() {
 fn test_evaluation_order() {
     println!("--- 5. Evaluation Order (Lazy Evaluation) ---");
 
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Quote prevents evaluation
     let expr = MettaValue::quote(MettaValue::SExpr(vec![
@@ -190,7 +190,7 @@ fn test_evaluation_order() {
 fn test_equality_operator() {
     println!("--- 6. Equality Operator (Pattern Matching) ---");
 
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // (= (factorial $n) (if (< $n 2) 1 (* $n (factorial (- $n 1)))))
     // Simplified version for testing
@@ -225,7 +225,7 @@ fn test_equality_operator() {
 fn test_error_termination() {
     println!("--- 7. Early Error Termination ---");
 
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // (= (safe-div $x $y) (if (== $y 0) (error "div by zero" $y) (div $x $y)))
     env.add_rule(Rule::new(

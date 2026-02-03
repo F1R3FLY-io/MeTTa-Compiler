@@ -5,83 +5,61 @@
 //! For retrieving atoms from named spaces, use `collapse_named_space_iter()` which provides
 //! lazy iteration with O(1) memory overhead.
 
-use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::RwLockReadGuard;
 
-use either::Either;
-use owning_ref::OwningHandle;
-
-use super::{Environment, MettaValue};
+use super::generic::GenericEnvironment;
+use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValue as MettaValueTrait};
+use crate::backend::MettaValue;
 
 /// Lazy iterator over named space atoms.
 ///
-/// Uses `OwningHandle` to keep the RwLock guard alive while iterating.
-/// Atoms are cloned lazily as the iterator is consumed, avoiding the need
-/// to clone the entire Vec upfront.
+/// With DashMap, we collect the atoms into a Vec for iteration since DashMap
+/// doesn't support OwningHandle pattern. The atoms are cloned during collection.
 ///
 /// # Performance
-/// - Memory overhead: O(1) for the iterator structure
-/// - Atoms cloned: O(k) where k = number of items actually consumed
+/// - Memory overhead: O(n) where n = number of atoms in the space
+/// - Atoms cloned: O(n) during collection
 ///
 /// # Example
 /// ```ignore
-/// // Lazy iteration - clones atoms on demand
+/// // Iteration - atoms are collected from DashMap
 /// for atom in env.collapse_named_space_iter(space_id).take(5) {
-///     // Only 5 atoms are cloned, regardless of space size
 ///     println!("{:?}", atom);
 /// }
 /// ```
-pub struct NamedSpaceIter<'a> {
-    inner: Either<
-        OwningHandle<
-            RwLockReadGuard<'a, HashMap<u64, (String, Vec<MettaValue>)>>,
-            Box<dyn Iterator<Item = MettaValue> + 'a>,
-        >,
-        std::iter::Empty<MettaValue>,
-    >,
+pub struct NamedSpaceIter {
+    inner: std::vec::IntoIter<MettaValue>,
 }
 
-impl<'a> Iterator for NamedSpaceIter<'a> {
+impl Iterator for NamedSpaceIter {
     type Item = MettaValue;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        match &mut self.inner {
-            Either::Left(handle) => handle.next(),
-            Either::Right(empty) => empty.next(),
-        }
+        self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        match &self.inner {
-            Either::Left(handle) => handle.size_hint(),
-            Either::Right(_) => (0, Some(0)),
-        }
+        self.inner.size_hint()
     }
 }
 
-impl Environment {
+impl<V, F> GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
     /// Create a new named space and return its ID
     /// Used by new-space operation
     pub fn create_named_space(&mut self, name: &str) -> u64 {
         self.make_owned();
 
-        let id = {
-            let mut next_id = self
-                .shared
-                .next_space_id
-                .write()
-                .expect("next_space_id lock poisoned");
-            let id = *next_id;
-            *next_id += 1;
-            id
-        };
+        // AtomicU64 - use fetch_add for atomic increment
+        let id = self.shared.next_space_id.fetch_add(1, Ordering::AcqRel);
 
+        // DashMap - use .insert() directly
         self.shared
             .named_spaces
-            .write()
-            .expect("named_spaces lock poisoned")
             .insert(id, (name.to_string(), Vec::new()));
 
         self.modified.store(true, Ordering::Release);
@@ -90,16 +68,12 @@ impl Environment {
 
     /// Add an atom to a named space by ID
     /// Used by add-atom operation
-    pub fn add_to_named_space(&mut self, space_id: u64, value: &MettaValue) -> bool {
+    pub fn add_to_named_space(&mut self, space_id: u64, value: V) -> bool {
         self.make_owned();
 
-        let mut spaces = self
-            .shared
-            .named_spaces
-            .write()
-            .expect("named_spaces lock poisoned");
-        if let Some((_, atoms)) = spaces.get_mut(&space_id) {
-            atoms.push(value.clone());
+        // DashMap - use .get_mut() for mutable access
+        if let Some(mut entry) = self.shared.named_spaces.get_mut(&space_id) {
+            entry.value_mut().1.push(value);
             self.modified.store(true, Ordering::Release);
             true
         } else {
@@ -109,15 +83,15 @@ impl Environment {
 
     /// Remove an atom from a named space by ID
     /// Used by remove-atom operation
-    pub fn remove_from_named_space(&mut self, space_id: u64, value: &MettaValue) -> bool {
+    pub fn remove_from_named_space(&mut self, space_id: u64, value: &V) -> bool
+    where
+        V: PartialEq,
+    {
         self.make_owned();
 
-        let mut spaces = self
-            .shared
-            .named_spaces
-            .write()
-            .expect("named_spaces lock poisoned");
-        if let Some((_, atoms)) = spaces.get_mut(&space_id) {
+        // DashMap - use .get_mut() for mutable access
+        if let Some(mut entry) = self.shared.named_spaces.get_mut(&space_id) {
+            let (_, atoms) = entry.value_mut();
             // Remove first matching atom
             if let Some(pos) = atoms.iter().position(|x| x == value) {
                 atoms.remove(pos);
@@ -128,65 +102,54 @@ impl Environment {
         false
     }
 
-    /// Lazy iterator over named space atoms.
-    ///
-    /// Uses `OwningHandle` to keep the RwLock guard alive while iterating.
-    /// Atoms are cloned lazily as the iterator is consumed, avoiding the need
-    /// to clone the entire Vec upfront.
-    ///
-    /// # Performance
-    /// - Memory overhead: O(1) for the iterator structure
-    /// - Atoms cloned: O(k) where k = number of items actually consumed
-    /// - Useful when you only need a subset of atoms or want to short-circuit
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Only clones atoms as they're consumed
-    /// for atom in env.collapse_named_space_iter(space_id).take(5) {
-    ///     println!("{:?}", atom);
-    /// }
-    ///
-    /// // Check if any atom matches a condition (short-circuits on first match)
-    /// let has_target = env.collapse_named_space_iter(space_id)
-    ///     .any(|atom| atom == target);
-    /// ```
-    pub fn collapse_named_space_iter(&self, space_id: u64) -> NamedSpaceIter<'_> {
-        let guard = self
-            .shared
+    /// Get atoms from a named space (collects into Vec).
+    pub fn collapse_named_space(&self, space_id: u64) -> Vec<V> {
+        // DashMap - use .get() directly
+        self.shared
             .named_spaces
-            .read()
-            .expect("named_spaces lock poisoned");
-
-        // Check if space exists before creating OwningHandle
-        if !guard.contains_key(&space_id) {
-            return NamedSpaceIter {
-                inner: Either::Right(std::iter::empty()),
-            };
-        }
-
-        // Create OwningHandle that keeps guard alive while we iterate
-        // Safety: The OwningHandle ensures the guard lives as long as the iterator
-        let handle = OwningHandle::new_with_fn(guard, |spaces_ptr| {
-            let spaces = unsafe { &*spaces_ptr };
-            match spaces.get(&space_id) {
-                Some((_, atoms)) => {
-                    Box::new(atoms.iter().cloned()) as Box<dyn Iterator<Item = MettaValue> + '_>
-                }
-                None => Box::new(std::iter::empty()) as Box<dyn Iterator<Item = MettaValue> + '_>,
-            }
-        });
-
-        NamedSpaceIter {
-            inner: Either::Left(handle),
-        }
+            .get(&space_id)
+            .map(|entry| entry.value().1.clone())
+            .unwrap_or_default()
     }
 
     /// Check if a named space exists
     pub fn has_named_space(&self, space_id: u64) -> bool {
-        self.shared
+        // DashMap - use .contains_key() directly
+        self.shared.named_spaces.contains_key(&space_id)
+    }
+}
+
+// MettaValue-specific iterator for collapse_named_space_iter
+impl super::Environment {
+    /// Iterator over named space atoms.
+    ///
+    /// With DashMap, atoms are collected into a Vec for iteration.
+    ///
+    /// # Performance
+    /// - Memory overhead: O(n) for the collected Vec
+    /// - Atoms cloned: O(n) during collection
+    ///
+    /// # Example
+    /// ```ignore
+    /// for atom in env.collapse_named_space_iter(space_id).take(5) {
+    ///     println!("{:?}", atom);
+    /// }
+    ///
+    /// // Check if any atom matches a condition
+    /// let has_target = env.collapse_named_space_iter(space_id)
+    ///     .any(|atom| atom == target);
+    /// ```
+    pub fn collapse_named_space_iter(&self, space_id: u64) -> NamedSpaceIter {
+        // DashMap - use .get() directly
+        let atoms = self
+            .shared
             .named_spaces
-            .read()
-            .expect("named_spaces lock poisoned")
-            .contains_key(&space_id)
+            .get(&space_id)
+            .map(|entry| entry.value().1.clone())
+            .unwrap_or_default();
+
+        NamedSpaceIter {
+            inner: atoms.into_iter(),
+        }
     }
 }

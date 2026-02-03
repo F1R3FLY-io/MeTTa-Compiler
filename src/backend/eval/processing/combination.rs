@@ -64,6 +64,6 @@ pub fn process_single_combination(
     // No rules matched even with evaluated arguments - this is a data constructor.
     // Check for typos and emit helpful warnings
     let mut env = unified_env;
-    let result = handle_no_rule_match(evaled_items, &sexpr, &mut env);
+    let result = handle_no_rule_match(evaled_items, &sexpr, &mut env, depth);
     ProcessedSExpr::Done((vec![result], env))
 }

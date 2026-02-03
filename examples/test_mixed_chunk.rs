@@ -40,7 +40,7 @@ fn main() {
     let mut vm = BytecodeVM::with_config_and_env(
         Arc::clone(&chunk),
         VmConfig::default(),
-        Environment::new(),
+        Environment::default(),
     );
 
     match vm.run() {

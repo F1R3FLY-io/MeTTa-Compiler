@@ -648,7 +648,7 @@ pub fn eval_bytecode_with_config(
 ///
 /// # Example
 /// ```ignore
-/// let env = Environment::new();
+/// let env = Environment::default();
 /// let rule_def = MettaValue::SExpr(vec![
 ///     MettaValue::Atom("=".to_string()),
 ///     MettaValue::SExpr(vec![
@@ -671,7 +671,7 @@ pub fn eval_bytecode_with_env(
     let mut vm = BytecodeVM::with_env(chunk, env);
     let (results, modified_env) = vm.run_with_env()?;
     // Return the environment if present, otherwise create a new one
-    let final_env = modified_env.unwrap_or_else(crate::backend::Environment::new);
+    let final_env = modified_env.unwrap_or_else(|| crate::backend::Environment::new(crate::backend::models::HeapMettaValueFactory));
     Ok((results, final_env))
 }
 

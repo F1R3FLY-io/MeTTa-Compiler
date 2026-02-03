@@ -79,7 +79,7 @@ fn bench_prefix_fast_path(c: &mut Criterion) {
     let sizes = [100, 500, 1000, 5000, 10000];
 
     for &size in &sizes {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         let facts = generate_facts(size);
         for fact in &facts {
             env.add_to_space(fact);
@@ -123,7 +123,7 @@ fn bench_bulk_insertion(c: &mut Criterion) {
             fact_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     env.add_facts_bulk(black_box(&facts)).unwrap();
                     black_box(env);
                 });
@@ -138,7 +138,7 @@ fn bench_bulk_insertion(c: &mut Criterion) {
             fact_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = Environment::new();
+                    let mut env = Environment::default();
                     env.add_rules_bulk(black_box(rules.clone())).unwrap();
                     black_box(env);
                 });
@@ -159,7 +159,7 @@ fn bench_cow_clone(c: &mut Criterion) {
     let mut group = c.benchmark_group("cow_clone");
 
     for rule_count in [0, 10, 100, 500, 1000].iter() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         let rules = generate_rules(*rule_count);
         for rule in &rules {
             env.add_rule(rule.clone());
@@ -229,7 +229,7 @@ fn bench_rule_matching(c: &mut Criterion) {
     let mut group = c.benchmark_group("rule_matching");
 
     for rule_count in [10, 50, 100, 500, 1000].iter() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add fibonacci-like rules
         for i in 0..*rule_count {
@@ -272,7 +272,7 @@ fn bench_type_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("type_lookup");
 
     for type_count in [10, 100, 1000, 10000].iter() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add type facts to space for lookup testing
         for i in 0..*type_count {
@@ -316,7 +316,7 @@ fn bench_evaluation(c: &mut Criterion) {
     ]);
 
     group.bench_function("simple_arithmetic", |b| {
-        let env = Environment::new();
+        let env = Environment::default();
         b.iter(|| {
             let result = eval(black_box(simple_expr.clone()), black_box(env.clone()));
             black_box(result);
@@ -331,7 +331,7 @@ fn bench_evaluation(c: &mut Criterion) {
             BenchmarkId::new("nested_arithmetic", depth),
             depth,
             |b, _| {
-                let env = Environment::new();
+                let env = Environment::default();
                 b.iter(|| {
                     let result = eval(black_box(nested_expr.clone()), black_box(env.clone()));
                     black_box(result);
@@ -359,7 +359,7 @@ fn bench_scalability(c: &mut Criterion) {
         // Benchmark environment construction time
         group.bench_with_input(BenchmarkId::new("env_construction", size), size, |b, _| {
             b.iter(|| {
-                let mut env = Environment::new();
+                let mut env = Environment::default();
                 for fact in &facts {
                     env.add_to_space(black_box(fact));
                 }
@@ -368,7 +368,7 @@ fn bench_scalability(c: &mut Criterion) {
         });
 
         // Benchmark lookup performance at scale
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         env.add_facts_bulk(&facts).unwrap();
 
         let search = MettaValue::SExpr(vec![

@@ -40,7 +40,7 @@ fn make_sexpr_rule(head: &str, idx: usize) -> Rule {
 
 /// Populate environment with n simple rules
 fn populate_environment(n: usize) -> Environment {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     for i in 0..n {
         let rule = make_test_rule(&format!("(rule{} $x)", i), &format!("(result{} $x)", i));
         env.add_rule(rule);
@@ -50,7 +50,7 @@ fn populate_environment(n: usize) -> Environment {
 
 /// Populate environment with n S-expression rules (more realistic)
 fn populate_environment_sexpr(n: usize, num_heads: usize) -> Environment {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     let heads: Vec<String> = (0..num_heads).map(|i| format!("head{}", i)).collect();
     for i in 0..n {
         let head = &heads[i % num_heads];

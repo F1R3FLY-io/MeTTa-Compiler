@@ -5,7 +5,7 @@ use crate::backend::models::Rule;
 
 #[test]
 fn test_eval_atom() {
-    let env = Environment::new();
+    let env = Environment::default();
     let value = MettaValue::Atom("foo".to_string());
     let (results, _) = eval(value.clone(), env);
     assert_eq!(results.len(), 1);
@@ -14,7 +14,7 @@ fn test_eval_atom() {
 
 #[test]
 fn test_eval_builtin_add() {
-    let env = Environment::new();
+    let env = Environment::default();
     let value = MettaValue::SExpr(vec![
         MettaValue::Atom("+".to_string()),
         MettaValue::Long(1),
@@ -27,7 +27,7 @@ fn test_eval_builtin_add() {
 
 #[test]
 fn test_eval_builtin_comparison() {
-    let env = Environment::new();
+    let env = Environment::default();
     let value = MettaValue::SExpr(vec![
         MettaValue::Atom("<".to_string()),
         MettaValue::Long(1),
@@ -40,7 +40,7 @@ fn test_eval_builtin_comparison() {
 
 #[test]
 fn test_eval_logical_and() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // True and True = True
     let value = MettaValue::SExpr(vec![
@@ -85,7 +85,7 @@ fn test_eval_logical_and() {
 
 #[test]
 fn test_eval_logical_or() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // True or True = True
     let value = MettaValue::SExpr(vec![
@@ -130,7 +130,7 @@ fn test_eval_logical_or() {
 
 #[test]
 fn test_eval_logical_not() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // not True = False
     let value = MettaValue::SExpr(vec![
@@ -153,7 +153,7 @@ fn test_eval_logical_not() {
 
 #[test]
 fn test_eval_logical_type_error() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // and with non-boolean should error
     let value = MettaValue::SExpr(vec![
@@ -188,7 +188,7 @@ fn test_eval_logical_type_error() {
 
 #[test]
 fn test_eval_logical_arity_error() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // and with wrong arity
     let value = MettaValue::SExpr(vec![
@@ -307,7 +307,7 @@ fn test_pattern_match_empty_sexpr_matches_empty_only() {
 
 #[test]
 fn test_eval_with_rule() {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Add rule: (= (double $x) (mul $x 2))
     let rule = Rule::new(
@@ -338,7 +338,7 @@ fn test_eval_with_rule() {
 
 #[test]
 fn test_eval_with_quote() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (eval (quote (+ 1 2)))
     // Quote prevents evaluation, eval forces it
@@ -361,7 +361,7 @@ fn test_eval_with_quote() {
 
 #[test]
 fn test_mvp_complete() {
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Add a rule: (= (safe-div $x $y) (if (== $y 0) (error "division by zero" $y) (div $x $y)))
     let rule = Rule::new(
@@ -421,7 +421,7 @@ fn test_mvp_complete() {
 #[test]
 fn test_nested_arithmetic() {
     // From c1_grounded_basic.metta: (+ 2 (* 3 5))
-    let env = Environment::new();
+    let env = Environment::default();
     let value = MettaValue::SExpr(vec![
         MettaValue::Atom("+".to_string()),
         MettaValue::Long(2),
@@ -438,7 +438,7 @@ fn test_nested_arithmetic() {
 #[test]
 fn test_comparison_with_arithmetic() {
     // From c1_grounded_basic.metta: (< 4 (+ 2 (* 3 5)))
-    let env = Environment::new();
+    let env = Environment::default();
     let value = MettaValue::SExpr(vec![
         MettaValue::Atom("<".to_string()),
         MettaValue::Long(4),
@@ -459,7 +459,7 @@ fn test_comparison_with_arithmetic() {
 #[test]
 fn test_equality_literals() {
     // From c1_grounded_basic.metta: (== 4 (+ 2 2))
-    let env = Environment::new();
+    let env = Environment::default();
     let value = MettaValue::SExpr(vec![
         MettaValue::Atom("==".to_string()),
         MettaValue::Long(4),
@@ -476,7 +476,7 @@ fn test_equality_literals() {
 #[test]
 fn test_equality_sexpr() {
     // From c1_grounded_basic.metta: structural equality tests
-    let env = Environment::new();
+    let env = Environment::default();
 
     // (== (A B) (A B)) should be supported via pattern matching
     // For now we test that equal atoms are equal
@@ -493,7 +493,7 @@ fn test_equality_sexpr() {
 fn test_factorial_recursive() {
     // From c1_grounded_basic.metta: factorial example with if guard
     // (= (fact $n) (if (> $n 0) (* $n (fact (- $n 1))) 1))
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     let rule = Rule::new(
         MettaValue::SExpr(vec![
@@ -575,7 +575,7 @@ fn test_factorial_with_compile() {
 #[test]
 fn test_incremental_nested_arithmetic() {
     // From test_metta.py: !(+ 1 (+ 2 (+ 3 4)))
-    let env = Environment::new();
+    let env = Environment::default();
     let value = MettaValue::SExpr(vec![
         MettaValue::Atom("+".to_string()),
         MettaValue::Long(1),
@@ -596,7 +596,7 @@ fn test_incremental_nested_arithmetic() {
 #[test]
 fn test_function_definition_and_call() {
     // From test_run_metta.py: (= (f) (+ 2 3)) !(f)
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Define rule: (= (f) (+ 2 3))
     let rule = Rule::new(
@@ -618,7 +618,7 @@ fn test_function_definition_and_call() {
 #[test]
 fn test_multiple_pattern_variables() {
     // Test pattern matching with multiple variables
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // (= (add3 $a $b $c) (+ $a (+ $b $c)))
     let rule = Rule::new(
@@ -654,7 +654,7 @@ fn test_multiple_pattern_variables() {
 #[test]
 fn test_nested_pattern_matching() {
     // Test nested S-expression pattern matching
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // (= (eval-pair (pair $x $y)) (+ $x $y))
     let rule = Rule::new(
@@ -729,7 +729,7 @@ fn test_variable_consistency_in_pattern() {
 #[test]
 fn test_conditional_with_pattern_matching() {
     // Test combining if with pattern matching
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // (= (abs $x) (if (< $x 0) (- 0 $x) $x))
     let rule = Rule::new(
@@ -774,7 +774,7 @@ fn test_conditional_with_pattern_matching() {
 #[test]
 fn test_string_values() {
     // Test string value handling
-    let env = Environment::new();
+    let env = Environment::default();
     let value = MettaValue::String("test".to_string());
     let (results, _) = eval(value.clone(), env);
     assert_eq!(results[0], value);
@@ -782,7 +782,7 @@ fn test_string_values() {
 
 #[test]
 fn test_boolean_values() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     let value_true = MettaValue::Bool(true);
     let (results, _) = eval(value_true.clone(), env.clone());
@@ -795,7 +795,7 @@ fn test_boolean_values() {
 
 #[test]
 fn test_nil_value() {
-    let env = Environment::new();
+    let env = Environment::default();
     let value = MettaValue::Nil();
     let (results, _) = eval(value, env);
     assert_eq!(results[0], MettaValue::Nil());
@@ -807,7 +807,7 @@ fn test_nil_value() {
 fn test_symbol_added_to_fact_database() {
     // Bare atoms should NOT be added to the fact database
     // Only rules, type assertions, and unmatched s-expressions are stored
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Evaluate the symbol "Hello"
     let symbol = MettaValue::Atom("Hello".to_string());
@@ -822,7 +822,7 @@ fn test_symbol_added_to_fact_database() {
 
 #[test]
 fn test_variables_not_added_to_fact_database() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test $variable
     let var1 = MettaValue::Atom("$x".to_string());
@@ -849,7 +849,7 @@ fn test_variables_not_added_to_fact_database() {
 fn test_multiple_symbols_in_fact_database() {
     // Bare atoms should NOT be added to fact database
     // This test verifies that evaluating multiple atoms doesn't pollute the environment
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Evaluate multiple symbols
     let symbol1 = MettaValue::Atom("Foo".to_string());
@@ -872,7 +872,7 @@ fn test_sexpr_added_to_fact_database() {
     // Verify official MeTTa ADD mode semantics:
     // When an s-expression like (Hello World) is evaluated, it is automatically added to the space
     // This matches: `(leaf1 leaf2)` in REPL -> auto-added, queryable via `!(match &self ...)`
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Evaluate the s-expression (Hello World)
     let sexpr = MettaValue::SExpr(vec![
@@ -902,7 +902,7 @@ fn test_sexpr_added_to_fact_database() {
 fn test_nested_sexpr_in_fact_database() {
     // Official MeTTa semantics: only the top-level expression is stored
     // Nested sub-expressions are NOT extracted and stored separately
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Evaluate a nested s-expression
     let sexpr = MettaValue::SExpr(vec![
@@ -944,7 +944,7 @@ fn test_pattern_matching_extracts_nested_sexpr() {
     // Demonstrates that while nested s-expressions are NOT stored separately,
     // they can still be accessed via pattern matching with variables.
     // This is how official MeTTa handles nested data extraction.
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Store a nested s-expression: (Outer (Inner Nested))
     let nested_expr = MettaValue::SExpr(vec![
@@ -988,7 +988,7 @@ fn test_pattern_matching_extracts_nested_sexpr() {
 
 #[test]
 fn test_grounded_operations_not_added_to_sexpr_facts() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Evaluate an arithmetic operation (add 1 2)
     let sexpr = MettaValue::SExpr(vec![
@@ -1009,7 +1009,7 @@ fn test_grounded_operations_not_added_to_sexpr_facts() {
 
 #[test]
 fn test_rule_definition_added_to_fact_database() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Define a rule: (= (double $x) (* $x 2))
     let rule_def = MettaValue::SExpr(vec![
@@ -1040,7 +1040,7 @@ fn test_rule_definition_added_to_fact_database() {
 
 #[test]
 fn test_empty_conjunction() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Empty conjunction: (,) → Nil
     let value = MettaValue::Conjunction(vec![]);
@@ -1052,7 +1052,7 @@ fn test_empty_conjunction() {
 
 #[test]
 fn test_unary_conjunction() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Unary conjunction: (, expr) → evaluates expr directly
     let value = MettaValue::Conjunction(vec![MettaValue::Long(42)]);
@@ -1064,7 +1064,7 @@ fn test_unary_conjunction() {
 
 #[test]
 fn test_unary_conjunction_with_expression() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Unary conjunction with expression: (, (+ 2 3)) → 5
     let value = MettaValue::Conjunction(vec![MettaValue::SExpr(vec![
@@ -1080,7 +1080,7 @@ fn test_unary_conjunction_with_expression() {
 
 #[test]
 fn test_binary_conjunction() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Binary conjunction: (, (+ 1 1) (+ 2 2)) → 2, 4
     let value = MettaValue::Conjunction(vec![
@@ -1104,7 +1104,7 @@ fn test_binary_conjunction() {
 
 #[test]
 fn test_nary_conjunction() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // N-ary conjunction: (, (+ 1 1) (+ 2 2) (+ 3 3)) → 2, 4, 6 (returns last)
     let value = MettaValue::Conjunction(vec![
@@ -1163,7 +1163,7 @@ fn test_conjunction_pattern_match() {
 
 #[test]
 fn test_conjunction_with_error_propagation() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Conjunction with error should propagate the error
     let value = MettaValue::Conjunction(vec![
@@ -1179,7 +1179,7 @@ fn test_conjunction_with_error_propagation() {
 
 #[test]
 fn test_nested_conjunction() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Nested conjunction: (, (+ 1 2) (, (+ 3 4)))
     let value = MettaValue::Conjunction(vec![
@@ -1203,7 +1203,7 @@ fn test_nested_conjunction() {
 
 #[test]
 fn test_arithmetic_type_error_bool() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: !(* true false) - booleans not valid for arithmetic
     let value = MettaValue::SExpr(vec![
@@ -1230,7 +1230,7 @@ fn test_arithmetic_type_error_bool() {
 
 #[test]
 fn test_string_comparison() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: !(< "a" "b") - lexicographic string comparison
     let value = MettaValue::SExpr(vec![
@@ -1246,7 +1246,7 @@ fn test_string_comparison() {
 
 #[test]
 fn test_comparison_mixed_type_error() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: !(< "hello" 42) - mixed types should error
     let value = MettaValue::SExpr(vec![
@@ -1273,7 +1273,7 @@ fn test_comparison_mixed_type_error() {
 
 #[test]
 fn test_arithmetic_wrong_arity() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Test: !(+ 1) - wrong number of arguments
     let value = MettaValue::SExpr(vec![MettaValue::Atom("+".to_string()), MettaValue::Long(1)]);
@@ -1298,7 +1298,7 @@ fn test_misspelled_special_form() {
     // Issue #51: When a misspelled special form is detected, a warning is printed
     // to stderr but the expression is returned as-is (ADD mode semantics).
     // This allows intentional data constructors like `lit` to work without errors.
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Try to use "mach" instead of "match" (4 chars, passes min length check)
     let expr = MettaValue::SExpr(vec![
@@ -1332,7 +1332,7 @@ fn test_misspelled_special_form() {
 fn test_undefined_symbol_with_rule_suggestion() {
     // Issue #51: When a misspelled function is detected, a warning is printed
     // to stderr but the expression is returned as-is (ADD mode semantics).
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Add a rule for "fibonacci"
     let rule = Rule::new(
@@ -1373,7 +1373,7 @@ fn test_undefined_symbol_with_rule_suggestion() {
 
 #[test]
 fn test_unknown_symbol_returns_as_is() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Completely unknown symbols (not similar to any known term)
     // should be returned as-is per ADD mode semantics
@@ -1391,7 +1391,7 @@ fn test_unknown_symbol_returns_as_is() {
 
 #[test]
 fn test_short_symbol_not_flagged_as_typo() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Short symbols like "a" should NOT be flagged as typos even if
     // they're close to special forms like "=" (edit distance 1)
@@ -1647,7 +1647,7 @@ fn test_nondeterministic_cartesian_product() {
     // !(+ (a) (b))
     // Expected: [11, 21, 12, 22]
 
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Add rules for (a) -> 1 and (a) -> 2
     env.add_rule(Rule::new(

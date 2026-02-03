@@ -12,13 +12,14 @@ use std::borrow::Cow;
 use phf::phf_set;
 use tracing::trace;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::{Environment, GenericEnvironment};
 use crate::backend::fuzzy_match::{FuzzyMatcher, SmartSuggestion, SuggestionContext};
-use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
+use crate::backend::models::{Bindings, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 use super::builtin;
 
 /// MeTTa special forms for "did you mean" suggestions during evaluation
+#[allow(dead_code)]
 pub const SPECIAL_FORMS: &[&str] = &[
     "=",
     "!",
@@ -334,6 +335,7 @@ pub fn friendly_value_repr(value: &MettaValue) -> String {
 /// - `op`: The operator/head of the expression (potentially misspelled)
 /// - `expr`: The full expression (for arity/type checking)
 /// - `env`: The environment (for type inference)
+#[allow(dead_code)]
 pub fn suggest_special_form_with_context(
     op: &str,
     expr: &[MettaValue],
@@ -391,6 +393,47 @@ pub fn resolve_tokens_shallow(items: &[MettaValue], env: &Environment) -> Vec<Me
                 }
                 // Keep everything else unchanged (S-expressions, literals, etc.)
                 _ => item.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Generic version of resolve_tokens_shallow.
+///
+/// This function works with any value type implementing `MettaValueTrait`,
+/// enabling zero-conversion evaluation for both heap and arena allocation modes.
+///
+/// Note: Token lookup returns values from the environment. For GenericEnvironment,
+/// this is zero-conversion as tokens are stored in the native value type.
+pub fn resolve_tokens_shallow_generic<V, F>(items: &[V], env: &GenericEnvironment<V, F>, _factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    items
+        .iter()
+        .map(|item| {
+            if let Some(name) = item.as_atom() {
+                // Skip variables - they're for pattern matching
+                if name.starts_with('$') {
+                    return item.clone();
+                }
+                // Skip special atoms like &self, &kb that might be handled elsewhere
+                // or are truly space references
+                if name == "&self" {
+                    // Let &self be resolved later in eval_step
+                    return item.clone();
+                }
+                // Try to resolve registered tokens (e.g., &stack → Space)
+                // Use lookup_token_generic which converts to V
+                if let Some(resolved) = env.lookup_token_generic(name, _factory) {
+                    resolved
+                } else {
+                    item.clone()
+                }
+            } else {
+                // Keep everything else unchanged (S-expressions, literals, etc.)
+                item.clone()
             }
         })
         .collect()
@@ -811,6 +854,7 @@ pub fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaValue> {
 /// stack overflow on deeply nested S-expressions. This is critical for:
 /// - Async evaluation (Tokio workers have smaller stacks ~2MB)
 /// - Deeply nested data structures common in knowledge graphs
+#[allow(dead_code)]
 pub fn values_equal(a: &MettaValue, b: &MettaValue) -> bool {
     // Work stack: pairs of values to compare
     let mut work_stack: Vec<(&MettaValue, &MettaValue)> = Vec::with_capacity(16);

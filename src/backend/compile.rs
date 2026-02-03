@@ -9,7 +9,7 @@
 
 #[cfg(test)]
 use crate::backend::models::MettaValueInner;
-use crate::backend::models::{MettaState, MettaValue};
+use crate::backend::models::{MettaState, MettaValue, MettaValueFactory, MettaValueTrait};
 use crate::ir::MettaExpr;
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind, TreeSitterMettaParser};
 
@@ -67,6 +67,199 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
 /// The file path will be included in any syntax error messages
 pub fn compile_with_path(src: &str, file_path: Option<&str>) -> Result<MettaState, SyntaxError> {
     compile(src).map_err(|e| match file_path {
+        Some(path) => e.with_file_path(path),
+        None => e,
+    })
+}
+
+// ============================================================================
+// Generic Compilation - Zero-Conversion Support
+// ============================================================================
+
+/// Convert a MettaExpr to any value type using a factory.
+///
+/// This enables zero-conversion compilation for both heap (MettaValue) and
+/// arena (ArenaValue) allocation strategies.
+pub fn expr_to_value_generic<V, F>(expr: &MettaExpr, factory: &F) -> Result<V, String>
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    match expr {
+        MettaExpr::Atom(s, _span) => {
+            // Parse literals (MeTTa uses capitalized True/False per hyperon-experimental)
+            match s.as_str() {
+                "True" => Ok(factory.bool(true)),
+                "False" => Ok(factory.bool(false)),
+                _ => Ok(factory.atom(s)),
+            }
+        }
+        MettaExpr::String(s, _span) => Ok(factory.string(s)),
+        MettaExpr::Integer(n, _span) => Ok(factory.long(*n)),
+        MettaExpr::Float(f, _span) => Ok(factory.float(*f)),
+        MettaExpr::List(items, _span) => {
+            if items.is_empty() {
+                // HE-compatible: () is an empty S-expression, not Nil
+                Ok(factory.sexpr(vec![]))
+            } else {
+                // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
+                let is_conjunction = items
+                    .first()
+                    .is_some_and(|first| matches!(first, MettaExpr::Atom(s, _) if s == ","));
+
+                if is_conjunction {
+                    // Convert to Conjunction variant (skip the comma operator)
+                    let goals: Result<Vec<V>, String> = items[1..]
+                        .iter()
+                        .map(|e| expr_to_value_generic(e, factory))
+                        .collect();
+                    Ok(factory.conjunction(goals?))
+                } else {
+                    // Regular S-expression
+                    let values: Result<Vec<V>, String> = items
+                        .iter()
+                        .map(|e| expr_to_value_generic(e, factory))
+                        .collect();
+                    Ok(factory.sexpr(values?))
+                }
+            }
+        }
+        MettaExpr::Quoted(expr, _span) => {
+            // For quoted expressions, wrap in a quote operator
+            let inner = expr_to_value_generic(expr.as_ref(), factory)?;
+            // Create (quote inner) as SExpr
+            Ok(factory.sexpr(vec![factory.atom("quote"), inner]))
+        }
+    }
+}
+
+/// Compile MeTTa source code to a generic value type.
+///
+/// This is the zero-conversion compile function that works with any value type
+/// implementing `MettaValueTrait`. It returns a vector of parsed expressions.
+///
+/// # Type Parameters
+///
+/// - `V`: The value type (e.g., `MettaValue` or `ArenaValue`)
+/// - `F`: The factory type for constructing values
+///
+/// # Arguments
+///
+/// - `src`: The MeTTa source code to compile
+/// - `factory`: The factory for constructing values
+///
+/// # Returns
+///
+/// A vector of compiled expressions in the target value type, or a syntax error.
+#[instrument(level = "info", skip(src, factory))]
+pub fn compile_generic<V, F>(src: &str, factory: &F) -> Result<Vec<V>, SyntaxError>
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    info!(
+        line_count = src.lines().count(),
+        char_count = src.chars().count(),
+        "Compiling MeTTa source (generic)"
+    );
+
+    // Parse the source into s-expressions using Tree-Sitter
+    let mut parser = TreeSitterMettaParser::new().map_err(|e| SyntaxError {
+        kind: SyntaxErrorKind::ParserInit(e),
+        line: 0,
+        column: 0,
+        text: String::new(),
+        file_path: None,
+    })?;
+
+    let sexprs = parser.parse(src).map_err(|e| {
+        error!(
+            kind = ?e.kind,
+            text = %e,
+            "Syntax error from parsing MeTTa source code"
+        );
+        debug!(src, %e);
+        e
+    })?;
+
+    // Convert all expressions using the generic factory
+    let values: Result<Vec<V>, String> = sexprs
+        .iter()
+        .map(|expr| expr_to_value_generic(expr, factory))
+        .collect();
+
+    let values = values.map_err(|e| {
+        error!(
+            text = %e,
+            "Error during converting MeTTa expressions to generic values"
+        );
+        SyntaxError {
+            kind: SyntaxErrorKind::UnknownNodeKind(e),
+            line: 0,
+            column: 0,
+            text: String::new(),
+            file_path: None,
+        }
+    })?;
+
+    info!(expr_count = values.len(), "Generic compilation successful");
+
+    Ok(values)
+}
+
+// ============================================================================
+// Arena Compilation - Zero-Conversion Arena Pipeline
+// ============================================================================
+
+use crate::backend::eval::trampoline::get_static_factory;
+use crate::backend::models::ArenaValue;
+
+/// Compile MeTTa source code directly to ArenaValue<'static>.
+///
+/// This function uses the thread-local static arena to compile MeTTa source
+/// code directly to `ArenaValue<'static>`, enabling zero-conversion evaluation
+/// when combined with `eval_trampoline_arena`.
+///
+/// # Arguments
+///
+/// - `src`: The MeTTa source code to compile
+///
+/// # Returns
+///
+/// A vector of compiled expressions as `ArenaValue<'static>`, or a syntax error.
+///
+/// # Example
+///
+/// ```ignore
+/// use mettatron::backend::compile::compile_arena;
+/// use mettatron::backend::eval::trampoline::{eval_trampoline_arena, StaticArenaContext};
+///
+/// // Parse directly to ArenaValue<'static>
+/// let exprs = compile_arena("!(+ 1 2)").unwrap();
+///
+/// // Create arena environment
+/// let env = StaticArenaContext::new_env();
+///
+/// // Evaluate - zero conversions throughout
+/// for expr in exprs {
+///     let (results, env) = eval_trampoline_arena(expr, env);
+///     // Results are ArenaValue<'static>
+/// }
+/// ```
+#[instrument(level = "info", skip(src))]
+pub fn compile_arena(src: &str) -> Result<Vec<ArenaValue<'static>>, SyntaxError> {
+    let factory = get_static_factory();
+    compile_generic(src, &factory)
+}
+
+/// Compile MeTTa source code to ArenaValue<'static> with a file path for error reporting.
+///
+/// Like `compile_arena`, but includes the file path in any syntax error messages.
+pub fn compile_arena_with_path(
+    src: &str,
+    file_path: Option<&str>,
+) -> Result<Vec<ArenaValue<'static>>, SyntaxError> {
+    compile_arena(src).map_err(|e| match file_path {
         Some(path) => e.with_file_path(path),
         None => e,
     })
@@ -450,5 +643,71 @@ mod tests {
         } else {
             panic!("Expected error");
         }
+    }
+
+    // =========================================================================
+    // Arena Compilation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_compile_arena_simple() {
+        use crate::backend::compile::compile_arena;
+        use crate::backend::models::ArenaValueInner;
+
+        let src = "(+ 1 2)";
+        let result = compile_arena(src);
+        assert!(result.is_ok());
+
+        let values = result.unwrap();
+        assert_eq!(values.len(), 1);
+        assert!(values[0].is_sexpr());
+
+        if let ArenaValueInner::SExpr(items) = values[0].inner() {
+            assert_eq!(items.len(), 3);
+            assert!(items[0].is_atom());
+            assert_eq!(items[0].as_atom(), Some("+"));
+            assert!(items[1].is_long());
+            assert_eq!(items[1].as_long(), Some(1));
+            assert!(items[2].is_long());
+            assert_eq!(items[2].as_long(), Some(2));
+        } else {
+            panic!("Expected SExpr");
+        }
+    }
+
+    #[test]
+    fn test_compile_arena_literals() {
+        use crate::backend::compile::compile_arena;
+
+        let src = "(True False 42 \"hello\")";
+        let values = compile_arena(src).unwrap();
+
+        assert_eq!(values.len(), 1);
+        if let Some(items) = values[0].as_sexpr() {
+            assert_eq!(items[0].as_bool(), Some(true));
+            assert_eq!(items[1].as_bool(), Some(false));
+            assert_eq!(items[2].as_long(), Some(42));
+            assert_eq!(items[3].as_string(), Some("hello"));
+        } else {
+            panic!("Expected SExpr");
+        }
+    }
+
+    #[test]
+    fn test_compile_arena_with_eval() {
+        use crate::backend::compile::compile_arena;
+        use crate::backend::eval::trampoline::{eval_trampoline_arena, StaticArenaContext};
+
+        let src = "!(+ 1 2)";
+        let values = compile_arena(src).unwrap();
+        let env = StaticArenaContext::new_env();
+
+        // Evaluate the expression
+        let (results, _env) = eval_trampoline_arena(values[0], env);
+
+        // Results should contain [3]
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_long());
+        assert_eq!(results[0].as_long(), Some(3));
     }
 }

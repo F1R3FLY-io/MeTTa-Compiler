@@ -1,0 +1,1340 @@
+//! Generic Environment for Zero-Conversion Evaluation
+//!
+//! This module provides generic environment types parameterized over value types,
+//! enabling zero-conversion evaluation with both heap and arena allocation strategies.
+//!
+//! ## Design
+//!
+//! The key insight is to parameterize the environment over `V: MettaValueTrait` instead
+//! of storing serialized bytes. This eliminates all conversions:
+//!
+//! - `HeapEnvironment = GenericEnvironment<MettaValue>` (O(1) Arc clone)
+//! - `ArenaEnvironment = GenericEnvironment<ArenaValue>` (O(1) pointer clone)
+//!
+//! ## Architecture
+//!
+//! ```ignore
+//! GenericEnvironment<V>
+//!   └── Arc<GenericEnvironmentShared<V>>
+//!         ├── rule_index: DashMap<(Symbol, usize), Vec<GenericRule<V>>>
+//!         ├── wildcard_rules: RwLock<Vec<GenericRule<V>>>
+//!         ├── named_spaces: DashMap<u64, (String, Vec<V>)>
+//!         ├── bindings: DashMap<String, V>
+//!         └── ... (type-agnostic fields: btm, symbols, states, etc.)
+//! ```
+//!
+//! ## Thread Safety
+//!
+//! Uses non-blocking concurrent data structures for maximum parallelism:
+//! - `DashMap` for concurrent HashMap access (lock-free reads, sharded writes)
+//! - `parking_lot::RwLock` for structures requiring exclusive access (PathMap, LruCache)
+//! - `AtomicBool`/`AtomicUsize` for simple flags and counters
+//!
+//! Clone operations are O(1) via Arc sharing until first mutation (CoW).
+
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+
+use dashmap::DashMap;
+use lru::LruCache;
+use mork_interning::SharedMappingHandle;
+use parking_lot::RwLock;
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
+use pathmap::PathMap;
+use tracing::trace;
+
+use super::bloom::HeadArityBloomFilter;
+use super::multiplicity::Multiplicity;
+use super::scope::ScopeTracker;
+use crate::backend::fuzzy_match::FuzzyMatcher;
+use crate::backend::grounded::{GenericGroundedRegistry, GroundedOperation, GroundedOperationTCO, GroundedRegistry, GroundedRegistryTCO};
+use crate::backend::models::{
+    GenericRule, IndexedMultiset, MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle, SymbolTable,
+};
+use crate::backend::modules::{ModuleRegistry, Tokenizer};
+use crate::backend::symbol::Symbol;
+
+// ============================================================================
+// Helper Functions for Environment Operations
+// ============================================================================
+
+/// Merge two PathMaps by taking the maximum multiplicity for each path.
+///
+/// This is used by environment union to combine facts from two environments.
+/// For each path present in either PathMap, the result contains that path with
+/// the maximum of the two multiplicities (or the single multiplicity if only in one).
+fn merge_pathmaps_max(
+    a: &PathMap<Multiplicity>,
+    b: &PathMap<Multiplicity>,
+) -> PathMap<Multiplicity> {
+    use pathmap::zipper::*;
+
+    // Start with a clone of 'a'
+    let mut result = a.clone();
+
+    // Iterate through 'b' and take max for each path
+    let mut rz = b.read_zipper();
+    while rz.to_next_val() {
+        let path = rz.path();
+        let b_count = rz.val().map(|m| m.count()).unwrap_or(0);
+
+        // Check if path exists in result
+        if let Some(a_mult) = result.get(path) {
+            // Take max of multiplicities
+            let max_count = a_mult.count().max(b_count);
+            result.insert(path, Multiplicity::new(max_count));
+        } else {
+            // Path only in b, add it
+            result.insert(path, Multiplicity::new(b_count));
+        }
+    }
+
+    result
+}
+
+// ============================================================================
+// Multiplicity Match - Generic for any value type
+// ============================================================================
+
+/// Generic multiplicity match that works with any value type.
+///
+/// Used by `match_space` to return matches with their multiplicities,
+/// enabling lazy expansion for high-multiplicity matches.
+#[derive(Debug, Clone)]
+pub struct MultiplicityMatch<V> {
+    /// The matched value
+    pub value: V,
+    /// The number of times this value appears
+    pub count: usize,
+}
+
+impl<V: Clone> MultiplicityMatch<V> {
+    /// Create a new multiplicity match.
+    #[inline]
+    pub fn new(value: V, count: usize) -> Self {
+        Self { value, count }
+    }
+
+    /// Expand into an iterator of cloned values.
+    ///
+    /// This defers the cloning until the iterator is actually consumed,
+    /// enabling lazy evaluation of high-multiplicity matches.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let m = MultiplicityMatch::new(atom, 1000);
+    /// // Only clones when iterated:
+    /// for value in m.expand().take(10) {
+    ///     // Only 10 clones happen, not 1000
+    /// }
+    /// ```
+    #[inline]
+    pub fn expand(self) -> impl Iterator<Item = V> {
+        std::iter::repeat(self.value).take(self.count)
+    }
+
+    /// Check if this is a single match (count == 1).
+    #[inline]
+    pub fn is_single(&self) -> bool {
+        self.count == 1
+    }
+}
+
+/// Shared state across all GenericEnvironment clones.
+///
+/// Parameterized over `V: MettaValueTrait` to enable zero-conversion evaluation.
+/// Values are stored natively in their concrete type (MettaValue or ArenaValue).
+///
+/// ## Thread Safety - Non-Blocking Concurrent Access
+///
+/// Uses lock-free and low-contention structures for maximum parallelism:
+/// - `DashMap`: Sharded concurrent HashMap with lock-free reads
+/// - `parking_lot::RwLock`: Fast reader-writer lock for non-DashMap structures
+/// - `AtomicU64`/`AtomicBool`/`AtomicUsize`: Lock-free counters and flags
+pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> {
+    // ========================================================================
+    // Type-Agnostic Storage (bytes/MORK)
+    // ========================================================================
+    /// PathMap trie for fact storage (value = atom multiplicity)
+    /// Uses parking_lot::RwLock (PathMap has no concurrent alternative)
+    pub(crate) btm: RwLock<PathMap<Multiplicity>>,
+
+    /// Shared symbol table for atom interning (Arc-wrapped for sharing across clones)
+    /// Enables O(1) equality comparison via AtomId instead of structural comparison
+    pub(crate) symbols: Arc<SymbolTable>,
+
+    /// Indexed multiplicity tracking: O(1) lookup via array indexing.
+    /// Uses parking_lot::RwLock (IndexedMultiset uses internal DashMap)
+    pub(crate) multiplicities: RwLock<IndexedMultiset>,
+
+    /// Mutable state cells registry (stores V directly - no serialization)
+    /// Uses DashMap for lock-free concurrent access
+    pub(crate) states: DashMap<u64, V>,
+
+    /// Counter for generating unique state IDs (lock-free atomic)
+    pub(crate) next_state_id: AtomicU64,
+
+    // ========================================================================
+    // Generic Rule Storage (parameterized over V)
+    // ========================================================================
+    /// Rule index: Maps (head_symbol, arity) -> Vec<GenericRule<V>>
+    /// Uses DashMap for lock-free concurrent read access
+    #[allow(clippy::type_complexity)]
+    pub(crate) rule_index: DashMap<(Symbol, usize), Vec<GenericRule<V>>>,
+
+    /// Wildcard rules: Rules without a clear head symbol
+    /// Uses RwLock since wildcard rules are rarely modified
+    pub(crate) wildcard_rules: RwLock<Vec<GenericRule<V>>>,
+
+    /// Fast flag: true if any wildcard rules exist (lock-free atomic)
+    pub(crate) has_wildcard_rules: AtomicBool,
+
+    // ========================================================================
+    // Generic Named Spaces (parameterized over V)
+    // ========================================================================
+    /// Named spaces registry: Maps space_id -> (name, atoms)
+    /// Uses DashMap for lock-free concurrent access
+    #[allow(clippy::type_complexity)]
+    pub(crate) named_spaces: DashMap<u64, (String, Vec<V>)>,
+
+    /// Counter for generating unique space IDs (lock-free atomic)
+    pub(crate) next_space_id: AtomicU64,
+
+    // ========================================================================
+    // Generic Symbol Bindings (parameterized over V)
+    // ========================================================================
+    /// Symbol bindings registry: Maps name -> V
+    /// Uses DashMap for lock-free concurrent access
+    pub(crate) bindings: DashMap<String, V>,
+
+    /// Type assertions: Maps symbol name -> type value V (no serialization)
+    /// Uses DashMap for lock-free concurrent access
+    pub(crate) types: DashMap<String, V>,
+
+    // ========================================================================
+    // Type-Agnostic Registries and Caches
+    // ========================================================================
+    /// Module registry (type-agnostic)
+    /// Uses RwLock (ModuleRegistry has internal state)
+    pub(crate) module_registry: RwLock<ModuleRegistry>,
+
+    /// Per-module tokenizer (type-agnostic)
+    /// Uses RwLock (Tokenizer has internal state)
+    pub(crate) tokenizer: RwLock<crate::backend::modules::GenericTokenizer<V>>,
+
+    /// Grounded operations registry (legacy, type-specific to MettaValue)
+    /// Uses RwLock (rarely modified after init)
+    pub(crate) grounded_registry: RwLock<GroundedRegistry>,
+
+    /// TCO-compatible grounded operations registry (type-specific to MettaValue)
+    /// Uses RwLock (rarely modified after init)
+    pub(crate) grounded_registry_tco: RwLock<GroundedRegistryTCO>,
+
+    /// Generic grounded operations registry (type-parameterized, zero-conversion)
+    /// Stateless and Clone, no lock needed
+    pub(crate) generic_grounded_registry: GenericGroundedRegistry,
+
+    /// Pattern cache for MORK serialization (keyed by MettaValue for heap mode)
+    /// Uses RwLock (LruCache requires exclusive access for get/put)
+    pub(crate) pattern_cache: RwLock<LruCache<MettaValue, Vec<u8>>>,
+
+    /// Type index: Lazy-initialized subtrie containing only type assertions
+    /// Uses RwLock (PathMap has no concurrent alternative)
+    pub(crate) type_index: RwLock<Option<PathMap<Multiplicity>>>,
+
+    /// Type index invalidation flag (lock-free atomic)
+    pub(crate) type_index_dirty: AtomicBool,
+
+    /// Fallback store for large expressions (arity >= 64)
+    /// Uses RwLock (PathMap has no concurrent alternative)
+    /// Stores V directly (zero-conversion)
+    pub(crate) large_expr_pathmap: RwLock<Option<PathMap<V>>>,
+
+    /// Fuzzy matcher for "Did you mean?" suggestions
+    /// Uses RwLock (FuzzyMatcher has internal state)
+    pub(crate) fuzzy_matcher: RwLock<FuzzyMatcher>,
+
+    /// Hierarchical scope tracker for context-aware symbol resolution
+    /// Uses RwLock (ScopeTracker has internal state)
+    pub(crate) scope_tracker: RwLock<ScopeTracker>,
+
+    /// Bloom filter for (head_symbol, arity) pairs - enables O(1) match_space() rejection
+    /// Uses RwLock (HeadArityBloomFilter has internal state)
+    pub(crate) head_arity_bloom: RwLock<HeadArityBloomFilter>,
+
+    /// O(1) total atom count (sum of all multiplicities)
+    pub(crate) total_atoms: AtomicUsize,
+}
+
+/// Generic environment parameterized over value type and factory.
+///
+/// This is the main entry point for zero-conversion evaluation. Use type aliases
+/// for convenience:
+///
+/// - `HeapEnvironment` = `GenericEnvironment<MettaValue, HeapMettaValueFactory>`
+/// - `ArenaEnvironment<'a>` = `GenericEnvironment<ArenaValue<'a>, ArenaValueFactory<'a>>`
+///
+/// ## Copy-on-Write (CoW) Semantics
+///
+/// Clones share data via Arc until first modification:
+/// - `owns_data = false`: Clone is sharing, must call `make_owned()` before mutation
+/// - `owns_data = true`: Clone owns its data, can mutate in-place
+///
+/// ## Performance
+///
+/// - Clone: O(1) - single Arc increment
+/// - First mutation after clone: O(n) deep copy via `make_owned()`
+/// - Subsequent mutations: O(1) in-place
+pub struct GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    /// Consolidated shared state - single Arc for O(1) cloning
+    pub(crate) shared: Arc<GenericEnvironmentShared<V>>,
+
+    /// Factory for creating V values (used by match_space, etc.)
+    pub(crate) factory: F,
+
+    /// SharedMappingHandle for MORK symbol interning
+    pub(crate) shared_mapping: SharedMappingHandle,
+
+    /// CoW: Tracks if this clone owns its data
+    pub(crate) owns_data: bool,
+
+    /// CoW: Tracks if this environment has been modified
+    pub(crate) modified: Arc<AtomicBool>,
+
+    /// Current module path for relative path resolution
+    pub(crate) current_module_path: Option<PathBuf>,
+}
+
+impl<V, F> GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    /// Create a new generic environment.
+    ///
+    /// # Parameters
+    ///
+    /// The factory is stored and used for creating V values during operations
+    /// like `match_space` that need to construct values from MORK bytes.
+    pub fn new(factory: F) -> Self {
+        use mork_interning::SharedMapping;
+
+        // Create shared symbol table for atom interning
+        let symbols = Arc::new(SymbolTable::new());
+
+        // Create the shared mapping for MORK symbol interning
+        let shared_mapping = SharedMapping::new();
+
+        // Warm up SharedMapping to avoid PathMap ensure_root() TOCTOU race.
+        if let Ok(permit) = shared_mapping.try_aquire_permission() {
+            for i in 0..128u8 {
+                let _ = permit.get_sym_or_insert(&[i]);
+            }
+        }
+
+        let shared = Arc::new(GenericEnvironmentShared {
+            // Type-agnostic storage
+            btm: RwLock::new(PathMap::new()),
+            symbols,
+            multiplicities: RwLock::new(IndexedMultiset::new()),
+            states: DashMap::new(),
+            next_state_id: AtomicU64::new(1),
+
+            // Generic rule storage
+            rule_index: DashMap::with_capacity(128),
+            wildcard_rules: RwLock::new(Vec::new()),
+            has_wildcard_rules: AtomicBool::new(false),
+
+            // Generic named spaces
+            named_spaces: DashMap::new(),
+            next_space_id: AtomicU64::new(1),
+
+            // Generic symbol bindings
+            bindings: DashMap::new(),
+
+            // Type assertions storage
+            types: DashMap::new(),
+
+            // Type-agnostic registries
+            module_registry: RwLock::new(ModuleRegistry::new()),
+            tokenizer: RwLock::new(crate::backend::modules::GenericTokenizer::<V>::new()),
+            grounded_registry: RwLock::new(GroundedRegistry::with_standard_ops()),
+            grounded_registry_tco: RwLock::new(GroundedRegistryTCO::with_standard_ops()),
+            generic_grounded_registry: GenericGroundedRegistry::with_standard_ops(),
+            pattern_cache: RwLock::new(LruCache::new(
+                NonZeroUsize::new(1000).expect("1000 is non-zero"),
+            )),
+            type_index: RwLock::new(None),
+            type_index_dirty: AtomicBool::new(true),
+            large_expr_pathmap: RwLock::new(None),
+            fuzzy_matcher: RwLock::new(FuzzyMatcher::new()),
+            scope_tracker: RwLock::new(ScopeTracker::new()),
+            head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)),
+            total_atoms: AtomicUsize::new(0),
+        });
+
+        GenericEnvironment {
+            shared,
+            factory,
+            shared_mapping,
+            owns_data: true,
+            modified: Arc::new(AtomicBool::new(false)),
+            current_module_path: None,
+        }
+    }
+
+    /// Get the factory for creating V values.
+    #[inline]
+    pub fn factory(&self) -> &F {
+        &self.factory
+    }
+
+    /// CoW: Make this environment own its data (deep copy if sharing).
+    ///
+    /// Called automatically on first mutation of a cloned environment.
+    /// No-op if already owns data (owns_data == true).
+    pub(crate) fn make_owned(&mut self) {
+        if self.owns_data {
+            return;
+        }
+        trace!(target: "mettatron::generic_environment::make_owned", "Deep copying CoW data");
+
+        // Helper to clone DashMap contents
+        fn clone_dashmap<K: Clone + Eq + std::hash::Hash, V: Clone>(
+            src: &DashMap<K, V>,
+        ) -> DashMap<K, V> {
+            let new_map = DashMap::with_capacity(src.len());
+            for entry in src.iter() {
+                new_map.insert(entry.key().clone(), entry.value().clone());
+            }
+            new_map
+        }
+
+        let new_shared = Arc::new(GenericEnvironmentShared {
+            // Type-agnostic storage - deep copy (parking_lot::RwLock doesn't use Result)
+            btm: RwLock::new(self.shared.btm.read().clone()),
+            symbols: Arc::clone(&self.shared.symbols), // Share symbol table (append-only)
+            multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
+            // DashMap - iterate and clone
+            states: clone_dashmap(&self.shared.states),
+            // Atomic - load and create new
+            next_state_id: AtomicU64::new(self.shared.next_state_id.load(Ordering::Acquire)),
+
+            // Generic rule storage - DashMap for rule_index
+            rule_index: clone_dashmap(&self.shared.rule_index),
+            wildcard_rules: RwLock::new(self.shared.wildcard_rules.read().clone()),
+            has_wildcard_rules: AtomicBool::new(
+                self.shared.has_wildcard_rules.load(Ordering::Acquire),
+            ),
+
+            // Generic named spaces - DashMap
+            named_spaces: clone_dashmap(&self.shared.named_spaces),
+            next_space_id: AtomicU64::new(self.shared.next_space_id.load(Ordering::Acquire)),
+
+            // Generic symbol bindings - DashMap
+            bindings: clone_dashmap(&self.shared.bindings),
+
+            // Type assertions - DashMap
+            types: clone_dashmap(&self.shared.types),
+
+            // Type-agnostic registries - parking_lot::RwLock (no .expect())
+            module_registry: RwLock::new(self.shared.module_registry.read().clone()),
+            tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
+            grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
+            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().clone()),
+            generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
+            pattern_cache: RwLock::new(self.shared.pattern_cache.read().clone()),
+            type_index: RwLock::new(self.shared.type_index.read().clone()),
+            type_index_dirty: AtomicBool::new(
+                self.shared.type_index_dirty.load(Ordering::Acquire),
+            ),
+            large_expr_pathmap: RwLock::new(self.shared.large_expr_pathmap.read().clone()),
+            fuzzy_matcher: RwLock::new(self.shared.fuzzy_matcher.read().clone()),
+            scope_tracker: RwLock::new(self.shared.scope_tracker.read().clone()),
+            head_arity_bloom: RwLock::new(self.shared.head_arity_bloom.read().clone()),
+            total_atoms: AtomicUsize::new(self.shared.total_atoms.load(Ordering::Acquire)),
+        });
+
+        self.shared = new_shared;
+        self.owns_data = true;
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Create a forked environment for nondeterministic branch isolation.
+    ///
+    /// Uses efficient O(1) multiplicity tracking via `IndexedMultiset::fork()`.
+    pub fn fork_for_nondeterminism(&self) -> Self {
+        trace!(target: "mettatron::generic_environment::fork", "Forking environment for nondeterminism");
+
+        // Helper to clone DashMap contents
+        fn clone_dashmap<K: Clone + Eq + std::hash::Hash, V: Clone>(
+            src: &DashMap<K, V>,
+        ) -> DashMap<K, V> {
+            let new_map = DashMap::with_capacity(src.len());
+            for entry in src.iter() {
+                new_map.insert(entry.key().clone(), entry.value().clone());
+            }
+            new_map
+        }
+
+        let new_shared = Arc::new(GenericEnvironmentShared {
+            // Type-agnostic storage (parking_lot::RwLock - no .expect())
+            btm: RwLock::new(self.shared.btm.read().clone()),
+            symbols: Arc::clone(&self.shared.symbols),
+            multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
+            states: clone_dashmap(&self.shared.states),
+            next_state_id: AtomicU64::new(self.shared.next_state_id.load(Ordering::Acquire)),
+
+            // Generic rule storage - DashMap
+            rule_index: clone_dashmap(&self.shared.rule_index),
+            wildcard_rules: RwLock::new(self.shared.wildcard_rules.read().clone()),
+            has_wildcard_rules: AtomicBool::new(
+                self.shared.has_wildcard_rules.load(Ordering::Acquire),
+            ),
+
+            // Generic named spaces - DashMap
+            named_spaces: clone_dashmap(&self.shared.named_spaces),
+            next_space_id: AtomicU64::new(self.shared.next_space_id.load(Ordering::Acquire)),
+
+            // Generic symbol bindings - DashMap
+            bindings: clone_dashmap(&self.shared.bindings),
+
+            // Type assertions - DashMap
+            types: clone_dashmap(&self.shared.types),
+
+            // Type-agnostic registries (parking_lot::RwLock - no .expect())
+            module_registry: RwLock::new(self.shared.module_registry.read().clone()),
+            tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
+            grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
+            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().clone()),
+            generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
+            // Clear pattern cache instead of copying
+            pattern_cache: RwLock::new(LruCache::new(
+                NonZeroUsize::new(1000).expect("1000 is non-zero"),
+            )),
+            type_index: RwLock::new(self.shared.type_index.read().clone()),
+            type_index_dirty: AtomicBool::new(
+                self.shared.type_index_dirty.load(Ordering::Acquire),
+            ),
+            large_expr_pathmap: RwLock::new(self.shared.large_expr_pathmap.read().clone()),
+            fuzzy_matcher: RwLock::new(self.shared.fuzzy_matcher.read().clone()),
+            scope_tracker: RwLock::new(self.shared.scope_tracker.read().clone()),
+            head_arity_bloom: RwLock::new(self.shared.head_arity_bloom.read().clone()),
+            total_atoms: AtomicUsize::new(self.shared.total_atoms.load(Ordering::Acquire)),
+        });
+
+        GenericEnvironment {
+            shared: new_shared,
+            factory: self.factory.clone(),
+            shared_mapping: self.shared_mapping.clone(),
+            owns_data: true,
+            modified: Arc::new(AtomicBool::new(false)),
+            current_module_path: self.current_module_path.clone(),
+        }
+    }
+
+    /// Union two environments (monotonic merge).
+    ///
+    /// This implements proper environment union semantics by merging state from
+    /// both environments:
+    ///
+    /// 1. **Fast path**: If both share the same underlying Arc, return a shared clone.
+    /// 2. **Fast path**: If neither was modified, share self's state.
+    /// 3. **Merge path**: Actually merge state from both environments:
+    ///    - PathMap facts: take max multiplicity for each path
+    ///    - Rules: combine and deduplicate by structural equality
+    ///    - Bindings/Types: combine (other's values take precedence on conflict)
+    ///    - States: combine by ID (other's values take precedence)
+    ///    - Named spaces: combine by ID
+    ///
+    /// This is used by the Rholang language server for combining environment
+    /// state after parallel or alternative evaluations.
+    pub fn union(&self, other: &Self) -> Self {
+        trace!(target: "mettatron::generic_environment::union", "Unioning environments");
+
+        // Fast path: same underlying data
+        if Arc::ptr_eq(&self.shared, &other.shared) {
+            return GenericEnvironment {
+                shared: Arc::clone(&self.shared),
+                factory: self.factory.clone(),
+                shared_mapping: self.shared_mapping.clone(),
+                owns_data: false,
+                modified: Arc::new(AtomicBool::new(false)),
+                current_module_path: self.current_module_path.clone(),
+            };
+        }
+
+        let self_modified = self.owns_data && self.modified.load(Ordering::Acquire);
+        let other_modified = other.owns_data && other.modified.load(Ordering::Acquire);
+
+        // Fast path: neither modified, share self's state
+        if !self_modified && !other_modified {
+            return GenericEnvironment {
+                shared: Arc::clone(&self.shared),
+                factory: self.factory.clone(),
+                shared_mapping: self.shared_mapping.clone(),
+                owns_data: false,
+                modified: Arc::new(AtomicBool::new(false)),
+                current_module_path: self.current_module_path.clone(),
+            };
+        }
+
+        // Fast path: only self modified, use self's state
+        if self_modified && !other_modified {
+            return GenericEnvironment {
+                shared: Arc::clone(&self.shared),
+                factory: self.factory.clone(),
+                shared_mapping: self.shared_mapping.clone(),
+                owns_data: false,
+                modified: Arc::new(AtomicBool::new(false)),
+                current_module_path: self.current_module_path.clone(),
+            };
+        }
+
+        // Fast path: only other modified, use other's state
+        if !self_modified && other_modified {
+            return GenericEnvironment {
+                shared: Arc::clone(&other.shared),
+                factory: self.factory.clone(),
+                shared_mapping: other.shared_mapping.clone(),
+                owns_data: false,
+                modified: Arc::new(AtomicBool::new(false)),
+                current_module_path: other.current_module_path.clone(),
+            };
+        }
+
+        // Both modified: perform actual merge
+        trace!(target: "mettatron::generic_environment::union", "Both environments modified, performing merge");
+
+        // Merge PathMaps by taking max multiplicity
+        let merged_btm = {
+            let self_btm = self.shared.btm.read();
+            let other_btm = other.shared.btm.read();
+            merge_pathmaps_max(&self_btm, &other_btm)
+        };
+
+        // Calculate total atoms from merged PathMap
+        let merged_total_atoms = {
+            use pathmap::zipper::*;
+            let mut rz = merged_btm.read_zipper();
+            let mut total = 0usize;
+            while rz.to_next_val() {
+                if let Some(mult) = rz.val() {
+                    total += mult.count() as usize;
+                }
+            }
+            total
+        };
+
+        // Merge rule indices
+        let merged_rule_index: DashMap<(Symbol, usize), Vec<GenericRule<V>>> = DashMap::new();
+        // Add self's rules
+        for entry in self.shared.rule_index.iter() {
+            let key = entry.key().clone();
+            let rules = entry.value().clone();
+            merged_rule_index.insert(key, rules);
+        }
+        // Merge other's rules (deduplicate by comparing LHS via MettaValueTrait)
+        for entry in other.shared.rule_index.iter() {
+            let key = entry.key().clone();
+            let other_rules = entry.value();
+            merged_rule_index
+                .entry(key)
+                .and_modify(|existing| {
+                    for rule in other_rules.iter() {
+                        // Deduplicate by comparing LHS (zero-conversion via MettaValueTrait)
+                        let is_duplicate = existing.iter().any(|r| {
+                            r.lhs.structurally_equivalent(&rule.lhs)
+                        });
+                        if !is_duplicate {
+                            existing.push(rule.clone());
+                        }
+                    }
+                })
+                .or_insert_with(|| other_rules.clone());
+        }
+
+        // Merge wildcard rules (deduplicate by comparing LHS via MettaValueTrait)
+        let merged_wildcard_rules = {
+            let self_wildcards = self.shared.wildcard_rules.read();
+            let other_wildcards = other.shared.wildcard_rules.read();
+            let mut merged = self_wildcards.clone();
+            for rule in other_wildcards.iter() {
+                // Zero-conversion deduplication using trait method
+                let is_duplicate = merged.iter().any(|r| {
+                    r.lhs.structurally_equivalent(&rule.lhs)
+                });
+                if !is_duplicate {
+                    merged.push(rule.clone());
+                }
+            }
+            merged
+        };
+        let has_wildcards = !merged_wildcard_rules.is_empty();
+
+        // Merge bindings (other takes precedence)
+        let merged_bindings: DashMap<String, V> = DashMap::new();
+        for entry in self.shared.bindings.iter() {
+            merged_bindings.insert(entry.key().clone(), entry.value().clone());
+        }
+        for entry in other.shared.bindings.iter() {
+            merged_bindings.insert(entry.key().clone(), entry.value().clone());
+        }
+
+        // Merge types (other takes precedence)
+        let merged_types: DashMap<String, V> = DashMap::new();
+        for entry in self.shared.types.iter() {
+            merged_types.insert(entry.key().clone(), entry.value().clone());
+        }
+        for entry in other.shared.types.iter() {
+            merged_types.insert(entry.key().clone(), entry.value().clone());
+        }
+
+        // Merge states (other takes precedence)
+        let merged_states: DashMap<u64, V> = DashMap::new();
+        for entry in self.shared.states.iter() {
+            merged_states.insert(*entry.key(), entry.value().clone());
+        }
+        for entry in other.shared.states.iter() {
+            merged_states.insert(*entry.key(), entry.value().clone());
+        }
+
+        // Merge named spaces (combine atoms within same space)
+        let merged_named_spaces: DashMap<u64, (String, Vec<V>)> = DashMap::new();
+        for entry in self.shared.named_spaces.iter() {
+            merged_named_spaces.insert(*entry.key(), entry.value().clone());
+        }
+        for entry in other.shared.named_spaces.iter() {
+            let (name, atoms) = entry.value();
+            merged_named_spaces
+                .entry(*entry.key())
+                .and_modify(|(_, existing_atoms)| {
+                    existing_atoms.extend(atoms.iter().cloned());
+                })
+                .or_insert_with(|| (name.clone(), atoms.clone()));
+        }
+
+        // Take max of ID counters to avoid collisions
+        let max_state_id = self.shared.next_state_id.load(Ordering::Acquire)
+            .max(other.shared.next_state_id.load(Ordering::Acquire));
+        let max_space_id = self.shared.next_space_id.load(Ordering::Acquire)
+            .max(other.shared.next_space_id.load(Ordering::Acquire));
+
+        // Merge fuzzy matchers by cloning self and inserting other's terms
+        let merged_fuzzy = {
+            let self_fuzzy = self.shared.fuzzy_matcher.read();
+            let other_fuzzy = other.shared.fuzzy_matcher.read();
+            // Clone self's fuzzy matcher (gets a fresh dictionary OnceLock)
+            let merged = self_fuzzy.clone();
+            // Insert all terms from other's pending set
+            for term in other_fuzzy.pending_iter() {
+                merged.insert(&term);
+            }
+            merged
+        };
+
+        // Create new shared state with merged data
+        let new_shared = Arc::new(GenericEnvironmentShared {
+            btm: RwLock::new(merged_btm),
+            symbols: Arc::clone(&self.shared.symbols), // Append-only, share
+            multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
+            states: merged_states,
+            next_state_id: AtomicU64::new(max_state_id),
+
+            rule_index: merged_rule_index,
+            wildcard_rules: RwLock::new(merged_wildcard_rules),
+            has_wildcard_rules: AtomicBool::new(has_wildcards),
+
+            named_spaces: merged_named_spaces,
+            next_space_id: AtomicU64::new(max_space_id),
+
+            bindings: merged_bindings,
+            types: merged_types,
+
+            // Share from self (these are typically static after initialization)
+            module_registry: RwLock::new(self.shared.module_registry.read().clone()),
+            tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
+            grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
+            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().clone()),
+            generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
+
+            // Clear/reset caches after merge
+            pattern_cache: RwLock::new(LruCache::new(
+                NonZeroUsize::new(1000).expect("1000 is non-zero"),
+            )),
+            type_index: RwLock::new(None), // Invalidate
+            type_index_dirty: AtomicBool::new(true),
+            large_expr_pathmap: RwLock::new(None), // TODO: merge these too
+
+            fuzzy_matcher: RwLock::new(merged_fuzzy),
+            scope_tracker: RwLock::new(other.shared.scope_tracker.read().clone()), // Use other's scope
+            head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // Reset (will be rebuilt)
+            total_atoms: AtomicUsize::new(merged_total_atoms),
+        });
+
+        GenericEnvironment {
+            shared: new_shared,
+            factory: self.factory.clone(),
+            shared_mapping: self.shared_mapping.clone(),
+            owns_data: true,
+            modified: Arc::new(AtomicBool::new(true)),
+            current_module_path: other.current_module_path.clone().or_else(|| self.current_module_path.clone()),
+        }
+    }
+
+    // ========================================================================
+    // Accessors
+    // ========================================================================
+
+    /// Get the shared symbol table.
+    pub fn symbols(&self) -> &Arc<SymbolTable> {
+        &self.shared.symbols
+    }
+
+    /// Get the generic grounded registry.
+    pub fn generic_grounded_registry(&self) -> &GenericGroundedRegistry {
+        &self.shared.generic_grounded_registry
+    }
+
+    /// Check if the environment has been modified.
+    pub fn is_modified(&self) -> bool {
+        self.modified.load(Ordering::Acquire)
+    }
+
+    /// Get the current module path.
+    pub fn current_module_path(&self) -> Option<&PathBuf> {
+        self.current_module_path.as_ref()
+    }
+
+    // Note: set_current_module_path is defined in module_ops.rs
+}
+
+impl<V, F> Clone for GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    fn clone(&self) -> Self {
+        GenericEnvironment {
+            shared: Arc::clone(&self.shared),
+            factory: self.factory.clone(),
+            shared_mapping: self.shared_mapping.clone(),
+            owns_data: false, // CoW: clones do not own data initially
+            modified: Arc::new(AtomicBool::new(false)),
+            current_module_path: self.current_module_path.clone(),
+        }
+    }
+}
+
+impl<V, F> std::fmt::Debug for GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenericEnvironment")
+            .field("owns_data", &self.owns_data)
+            .field("modified", &self.modified.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+
+
+
+
+
+// ============================================================================
+// MORK Space Access Methods
+// ============================================================================
+
+use mork::space::Space;
+
+impl<V, F> GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    /// Create a thread-local Space for operations.
+    /// Following the Rholang LSP pattern: cheap clone via structural sharing.
+    pub fn create_space(&self) -> Space<Multiplicity> {
+        let btm = self.shared.btm.read().clone();
+        Space {
+            btm,
+            sm: self.shared_mapping.clone(),
+            mmaps: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Update PathMap and shared mapping after Space modifications (write operations).
+    /// This updates both the PathMap (btm) and the SharedMappingHandle (sm).
+    pub(crate) fn update_pathmap(&mut self, space: Space<Multiplicity>) {
+        self.make_owned(); // CoW: ensure we own data before modifying
+        *self.shared.btm.write() = space.btm;
+        self.shared_mapping = space.sm;
+        self.modified.store(true, Ordering::Release); // CoW: mark as modified
+    }
+
+    /// Get the total atom count (O(1)).
+    pub fn total_atoms(&self) -> usize {
+        self.shared.total_atoms.load(Ordering::Acquire)
+    }
+
+    /// Get the "self" space handle.
+    ///
+    /// Returns a SpaceHandle for the current module's space.
+    pub fn self_space(&self) -> SpaceHandle {
+        // Use ID 0 for the default "self" space
+        SpaceHandle::new(0, "self".to_string())
+    }
+
+    /// Register a token with a value in the tokenizer.
+    pub fn register_token(&mut self, token: &str, value: V) {
+        self.make_owned();
+        self.shared.tokenizer.write().register_token_value(token, value);
+        self.shared.fuzzy_matcher.write().insert(token);
+        self.modified.store(true, Ordering::Release);
+    }
+}
+
+// ============================================================================
+// Generic Space Operations via MORK - Zero-Conversion Architecture
+// ============================================================================
+//
+// These methods use the generic MORK conversion functions that work directly
+// with any V: MettaValueTrait, avoiding intermediate MettaValue conversions.
+//
+// Data flow:
+//   V → value_to_mork_bytes_generic() → MORK bytes → PathMap storage
+//   PathMap → MORK bytes → mork_bytes_to_generic_value() → V
+//
+// Pattern matching and binding application also use generic versions:
+//   pattern_match_generic() - works directly on V
+//   apply_bindings_generic() - works directly on V
+// ============================================================================
+
+impl<V, F> GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    /// Add a fact to the MORK Space for pattern matching.
+    ///
+    /// ## Zero-Conversion Architecture
+    ///
+    /// Uses `value_to_mork_bytes_generic()` which operates directly on V via
+    /// `MettaValueTrait` methods. No intermediate `MettaValue` conversion occurs.
+    ///
+    /// ## Multiplicity Tracking
+    ///
+    /// Uses MeTTa HE semantics: each `add_to_space` call increments the atom's multiplicity.
+    pub fn add_to_space(&mut self, value: &V) {
+        use crate::backend::mork_convert::{value_to_mork_bytes_generic, ConversionContext};
+        use crate::backend::varint_encoding::value_to_varint_key_generic;
+        use super::multiplicity::add_atom;
+
+        self.make_owned();
+
+        let space = self.create_space();
+        let mut ctx = ConversionContext::new();
+
+        // Direct V → MORK bytes conversion (no to_heap())
+        match value_to_mork_bytes_generic(value, &space, &mut ctx) {
+            Ok(mork_bytes) => {
+                let mut btm = self.shared.btm.write();
+                add_atom(&mut btm, &mork_bytes);
+                drop(btm);
+
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+                // Use trait method for head symbol extraction
+                if let Some(head) = value.get_head_symbol() {
+                    let arity = value.get_arity() as u8;
+                    self.shared.head_arity_bloom.write().insert(head.as_bytes(), arity);
+                }
+            }
+            Err(_) => {
+                // Fallback for large expressions (arity >= 64)
+                // Store V directly (zero-conversion)
+                let key = value_to_varint_key_generic(value);
+
+                let mut guard = self.shared.large_expr_pathmap.write();
+                let fallback = guard.get_or_insert_with(PathMap::new);
+                fallback.insert(&key, value.clone());
+
+                {
+                    let mut btm = self.shared.btm.write();
+                    add_atom(&mut btm, &key);
+                }
+
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Remove a fact from MORK Space by exact match.
+    ///
+    /// ## Zero-Conversion Architecture
+    ///
+    /// Uses `value_to_mork_bytes_generic()` which operates directly on V via
+    /// `MettaValueTrait` methods. No intermediate `MettaValue` conversion occurs.
+    ///
+    /// ## Multiplicity Tracking
+    ///
+    /// Decrements the atom's multiplicity. If multiplicity reaches 0, the atom is removed.
+    pub fn remove_from_space(&mut self, value: &V) {
+        use crate::backend::mork_convert::{value_to_mork_bytes_generic, ConversionContext};
+        use crate::backend::varint_encoding::value_to_varint_key_generic;
+        use super::multiplicity::{get_multiplicity, remove_atom};
+
+        self.make_owned();
+
+        let space = self.create_space();
+        let mut ctx = ConversionContext::new();
+
+        // Direct V → MORK bytes conversion (no to_heap())
+        match value_to_mork_bytes_generic(value, &space, &mut ctx) {
+            Ok(mork_bytes) => {
+                let mut btm = self.shared.btm.write();
+
+                let current_count = get_multiplicity(&btm, &mork_bytes);
+                if current_count == 0 {
+                    if !btm.contains(&mork_bytes) {
+                        return;
+                    }
+                    btm.remove(&mork_bytes);
+                    drop(btm);
+                    self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    self.shared.head_arity_bloom.write().note_deletion();
+                    return;
+                }
+
+                let new_count = remove_atom(&mut btm, &mork_bytes);
+
+                if new_count == 0 {
+                    self.shared.head_arity_bloom.write().note_deletion();
+                }
+
+                drop(btm);
+                self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            }
+            Err(_) => {
+                // Fallback for large expressions (arity >= 64)
+                let key = value_to_varint_key_generic(value);
+
+                {
+                    let mut btm = self.shared.btm.write();
+                    remove_atom(&mut btm, &key);
+                }
+
+                let mut guard = self.shared.large_expr_pathmap.write();
+                if let Some(ref mut fallback) = *guard {
+                    if fallback.contains(&key) {
+                        fallback.remove(&key);
+                        self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Match pattern against all atoms in the Space.
+    ///
+    /// Returns `MultiplicityMatch` structs containing the instantiated template and its
+    /// multiplicity count. This deferred expansion design avoids cloning the template N times
+    /// for atoms with multiplicity N.
+    ///
+    /// ## Zero-Conversion Architecture
+    ///
+    /// Uses generic functions that operate directly on V:
+    /// - `mork_bytes_to_generic_value()` - MORK bytes → V
+    /// - `pattern_match_generic()` - pattern matching on V
+    /// - `apply_bindings_generic()` - template instantiation on V
+    ///
+    /// No intermediate `MettaValue` conversions occur in the hot path.
+    pub fn match_space(&self, pattern: &V, template: &V) -> Vec<MultiplicityMatch<V>> {
+        use crate::backend::eval::bindings_generic::{
+            apply_bindings_generic, pattern_match_generic,
+        };
+        use super::multiplicity::get_multiplicity;
+        use super::mork_encoding::mork_bytes_to_generic_value;
+
+        // Bloom filter check using trait methods (no conversion)
+        if let Some(expected_head) = pattern.get_head_symbol() {
+            let pattern_arity = pattern.get_arity() as u8;
+            let bloom_result = self.shared.head_arity_bloom.read()
+                .may_contain(expected_head.as_bytes(), pattern_arity);
+            if !bloom_result {
+                return Vec::new();
+            }
+        }
+
+        let space = self.create_space();
+        use pathmap::zipper::*;
+        let mut rz = space.btm.read_zipper();
+        let mut results = Vec::new();
+
+        // Iterate through MORK PathMap
+        while rz.to_next_val() {
+            let path_bytes = rz.path();
+            let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1) as usize;
+
+            // Direct MORK bytes → V conversion (no MettaValue intermediate)
+            if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                path_bytes,
+                &space,
+                &self.factory,
+            ) {
+                // Direct pattern matching on V (no conversion)
+                if let Some(bindings) = pattern_match_generic(pattern, &atom) {
+                    // Direct template instantiation on V (no conversion)
+                    let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
+                    results.push(MultiplicityMatch::new(instantiated, multiplicity));
+                }
+            }
+        }
+
+        drop(space);
+
+        // Check large expression fallback PathMap (stores V directly, zero-conversion)
+        let guard = self.shared.large_expr_pathmap.read();
+        if let Some(ref fallback) = *guard {
+            let btm = self.shared.btm.read();
+
+            for (key, stored_value) in fallback.iter() {
+                // stored_value is already V (zero-conversion)
+                if let Some(bindings) = pattern_match_generic(pattern, stored_value) {
+                    let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
+                    let multiplicity = get_multiplicity(&btm, &key).max(1) as usize;
+                    results.push(MultiplicityMatch::new(instantiated, multiplicity));
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Check if any atom in the Space matches the pattern (existence check only).
+    ///
+    /// This is the fastest query when you only need to know IF a match exists,
+    /// not what the match is. It avoids template instantiation overhead.
+    ///
+    /// ## Zero-Conversion Architecture
+    ///
+    /// Uses generic functions that operate directly on V:
+    /// - `mork_bytes_to_generic_value()` - MORK bytes → V
+    /// - `pattern_match_generic()` - pattern matching on V
+    pub fn match_space_exists(&self, pattern: &V) -> bool {
+        use crate::backend::eval::bindings_generic::pattern_match_generic;
+        use super::mork_encoding::mork_bytes_to_generic_value;
+
+        // Bloom filter check using trait methods (no conversion)
+        if let Some(expected_head) = pattern.get_head_symbol() {
+            let pattern_arity = pattern.get_arity() as u8;
+            if !self.shared.head_arity_bloom.read()
+                .may_contain(expected_head.as_bytes(), pattern_arity)
+            {
+                return false;
+            }
+        }
+
+        let space = self.create_space();
+        use pathmap::zipper::*;
+        let mut rz = space.btm.read_zipper();
+
+        while rz.to_next_val() {
+            let path_bytes = rz.path();
+
+            // Direct MORK bytes → V conversion (no MettaValue intermediate)
+            if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                path_bytes,
+                &space,
+                &self.factory,
+            ) {
+                // Direct pattern matching on V (no conversion)
+                if pattern_match_generic(pattern, &atom).is_some() {
+                    return true;
+                }
+            }
+        }
+
+        drop(space);
+
+        // Check large expression fallback PathMap (stores V directly, zero-conversion)
+        let guard = self.shared.large_expr_pathmap.read();
+        if let Some(ref fallback) = *guard {
+            for (_key, stored_value) in fallback.iter() {
+                // stored_value is already V (zero-conversion)
+                if pattern_match_generic(pattern, stored_value).is_some() {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+}
+
+// ============================================================================
+// Type Aliases for Convenience
+// ============================================================================
+
+/// Heap-allocated environment using MettaValue.
+///
+/// This is the default environment type for standard evaluation.
+/// MettaValue uses Arc internally, so clone is O(1).
+pub type HeapEnvironment = GenericEnvironment<MettaValue, crate::backend::models::HeapMettaValueFactory>;
+
+impl Default for HeapEnvironment {
+    fn default() -> Self {
+        GenericEnvironment::new(crate::backend::models::HeapMettaValueFactory)
+    }
+}
+
+
+/// Arena-allocated environment using ArenaValue.
+///
+/// This environment type uses arena allocation for zero-conversion evaluation.
+/// ArenaValue uses bump allocation internally, so clone is O(1) pointer copy.
+pub type ArenaEnvironment<'a> = GenericEnvironment<
+    crate::backend::models::ArenaValue<'a>,
+    crate::backend::models::ArenaValueFactory<'a>,
+>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::models::HeapMettaValueFactory;
+
+    #[test]
+    fn test_generic_environment_new() {
+        let env: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        assert!(env.owns_data);
+        assert!(!env.is_modified());
+    }
+
+    #[test]
+    fn test_generic_environment_clone_cow() {
+        let env1: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        let env2 = env1.clone();
+
+        // Clone should not own data
+        assert!(env1.owns_data);
+        assert!(!env2.owns_data);
+
+        // Both should share the same Arc
+        assert!(Arc::ptr_eq(&env1.shared, &env2.shared));
+    }
+
+    #[test]
+    fn test_generic_environment_add_rule() {
+        let mut env: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+
+        let lhs = MettaValue::SExpr(vec![
+            MettaValue::Atom("add".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Long(1),
+        ]);
+        let rhs = MettaValue::Long(42);
+        let rule = crate::backend::Rule::new(lhs, rhs);
+
+        env.add_rule(rule);
+
+        // Should have one rule for (add, 2)
+        let rules: Vec<_> = env.get_matching_rules_iter("add", 2).collect();
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn test_generic_environment_bind() {
+        let mut env: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+
+        env.bind("x", MettaValue::Long(42));
+
+        assert!(env.has_binding("x"));
+        assert_eq!(env.get_binding("x"), Some(MettaValue::Long(42)));
+        assert!(!env.has_binding("y"));
+    }
+
+    #[test]
+    fn test_generic_environment_named_space() {
+        let mut env: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+
+        let space_id = env.create_named_space("test");
+        assert!(env.has_named_space(space_id));
+
+        env.add_to_named_space(space_id, MettaValue::Long(1));
+        env.add_to_named_space(space_id, MettaValue::Long(2));
+
+        let atoms = env.collapse_named_space(space_id);
+        assert_eq!(atoms.len(), 2);
+    }
+
+    #[test]
+    fn test_generic_environment_fork() {
+        let mut env1: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        env1.bind("x", MettaValue::Long(1));
+
+        let mut env2 = env1.fork_for_nondeterminism();
+
+        // Forked env should own its data
+        assert!(env2.owns_data);
+
+        // Modify forked env
+        env2.bind("x", MettaValue::Long(2));
+
+        // Original should be unchanged
+        assert_eq!(env1.get_binding("x"), Some(MettaValue::Long(1)));
+        assert_eq!(env2.get_binding("x"), Some(MettaValue::Long(2)));
+    }
+
+    #[test]
+    fn test_generic_environment_state() {
+        let mut env: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+
+        // Create state
+        let state_id = env.create_state(&MettaValue::Long(42));
+        assert!(env.has_state(state_id));
+
+        // Get state
+        let value = env.get_state(state_id);
+        assert_eq!(value, Some(MettaValue::Long(42)));
+
+        // Change state
+        assert!(env.change_state(state_id, &MettaValue::Long(100)));
+        let new_value = env.get_state(state_id);
+        assert_eq!(new_value, Some(MettaValue::Long(100)));
+
+        // Non-existent state
+        assert!(!env.has_state(999));
+        assert_eq!(env.get_state(999), None);
+    }
+
+    #[test]
+    fn test_generic_environment_state_shared_across_clones() {
+        let mut env1: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+
+        // Create state in original
+        let state_id = env1.create_state(&MettaValue::Long(1));
+
+        // Clone (sharing Arc)
+        let env2 = env1.clone();
+
+        // State should be visible in clone
+        assert_eq!(env2.get_state(state_id), Some(MettaValue::Long(1)));
+
+        // Modify state - should be visible in both (states are truly mutable)
+        env1.change_state(state_id, &MettaValue::Long(2));
+
+        // Both should see the new value
+        assert_eq!(env1.get_state(state_id), Some(MettaValue::Long(2)));
+        assert_eq!(env2.get_state(state_id), Some(MettaValue::Long(2)));
+    }
+}

@@ -6,6 +6,7 @@
 use tracing::trace;
 
 use crate::backend::environment::Environment;
+#[allow(unused_imports)]
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 use super::super::step::ProcessedSExpr;

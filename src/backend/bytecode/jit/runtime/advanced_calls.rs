@@ -59,7 +59,7 @@ pub unsafe extern "C" fn jit_runtime_call_native(
     args.reverse(); // Restore argument order
 
     // Create native context
-    let native_ctx = NativeContext::new(Environment::new());
+    let native_ctx = NativeContext::new(Environment::default());
 
     // In a full implementation, we would get the registry from the context
     // For now, use a default registry with stdlib functions

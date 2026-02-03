@@ -47,7 +47,7 @@ fn make_test_fact(value: &str) -> MettaValue {
 #[test]
 fn test_new_environment_owns_data() {
     // Test: New environment should own its data
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(env.owns_data, "New environment should own its data");
     assert!(
         !env.modified.load(Ordering::Acquire),
@@ -58,7 +58,7 @@ fn test_new_environment_owns_data() {
 #[test]
 fn test_clone_does_not_own_data() {
     // Test: Cloned environment should not own data initially
-    let env = Environment::new();
+    let env = Environment::default();
     let clone = env.clone();
 
     assert!(env.owns_data, "Original environment should still own data");
@@ -75,7 +75,7 @@ fn test_clone_does_not_own_data() {
 #[test]
 fn test_clone_shares_arc_pointers() {
     // Test: Clone should share Arc pointers (cheap O(1) clone)
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Get Arc pointer addresses before clone (consolidated shared pointer)
     let shared_ptr_before = StdArc::as_ptr(&env.shared);
@@ -95,7 +95,7 @@ fn test_clone_shares_arc_pointers() {
 #[test]
 fn test_make_owned_triggers_on_first_write() {
     // Test: First mutation should trigger make_owned() and deep copy
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     let rule = make_test_rule("(test $x)", "(result $x)");
 
     // Add rule to original (already owns data, no make_owned() needed)
@@ -134,7 +134,7 @@ fn test_make_owned_triggers_on_first_write() {
 #[test]
 fn test_isolation_after_clone_mutation() {
     // Test: Mutations to clone should not affect original
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     let rule1 = make_test_rule("(original $x)", "(original-result $x)");
     env.add_rule(rule1.clone());
 
@@ -160,7 +160,7 @@ fn test_isolation_after_clone_mutation() {
 #[test]
 fn test_modification_tracking() {
     // Test: Modification flag is correctly tracked
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     assert!(
         !env.modified.load(Ordering::Acquire),
         "New env should not be modified"
@@ -191,7 +191,7 @@ fn test_modification_tracking() {
 #[test]
 fn test_make_owned_idempotency() {
     // Test: make_owned() should be idempotent (safe to call multiple times)
-    let env = Environment::new();
+    let env = Environment::default();
     let mut clone = env.clone();
 
     // First mutation triggers make_owned()
@@ -219,7 +219,7 @@ fn test_make_owned_idempotency() {
 fn test_deep_clone_copies_all_fields() {
     // Test: make_owned() should deep copy the consolidated shared state
     // (All 17 RwLock fields are now in one Arc<EnvironmentShared>)
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     env.add_rule(make_test_rule("(test $x)", "(result $x)"));
 
     let mut clone = env.clone();
@@ -243,7 +243,7 @@ fn test_deep_clone_copies_all_fields() {
 #[test]
 fn test_multiple_clones_independent() {
     // Test: Multiple clones should be independent after mutation
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     env.add_rule(make_test_rule("(original $x)", "(original-result $x)"));
 
     let mut clone1 = env.clone();
@@ -275,7 +275,7 @@ fn test_multiple_clones_independent() {
 fn property_clone_never_shares_mutable_state_after_write() {
     // Property: After mutation, clone and original should have independent state
     for i in 0..10 {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         env.add_rule(make_test_rule(&format!("(test{}  $x)", i), "(result $x)"));
 
         let mut clone = env.clone();
@@ -295,7 +295,7 @@ fn property_clone_never_shares_mutable_state_after_write() {
 #[test]
 fn property_parallel_writes_are_isolated() {
     // Property: Parallel mutations to different clones should be isolated
-    let env = Environment::new();
+    let env = Environment::default();
     let num_threads = 4;
     let barrier = StdArc::new(Barrier::new(num_threads));
 
@@ -350,7 +350,7 @@ fn property_parallel_writes_are_isolated() {
 #[test]
 fn stress_many_clones_with_mutations() {
     // Stress: Create 1000 clones and mutate each one
-    let env = Environment::new();
+    let env = Environment::default();
 
     for i in 0..1000 {
         let mut clone = env.clone();
@@ -375,7 +375,7 @@ fn stress_many_clones_with_mutations() {
 #[test]
 fn stress_deep_clone_chains() {
     // Stress: Create clone chains (clone of clone of clone...)
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     env.add_rule(make_test_rule("(original $x)", "(result $x)"));
 
     let mut current = env.clone();
@@ -395,7 +395,7 @@ fn stress_deep_clone_chains() {
 #[test]
 fn stress_concurrent_clone_and_mutate() {
     // Stress: Concurrent cloning and mutation across multiple threads
-    let env = StdArc::new(Environment::new());
+    let env = StdArc::new(Environment::default());
     let num_threads = 8;
 
     let handles: Vec<_> = (0..num_threads)
@@ -434,7 +434,7 @@ fn integration_parallel_eval_with_dynamic_rules() {
     // Integration: Simulate parallel evaluation where each thread adds rules dynamically
     use std::sync::Mutex as StdMutex;
 
-    let base_env = Environment::new();
+    let base_env = Environment::default();
     let results = StdArc::new(StdMutex::new(Vec::new()));
     let num_threads = 4;
 
@@ -483,7 +483,7 @@ fn integration_parallel_eval_with_dynamic_rules() {
 #[test]
 fn integration_read_while_write() {
     // Integration: Test concurrent reads and writes (RwLock benefit)
-    let mut env = Environment::new();
+    let mut env = Environment::default();
     for i in 0..100 {
         env.add_rule(make_test_rule(&format!("(rule{} $x)", i), "(result $x)"));
     }
@@ -522,7 +522,7 @@ fn integration_read_while_write() {
 #[test]
 fn integration_clone_preserves_rule_data() {
     // Integration: Verify clone preserves all rule data correctly
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Add various rules
     let rules = vec![
@@ -570,7 +570,7 @@ mod all_atom_multiplicity {
     /// Test: Adding the same data atom twice results in count=2
     #[test]
     fn test_add_same_atom_twice_increments_count() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Create a simple data atom (not a rule)
         let atom = MettaValue::SExpr(vec![
@@ -590,7 +590,7 @@ mod all_atom_multiplicity {
     /// Test: match_space returns N results for atoms with multiplicity N
     #[test]
     fn test_match_space_returns_n_copies_for_multiplicity_n() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Create and add a data atom 3 times
         let atom = MettaValue::SExpr(vec![
@@ -633,7 +633,7 @@ mod all_atom_multiplicity {
     /// Test: Removing once decrements counter, atom still in space
     #[test]
     fn test_remove_once_decrements_counter_keeps_atom() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add atom twice
         let atom = MettaValue::SExpr(vec![
@@ -673,7 +673,7 @@ mod all_atom_multiplicity {
     /// Test: Removing twice (count=0) removes atom from PathMap
     #[test]
     fn test_remove_all_copies_removes_from_space() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add atom twice
         let atom = MettaValue::SExpr(vec![
@@ -704,7 +704,7 @@ mod all_atom_multiplicity {
     /// Test: Simple atom (not s-expression) multiplicity
     #[test]
     fn test_simple_atom_multiplicity() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         let atom = MettaValue::Atom("simple-fact".to_string());
 
@@ -739,7 +739,7 @@ mod all_atom_multiplicity {
     /// Test: Rules with multiplicity still work correctly
     #[test]
     fn test_rules_with_multiplicity() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Create a rule s-expression
         let rule_sexpr = MettaValue::SExpr(vec![
@@ -789,7 +789,7 @@ mod all_atom_multiplicity {
     /// Test: Fork/CoW preserves multiplicities correctly
     #[test]
     fn test_fork_preserves_multiplicities() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add atom 3 times
         let atom = MettaValue::SExpr(vec![
@@ -839,7 +839,7 @@ mod all_atom_multiplicity {
     /// Test: Different atoms have independent multiplicities
     #[test]
     fn test_different_atoms_independent_multiplicities() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         let atom1 = MettaValue::SExpr(vec![
             MettaValue::Atom("first".to_string()),
@@ -889,7 +889,7 @@ mod all_atom_multiplicity {
     /// Test: match_space with variable pattern and multiplicity
     #[test]
     fn test_match_space_variable_pattern_with_multiplicity() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add same fact twice
         let fact = MettaValue::SExpr(vec![
@@ -931,7 +931,7 @@ mod all_atom_multiplicity {
     /// Test: Multiplicity survives rebuild_rule_index
     #[test]
     fn test_multiplicity_survives_rebuild() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add a rule twice
         let rule_sexpr = MettaValue::SExpr(vec![
@@ -1015,7 +1015,7 @@ mod thread_safety {
 
     #[test]
     fn test_concurrent_clone_and_mutate_2_threads() {
-        let mut base = Environment::new();
+        let mut base = Environment::default();
 
         // Add some base rules
         for i in 0..10 {
@@ -1077,7 +1077,7 @@ mod thread_safety {
         const N_THREADS: usize = 8;
         const RULES_PER_THREAD: usize = 10;
 
-        let mut base = Environment::new();
+        let mut base = Environment::default();
 
         // Add base rules
         for i in 0..20 {
@@ -1147,7 +1147,7 @@ mod thread_safety {
         const N_THREADS: usize = 4;
         const RULES_PER_THREAD: usize = 25;
 
-        let env = StdArc::new(Environment::new());
+        let env = StdArc::new(Environment::default());
         let barrier = StdArc::new(Barrier::new(N_THREADS));
 
         let handles: Vec<_> = (0..N_THREADS)
@@ -1198,7 +1198,7 @@ mod thread_safety {
         const N_READERS: usize = 16;
         const READS_PER_THREAD: usize = 100;
 
-        let mut base = Environment::new();
+        let mut base = Environment::default();
         for i in 0..50 {
             base.add_rule(make_test_rule_sexpr(
                 &format!("(rule{} $x)", i),
@@ -1245,7 +1245,7 @@ mod thread_safety {
         const N_CLONERS: usize = 4;
         const N_MUTATORS: usize = 4;
 
-        let mut base = Environment::new();
+        let mut base = Environment::default();
         for i in 0..20 {
             base.add_rule(make_test_rule_sexpr(
                 &format!("(base{} $x)", i),
@@ -1313,7 +1313,7 @@ mod thread_safety {
         // Test that concurrent first mutations (which trigger make_owned) are safe
         const N_THREADS: usize = 8;
 
-        let mut base = Environment::new();
+        let mut base = Environment::default();
         for i in 0..10 {
             base.add_rule(make_test_rule_sexpr(
                 &format!("(base{} $x)", i),
@@ -1376,7 +1376,7 @@ mod thread_safety {
         const N_READERS: usize = 8;
         const N_WRITERS: usize = 2;
 
-        let mut base = Environment::new();
+        let mut base = Environment::default();
         for i in 0..30 {
             base.add_rule(make_test_rule_sexpr(
                 &format!("(rule{} $x)", i),
@@ -1446,7 +1446,7 @@ mod thread_safety {
     #[test]
     fn test_remove_from_space_decrements_multiplicity() {
         // Test: Removing a rule should decrement its multiplicity count
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Create a rule and add it first via add_rule() (which sets up multiplicity tracking)
         let lhs = MettaValue::SExpr(vec![

@@ -280,7 +280,7 @@ fn test_smart_suggestion_confidence_levels() {
 fn test_context_arity_filtering_lit_vs_let() {
     // Core issue #51 case: (lit p) has arity 1, let needs arity 3
     let matcher = FuzzyMatcher::from_terms(vec!["let", "if", "case", "match"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (lit p) - 1 argument
     let expr = vec![
@@ -301,7 +301,7 @@ fn test_context_arity_filtering_lit_vs_let() {
 fn test_context_arity_matching_lett_vs_let() {
     // (lett x 1 x) has arity 3, same as let - should suggest
     let matcher = FuzzyMatcher::from_terms(vec!["let", "if", "case", "match"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (lett x 1 x) - 3 arguments
     let expr = vec![
@@ -325,7 +325,7 @@ fn test_context_arity_matching_lett_vs_let() {
 fn test_context_arity_catch_filtering() {
     // (cach e) has arity 1, catch needs arity 2 - should NOT suggest
     let matcher = FuzzyMatcher::from_terms(vec!["catch", "case", "match"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (cach e) - 1 argument
     let expr = vec![
@@ -348,7 +348,7 @@ fn test_context_arity_catch_filtering() {
 fn test_context_arity_catch_matching() {
     // (cach e d) has arity 2, catch needs arity 2 - should suggest
     let matcher = FuzzyMatcher::from_terms(vec!["catch", "case", "match"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (cach e d) - 2 arguments
     let expr = vec![
@@ -367,7 +367,7 @@ fn test_context_arity_catch_matching() {
 fn test_context_type_filtering_match_space() {
     // (match "hello" p t) - String at position 1, but match expects Space
     let matcher = FuzzyMatcher::from_terms(vec!["match", "catch"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression with String where Space is expected
     let expr = vec![
@@ -392,7 +392,7 @@ fn test_context_type_filtering_match_space() {
 fn test_context_type_matching_match_space() {
     // (match &self p t) - Space at position 1, correct for match
     let matcher = FuzzyMatcher::from_terms(vec!["match", "catch"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression with proper Space reference
     let expr = vec![
@@ -412,7 +412,7 @@ fn test_context_type_matching_match_space() {
 fn test_context_prefix_suggestion_match_self() {
     // In (match self p t), suggest &self because position 1 expects Space
     let matcher = FuzzyMatcher::from_terms(vec!["match"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (match self p t) - need to check 'self' in arg position
     let expr = vec![
@@ -440,7 +440,7 @@ fn test_context_prefix_suggestion_match_self() {
 fn test_context_no_prefix_suggestion_head_position() {
     // In (self foo bar), don't suggest &self for head position
     let matcher = FuzzyMatcher::from_terms(vec!["match"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (self foo bar) - self is in head position
     let expr = vec![
@@ -463,7 +463,7 @@ fn test_context_no_prefix_suggestion_head_position() {
 #[test]
 #[allow(clippy::approx_constant)]
 fn test_type_matches_number() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(type_matches(&MettaValue::Long(42), &TypeExpr::Number, &env));
     assert!(type_matches(
         &MettaValue::Float(3.14),
@@ -479,7 +479,7 @@ fn test_type_matches_number() {
 
 #[test]
 fn test_type_matches_bool() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(type_matches(&MettaValue::Bool(true), &TypeExpr::Bool, &env));
     assert!(type_matches(
         &MettaValue::Atom("True".to_string()),
@@ -491,7 +491,7 @@ fn test_type_matches_bool() {
 
 #[test]
 fn test_type_matches_space() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(type_matches(
         &MettaValue::Atom("&self".to_string()),
         &TypeExpr::Space,
@@ -511,7 +511,7 @@ fn test_type_matches_space() {
 
 #[test]
 fn test_type_matches_any_and_pattern() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Any and Pattern should match anything
     assert!(type_matches(&MettaValue::Long(42), &TypeExpr::Any, &env));
     assert!(type_matches(
@@ -565,7 +565,7 @@ fn test_values_compatible() {
 fn test_context_arity_zero_arity_nop() {
     // nop has arity 0, (nopp) has 0 args - should match
     let matcher = FuzzyMatcher::from_terms(vec!["nop", "not"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (nopp) - 0 arguments
     let expr = vec![MettaValue::Atom("nopp".to_string())];
@@ -583,7 +583,7 @@ fn test_context_arity_zero_arity_nop() {
 fn test_context_arity_zero_arity_empty() {
     // empty has arity 0
     let matcher = FuzzyMatcher::from_terms(vec!["empty", "error"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (emty) - 0 arguments (typo for empty)
     let expr = vec![MettaValue::Atom("emty".to_string())];
@@ -602,7 +602,7 @@ fn test_context_arity_zero_arity_empty() {
 fn test_context_arity_zero_arity_with_args_should_not_match() {
     // nop has arity 0, (nopp x) has 1 arg - should NOT match
     let matcher = FuzzyMatcher::from_terms(vec!["nop"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (nopp x) - 1 argument, but nop expects 0
     let expr = vec![
@@ -625,7 +625,7 @@ fn test_context_arity_zero_arity_with_args_should_not_match() {
 fn test_context_arity_variadic_case_min() {
     // case has min_arity 2, max_arity MAX
     let matcher = FuzzyMatcher::from_terms(vec!["case", "catch"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (cas x y) - 2 arguments, meets min
     let expr = vec![
@@ -647,7 +647,7 @@ fn test_context_arity_variadic_case_min() {
 fn test_context_arity_variadic_case_many_args() {
     // case can have many arguments (variadic)
     let matcher = FuzzyMatcher::from_terms(vec!["case"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (caze x y z w v) - 5 arguments
     let expr = vec![
@@ -673,7 +673,7 @@ fn test_context_arity_variadic_case_many_args() {
 fn test_context_arity_variadic_below_min() {
     // case has min_arity 2, (cas x) has 1 arg - below min
     let matcher = FuzzyMatcher::from_terms(vec!["case"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (cas x) - 1 argument, below min_arity 2
     let expr = vec![
@@ -696,7 +696,7 @@ fn test_context_arity_variadic_below_min() {
 fn test_context_arity_exact_min() {
     // if has min_arity 3, max_arity 3
     let matcher = FuzzyMatcher::from_terms(vec!["if"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (iff cond then else) - exactly 3 arguments
     let expr = vec![
@@ -718,7 +718,7 @@ fn test_context_arity_exact_min() {
 fn test_context_arity_above_max_fixed() {
     // + has min_arity 2, max_arity 2
     let matcher = FuzzyMatcher::from_terms(vec!["+"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (++ 1 2 3) - 3 arguments, above max 2
     let expr = vec![
@@ -743,7 +743,7 @@ fn test_context_arity_above_max_fixed() {
 fn test_context_arity_unify_four_args() {
     // unify has exactly 4 arguments
     let matcher = FuzzyMatcher::from_terms(vec!["unify"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (uniffy a b c d) - 4 arguments, matches
     let expr = vec![
@@ -765,7 +765,7 @@ fn test_context_arity_unify_four_args() {
 fn test_context_arity_unify_wrong_arity() {
     // unify has exactly 4 arguments
     let matcher = FuzzyMatcher::from_terms(vec!["unify"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Expression: (uniffy a b c) - 3 arguments, wrong arity
     let expr = vec![
@@ -792,21 +792,21 @@ fn test_context_arity_unify_wrong_arity() {
 
 #[test]
 fn test_type_matches_unit() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(type_matches(&MettaValue::Unit(), &TypeExpr::Unit, &env));
     assert!(!type_matches(&MettaValue::Long(0), &TypeExpr::Unit, &env));
 }
 
 #[test]
 fn test_type_matches_nil() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(type_matches(&MettaValue::Nil(), &TypeExpr::Nil, &env));
     assert!(!type_matches(&MettaValue::Unit(), &TypeExpr::Nil, &env));
 }
 
 #[test]
 fn test_type_matches_error() {
-    let env = Environment::new();
+    let env = Environment::default();
     let error_val = MettaValue::Error(
         "test error".to_string(),
         MettaValue::String("error msg".to_string()),
@@ -821,7 +821,7 @@ fn test_type_matches_error() {
 
 #[test]
 fn test_type_matches_atom() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(type_matches(
         &MettaValue::Atom("foo".to_string()),
         &TypeExpr::Atom,
@@ -841,7 +841,7 @@ fn test_type_matches_atom() {
 
 #[test]
 fn test_type_matches_string() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(type_matches(
         &MettaValue::String("hello".to_string()),
         &TypeExpr::String,
@@ -856,7 +856,7 @@ fn test_type_matches_string() {
 
 #[test]
 fn test_type_matches_type_names() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Standard type names should match TypeExpr::Type
     assert!(type_matches(
         &MettaValue::Atom("Number".to_string()),
@@ -882,7 +882,7 @@ fn test_type_matches_type_names() {
 
 #[test]
 fn test_type_matches_list_sexpr() {
-    let env = Environment::new();
+    let env = Environment::default();
     let list = MettaValue::SExpr(vec![
         MettaValue::Long(1),
         MettaValue::Long(2),
@@ -897,7 +897,7 @@ fn test_type_matches_list_sexpr() {
 
 #[test]
 fn test_type_matches_empty_list() {
-    let env = Environment::new();
+    let env = Environment::default();
     let empty_list = MettaValue::SExpr(vec![]);
     assert!(type_matches(
         &empty_list,
@@ -908,7 +908,7 @@ fn test_type_matches_empty_list() {
 
 #[test]
 fn test_type_matches_nested_list() {
-    let env = Environment::new();
+    let env = Environment::default();
     let nested = MettaValue::SExpr(vec![
         MettaValue::SExpr(vec![MettaValue::Long(1)]),
         MettaValue::SExpr(vec![MettaValue::Long(2)]),
@@ -922,7 +922,7 @@ fn test_type_matches_nested_list() {
 
 #[test]
 fn test_type_matches_arrow_atom() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Function names (atoms) match arrow types
     let arrow_type = TypeExpr::Arrow(vec![TypeExpr::Number], Box::new(TypeExpr::Number));
     assert!(type_matches(
@@ -934,7 +934,7 @@ fn test_type_matches_arrow_atom() {
 
 #[test]
 fn test_type_matches_arrow_sexpr() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Lambda-like expressions match arrow types
     let arrow_type = TypeExpr::Arrow(vec![TypeExpr::Var("a")], Box::new(TypeExpr::Var("b")));
     let lambda = MettaValue::SExpr(vec![
@@ -947,7 +947,7 @@ fn test_type_matches_arrow_sexpr() {
 
 #[test]
 fn test_type_matches_bindings() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Bindings type accepts anything
     assert!(type_matches(
         &MettaValue::Long(42),
@@ -963,7 +963,7 @@ fn test_type_matches_bindings() {
 
 #[test]
 fn test_type_matches_expr() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Expr type accepts anything
     assert!(type_matches(
         &MettaValue::Atom("x".to_string()),
@@ -976,7 +976,7 @@ fn test_type_matches_expr() {
 #[test]
 #[allow(clippy::approx_constant)]
 fn test_type_mismatch_number_expects_string() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(!type_matches(
         &MettaValue::Long(42),
         &TypeExpr::String,
@@ -991,7 +991,7 @@ fn test_type_mismatch_number_expects_string() {
 
 #[test]
 fn test_type_mismatch_string_expects_number() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(!type_matches(
         &MettaValue::String("42".to_string()),
         &TypeExpr::Number,
@@ -1001,7 +1001,7 @@ fn test_type_mismatch_string_expects_number() {
 
 #[test]
 fn test_type_mismatch_bool_expects_number() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(!type_matches(
         &MettaValue::Bool(true),
         &TypeExpr::Number,
@@ -1011,7 +1011,7 @@ fn test_type_mismatch_bool_expects_number() {
 
 #[test]
 fn test_type_mismatch_atom_expects_list() {
-    let env = Environment::new();
+    let env = Environment::default();
     assert!(!type_matches(
         &MettaValue::Atom("not-a-list".to_string()),
         &TypeExpr::List(Box::new(TypeExpr::Var("a"))),
@@ -1025,7 +1025,7 @@ fn test_type_mismatch_atom_expects_list() {
 
 #[test]
 fn test_type_var_unify_same_number_type() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Both arguments are Numbers - consistent $a binding
     let args = vec![MettaValue::Long(1), MettaValue::Long(2)];
     let expected_types = vec![TypeExpr::Var("a"), TypeExpr::Var("a")];
@@ -1034,7 +1034,7 @@ fn test_type_var_unify_same_number_type() {
 
 #[test]
 fn test_type_var_unify_number_and_float() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Long and Float are both compatible as numbers
     let args = vec![MettaValue::Long(1), MettaValue::Float(2.0)];
     let expected_types = vec![TypeExpr::Var("a"), TypeExpr::Var("a")];
@@ -1043,7 +1043,7 @@ fn test_type_var_unify_number_and_float() {
 
 #[test]
 fn test_type_var_unify_different_types_fail() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Number and String are different - inconsistent $a
     let args = vec![MettaValue::Long(1), MettaValue::String("x".to_string())];
     let expected_types = vec![TypeExpr::Var("a"), TypeExpr::Var("a")];
@@ -1052,7 +1052,7 @@ fn test_type_var_unify_different_types_fail() {
 
 #[test]
 fn test_type_var_unify_bool_and_number_fail() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Bool and Number are different
     let args = vec![MettaValue::Bool(true), MettaValue::Long(1)];
     let expected_types = vec![TypeExpr::Var("a"), TypeExpr::Var("a")];
@@ -1061,7 +1061,7 @@ fn test_type_var_unify_bool_and_number_fail() {
 
 #[test]
 fn test_type_var_multiple_vars_consistent() {
-    let env = Environment::new();
+    let env = Environment::default();
     // unify has signature (-> $a $a $b $b $b)
     // Args: (atom atom number number) where $a=Atom, $b=Number
     let args = vec![
@@ -1081,7 +1081,7 @@ fn test_type_var_multiple_vars_consistent() {
 
 #[test]
 fn test_type_var_multiple_vars_inconsistent() {
-    let env = Environment::new();
+    let env = Environment::default();
     // $a consistent (atoms) but $b inconsistent (number vs string)
     let args = vec![
         MettaValue::Atom("x".to_string()),
@@ -1100,7 +1100,7 @@ fn test_type_var_multiple_vars_inconsistent() {
 
 #[test]
 fn test_type_var_atoms_always_compatible() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Different atoms are considered compatible (both Atom type)
     let args = vec![
         MettaValue::Atom("foo".to_string()),
@@ -1112,7 +1112,7 @@ fn test_type_var_atoms_always_compatible() {
 
 #[test]
 fn test_type_var_sexprs_compatible() {
-    let env = Environment::new();
+    let env = Environment::default();
     // Different s-expressions are considered compatible
     let args = vec![
         MettaValue::SExpr(vec![MettaValue::Long(1)]),
@@ -1130,7 +1130,7 @@ fn test_type_var_sexprs_compatible() {
 fn test_prefix_context_add_atom() {
     // add-atom expects Space at position 1
     let matcher = FuzzyMatcher::from_terms(vec!["add-atom"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     let expr = vec![
         MettaValue::Atom("add-atom".to_string()),
@@ -1156,7 +1156,7 @@ fn test_prefix_context_add_atom() {
 fn test_prefix_context_remove_atom() {
     // remove-atom expects Space at position 1
     let matcher = FuzzyMatcher::from_terms(vec!["remove-atom"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     let expr = vec![
         MettaValue::Atom("remove-atom".to_string()),
@@ -1177,7 +1177,7 @@ fn test_prefix_context_remove_atom() {
 fn test_prefix_context_get_atoms() {
     // get-atoms expects Space at position 1
     let matcher = FuzzyMatcher::from_terms(vec!["get-atoms"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     let expr = vec![
         MettaValue::Atom("get-atoms".to_string()),
@@ -1194,7 +1194,7 @@ fn test_prefix_context_get_atoms() {
 fn test_prefix_no_suggestion_already_has_ampersand() {
     // If it already has &, don't suggest adding another
     let matcher = FuzzyMatcher::from_terms(vec!["match"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     let expr = vec![
         MettaValue::Atom("match".to_string()),
@@ -1218,7 +1218,7 @@ fn test_prefix_no_suggestion_already_has_ampersand() {
 fn test_prefix_no_suggestion_for_dollar_var() {
     // $variables in space position should not get & prefix
     let matcher = FuzzyMatcher::from_terms(vec!["match"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     let expr = vec![
         MettaValue::Atom("match".to_string()),
@@ -1242,7 +1242,7 @@ fn test_prefix_no_suggestion_for_dollar_var() {
 fn test_prefix_no_suggestion_pattern_position() {
     // let's pattern position (position 1) expects Pattern, not Space
     let matcher = FuzzyMatcher::from_terms(vec!["let"]);
-    let env = Environment::new();
+    let env = Environment::default();
 
     let expr = vec![
         MettaValue::Atom("let".to_string()),

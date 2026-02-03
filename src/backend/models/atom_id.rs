@@ -20,7 +20,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use super::MettaValue;
+// Import concrete type
+use super::metta_value::MettaValue;
+// Import traits for method resolution
+use super::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
 
 /// A unique identifier for an interned atom.
 ///
@@ -52,19 +55,26 @@ impl AtomId {
     }
 }
 
-/// Thread-safe symbol interning table for MettaValue.
+/// Thread-safe symbol interning table with byte-array storage.
 ///
-/// The SymbolTable provides bidirectional mapping between `MettaValue` and `AtomId`:
-/// - Forward: `MettaValue` → `AtomId` (for interning)
-/// - Reverse: `AtomId` → `MettaValue` (for materialization)
+/// The SymbolTable provides bidirectional mapping between serialized values and `AtomId`:
+/// - Forward: bytes (serialized value) → `AtomId` (for interning)
+/// - Reverse: `AtomId` → bytes (for materialization)
 ///
-/// # Thread Safety
+/// ## Type-Agnostic Storage
+///
+/// Values are stored as serialized bytes, enabling:
+/// - Storage of any value type implementing `MettaValueTrait::serialize()`
+/// - Retrieval into any value type via `MettaValueFactory::deserialize()`
+/// - Zero deep copies - just serialization/deserialization at boundaries
+///
+/// ## Thread Safety
 ///
 /// All operations are thread-safe and lock-free for the common case:
 /// - `intern()`: Uses DashMap for concurrent insert-or-get
 /// - `resolve()`: Uses RwLock with read-heavy access pattern
 ///
-/// # Memory Model
+/// ## Memory Model
 ///
 /// Values are stored once and never removed (append-only). This ensures:
 /// - AtomIds remain valid for the lifetime of the SymbolTable
@@ -74,16 +84,16 @@ pub struct SymbolTable {
     /// Next AtomId to assign (atomic counter for lock-free ID generation)
     next_id: AtomicU64,
 
-    /// Forward lookup: pre-computed hash → (MettaValue, AtomId)
+    /// Forward lookup: hash(bytes) → Vec<(bytes, AtomId)>
     /// We use the hash as a first-level key to avoid re-hashing during lookup.
-    /// Collisions are handled by comparing the actual MettaValue.
-    value_to_id: DashMap<u64, Vec<(MettaValue, AtomId)>, Xxh3Builder>,
+    /// Collisions are handled by comparing the actual bytes.
+    bytes_to_id: DashMap<u64, Vec<(Vec<u8>, AtomId)>, Xxh3Builder>,
 
-    /// Reverse lookup: AtomId → MettaValue
+    /// Reverse lookup: AtomId → bytes
     /// Sequential storage indexed by AtomId.0
-    id_to_value: RwLock<Vec<MettaValue>>,
+    id_to_bytes: RwLock<Vec<Vec<u8>>>,
 
-    /// Hasher for computing MettaValue hashes
+    /// Hasher for computing byte array hashes
     hasher_builder: Xxh3Builder,
 }
 
@@ -92,8 +102,8 @@ impl SymbolTable {
     pub fn new() -> Self {
         Self {
             next_id: AtomicU64::new(0),
-            value_to_id: DashMap::with_hasher(Xxh3Builder::new()),
-            id_to_value: RwLock::new(Vec::new()),
+            bytes_to_id: DashMap::with_hasher(Xxh3Builder::new()),
+            id_to_bytes: RwLock::new(Vec::new()),
             hasher_builder: Xxh3Builder::new(),
         }
     }
@@ -104,50 +114,46 @@ impl SymbolTable {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             next_id: AtomicU64::new(0),
-            value_to_id: DashMap::with_capacity_and_hasher(capacity, Xxh3Builder::new()),
-            id_to_value: RwLock::new(Vec::with_capacity(capacity)),
+            bytes_to_id: DashMap::with_capacity_and_hasher(capacity, Xxh3Builder::new()),
+            id_to_bytes: RwLock::new(Vec::with_capacity(capacity)),
             hasher_builder: Xxh3Builder::new(),
         }
     }
 
-    /// Compute the hash of a MettaValue using xxh3.
+    /// Compute the hash of bytes using xxh3.
     #[inline]
-    fn compute_hash(&self, value: &MettaValue) -> u64 {
+    fn compute_bytes_hash(&self, bytes: &[u8]) -> u64 {
         let mut hasher = self.hasher_builder.build_hasher();
-        value.hash(&mut hasher);
+        bytes.hash(&mut hasher);
         hasher.finish()
     }
 
-    /// Intern a MettaValue, returning its unique AtomId.
-    ///
-    /// If the value has been interned before, returns the existing AtomId.
-    /// Otherwise, assigns a new AtomId and stores the value.
-    ///
-    /// # Performance
-    /// - Best case (value exists): O(1) with no allocation
-    /// - Worst case (new value with hash collision): O(k) where k = collision chain length
-    ///
-    /// # Thread Safety
-    /// This method is thread-safe and can be called concurrently from multiple threads.
-    pub fn intern(&self, value: &MettaValue) -> AtomId {
-        let hash = self.compute_hash(value);
+    // =========================================================================
+    // Byte-based API (zero-copy, type-agnostic)
+    // =========================================================================
 
-        // Fast path: check if value already exists
-        if let Some(entries) = self.value_to_id.get(&hash) {
-            for (stored_value, id) in entries.iter() {
-                if stored_value == value {
+    /// Intern a value by its serialized bytes, returning its unique AtomId.
+    ///
+    /// This is the preferred API for zero-copy storage. The caller serializes
+    /// the value once, and we store the bytes directly.
+    pub fn intern_bytes(&self, bytes: &[u8]) -> AtomId {
+        let hash = self.compute_bytes_hash(bytes);
+
+        // Fast path: check if bytes already exist
+        if let Some(entries) = self.bytes_to_id.get(&hash) {
+            for (stored_bytes, id) in entries.iter() {
+                if stored_bytes.as_slice() == bytes {
                     return *id;
                 }
             }
         }
 
-        // Slow path: need to insert new value
-        // Use entry API to handle race conditions
-        let mut entry = self.value_to_id.entry(hash).or_insert_with(Vec::new);
+        // Slow path: need to insert new bytes
+        let mut entry = self.bytes_to_id.entry(hash).or_insert_with(Vec::new);
 
         // Double-check in case another thread inserted while we were waiting
-        for (stored_value, id) in entry.iter() {
-            if stored_value == value {
+        for (stored_bytes, id) in entry.iter() {
+            if stored_bytes.as_slice() == bytes {
                 return *id;
             }
         }
@@ -156,31 +162,28 @@ impl SymbolTable {
         let new_id = AtomId(self.next_id.fetch_add(1, Ordering::Relaxed));
 
         // Add to forward map
-        entry.push((value.clone(), new_id));
+        entry.push((bytes.to_vec(), new_id));
 
         // Add to reverse map
         {
-            let mut id_to_value = self.id_to_value.write().expect("id_to_value lock poisoned");
-            // Ensure the vector is large enough (IDs are assigned sequentially)
+            let mut id_to_bytes = self.id_to_bytes.write().expect("id_to_bytes lock poisoned");
             let idx = new_id.0 as usize;
-            if id_to_value.len() <= idx {
-                id_to_value.resize(idx + 1, MettaValue::Nil());
+            if id_to_bytes.len() <= idx {
+                id_to_bytes.resize(idx + 1, Vec::new());
             }
-            id_to_value[idx] = value.clone();
+            id_to_bytes[idx] = bytes.to_vec();
         }
 
         new_id
     }
 
-    /// Look up an AtomId without interning (returns None if not found).
-    ///
-    /// This is useful for checking if a value exists without modifying the table.
-    pub fn get(&self, value: &MettaValue) -> Option<AtomId> {
-        let hash = self.compute_hash(value);
+    /// Look up an AtomId by bytes without interning.
+    pub fn get_bytes(&self, bytes: &[u8]) -> Option<AtomId> {
+        let hash = self.compute_bytes_hash(bytes);
 
-        if let Some(entries) = self.value_to_id.get(&hash) {
-            for (stored_value, id) in entries.iter() {
-                if stored_value == value {
+        if let Some(entries) = self.bytes_to_id.get(&hash) {
+            for (stored_bytes, id) in entries.iter() {
+                if stored_bytes.as_slice() == bytes {
                     return Some(*id);
                 }
             }
@@ -188,20 +191,83 @@ impl SymbolTable {
         None
     }
 
+    /// Resolve an AtomId to its serialized bytes.
+    pub fn resolve_bytes(&self, id: AtomId) -> Vec<u8> {
+        let id_to_bytes = self.id_to_bytes.read().expect("id_to_bytes lock poisoned");
+        id_to_bytes[id.0 as usize].clone()
+    }
+
+    /// Try to resolve an AtomId to bytes, returning None if invalid.
+    pub fn try_resolve_bytes(&self, id: AtomId) -> Option<Vec<u8>> {
+        let id_to_bytes = self.id_to_bytes.read().expect("id_to_bytes lock poisoned");
+        id_to_bytes.get(id.0 as usize).cloned()
+    }
+
+    // =========================================================================
+    // Generic value API (uses serialization internally)
+    // =========================================================================
+
+    /// Intern any value implementing MettaValueTrait.
+    ///
+    /// The value is serialized to bytes for storage. This enables type-agnostic
+    /// interning - both MettaValue and ArenaValue can be interned.
+    pub fn intern_value<V: super::MettaValueTrait>(&self, value: &V) -> AtomId {
+        let bytes = value.serialize();
+        self.intern_bytes(&bytes)
+    }
+
+    /// Resolve an AtomId to a value using the provided factory.
+    ///
+    /// The stored bytes are deserialized using the factory, which allocates
+    /// in the appropriate context (heap or arena).
+    pub fn resolve_value<V: super::MettaValueTrait, F: super::MettaValueFactory<V>>(
+        &self,
+        id: AtomId,
+        factory: &F,
+    ) -> Result<V, String> {
+        let bytes = self.resolve_bytes(id);
+        factory.deserialize(&bytes).map(|(v, _)| v)
+    }
+
+    // =========================================================================
+    // Legacy MettaValue API (for backwards compatibility)
+    // =========================================================================
+
+    /// Intern a MettaValue, returning its unique AtomId.
+    ///
+    /// This is a convenience method that serializes and stores the value.
+    pub fn intern(&self, value: &MettaValue) -> AtomId {
+        self.intern_value(value)
+    }
+
+    /// Look up an AtomId without interning (returns None if not found).
+    pub fn get(&self, value: &MettaValue) -> Option<AtomId> {
+        let bytes = value.serialize();
+        self.get_bytes(&bytes)
+    }
+
     /// Resolve an AtomId back to its MettaValue.
     ///
     /// # Panics
-    /// Panics if the AtomId is invalid (not obtained from this SymbolTable).
+    /// Panics if the AtomId is invalid or deserialization fails.
     pub fn resolve(&self, id: AtomId) -> MettaValue {
-        let id_to_value = self.id_to_value.read().expect("id_to_value lock poisoned");
-        id_to_value[id.0 as usize].clone()
+        let bytes = self.resolve_bytes(id);
+        let factory = super::HeapMettaValueFactory;
+        factory.deserialize(&bytes)
+            .map(|(v, _)| v)
+            .expect("failed to deserialize stored value")
     }
 
     /// Try to resolve an AtomId, returning None if invalid.
     pub fn try_resolve(&self, id: AtomId) -> Option<MettaValue> {
-        let id_to_value = self.id_to_value.read().expect("id_to_value lock poisoned");
-        id_to_value.get(id.0 as usize).cloned()
+        let bytes = self.try_resolve_bytes(id)?;
+        let factory = super::HeapMettaValueFactory;
+        factory.deserialize(&bytes).ok().map(|(v, _)| v)
     }
+
+    // =========================================================================
+    // Utility methods
+    // =========================================================================
 
     /// Get the number of unique atoms in the symbol table.
     #[inline]
@@ -215,16 +281,24 @@ impl SymbolTable {
         self.len() == 0
     }
 
-    /// Iterate over all interned (AtomId, MettaValue) pairs.
-    ///
-    /// Note: This acquires a read lock for the duration of iteration.
-    pub fn iter(&self) -> impl Iterator<Item = (AtomId, MettaValue)> + '_ {
-        let id_to_value = self.id_to_value.read().expect("id_to_value lock poisoned");
-        let len = id_to_value.len();
+    /// Iterate over all interned (AtomId, bytes) pairs.
+    pub fn iter_bytes(&self) -> impl Iterator<Item = (AtomId, Vec<u8>)> + '_ {
+        let id_to_bytes = self.id_to_bytes.read().expect("id_to_bytes lock poisoned");
+        let len = id_to_bytes.len();
         (0..len).map(move |i| {
             let id = AtomId(i as u64);
-            let value = id_to_value[i].clone();
-            (id, value)
+            let bytes = id_to_bytes[i].clone();
+            (id, bytes)
+        })
+    }
+
+    /// Iterate over all interned (AtomId, MettaValue) pairs.
+    ///
+    /// Note: This deserializes each value, which may be expensive.
+    pub fn iter(&self) -> impl Iterator<Item = (AtomId, MettaValue)> + '_ {
+        let factory = super::HeapMettaValueFactory;
+        self.iter_bytes().filter_map(move |(id, bytes)| {
+            factory.deserialize(&bytes).ok().map(|(v, _)| (id, v))
         })
     }
 }

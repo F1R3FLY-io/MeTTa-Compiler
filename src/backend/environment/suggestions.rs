@@ -2,10 +2,15 @@
 //!
 //! Provides "Did you mean?" functionality for undefined symbols using Levenshtein distance.
 
-use super::Environment;
+use super::generic::GenericEnvironment;
 use crate::backend::fuzzy_match::SmartSuggestion;
+use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValue as MettaValueTrait};
 
-impl Environment {
+impl<V, F> GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
     /// Get fuzzy suggestions for a potentially misspelled symbol
     ///
     /// Returns a list of (symbol, distance) pairs sorted by Levenshtein distance.
@@ -27,7 +32,6 @@ impl Environment {
         self.shared
             .fuzzy_matcher
             .read()
-            .expect("fuzzy_matcher lock poisoned")
             .suggest(query, max_distance)
     }
 
@@ -50,7 +54,6 @@ impl Environment {
         self.shared
             .fuzzy_matcher
             .read()
-            .expect("fuzzy_matcher lock poisoned")
             .did_you_mean(symbol, max_distance, 3)
     }
 
@@ -80,7 +83,6 @@ impl Environment {
         self.shared
             .fuzzy_matcher
             .read()
-            .expect("fuzzy_matcher lock poisoned")
             .smart_did_you_mean(symbol, max_distance, 3)
     }
 }

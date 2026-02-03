@@ -4,9 +4,14 @@
 
 use std::sync::atomic::Ordering;
 
-use super::Environment;
+use super::generic::GenericEnvironment;
+use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValue as MettaValueTrait};
 
-impl Environment {
+impl<V, F> GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
     /// Push a new scope onto the scope tracker.
     /// Called when entering lexical contexts like `let`, `match`, or function bodies.
     pub fn push_scope(&mut self) {
@@ -14,7 +19,6 @@ impl Environment {
         self.shared
             .scope_tracker
             .write()
-            .expect("scope_tracker lock poisoned")
             .push_scope();
         self.modified.store(true, Ordering::Release);
     }
@@ -26,7 +30,6 @@ impl Environment {
         self.shared
             .scope_tracker
             .write()
-            .expect("scope_tracker lock poisoned")
             .pop_scope();
         self.modified.store(true, Ordering::Release);
     }
@@ -38,7 +41,6 @@ impl Environment {
         self.shared
             .scope_tracker
             .write()
-            .expect("scope_tracker lock poisoned")
             .add_symbol(name);
         self.modified.store(true, Ordering::Release);
     }
@@ -49,7 +51,6 @@ impl Environment {
         self.shared
             .scope_tracker
             .write()
-            .expect("scope_tracker lock poisoned")
             .add_symbols(names);
         self.modified.store(true, Ordering::Release);
     }
@@ -59,7 +60,6 @@ impl Environment {
         self.shared
             .scope_tracker
             .read()
-            .expect("scope_tracker lock poisoned")
             .is_visible(name)
     }
 
@@ -69,7 +69,6 @@ impl Environment {
         self.shared
             .scope_tracker
             .read()
-            .expect("scope_tracker lock poisoned")
             .visible_symbols()
             .cloned()
             .collect()
@@ -80,7 +79,6 @@ impl Environment {
         self.shared
             .scope_tracker
             .read()
-            .expect("scope_tracker lock poisoned")
             .depth()
     }
 
@@ -89,7 +87,6 @@ impl Environment {
         self.shared
             .scope_tracker
             .read()
-            .expect("scope_tracker lock poisoned")
             .at_global_scope()
     }
 }

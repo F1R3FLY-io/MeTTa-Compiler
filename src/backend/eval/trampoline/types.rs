@@ -15,6 +15,7 @@ use super::super::CartesianProductIter;
 /// Maximum evaluation depth to prevent stack overflow
 /// This limits how deep the evaluation can recurse through nested expressions
 /// Set to 1000 to allow legitimate deep nesting while still catching runaway recursion
+#[allow(dead_code)]
 pub const MAX_EVAL_DEPTH: usize = 1000;
 
 /// Work item representing pending evaluation work
@@ -35,7 +36,11 @@ pub enum WorkItem {
 }
 
 /// Continuation representing what to do with an evaluation result
+///
+/// Note: Some variants store `env` and `depth` fields that are preserved for context
+/// but the actual environment from the evaluation result may be used instead.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum Continuation {
     /// Final result - return from eval()
     Done,

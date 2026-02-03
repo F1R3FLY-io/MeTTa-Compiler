@@ -181,6 +181,47 @@ fn format_results(results: &[MettaValue]) -> String {
     format!("[{}]", formatted.join(", "))
 }
 
+// ============================================================================
+// Arena-based evaluation functions (zero-conversion path)
+// ============================================================================
+
+/// Format an ArenaValue result for display (mirrors format_result for MettaValue)
+fn format_result_arena(value: &ArenaValue) -> String {
+    match value.inner() {
+        ArenaValueInner::Atom(s) => s.to_string(),
+        ArenaValueInner::Bool(b) => b.to_string(),
+        ArenaValueInner::Long(n) => n.to_string(),
+        ArenaValueInner::Float(f) => f.to_string(),
+        ArenaValueInner::String(s) => format!("\"{}\"", s),
+        ArenaValueInner::Nil => "Nil".to_string(),
+        ArenaValueInner::Error(msg, details) => {
+            format!("(Error {} {})", msg, format_result_arena(details))
+        }
+        ArenaValueInner::Type(t) => format!("Type({})", format_result_arena(t)),
+        ArenaValueInner::SExpr(items) => {
+            let formatted: Vec<String> = items.iter().map(format_result_arena).collect();
+            format!("({})", formatted.join(" "))
+        }
+        ArenaValueInner::Conjunction(goals) => {
+            let formatted: Vec<String> = goals.iter().map(format_result_arena).collect();
+            format!("(, {})", formatted.join(" "))
+        }
+        ArenaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+        ArenaValueInner::State(id) => format!("(State {})", id),
+        ArenaValueInner::Unit => "()".to_string(),
+        ArenaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+        ArenaValueInner::Empty => "Empty".to_string(),
+    }
+}
+
+fn format_results_arena(results: &[ArenaValue]) -> String {
+    if results.is_empty() {
+        return "[]".to_string();
+    }
+    let formatted: Vec<String> = results.iter().map(format_result_arena).collect();
+    format!("[{}]", formatted.join(", "))
+}
+
 fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     if options.show_sexpr {
         // Parse with Tree-Sitter and show S-expressions
@@ -194,14 +235,27 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         return Ok(output);
     }
 
-    // Compile to MettaValue (include file path in error messages)
+    // Choose evaluation mode based on METTA_USE_ARENA environment variable
+    if is_arena_mode_enabled() {
+        eval_metta_arena(input, options)
+    } else {
+        eval_metta_heap(input, options)
+    }
+}
+
+/// Heap-based evaluation (default mode)
+///
+/// Uses MettaValue throughout: compile → MettaValue → eval → MettaValue
+fn eval_metta_heap(input: &str, options: &Options) -> Result<String, String> {
+    // Common setup: file path for error messages
     let file_path = options
         .input
         .as_ref()
         .filter(|p| *p != "-")
         .map(|s| s.as_str());
-    let state = compile_with_path(input, file_path).map_err(|e| e.to_string())?;
-    let mut env = state.environment;
+
+    // Create environment
+    let mut env = Environment::default();
 
     // Set the current module path for relative includes
     if let Some(ref input_path) = options.input {
@@ -224,6 +278,11 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         env.set_strict_mode(true);
     }
 
+    // Standard MettaValue evaluation
+    let state = compile_with_path(input, file_path).map_err(|e| e.to_string())?;
+    // Merge any rules from compilation into our environment
+    env = env.union(&state.environment);
+
     // Evaluate each expression
     let mut output = String::new();
     for sexpr in state.source {
@@ -243,6 +302,71 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         // HE-compatible: print [] for empty result sets
         if should_output {
             output.push_str(&format!("{}\n", format_results(&filtered_results)));
+        }
+    }
+
+    Ok(output)
+}
+
+/// Arena-based evaluation (zero-conversion mode)
+///
+/// Uses ArenaValue<'static> throughout: compile_arena → ArenaValue → eval_trampoline_arena → ArenaValue
+/// No conversions between value types occur in this mode.
+fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
+
+    // Common setup: file path for error messages
+    let file_path = options
+        .input
+        .as_ref()
+        .filter(|p| *p != "-")
+        .map(|s| s.as_str());
+
+    // Create arena environment
+    let mut env = StaticArenaContext::new_env();
+
+    // Set the current module path for relative includes
+    if let Some(ref input_path) = options.input {
+        if input_path != "-" {
+            let path = Path::new(input_path);
+            // Canonicalize to get absolute path, then get parent directory
+            if let Ok(canonical) = path.canonicalize() {
+                if let Some(parent) = canonical.parent() {
+                    env.set_current_module_path(Some(parent.to_path_buf()));
+                }
+            } else if let Some(parent) = path.parent() {
+                // Fallback if file doesn't exist yet (shouldn't happen, but be safe)
+                env.set_current_module_path(Some(parent.to_path_buf()));
+            }
+        }
+    }
+
+    // Configure strict mode if requested
+    if options.strict_mode {
+        env.set_strict_mode(true);
+    }
+
+    // Compile directly to ArenaValue<'static>
+    let exprs = compile_arena_with_path(input, file_path).map_err(|e| e.to_string())?;
+
+    // Evaluate each expression
+    let mut output = String::new();
+    for expr in exprs {
+        // Only output results for S-expressions, not atoms or ground types
+        let should_output = expr.is_sexpr();
+
+        let (results, new_env) = eval_trampoline_arena(expr, env);
+        env = new_env;
+
+        // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
+        let filtered_results: Vec<ArenaValue> = results
+            .into_iter()
+            .filter(|v| !v.is_empty())
+            .collect();
+
+        // Print results with list notation (only for S-expressions)
+        // HE-compatible: print [] for empty result sets
+        if should_output {
+            output.push_str(&format!("{}\n", format_results_arena(&filtered_results)));
         }
     }
 
@@ -291,7 +415,7 @@ fn run_repl(options: &Options) {
     // Create output highlighter
     let output_highlighter = QueryHighlighter::new().ok();
 
-    let mut env = Environment::new();
+    let mut env = Environment::default();
 
     // Configure strict mode if requested
     if options.strict_mode {

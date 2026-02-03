@@ -3,7 +3,7 @@ use mettatron::backend::eval::eval;
 use mettatron::backend::models::MettaValue;
 
 fn main() {
-    let env = Environment::new();
+    let env = Environment::default();
 
     // Define a rule: (= (double $x) (* $x 2))
     let rule_def = MettaValue::SExpr(vec![

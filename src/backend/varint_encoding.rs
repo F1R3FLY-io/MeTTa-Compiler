@@ -269,6 +269,140 @@ fn decode_string(bytes: &[u8]) -> Option<(String, usize)> {
     Some((s, end))
 }
 
+// ============================================================================
+// Generic Varint Encoding (uses MettaValueTrait)
+// ============================================================================
+
+use crate::backend::models::MettaValueTrait;
+
+/// Encode any MettaValueTrait value to binary key with varint arity (no 63 limit)
+///
+/// This is the generic version that uses trait methods instead of MettaValueInner
+/// pattern matching, enabling zero-conversion for ArenaValue.
+pub fn value_to_varint_key_generic<V: MettaValueTrait>(value: &V) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(64);
+    encode_value_generic(&mut buf, value);
+    buf
+}
+
+/// Encode a value recursively into the buffer using trait methods
+fn encode_value_generic<V: MettaValueTrait>(buf: &mut Vec<u8>, value: &V) {
+    // Check each variant using trait methods
+
+    // S-expressions
+    if let Some(items) = value.as_sexpr() {
+        buf.push(tags::SEXPR);
+        encode_varint(buf, items.len() as u64);
+        for item in items {
+            encode_value_generic(buf, item);
+        }
+        return;
+    }
+
+    // Conjunctions
+    if let Some(goals) = value.as_conjunction() {
+        buf.push(tags::CONJUNCTION);
+        encode_varint(buf, goals.len() as u64);
+        for goal in goals {
+            encode_value_generic(buf, goal);
+        }
+        return;
+    }
+
+    // Atoms
+    if let Some(s) = value.as_atom() {
+        buf.push(tags::ATOM);
+        encode_string(buf, s);
+        return;
+    }
+
+    // Long
+    if let Some(n) = value.as_long() {
+        buf.push(tags::LONG);
+        buf.extend_from_slice(&n.to_le_bytes());
+        return;
+    }
+
+    // Float
+    if let Some(f) = value.as_float() {
+        buf.push(tags::FLOAT);
+        buf.extend_from_slice(&f.to_le_bytes());
+        return;
+    }
+
+    // Bool
+    if let Some(b) = value.as_bool() {
+        buf.push(if b { tags::BOOL_TRUE } else { tags::BOOL_FALSE });
+        return;
+    }
+
+    // String
+    if let Some(s) = value.as_string() {
+        buf.push(tags::STRING);
+        encode_string(buf, s);
+        return;
+    }
+
+    // Nil
+    if value.is_nil() {
+        buf.push(tags::NIL);
+        return;
+    }
+
+    // Unit
+    if value.is_unit() {
+        buf.push(tags::UNIT);
+        return;
+    }
+
+    // Error
+    if let Some((msg, details)) = value.as_error() {
+        buf.push(tags::ERROR);
+        encode_string(buf, msg);
+        encode_value_generic(buf, details);
+        return;
+    }
+
+    // Type
+    if let Some(inner) = value.as_type() {
+        buf.push(tags::TYPE);
+        encode_value_generic(buf, inner);
+        return;
+    }
+
+    // Space
+    if let Some(handle) = value.as_space() {
+        buf.push(tags::SPACE);
+        encode_varint(buf, handle.id);
+        encode_string(buf, &handle.name);
+        return;
+    }
+
+    // State
+    if let Some(id) = value.as_state() {
+        buf.push(tags::STATE);
+        encode_varint(buf, id);
+        return;
+    }
+
+    // Memo
+    if let Some(handle) = value.as_memo() {
+        buf.push(tags::MEMO);
+        encode_varint(buf, handle.id);
+        encode_string(buf, &handle.name);
+        return;
+    }
+
+    // Empty
+    if value.is_empty() {
+        buf.push(tags::EMPTY);
+        return;
+    }
+
+    // Fallback for unknown types - encode as nil
+    buf.push(tags::NIL);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

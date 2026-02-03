@@ -152,6 +152,15 @@ impl FuzzyMatcher {
         }
     }
 
+    /// Iterate over pending terms.
+    ///
+    /// This is useful for merging two fuzzy matchers: clone one, then insert
+    /// all terms from the other's pending set.
+    #[inline]
+    pub fn pending_iter(&self) -> impl Iterator<Item = String> + '_ {
+        self.pending.iter().map(|r| r.clone())
+    }
+
     /// Find similar terms within the given edit distance.
     ///
     /// Returns a vector of (term, distance) pairs sorted by distance.

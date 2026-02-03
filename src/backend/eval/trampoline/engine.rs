@@ -1693,7 +1693,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
 
                                     // No rules matched even with evaluated arguments - data constructor
                                     let result_value = super::super::handle_no_rule_match(
-                                        evaled_vec, &sexpr, &mut env,
+                                        evaled_vec, &sexpr, &mut env, depth,
                                     );
                                     results.push(result_value);
 
@@ -2956,7 +2956,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                     });
                                 } else {
                                     // Space match with bodies
-                                    let matches: Vec<MultiplicityMatch> =
+                                    let matches: Vec<MultiplicityMatch<MettaValue>> =
                                         if handle.is_module_space() || handle.name == "self" {
                                             env_after_p1.match_space(&pattern, &pattern)
                                         } else {
@@ -3103,7 +3103,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                         result: (vec![MettaValue::Bool(exists)], env_after),
                                     });
                                 } else {
-                                    let matches: Vec<MultiplicityMatch> =
+                                    let matches: Vec<MultiplicityMatch<MettaValue>> =
                                         if handle.is_module_space() || handle.name == "self" {
                                             env_after.match_space(&pattern, &pattern)
                                         } else {
@@ -4160,7 +4160,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 result: (vec![err], env_after),
                             });
                         } else {
-                            let value = value_results[0].clone();
+                            let value = &value_results[0];
                             let state_id = env_after.create_state(value);
                             work_stack.push(WorkItem::Resume {
                                 cont_id: parent_cont,
@@ -4284,7 +4284,7 @@ pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
                                 result: (vec![err], env_after),
                             });
                         } else {
-                            let value = value_results[0].clone();
+                            let value = &value_results[0];
 
                             match state_value.inner() {
                                 MettaValueInner::State(state_id) => {

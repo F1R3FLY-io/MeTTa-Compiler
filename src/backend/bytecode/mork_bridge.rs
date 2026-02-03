@@ -333,14 +333,14 @@ mod tests {
 
     #[test]
     fn test_bridge_creation() {
-        let env = Environment::new();
+        let env = Environment::default();
         let bridge = MorkBridge::from_env(env);
         assert_eq!(bridge.cache_size(), 0);
     }
 
     #[test]
     fn test_dispatch_no_rules() {
-        let env = Environment::new();
+        let env = Environment::default();
         let bridge = MorkBridge::from_env(env);
 
         let expr = MettaValue::SExpr(vec![
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_with_rule() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add rule: (= (double $x) (+ $x $x))
         let rule = Rule::new(
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_rule_caching() {
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Add rule
         let rule = Rule::new(

@@ -2,13 +2,21 @@
 //!
 //! Provides explicit, user-controlled memoization for expensive computations.
 //! Memo tables cache evaluation results indexed by expression hash.
+//!
+//! ## Type-Agnostic Storage
+//!
+//! Memos are stored as serialized bytes, enabling:
+//! - Storage of any value type implementing `MettaValueTrait::serialize()`
+//! - Retrieval into any value type via `MettaValueFactory::deserialize()`
+//! - Zero deep copies between value types - just serialization/deserialization
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use super::MettaValue;
+use super::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
+use super::{HeapMettaValueFactory, MettaValue};
 
 /// Global counter for unique memo IDs
 static NEXT_MEMO_ID: AtomicU64 = AtomicU64::new(1);
@@ -24,6 +32,7 @@ static NEXT_MEMO_ID: AtomicU64 = AtomicU64::new(1);
 /// - Supports optional LRU eviction with configurable max size
 /// - Thread-safe via RwLock for concurrent access
 /// - Lock-free hit/miss statistics via AtomicU64 (no write lock needed for reads)
+/// - Type-agnostic storage via byte serialization
 #[derive(Debug)]
 pub struct MemoHandle {
     /// Unique identifier for this memo table
@@ -41,7 +50,7 @@ pub struct MemoHandle {
 /// Internal memoization state (cache only; counters are external atomics)
 #[derive(Debug)]
 struct MemoInner {
-    /// Cache: expression_hash -> cached results
+    /// Cache: expression_hash -> cached results (stored as bytes)
     cache: HashMap<u64, MemoEntry>,
     /// Maximum cache size (0 = unlimited)
     max_size: usize,
@@ -50,16 +59,14 @@ struct MemoInner {
     lru_order: Vec<u64>,
 }
 
-/// A single cache entry
+/// A single cache entry (stores serialized bytes)
 #[derive(Debug, Clone)]
 struct MemoEntry {
-    /// The original expression (for debugging/verification)
+    /// The original expression (serialized bytes for debugging/verification)
     #[allow(dead_code)]
-    expression: MettaValue,
-    /// Cached evaluation results
-    results: Vec<MettaValue>,
-    /// Whether this was a first-only cache (memo-first vs memo)
-    first_only: bool,
+    expression_bytes: Vec<u8>,
+    /// Cached evaluation results (serialized bytes)
+    results_bytes: Vec<Vec<u8>>,
 }
 
 impl MemoHandle {
@@ -84,27 +91,57 @@ impl MemoHandle {
         }
     }
 
-    /// Compute hash for a MettaValue expression
+    /// Compute hash for a MettaValue expression using Hash trait (generic version)
     #[inline]
-    fn hash_expression(expr: &MettaValue) -> u64 {
+    #[allow(dead_code)]
+    fn hash_expression_generic<V: MettaValueTrait + Hash>(expr: &V) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         let mut hasher = DefaultHasher::new();
         expr.hash(&mut hasher);
         hasher.finish()
     }
 
-    /// Look up cached results for an expression
+    /// Compute hash from serialized bytes
+    #[inline]
+    fn hash_bytes(bytes: &[u8]) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        let mut hasher = DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Compute hash for a MettaValue expression (legacy)
+    #[inline]
+    #[allow(dead_code)]
+    fn hash_expression(expr: &MettaValue) -> u64 {
+        Self::hash_expression_generic(expr)
+    }
+
+    /// Look up cached results for an expression (generic version using serialization).
+    ///
+    /// This version doesn't require `Hash` - it serializes the expression to bytes
+    /// and hashes the bytes. This enables use with any `MettaValueTrait` implementation.
     ///
     /// Returns Some(results) if cached, None if miss.
     /// Updates hit/miss counters via lock-free atomics.
-    pub fn lookup(&self, expr: &MettaValue) -> Option<Vec<MettaValue>> {
-        let hash = Self::hash_expression(expr);
+    pub fn lookup_generic<V: MettaValueTrait, F: MettaValueFactory<V>>(
+        &self,
+        expr: &V,
+        factory: &F,
+    ) -> Option<Vec<V>> {
+        let hash = Self::hash_bytes(&expr.serialize());
 
         // Fast path: check cache with read lock, update atomics without lock
         {
             let inner = self.inner.read().unwrap();
             if let Some(entry) = inner.cache.get(&hash) {
-                let result = entry.results.clone();
+                // Deserialize results using the provided factory
+                let results: Vec<V> = entry
+                    .results_bytes
+                    .iter()
+                    .filter_map(|bytes| factory.deserialize(bytes).ok().map(|(v, _)| v))
+                    .collect();
+
                 // Update LRU requires write lock - defer to slow path if needed
                 if inner.max_size > 0 {
                     drop(inner);
@@ -116,7 +153,7 @@ impl MemoHandle {
                     }
                 }
                 self.hits.fetch_add(1, Ordering::Relaxed);
-                return Some(result);
+                return Some(results);
             }
         }
 
@@ -125,11 +162,19 @@ impl MemoHandle {
         None
     }
 
-    /// Store evaluation results for an expression
+    /// Look up cached results for an expression (legacy MettaValue version).
+    pub fn lookup(&self, expr: &MettaValue) -> Option<Vec<MettaValue>> {
+        self.lookup_generic(expr, &HeapMettaValueFactory)
+    }
+
+    /// Store evaluation results for an expression (generic version using serialization).
+    ///
+    /// This version doesn't require `Hash` - it serializes the expression to bytes
+    /// and hashes the bytes. This enables use with any `MettaValueTrait` implementation.
     ///
     /// If max_size is set and exceeded, evicts LRU entry.
-    pub fn store(&self, expr: &MettaValue, results: Vec<MettaValue>, first_only: bool) {
-        let hash = Self::hash_expression(expr);
+    pub fn store_generic<V: MettaValueTrait>(&self, expr: &V, results: &[V]) {
+        let hash = Self::hash_bytes(&expr.serialize());
         let mut inner = self.inner.write().unwrap();
 
         // Check if we need to evict (before inserting)
@@ -141,13 +186,16 @@ impl MemoHandle {
             }
         }
 
+        // Serialize the expression and results to bytes
+        let expression_bytes = expr.serialize();
+        let results_bytes: Vec<Vec<u8>> = results.iter().map(|r| r.serialize()).collect();
+
         // Insert new entry
         inner.cache.insert(
             hash,
             MemoEntry {
-                expression: expr.clone(),
-                results,
-                first_only,
+                expression_bytes,
+                results_bytes,
             },
         );
 
@@ -155,6 +203,14 @@ impl MemoHandle {
         if inner.max_size > 0 {
             inner.lru_order.push(hash);
         }
+    }
+
+    /// Store evaluation results for an expression (legacy MettaValue version).
+    ///
+    /// If max_size is set and exceeded, evicts LRU entry.
+    /// The `first_only` parameter is retained for API compatibility but no longer stored.
+    pub fn store(&self, expr: &MettaValue, results: Vec<MettaValue>, _first_only: bool) {
+        self.store_generic(expr, &results)
     }
 
     /// Clear all cached entries

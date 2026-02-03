@@ -2139,6 +2139,7 @@ dependencies = [
 name = "mettatron"
 version = "0.2.0"
 dependencies = [
+ "bumpalo",
  "clap",
  "cranelift",
  "cranelift-frontend",

@@ -29,7 +29,7 @@ fn eval_bytecode(expr: &MettaValue) -> Vec<MettaValue> {
 
 /// Evaluate expression via tree-walking interpreter
 fn eval_tree_walker(expr: &MettaValue) -> Vec<MettaValue> {
-    let env = Environment::new();
+    let env = Environment::default();
     let (results, _env) = eval(expr.clone(), env);
     results
 }

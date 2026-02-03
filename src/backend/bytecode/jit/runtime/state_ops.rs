@@ -122,7 +122,7 @@ pub unsafe extern "C" fn jit_runtime_new_state(
     let metta_val = jit_val.to_metta();
 
     // Create state in environment
-    let state_id = env.create_state(metta_val);
+    let state_id = env.create_state(&metta_val);
 
     // Return State(id) as heap-allocated MettaValue
     let state_val = MettaValue::State(state_id);
@@ -256,7 +256,7 @@ pub unsafe extern "C" fn jit_runtime_change_state(
     let env = &mut *(ctx_ref.env_ptr as *mut Environment);
 
     // Change state value
-    if env.change_state(state_id, metta_new_val) {
+    if env.change_state(state_id, &metta_new_val) {
         // Optimization 5.1: Update cache with the new value
         // (more efficient than invalidating since next read will be a hit)
         ctx_ref.state_cache_put(state_id, jit_new_val);

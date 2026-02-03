@@ -431,7 +431,7 @@ mod tests {
         use crate::backend::{compile, eval, Environment};
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = Environment::new();
+        let mut env = Environment::default();
 
         // Initially no user-defined functions
         assert_eq!(helper.defined_functions.len(), 0);
@@ -476,7 +476,7 @@ mod tests {
         use rustyline::history::DefaultHistory;
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
 
@@ -505,7 +505,7 @@ mod tests {
         use rustyline::history::DefaultHistory;
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = Environment::new();
+        let mut env = Environment::default();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
 

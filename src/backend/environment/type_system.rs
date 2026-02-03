@@ -11,9 +11,48 @@ use mork_expr::Expr;
 use pathmap::PathMap;
 use tracing::trace;
 
+use super::generic::GenericEnvironment;
 use super::multiplicity::Multiplicity;
 use super::{Environment, MettaValue};
-use crate::backend::models::MettaValueInner;
+use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
+
+// ============================================================================
+// Generic Type Operations (for GenericEnvironment<V, F>)
+// ============================================================================
+
+impl<V, F> GenericEnvironment<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    /// Add a type assertion (generic version).
+    ///
+    /// Stores the type in the `types` DashMap for generic lookups.
+    /// For MettaValue environments that need MORK persistence, use
+    /// `Environment::add_type` which also stores in MORK Space.
+    pub fn add_type_generic(&mut self, name: &str, typ: V) {
+        trace!(target: "mettatron::environment::add_type_generic", name);
+        self.make_owned();
+
+        // Store in types DashMap
+        self.shared.types.insert(name.to_string(), typ);
+
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Get type for a symbol (generic version).
+    ///
+    /// Looks up the type in the `types` DashMap.
+    /// For MettaValue environments, prefer `Environment::get_type` which
+    /// uses the optimized MORK index.
+    pub fn get_type_generic(&self, name: &str) -> Option<V> {
+        self.shared.types.get(name).map(|r| r.value().clone())
+    }
+}
+
+// ============================================================================
+// MettaValue-specific Type Operations (with MORK persistence)
+// ============================================================================
 
 impl Environment {
     /// Add a type assertion
@@ -31,12 +70,8 @@ impl Environment {
         ]);
         self.add_to_space(&type_assertion);
 
-        // Invalidate type index cache
-        *self
-            .shared
-            .type_index_dirty
-            .write()
-            .expect("type_index_dirty lock poisoned") = true;
+        // Invalidate type index cache - AtomicBool
+        self.shared.type_index_dirty.store(true, Ordering::Release);
         self.modified.store(true, Ordering::Release); // CoW: mark as modified
     }
 
@@ -46,18 +81,16 @@ impl Environment {
     ///
     /// The type index is lazily initialized and cached until invalidated
     pub(crate) fn ensure_type_index(&self) {
-        let dirty = *self
-            .shared
-            .type_index_dirty
-            .read()
-            .expect("type_index_dirty lock poisoned");
+        // AtomicBool - check dirty flag
+        let dirty = self.shared.type_index_dirty.load(Ordering::Acquire);
         if !dirty {
             return; // Index is up to date
         }
 
         // Build type index using PathMap::restrict()
         // This extracts a subtrie containing only paths that start with ":"
-        let btm = self.shared.btm.read().expect("btm lock poisoned");
+        // parking_lot::RwLock - no .expect()
+        let btm = self.shared.btm.read();
 
         // Create a PathMap containing only the ":" prefix
         // restrict() will return all paths in btm that have matching prefixes in this map
@@ -76,18 +109,12 @@ impl Environment {
 
         // Extract type subtrie using restrict()
         let type_subtrie = btm.restrict(&type_prefix_map);
+        drop(btm); // Release read lock before acquiring write lock
 
-        // Cache the subtrie
-        *self
-            .shared
-            .type_index
-            .write()
-            .expect("type_index lock poisoned") = Some(type_subtrie);
-        *self
-            .shared
-            .type_index_dirty
-            .write()
-            .expect("type_index_dirty lock poisoned") = false;
+        // Cache the subtrie - parking_lot::RwLock - no .expect()
+        *self.shared.type_index.write() = Some(type_subtrie);
+        // AtomicBool - clear dirty flag
+        self.shared.type_index_dirty.store(false, Ordering::Release);
     }
 
     /// Get type for an atom by querying MORK Space
@@ -104,18 +131,14 @@ impl Environment {
         // Ensure type index is built and up-to-date
         self.ensure_type_index();
 
-        // Get the type index subtrie
-        let type_index_opt = self
-            .shared
-            .type_index
-            .read()
-            .expect("type_index lock poisoned");
-        let type_index = match type_index_opt.as_ref() {
+        // Get the type index subtrie - parking_lot::RwLock - no .expect()
+        let type_index_guard = self.shared.type_index.read();
+        let type_index = match type_index_guard.as_ref() {
             Some(index) => index,
             None => {
                 // Index failed to build, fall back to linear search
                 trace!(target: "mettatron::environment::get_type", name, "Falling back to linear search");
-                drop(type_index_opt); // Release lock before fallback
+                drop(type_index_guard); // Release lock before fallback
                 return self.get_type_linear(name);
             }
         };
@@ -162,7 +185,7 @@ impl Environment {
         }
 
         // Release the type index lock before fallback
-        drop(type_index_opt);
+        drop(type_index_guard);
 
         // Slow path: O(n) linear search (fallback if exact match fails)
         // This handles edge cases where MORK encoding might differ

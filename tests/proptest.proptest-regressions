@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b895791edd60ca0acbb93cd57c21377c900087fb74691a245cb72ad85a146f44 # shrinks to value = SExpr([SExpr([SExpr([SExpr([Float(-3.736201921236367e218)])])])])
+cc afe629550cb6ee8ef79360aaf7276d052064be23036b9569745c9aa10a7bc8e3 # shrinks to value = Float(7.47350972386261e250)
+cc 5db1360613ba9e4c66a6bfe1095a24c9f92ef7d9fd21038ccacf71d2be43db61 # shrinks to src = "-5251347248616004000000000"

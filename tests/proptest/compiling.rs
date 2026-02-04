@@ -1,7 +1,8 @@
 use mettatron::compile;
 use proptest::prelude::*;
 
-use super::generators::*;
+use super::strategies::primitive::*;
+use super::strategies::sexpr::*;
 
 proptest! {
   #[test]
@@ -11,7 +12,7 @@ proptest! {
   }
 
   #[test]
-  fn compiled_atom(src in atom()) {
+  fn compiled_atom(src in primitive()) {
       let compiled = compile(&src);
       prop_assert!(compiled.is_ok());
   }
@@ -48,8 +49,6 @@ proptest! {
 
   #[test]
   fn compiled_multiline_sexpr(src in multiline_sexpr()) {
-    dbg!(&src);
-
       let compiled = compile(&src);
       prop_assert!(compiled.is_ok());
   }

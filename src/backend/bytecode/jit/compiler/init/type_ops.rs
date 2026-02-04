@@ -11,8 +11,11 @@ use crate::backend::bytecode::jit::runtime;
 use crate::backend::bytecode::jit::types::JitResult;
 
 /// Function IDs for type operations
+///
+/// Note: get_type uses runtime mode dispatch based on JitContext.value_mode.
+/// No separate arena FuncId is needed - the same function handles both modes.
 pub struct TypeOpsFuncIds {
-    /// Get type of value
+    /// Get type of value (dispatches based on ctx.value_mode)
     pub get_type_func_id: FuncId,
     /// Check if value matches type
     pub check_type_func_id: FuncId,
@@ -31,6 +34,8 @@ pub trait TypeOpsInit {
 
 impl<T> TypeOpsInit for T {
     fn register_type_ops_symbols(builder: &mut JITBuilder) {
+        // Type operation symbols
+        // Note: get_type uses runtime mode dispatch based on JitContext.value_mode
         builder.symbol(
             "jit_runtime_get_type",
             runtime::jit_runtime_get_type as *const u8,

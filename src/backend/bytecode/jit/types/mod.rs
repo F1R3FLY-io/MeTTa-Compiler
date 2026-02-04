@@ -47,6 +47,8 @@ pub use constants::{
     TAG_UNIT,
     TAG_VAR,
     VAR_INDEX_CACHE_SIZE,
+    // Zero-conversion mode
+    JitValueMode,
 };
 
 // Re-export binding types

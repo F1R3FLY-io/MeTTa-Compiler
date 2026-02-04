@@ -47,6 +47,8 @@ pub use types::{
     JitError,
     JitResult,
     JitValue,
+    // Zero-conversion support (Phase 6)
+    JitValueMode,
     JIT_SIGNAL_BAILOUT,
     JIT_SIGNAL_ERROR,
     JIT_SIGNAL_FAIL,
@@ -60,6 +62,17 @@ pub use types::{
     STACK_SAVE_POOL_SIZE,
     // Optimization 5.3: Variable index cache
     VAR_INDEX_CACHE_SIZE,
+    // NaN-boxing constants (for arena JIT conversion)
+    PAYLOAD_MASK,
+    TAG_ATOM,
+    TAG_BOOL,
+    TAG_ERROR,
+    TAG_HEAP,
+    TAG_LONG,
+    TAG_MASK,
+    TAG_NIL,
+    TAG_UNIT,
+    TAG_VAR,
 };
 // Space Ops Phase 4: Binding forking for nondeterminism
 pub use compiler::JitCompiler;

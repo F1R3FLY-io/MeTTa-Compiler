@@ -960,6 +960,729 @@ pub fn global_tiered_cache() -> &'static TieredCompilationCache {
 }
 
 // =============================================================================
+// Arena Tiered Compilation Cache - Zero-Conversion Support
+// =============================================================================
+
+use crate::backend::models::ArenaValue;
+use crate::backend::bytecode::chunk::GenericBytecodeChunk;
+
+/// Hash an ArenaValue for cache lookup.
+///
+/// Uses the same hashing strategy as MettaValue (FxHash-style mixing for primitives,
+/// xxHash3 for complex types) to ensure consistent and efficient lookups.
+pub fn hash_arena_value(expr: &ArenaValue<'static>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    use xxhash_rust::xxh3::Xxh3;
+
+    // Golden ratio constant for good hash distribution
+    const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
+    // Type-specific seeds
+    const LONG_SEED: u64 = 0x517cc1b727220a95;
+    const BOOL_SEED: u64 = 0x2d358dccaa6c78a5;
+    const NIL_HASH: u64 = 0x6e696c5f_68617368;
+    const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
+    const UNIT_HASH: u64 = 0x756e6974_68617368; // "unit_hash" as bytes
+
+    // Fast path for primitives
+    if expr.is_nil() {
+        return NIL_HASH;
+    }
+    if expr.is_unit() {
+        return UNIT_HASH;
+    }
+    if let Some(b) = expr.as_bool() {
+        return if b {
+            BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
+        } else {
+            BOOL_SEED
+        };
+    }
+    if let Some(n) = expr.as_long() {
+        let x = (n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+        return x ^ (x >> 32);
+    }
+    if let Some(f) = expr.as_float() {
+        let bits = f.to_bits();
+        let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
+        return x ^ (x >> 32);
+    }
+
+    // Slow path for complex types - use xxHash3
+    let mut hasher = Xxh3::new();
+    hash_arena_value_recursive(expr, &mut hasher);
+    hasher.finish()
+}
+
+/// Recursively hash an ArenaValue for complex types.
+fn hash_arena_value_recursive<H: std::hash::Hasher>(expr: &ArenaValue<'static>, hasher: &mut H) {
+    use std::hash::Hash;
+
+    // Hash type discriminant first
+    let type_tag: u8 = if expr.is_nil() { 0 }
+        else if expr.is_unit() { 1 }
+        else if expr.is_bool() { 2 }
+        else if expr.is_long() { 3 }
+        else if expr.is_float() { 4 }
+        else if expr.is_string() { 5 }
+        else if expr.is_atom() { 6 }
+        else if expr.is_sexpr() { 7 }
+        else if expr.is_error() { 8 }
+        else if expr.is_empty() { 9 }
+        else { 10 }; // Other types
+    type_tag.hash(hasher);
+
+    // Hash content based on type
+    if let Some(b) = expr.as_bool() {
+        b.hash(hasher);
+    } else if let Some(n) = expr.as_long() {
+        n.hash(hasher);
+    } else if let Some(f) = expr.as_float() {
+        f.to_bits().hash(hasher);
+    } else if let Some(s) = expr.as_string() {
+        s.hash(hasher);
+    } else if let Some(s) = expr.as_atom() {
+        s.hash(hasher);
+    } else if let Some(items) = expr.as_sexpr() {
+        items.len().hash(hasher);
+        for item in items {
+            hash_arena_value_recursive(item, hasher);
+        }
+    }
+}
+
+/// Per-expression compilation state for arena values.
+///
+/// Similar to `ExprCompilationState` but stores `GenericBytecodeChunk<ArenaValue<'static>>`.
+/// Supports full JIT tiering (Stage 1 and Stage 2) for hot code paths.
+pub struct ArenaExprCompilationState {
+    /// Number of times this expression has been executed.
+    pub execution_count: AtomicU32,
+
+    // Bytecode tier (Tier 1)
+    /// Status of bytecode compilation.
+    bytecode_status: AtomicU8,
+
+    /// Compiled bytecode chunk (write-once via OnceLock).
+    bytecode_chunk: OnceLock<Arc<GenericBytecodeChunk<ArenaValue<'static>>>>,
+
+    // JIT Stage 1 (Tier 2)
+    /// Status of JIT Stage 1 compilation.
+    jit1_status: AtomicU8,
+
+    /// JIT Stage 1 native code (write-once via OnceLock).
+    jit1_code: OnceLock<Arc<NativeCode>>,
+
+    // JIT Stage 2 (Tier 3)
+    /// Status of JIT Stage 2 compilation.
+    jit2_status: AtomicU8,
+
+    /// JIT Stage 2 native code (write-once via OnceLock).
+    jit2_code: OnceLock<Arc<NativeCode>>,
+
+    /// Original expression hash for debugging.
+    expr_hash: u64,
+}
+
+impl ArenaExprCompilationState {
+    /// Create a new cold state with zero executions.
+    pub fn new(expr_hash: u64) -> Self {
+        Self {
+            execution_count: AtomicU32::new(0),
+            bytecode_status: AtomicU8::new(TierStatusKind::NotStarted as u8),
+            bytecode_chunk: OnceLock::new(),
+            jit1_status: AtomicU8::new(TierStatusKind::NotStarted as u8),
+            jit1_code: OnceLock::new(),
+            jit2_status: AtomicU8::new(TierStatusKind::NotStarted as u8),
+            jit2_code: OnceLock::new(),
+            expr_hash,
+        }
+    }
+
+    /// Get the current execution count.
+    #[inline]
+    pub fn count(&self) -> u32 {
+        self.execution_count.load(Ordering::Relaxed)
+    }
+
+    /// Get bytecode status.
+    #[inline]
+    pub fn bytecode_status(&self) -> TierStatusKind {
+        TierStatusKind::from(self.bytecode_status.load(Ordering::Acquire))
+    }
+
+    /// Get bytecode chunk if ready.
+    #[inline]
+    pub fn bytecode_chunk(&self) -> Option<Arc<GenericBytecodeChunk<ArenaValue<'static>>>> {
+        if self.bytecode_status() == TierStatusKind::Ready {
+            self.bytecode_chunk.get().cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Try to start bytecode compilation (atomic CAS).
+    #[inline]
+    pub fn try_start_bytecode_compile(&self) -> bool {
+        self.bytecode_status
+            .compare_exchange(
+                TierStatusKind::NotStarted as u8,
+                TierStatusKind::Compiling as u8,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+    }
+
+    /// Set bytecode compilation result.
+    pub fn set_bytecode_ready(&self, chunk: Arc<GenericBytecodeChunk<ArenaValue<'static>>>) {
+        let _ = self.bytecode_chunk.set(chunk);
+        self.bytecode_status
+            .store(TierStatusKind::Ready as u8, Ordering::Release);
+    }
+
+    /// Mark bytecode compilation as failed.
+    pub fn set_bytecode_failed(&self) {
+        self.bytecode_status
+            .store(TierStatusKind::Failed as u8, Ordering::Release);
+    }
+
+    // -------------------------------------------------------------------------
+    // JIT Stage 1 Methods
+    // -------------------------------------------------------------------------
+
+    /// Get JIT Stage 1 status.
+    #[inline]
+    pub fn jit1_status(&self) -> TierStatusKind {
+        TierStatusKind::from(self.jit1_status.load(Ordering::Acquire))
+    }
+
+    /// Get JIT Stage 1 native code if ready (lock-free read via OnceLock).
+    #[inline]
+    pub fn jit1_code(&self) -> Option<Arc<NativeCode>> {
+        if self.jit1_status() == TierStatusKind::Ready {
+            self.jit1_code.get().cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Try to start JIT Stage 1 compilation (atomic CAS).
+    /// Returns true if this thread won the race to compile.
+    #[inline]
+    pub fn try_start_jit1_compile(&self) -> bool {
+        self.jit1_status
+            .compare_exchange(
+                TierStatusKind::NotStarted as u8,
+                TierStatusKind::Compiling as u8,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+    }
+
+    /// Set JIT Stage 1 compilation result (write-once via OnceLock).
+    pub fn set_jit1_ready(&self, code: Arc<NativeCode>) {
+        let _ = self.jit1_code.set(code);
+        self.jit1_status
+            .store(TierStatusKind::Ready as u8, Ordering::Release);
+    }
+
+    /// Mark JIT Stage 1 compilation as failed.
+    pub fn set_jit1_failed(&self) {
+        self.jit1_status
+            .store(TierStatusKind::Failed as u8, Ordering::Release);
+    }
+
+    // -------------------------------------------------------------------------
+    // JIT Stage 2 Methods
+    // -------------------------------------------------------------------------
+
+    /// Get JIT Stage 2 status.
+    #[inline]
+    pub fn jit2_status(&self) -> TierStatusKind {
+        TierStatusKind::from(self.jit2_status.load(Ordering::Acquire))
+    }
+
+    /// Get JIT Stage 2 native code if ready (lock-free read via OnceLock).
+    #[inline]
+    pub fn jit2_code(&self) -> Option<Arc<NativeCode>> {
+        if self.jit2_status() == TierStatusKind::Ready {
+            self.jit2_code.get().cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Try to start JIT Stage 2 compilation (atomic CAS).
+    /// Returns true if this thread won the race to compile.
+    #[inline]
+    pub fn try_start_jit2_compile(&self) -> bool {
+        self.jit2_status
+            .compare_exchange(
+                TierStatusKind::NotStarted as u8,
+                TierStatusKind::Compiling as u8,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+    }
+
+    /// Set JIT Stage 2 compilation result (write-once via OnceLock).
+    pub fn set_jit2_ready(&self, code: Arc<NativeCode>) {
+        let _ = self.jit2_code.set(code);
+        self.jit2_status
+            .store(TierStatusKind::Ready as u8, Ordering::Release);
+    }
+
+    /// Mark JIT Stage 2 compilation as failed.
+    pub fn set_jit2_failed(&self) {
+        self.jit2_status
+            .store(TierStatusKind::Failed as u8, Ordering::Release);
+    }
+}
+
+impl std::fmt::Debug for ArenaExprCompilationState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ArenaExprCompilationState")
+            .field("execution_count", &self.count())
+            .field("bytecode_status", &self.bytecode_status())
+            .field("jit1_status", &self.jit1_status())
+            .field("jit2_status", &self.jit2_status())
+            .field("expr_hash", &self.expr_hash)
+            .finish()
+    }
+}
+
+/// Arena tiered compilation cache.
+///
+/// Manages compilation state for ArenaValue expressions, separate from the
+/// MettaValue cache to ensure type safety and zero-conversion execution.
+/// Supports full JIT tiering (Stage 1 at 100+ executions, Stage 2 at 500+).
+pub struct ArenaTieredCache {
+    /// Map from expression hash to compilation state.
+    entries: DashMap<u64, Arc<ArenaExprCompilationState>>,
+
+    /// Threshold for bytecode compilation.
+    pub bytecode_threshold: u32,
+
+    /// Threshold for JIT Stage 1 compilation.
+    pub jit1_threshold: u32,
+
+    /// Threshold for JIT Stage 2 compilation.
+    pub jit2_threshold: u32,
+
+    // Statistics
+    expressions_tracked: AtomicU64,
+    total_executions: AtomicU64,
+    bytecode_compilations_triggered: AtomicU64,
+    bytecode_compilations_completed: AtomicU64,
+    bytecode_compilations_failed: AtomicU64,
+    bytecode_executions: AtomicU64,
+    jit1_compilations_triggered: AtomicU64,
+    jit1_compilations_completed: AtomicU64,
+    jit1_compilations_failed: AtomicU64,
+    jit1_executions: AtomicU64,
+    jit2_compilations_triggered: AtomicU64,
+    jit2_compilations_completed: AtomicU64,
+    jit2_compilations_failed: AtomicU64,
+    jit2_executions: AtomicU64,
+    interpreter_executions: AtomicU64,
+}
+
+impl ArenaTieredCache {
+    /// Create a new arena tiered cache with default thresholds.
+    pub fn new() -> Self {
+        Self {
+            entries: DashMap::new(),
+            bytecode_threshold: BYTECODE_THRESHOLD,
+            jit1_threshold: JIT1_THRESHOLD,
+            jit2_threshold: JIT2_THRESHOLD,
+            expressions_tracked: AtomicU64::new(0),
+            total_executions: AtomicU64::new(0),
+            bytecode_compilations_triggered: AtomicU64::new(0),
+            bytecode_compilations_completed: AtomicU64::new(0),
+            bytecode_compilations_failed: AtomicU64::new(0),
+            bytecode_executions: AtomicU64::new(0),
+            jit1_compilations_triggered: AtomicU64::new(0),
+            jit1_compilations_completed: AtomicU64::new(0),
+            jit1_compilations_failed: AtomicU64::new(0),
+            jit1_executions: AtomicU64::new(0),
+            jit2_compilations_triggered: AtomicU64::new(0),
+            jit2_compilations_completed: AtomicU64::new(0),
+            jit2_compilations_failed: AtomicU64::new(0),
+            jit2_executions: AtomicU64::new(0),
+            interpreter_executions: AtomicU64::new(0),
+        }
+    }
+
+    /// Create a new cache with custom thresholds.
+    pub fn with_thresholds(bytecode: u32, jit1: u32, jit2: u32) -> Self {
+        Self {
+            entries: DashMap::new(),
+            bytecode_threshold: bytecode,
+            jit1_threshold: jit1,
+            jit2_threshold: jit2,
+            expressions_tracked: AtomicU64::new(0),
+            total_executions: AtomicU64::new(0),
+            bytecode_compilations_triggered: AtomicU64::new(0),
+            bytecode_compilations_completed: AtomicU64::new(0),
+            bytecode_compilations_failed: AtomicU64::new(0),
+            bytecode_executions: AtomicU64::new(0),
+            jit1_compilations_triggered: AtomicU64::new(0),
+            jit1_compilations_completed: AtomicU64::new(0),
+            jit1_compilations_failed: AtomicU64::new(0),
+            jit1_executions: AtomicU64::new(0),
+            jit2_compilations_triggered: AtomicU64::new(0),
+            jit2_compilations_completed: AtomicU64::new(0),
+            jit2_compilations_failed: AtomicU64::new(0),
+            jit2_executions: AtomicU64::new(0),
+            interpreter_executions: AtomicU64::new(0),
+        }
+    }
+
+    /// Get or create a compilation state for an expression.
+    fn get_or_create_state(&self, expr: &ArenaValue<'static>) -> Arc<ArenaExprCompilationState> {
+        let hash = hash_arena_value(expr);
+
+        // Fast path: check if already exists
+        if let Some(entry) = self.entries.get(&hash) {
+            return Arc::clone(entry.value());
+        }
+
+        // Slow path: create new entry
+        let state = Arc::new(ArenaExprCompilationState::new(hash));
+        self.entries.entry(hash).or_insert_with(|| {
+            self.expressions_tracked.fetch_add(1, Ordering::Relaxed);
+            Arc::clone(&state)
+        });
+
+        self.entries
+            .get(&hash)
+            .map(|e| Arc::clone(e.value()))
+            .unwrap_or(state)
+    }
+
+    /// Record an execution and trigger tier compilations if thresholds reached.
+    ///
+    /// Returns the compilation state for dispatch decisions.
+    /// Triggers:
+    /// - Bytecode compilation at bytecode_threshold (default: 1)
+    /// - JIT Stage 1 compilation at jit1_threshold (default: 100)
+    /// - JIT Stage 2 compilation at jit2_threshold (default: 500)
+    pub fn record_execution(&self, expr: &ArenaValue<'static>) -> Arc<ArenaExprCompilationState> {
+        let state = self.get_or_create_state(expr);
+
+        // Atomically increment execution count
+        let count = state.execution_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+        // Update total execution stats
+        self.total_executions.fetch_add(1, Ordering::Relaxed);
+
+        // Check for tier compilation triggers (in order of increasing tier)
+        self.maybe_trigger_bytecode(expr, &state, count);
+        self.maybe_trigger_jit1(&state, count);
+        self.maybe_trigger_jit2(&state, count);
+
+        state
+    }
+
+    /// Maybe trigger bytecode compilation.
+    fn maybe_trigger_bytecode(
+        &self,
+        expr: &ArenaValue<'static>,
+        state: &Arc<ArenaExprCompilationState>,
+        count: u32,
+    ) {
+        // Check threshold
+        if count < self.bytecode_threshold {
+            return;
+        }
+
+        // Check if already started
+        if state.bytecode_status() != TierStatusKind::NotStarted {
+            return;
+        }
+
+        // Try to win the compilation race
+        if !state.try_start_bytecode_compile() {
+            return;
+        }
+
+        // Update stats
+        self.bytecode_compilations_triggered.fetch_add(1, Ordering::Relaxed);
+
+        // Clone what we need for the background task
+        let expr_clone = expr.clone();
+        let state_clone = Arc::clone(state);
+
+        // Compile in background
+        rayon::spawn(move || {
+            use crate::backend::bytecode::compile_arena_bytecode_arc;
+
+            match compile_arena_bytecode_arc("tiered", &expr_clone) {
+                Ok(chunk) => {
+                    state_clone.set_bytecode_ready(chunk);
+                }
+                Err(_) => {
+                    state_clone.set_bytecode_failed();
+                }
+            }
+        });
+    }
+
+    /// Trigger JIT Stage 1 compilation at jit1_threshold (default: 100 executions).
+    ///
+    /// JIT Stage 1 requires bytecode to be Ready first (compiles from bytecode).
+    /// The generated JIT code uses runtime functions that dispatch based on
+    /// `JitContext.value_mode` to handle arena vs heap values correctly.
+    fn maybe_trigger_jit1(&self, state: &Arc<ArenaExprCompilationState>, count: u32) {
+        // Check threshold
+        if count < self.jit1_threshold {
+            return;
+        }
+
+        // JIT Stage 1 requires bytecode to be Ready
+        if state.bytecode_status() != TierStatusKind::Ready {
+            return;
+        }
+
+        // Check if already started
+        if state.jit1_status() != TierStatusKind::NotStarted {
+            return;
+        }
+
+        // Try to win the compilation race
+        if !state.try_start_jit1_compile() {
+            return;
+        }
+
+        // Update stats
+        self.jit1_compilations_triggered
+            .fetch_add(1, Ordering::Relaxed);
+
+        // Get the bytecode chunk
+        let chunk = match state.bytecode_chunk() {
+            Some(c) => c,
+            None => {
+                state.set_jit1_failed();
+                return;
+            }
+        };
+
+        // Clone state for background task
+        let state_clone = Arc::clone(state);
+
+        // JIT compilation in background
+        rayon::spawn(move || {
+            use super::jit::compiler::JitCompiler;
+
+            // Check if chunk can be JIT compiled
+            // We use the bytecode-only compilability check - bytecode structure is the same
+            // regardless of value type (ArenaValue or MettaValue)
+            if !JitCompiler::can_compile_stage1_bytecode(chunk.code()) {
+                state_clone.set_jit1_failed();
+                return;
+            }
+
+            // Create JIT compiler and compile
+            // The bytecode is identical for arena and heap modes - runtime functions
+            // dispatch based on JitContext.value_mode to handle value creation correctly
+            match JitCompiler::new() {
+                Ok(mut compiler) => {
+                    // Create a temporary BytecodeChunk wrapper for compilation
+                    // The JIT compiler needs BytecodeChunk for full analysis
+                    let temp_chunk = super::chunk::BytecodeChunk::from_code_and_constant_count(
+                        "arena_jit",
+                        chunk.code().to_vec(),
+                        chunk.constant_count(),
+                    );
+
+                    match compiler.compile(&temp_chunk) {
+                        Ok(ptr) => {
+                            let code = NativeCode {
+                                ptr,
+                                code_size: chunk.len() * 8, // Rough estimate
+                            };
+                            state_clone.set_jit1_ready(Arc::new(code));
+                        }
+                        Err(_) => {
+                            state_clone.set_jit1_failed();
+                        }
+                    }
+                }
+                Err(_) => {
+                    state_clone.set_jit1_failed();
+                }
+            }
+        });
+    }
+
+    /// Trigger JIT Stage 2 compilation at jit2_threshold (default: 500 executions).
+    ///
+    /// JIT Stage 2 requires bytecode to be Ready (can skip JIT Stage 1).
+    /// Stage 2 uses more aggressive optimizations.
+    fn maybe_trigger_jit2(&self, state: &Arc<ArenaExprCompilationState>, count: u32) {
+        // Check threshold
+        if count < self.jit2_threshold {
+            return;
+        }
+
+        // JIT Stage 2 requires bytecode to be Ready (can skip JIT1)
+        if state.bytecode_status() != TierStatusKind::Ready {
+            return;
+        }
+
+        // Check if already started
+        if state.jit2_status() != TierStatusKind::NotStarted {
+            return;
+        }
+
+        // Try to win the compilation race
+        if !state.try_start_jit2_compile() {
+            return;
+        }
+
+        // Update stats
+        self.jit2_compilations_triggered
+            .fetch_add(1, Ordering::Relaxed);
+
+        // Get the bytecode chunk
+        let chunk = match state.bytecode_chunk() {
+            Some(c) => c,
+            None => {
+                state.set_jit2_failed();
+                return;
+            }
+        };
+
+        // Clone state for background task
+        let state_clone = Arc::clone(state);
+
+        // JIT Stage 2 compilation in background
+        rayon::spawn(move || {
+            use super::jit::compiler::JitCompiler;
+
+            // Check if chunk can be JIT compiled
+            if !JitCompiler::can_compile_stage1_bytecode(chunk.code()) {
+                state_clone.set_jit2_failed();
+                return;
+            }
+
+            // Create JIT compiler and compile with Stage 2 optimizations
+            // TODO: Add Stage 2-specific optimizations (more aggressive inlining, etc.)
+            match JitCompiler::new() {
+                Ok(mut compiler) => {
+                    // Create a temporary BytecodeChunk wrapper for compilation
+                    let temp_chunk = super::chunk::BytecodeChunk::from_code_and_constant_count(
+                        "arena_jit_s2",
+                        chunk.code().to_vec(),
+                        chunk.constant_count(),
+                    );
+
+                    match compiler.compile(&temp_chunk) {
+                        Ok(ptr) => {
+                            let code = NativeCode {
+                                ptr,
+                                code_size: chunk.len() * 10, // Stage 2 generates more code
+                            };
+                            state_clone.set_jit2_ready(Arc::new(code));
+                        }
+                        Err(_) => {
+                            state_clone.set_jit2_failed();
+                        }
+                    }
+                }
+                Err(_) => {
+                    state_clone.set_jit2_failed();
+                }
+            }
+        });
+    }
+
+    /// Get the best available execution tier for an expression.
+    ///
+    /// Returns the highest tier that has Ready status:
+    /// - JitStage2 (highest) - very hot code, 500+ executions
+    /// - JitStage1 - hot code, 100+ executions
+    /// - Bytecode - warm code, 2+ executions
+    /// - Interpreter (lowest) - cold code
+    pub fn get_best_tier(&self, expr: &ArenaValue<'static>) -> ExecutionTier {
+        let hash = hash_arena_value(expr);
+
+        if let Some(entry) = self.entries.get(&hash) {
+            let state = entry.value();
+
+            // Check from highest to lowest tier
+            if state.jit2_status() == TierStatusKind::Ready {
+                return ExecutionTier::JitStage2;
+            }
+            if state.jit1_status() == TierStatusKind::Ready {
+                return ExecutionTier::JitStage1;
+            }
+            if state.bytecode_status() == TierStatusKind::Ready {
+                return ExecutionTier::Bytecode;
+            }
+        }
+
+        ExecutionTier::Interpreter
+    }
+
+    /// Get the compilation state for an expression (if it exists).
+    pub fn get_state(&self, expr: &ArenaValue<'static>) -> Option<Arc<ArenaExprCompilationState>> {
+        let hash = hash_arena_value(expr);
+        self.entries.get(&hash).map(|e| Arc::clone(e.value()))
+    }
+
+    /// Record an execution at a specific tier (for statistics).
+    pub fn record_tier_execution(&self, tier: ExecutionTier) {
+        match tier {
+            ExecutionTier::Interpreter => {
+                self.interpreter_executions.fetch_add(1, Ordering::Relaxed);
+            }
+            ExecutionTier::Bytecode => {
+                self.bytecode_executions.fetch_add(1, Ordering::Relaxed);
+            }
+            ExecutionTier::JitStage1 => {
+                self.jit1_executions.fetch_add(1, Ordering::Relaxed);
+            }
+            ExecutionTier::JitStage2 => {
+                self.jit2_executions.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Get the number of expressions tracked.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Clear the cache.
+    pub fn clear(&self) {
+        self.entries.clear();
+    }
+}
+
+impl Default for ArenaTieredCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Global arena tiered compilation cache.
+static GLOBAL_ARENA_TIERED_CACHE: std::sync::LazyLock<ArenaTieredCache> =
+    std::sync::LazyLock::new(ArenaTieredCache::new);
+
+/// Get a reference to the global arena tiered compilation cache.
+pub fn global_arena_tiered_cache() -> &'static ArenaTieredCache {
+    &GLOBAL_ARENA_TIERED_CACHE
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

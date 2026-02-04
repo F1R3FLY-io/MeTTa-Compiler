@@ -97,6 +97,26 @@ impl ChunkId {
         ChunkId(hasher.finish())
     }
 
+    /// Create a chunk ID from a generic bytecode chunk.
+    ///
+    /// This works with any value type (MettaValue or ArenaValue) since the bytecode
+    /// structure is identical - only the constants differ in type.
+    pub fn from_generic_chunk<V>(chunk: &crate::backend::bytecode::GenericBytecodeChunk<V>) -> Self
+    where
+        V: crate::backend::models::MettaValueTrait + Clone + Send + Sync + 'static,
+    {
+        use std::collections::hash_map::DefaultHasher;
+        let mut hasher = DefaultHasher::new();
+
+        // Hash the bytecode content (identical regardless of value type)
+        chunk.code().hash(&mut hasher);
+
+        // Include constant pool size to differentiate chunks
+        chunk.constant_count().hash(&mut hasher);
+
+        ChunkId(hasher.finish())
+    }
+
     /// Create a chunk ID from a raw u64
     pub fn from_raw(id: u64) -> Self {
         ChunkId(id)

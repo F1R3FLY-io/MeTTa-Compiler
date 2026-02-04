@@ -9,6 +9,11 @@
 //! The VM calls functions by ID for efficient dispatch. Function signatures
 //! follow a standard pattern: `fn(&[MettaValue], &NativeContext) -> NativeResult`.
 //!
+//! # Generic Support
+//!
+//! The registry supports generic value types through `GenericNativeRegistry<V, F>`,
+//! enabling zero-conversion execution with ArenaValue or MettaValue.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -27,9 +32,11 @@
 //! ```
 
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::environment::GenericEnvironment;
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
 use crate::backend::Environment;
 
 /// Result type for native function calls
@@ -64,6 +71,380 @@ impl std::fmt::Display for NativeError {
 }
 
 impl std::error::Error for NativeError {}
+
+// =============================================================================
+// Generic Types (for zero-conversion execution)
+// =============================================================================
+
+/// Generic result type for native function calls
+pub type GenericNativeResult<V> = Result<Vec<V>, NativeError>;
+
+/// Generic context provided to native functions during execution
+#[derive(Clone)]
+pub struct GenericNativeContext<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    /// Current environment (for accessing bindings if needed)
+    pub env: GenericEnvironment<V, F>,
+    /// Factory for constructing values
+    pub factory: F,
+}
+
+impl<V, F> GenericNativeContext<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    /// Create a new generic native context
+    pub fn new(env: GenericEnvironment<V, F>, factory: F) -> Self {
+        Self { env, factory }
+    }
+}
+
+/// Generic type alias for native function signature
+pub type GenericNativeFn<V, F> = Arc<
+    dyn Fn(&[V], &GenericNativeContext<V, F>) -> GenericNativeResult<V> + Send + Sync,
+>;
+
+/// Generic registry entry for a native function
+struct GenericRegistryEntry<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    name: String,
+    func: GenericNativeFn<V, F>,
+}
+
+/// Generic registry for native Rust functions callable from bytecode
+///
+/// Functions are registered by name and assigned sequential IDs starting from 0.
+/// The registry is append-only; functions cannot be removed or reassigned.
+pub struct GenericNativeRegistry<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    /// Functions stored by ID (index)
+    functions: Vec<GenericRegistryEntry<V, F>>,
+    /// Name to ID mapping for registration lookup
+    name_to_id: HashMap<String, u16>,
+    /// Phantom data for factory type
+    _phantom: PhantomData<F>,
+}
+
+impl<V, F> std::fmt::Debug for GenericNativeRegistry<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenericNativeRegistry")
+            .field("function_count", &self.functions.len())
+            .field("names", &self.name_to_id.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl<V, F> Default for GenericNativeRegistry<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<V, F> GenericNativeRegistry<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    /// Create a new empty registry
+    pub fn new() -> Self {
+        Self {
+            functions: Vec::new(),
+            name_to_id: HashMap::new(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Create a registry with standard library functions pre-registered
+    pub fn with_stdlib(factory: F) -> Self {
+        let mut registry = Self::new();
+        registry.register_stdlib(factory);
+        registry
+    }
+
+    /// Register a native function, returning its ID
+    ///
+    /// If a function with this name already exists, returns its existing ID.
+    pub fn register<Func>(&mut self, name: &str, func: Func) -> u16
+    where
+        Func: Fn(&[V], &GenericNativeContext<V, F>) -> GenericNativeResult<V> + Send + Sync + 'static,
+    {
+        // Check if already registered
+        if let Some(&id) = self.name_to_id.get(name) {
+            return id;
+        }
+
+        let id = self.functions.len() as u16;
+        self.functions.push(GenericRegistryEntry {
+            name: name.to_string(),
+            func: Arc::new(func),
+        });
+        self.name_to_id.insert(name.to_string(), id);
+        id
+    }
+
+    /// Get the ID of a registered function by name
+    pub fn get_id(&self, name: &str) -> Option<u16> {
+        self.name_to_id.get(name).copied()
+    }
+
+    /// Get the name of a registered function by ID
+    pub fn get_name(&self, id: u16) -> Option<&str> {
+        self.functions.get(id as usize).map(|e| e.name.as_str())
+    }
+
+    /// Call a native function by ID
+    pub fn call(&self, id: u16, args: &[V], ctx: &GenericNativeContext<V, F>) -> GenericNativeResult<V> {
+        let entry = self
+            .functions
+            .get(id as usize)
+            .ok_or(NativeError::NotFound(id))?;
+
+        (entry.func)(args, ctx)
+    }
+
+    /// Get the number of registered functions
+    pub fn len(&self) -> usize {
+        self.functions.len()
+    }
+
+    /// Check if the registry is empty
+    pub fn is_empty(&self) -> bool {
+        self.functions.is_empty()
+    }
+
+    /// Register standard library functions using generic factory methods
+    fn register_stdlib(&mut self, factory: F) {
+        // Print function
+        self.register("print", |args, _ctx| {
+            for (i, arg) in args.iter().enumerate() {
+                if i > 0 {
+                    print!(" ");
+                }
+                // Use Display trait via type_name for debug output
+                if let Some(s) = arg.as_string() {
+                    print!("{}", s);
+                } else if let Some(n) = arg.as_long() {
+                    print!("{}", n);
+                } else if let Some(b) = arg.as_bool() {
+                    print!("{}", if b { "True" } else { "False" });
+                } else if arg.is_nil() {
+                    print!("()");
+                } else if arg.is_unit() {
+                    print!("Unit");
+                } else if let Some(name) = arg.as_atom() {
+                    print!("{}", name);
+                } else {
+                    print!("<{}>", arg.type_name());
+                }
+            }
+            println!();
+            Ok(vec![_ctx.factory.unit()])
+        });
+
+        // String concatenation
+        {
+            let factory_clone = factory.clone();
+            self.register("concat", move |args, _ctx| {
+                let mut result = String::new();
+                for arg in args {
+                    if let Some(s) = arg.as_string() {
+                        result.push_str(s);
+                    } else if let Some(n) = arg.as_long() {
+                        result.push_str(&n.to_string());
+                    } else if let Some(b) = arg.as_bool() {
+                        result.push_str(if b { "True" } else { "False" });
+                    } else if let Some(name) = arg.as_atom() {
+                        result.push_str(name);
+                    } else {
+                        result.push_str(&format!("<{}>", arg.type_name()));
+                    }
+                }
+                Ok(vec![factory_clone.string(&result)])
+            });
+        }
+
+        // String length
+        {
+            let factory_clone = factory.clone();
+            self.register("strlen", move |args, _ctx| {
+                if args.len() != 1 {
+                    return Err(NativeError::ArityMismatch {
+                        expected: 1,
+                        got: args.len(),
+                    });
+                }
+                if let Some(s) = args[0].as_string() {
+                    Ok(vec![factory_clone.long(s.len() as i64)])
+                } else {
+                    Err(NativeError::TypeError {
+                        expected: "String",
+                        got: args[0].type_name().to_string(),
+                    })
+                }
+            });
+        }
+
+        // Random number
+        {
+            let factory_clone = factory.clone();
+            self.register("random", move |args, _ctx| {
+                let max = match args.first() {
+                    Some(v) => {
+                        if let Some(n) = v.as_long() {
+                            n
+                        } else {
+                            return Err(NativeError::TypeError {
+                                expected: "Long",
+                                got: v.type_name().to_string(),
+                            });
+                        }
+                    }
+                    None => 100, // Default max
+                };
+
+                // Simple LCG random (for reproducibility in tests)
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let seed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(42) as u64;
+
+                let random_val =
+                    ((seed * 6364136223846793005 + 1442695040888963407) % (max as u64)) as i64;
+                Ok(vec![factory_clone.long(random_val)])
+            });
+        }
+
+        // Assert function
+        {
+            let factory_clone = factory.clone();
+            self.register("assert", move |args, _ctx| {
+                if args.len() != 1 && args.len() != 2 {
+                    return Err(NativeError::ArityMismatch {
+                        expected: 1,
+                        got: args.len(),
+                    });
+                }
+
+                if let Some(b) = args[0].as_bool() {
+                    if b {
+                        Ok(vec![factory_clone.unit()])
+                    } else {
+                        let msg = if args.len() > 1 {
+                            if let Some(s) = args[1].as_string() {
+                                s.to_string()
+                            } else {
+                                "assertion failed".to_string()
+                            }
+                        } else {
+                            "assertion failed".to_string()
+                        };
+                        Err(NativeError::RuntimeError(msg))
+                    }
+                } else {
+                    Err(NativeError::TypeError {
+                        expected: "Bool",
+                        got: args[0].type_name().to_string(),
+                    })
+                }
+            });
+        }
+
+        // Type-of function (returns type as atom)
+        {
+            let factory_clone = factory.clone();
+            self.register("type-of", move |args, _ctx| {
+                if args.len() != 1 {
+                    return Err(NativeError::ArityMismatch {
+                        expected: 1,
+                        got: args.len(),
+                    });
+                }
+
+                let type_name = args[0].type_name();
+                Ok(vec![factory_clone.atom(type_name)])
+            });
+        }
+
+        // List operations
+        {
+            let factory_clone = factory.clone();
+            self.register("list-length", move |args, _ctx| {
+                if args.len() != 1 {
+                    return Err(NativeError::ArityMismatch {
+                        expected: 1,
+                        got: args.len(),
+                    });
+                }
+
+                if let Some(items) = args[0].as_sexpr() {
+                    Ok(vec![factory_clone.long(items.len() as i64)])
+                } else {
+                    Err(NativeError::TypeError {
+                        expected: "Expression",
+                        got: args[0].type_name().to_string(),
+                    })
+                }
+            });
+        }
+
+        // Range function: (range start end) -> (start start+1 ... end-1)
+        {
+            let factory_clone = factory.clone();
+            self.register("range", move |args, _ctx| {
+                if args.len() != 2 {
+                    return Err(NativeError::ArityMismatch {
+                        expected: 2,
+                        got: args.len(),
+                    });
+                }
+
+                let start = if let Some(n) = args[0].as_long() {
+                    n
+                } else {
+                    return Err(NativeError::TypeError {
+                        expected: "Long",
+                        got: args[0].type_name().to_string(),
+                    });
+                };
+
+                let end = if let Some(n) = args[1].as_long() {
+                    n
+                } else {
+                    return Err(NativeError::TypeError {
+                        expected: "Long",
+                        got: args[1].type_name().to_string(),
+                    });
+                };
+
+                let items: Vec<V> = (start..end).map(|n| factory_clone.long(n)).collect();
+                Ok(vec![factory_clone.sexpr(items)])
+            });
+        }
+    }
+}
+
+// =============================================================================
+// Non-Generic Types (backwards compatibility)
+// =============================================================================
 
 /// Context provided to native functions during execution
 #[derive(Clone)]

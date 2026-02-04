@@ -103,12 +103,18 @@ pub use type_predicates::{
 };
 
 // Type operations
-pub use type_ops::{jit_runtime_assert_type, jit_runtime_check_type, jit_runtime_get_type};
+pub use type_ops::{
+    jit_runtime_assert_type, jit_runtime_check_type, jit_runtime_get_type,
+    // Generic variants (zero-conversion support)
+    get_type_generic,
+};
 
 // Value creation
 pub use value_creation::{
     jit_runtime_cons_atom, jit_runtime_make_list, jit_runtime_make_quote, jit_runtime_make_sexpr,
     jit_runtime_push_uri,
+    // Generic variants (zero-conversion support)
+    cons_atom_generic, make_list_generic, make_quote_generic, make_sexpr_generic,
 };
 
 // S-expression operations
@@ -156,6 +162,15 @@ pub use bindings::{
     jit_runtime_has_binding, jit_runtime_load_binding, jit_runtime_pop_binding_frame,
     jit_runtime_push_binding_frame, jit_runtime_restore_bindings, jit_runtime_saved_bindings_size,
     jit_runtime_store_binding, JitSavedBindings,
+};
+
+// Core helpers (NaN-boxing and conversion)
+pub use helpers::{
+    box_long, extract_long_signed, make_jit_error, make_jit_error_with_details, metta_to_jit,
+    metta_to_jit_tracked,
+    // Generic conversion (zero-conversion support)
+    get_value_mode, is_arena_mode, jit_to_value_generic, value_to_jit_generic,
+    value_to_jit_tracked_generic,
 };
 
 // Pattern matching
@@ -236,13 +251,7 @@ pub use state_ops::{
 };
 
 // =============================================================================
-// Re-export helpers for internal use
+// Re-export constants for submodules
 // =============================================================================
 
-pub(crate) use helpers::{
-    box_long, extract_long_signed, make_jit_error, make_jit_error_with_details, metta_to_jit,
-    metta_to_jit_tracked,
-};
-
-// Re-export constants for submodules
 pub(crate) use super::types::MAX_ALTERNATIVES_INLINE;

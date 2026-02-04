@@ -78,6 +78,8 @@ use rules::{try_match_all_rules, try_match_all_rules_iterative, try_match_all_ru
 
 // Re-export from trampoline module
 pub use trampoline::{eval_trampoline, eval_trampoline_arena, create_arena_context};
+// Re-export arena context types for external use
+pub use trampoline::{ArenaEnvironment, StaticArenaContext};
 
 // Re-export from step module
 #[allow(unused_imports)]
@@ -216,4 +218,164 @@ fn execute_bytecode_chunk(
     }
 
     executor.run(chunk).map_err(|_| ())
+}
+
+// =============================================================================
+// Arena-based Evaluation with Bytecode/JIT Tiering
+// =============================================================================
+
+use crate::backend::models::ArenaValue;
+
+/// Type alias for arena evaluation result.
+pub type ArenaEvalResult = (Vec<ArenaValue<'static>>, ArenaEnvironment);
+
+/// Evaluate an ArenaValue with bytecode/JIT tiering.
+///
+/// This function provides zero-conversion evaluation for ArenaValue expressions.
+/// It uses the arena tiered cache to track executions and trigger background
+/// bytecode compilation, then executes via:
+/// - Bytecode VM if bytecode is ready
+/// - Tree-walker interpreter otherwise
+///
+/// # Arguments
+/// * `value` - The ArenaValue expression to evaluate
+/// * `env` - The arena-based environment
+///
+/// # Returns
+/// A tuple of (results, updated_environment) where results are `Vec<ArenaValue<'static>>`.
+///
+/// # Example
+/// ```ignore
+/// use mettatron::backend::compile::compile_arena;
+/// use mettatron::backend::eval::{eval_arena, trampoline::StaticArenaContext};
+///
+/// let exprs = compile_arena("!(+ 1 2)").unwrap();
+/// let env = StaticArenaContext::new_env();
+///
+/// for expr in exprs {
+///     let (results, env) = eval_arena(expr, env);
+///     println!("{:?}", results);
+/// }
+/// ```
+pub fn eval_arena(value: ArenaValue<'static>, env: ArenaEnvironment) -> ArenaEvalResult {
+    use crate::backend::bytecode::{
+        can_compile_arena, can_compile_arena_with_env, eval_bytecode_arena_with_env,
+        execute_arena, global_arena_tiered_cache,
+        ExecutionTier, TierStatusKind,
+    };
+
+    // Record execution in arena tiered cache
+    // This triggers background bytecode and JIT compilation at thresholds
+    let state = global_arena_tiered_cache().record_execution(&value);
+
+    // Check if this expression can be compiled to bytecode (pure expressions)
+    if can_compile_arena(&value) {
+        // Check for JIT execution first (highest tier)
+        // JIT Stage 2 (very hot code, 500+ executions)
+        // Now properly threads environment through execution.
+        if state.jit2_status() == TierStatusKind::Ready {
+            if let Some(code) = state.jit2_code() {
+                match execute_jit_arena_with_env(&state, code.ptr, env.clone()) {
+                    Ok((results, new_env)) => {
+                        global_arena_tiered_cache()
+                            .record_tier_execution(ExecutionTier::JitStage2);
+                        return (results, new_env);
+                    }
+                    Err(_) => {
+                        // JIT execution failed, fall through
+                    }
+                }
+            }
+        }
+
+        // JIT Stage 1 (hot code, 100+ executions)
+        // Now properly threads environment through execution.
+        if state.jit1_status() == TierStatusKind::Ready {
+            if let Some(code) = state.jit1_code() {
+                match execute_jit_arena_with_env(&state, code.ptr, env.clone()) {
+                    Ok((results, new_env)) => {
+                        global_arena_tiered_cache()
+                            .record_tier_execution(ExecutionTier::JitStage1);
+                        return (results, new_env);
+                    }
+                    Err(_) => {
+                        // JIT execution failed, fall through
+                    }
+                }
+            }
+        }
+
+        // Bytecode VM (warm code, 2+ executions)
+        if state.bytecode_status() == TierStatusKind::Ready {
+            if let Some(chunk) = state.bytecode_chunk() {
+                // Execute via generic bytecode VM (zero-conversion)
+                match execute_arena(chunk, env.clone()) {
+                    Ok((results, new_env)) => {
+                        global_arena_tiered_cache()
+                            .record_tier_execution(ExecutionTier::Bytecode);
+                        return (results, new_env);
+                    }
+                    Err(_) => {
+                        // Bytecode execution failed, fall through to tree-walker
+                    }
+                }
+            }
+        }
+    }
+
+    // Try environment-aware bytecode for expressions that need rule dispatch.
+    // This mirrors the can_compile_with_env path in eval() for heap values.
+    // It handles expressions that aren't pure (can_compile_arena returns false)
+    // but can still benefit from bytecode VM execution with environment access.
+    if can_compile_arena_with_env(&value) {
+        match eval_bytecode_arena_with_env(&value, env.clone()) {
+            Ok((results, new_env)) => {
+                global_arena_tiered_cache()
+                    .record_tier_execution(ExecutionTier::Bytecode);
+                return (results, new_env);
+            }
+            Err(_) => {
+                // Bytecode compilation/execution failed, fall through to tree-walker
+            }
+        }
+    }
+
+    // Tier 0: Tree-walker interpreter (cold code or fallback)
+    global_arena_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
+    eval_trampoline_arena(value, env)
+}
+
+/// Execute JIT-compiled code for arena expression with environment threading.
+///
+/// This function sets up a HybridExecutor in arena mode and executes the
+/// JIT-compiled native code. The environment is properly threaded through
+/// execution, allowing JIT runtime functions to access and modify it.
+///
+/// # Arguments
+/// * `state` - The compilation state containing bytecode chunk
+/// * `native_ptr` - Pointer to JIT-compiled function
+/// * `env` - The arena environment to thread through execution
+///
+/// # Returns
+/// Tuple of (results, updated_environment) or an error
+fn execute_jit_arena_with_env(
+    state: &std::sync::Arc<crate::backend::bytecode::ArenaExprCompilationState>,
+    native_ptr: *const (),
+    env: ArenaEnvironment,
+) -> Result<(Vec<ArenaValue<'static>>, ArenaEnvironment), ()> {
+    use crate::backend::bytecode::jit::HybridExecutor;
+    use crate::backend::eval::trampoline::{get_static_arena, get_static_factory};
+
+    // Get arena and factory from thread-local storage
+    let arena = get_static_arena();
+    let factory = get_static_factory();
+
+    // Get the bytecode chunk (needed for constants)
+    let chunk = state.bytecode_chunk().ok_or(())?;
+
+    // Create hybrid executor and run in arena mode with environment
+    let mut executor = HybridExecutor::new();
+    executor
+        .execute_jit_arena_with_env(&chunk, native_ptr, arena, &factory, env)
+        .map_err(|_| ())
 }

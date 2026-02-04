@@ -250,9 +250,18 @@ pub struct StaticArenaContext {
 /// Type alias for arena environment
 pub type ArenaEnvironment = GenericEnvironment<ArenaValue<'static>, ArenaValueFactory<'static>>;
 
+use std::cell::RefCell;
+
 // Thread-local static arena storage
 thread_local! {
     static STATIC_ARENA: &'static Bump = Box::leak(Box::new(Bump::new()));
+}
+
+// Thread-local persistent environment storage for arena mode.
+// This persists state (rules, facts, bindings) across sequential evaluations,
+// matching heap mode behavior where environments are threaded through.
+thread_local! {
+    static STATIC_ENV: RefCell<Option<ArenaEnvironment>> = const { RefCell::new(None) };
 }
 
 impl StaticArenaContext {
@@ -274,11 +283,66 @@ impl StaticArenaContext {
     }
 
     /// Create a new ArenaEnvironment for this context.
+    ///
+    /// Note: This creates a fresh environment every time. For persistent state
+    /// across sequential evaluations, use `get_or_create_env()` instead.
     #[inline]
     pub fn new_env() -> ArenaEnvironment {
         STATIC_ARENA.with(|arena| {
             ArenaEnvironment::new(ArenaValueFactory::new(arena))
         })
+    }
+
+    /// Get or create the persistent thread-local environment.
+    ///
+    /// This environment accumulates state across sequential evaluations,
+    /// matching heap mode behavior where environments are threaded through.
+    /// Use this instead of `new_env()` for file evaluation where state should
+    /// persist between expressions.
+    ///
+    /// # Returns
+    ///
+    /// A clone of the persistent environment. The clone shares state via Arc
+    /// until first mutation (CoW semantics).
+    #[inline]
+    pub fn get_or_create_env() -> ArenaEnvironment {
+        STATIC_ENV.with(|env_cell| {
+            let mut env_opt = env_cell.borrow_mut();
+            if env_opt.is_none() {
+                *env_opt = Some(Self::new_env());
+            }
+            // Return a clone that shares state via Arc (O(1) clone)
+            env_opt.as_ref().expect("env was just initialized").clone()
+        })
+    }
+
+    /// Update the persistent environment after evaluation.
+    ///
+    /// Call this after evaluation to preserve state changes (rules, facts, bindings)
+    /// for subsequent evaluations. This is essential for correct arena mode semantics
+    /// where state must persist across the evaluation of multiple expressions.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_env` - The environment containing accumulated state from evaluation.
+    #[inline]
+    pub fn update_env(new_env: ArenaEnvironment) {
+        STATIC_ENV.with(|env_cell| {
+            *env_cell.borrow_mut() = Some(new_env);
+        });
+    }
+
+    /// Reset the persistent environment.
+    ///
+    /// Clears all accumulated state (rules, facts, bindings). Use this:
+    /// - Between test cases to ensure isolation
+    /// - When starting a new session
+    /// - To reclaim memory from the arena
+    #[inline]
+    pub fn reset_env() {
+        STATIC_ENV.with(|env_cell| {
+            *env_cell.borrow_mut() = None;
+        });
     }
 
     /// Get the thread-local static arena directly.
@@ -426,5 +490,102 @@ mod tests {
         let enabled = is_arena_mode_enabled();
         // Don't assert specific value since it depends on environment
         let _ = enabled;
+    }
+
+    #[test]
+    fn test_static_arena_persistent_env() {
+        // Reset to ensure clean state
+        StaticArenaContext::reset_env();
+
+        // First call should create new env
+        let env1 = StaticArenaContext::get_or_create_env();
+        assert!(env1.owns_data == false); // Clone doesn't own data
+
+        // Second call should return clone of same env
+        let env2 = StaticArenaContext::get_or_create_env();
+        assert!(std::sync::Arc::ptr_eq(&env1.shared, &env2.shared));
+
+        // Update with a modified env
+        let mut modified_env = env1.clone();
+        let ctx = StaticArenaContext::get();
+        modified_env.bind("test_var", ctx.factory().atom("test_value"));
+        StaticArenaContext::update_env(modified_env);
+
+        // Get should now return env with the binding
+        let env3 = StaticArenaContext::get_or_create_env();
+        assert!(env3.has_binding("test_var"));
+
+        // Reset should clear everything
+        StaticArenaContext::reset_env();
+        let env4 = StaticArenaContext::get_or_create_env();
+        assert!(!env4.has_binding("test_var"));
+    }
+
+    #[test]
+    fn test_static_arena_env_persists_rules() {
+        use crate::backend::models::GenericRule;
+
+        // Reset to ensure clean state
+        StaticArenaContext::reset_env();
+
+        let ctx = StaticArenaContext::get();
+        let factory = ctx.factory();
+
+        // Create env and add a rule
+        let mut env = StaticArenaContext::get_or_create_env();
+
+        let lhs = factory.sexpr(vec![
+            factory.atom("test-fn"),
+            factory.atom("$x"),
+        ]);
+        let rhs = factory.atom("result");
+        let rule = GenericRule::new(lhs, rhs);
+
+        env.add_generic_rule(rule);
+        StaticArenaContext::update_env(env);
+
+        // Get env again and verify rule persists
+        let env2 = StaticArenaContext::get_or_create_env();
+        let rules: Vec<_> = env2.get_matching_rules("test-fn", 1).collect();
+        assert_eq!(rules.len(), 1);
+
+        // Clean up
+        StaticArenaContext::reset_env();
+    }
+
+    #[test]
+    fn test_static_arena_env_persists_space_facts() {
+
+        // Reset to ensure clean state
+        StaticArenaContext::reset_env();
+
+        let ctx = StaticArenaContext::get();
+        let factory = ctx.factory();
+
+        // Create env and add a fact to space
+        let mut env = StaticArenaContext::get_or_create_env();
+
+        let fact = factory.sexpr(vec![
+            factory.atom("fact"),
+            factory.atom("x"),
+            factory.long(42),
+        ]);
+
+        env.add_to_space(&fact);
+        StaticArenaContext::update_env(env);
+
+        // Get env again and verify fact persists
+        let env2 = StaticArenaContext::get_or_create_env();
+        let pattern = factory.sexpr(vec![
+            factory.atom("fact"),
+            factory.atom("$var"),
+            factory.atom("$val"),
+        ]);
+        let template = pattern.clone();
+        let matches = env2.match_space(&pattern, &template);
+        assert!(!matches.is_empty());
+
+        // Clean up
+        StaticArenaContext::reset_env();
     }
 }

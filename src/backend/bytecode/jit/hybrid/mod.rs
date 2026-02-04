@@ -37,6 +37,7 @@
 //! let results = executor.run(&chunk)?;
 //! ```
 
+mod arena;
 mod backtracking;
 mod config;
 mod constants;

@@ -1044,6 +1044,162 @@ where
         }
     }
 
+    // ========================================================================
+    // Interior Mutability Space Operations (for CoW-safe shared access)
+    // ========================================================================
+    //
+    // These methods use interior mutability via RwLock/DashMap to mutate shared
+    // state WITHOUT triggering the CoW deep copy in make_owned(). This is essential
+    // for arena mode correctness where environments are cloned but should share
+    // the underlying space state.
+
+    /// Ensure this environment owns its data (CoW helper).
+    ///
+    /// Call this once before a batch of mutations when using the `_shared` methods.
+    /// This triggers a deep copy if needed, then subsequent `_shared` operations
+    /// can mutate the owned data efficiently.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// env.ensure_owned();
+    /// for fact in facts {
+    ///     env.add_to_space_shared(&fact); // No CoW copy per-fact
+    /// }
+    /// ```
+    #[inline]
+    pub fn ensure_owned(&mut self) {
+        self.make_owned();
+    }
+
+    /// Add a fact to MORK Space using interior mutability (no CoW copy).
+    ///
+    /// This method uses `&self` (not `&mut self`) and operates directly on the
+    /// shared state via interior mutability. This is critical for arena mode
+    /// where environments are cloned but should share space state updates.
+    ///
+    /// # Thread Safety
+    ///
+    /// Uses `RwLock::write()` for PathMap access and atomic operations for counters.
+    /// Safe to call from multiple clones of the same environment.
+    ///
+    /// # When to Use
+    ///
+    /// - When you have multiple environment clones that should share space state
+    /// - In loops where calling `add_to_space()` would trigger repeated CoW copies
+    /// - In arena mode evaluation where state must persist across cloned environments
+    pub fn add_to_space_shared(&self, value: &V) {
+        use crate::backend::mork_convert::{value_to_mork_bytes_generic, ConversionContext};
+        use crate::backend::varint_encoding::value_to_varint_key_generic;
+        use super::multiplicity::add_atom;
+
+        let space = self.create_space();
+        let mut ctx = ConversionContext::new();
+
+        // Direct V → MORK bytes conversion (no to_heap())
+        match value_to_mork_bytes_generic(value, &space, &mut ctx) {
+            Ok(mork_bytes) => {
+                let mut btm = self.shared.btm.write();
+                add_atom(&mut btm, &mork_bytes);
+                drop(btm);
+
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+
+                // Use trait method for head symbol extraction
+                if let Some(head) = value.get_head_symbol() {
+                    let arity = value.get_arity() as u8;
+                    self.shared.head_arity_bloom.write().insert(head.as_bytes(), arity);
+                }
+            }
+            Err(_) => {
+                // Fallback for large expressions (arity >= 64)
+                // Store V directly (zero-conversion)
+                let key = value_to_varint_key_generic(value);
+
+                let mut guard = self.shared.large_expr_pathmap.write();
+                let fallback = guard.get_or_insert_with(PathMap::new);
+                fallback.insert(&key, value.clone());
+
+                {
+                    let mut btm = self.shared.btm.write();
+                    add_atom(&mut btm, &key);
+                }
+
+                self.shared.total_atoms.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        // Mark as modified for union() fast-path detection
+        self.modified.store(true, Ordering::Release);
+    }
+
+    /// Remove a fact from MORK Space using interior mutability (no CoW copy).
+    ///
+    /// This method uses `&self` (not `&mut self`) and operates directly on the
+    /// shared state via interior mutability.
+    ///
+    /// # Thread Safety
+    ///
+    /// Uses `RwLock::write()` for PathMap access and atomic operations for counters.
+    /// Safe to call from multiple clones of the same environment.
+    pub fn remove_from_space_shared(&self, value: &V) {
+        use crate::backend::mork_convert::{value_to_mork_bytes_generic, ConversionContext};
+        use crate::backend::varint_encoding::value_to_varint_key_generic;
+        use super::multiplicity::{get_multiplicity, remove_atom};
+
+        let space = self.create_space();
+        let mut ctx = ConversionContext::new();
+
+        // Direct V → MORK bytes conversion (no to_heap())
+        match value_to_mork_bytes_generic(value, &space, &mut ctx) {
+            Ok(mork_bytes) => {
+                let mut btm = self.shared.btm.write();
+
+                let current_count = get_multiplicity(&btm, &mork_bytes);
+                if current_count == 0 {
+                    if !btm.contains(&mork_bytes) {
+                        return;
+                    }
+                    btm.remove(&mork_bytes);
+                    drop(btm);
+                    self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    self.shared.head_arity_bloom.write().note_deletion();
+                    self.modified.store(true, Ordering::Release);
+                    return;
+                }
+
+                let new_count = remove_atom(&mut btm, &mork_bytes);
+
+                if new_count == 0 {
+                    self.shared.head_arity_bloom.write().note_deletion();
+                }
+
+                drop(btm);
+                self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+            }
+            Err(_) => {
+                // Fallback for large expressions (arity >= 64)
+                let key = value_to_varint_key_generic(value);
+
+                {
+                    let mut btm = self.shared.btm.write();
+                    remove_atom(&mut btm, &key);
+                }
+
+                let mut guard = self.shared.large_expr_pathmap.write();
+                if let Some(ref mut fallback) = *guard {
+                    if fallback.contains(&key) {
+                        fallback.remove(&key);
+                        self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+
+        // Mark as modified for union() fast-path detection
+        self.modified.store(true, Ordering::Release);
+    }
+
     /// Match pattern against all atoms in the Space.
     ///
     /// Returns `MultiplicityMatch` structs containing the instantiated template and its

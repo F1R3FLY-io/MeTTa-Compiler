@@ -9,6 +9,269 @@ use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
 use super::BlockInfo;
 
+/// Check if raw bytecode can be JIT compiled (bytecode-only check).
+///
+/// This is a low-level function that operates directly on bytecode bytes.
+/// It's useful for generic bytecode chunks (like `GenericBytecodeChunk<ArenaValue>`)
+/// where the bytecode structure is identical regardless of the value type.
+///
+/// Note: This does NOT check for nondeterminism flags - caller must ensure
+/// the chunk doesn't have nondeterministic operations or handle them appropriately.
+pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
+    let mut offset = 0;
+
+    while offset < code.len() {
+        let Some(op) = Opcode::from_byte(code[offset]) else {
+            return false;
+        };
+
+        // Check if opcode is compilable (same logic as can_compile_stage1)
+        match op {
+            // Stack operations (all Stage 1)
+            Opcode::Nop
+            | Opcode::Pop
+            | Opcode::Dup
+            | Opcode::Swap
+            | Opcode::Rot3
+            | Opcode::Over
+            | Opcode::DupN
+            | Opcode::PopN => {}
+
+            // Value creation (Stage 1: simple constants, Stage 2+13: via runtime calls)
+            Opcode::PushNil
+            | Opcode::PushTrue
+            | Opcode::PushFalse
+            | Opcode::PushUnit
+            | Opcode::PushLongSmall
+            | Opcode::PushLong
+            | Opcode::PushConstant
+            | Opcode::PushEmpty
+            | Opcode::PushAtom
+            | Opcode::PushString
+            | Opcode::PushVariable => {}
+
+            // S-expression operations
+            Opcode::GetHead
+            | Opcode::GetTail
+            | Opcode::GetArity
+            | Opcode::GetElement => {}
+
+            // Arithmetic
+            Opcode::Add
+            | Opcode::Sub
+            | Opcode::Mul
+            | Opcode::Div
+            | Opcode::Mod
+            | Opcode::Neg
+            | Opcode::Abs
+            | Opcode::FloorDiv
+            | Opcode::Pow => {}
+
+            // Extended math operations
+            Opcode::Sqrt
+            | Opcode::Log
+            | Opcode::Trunc
+            | Opcode::Ceil
+            | Opcode::FloorMath
+            | Opcode::Round
+            | Opcode::Sin
+            | Opcode::Cos
+            | Opcode::Tan
+            | Opcode::Asin
+            | Opcode::Acos
+            | Opcode::Atan
+            | Opcode::IsNan
+            | Opcode::IsInf => {}
+
+            // Expression manipulation
+            Opcode::IndexAtom
+            | Opcode::MinAtom
+            | Opcode::MaxAtom => {}
+
+            // Boolean
+            Opcode::And | Opcode::Or | Opcode::Not | Opcode::Xor => {}
+
+            // Comparisons
+            Opcode::Lt
+            | Opcode::Le
+            | Opcode::Gt
+            | Opcode::Ge
+            | Opcode::Eq
+            | Opcode::Ne
+            | Opcode::StructEq => {}
+
+            // Control
+            Opcode::Return
+            | Opcode::Jump
+            | Opcode::JumpIfFalse
+            | Opcode::JumpIfTrue
+            | Opcode::JumpShort
+            | Opcode::JumpIfFalseShort
+            | Opcode::JumpIfTrueShort => {}
+
+            // Local variables
+            Opcode::LoadLocal
+            | Opcode::StoreLocal
+            | Opcode::LoadLocalWide
+            | Opcode::StoreLocalWide => {}
+
+            // Type-based jumps
+            Opcode::JumpIfNil
+            | Opcode::JumpIfError => {}
+
+            // Type predicates
+            Opcode::IsVariable
+            | Opcode::IsSExpr
+            | Opcode::IsSymbol => {}
+
+            // Type operations
+            Opcode::GetType
+            | Opcode::CheckType
+            | Opcode::IsType
+            | Opcode::AssertType => {}
+
+            // Value creation
+            Opcode::MakeSExpr
+            | Opcode::MakeSExprLarge
+            | Opcode::ConsAtom
+            | Opcode::PushUri
+            | Opcode::MakeList
+            | Opcode::MakeQuote => {}
+
+            // Call operations
+            Opcode::Call
+            | Opcode::TailCall
+            | Opcode::CallN
+            | Opcode::TailCallN => {}
+
+            // Binding operations
+            Opcode::LoadBinding
+            | Opcode::StoreBinding
+            | Opcode::HasBinding
+            | Opcode::ClearBindings
+            | Opcode::PushBindingFrame
+            | Opcode::PopBindingFrame => {}
+
+            // Pattern matching
+            Opcode::Match
+            | Opcode::MatchBind
+            | Opcode::MatchHead
+            | Opcode::MatchArity
+            | Opcode::MatchGuard
+            | Opcode::Unify
+            | Opcode::UnifyBind => {}
+
+            // Space operations
+            Opcode::SpaceAdd
+            | Opcode::SpaceRemove
+            | Opcode::SpaceGetAtoms
+            | Opcode::SpaceMatch => {}
+
+            // State operations
+            Opcode::NewState
+            | Opcode::GetState
+            | Opcode::ChangeState => {}
+
+            // Rule dispatch
+            Opcode::DispatchRules
+            | Opcode::TryRule
+            | Opcode::NextRule
+            | Opcode::CommitRule
+            | Opcode::FailRule
+            | Opcode::LookupRules
+            | Opcode::ApplySubst
+            | Opcode::DefineRule => {}
+
+            // Special forms
+            Opcode::EvalIf
+            | Opcode::EvalLet
+            | Opcode::EvalLetStar
+            | Opcode::EvalMatch
+            | Opcode::EvalCase
+            | Opcode::EvalChain
+            | Opcode::EvalQuote
+            | Opcode::EvalUnquote
+            | Opcode::EvalEval
+            | Opcode::EvalBind
+            | Opcode::EvalNew
+            | Opcode::EvalCollapse
+            | Opcode::EvalSuperpose
+            | Opcode::EvalMemo
+            | Opcode::EvalMemoFirst
+            | Opcode::EvalPragma
+            | Opcode::EvalFunction
+            | Opcode::EvalLambda
+            | Opcode::EvalApply => {}
+
+            // Advanced nondeterminism
+            Opcode::Cut
+            | Opcode::Guard
+            | Opcode::Amb
+            | Opcode::Commit
+            | Opcode::Backtrack => {}
+
+            // Advanced calls
+            Opcode::CallNative
+            | Opcode::CallExternal
+            | Opcode::CallCached => {}
+
+            // MORK bridge
+            Opcode::MorkLookup
+            | Opcode::MorkMatch
+            | Opcode::MorkInsert
+            | Opcode::MorkDelete => {}
+
+            // Debug/Meta
+            Opcode::Trace
+            | Opcode::Breakpoint => {}
+
+            // Core nondeterminism markers
+            Opcode::Fail
+            | Opcode::BeginNondet
+            | Opcode::EndNondet => {}
+
+            // Multi-value return
+            Opcode::ReturnMulti
+            | Opcode::CollectN => {}
+
+            // Multi-way branch
+            Opcode::JumpTable => {}
+
+            // Global/Space access
+            Opcode::LoadGlobal
+            | Opcode::StoreGlobal
+            | Opcode::LoadSpace => {}
+
+            // Closure support
+            Opcode::LoadUpvalue => {}
+
+            // Atom operations
+            Opcode::DeconAtom
+            | Opcode::Repr => {}
+
+            // Higher-order operations
+            Opcode::MapAtom
+            | Opcode::FilterAtom
+            | Opcode::FoldlAtom => {}
+
+            // Meta-type
+            Opcode::GetMetaType => {}
+
+            // MORK and debug
+            Opcode::BloomCheck
+            | Opcode::Halt => {}
+
+            // Anything else is not compilable
+            _ => return false,
+        }
+
+        // Advance by opcode size (1 byte) + operand size
+        offset += 1 + op.immediate_size();
+    }
+
+    true
+}
+
 /// Check if a bytecode chunk can be JIT compiled (Stage 1-5 + Phase A-I)
 ///
 /// Supported features:

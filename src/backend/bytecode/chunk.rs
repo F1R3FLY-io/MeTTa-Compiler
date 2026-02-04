@@ -112,6 +112,75 @@ impl BytecodeChunk {
         ChunkBuilder::new(name)
     }
 
+    /// Create a BytecodeChunk from raw bytecode and constant count (no actual constants).
+    ///
+    /// This is used for JIT compilation of generic bytecode chunks where the bytecode
+    /// is identical but the constants are typed differently (e.g., ArenaValue vs MettaValue).
+    /// The JIT compiler only needs the bytecode structure and constant count for code generation;
+    /// actual constants are accessed via JitContext at runtime.
+    ///
+    /// # Arguments
+    /// * `name` - Debug name for this chunk
+    /// * `code` - Raw bytecode instructions
+    /// * `constant_count` - Number of constants (for validation, not stored)
+    ///
+    /// # Returns
+    /// A BytecodeChunk with the given bytecode and an empty constant pool.
+    pub fn from_code_and_constant_count(
+        name: impl Into<String>,
+        code: Vec<u8>,
+        _constant_count: usize,
+    ) -> Self {
+        // Detect nondeterminism in the bytecode
+        let has_nondeterminism = Self::detect_nondeterminism(&code);
+
+        Self {
+            code,
+            constants: Vec::new(), // JIT uses JitContext for constants
+            sub_chunks: Vec::new(),
+            line_info: Vec::new(),
+            jump_tables: Vec::new(),
+            name: name.into(),
+            local_count: 0,
+            upvalue_count: 0,
+            arity: 0,
+            is_vararg: false,
+            has_nondeterminism,
+            jit_profile: JitProfile::new(),
+        }
+    }
+
+    /// Detect nondeterminism opcodes in raw bytecode.
+    fn detect_nondeterminism(code: &[u8]) -> bool {
+        let mut offset = 0;
+        while offset < code.len() {
+            if let Some(opcode) = Opcode::from_byte(code[offset]) {
+                if matches!(
+                    opcode,
+                    Opcode::Fork
+                        | Opcode::Yield
+                        | Opcode::Collect
+                        | Opcode::CollectN
+                        | Opcode::BeginNondet
+                        | Opcode::EndNondet
+                        | Opcode::Cut
+                        | Opcode::Fail
+                        | Opcode::Amb
+                        | Opcode::Guard
+                        | Opcode::Backtrack
+                        | Opcode::Commit
+                ) {
+                    return true;
+                }
+                // Skip to next instruction
+                offset += 1 + opcode.immediate_size();
+            } else {
+                offset += 1;
+            }
+        }
+        false
+    }
+
     /// Get the bytecode instructions
     #[inline]
     pub fn code(&self) -> &[u8] {
@@ -745,6 +814,495 @@ impl CompiledPattern {
         }
     }
 }
+
+// ============================================================================
+// Generic Bytecode Chunk - Zero-Conversion Support
+// ============================================================================
+
+use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+
+/// Generic bytecode chunk that stores constants of any value type.
+///
+/// This is the generic version of `BytecodeChunk` that works with any value type
+/// implementing `MettaValueTrait`. It enables zero-conversion evaluation where
+/// arena-allocated values are never converted to heap values.
+///
+/// # Type Parameters
+///
+/// - `V`: The value type for constants (e.g., `MettaValue` or `ArenaValue<'static>`)
+///
+/// # Thread Safety
+///
+/// Generic chunks are immutable after construction and can be shared across threads
+/// via `Arc<GenericBytecodeChunk<V>>`.
+#[derive(Debug, Clone)]
+pub struct GenericBytecodeChunk<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + 'static,
+{
+    /// The bytecode instructions
+    code: Vec<u8>,
+
+    /// Constant pool for values that can't be encoded inline
+    constants: Vec<V>,
+
+    /// Sub-chunk pool for nested chunks
+    sub_chunks: Vec<Arc<GenericBytecodeChunk<V>>>,
+
+    /// Source line information: (byte_offset, line_number)
+    line_info: Vec<(usize, u32)>,
+
+    /// Jump tables for switch statements
+    jump_tables: Vec<JumpTable>,
+
+    /// Name of this chunk (for debugging)
+    name: String,
+
+    /// Number of local slots needed
+    local_count: u16,
+
+    /// Number of upvalues captured
+    upvalue_count: u16,
+
+    /// Arity (number of parameters) if this is a function
+    arity: u8,
+
+    /// Whether this chunk uses varargs
+    is_vararg: bool,
+
+    /// Whether this chunk contains nondeterminism opcodes
+    has_nondeterminism: bool,
+
+    /// JIT profile for hotness tracking (not used for arena values)
+    jit_profile: JitProfile,
+}
+
+impl<V> GenericBytecodeChunk<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + 'static,
+{
+    /// Create a new empty chunk
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            code: Vec::new(),
+            constants: Vec::new(),
+            sub_chunks: Vec::new(),
+            line_info: Vec::new(),
+            jump_tables: Vec::new(),
+            name: name.into(),
+            local_count: 0,
+            upvalue_count: 0,
+            arity: 0,
+            is_vararg: false,
+            has_nondeterminism: false,
+            jit_profile: JitProfile::new(),
+        }
+    }
+
+    /// Get the bytecode instructions
+    #[inline]
+    pub fn code(&self) -> &[u8] {
+        &self.code
+    }
+
+    /// Get the length of the bytecode
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.code.len()
+    }
+
+    /// Check if the chunk is empty
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.code.is_empty()
+    }
+
+    /// Get a byte at the given offset
+    #[inline]
+    pub fn read_byte(&self, offset: usize) -> Option<u8> {
+        self.code.get(offset).copied()
+    }
+
+    /// Get an opcode at the given offset
+    #[inline]
+    pub fn read_opcode(&self, offset: usize) -> Option<Opcode> {
+        self.code.get(offset).and_then(|&b| Opcode::from_byte(b))
+    }
+
+    /// Read a u16 from the bytecode (big-endian)
+    #[inline]
+    pub fn read_u16(&self, offset: usize) -> Option<u16> {
+        if offset + 1 < self.code.len() {
+            Some(u16::from_be_bytes([
+                self.code[offset],
+                self.code[offset + 1],
+            ]))
+        } else {
+            None
+        }
+    }
+
+    /// Read a signed i16 from the bytecode (big-endian)
+    #[inline]
+    pub fn read_i16(&self, offset: usize) -> Option<i16> {
+        self.read_u16(offset).map(|u| u as i16)
+    }
+
+    /// Read a signed i8 from the bytecode
+    #[inline]
+    pub fn read_i8(&self, offset: usize) -> Option<i8> {
+        self.code.get(offset).map(|&b| b as i8)
+    }
+
+    /// Get a constant from the pool
+    #[inline]
+    pub fn get_constant(&self, index: u16) -> Option<&V> {
+        self.constants.get(index as usize)
+    }
+
+    /// Get all constants
+    #[inline]
+    pub fn constants(&self) -> &[V] {
+        &self.constants
+    }
+
+    /// Get the number of constants
+    #[inline]
+    pub fn constant_count(&self) -> usize {
+        self.constants.len()
+    }
+
+    /// Get a sub-chunk from the pool
+    #[inline]
+    pub fn get_chunk_constant(&self, index: u16) -> Option<Arc<GenericBytecodeChunk<V>>> {
+        self.sub_chunks.get(index as usize).cloned()
+    }
+
+    /// Get the number of sub-chunks
+    #[inline]
+    pub fn sub_chunk_count(&self) -> usize {
+        self.sub_chunks.len()
+    }
+
+    /// Get the source line for a bytecode offset
+    pub fn get_line(&self, offset: usize) -> Option<u32> {
+        match self.line_info.binary_search_by_key(&offset, |&(o, _)| o) {
+            Ok(idx) => Some(self.line_info[idx].1),
+            Err(idx) if idx > 0 => Some(self.line_info[idx - 1].1),
+            _ => None,
+        }
+    }
+
+    /// Get the chunk name
+    #[inline]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the number of local slots
+    #[inline]
+    pub fn local_count(&self) -> u16 {
+        self.local_count
+    }
+
+    /// Get the number of upvalues
+    #[inline]
+    pub fn upvalue_count(&self) -> u16 {
+        self.upvalue_count
+    }
+
+    /// Get the arity
+    #[inline]
+    pub fn arity(&self) -> u8 {
+        self.arity
+    }
+
+    /// Check if vararg
+    #[inline]
+    pub fn is_vararg(&self) -> bool {
+        self.is_vararg
+    }
+
+    /// Check if this chunk contains nondeterminism opcodes
+    #[inline]
+    pub fn has_nondeterminism(&self) -> bool {
+        self.has_nondeterminism
+    }
+
+    /// Get a jump table by index
+    #[inline]
+    pub fn get_jump_table(&self, index: usize) -> Option<&JumpTable> {
+        self.jump_tables.get(index)
+    }
+
+    /// Get the JIT profile for this chunk
+    pub fn jit_profile(&self) -> &JitProfile {
+        &self.jit_profile
+    }
+}
+
+/// Generic builder for constructing BytecodeChunks.
+///
+/// # Type Parameters
+///
+/// - `V`: The value type for constants
+/// - `F`: The factory type for constructing values
+#[derive(Debug)]
+pub struct GenericChunkBuilder<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + PartialEq + 'static,
+    F: MettaValueFactory<V>,
+{
+    code: Vec<u8>,
+    constants: Vec<V>,
+    sub_chunks: Vec<Arc<GenericBytecodeChunk<V>>>,
+    line_info: Vec<(usize, u32)>,
+    jump_tables: Vec<JumpTable>,
+    name: String,
+    local_count: u16,
+    upvalue_count: u16,
+    arity: u8,
+    is_vararg: bool,
+    current_line: u32,
+    optimize: bool,
+    has_nondeterminism: bool,
+    factory: F,
+}
+
+impl<V, F> GenericChunkBuilder<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + PartialEq + 'static,
+    F: MettaValueFactory<V>,
+{
+    /// Create a new chunk builder
+    pub fn new(name: impl Into<String>, factory: F) -> Self {
+        Self {
+            code: Vec::with_capacity(256),
+            constants: Vec::new(),
+            sub_chunks: Vec::new(),
+            line_info: Vec::new(),
+            jump_tables: Vec::new(),
+            name: name.into(),
+            local_count: 0,
+            upvalue_count: 0,
+            arity: 0,
+            is_vararg: false,
+            current_line: 1,
+            optimize: false,
+            has_nondeterminism: false,
+            factory,
+        }
+    }
+
+    /// Get the factory
+    #[inline]
+    pub fn factory(&self) -> &F {
+        &self.factory
+    }
+
+    /// Enable or disable peephole optimization
+    pub fn set_optimize(&mut self, enable: bool) {
+        self.optimize = enable;
+    }
+
+    /// Set the current source line
+    pub fn set_line(&mut self, line: u32) {
+        self.current_line = line;
+    }
+
+    /// Set the number of local slots
+    pub fn set_local_count(&mut self, count: u16) {
+        self.local_count = count;
+    }
+
+    /// Set the number of upvalues
+    pub fn set_upvalue_count(&mut self, count: u16) {
+        self.upvalue_count = count;
+    }
+
+    /// Set the arity
+    pub fn set_arity(&mut self, arity: u8) {
+        self.arity = arity;
+    }
+
+    /// Set vararg flag
+    pub fn set_vararg(&mut self, is_vararg: bool) {
+        self.is_vararg = is_vararg;
+    }
+
+    /// Get the name of this chunk
+    #[inline]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the current bytecode offset
+    #[inline]
+    pub fn current_offset(&self) -> usize {
+        self.code.len()
+    }
+
+    /// Emit a single opcode
+    pub fn emit(&mut self, opcode: Opcode) {
+        self.check_nondeterminism(opcode);
+        self.emit_line_info();
+        self.code.push(opcode.to_byte());
+    }
+
+    /// Emit an opcode with a 1-byte operand
+    pub fn emit_byte(&mut self, opcode: Opcode, operand: u8) {
+        self.check_nondeterminism(opcode);
+        self.emit_line_info();
+        self.code.push(opcode.to_byte());
+        self.code.push(operand);
+    }
+
+    /// Emit an opcode with a 2-byte operand (big-endian)
+    pub fn emit_u16(&mut self, opcode: Opcode, operand: u16) {
+        self.check_nondeterminism(opcode);
+        self.emit_line_info();
+        self.code.push(opcode.to_byte());
+        self.code.extend_from_slice(&operand.to_be_bytes());
+    }
+
+    /// Emit raw bytes
+    pub fn emit_raw(&mut self, bytes: &[u8]) {
+        self.code.extend_from_slice(bytes);
+    }
+
+    /// Add a constant to the pool, returns its index
+    pub fn add_constant(&mut self, value: V) -> u16 {
+        // Check if constant already exists (requires PartialEq)
+        for (i, existing) in self.constants.iter().enumerate() {
+            if existing == &value {
+                return i as u16;
+            }
+        }
+
+        let index = self.constants.len();
+        if index > u16::MAX as usize {
+            panic!("Too many constants in chunk (max {})", u16::MAX);
+        }
+        self.constants.push(value);
+        index as u16
+    }
+
+    /// Emit a constant load
+    pub fn emit_constant(&mut self, value: V) {
+        let index = self.add_constant(value);
+        self.emit_u16(Opcode::PushConstant, index);
+    }
+
+    /// Create a forward jump, returns a label to patch later
+    pub fn emit_jump(&mut self, opcode: Opcode) -> JumpLabel {
+        debug_assert!(opcode.is_jump());
+        self.emit_line_info();
+        let offset = self.code.len();
+        self.code.push(opcode.to_byte());
+        self.code.extend_from_slice(&[0xFF, 0xFF]);
+        JumpLabel { offset: offset + 1 }
+    }
+
+    /// Patch a jump label to jump to the current position
+    pub fn patch_jump(&mut self, label: JumpLabel) {
+        let target = self.code.len();
+        let jump_from = label.offset + 2;
+        let offset = (target as isize - jump_from as isize) as i16;
+        let bytes = offset.to_be_bytes();
+        self.code[label.offset] = bytes[0];
+        self.code[label.offset + 1] = bytes[1];
+    }
+
+    /// Add a sub-chunk to the pool, returns its index
+    pub fn add_chunk_constant(&mut self, chunk: GenericBytecodeChunk<V>) -> u16 {
+        let index = self.sub_chunks.len();
+        if index > u16::MAX as usize {
+            panic!("Too many sub-chunks in chunk (max {})", u16::MAX);
+        }
+        self.sub_chunks.push(Arc::new(chunk));
+        index as u16
+    }
+
+    /// Record line info for current position
+    fn emit_line_info(&mut self) {
+        let offset = self.code.len();
+        if self.line_info.is_empty()
+            || self.line_info.last().map(|&(_, l)| l) != Some(self.current_line)
+        {
+            self.line_info.push((offset, self.current_line));
+        }
+    }
+
+    /// Check if opcode is nondeterministic and set flag if so
+    #[inline]
+    fn check_nondeterminism(&mut self, opcode: Opcode) {
+        if self.has_nondeterminism {
+            return;
+        }
+        if matches!(
+            opcode,
+            Opcode::Fork
+                | Opcode::Yield
+                | Opcode::Collect
+                | Opcode::CollectN
+                | Opcode::BeginNondet
+                | Opcode::EndNondet
+                | Opcode::Cut
+                | Opcode::Fail
+                | Opcode::Amb
+                | Opcode::Guard
+                | Opcode::Backtrack
+                | Opcode::Commit
+        ) {
+            self.has_nondeterminism = true;
+        }
+    }
+
+    /// Build the final chunk
+    pub fn build(self) -> GenericBytecodeChunk<V> {
+        // Run peephole optimization if enabled
+        let code = if self.optimize && !self.code.is_empty() {
+            let mut optimizer = PeepholeOptimizer::new();
+            optimizer.optimize(self.code)
+        } else {
+            self.code
+        };
+
+        GenericBytecodeChunk {
+            code,
+            constants: self.constants,
+            sub_chunks: self.sub_chunks,
+            line_info: self.line_info,
+            jump_tables: self.jump_tables,
+            name: self.name,
+            local_count: self.local_count,
+            upvalue_count: self.upvalue_count,
+            arity: self.arity,
+            is_vararg: self.is_vararg,
+            has_nondeterminism: self.has_nondeterminism,
+            jit_profile: JitProfile::new(),
+        }
+    }
+
+    /// Build and wrap in Arc
+    pub fn build_arc(self) -> Arc<GenericBytecodeChunk<V>> {
+        Arc::new(self.build())
+    }
+}
+
+// ============================================================================
+// Type Aliases for Backwards Compatibility
+// ============================================================================
+
+// Note: The concrete types `BytecodeChunk` and `ChunkBuilder` are defined above
+// as non-generic types for backwards compatibility. When fully migrated, they
+// can become:
+//
+// pub type BytecodeChunk = GenericBytecodeChunk<MettaValue>;
+// pub type ChunkBuilder = GenericChunkBuilder<MettaValue, HeapMettaValueFactory>;
+
+/// Type alias for heap-based bytecode chunk (explicit generic usage)
+pub type HeapBytecodeChunk = GenericBytecodeChunk<MettaValue>;
 
 #[cfg(test)]
 mod tests {

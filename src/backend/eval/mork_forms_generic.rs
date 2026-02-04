@@ -289,10 +289,16 @@ where
 }
 
 /// Evaluate consequent conjunction with binding threading (generic version).
+///
+/// ## CoW-Safe Implementation
+///
+/// Uses `add_to_space_shared()` for interior mutability on the shared state,
+/// avoiding CoW deep copies that would cause state loss when the environment
+/// is cloned in loops.
 fn eval_consequent_conjunction_generic<V, F>(
     goals: Vec<V>,
     initial_bindings: GenericBindings<V>,
-    mut env: GenericEnvironment<V, F>,
+    env: GenericEnvironment<V, F>,
     factory: &F,
 ) -> GenericMorkResult<V, F>
 where
@@ -327,23 +333,27 @@ where
         }
     }
 
-    // Pass 2: Add all goals to space
+    // Pass 2: Add all goals to space using interior mutability
+    // Note: We use add_to_space_shared() to mutate the shared Arc state directly,
+    // avoiding CoW copies that would cause state loss in cloned environments.
     let mut all_results = Vec::new();
 
     for goal in goals.iter() {
         let fully_instantiated = apply_bindings_generic(goal, &current_bindings, factory);
 
         if is_exec_form_generic(&fully_instantiated) {
-            env.add_to_space(&fully_instantiated);
+            // Use interior mutability - no CoW copy
+            env.add_to_space_shared(&fully_instantiated);
             all_results.push(factory.atom("ok"));
         } else if is_operation_form_generic(&fully_instantiated) {
             if let Some(items) = fully_instantiated.as_sexpr() {
-                let (op_results, op_env) = eval_operation_generic(items, env.clone(), factory);
+                // eval_operation_generic also uses shared methods now
+                let (op_results, _) = eval_operation_generic_shared(items, &env, factory);
                 all_results.extend(op_results);
-                env = op_env;
             }
         } else {
-            env.add_to_space(&fully_instantiated);
+            // Use interior mutability - no CoW copy
+            env.add_to_space_shared(&fully_instantiated);
             all_results.push(fully_instantiated.clone());
         }
     }
@@ -383,6 +393,45 @@ where
     }
 
     (vec![factory.atom("ok")], env)
+}
+
+/// Evaluate operation using interior mutability (CoW-safe version).
+///
+/// Uses `add_to_space_shared()` and `remove_from_space_shared()` to avoid
+/// triggering CoW deep copies when the environment is cloned.
+fn eval_operation_generic_shared<V, F>(
+    items: &[V],
+    env: &GenericEnvironment<V, F>,
+    factory: &F,
+) -> (Vec<V>, ())
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    let operations = &items[1..]; // Skip "O" operator
+
+    for op in operations {
+        if let Some(op_items) = op.as_sexpr() {
+            if op_items.len() == 2 {
+                if let Some(op_type) = op_items[0].as_atom() {
+                    let fact = &op_items[1];
+                    match op_type {
+                        "+" => {
+                            // Use interior mutability - no CoW copy
+                            env.add_to_space_shared(fact);
+                        }
+                        "-" => {
+                            // Use interior mutability - no CoW copy
+                            env.remove_from_space_shared(fact);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    (vec![factory.atom("ok")], ())
 }
 
 /// Generic eval_coalg: (coalg <pattern> <templates>)

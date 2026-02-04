@@ -132,6 +132,7 @@ pub struct JitCompiler {
     mork_match_func_id: FuncId,
     mork_insert_func_id: FuncId,
     mork_delete_func_id: FuncId,
+
 }
 
 /// Block info for JIT compilation - tracks jump targets and predecessor counts
@@ -468,6 +469,19 @@ impl JitCompiler {
         analysis::can_compile_stage1(chunk)
     }
 
+    /// Check if raw bytecode can be JIT compiled (bytecode-only check).
+    ///
+    /// This is useful for generic bytecode chunks where the bytecode structure
+    /// is identical regardless of the value type (e.g., `GenericBytecodeChunk<ArenaValue>`).
+    ///
+    /// Note: This does NOT check for nondeterminism flags. For chunks with
+    /// nondeterministic operations (Fork/Yield/Collect), use `can_compile_stage1`
+    /// which performs that check.
+    #[inline]
+    pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
+        analysis::can_compile_stage1_bytecode(code)
+    }
+
     /// Pre-scan bytecode to find all jump targets and their predecessor counts
     ///
     /// Delegates to `analysis::find_block_info` for the actual implementation.
@@ -779,6 +793,8 @@ impl JitCompiler {
             | Opcode::ConsAtom
             | Opcode::MakeList
             | Opcode::MakeQuote => {
+                // Value creation operations use runtime mode dispatch based on
+                // JitContext.value_mode - the same FuncIds work for both heap and arena modes
                 let mut ctx = handlers::SExprHandlerContext {
                     module: &mut self.module,
                     get_head_func_id: self.sexpr.get_head_func_id,

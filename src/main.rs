@@ -310,8 +310,18 @@ fn eval_metta_heap(input: &str, options: &Options) -> Result<String, String> {
 
 /// Arena-based evaluation (zero-conversion mode)
 ///
-/// Uses ArenaValue<'static> throughout: compile_arena → ArenaValue → eval_trampoline_arena → ArenaValue
+/// Uses ArenaValue<'static> throughout: compile_arena → ArenaValue → eval_arena → ArenaValue
 /// No conversions between value types occur in this mode.
+///
+/// With bytecode/JIT tiering enabled:
+/// - First execution triggers background bytecode compilation
+/// - Subsequent executions use bytecode VM if ready
+/// - Falls back to tree-walker interpreter for cold code
+///
+/// ## Environment Persistence
+///
+/// Uses `StaticArenaContext::get_or_create_env()` to maintain state (rules, facts,
+/// bindings) across sequential evaluations, matching heap mode behavior.
 fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
 
     // Common setup: file path for error messages
@@ -321,8 +331,10 @@ fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
         .filter(|p| *p != "-")
         .map(|s| s.as_str());
 
-    // Create arena environment
-    let mut env = StaticArenaContext::new_env();
+    // Get or create persistent arena environment.
+    // This maintains state across sequential evaluations, matching heap mode behavior.
+    // Uses thread-local storage to persist rules, facts, and bindings.
+    let mut env = StaticArenaContext::get_or_create_env();
 
     // Set the current module path for relative includes
     if let Some(ref input_path) = options.input {
@@ -348,13 +360,14 @@ fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
     // Compile directly to ArenaValue<'static>
     let exprs = compile_arena_with_path(input, file_path).map_err(|e| e.to_string())?;
 
-    // Evaluate each expression
+    // Evaluate each expression using bytecode/JIT tiering
     let mut output = String::new();
     for expr in exprs {
         // Only output results for S-expressions, not atoms or ground types
         let should_output = expr.is_sexpr();
 
-        let (results, new_env) = eval_trampoline_arena(expr, env);
+        // Use eval_arena for bytecode/JIT tiering (zero-conversion throughout)
+        let (results, new_env) = eval_arena(expr, env);
         env = new_env;
 
         // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
@@ -369,6 +382,11 @@ fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
             output.push_str(&format!("{}\n", format_results_arena(&filtered_results)));
         }
     }
+
+    // Persist the final environment state for subsequent evaluations.
+    // This is critical for arena mode correctness: without this, state changes
+    // (rules, facts, bindings) would be lost between evaluation batches.
+    StaticArenaContext::update_env(env);
 
     Ok(output)
 }

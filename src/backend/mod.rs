@@ -27,11 +27,12 @@ pub use builtin_signatures::{
 };
 pub use compile::{compile, compile_arena, compile_arena_with_path, compile_generic, compile_with_path};
 pub use environment::{Environment, GenericEnvironment, HeapEnvironment, ScopeTracker};
-pub use eval::{eval, pattern_match};
+pub use eval::{eval, eval_arena, pattern_match};
 pub use eval::trampoline::{
-    eval_trampoline_arena, ArenaEnvironment, ArenaEvalResult, StaticArenaContext,
+    eval_trampoline_arena, ArenaEnvironment, StaticArenaContext,
     get_static_arena, get_static_factory, is_arena_mode_enabled,
 };
+pub use eval::ArenaEvalResult;
 pub use fuzzy_match::FuzzyMatcher;
 pub use grounded::{ExecError, GroundedOperation, GroundedRegistry, GroundedResult};
 pub use models::*;

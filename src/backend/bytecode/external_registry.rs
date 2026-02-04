@@ -10,6 +10,11 @@
 //! Unlike native functions (which use numeric IDs for efficiency), external functions
 //! use string-based lookup to support dynamic registration from external systems.
 //!
+//! # Generic Support
+//!
+//! The registry supports generic value types through `GenericExternalRegistry<V, F>`,
+//! enabling zero-conversion execution with ArenaValue or MettaValue.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -26,9 +31,13 @@
 //! ```
 
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::environment::GenericEnvironment;
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
+#[cfg(test)]
+use crate::backend::models::MettaValueInner;
 use crate::backend::Environment;
 
 /// Result type for external function calls
@@ -66,6 +75,159 @@ impl std::fmt::Display for ExternalError {
 }
 
 impl std::error::Error for ExternalError {}
+
+// =============================================================================
+// Generic Types (for zero-conversion execution)
+// =============================================================================
+
+/// Generic result type for external function calls
+pub type GenericExternalResult<V> = Result<Vec<V>, ExternalError>;
+
+/// Generic context provided to external functions during execution
+#[derive(Clone)]
+pub struct GenericExternalContext<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    /// Current environment (for accessing bindings if needed)
+    pub env: GenericEnvironment<V, F>,
+    /// Factory for constructing values
+    pub factory: F,
+}
+
+impl<V, F> GenericExternalContext<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    /// Create a new generic external context
+    pub fn new(env: GenericEnvironment<V, F>, factory: F) -> Self {
+        Self { env, factory }
+    }
+}
+
+/// Generic type alias for external function signature
+pub type GenericExternalFn<V, F> = Arc<
+    dyn Fn(&[V], &GenericExternalContext<V, F>) -> GenericExternalResult<V> + Send + Sync,
+>;
+
+/// Generic registry entry for an external function
+struct GenericExternalRegistryEntry<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    func: GenericExternalFn<V, F>,
+}
+
+/// Generic registry for external functions callable from bytecode
+///
+/// External functions are registered by name and looked up by name during execution.
+/// This supports dynamic registration from external systems like Rholang.
+pub struct GenericExternalRegistry<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    /// Functions stored by name
+    functions: HashMap<String, GenericExternalRegistryEntry<V, F>>,
+    /// Phantom data for factory type
+    _phantom: PhantomData<F>,
+}
+
+impl<V, F> std::fmt::Debug for GenericExternalRegistry<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenericExternalRegistry")
+            .field("function_count", &self.functions.len())
+            .field("names", &self.functions.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl<V, F> Default for GenericExternalRegistry<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<V, F> GenericExternalRegistry<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
+{
+    /// Create a new empty registry
+    pub fn new() -> Self {
+        Self {
+            functions: HashMap::new(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Register an external function
+    ///
+    /// If a function with this name already exists, it will be replaced.
+    pub fn register<Func>(&mut self, name: &str, func: Func)
+    where
+        Func: Fn(&[V], &GenericExternalContext<V, F>) -> GenericExternalResult<V> + Send + Sync + 'static,
+    {
+        self.functions.insert(
+            name.to_string(),
+            GenericExternalRegistryEntry {
+                func: Arc::new(func),
+            },
+        );
+    }
+
+    /// Unregister an external function
+    ///
+    /// Returns true if the function was present and removed.
+    pub fn unregister(&mut self, name: &str) -> bool {
+        self.functions.remove(name).is_some()
+    }
+
+    /// Check if a function is registered
+    pub fn contains(&self, name: &str) -> bool {
+        self.functions.contains_key(name)
+    }
+
+    /// Call an external function by name
+    pub fn call(&self, name: &str, args: &[V], ctx: &GenericExternalContext<V, F>) -> GenericExternalResult<V> {
+        let entry = self
+            .functions
+            .get(name)
+            .ok_or_else(|| ExternalError::NotFound(name.to_string()))?;
+
+        (entry.func)(args, ctx)
+    }
+
+    /// Get the number of registered functions
+    pub fn len(&self) -> usize {
+        self.functions.len()
+    }
+
+    /// Check if the registry is empty
+    pub fn is_empty(&self) -> bool {
+        self.functions.is_empty()
+    }
+
+    /// Get an iterator over registered function names
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.functions.keys().map(|s| s.as_str())
+    }
+}
+
+// =============================================================================
+// Non-Generic Types (backwards compatibility)
+// =============================================================================
 
 /// Context provided to external functions during execution
 #[derive(Clone)]

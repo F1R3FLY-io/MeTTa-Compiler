@@ -206,9 +206,15 @@ where
 {
     /// Add a generic rule to the environment.
     ///
-    /// This is the generic version that stores `GenericRule<V>` directly in the rule_index.
-    /// It does NOT store in MORK PathMap (use `Environment::add_rule` for MettaValue rules
-    /// that need MORK persistence).
+    /// This is the generic version that stores `GenericRule<V>` directly in the rule_index
+    /// AND in MORK Space (for `match` operations).
+    ///
+    /// ## Storage Locations
+    ///
+    /// 1. **Rule Index**: For O(k) rule lookup by (head_symbol, arity)
+    /// 2. **MORK Space**: For `(match &self pattern template)` queries
+    ///
+    /// This matches the behavior of `Environment::add_rule` for MettaValue rules.
     ///
     /// # Arguments
     /// - `rule`: The generic rule to add
@@ -217,26 +223,48 @@ where
         self.make_owned(); // CoW: ensure we own data before modifying
 
         // Get head symbol and arity for indexing
-        if let Some(head) = rule.lhs.get_head_symbol() {
-            let arity = rule.lhs.get_arity();
+        let head_opt = rule.lhs.get_head_symbol();
+        let arity = rule.lhs.get_arity();
+
+        if let Some(ref head) = head_opt {
             // Track symbol name in fuzzy matcher for "Did you mean?" suggestions
-            self.shared.fuzzy_matcher.write().insert(&head);
+            self.shared.fuzzy_matcher.write().insert(head);
             // Use Symbol for O(1) comparison when symbol-interning is enabled
-            let head_sym = Symbol::new(&head);
+            let head_sym = Symbol::new(head);
 
             // Store in rule index - DashMap entry API
             self.shared
                 .rule_index
                 .entry((head_sym, arity))
                 .or_default()
-                .push(rule);
+                .push(rule.clone());
         } else {
             // Rules without head symbol (wildcards, variables) go to wildcard list
-            self.shared.wildcard_rules.write().push(rule);
+            self.shared.wildcard_rules.write().push(rule.clone());
             // Mark that we have wildcard rules (for fast-path in get_matching_rules)
             self.shared
                 .has_wildcard_rules
                 .store(true, Ordering::Release);
+        }
+
+        // Also add rule to MORK Space for (match &self ...) queries
+        // Create rule s-expression: (= lhs rhs)
+        let rule_sexpr = self.factory.sexpr(vec![
+            self.factory.atom("="),
+            rule.lhs.clone(),
+            rule.rhs.clone(),
+        ]);
+
+        // Add to MORK Space using add_to_space (which handles MORK bytes conversion)
+        self.add_to_space(&rule_sexpr);
+
+        // Update bloom filter with (head, arity) for O(1) match_space() rejection
+        if let Some(head) = head_opt {
+            let arity_u8 = arity as u8;
+            self.shared
+                .head_arity_bloom
+                .write()
+                .insert(head.as_bytes(), arity_u8);
         }
 
         self.modified.store(true, Ordering::Release);

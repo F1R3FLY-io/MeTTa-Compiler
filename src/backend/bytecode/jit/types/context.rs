@@ -7,7 +7,7 @@ use std::fmt;
 
 use super::binding::JitBindingFrame;
 use super::constants::{
-    MAX_STACK_SAVE_VALUES, STACK_SAVE_POOL_SIZE, STATE_CACHE_MASK, STATE_CACHE_SIZE,
+    JitValueMode, MAX_STACK_SAVE_VALUES, STACK_SAVE_POOL_SIZE, STATE_CACHE_MASK, STATE_CACHE_SIZE,
     VAR_INDEX_CACHE_SIZE,
 };
 use super::nondet::{JitBailoutReason, JitChoicePoint};
@@ -223,6 +223,27 @@ pub struct JitContext {
     /// name_hash is hash of variable name for fast comparison
     /// constant_index is index into constants array, or u32::MAX for empty slot
     pub var_index_cache: [(u64, u32); VAR_INDEX_CACHE_SIZE],
+
+    // -------------------------------------------------------------------------
+    // Zero-Conversion Arena Mode Support (Phase 6)
+    // -------------------------------------------------------------------------
+    /// Value mode indicator - determines how heap pointers are interpreted.
+    /// - Heap: TAG_HEAP points to `*const MettaValue`
+    /// - Arena: TAG_HEAP points to `*const ArenaValueInner`
+    pub value_mode: JitValueMode,
+
+    /// Pointer to arena constant pool (for arena mode).
+    /// When `value_mode == Arena`, this points to `&[ArenaValue<'static>]`.
+    /// In heap mode, this is null (use `constants` instead).
+    pub arena_constants: *const (),
+
+    /// Number of arena constants in the pool.
+    pub arena_constants_len: usize,
+
+    /// Pointer to the arena allocator (for arena mode value creation).
+    /// When `value_mode == Arena`, this points to `&'static Bump`.
+    /// Runtime functions use this to allocate new values.
+    pub arena: *const (),
 }
 
 impl JitContext {
@@ -301,6 +322,11 @@ impl JitContext {
             // Variable index cache (Optimization 5.3)
             // u32::MAX indicates empty slot
             var_index_cache: [(0, u32::MAX); VAR_INDEX_CACHE_SIZE],
+            // Arena mode fields (default: heap mode)
+            value_mode: JitValueMode::Heap,
+            arena_constants: std::ptr::null(),
+            arena_constants_len: 0,
+            arena: std::ptr::null(),
         }
     }
 
@@ -381,6 +407,11 @@ impl JitContext {
             // Variable index cache (Optimization 5.3)
             // u32::MAX indicates empty slot
             var_index_cache: [(0, u32::MAX); VAR_INDEX_CACHE_SIZE],
+            // Arena mode fields (default: heap mode)
+            value_mode: JitValueMode::Heap,
+            arena_constants: std::ptr::null(),
+            arena_constants_len: 0,
+            arena: std::ptr::null(),
         }
     }
 
@@ -795,6 +826,109 @@ impl JitContext {
     pub fn has_env(&self) -> bool {
         !self.env_ptr.is_null()
     }
+
+    // -------------------------------------------------------------------------
+    // Arena Mode Support (Phase 6 - Zero-Conversion)
+    // -------------------------------------------------------------------------
+
+    /// Create a JitContext configured for arena mode.
+    ///
+    /// In arena mode, TAG_HEAP pointers point to `ArenaValueInner` instead of
+    /// `MettaValue`. The arena allocator is used for creating new values.
+    ///
+    /// # Safety
+    /// - `arena_constants` must point to a valid `&[ArenaValue<'static>]`
+    /// - `arena` must point to a valid `&'static Bump` allocator
+    /// - All pointers must remain valid for the lifetime of JIT execution
+    pub unsafe fn for_arena(
+        stack: *mut JitValue,
+        stack_cap: usize,
+        arena_constants: *const (),
+        arena_constants_len: usize,
+        arena: *const (),
+    ) -> Self {
+        let mut ctx = Self::new(
+            stack,
+            stack_cap,
+            std::ptr::null(), // No heap constants
+            0,
+        );
+        ctx.value_mode = JitValueMode::Arena;
+        ctx.arena_constants = arena_constants;
+        ctx.arena_constants_len = arena_constants_len;
+        ctx.arena = arena;
+        ctx
+    }
+
+    /// Create a JitContext for arena mode with nondeterminism support.
+    ///
+    /// # Safety
+    /// Same requirements as `for_arena` plus:
+    /// - `choice_points` must be valid for `choice_point_cap` elements
+    /// - `results` must be valid for `results_cap` elements
+    pub unsafe fn for_arena_with_nondet(
+        stack: *mut JitValue,
+        stack_cap: usize,
+        arena_constants: *const (),
+        arena_constants_len: usize,
+        arena: *const (),
+        choice_points: *mut JitChoicePoint,
+        choice_point_cap: usize,
+        results: *mut JitValue,
+        results_cap: usize,
+    ) -> Self {
+        let mut ctx = Self::with_nondet(
+            stack,
+            stack_cap,
+            std::ptr::null(), // No heap constants
+            0,
+            choice_points,
+            choice_point_cap,
+            results,
+            results_cap,
+        );
+        ctx.value_mode = JitValueMode::Arena;
+        ctx.arena_constants = arena_constants;
+        ctx.arena_constants_len = arena_constants_len;
+        ctx.arena = arena;
+        ctx
+    }
+
+    /// Check if running in arena mode
+    #[inline]
+    pub fn is_arena_mode(&self) -> bool {
+        self.value_mode == JitValueMode::Arena
+    }
+
+    /// Check if running in heap mode
+    #[inline]
+    pub fn is_heap_mode(&self) -> bool {
+        self.value_mode == JitValueMode::Heap
+    }
+
+    /// Get the value mode
+    #[inline]
+    pub fn value_mode(&self) -> JitValueMode {
+        self.value_mode
+    }
+
+    /// Get arena allocator pointer (for arena mode value creation).
+    ///
+    /// Returns null if not in arena mode.
+    #[inline]
+    pub fn arena_ptr(&self) -> *const () {
+        if self.is_arena_mode() {
+            self.arena
+        } else {
+            std::ptr::null()
+        }
+    }
+
+    /// Check if arena allocator is available
+    #[inline]
+    pub fn has_arena(&self) -> bool {
+        self.is_arena_mode() && !self.arena.is_null()
+    }
 }
 
 impl fmt::Debug for JitContext {
@@ -816,6 +950,8 @@ impl fmt::Debug for JitContext {
             .field("binding_frames_cap", &self.binding_frames_cap)
             .field("grounded_spaces_count", &self.grounded_spaces_count)
             .field("template_results_cap", &self.template_results_cap)
+            .field("value_mode", &self.value_mode)
+            .field("arena_constants_len", &self.arena_constants_len)
             .finish()
     }
 }

@@ -11,6 +11,10 @@ use crate::backend::bytecode::jit::runtime;
 use crate::backend::bytecode::jit::types::JitResult;
 
 /// Function IDs for S-expression operations
+///
+/// Note: Value creation functions (make_sexpr, cons_atom, make_list, make_quote)
+/// use runtime mode dispatch based on JitContext.value_mode. No separate arena
+/// FuncIds are needed - the same functions handle both heap and arena modes.
 pub struct SExprFuncIds {
     /// Push empty expression
     pub push_empty_func_id: FuncId,
@@ -22,13 +26,13 @@ pub struct SExprFuncIds {
     pub get_arity_func_id: FuncId,
     /// Get element at index
     pub get_element_func_id: FuncId,
-    /// Make new S-expression
+    /// Make new S-expression (dispatches based on ctx.value_mode)
     pub make_sexpr_func_id: FuncId,
-    /// Cons atom to expression
+    /// Cons atom to expression (dispatches based on ctx.value_mode)
     pub cons_atom_func_id: FuncId,
-    /// Make list from stack values
+    /// Make list from stack values (dispatches based on ctx.value_mode)
     pub make_list_func_id: FuncId,
-    /// Make quoted expression
+    /// Make quoted expression (dispatches based on ctx.value_mode)
     pub make_quote_func_id: FuncId,
 }
 
@@ -43,6 +47,9 @@ pub trait SExprInit {
 
 impl<T> SExprInit for T {
     fn register_sexpr_symbols(builder: &mut JITBuilder) {
+        // S-expression operation symbols
+        // Note: Value creation functions use runtime mode dispatch based on
+        // JitContext.value_mode - no separate arena symbols needed
         builder.symbol(
             "jit_runtime_push_empty",
             runtime::jit_runtime_push_empty as *const u8,

@@ -4,7 +4,7 @@ use super::*;
 use crate::backend::models::MettaValueInner;
 
 // Mock eval function for testing
-fn mock_eval(value: MettaValue, env: Environment) -> (Vec<MettaValue>, Environment) {
+fn mock_eval(value: MettaValue, env: HeapEnvironment) -> (Vec<MettaValue>, HeapEnvironment) {
     // Just return the value as-is (no evaluation)
     (vec![value], env)
 }
@@ -12,7 +12,7 @@ fn mock_eval(value: MettaValue, env: Environment) -> (Vec<MettaValue>, Environme
 #[test]
 fn test_add_op() {
     let add = AddOp;
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     let args = vec![MettaValue::Long(2), MettaValue::Long(3)];
     let result = add.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -24,7 +24,7 @@ fn test_add_op() {
 #[test]
 fn test_add_float() {
     let add = AddOp;
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     let args = vec![MettaValue::Float(2.5), MettaValue::Float(3.5)];
     let result = add.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -40,7 +40,7 @@ fn test_add_float() {
 #[test]
 fn test_comparison_less() {
     let less = LessOp;
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     let args = vec![MettaValue::Long(2), MettaValue::Long(3)];
     let result = less.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -52,7 +52,7 @@ fn test_comparison_less() {
 #[test]
 fn test_logical_and_short_circuit() {
     let and = AndOp;
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // false AND <anything> should return false without evaluating second arg
     let args = vec![
@@ -68,7 +68,7 @@ fn test_logical_and_short_circuit() {
 #[test]
 fn test_equality() {
     let eq = EqualOp;
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // Test Nil == ()
     let args = vec![MettaValue::Nil(), MettaValue::SExpr(vec![])];
@@ -81,7 +81,7 @@ fn test_equality() {
 #[test]
 fn test_division_by_zero() {
     let div = DivOp;
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     let args = vec![MettaValue::Long(10), MettaValue::Long(0)];
     let result = div.execute_raw(&args, &env, &mock_eval);
@@ -92,7 +92,7 @@ fn test_division_by_zero() {
 #[test]
 fn test_incorrect_arity() {
     let add = AddOp;
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     let args = vec![MettaValue::Long(1)];
     let result = add.execute_raw(&args, &env, &mock_eval);
@@ -103,7 +103,7 @@ fn test_incorrect_arity() {
 #[test]
 fn test_type_error_on_type_mismatch() {
     let add = AddOp;
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     let args = vec![
         MettaValue::Long(1),

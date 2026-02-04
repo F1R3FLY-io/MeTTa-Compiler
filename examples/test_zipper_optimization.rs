@@ -1,9 +1,9 @@
-use mettatron::backend::environment::Environment;
+use mettatron::backend::environment::HeapEnvironment;
 use mettatron::backend::eval::eval;
 use mettatron::backend::models::MettaValue;
 
 fn main() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // Define a rule: (= (double $x) (* $x 2))
     let rule_def = MettaValue::SExpr(vec![

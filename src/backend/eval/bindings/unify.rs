@@ -5,7 +5,7 @@
 //! - sealed: Create locally scoped variables by replacing free variables
 //! - atom-subst: Variable substitution through pattern matching
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,7 +17,7 @@ static SEALED_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Step version of eval_unify that defers evaluation to trampoline.
 /// This prevents stack overflow for deeply nested unify operations.
-pub(crate) fn eval_unify_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(crate) fn eval_unify_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     let args = &items[1..];
 
     if args.len() < 4 {
@@ -60,7 +60,7 @@ pub(crate) fn eval_unify_step(items: Vec<MettaValue>, env: Environment, depth: u
 ///
 /// DEPRECATED: Use eval_unify_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_unify(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     let args = &items[1..];
 
     if args.len() < 4 {
@@ -288,7 +288,7 @@ pub(crate) fn eval_unify(items: Vec<MettaValue>, env: Environment) -> EvalResult
 /// !(sealed ($x) (foo $x $y $z))
 /// ; → (foo $x $y_123 $z_123)  ; $x preserved, $y and $z made unique
 /// ```
-pub(crate) fn eval_sealed(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_sealed(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     if items.len() < 3 {
         let got = items.len() - 1;
         let err = MettaValue::Error(
@@ -486,7 +486,7 @@ fn seal_variables_iterative(
 /// !(atom-subst 42 $x (+ $x 1))
 /// ; → (+ 42 1)
 /// ```
-pub(crate) fn eval_atom_subst(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_atom_subst(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     if items.len() < 4 {
         let got = items.len() - 1;
         let err = MettaValue::Error(

@@ -480,7 +480,7 @@ pub async fn run_state_async(
 #[cfg(all(feature = "async", feature = "hybrid-p2-priority-scheduler"))]
 async fn evaluate_batch_parallel(
     batch: Vec<(usize, MettaValue, bool)>,
-    env: crate::backend::environment::Environment,
+    env: crate::backend::environment::HeapEnvironment,
 ) -> Vec<(usize, Vec<MettaValue>, bool)> {
     use crate::backend::eval::eval;
     use crate::backend::priority_scheduler::global_priority_eval_pool;
@@ -542,7 +542,7 @@ async fn evaluate_batch_parallel(
 #[cfg(all(feature = "async", not(feature = "hybrid-p2-priority-scheduler")))]
 async fn evaluate_batch_parallel(
     batch: Vec<(usize, MettaValue, bool)>,
-    env: crate::backend::environment::Environment,
+    env: crate::backend::environment::HeapEnvironment,
 ) -> Vec<(usize, Vec<MettaValue>, bool)> {
     use crate::backend::eval::eval;
     use rayon::prelude::*;

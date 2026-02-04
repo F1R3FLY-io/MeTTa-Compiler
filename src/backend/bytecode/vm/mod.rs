@@ -32,7 +32,7 @@ use super::mork_bridge::MorkBridge;
 use super::native_registry::NativeRegistry;
 use super::opcodes::Opcode;
 use crate::backend::models::{MettaValue, MettaValueInner};
-use crate::backend::Environment;
+use crate::backend::HeapEnvironment;
 
 // === Submodules ===
 
@@ -110,7 +110,7 @@ pub struct BytecodeVM {
 
     /// Optional environment for rule definitions and lookups
     /// When present, enables DefineRule and RuntimeCall opcodes
-    pub(super) env: Option<Environment>,
+    pub(super) env: Option<HeapEnvironment>,
 }
 
 impl BytecodeVM {
@@ -174,7 +174,7 @@ impl BytecodeVM {
     ///
     /// This enables the DefineRule and RuntimeCall opcodes to interact with
     /// the MeTTa environment for rule-based evaluation.
-    pub fn with_env(chunk: Arc<BytecodeChunk>, env: Environment) -> Self {
+    pub fn with_env(chunk: Arc<BytecodeChunk>, env: HeapEnvironment) -> Self {
         Self {
             value_stack: Vec::with_capacity(256),
             call_stack: Vec::with_capacity(64),
@@ -196,7 +196,7 @@ impl BytecodeVM {
     pub fn with_config_and_env(
         chunk: Arc<BytecodeChunk>,
         config: VmConfig,
-        env: Environment,
+        env: HeapEnvironment,
     ) -> Self {
         Self {
             value_stack: Vec::with_capacity(256),
@@ -226,7 +226,7 @@ impl BytecodeVM {
     /// Set the environment for rule operations.
     ///
     /// This is a builder-style method for setting environment after construction.
-    pub fn with_environment(mut self, env: Environment) -> Self {
+    pub fn with_environment(mut self, env: HeapEnvironment) -> Self {
         self.env = Some(env);
         self
     }
@@ -234,14 +234,14 @@ impl BytecodeVM {
     // === Environment Accessors ===
 
     /// Get a reference to the environment, if present.
-    pub fn environment(&self) -> Option<&Environment> {
+    pub fn environment(&self) -> Option<&HeapEnvironment> {
         self.env.as_ref()
     }
 
     /// Take ownership of the environment, returning it.
     ///
     /// This is used to return the modified environment after execution.
-    pub fn take_environment(&mut self) -> Option<Environment> {
+    pub fn take_environment(&mut self) -> Option<HeapEnvironment> {
         self.env.take()
     }
 
@@ -324,7 +324,7 @@ impl BytecodeVM {
     /// # Returns
     /// A tuple of (results, environment) where environment is the modified state
     /// after execution (e.g., with newly defined rules).
-    pub fn run_with_env(&mut self) -> VmResult<(Vec<MettaValue>, Option<Environment>)> {
+    pub fn run_with_env(&mut self) -> VmResult<(Vec<MettaValue>, Option<HeapEnvironment>)> {
         let results = self.run()?;
         let env = self.env.take();
         Ok((results, env))

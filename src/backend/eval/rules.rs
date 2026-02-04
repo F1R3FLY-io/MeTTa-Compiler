@@ -8,7 +8,7 @@ use tracing::trace;
 
 use mork_expr::Expr;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{Bindings, MettaValue, Rule};
 use crate::backend::mork_convert::{
     metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext,
@@ -23,7 +23,7 @@ use super::pattern::pattern_match;
 ///
 /// This function supports MeTTa's non-deterministic semantics where multiple rules
 /// can match the same expression and all results should be returned.
-pub fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(MettaValue, Bindings)> {
+pub fn try_match_all_rules(expr: &MettaValue, env: &HeapEnvironment) -> Vec<(MettaValue, Bindings)> {
     // Try MORK's query_multi first for O(k) matching where k = number of matching rules
     // Falls back to iterative O(n) matching if query_multi fails (e.g., arity >= 64)
     let query_multi_results = try_match_all_rules_query_multi(expr, env);
@@ -39,7 +39,7 @@ pub fn try_match_all_rules(expr: &MettaValue, env: &Environment) -> Vec<(MettaVa
 /// RHS clone is O(1) since MettaValue uses Arc internally
 pub fn try_match_all_rules_query_multi(
     expr: &MettaValue,
-    env: &Environment,
+    env: &HeapEnvironment,
 ) -> Vec<(MettaValue, Bindings)> {
     trace!(target: "mettatron::backend::eval::try_match_all_rules_query_multi", ?expr);
     // Create a pattern that queries for rules: (= <expr-pattern> $rhs)
@@ -109,7 +109,7 @@ pub fn try_match_all_rules_query_multi(
 /// RHS clone is O(1) since MettaValue uses Arc internally
 pub fn try_match_all_rules_iterative(
     expr: &MettaValue,
-    env: &Environment,
+    env: &HeapEnvironment,
 ) -> Vec<(MettaValue, Bindings)> {
     trace!(target: "mettatron::backend::eval::try_match_all_rules_iterative", ?expr);
     // Extract head symbol and arity for indexed lookup

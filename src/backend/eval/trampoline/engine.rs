@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use tracing::trace;
 
-use crate::backend::environment::{Environment, MultiplicityMatch};
+use crate::backend::environment::{HeapEnvironment, MultiplicityMatch};
 use crate::backend::grounded::{ExecError, GroundedWork};
 use crate::backend::models::{EvalResult, MemoHandle, MettaValue, MettaValueInner};
 
@@ -22,7 +22,7 @@ use super::types::{Continuation, WorkItem};
 /// Iterative evaluation using a trampoline pattern with explicit work stack.
 /// This prevents stack overflow by using heap-allocated work items instead of
 /// recursive function calls.
-pub fn eval_trampoline(value: MettaValue, env: Environment) -> EvalResult {
+pub fn eval_trampoline(value: MettaValue, env: HeapEnvironment) -> EvalResult {
     // Debug tracing controlled by environment variable
     let debug_eval = std::env::var("METTA_DEBUG_EVAL").is_ok();
     let mut eval_count: u64 = 0;

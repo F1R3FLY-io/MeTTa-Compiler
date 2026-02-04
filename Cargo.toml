@@ -218,6 +218,10 @@ parking_lot = "0.12"
 # The "collections" feature provides Vec and String types that allocate from arena
 bumpalo = { version = "3.14", features = ["collections"] }
 
+# ouroboros - Safe self-referential structs for ArenaState
+# Enables ArenaValue<'a> to reference the arena it's allocated in within the same struct
+ouroboros = "0.18"
+
 [features]
 default = ["interning", "async"]
 async = ["tokio"]

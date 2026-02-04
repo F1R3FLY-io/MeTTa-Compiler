@@ -6,7 +6,7 @@
 #[cfg(feature = "fuzzy-suggestions")]
 use tracing::trace;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 #[cfg(feature = "fuzzy-suggestions")]
 use crate::backend::fuzzy_match::SuggestionConfidence;
 #[allow(unused_imports)]
@@ -38,7 +38,7 @@ use super::super::suggest_special_form_with_context;
 pub fn handle_no_rule_match(
     evaled_items: Vec<MettaValue>,
     sexpr: &MettaValue,
-    unified_env: &mut Environment,
+    unified_env: &mut HeapEnvironment,
     depth: usize,
 ) -> MettaValue {
     // Check for likely typos before falling back to ADD mode
@@ -115,7 +115,7 @@ pub fn handle_no_rule_match(
 pub fn handle_no_rule_match(
     _evaled_items: Vec<MettaValue>,
     sexpr: &MettaValue,
-    unified_env: &mut Environment,
+    unified_env: &mut HeapEnvironment,
     depth: usize,
 ) -> MettaValue {
     // ADD mode: add to space and return unreduced s-expression

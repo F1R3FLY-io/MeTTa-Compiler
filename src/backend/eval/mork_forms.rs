@@ -6,7 +6,7 @@
 //! - lookup: Conditional fact lookup with success/failure branches
 //! - rulify: Meta-programming for runtime rule generation
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 
 use super::{eval, EvalResult};
@@ -27,7 +27,7 @@ use super::{eval, EvalResult};
 /// - (exec P0 (,) (, (always-true)))  ; Empty antecedent, always fires
 /// - (exec P1 (, (parent $x Alice)) (, (result $x)))  ; Simple pattern match
 /// - (exec P2 (, (a $x) (b $x)) (, (c $x)))  ; Binary conjunction with shared variable
-pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalResult {
+pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: HeapEnvironment) -> EvalResult {
     let args = &items[1..]; // Skip "exec" operator
 
     if args.len() < 3 {
@@ -154,7 +154,7 @@ pub(super) fn eval_exec(items: Vec<MettaValue>, mut env: Environment) -> EvalRes
 /// - (, (exec $p $a $c) (gen Z $child $parent)) - multiple goals with shared vars
 ///
 /// Returns: Vec<Bindings> - all successful binding sets (empty if antecedent fails)
-fn match_conjunction_goals_with_bindings(goals: &[MettaValue], env: &Environment) -> Vec<Bindings> {
+fn match_conjunction_goals_with_bindings(goals: &[MettaValue], env: &HeapEnvironment) -> Vec<Bindings> {
     if goals.is_empty() {
         // Empty conjunction succeeds with empty bindings
         return vec![Bindings::new()];
@@ -174,7 +174,7 @@ fn match_conjunction_goals_with_bindings(goals: &[MettaValue], env: &Environment
 fn thread_bindings_through_goals(
     goals: &[MettaValue],
     current_bindings: Vec<Bindings>,
-    env: &Environment,
+    env: &HeapEnvironment,
 ) -> Vec<Bindings> {
     use crate::backend::eval::{apply_bindings, pattern_match};
 
@@ -246,7 +246,7 @@ fn thread_bindings_through_goals(
 fn eval_consequent_conjunction_with_bindings(
     goals: Vec<MettaValue>,
     initial_bindings: Bindings,
-    mut env: Environment,
+    mut env: HeapEnvironment,
 ) -> EvalResult {
     use crate::backend::eval::{apply_bindings, pattern_match};
 
@@ -338,7 +338,7 @@ fn is_operation_form(value: &MettaValue) -> bool {
 }
 
 /// Evaluate an operation from a MettaValue
-fn eval_operation_from_value(value: &MettaValue, env: Environment) -> EvalResult {
+fn eval_operation_from_value(value: &MettaValue, env: HeapEnvironment) -> EvalResult {
     match value.inner() {
         MettaValueInner::SExpr(items) => eval_operation(items, env),
         _ => (vec![], env),
@@ -352,7 +352,7 @@ fn matches_operation(items: &[MettaValue]) -> bool {
 
 /// Evaluate operation: (O (+ fact) (- fact) ...)
 /// Operations modify the MORK space by adding or removing facts
-fn eval_operation(items: &[MettaValue], mut env: Environment) -> EvalResult {
+fn eval_operation(items: &[MettaValue], mut env: HeapEnvironment) -> EvalResult {
     let operations = &items[1..]; // Skip "O" operator
 
     for op in operations {
@@ -392,7 +392,7 @@ fn eval_operation(items: &[MettaValue], mut env: Environment) -> EvalResult {
 /// - (coalg (tree $t) (, (ctx $t nil)))  ; Lift: wrap tree in context
 /// - (coalg (ctx (branch $l $r) $p) (, (ctx $l (cons $p L)) (ctx $r (cons $p R))))  ; Explode
 /// - (coalg (ctx (leaf $v) $p) (, (value $p $v)))  ; Drop: terminal
-pub(super) fn eval_coalg(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_coalg(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     let args = &items[1..]; // Skip "coalg" operator
 
     if args.len() < 2 {
@@ -448,7 +448,7 @@ pub(super) fn eval_coalg(items: Vec<MettaValue>, env: Environment) -> EvalResult
 /// Examples:
 /// - (lookup $y (, T) (, $cy))  ; If $y exists, return T, else execute $cy
 /// - (lookup $p (, (lookup $t $px $tx)) (, (exec (0 $t) $px $tx)))  ; Nested lookup
-pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_lookup(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     let args = &items[1..]; // Skip "lookup" operator
 
     if args.len() < 3 {
@@ -508,7 +508,7 @@ pub(super) fn eval_lookup(items: Vec<MettaValue>, env: Environment) -> EvalResul
 }
 
 /// Helper to evaluate conjunction goals sequentially (for lookup branches, not exec antecedents)
-fn eval_conjunction_goals(goals: Vec<MettaValue>, mut env: Environment) -> EvalResult {
+fn eval_conjunction_goals(goals: Vec<MettaValue>, mut env: HeapEnvironment) -> EvalResult {
     let mut all_results = Vec::new();
 
     for goal in goals {
@@ -530,7 +530,7 @@ fn eval_conjunction_goals(goals: Vec<MettaValue>, mut env: Environment) -> EvalR
 /// Examples:
 /// - (rulify $name (, $p0) (, $t0) (, (tmp $p0)) (O (- (tmp $p0)) (+ (tmp $t0))))
 /// - (rulify $name (, $p0) (, $t0 $t1) (, (tmp $p0)) (O (- (tmp $p0)) (+ (tmp $t0)) (+ (tmp $t1))))
-pub(super) fn eval_rulify(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_rulify(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     let args = &items[1..]; // Skip "rulify" operator
 
     if args.len() < 5 {
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_exec_empty_antecedent() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (exec P0 (,) (, 42))
         // let value = MettaValue::SExpr(vec![
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_exec_simple_consequent() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (exec P1 (,) (, (+ 1 2)))
         let value = eval_exec(
@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_coalg_structure() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (coalg (tree $t) (, (ctx $t nil)))
         let value = eval_coalg(
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn test_lookup_success_branch() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (lookup foo (, T) (, F))
         let value = eval_lookup(
@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn test_lookup_failure_branch() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (lookup $x (, T) (, F))
         let value = eval_lookup(

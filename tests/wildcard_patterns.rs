@@ -3,12 +3,12 @@
 //! Tests that wildcard patterns ($_ and _) work correctly in all contexts
 
 use mettatron::backend::compile::compile;
-use mettatron::backend::environment::Environment;
+use mettatron::backend::environment::HeapEnvironment;
 use mettatron::backend::eval::eval;
 
 #[test]
 fn test_underscore_wildcard() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add facts
     env.add_to_space(&compile("(data 1 foo)").unwrap().source[0]);
@@ -24,7 +24,7 @@ fn test_underscore_wildcard() {
 
 #[test]
 fn test_dollar_underscore_wildcard() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add generation facts like in ancestor.mm2 line 38
     env.add_to_space(&compile("(generation Z Alice Bob)").unwrap().source[0]);
@@ -40,7 +40,7 @@ fn test_dollar_underscore_wildcard() {
 
 #[test]
 fn test_multiple_wildcards() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add facts with multiple fields
     env.add_to_space(&compile("(record 1 foo 100 alpha)").unwrap().source[0]);
@@ -55,7 +55,7 @@ fn test_multiple_wildcards() {
 
 #[test]
 fn test_wildcard_in_nested_pattern() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add nested facts
     env.add_to_space(&compile("(data (info 1 foo) result)").unwrap().source[0]);
@@ -70,7 +70,7 @@ fn test_wildcard_in_nested_pattern() {
 
 #[test]
 fn test_wildcard_vs_variable() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add facts
     env.add_to_space(&compile("(pair 1 1)").unwrap().source[0]);

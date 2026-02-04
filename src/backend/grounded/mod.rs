@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use super::environment::Environment;
+use super::environment::HeapEnvironment;
 use super::models::{MettaValue, MettaValueInner};
 
 // Re-export all public types

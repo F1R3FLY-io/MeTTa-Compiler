@@ -1,5 +1,5 @@
 use crate::backend::builtin_signatures::{get_return_type, get_signature, TypeExpr};
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use tracing::trace;
 
@@ -44,7 +44,7 @@ pub(crate) fn suggest_type_name(name: &str) -> Option<String> {
 
 /// Type assertion: (: expr type)
 /// Adds a type assertion to the environment
-pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_type_assertion", ?items);
     require_args_with_usage!(":", items, 2, env, "(: expr type)");
 
@@ -76,7 +76,7 @@ pub(super) fn eval_type_assertion(items: Vec<MettaValue>, env: Environment) -> E
 
 /// get-type: return the type of an expression
 /// (get-type expr) -> Type
-pub(super) fn eval_get_type(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_get_type(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_get_type", ?items);
     require_args_with_usage!("get-type", items, 1, env, "(get-type expr)");
 
@@ -87,7 +87,7 @@ pub(super) fn eval_get_type(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
 /// check-type: check if expression has expected type
 /// (check-type expr expected-type) -> Bool
-pub(super) fn eval_check_type(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_check_type(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_check_type", ?items);
     require_args_with_usage!("check-type", items, 2, env, "(check-type expr type)");
 
@@ -105,7 +105,7 @@ pub(super) fn eval_check_type(items: Vec<MettaValue>, env: Environment) -> EvalR
 ///
 /// Uses the built-in signature registry for accurate return type inference.
 /// For example, `infer_type((+ 1 2))` → `Number` based on `+`'s return type.
-pub fn infer_type(expr: &MettaValue, env: &Environment) -> MettaValue {
+pub fn infer_type(expr: &MettaValue, env: &HeapEnvironment) -> MettaValue {
     match expr.inner() {
         // Ground types have built-in types
         MettaValueInner::Bool(_) => MettaValue::Atom("Bool".to_string()),
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_type_assertion_missing_arguments() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (:) - missing both arguments
         let value = MettaValue::SExpr(vec![MettaValue::Atom(":".to_string())]);
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_get_type_missing_argument() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (get-type) - missing argument
         let value = MettaValue::SExpr(vec![MettaValue::Atom("get-type".to_string())]);
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_check_type_missing_arguments() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (check-type x) - missing type argument
         let value = MettaValue::SExpr(vec![
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_type_assertion() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (: x Number)
         let type_assertion = MettaValue::SExpr(vec![
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_get_type_ground_types() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (get-type 42) -> Number
         let get_type_long = MettaValue::SExpr(vec![
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_get_type_with_assertion() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add type assertion: (: foo Number)
         env.add_type("foo".to_string(), MettaValue::Atom("Number".to_string()));
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_get_type_builtin_operations() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (get-type (add 1 2)) -> Number
         let get_type_add = MettaValue::SExpr(vec![
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn test_check_type() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add type assertion: (: x Number)
         env.add_type("x".to_string(), MettaValue::Atom("Number".to_string()));
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn test_check_type_with_type_variables() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (check-type 42 $t) -> true (type variable matches anything)
         let check_type_var = MettaValue::SExpr(vec![
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn test_arrow_type_assertion() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // (: add (-> Number Number Number))
         // Using a user-defined function name instead of builtin "+"
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_integration_with_rules_and_types() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add type assertion: (: double (-> Number Number))
         let type_assertion = MettaValue::SExpr(vec![
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn test_type_assertion_added_to_fact_database() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Define a type assertion: (: x Number)
         let type_assertion = MettaValue::SExpr(vec![
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn test_type_error_propagation() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: !(+ 1 (+ 2 "bad")) - error should propagate from inner expression
         let value = MettaValue::SExpr(vec![

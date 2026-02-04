@@ -5,13 +5,13 @@
 
 use super::basic::*;
 use super::helpers::substitute_variable;
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::eval::eval;
 use crate::backend::models::{MettaValue, MettaValueInner};
 
 #[test]
 fn test_map_atom_simple() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom (1 2 3) $v (+ $v 1))
     let expr = MettaValue::SExpr(vec![
@@ -45,7 +45,7 @@ fn test_map_atom_simple() {
 
 #[test]
 fn test_map_atom_empty_list() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom () $v (+ $v 1))
     let expr = MettaValue::SExpr(vec![
@@ -68,7 +68,7 @@ fn test_map_atom_empty_list() {
 
 #[test]
 fn test_map_atom_invalid_variable() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom (1 2 3) invalid-var (+ $v 1))
     let expr = MettaValue::SExpr(vec![
@@ -147,7 +147,7 @@ fn test_substitute_variable_nested() {
 
 #[test]
 fn test_filter_atom_simple() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (filter-atom (1 2 3 4) $v (> $v 2))
     let expr = MettaValue::SExpr(vec![
@@ -181,7 +181,7 @@ fn test_filter_atom_simple() {
 
 #[test]
 fn test_filter_atom_all_filtered_out() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (filter-atom (1 2) $v (> $v 5))
     let expr = MettaValue::SExpr(vec![
@@ -204,7 +204,7 @@ fn test_filter_atom_all_filtered_out() {
 
 #[test]
 fn test_filter_atom_empty_list() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (filter-atom () $v (> $v 2))
     let expr = MettaValue::SExpr(vec![
@@ -229,7 +229,7 @@ fn test_filter_atom_empty_list() {
 
 #[test]
 fn test_foldl_atom_sum() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (foldl-atom (1 2 3 4) 0 $acc $x (+ $acc $x))
     let expr = MettaValue::SExpr(vec![
@@ -258,7 +258,7 @@ fn test_foldl_atom_sum() {
 
 #[test]
 fn test_foldl_atom_product() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (foldl-atom (2 3 4) 1 $acc $x (* $acc $x))
     let expr = MettaValue::SExpr(vec![
@@ -286,7 +286,7 @@ fn test_foldl_atom_product() {
 
 #[test]
 fn test_foldl_atom_empty_list() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (foldl-atom () 42 $acc $x (+ $acc $x))
     let expr = MettaValue::SExpr(vec![
@@ -310,7 +310,7 @@ fn test_foldl_atom_empty_list() {
 
 #[test]
 fn test_foldl_atom_wrong_arity() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (foldl-atom (1 2 3) 0) - missing arguments
     let expr = MettaValue::SExpr(vec![
@@ -333,7 +333,7 @@ fn test_foldl_atom_wrong_arity() {
 
 #[test]
 fn test_map_filter_compose() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // First map: (map-atom (1 2 3 4) $v (* $v 2)) -> (2 4 6 8)
     let map_expr = MettaValue::SExpr(vec![
@@ -384,7 +384,7 @@ fn test_map_filter_compose() {
 
 #[test]
 fn test_map_atom_identity_function() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom (1 2 3) $x $x) - identity function
     let expr = MettaValue::SExpr(vec![
@@ -413,7 +413,7 @@ fn test_map_atom_identity_function() {
 
 #[test]
 fn test_map_atom_constant_function() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom (a b c) $x 42) - constant function
     let expr = MettaValue::SExpr(vec![
@@ -442,7 +442,7 @@ fn test_map_atom_constant_function() {
 
 #[test]
 fn test_map_atom_wrong_arity() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // Test with too few arguments
     let expr = MettaValue::SExpr(vec![
@@ -457,7 +457,7 @@ fn test_map_atom_wrong_arity() {
 
 #[test]
 fn test_map_atom_non_list_input() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom 42 $x (+ $x 1)) - non-list as first argument
     let expr = MettaValue::SExpr(vec![
@@ -478,7 +478,7 @@ fn test_map_atom_non_list_input() {
 
 #[test]
 fn test_map_atom_nil_input() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom nil $x (+ $x 1))
     // Nil is treated as an empty list, and returns empty list (HE-compatible)
@@ -501,7 +501,7 @@ fn test_map_atom_nil_input() {
 
 #[test]
 fn test_map_atom_mixed_types() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom (1 "hello" true) $x $x) - mixed type list
     let expr = MettaValue::SExpr(vec![
@@ -532,7 +532,7 @@ fn test_map_atom_mixed_types() {
 
 #[test]
 fn test_variable_with_underscores() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom (1 2 3) $_var_name (+ $_var_name 1))
     let expr = MettaValue::SExpr(vec![
@@ -565,7 +565,7 @@ fn test_variable_with_underscores() {
 
 #[test]
 fn test_variable_with_numbers() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom (1 2 3) $x1 (+ $x1 1))
     let expr = MettaValue::SExpr(vec![
@@ -600,7 +600,7 @@ fn test_variable_with_numbers() {
 
 #[test]
 fn test_map_atom_variable_format_suggestion() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (map-atom (1 2 3) x (+ x 1)) - missing $ prefix on variable
     let expr = MettaValue::SExpr(vec![
@@ -639,7 +639,7 @@ fn test_map_atom_variable_format_suggestion() {
 
 #[test]
 fn test_filter_atom_variable_format_suggestion() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (filter-atom (1 2 3) v (> v 1)) - missing $ prefix
     let expr = MettaValue::SExpr(vec![
@@ -673,7 +673,7 @@ fn test_filter_atom_variable_format_suggestion() {
 
 #[test]
 fn test_foldl_atom_variable_format_suggestion_acc() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // (foldl-atom (1 2 3) 0 acc $x (+ acc $x)) - missing $ prefix on acc
     let expr = MettaValue::SExpr(vec![

@@ -1,4 +1,4 @@
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{MettaValue, MettaValueInner};
 use tracing::{debug, trace};
 
@@ -11,7 +11,7 @@ use super::{apply_bindings, eval, pattern_match, EvalStep};
 ///
 /// This is the fully lazy version of eval_if(). Both condition and branch evaluation are
 /// deferred to the trampoline.
-pub(super) fn eval_if_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(super) fn eval_if_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     let args = &items[1..];
 
     // Validate arity - same as eval_if
@@ -45,7 +45,7 @@ pub(super) fn eval_if_step(items: Vec<MettaValue>, env: Environment, depth: usiz
 /// Trampoline-enabled case evaluation.
 /// Returns EvalStep::EvalCaseAtom to defer atom evaluation to the trampoline,
 /// preventing stack overflow for deeply nested case expressions.
-pub(super) fn eval_case_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(super) fn eval_case_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::eval::eval_case_step", ?items);
 
     // Validate arity
@@ -76,7 +76,7 @@ pub(super) fn eval_case_step(items: Vec<MettaValue>, env: Environment, depth: us
 
 /// Step version of eval_switch that returns EvalStep for trampoline evaluation.
 /// This defers switch logic to the trampoline to prevent stack overflow.
-pub(super) fn eval_switch_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(super) fn eval_switch_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::eval::eval_switch_step", ?items);
     if items.len() != 3 {
         let err = MettaValue::Error(
@@ -96,7 +96,7 @@ pub(super) fn eval_switch_step(items: Vec<MettaValue>, env: Environment, depth: 
 /// Step version of eval_switch_minimal_handler that returns EvalStep.
 pub(super) fn eval_switch_minimal_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_switch_minimal_step", ?items);
@@ -118,7 +118,7 @@ pub(super) fn eval_switch_minimal_step(
 /// Step version of eval_switch_internal_handler that returns EvalStep.
 pub(super) fn eval_switch_internal_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_switch_internal_step", ?items);
@@ -170,7 +170,7 @@ pub(super) fn eval_switch_internal_step(
 pub(crate) fn eval_switch_minimal_trampoline(
     atom: MettaValue,
     cases: MettaValue,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_switch_minimal_trampoline", ?atom, ?cases);
@@ -210,7 +210,7 @@ fn eval_switch_internal_trampoline(
     atom: MettaValue,
     first_case: MettaValue,
     remaining_cases: MettaValue,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_switch_internal_trampoline", ?atom, ?first_case, ?remaining_cases);
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_if_true_branch() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (if true (+ 1 2) (+ 3 4))
         let value = MettaValue::SExpr(vec![
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn test_if_false_branch() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (if false (+ 1 2) (+ 3 4))
         let value = MettaValue::SExpr(vec![
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_if_with_comparison() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (if (< 1 2) "yes" "no")
         let value = MettaValue::SExpr(vec![
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_if_only_evaluates_chosen_branch() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (if true 1 (error "should not evaluate"))
         // The error in the else branch should not be evaluated
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_switch_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (switch 42 ((42 "found") (43 "not found")))
         let value = MettaValue::SExpr(vec![
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_switch_with_variables() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (switch 42 (($x (+ $x 10))))
         let value = MettaValue::SExpr(vec![
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_switch_no_match() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (switch 50 ((42 "found") (43 "not found")))
         let value = MettaValue::SExpr(vec![
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn test_switch_with_sexpr_pattern() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (switch (foo 42) (((foo $x) (+ $x 1)) ((bar $y) (+ $y 2))))
         let value = MettaValue::SExpr(vec![
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn test_case_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (case 42 ((42 "found") (43 "not found")))
         let value = MettaValue::SExpr(vec![
@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn test_case_with_evaluation() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (case (+ 1 2) ((3 "three") (4 "four")))
         let value = MettaValue::SExpr(vec![
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_case_with_empty_result() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // First define a rule that returns empty: (= (empty-result) ())
         let empty_rule = Rule::new(
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_switch_first_match_wins() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (switch 42 (($x "first") (42 "second")))
         // Should match the first case ($x matches anything)
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_switch_empty_cases() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (switch 42 ())
         let value = MettaValue::SExpr(vec![
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn test_switch_with_wildcard() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (switch 42 ((100 "hundred") (_ "anything else")))
         let value = MettaValue::SExpr(vec![
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn test_switch_missing_arguments() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (switch) - missing both arguments
         let value = MettaValue::SExpr(vec![MettaValue::Atom("switch".to_string())]);
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_case_missing_arguments() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (case 42) - missing cases argument
         let value = MettaValue::SExpr(vec![
@@ -680,7 +680,7 @@ mod tests {
 
     #[test]
     fn test_switch_malformed_case() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (switch 42 ((42))) - case missing template
         let value = MettaValue::SExpr(vec![
@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn test_switch_with_complex_patterns() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (switch (add 10 20) (((add $x $y) (+ $x $y $x)) ((mul $a $b) (* $a $b))))
         let value = MettaValue::SExpr(vec![
@@ -755,7 +755,7 @@ mod tests {
 
     #[test]
     fn test_switch_vs_case_empty_handling() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Define a rule that can return Empty: (= (maybe-empty $x) (if (== $x 0) () $x))
         let maybe_empty_rule = Rule::new(
@@ -833,7 +833,7 @@ mod tests {
 
     #[test]
     fn test_switch_case_with_nested_pattern_matching_and_variable_scoping() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test complex nested pattern matching with variable consistency
         // Create a test structure directly in the test

@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 use tracing::trace;
@@ -14,7 +14,7 @@ use tracing::trace;
 /// Cons atom: (cons-atom head tail)
 /// Constructs an expression using two arguments
 /// Example: (cons-atom a (b c)) -> (a b c)
-pub(super) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_cons_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_cons_atom", ?items);
     require_args_with_usage!("cons-atom", items, 2, env, "(cons-atom head tail)");
 
@@ -50,7 +50,7 @@ pub(super) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// Works as a reverse to cons-atom function. It gets Expression as an input
 /// and returns it splitted to head and tail.
 /// Example: (decons-atom (Cons X Nil)) -> (Cons (X Nil))
-pub(super) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_decons_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_decons_atom", ?items);
     require_args_with_usage!("decons-atom", items, 1, env, "(decons-atom expr)");
 
@@ -90,7 +90,7 @@ pub(super) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 /// Size atom: (size-atom expr)
 /// Returns the size (number of elements) of an expression
 /// Example: (size-atom (a b c)) -> 3
-pub(super) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_size_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_size_atom", ?items);
     require_args_with_usage!("size-atom", items, 1, env, "(size-atom expr)");
 
@@ -118,7 +118,7 @@ pub(super) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// Index atom: (index-atom expr index)
 /// Returns the atom at the given index in the expression, or error if index is out of bounds
 /// Example: (index-atom (a b c) 1) -> b
-pub(super) fn eval_index_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_index_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_index_atom", ?items);
     require_args_with_usage!("index-atom", items, 2, env, "(index-atom expr index)");
 
@@ -178,7 +178,7 @@ pub(super) fn eval_index_atom(items: Vec<MettaValue>, env: Environment) -> EvalR
 /// Car atom: (car-atom expr)
 /// Extracts the first atom of an expression
 /// Example: (car-atom (a b c)) -> a
-pub(super) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_car_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_car_atom", ?items);
     require_args_with_usage!("car-atom", items, 1, env, "(car-atom expr)");
 
@@ -214,7 +214,7 @@ pub(super) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// Cdr atom: (cdr-atom expr)
 /// Extracts the tail of an expression (all except first atom)
 /// Example: (cdr-atom (a b c)) -> (b c)
-pub(super) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_cdr_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_cdr_atom", ?items);
     require_args_with_usage!("cdr-atom", items, 1, env, "(cdr-atom expr)");
 
@@ -258,7 +258,7 @@ pub(super) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// Returns the atom with minimum value in the expression
 /// Only numbers (Long or Float) are allowed
 /// Example: (min-atom (5 2 8 1)) -> 1
-pub(super) fn eval_min_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_min_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_min_atom", ?items);
     require_args_with_usage!("min-atom", items, 1, env, "(min-atom expr)");
 
@@ -322,7 +322,7 @@ pub(super) fn eval_min_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// Returns the atom with maximum value in the expression
 /// Only numbers (Long or Float) are allowed
 /// Example: (max-atom (5 2 8 1)) -> 8
-pub(super) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_max_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_max_atom", ?items);
     require_args_with_usage!("max-atom", items, 1, env, "(max-atom expr)");
 
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_cons_atom_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (cons-atom a (b c)) should produce (a b c)
         let source = "(cons-atom a (b c))";
@@ -419,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_cons_atom_with_empty_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (cons-atom a ()) should produce (a)
         let source = "(cons-atom a ())";
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_cons_atom_with_nested_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (cons-atom head (nested (deep (value)))) should produce (head nested (deep (value)))
         let source = "(cons-atom head (nested (deep (value))))";
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_cons_atom_error_when_tail_is_atom() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (cons-atom a b) should produce an error (tail must be Expression, not Atom)
         let source = "(cons-atom a b)";
@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn test_cons_atom_wrong_argument_count() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (cons-atom a) should produce an error (missing tail)
         let source = "(cons-atom a)";
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn test_decons_atom_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (decons-atom (a b c)) should produce (a (b c))
         let source = "(decons-atom (a b c))";
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_decons_atom_with_single_element() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (decons-atom (a)) should produce (a ())
         let source = "(decons-atom (a))";
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_decons_atom_with_empty_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (decons-atom ()) should produce empty results (HE-compatible silent failure)
         // In HE semantics, decons on empty expression is nondeterministic failure
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn test_decons_atom_with_nested_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (decons-atom (a (b c) d)) should produce (a ((b c) d))
         let source = "(decons-atom (a (b c) d))";
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_decons_atom_error_wrong_argument_count() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (decons-atom) should produce an error (missing expr)
         let source = "(decons-atom)";
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_size_atom_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (size-atom (a b c)) should produce 3
         let source = "(size-atom (a b c))";
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_size_atom_with_empty_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (size-atom ()) should produce 0
         let source = "(size-atom ())";
@@ -652,7 +652,7 @@ mod tests {
 
     #[test]
     fn test_size_atom_with_single_element() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (size-atom (a)) should produce 1
         let source = "(size-atom (a))";
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_size_atom_with_nested_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (size-atom (a (b c) d)) should produce 3 (nested expressions count as single elements)
         let source = "(size-atom (a (b c) d))";
@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn test_size_atom_error_wrong_argument_count() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (size-atom) should produce an error (missing expr)
         let source = "(size-atom)";
@@ -705,7 +705,7 @@ mod tests {
 
     #[test]
     fn test_index_atom_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (index-atom (a b c) 1) should produce b
         let source = "(index-atom (a b c) 1)";
@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn test_index_atom_first_element() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (index-atom (a b c) 0) should produce a
         let source = "(index-atom (a b c) 0)";
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn test_index_atom_with_nested_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (index-atom (a (b c) d) 1) should produce (b c)
         let source = "(index-atom (a (b c) d) 1)";
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn test_index_atom_error_out_of_bounds() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (index-atom (a b c) 5) should produce an error
         let source = "(index-atom (a b c) 5)";
@@ -780,7 +780,7 @@ mod tests {
 
     #[test]
     fn test_index_atom_error_wrong_argument_count() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (index-atom (a b c)) should produce an error (missing index)
         let source = "(index-atom (a b c))";
@@ -799,7 +799,7 @@ mod tests {
 
     #[test]
     fn test_car_atom_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (car-atom (a b c)) should produce a
         let source = "(car-atom (a b c))";
@@ -816,7 +816,7 @@ mod tests {
 
     #[test]
     fn test_car_atom_with_single_element() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (car-atom (a)) should produce a
         let source = "(car-atom (a))";
@@ -833,7 +833,7 @@ mod tests {
 
     #[test]
     fn test_car_atom_with_nested_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (car-atom ((a b) c d)) should produce (a b)
         let source = "(car-atom ((a b) c d))";
@@ -853,7 +853,7 @@ mod tests {
 
     #[test]
     fn test_car_atom_error_with_empty_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (car-atom ()) should produce an error
         let source = "(car-atom ())";
@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn test_car_atom_error_wrong_argument_count() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (car-atom) should produce an error (missing expr)
         let source = "(car-atom)";
@@ -893,7 +893,7 @@ mod tests {
 
     #[test]
     fn test_cdr_atom_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (cdr-atom (a b c)) should produce (b c)
         let source = "(cdr-atom (a b c))";
@@ -913,7 +913,7 @@ mod tests {
 
     #[test]
     fn test_cdr_atom_with_single_element() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (cdr-atom (a)) should produce () - empty expression
         let source = "(cdr-atom (a))";
@@ -931,7 +931,7 @@ mod tests {
 
     #[test]
     fn test_cdr_atom_with_nested_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (cdr-atom (a (b c) d)) should produce ((b c) d)
         let source = "(cdr-atom (a (b c) d))";
@@ -954,7 +954,7 @@ mod tests {
 
     #[test]
     fn test_cdr_atom_error_with_empty_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (cdr-atom ()) should produce an error
         let source = "(cdr-atom ())";
@@ -975,7 +975,7 @@ mod tests {
 
     #[test]
     fn test_cdr_atom_error_wrong_argument_count() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (cdr-atom) should produce an error (missing expr)
         let source = "(cdr-atom)";
@@ -994,7 +994,7 @@ mod tests {
 
     #[test]
     fn test_min_atom_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (min-atom (5 2 8 1)) should produce 1
         let source = "(min-atom (5 2 8 1))";
@@ -1011,7 +1011,7 @@ mod tests {
 
     #[test]
     fn test_min_atom_with_single_element() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (min-atom (42)) should produce 42
         let source = "(min-atom (42))";
@@ -1028,7 +1028,7 @@ mod tests {
 
     #[test]
     fn test_min_atom_with_floats() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (min-atom (5.5 2.1 8.9 1.0)) should produce 1.0
         // Note: We need to create Float values manually since parser might not support floats
@@ -1052,7 +1052,7 @@ mod tests {
 
     #[test]
     fn test_min_atom_error_with_empty_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (min-atom ()) should produce an error
         let source = "(min-atom ())";
@@ -1073,7 +1073,7 @@ mod tests {
 
     #[test]
     fn test_min_atom_error_with_non_numeric_value() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (min-atom (5 2 hello 8)) should produce an error
         let source = "(min-atom (5 2 hello 8))";
@@ -1094,7 +1094,7 @@ mod tests {
 
     #[test]
     fn test_max_atom_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (max-atom (5 2 8 1)) should produce 8
         let source = "(max-atom (5 2 8 1))";
@@ -1111,7 +1111,7 @@ mod tests {
 
     #[test]
     fn test_max_atom_with_single_element() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (max-atom (42)) should produce 42
         let source = "(max-atom (42))";
@@ -1128,7 +1128,7 @@ mod tests {
 
     #[test]
     fn test_max_atom_with_floats() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (max-atom (5.5 2.1 8.9 1.0)) should produce 8.9
         let expr = MettaValue::SExpr(vec![
@@ -1151,7 +1151,7 @@ mod tests {
 
     #[test]
     fn test_max_atom_error_with_empty_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (max-atom ()) should produce an error
         let source = "(max-atom ())";
@@ -1172,7 +1172,7 @@ mod tests {
 
     #[test]
     fn test_max_atom_error_with_non_numeric_value() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test: (max-atom (5 2 hello 8)) should produce an error
         let source = "(max-atom (5 2 hello 8))";

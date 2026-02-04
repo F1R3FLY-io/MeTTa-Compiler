@@ -7,7 +7,7 @@ fn main() {
     println!("=== MeTTa Backend REPL ===");
     println!("Enter MeTTa expressions. Type 'exit' to quit.\n");
 
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
     let mut line_num = 1;
 
     loop {

@@ -4,12 +4,12 @@
 //! in pattern matching and evaluation for PR #2 (feature/mork-peano-numbers).
 
 use mettatron::backend::compile::compile;
-use mettatron::backend::environment::Environment;
+use mettatron::backend::environment::HeapEnvironment;
 use mettatron::backend::eval::eval;
 
 #[test]
 fn test_peano_zero_literal() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // Parse Peano zero
     let source = "Z";
@@ -25,7 +25,7 @@ fn test_peano_zero_literal() {
 
 #[test]
 fn test_peano_successor_literals() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // Parse Peano successors
     let source1 = "(S Z)";
@@ -53,7 +53,7 @@ fn test_peano_successor_literals() {
 
 #[test]
 fn test_peano_pattern_matching_zero() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add a fact with Peano zero
     let fact_source = "(number Z)";
@@ -70,7 +70,7 @@ fn test_peano_pattern_matching_zero() {
 
 #[test]
 fn test_peano_pattern_matching_successor() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add facts with Peano successors
     let fact1 = compile("(number (S Z))").unwrap();
@@ -96,7 +96,7 @@ fn test_peano_pattern_matching_successor() {
 
 #[test]
 fn test_peano_nested_pattern_matching() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add fact with nested Peano
     let fact = compile("(generation (S (S Z)) Alice Bob)").unwrap();
@@ -121,7 +121,7 @@ fn test_peano_nested_pattern_matching() {
 
 #[test]
 fn test_peano_in_rules() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // Define a rule using Peano numbers
     let rule_source = "(= (next Z) (S Z))";
@@ -138,7 +138,7 @@ fn test_peano_in_rules() {
 
 #[test]
 fn test_peano_pattern_destructuring() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add facts with Peano numbers
     env.add_to_space(&compile("(num (S Z))").unwrap().source[0]);
@@ -159,7 +159,7 @@ fn test_peano_pattern_destructuring() {
 
 #[test]
 fn test_peano_in_space_operations() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add Peano number via direct API
     let peano_fact = compile("(count (S (S (S Z))))").unwrap();

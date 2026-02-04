@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use phf::phf_set;
 use tracing::trace;
 
-use crate::backend::environment::{Environment, GenericEnvironment};
+use crate::backend::environment::{HeapEnvironment, GenericEnvironment};
 use crate::backend::fuzzy_match::{FuzzyMatcher, SmartSuggestion, SuggestionContext};
 use crate::backend::models::{Bindings, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
@@ -339,7 +339,7 @@ pub fn friendly_value_repr(value: &MettaValue) -> String {
 pub fn suggest_special_form_with_context(
     op: &str,
     expr: &[MettaValue],
-    env: &Environment,
+    env: &HeapEnvironment,
 ) -> Option<SmartSuggestion> {
     use std::sync::OnceLock;
 
@@ -368,7 +368,7 @@ pub fn is_grounded_op(name: &str) -> bool {
 /// - Variables ($x) are kept as-is (they're for pattern matching)
 /// - S-expressions are kept unevaluated (lazy evaluation)
 /// - Special tokens like &self are NOT resolved here (handled in eval_step)
-pub fn resolve_tokens_shallow(items: &[MettaValue], env: &Environment) -> Vec<MettaValue> {
+pub fn resolve_tokens_shallow(items: &[MettaValue], env: &HeapEnvironment) -> Vec<MettaValue> {
     items
         .iter()
         .map(|item| {

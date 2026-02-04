@@ -34,7 +34,7 @@ fn example_rules() {
     println!("--- Example 2: Pattern Matching with Rules ---");
 
     // Create an environment and add a rule: (= (double $x) (mul $x 2))
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
     env.add_rule(Rule::new(
         MettaValue::SExpr(vec![
             MettaValue::Atom("double".to_string()),

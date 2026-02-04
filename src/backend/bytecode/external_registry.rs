@@ -38,7 +38,7 @@ use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 #[cfg(test)]
 use crate::backend::models::MettaValueInner;
-use crate::backend::Environment;
+use crate::backend::HeapEnvironment;
 
 /// Result type for external function calls
 pub type ExternalResult = Result<Vec<MettaValue>, ExternalError>;
@@ -233,19 +233,19 @@ where
 #[derive(Clone)]
 pub struct ExternalContext {
     /// Current environment (for accessing bindings if needed)
-    pub env: Environment,
+    pub env: HeapEnvironment,
 }
 
 impl ExternalContext {
     /// Create a new external context
-    pub fn new(env: Environment) -> Self {
+    pub fn new(env: HeapEnvironment) -> Self {
         Self { env }
     }
 
     /// Create a default context with empty environment
     pub fn default() -> Self {
         Self {
-            env: Environment::default(),
+            env: HeapEnvironment::default(),
         }
     }
 }

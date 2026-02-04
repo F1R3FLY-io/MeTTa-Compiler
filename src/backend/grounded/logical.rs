@@ -6,7 +6,7 @@
 //! - `NotOp` - Logical NOT (not)
 
 use super::{
-    friendly_type_name, Environment, EvalFn, ExecError, GroundedOperation, GroundedResult,
+    friendly_type_name, HeapEnvironment, EvalFn, ExecError, GroundedOperation, GroundedResult,
     MettaValue, MettaValueInner,
 };
 
@@ -21,7 +21,7 @@ impl GroundedOperation for AndOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &Environment,
+        env: &HeapEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         if args.len() != 2 {
@@ -81,7 +81,7 @@ impl GroundedOperation for OrOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &Environment,
+        env: &HeapEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         if args.len() != 2 {
@@ -141,7 +141,7 @@ impl GroundedOperation for NotOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &Environment,
+        env: &HeapEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         if args.len() != 1 {

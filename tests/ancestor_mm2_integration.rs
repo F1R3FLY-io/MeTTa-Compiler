@@ -3,13 +3,13 @@
 //! Tests the complete ancestor.mm2 logic with real MORK patterns
 
 use mettatron::backend::compile::compile;
-use mettatron::backend::environment::Environment;
+use mettatron::backend::environment::HeapEnvironment;
 use mettatron::backend::eval::eval;
 use mettatron::backend::eval::fixed_point::eval_env_to_fixed_point;
 
 #[test]
 fn test_ancestor_mm2_simple() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add parent facts
     env.add_to_space(&compile("(parent Bob Ann)").unwrap().source[0]);
@@ -64,7 +64,7 @@ fn test_ancestor_mm2_simple() {
 
 #[test]
 fn test_ancestor_mm2_child_derivation() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add parent facts
     env.add_to_space(&compile("(parent Tom Bob)").unwrap().source[0]);
@@ -99,7 +99,7 @@ fn test_ancestor_mm2_child_derivation() {
 
 #[test]
 fn test_ancestor_mm2_generation_z() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add facts
     env.add_to_space(&compile("(parent Bob Ann)").unwrap().source[0]);
@@ -130,7 +130,7 @@ fn test_ancestor_mm2_generation_z() {
 
 #[test]
 fn test_ancestor_mm2_multiple_generations() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Three generation family: Tom -> Bob -> Ann
     env.add_to_space(&compile("(parent Tom Bob)").unwrap().source[0]);

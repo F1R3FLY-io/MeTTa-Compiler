@@ -3,7 +3,7 @@
 //! This module handles the identification of grounded arguments that need
 //! evaluation in a hybrid lazy/eager evaluation strategy.
 
-use crate::backend::environment::{Environment, GenericEnvironment};
+use crate::backend::environment::{HeapEnvironment, GenericEnvironment};
 use crate::backend::models::{MettaValue, MettaValueInner, MettaValueTrait};
 
 use super::super::{is_eager_special_form, is_grounded_op};
@@ -35,7 +35,7 @@ use super::super::{is_eager_special_form, is_grounded_op};
 /// - The argument `(add-atom &stack x)` is NOT grounded (user-defined side effect)
 /// - Keep it unevaluated for lazy pattern matching
 /// - Returns empty vec
-pub fn find_grounded_arg_indices(items: &[MettaValue], env: &Environment) -> Vec<usize> {
+pub fn find_grounded_arg_indices(items: &[MettaValue], env: &HeapEnvironment) -> Vec<usize> {
     let mut indices = Vec::new();
 
     // Skip the first item (operator) - we only check arguments

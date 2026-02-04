@@ -4,7 +4,7 @@ use std::sync::Arc;
 fn main() {
     use mettatron::backend::bytecode::vm::{BytecodeVM, VmConfig};
     use mettatron::backend::bytecode::{BytecodeChunk, ChunkBuilder, Opcode};
-    use mettatron::backend::Environment;
+    use mettatron::backend::HeapEnvironment;
 
     let ops = 10;
     let mut builder = ChunkBuilder::new("state_mixed");
@@ -40,7 +40,7 @@ fn main() {
     let mut vm = BytecodeVM::with_config_and_env(
         Arc::clone(&chunk),
         VmConfig::default(),
-        Environment::default(),
+        HeapEnvironment::default(),
     );
 
     match vm.run() {

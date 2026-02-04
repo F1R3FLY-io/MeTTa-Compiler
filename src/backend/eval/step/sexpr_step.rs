@@ -5,7 +5,7 @@
 
 use tracing::trace;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::grounded::{ExecError, GroundedState};
 use crate::backend::models::{MettaValue, MettaValueInner};
 
@@ -18,7 +18,7 @@ use super::grounded::find_grounded_arg_indices;
 use super::types::EvalStep;
 
 /// Evaluate an S-expression step - handles special forms and delegates to iterative collection
-pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub fn eval_sexpr_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::backend::eval::eval_sexpr_step",?items, depth);
 
     // Preprocess to combine `& self` into `&self` for HE-compatible space references
@@ -164,8 +164,8 @@ pub fn eval_sexpr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -
         if let Some(grounded_op) = env.get_grounded_operation(op) {
             // Create an eval function closure for grounded operations to use
             let eval_fn = |value: MettaValue,
-                           env_inner: Environment|
-             -> (Vec<MettaValue>, Environment) { eval(value, env_inner) };
+                           env_inner: HeapEnvironment|
+             -> (Vec<MettaValue>, HeapEnvironment) { eval(value, env_inner) };
 
             match grounded_op.execute_raw(&items[1..], &env, &eval_fn) {
                 Ok(results) => {

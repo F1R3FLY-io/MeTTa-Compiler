@@ -12,7 +12,7 @@ use super::BytecodeVM;
 use crate::backend::bytecode::external_registry::ExternalContext;
 use crate::backend::bytecode::native_registry::NativeContext;
 use crate::backend::models::{MettaValue, MettaValueInner};
-use crate::backend::Environment;
+use crate::backend::HeapEnvironment;
 
 impl BytecodeVM {
     // === Advanced Calls ===
@@ -32,7 +32,7 @@ impl BytecodeVM {
         args.reverse();
 
         // Create context for native function
-        let ctx = NativeContext::new(Environment::default());
+        let ctx = NativeContext::new(HeapEnvironment::default());
 
         // Call through registry
         let result = self
@@ -81,7 +81,7 @@ impl BytecodeVM {
         args.reverse();
 
         // Try to call through external registry
-        let ctx = ExternalContext::new(Environment::default());
+        let ctx = ExternalContext::new(HeapEnvironment::default());
         match self.external_registry.call(&func_name, &args, &ctx) {
             Ok(results) => {
                 // Push result (single value or s-expression for multiple)

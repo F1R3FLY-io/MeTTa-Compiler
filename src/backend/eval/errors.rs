@@ -1,11 +1,11 @@
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use tracing::trace;
 
 use super::{eval, EvalStep};
 
 /// Error construction: (error msg details)
-pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_error(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_error", ?items);
     if items.len() < 2 {
         return (vec![], env);
@@ -27,7 +27,7 @@ pub(super) fn eval_error(items: Vec<MettaValue>, env: Environment) -> EvalResult
 
 /// HE-compatible error construction: (Error details msg)
 /// Adapts HE's argument order to MeTTaTron's internal format
-pub(super) fn eval_error_he(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_error_he(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     if items.len() < 2 {
         return (vec![], env);
     }
@@ -55,7 +55,7 @@ pub(super) fn eval_error_he(items: Vec<MettaValue>, env: Environment) -> EvalRes
 ///
 /// DEPRECATED: Use eval_if_error_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_if_error(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_if_error", ?items);
     require_args_with_usage!("is-error", items, 1, env, "(is-error expr)");
 
@@ -71,7 +71,7 @@ pub(super) fn eval_if_error(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// Step version of eval_if_error that defers evaluation to trampoline.
 pub(super) fn eval_if_error_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_if_error_step", ?items);
@@ -94,7 +94,7 @@ pub(super) fn eval_if_error_step(
 }
 
 /// Step version of eval_catch that defers evaluation to trampoline.
-pub(super) fn eval_catch_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(super) fn eval_catch_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::eval::eval_catch_step", ?items);
     let args = &items[1..];
 
@@ -120,7 +120,7 @@ pub(super) fn eval_catch_step(items: Vec<MettaValue>, env: Environment, depth: u
 ///
 /// DEPRECATED: Use eval_catch_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_catch(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_catch(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     let args = &items[1..];
     trace!(target: "mettatron::eval::eval_catch", ?items, ?args);
 
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn test_is_error_missing_argument() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (is-error) - missing argument
         let value = MettaValue::SExpr(vec![MettaValue::Atom("is-error".to_string())]);
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_error_propagation() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Create an error
         let error = MettaValue::Error("test error".to_string(), MettaValue::Long(42));
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_error_in_subexpression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (+ (error "fail" 42) 10)
         let value = MettaValue::SExpr(vec![
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_error_construction() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (error "my error" (+ 1 2))
         let value = MettaValue::SExpr(vec![
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_is_error_with_error() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (is-error (error "test" 42))
         // Should return true
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_is_error_with_normal_value() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (is-error (+ 1 2))
         // Should return false
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_catch_with_successful_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test catch where expression succeeds (no error)
         // (catch (+ 2 3) (error "should not reach" nil))
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_error_propagation_through_complex_nested_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test error propagation through deeply nested arithmetic
         // (+ 1 (* 2 (/ 6 (- 4 (error "deep" nil)))))
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_multiple_errors_in_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test expression with multiple errors - first one should win
         // (+ (error "first" nil) (error "second" nil))
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_is_error_with_catch_combinations() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test is-error applied to catch results
         // (is-error (catch (+ 1 2) "default"))
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_error_in_conditional_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test error in if condition
         // (if (error "condition-error" nil) "then" "else")
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_catch_with_error() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (catch (error "fail" 42) "recovered")
         // Should return "recovered" instead of propagating error
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_catch_without_error() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (catch (+ 1 2) "default")
         // Should return 3 (no error occurred)
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn test_catch_prevents_error_propagation() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (+ 10 (catch (error "fail" 0) 5))
         // The error should be caught and replaced with 5, so result is 15
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_error_construction_variants() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test error with just a message (no details)
         let error_msg_only = MettaValue::SExpr(vec![
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_is_error_with_various_types() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test is-error with different MettaValue types
         let test_cases = vec![
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_is_error_with_empty_results() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Create a rule that returns empty: (= (returns-empty) ())
         use crate::backend::models::Rule;
@@ -657,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_catch_with_nested_errors() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test catch with nested error construction
         // (catch (error "outer" (error "inner" 42)) "recovered")
@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_catch_missing_arguments() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test catch with only one argument
         let catch_one_arg = MettaValue::SExpr(vec![
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_reduction_prevention_combo() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Complex reduction prevention:
         // (if (is-error (catch (/ 10 0) (error "caught" 0)))

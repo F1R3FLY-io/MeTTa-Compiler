@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use mettatron::backend::compile::compile;
-use mettatron::backend::environment::Environment;
+use mettatron::backend::environment::HeapEnvironment;
 
 /// Generate N type assertions for benchmarking
 /// Creates type assertions like: (: atom-0 Int), (: atom-1 String), etc.
@@ -30,7 +30,7 @@ fn bench_type_lookup(c: &mut Criterion) {
             type_count,
             |b, _| {
                 // Setup: Create environment with N type assertions
-                let mut env = Environment::default();
+                let mut env = HeapEnvironment::default();
                 let state = compile(&types_src).expect("Failed to compile types");
                 for typ in state.source {
                     env.add_to_space(&typ);
@@ -50,7 +50,7 @@ fn bench_type_lookup(c: &mut Criterion) {
             type_count,
             |b, _| {
                 // Setup: Create environment with N type assertions
-                let mut env = Environment::default();
+                let mut env = HeapEnvironment::default();
                 let state = compile(&types_src).expect("Failed to compile types");
                 for typ in state.source {
                     env.add_to_space(&typ);
@@ -70,7 +70,7 @@ fn bench_type_lookup(c: &mut Criterion) {
             type_count,
             |b, _| {
                 // Setup: Create environment with N type assertions
-                let mut env = Environment::default();
+                let mut env = HeapEnvironment::default();
                 let state = compile(&types_src).expect("Failed to compile types");
                 for typ in state.source {
                     env.add_to_space(&typ);
@@ -90,7 +90,7 @@ fn bench_type_lookup(c: &mut Criterion) {
             type_count,
             |b, _| {
                 // Setup: Create environment with N type assertions
-                let mut env = Environment::default();
+                let mut env = HeapEnvironment::default();
                 let state = compile(&types_src).expect("Failed to compile types");
                 for typ in state.source {
                     env.add_to_space(&typ);
@@ -123,7 +123,7 @@ fn bench_type_index_build(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         // Setup: Create fresh environment for each iteration (cold cache)
-                        let mut env = Environment::default();
+                        let mut env = HeapEnvironment::default();
                         let state = compile(&types_src).expect("Failed to compile types");
                         for typ in state.source {
                             env.add_to_space(&typ);
@@ -145,7 +145,7 @@ fn bench_type_index_build(c: &mut Criterion) {
             type_count,
             |b, _| {
                 // Setup: Create environment and warm up cache
-                let mut env = Environment::default();
+                let mut env = HeapEnvironment::default();
                 let state = compile(&types_src).expect("Failed to compile types");
                 for typ in state.source {
                     env.add_to_space(&typ);
@@ -177,7 +177,7 @@ fn bench_type_lookup_mixed(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         // Setup: Create environment with N-1 type assertions
-                        let mut env = Environment::default();
+                        let mut env = HeapEnvironment::default();
                         let mut types_partial_src = generate_type_assertions(type_count - 1);
                         types_partial_src.push_str("(: new-atom Int)\n");
                         let state = compile(&types_partial_src).expect("Failed to compile types");

@@ -91,7 +91,7 @@ impl MettaHelper {
     /// Note: Variable names are NOT extracted because they are normalized to MORK's
     /// internal variable names ($a, $b, etc.) and don't preserve their original names.
     /// Only function names (symbols) remain unchanged after compilation.
-    pub fn update_from_environment(&mut self, env: &crate::backend::Environment) {
+    pub fn update_from_environment(&mut self, env: &crate::backend::HeapEnvironment) {
         use crate::backend::MettaValueInner;
 
         // Clear previous definitions
@@ -428,10 +428,10 @@ mod tests {
 
     #[test]
     fn test_update_from_environment() {
-        use crate::backend::{compile, eval, Environment};
+        use crate::backend::{compile, eval, HeapEnvironment};
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Initially no user-defined functions
         assert_eq!(helper.defined_functions.len(), 0);
@@ -440,7 +440,7 @@ mod tests {
         let code =
             "(= (fibonacci $n) (if (< $n 2) $n (+ (fibonacci (- $n 1)) (fibonacci (- $n 2)))))";
         let state = compile(code).unwrap();
-        env = env.union(&state.environment);
+        // env = env.union(&state.environment);
 
         // IMPORTANT: Rules are added to environment during evaluation
         for sexpr in state.source {
@@ -472,18 +472,18 @@ mod tests {
 
     #[test]
     fn test_completion_with_user_defined() {
-        use crate::backend::{compile, eval, Environment};
+        use crate::backend::{compile, eval, HeapEnvironment};
         use rustyline::history::DefaultHistory;
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
 
         // Define a function
         let code = "(= (my-func $x) (* 2 $x))";
         let state = compile(code).unwrap();
-        env = env.union(&state.environment);
+        // env = env.union(&state.environment);
 
         // Evaluate to add rules to environment
         for sexpr in state.source {
@@ -501,18 +501,18 @@ mod tests {
 
     #[test]
     fn test_constant_completion() {
-        use crate::backend::{compile, eval, Environment};
+        use crate::backend::{compile, eval, HeapEnvironment};
         use rustyline::history::DefaultHistory;
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
 
         // Define a constant (not a variable, since variable names get normalized)
         let code = "(= my-const 42)";
         let state = compile(code).unwrap();
-        env = env.union(&state.environment);
+        // env = env.union(&state.environment);
 
         // Evaluate to add rules to environment
         for sexpr in state.source {

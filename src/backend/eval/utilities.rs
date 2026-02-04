@@ -1,4 +1,4 @@
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
@@ -13,7 +13,7 @@ use super::EvalStep;
 /// Usage: (get-metatype atom)
 pub(crate) fn eval_get_metatype_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 2 {
@@ -38,7 +38,7 @@ pub(crate) fn eval_get_metatype_step(
 /// This is distinct from:
 /// - Empty result set (vec![]) - no alternatives exist, evaluation branch is dead
 /// - Unit (()) - a valid result representing "success with no value"
-pub(super) fn eval_empty(_items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_empty(_items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     // Return Empty sentinel - will be filtered at result collection
     (vec![MettaValue::Empty()], env)
 }
@@ -49,7 +49,7 @@ pub(super) fn eval_empty(_items: Vec<MettaValue>, env: Environment) -> EvalResul
 ///
 /// DEPRECATED: Use eval_get_metatype_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_get_metatype(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_get_metatype(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("get-metatype", items, 1, env, "(get-metatype atom)");
 
     let atom = &items[1];
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn test_empty_returns_empty_sentinel() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("empty".to_string())];
         let (results, _) = eval_empty(items, env);
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_empty_with_arguments() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (empty 1 2 3) - arguments should be ignored
         let items = vec![
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_empty_environment_unchanged() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("empty".to_string())];
         let (results, _) = eval_empty(items, env);
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_symbol() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("get-metatype".to_string()),
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_variable() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("get-metatype".to_string()),
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_grounded() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("get-metatype".to_string()),
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("foo".to_string()),
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_eval_get_metatype_missing_args() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("get-metatype".to_string())];
         let (results, _) = eval_get_metatype(items, env);

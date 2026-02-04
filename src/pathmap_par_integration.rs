@@ -1,5 +1,5 @@
 use crate::backend::environment::multiplicity::Multiplicity;
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 /// PathMap Par Integration Module
 ///
 /// Provides conversion between MeTTa types and Rholang PathMap-based Par types.
@@ -202,7 +202,7 @@ pub fn metta_values_to_list_par(values: &[MettaValue]) -> Par {
 ///   ("space", GByteArray) - Raw MORK trie bytes
 ///   ("multiplicities", GByteArray) - Binary encoded multiplicities map
 /// Note: Type assertions are stored within the space, not separately
-pub fn environment_to_par(env: &Environment) -> Par {
+pub fn environment_to_par(env: &HeapEnvironment) -> Par {
     // CRITICAL FIX for "reserved 111" bug:
     // We CANNOT use dump_all_sexpr() because it calls serialize2() which interprets
     // bytes as MORK tags. When symbol data contains bytes in range 64-127 (like 'o'=111),
@@ -481,7 +481,7 @@ pub fn metta_error_to_par(error_msg: &str) -> Par {
     // Create a MettaState with the error in output
     let error_state = MettaState {
         source: vec![],
-        environment: Environment::default(),
+        environment: HeapEnvironment::default(),
         output: vec![error_value],
     };
 
@@ -595,7 +595,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
 ///   (("space", GByteArray), ("multiplicities", GByteArray))
 ///   or (("space", GByteArray), ("multiplicities", GByteArray), ("large_exprs", GByteArray))
 /// Note: Type assertions are stored within the space, not separately
-pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
+pub fn par_to_environment(par: &Par) -> Result<HeapEnvironment, String> {
     use std::collections::HashMap;
     trace!(target: "mettatron::rholang_integration::par_to_environment", par_exprs_count = par.exprs.len());
 
@@ -711,7 +711,7 @@ pub fn par_to_environment(par: &Par) -> Result<Environment, String> {
             }
 
             // Reconstruct Environment
-            let mut env = Environment::default();
+            let mut env = HeapEnvironment::default();
 
             // Restore multiplicities
             env.set_multiplicities(multiplicities_map);
@@ -1030,7 +1030,7 @@ mod tests {
     #[test]
     fn test_environment_serialization_roundtrip() {
         // Create an environment with a rule
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
         let rule = Rule::new(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
@@ -1344,7 +1344,7 @@ mod tests {
     #[test]
     fn test_reserved_bytes_roundtrip_y_z() {
         // Test with symbols containing 'y' (121) and 'z' (122) - reserved bytes
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add expression with reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1374,7 +1374,7 @@ mod tests {
     #[test]
     fn test_reserved_bytes_roundtrip_tilde() {
         // Test with tilde '~' (126) - the specific byte mentioned in the bug report
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add expression with tilde (the problematic reserved byte)
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1409,7 +1409,7 @@ mod tests {
     #[test]
     fn test_reserved_bytes_multiple_roundtrips() {
         // Test multiple round-trips to ensure bytes are preserved exactly
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add multiple expressions with various reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1456,7 +1456,7 @@ mod tests {
     #[test]
     fn test_reserved_bytes_with_rules() {
         // Test the original bug scenario: rules with if + match containing reserved bytes
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add fact with reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1509,7 +1509,7 @@ mod tests {
     fn test_reserved_bytes_all_range() {
         // Test all bytes in the reserved range (64-127)
         // This ensures the fix works for ANY reserved byte, not just specific ones
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add expressions with various ASCII characters in the reserved range
         // '@' = 64, 'A' = 65, ..., 'Z' = 90, ..., 'z' = 122, '{' = 123, '~' = 126, DEL = 127
@@ -1546,7 +1546,7 @@ mod tests {
         // REGRESSION TEST for the "reserved 111" bug from robot_planning.rho
         // This test specifically uses symbols containing 'o' (byte 111) which is reserved
         // The bug occurred when dump_all_sexpr() tried to interpret 'o' as a tag byte
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add facts with 'o' (111) - the specific byte that triggered the demo failure
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1613,7 +1613,7 @@ mod tests {
         // This exposes issues that simple round-trip tests miss
         use crate::backend::eval::eval;
 
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add facts with 'o' (111) - reserved byte
         env.add_to_space(&MettaValue::SExpr(vec![

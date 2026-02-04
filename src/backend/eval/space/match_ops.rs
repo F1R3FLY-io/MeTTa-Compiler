@@ -5,7 +5,7 @@
 
 use tracing::debug;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner, SpaceHandle};
 
 use super::super::EvalStep;
@@ -15,7 +15,7 @@ use super::helpers::suggest_space_name;
 
 /// Step version of eval_match - defers evaluation to trampoline.
 /// Handles both 3-arg (match space pattern template) and 4-arg (match & self pattern template) syntaxes.
-pub(crate) fn eval_match_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(crate) fn eval_match_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     let args = &items[1..];
     debug!(target: "mettatron::eval::eval_match_step", ?args, ?items);
 
@@ -136,7 +136,7 @@ pub(crate) fn eval_match_step(items: Vec<MettaValue>, env: Environment, depth: u
 ///
 /// DEPRECATED: Use eval_match_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_match(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_match(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     let args = &items[1..];
     debug!(target: "mettatron::eval::eval_match", ?args, ?items);
 
@@ -272,7 +272,7 @@ fn match_with_space_handle(
     handle: &SpaceHandle,
     pattern: &MettaValue,
     template: &MettaValue,
-    env: &Environment,
+    env: &HeapEnvironment,
 ) -> Vec<MettaValue> {
     // Debug logging
     let debug = std::env::var("METTA_DEBUG_MATCH").is_ok();

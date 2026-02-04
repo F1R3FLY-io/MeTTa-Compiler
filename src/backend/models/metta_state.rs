@@ -1,5 +1,5 @@
 use super::MettaValue;
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 
 /// MeTTa compilation/evaluation state for PathMap-based REPL integration
 /// This structure represents the state of a MeTTa computation session.
@@ -28,7 +28,7 @@ pub struct MettaState {
     /// Source s-expressions to be evaluated
     pub source: Vec<MettaValue>,
     /// The atom space (MORK fact database) containing rules and facts
-    pub environment: Environment,
+    pub environment: HeapEnvironment,
     /// Evaluation output results
     pub output: Vec<MettaValue>,
 }
@@ -38,7 +38,7 @@ impl MettaState {
     pub fn new_compiled(source: Vec<MettaValue>) -> Self {
         MettaState {
             source,
-            environment: Environment::default(),
+            environment: HeapEnvironment::default(),
             output: Vec::new(),
         }
     }
@@ -47,13 +47,13 @@ impl MettaState {
     pub fn new_empty() -> Self {
         MettaState {
             source: Vec::new(),
-            environment: Environment::default(),
+            environment: HeapEnvironment::default(),
             output: Vec::new(),
         }
     }
 
     /// Create an accumulated state with existing environment and output
-    pub fn new_accumulated(environment: Environment, output: Vec<MettaValue>) -> Self {
+    pub fn new_accumulated(environment: HeapEnvironment, output: Vec<MettaValue>) -> Self {
         MettaState {
             source: Vec::new(),
             environment,
@@ -106,7 +106,7 @@ impl From<MettaValue> for MettaState {
     fn from(error_sexpr: MettaValue) -> Self {
         MettaState {
             source: vec![error_sexpr],
-            environment: Environment::default(),
+            environment: HeapEnvironment::default(),
             output: Vec::new(),
         }
     }
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn test_to_json_with_output() {
         let state = MettaState::new_accumulated(
-            Environment::default(),
+            HeapEnvironment::default(),
             vec![
                 MettaValue::Bool(true),
                 MettaValue::String("result".to_string()),
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn test_to_json_with_environment() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
         env.add_rule(Rule::new(
             MettaValue::Atom("x".to_string()),
             MettaValue::Long(1),
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_to_json_complete() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
         env.add_rule(Rule::new(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
@@ -223,7 +223,7 @@ mod tests {
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ])],
-            environment: Environment::default(),
+            environment: HeapEnvironment::default(),
             output: vec![MettaValue::SExpr(vec![
                 MettaValue::Atom("result".to_string()),
                 MettaValue::Long(3),

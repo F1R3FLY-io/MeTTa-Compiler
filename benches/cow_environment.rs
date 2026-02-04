@@ -8,7 +8,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use mettatron::backend::models::{MettaValue, Rule};
-use mettatron::backend::Environment;
+use mettatron::backend::HeapEnvironment;
 use std::sync::Arc as StdArc;
 
 // ============================================================================
@@ -24,8 +24,8 @@ fn make_test_rule(pattern: &str, body: &str) -> Rule {
 }
 
 /// Populate environment with n rules
-fn populate_environment(n: usize) -> Environment {
-    let mut env = Environment::default();
+fn populate_environment(n: usize) -> HeapEnvironment {
+    let mut env = HeapEnvironment::default();
     for i in 0..n {
         let rule = make_test_rule(&format!("(rule{} $x)", i), &format!("(result{} $x)", i));
         env.add_rule(rule);
@@ -41,7 +41,7 @@ fn bench_clone_cost(c: &mut Criterion) {
     let mut group = c.benchmark_group("clone_cost");
 
     // Empty environment
-    let empty = Environment::default();
+    let empty = HeapEnvironment::default();
     group.bench_function("empty", |b| {
         b.iter(|| {
             let clone = black_box(&empty).clone();
@@ -272,7 +272,7 @@ fn bench_typical_workload(c: &mut Criterion) {
     group.bench_function("create_add_clone_mutate", |b| {
         b.iter(|| {
             // Create and populate
-            let mut env = Environment::default();
+            let mut env = HeapEnvironment::default();
             for i in 0..50 {
                 let rule = make_test_rule(&format!("(rule{} $x)", i), "(result $x)");
                 env.add_rule(rule);

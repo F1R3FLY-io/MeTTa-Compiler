@@ -20,7 +20,7 @@
 use std::collections::VecDeque;
 use std::fmt::Debug;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::grounded::GenericGroundedState;
 use crate::backend::models::{GenericBindings, MemoHandle, MettaValue, MettaValueTrait, SpaceHandle};
 
@@ -35,7 +35,7 @@ pub const MAX_EVAL_DEPTH: usize = 1000;
 ///
 /// Parameterized over value type V and environment type E.
 /// Default E = Environment for backward compatibility.
-pub type GenericEvalResult<V, E = Environment> = (Vec<V>, E);
+pub type GenericEvalResult<V, E = HeapEnvironment> = (Vec<V>, E);
 
 /// Generic work item representing pending evaluation work.
 ///
@@ -47,7 +47,7 @@ pub type GenericEvalResult<V, E = Environment> = (Vec<V>, E);
 /// - `V: MettaValueTrait` - The value type (MettaValue or ArenaValue)
 /// - `E: Clone` - The environment type (defaults to Environment for backward compatibility)
 #[derive(Debug)]
-pub enum GenericWorkItem<V: MettaValueTrait, E: Clone = Environment> {
+pub enum GenericWorkItem<V: MettaValueTrait, E: Clone = HeapEnvironment> {
     /// Evaluate a value and send result to continuation
     Eval {
         value: V,
@@ -82,7 +82,7 @@ pub enum GenericWorkItem<V: MettaValueTrait, E: Clone = Environment> {
 /// the original environment for debugging/reference.
 #[derive(Debug)]
 #[allow(dead_code)]
-pub enum GenericContinuation<V: MettaValueTrait, E: Clone = Environment> {
+pub enum GenericContinuation<V: MettaValueTrait, E: Clone = HeapEnvironment> {
     /// Final result - return from eval()
     Done,
 
@@ -579,15 +579,15 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = Environment> {
 
 /// WorkItem specialized for heap-allocated MettaValue with standard Environment
 #[allow(dead_code)]
-pub type HeapWorkItem = GenericWorkItem<MettaValue, Environment>;
+pub type HeapWorkItem = GenericWorkItem<MettaValue, HeapEnvironment>;
 
 /// Continuation specialized for heap-allocated MettaValue with standard Environment
 #[allow(dead_code)]
-pub type HeapContinuation = GenericContinuation<MettaValue, Environment>;
+pub type HeapContinuation = GenericContinuation<MettaValue, HeapEnvironment>;
 
 /// EvalResult specialized for heap-allocated MettaValue with standard Environment
 #[allow(dead_code)]
-pub type HeapEvalResult = GenericEvalResult<MettaValue, Environment>;
+pub type HeapEvalResult = GenericEvalResult<MettaValue, HeapEnvironment>;
 
 #[cfg(test)]
 mod tests {

@@ -13,7 +13,7 @@
 //! Reference: /home/dylon/Workspace/f1r3fly.io/MORK/kernel/resources/ancestor.mm2
 
 use mettatron::backend::compile::compile;
-use mettatron::backend::environment::Environment;
+use mettatron::backend::environment::HeapEnvironment;
 use mettatron::backend::eval::eval;
 use mettatron::backend::eval::fixed_point::eval_env_to_fixed_point;
 
@@ -31,7 +31,7 @@ use mettatron::backend::eval::fixed_point::eval_env_to_fixed_point;
 
 #[test]
 fn test_full_ancestor_mm2() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // ========== FACTS (lines 8-19) ==========
 
@@ -219,7 +219,7 @@ fn test_ancestor_mm2_with_incest_detection() {
     // This test adds the additional family relationships mentioned in
     // ancestor.mm2 lines 41-45 to test incest detection rules
 
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Base family (subset for faster test)
     env.add_to_space(&compile("(parent Bob Ann)").unwrap().source[0]);
@@ -313,7 +313,7 @@ fn test_ancestor_mm2_meta_rule_execution() {
     // Focus on testing the meta-programming pattern (lines 33-36)
     // where exec rules generate new exec rules
 
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Simple family: Ann -> Bob -> Carol
     env.add_to_space(&compile("(parent Bob Ann)").unwrap().source[0]);
@@ -375,26 +375,26 @@ fn test_ancestor_mm2_meta_rule_execution() {
 // ========== HELPER FUNCTIONS ==========
 
 /// Count total facts in environment
-fn count_facts(env: &Environment) -> usize {
+fn count_facts(env: &HeapEnvironment) -> usize {
     let wildcard = compile("$_").unwrap().source[0].clone();
     env.match_space(&wildcard, &wildcard).len()
 }
 
 /// Query for a specific fact
-fn query_fact(env: &Environment, fact_str: &str) -> Vec<mettatron::backend::models::MettaValue> {
+fn query_fact(env: &HeapEnvironment, fact_str: &str) -> Vec<mettatron::backend::models::MettaValue> {
     let query = compile(&format!("(match &self {} {})", fact_str, fact_str)).unwrap();
     let (results, _) = eval(query.source[0].clone(), env.clone());
     results
 }
 
 /// Query with pattern variables
-fn query_pattern(env: &Environment, pattern: &str) -> Vec<mettatron::backend::models::MettaValue> {
+fn query_pattern(env: &HeapEnvironment, pattern: &str) -> Vec<mettatron::backend::models::MettaValue> {
     let query = compile(&format!("(match &self {} {})", pattern, pattern)).unwrap();
     let (results, _) = eval(query.source[0].clone(), env.clone());
     results
 }
 
 /// Count exec rules in space
-fn count_exec_rules(env: &Environment) -> usize {
+fn count_exec_rules(env: &HeapEnvironment) -> usize {
     query_pattern(env, "(exec $p $a $c)").len()
 }

@@ -10,7 +10,7 @@
 //! - backtrack: Force immediate backtracking
 //! - get-atoms: Get all atoms from a space as a superposition
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
@@ -21,7 +21,7 @@ use super::super::EvalStep;
 /// Usage: (collapse expr)
 pub(crate) fn eval_collapse_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 2 {
@@ -55,7 +55,7 @@ pub(crate) fn eval_collapse_step(
 ///
 /// DEPRECATED: Use eval_collapse_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_collapse(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("collapse", items, 1, env, "(collapse expr)");
 
     let expr = &items[1];
@@ -101,7 +101,7 @@ pub(crate) fn eval_collapse(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// Usage: (collapse-bind expr)
 pub(crate) fn eval_collapse_bind_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 2 {
@@ -138,7 +138,7 @@ pub(crate) fn eval_collapse_bind_step(
 ///
 /// DEPRECATED: Use eval_collapse_bind_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_collapse_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_collapse_bind(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("collapse-bind", items, 1, env, "(collapse-bind expr)");
 
     let expr = &items[1];
@@ -164,7 +164,7 @@ pub(crate) fn eval_collapse_bind(items: Vec<MettaValue>, env: Environment) -> Ev
 /// !(superpose (1 2 3))  ; Returns 1, 2, 3 as separate results
 /// !(superpose ())       ; Returns empty (no results)
 /// ```
-pub(crate) fn eval_superpose(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_superpose(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("superpose", items, 1, env, "(superpose list)");
 
     let expr = &items[1];
@@ -198,7 +198,7 @@ pub(crate) fn eval_superpose(items: Vec<MettaValue>, env: Environment) -> EvalRe
 
 /// Step version of eval_amb - defers evaluation to trampoline.
 /// Usage: (amb alt1 alt2 ... altN)
-pub(crate) fn eval_amb_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(crate) fn eval_amb_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     let alternatives = items[1..].to_vec();
 
     if alternatives.is_empty() {
@@ -227,7 +227,7 @@ pub(crate) fn eval_amb_step(items: Vec<MettaValue>, env: Environment, depth: usi
 ///
 /// DEPRECATED: Use eval_amb_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_amb(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_amb(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     let args = &items[1..];
 
     if args.is_empty() {
@@ -250,7 +250,7 @@ pub(crate) fn eval_amb(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 
 /// Step version of eval_guard - defers evaluation to trampoline.
 /// Usage: (guard condition)
-pub(crate) fn eval_guard_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(crate) fn eval_guard_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     if items.len() < 2 {
         let err = MettaValue::Error(
             "guard requires 1 argument. Usage: (guard condition)".to_string(),
@@ -280,7 +280,7 @@ pub(crate) fn eval_guard_step(items: Vec<MettaValue>, env: Environment, depth: u
 ///
 /// DEPRECATED: Use eval_guard_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_guard(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_guard(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("guard", items, 1, env, "(guard condition)");
 
     let condition = &items[1];
@@ -335,7 +335,7 @@ pub(crate) fn eval_guard(items: Vec<MettaValue>, env: Environment) -> EvalResult
 /// !(commit)    ; Remove all choice points
 /// !(commit 1)  ; Remove 1 choice point
 /// ```
-pub(crate) fn eval_commit(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_commit(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     // In tree-walker evaluation, commit is a no-op since we don't maintain
     // explicit choice points. The nondeterminism is handled through result lists.
     // Just return Unit to indicate success.
@@ -353,7 +353,7 @@ pub(crate) fn eval_commit(items: Vec<MettaValue>, env: Environment) -> EvalResul
 /// ```metta
 /// !(backtrack)  ; Returns empty (no results)
 /// ```
-pub(crate) fn eval_backtrack(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_backtrack(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     let _ = items; // Suppress unused warning
                    // Return empty to signal nondeterministic failure
     (vec![], env)
@@ -363,7 +363,7 @@ pub(crate) fn eval_backtrack(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// Usage: (get-atoms space)
 pub(crate) fn eval_get_atoms_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 2 {
@@ -394,7 +394,7 @@ pub(crate) fn eval_get_atoms_step(
 ///
 /// DEPRECATED: Use eval_get_atoms_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_get_atoms(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_get_atoms(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("get-atoms", items, 1, env, "(get-atoms space)");
 
     let space_ref = &items[1];

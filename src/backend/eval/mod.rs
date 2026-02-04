@@ -44,7 +44,7 @@ mod eval_tests;
 
 use tracing::debug;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue};
 
 // Re-export from cartesian module
@@ -91,10 +91,6 @@ pub(crate) use processing::{
     handle_no_rule_match, process_collected_sexpr, process_single_combination,
 };
 
-// Re-export from conjunction module (deprecated - use conjunction::eval_conjunction_step instead)
-#[allow(unused_imports)]
-use conjunction::eval_conjunction;
-
 // Re-export from control_flow module for trampoline access
 pub(crate) use control_flow::eval_switch_minimal_trampoline;
 
@@ -114,7 +110,7 @@ pub(crate) use control_flow::eval_switch_minimal_trampoline;
 ///
 /// Each execution records a count and triggers background compilation at thresholds.
 /// The HybridExecutor handles tier dispatch, with graceful fallback to lower tiers.
-pub fn eval(value: MettaValue, env: Environment) -> EvalResult {
+pub fn eval(value: MettaValue, env: HeapEnvironment) -> EvalResult {
     debug!(metta_val = ?value);
 
     use crate::backend::bytecode::{

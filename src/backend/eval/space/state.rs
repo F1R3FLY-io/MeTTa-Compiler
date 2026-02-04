@@ -5,7 +5,7 @@
 //! - get-state: Get the current value from a state cell
 //! - change-state!: Change the value in a state cell
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
@@ -16,7 +16,7 @@ use super::super::EvalStep;
 /// Usage: (new-state initial-value)
 pub(crate) fn eval_new_state_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 2 {
@@ -43,7 +43,7 @@ pub(crate) fn eval_new_state_step(
 /// Usage: (get-state state-ref)
 pub(crate) fn eval_get_state_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 2 {
@@ -70,7 +70,7 @@ pub(crate) fn eval_get_state_step(
 /// Usage: (change-state! state-ref new-value)
 pub(crate) fn eval_change_state_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 3 {
@@ -100,7 +100,7 @@ pub(crate) fn eval_change_state_step(
 ///
 /// DEPRECATED: Use eval_new_state_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_new_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_new_state(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("new-state", items, 1, env, "(new-state initial-value)");
 
     let initial_value = &items[1];
@@ -125,7 +125,7 @@ pub(crate) fn eval_new_state(items: Vec<MettaValue>, env: Environment) -> EvalRe
 ///
 /// DEPRECATED: Use eval_get_state_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_get_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_get_state(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("get-state", items, 1, env, "(get-state state)");
 
     let state_ref = &items[1];
@@ -173,7 +173,7 @@ pub(crate) fn eval_get_state(items: Vec<MettaValue>, env: Environment) -> EvalRe
 ///
 /// DEPRECATED: Use eval_change_state_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_change_state(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_change_state(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!(
         "change-state!",
         items,

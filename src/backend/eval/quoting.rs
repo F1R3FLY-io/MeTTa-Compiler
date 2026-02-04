@@ -1,10 +1,10 @@
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 #[allow(unused_imports)]
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use tracing::trace;
 
 /// Quote: return argument unevaluated
-pub(super) fn eval_quote(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_quote(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_quote", ?items);
     require_args_with_usage!("quote", items, 1, env, "(quote expr)");
     (vec![items[1].clone()], env)
@@ -17,7 +17,7 @@ mod tests {
 
     #[test]
     fn test_quote_missing_argument() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (quote) - missing argument
         let value = MettaValue::SExpr(vec![MettaValue::Atom("quote".to_string())]);
@@ -35,7 +35,7 @@ mod tests {
 
     #[test]
     fn test_quote_prevents_evaluation() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (quote (+ 1 2))
         // Should return the expression unevaluated
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_variable() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (quote $x)
         let value = MettaValue::SExpr(vec![
@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_complex_nested_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quoting deeply nested expressions
         // (quote (+ 1 (* 2 (/ 6 3))))
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_different_value_types() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quoting different types of values
         let test_cases = vec![
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_variables() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quoting variables with different prefixes
         let variable_cases = vec![
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_expressions_containing_special_forms() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quoting expressions that contain special forms
         // (quote (if (> 5 3) "yes" "no"))
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_errors() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quoting error expressions
         // (quote (error "test" 42))
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_empty_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quoting empty expressions
         // (quote ())
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_quote_preserves_exact_structure() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test that quote preserves exact structure including nested quotes
         // (quote (quote (+ 1 2)))
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_function_calls() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quoting function calls (should not be evaluated)
         // (quote (foo bar baz))
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_arithmetic_operations() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test that quoted arithmetic is not evaluated
         // (quote (* (+ 2 3) (- 10 4)))
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_comparison_operations() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quoting comparison operations
         // (quote (< (+ 1 2) (* 2 2)))
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_quote_integration_with_eval() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test that eval can process quoted expressions
         // (eval (quote (+ 2 3)))
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn test_quote_preserves_special_types() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quoting Type values
         let quote_type = MettaValue::SExpr(vec![
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_quote_in_complex_control_flow() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quote within if expressions
         // (if true (quote (+ 1 2)) (quote (+ 3 4)))
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_quote_with_very_deep_nesting() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test quote with deeply nested structure (stress test)
         // (quote (a (b (c (d (e (f 42)))))))

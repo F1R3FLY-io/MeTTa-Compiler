@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::warn;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::eval::pattern_match;
 use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 
@@ -71,7 +71,7 @@ impl RuleCacheKey {
 /// shared across VM invocations.
 pub struct MorkBridge {
     /// Reference to the environment for rule lookup
-    env: Arc<RwLock<Environment>>,
+    env: Arc<RwLock<HeapEnvironment>>,
 
     /// Cache of compiled rule bodies
     /// Key: hash of rule RHS
@@ -154,7 +154,7 @@ impl BridgeStats {
 
 impl MorkBridge {
     /// Create a new bridge with the given environment
-    pub fn new(env: Arc<RwLock<Environment>>) -> Self {
+    pub fn new(env: Arc<RwLock<HeapEnvironment>>) -> Self {
         Self {
             env,
             rule_cache: RwLock::new(HashMap::new()),
@@ -163,12 +163,12 @@ impl MorkBridge {
     }
 
     /// Create a bridge from an owned environment
-    pub fn from_env(env: Environment) -> Self {
+    pub fn from_env(env: HeapEnvironment) -> Self {
         Self::new(Arc::new(RwLock::new(env)))
     }
 
     /// Get the underlying environment
-    pub fn environment(&self) -> Arc<RwLock<Environment>> {
+    pub fn environment(&self) -> Arc<RwLock<HeapEnvironment>> {
         Arc::clone(&self.env)
     }
 
@@ -220,7 +220,7 @@ impl MorkBridge {
     fn find_matching_rules(
         &self,
         expr: &MettaValue,
-        env: &Environment,
+        env: &HeapEnvironment,
     ) -> Vec<(MettaValue, MettaValue, Bindings)> {
         // Extract head symbol and arity for indexed lookup (lazy iteration)
         let matching_rules = if let Some(head) = get_head_symbol(expr) {
@@ -333,14 +333,14 @@ mod tests {
 
     #[test]
     fn test_bridge_creation() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let bridge = MorkBridge::from_env(env);
         assert_eq!(bridge.cache_size(), 0);
     }
 
     #[test]
     fn test_dispatch_no_rules() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let bridge = MorkBridge::from_env(env);
 
         let expr = MettaValue::SExpr(vec![
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_with_rule() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add rule: (= (double $x) (+ $x $x))
         let rule = Rule::new(
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_rule_caching() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add rule
         let rule = Rule::new(

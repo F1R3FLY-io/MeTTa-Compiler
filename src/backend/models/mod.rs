@@ -24,10 +24,10 @@ pub use metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
 pub use multiset::{AtomMultiset, AtomMultisetSnapshot};
 pub use space_handle::{GenericMultiplicityMatch, SpaceHandle};
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 
 /// Result of evaluation: (result, new_environment)
-pub type EvalResult = (Vec<MettaValue>, Environment);
+pub type EvalResult = (Vec<MettaValue>, HeapEnvironment);
 
 /// Represents a pattern matching rule: (= lhs rhs)
 /// MettaValue is O(1) to clone (internally Arc-wrapped), so rules

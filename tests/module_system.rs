@@ -8,7 +8,7 @@
 //! - Format precedence (`_pkg-info.metta` > `metta.toml`)
 //! - Strict mode behavior
 
-use mettatron::{compile, eval, Environment, MettaValue};
+use mettatron::{compile, eval, HeapEnvironment, MettaValue};
 use std::fs;
 use std::path::PathBuf;
 
@@ -23,7 +23,7 @@ fn fixtures_dir() -> PathBuf {
 
 #[test]
 fn test_include_basic_file() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
     let fixture_path = fixtures_dir().join("test_module.metta");
 
     // Set up the environment to know about our test directory
@@ -41,7 +41,7 @@ fn test_include_basic_file() {
 
 #[test]
 fn test_include_defines_rules() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
     let fixture_path = fixtures_dir().join("test_module.metta");
     env.set_current_module_path(Some(fixtures_dir()));
 
@@ -62,7 +62,7 @@ fn test_include_defines_rules() {
 
 #[test]
 fn test_include_caches_module() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
     let fixture_path = fixtures_dir().join("test_module.metta");
     env.set_current_module_path(Some(fixtures_dir()));
 
@@ -92,7 +92,7 @@ fn test_include_caches_module() {
 
 #[test]
 fn test_import_via_include() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
     let fixture_path = fixtures_dir().join("test_module.metta");
     env.set_current_module_path(Some(fixtures_dir()));
 
@@ -120,7 +120,7 @@ fn test_import_via_include() {
 
 #[test]
 fn test_bind_creates_token() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // bind! is a special form that evaluates directly
     // Using token without & prefix due to parser limitation with &-prefixed tokens
@@ -139,7 +139,7 @@ fn test_bind_creates_token() {
 
 #[test]
 fn test_bind_with_expression() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // Bind to a computed value
     let code = r#"(bind! sum-value (+ 10 20))"#;
@@ -155,7 +155,7 @@ fn test_bind_with_expression() {
 
 #[test]
 fn test_bind_token_resolution() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
 
     // First bind a value
     let bind_code = r#"(bind! x-val 100)"#;
@@ -179,13 +179,13 @@ fn test_bind_token_resolution() {
 
 #[test]
 fn test_strict_mode_default_disabled() {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
     assert!(!env.is_strict_mode());
 }
 
 #[test]
 fn test_strict_mode_can_be_enabled() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
     env.set_strict_mode(true);
     assert!(env.is_strict_mode());
 }
@@ -549,7 +549,7 @@ version = "1.0.0"
 
 #[test]
 fn test_full_module_workflow() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
     let fixture_path = fixtures_dir().join("test_module.metta");
     env.set_current_module_path(Some(fixtures_dir()));
 
@@ -570,7 +570,7 @@ fn test_full_module_workflow() {
 
 #[test]
 fn test_transitive_imports() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
     env.set_current_module_path(Some(fixtures_dir()));
 
     // Include module B, which includes module A

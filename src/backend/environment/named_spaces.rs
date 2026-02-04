@@ -120,7 +120,7 @@ where
 }
 
 // MettaValue-specific iterator for collapse_named_space_iter
-impl super::Environment {
+impl super::HeapEnvironment {
     /// Iterator over named space atoms.
     ///
     /// With DashMap, atoms are collected into a Vec for iteration.

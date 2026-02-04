@@ -35,7 +35,7 @@ pub(crate) static VARNAMES: [&str; 64] = [
     "$c2", "$d2", "$e2", "$f2", "$g2", "$h2", "$i2", "$j2", "$k2", "$l2",
 ];
 
-impl super::Environment {
+impl super::HeapEnvironment {
     /// Extract (head_symbol_bytes, arity) from MORK expression bytes in O(1).
     ///
     /// This is used for lazy pre-filtering in `match_space()`: if the pattern has a fixed

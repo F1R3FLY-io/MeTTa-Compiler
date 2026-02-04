@@ -5,7 +5,7 @@
 
 use tracing::trace;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 #[allow(unused_imports)]
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
@@ -18,7 +18,7 @@ use super::combination::process_single_combination;
 /// Uses lazy Cartesian product for memory-efficient nondeterministic evaluation.
 pub fn process_collected_sexpr(
     collected: Vec<EvalResult>,
-    original_env: Environment,
+    original_env: HeapEnvironment,
     depth: usize,
 ) -> ProcessedSExpr {
     trace!(target: "mettatron::backend::eval::process_collected_sexpr", ?collected, depth);
@@ -35,11 +35,9 @@ pub fn process_collected_sexpr(
     // Split results and environments
     let (eval_results, envs): (Vec<_>, Vec<_>) = collected.into_iter().unzip();
 
-    // Union all environments
-    let mut unified_env = original_env;
-    for e in envs {
-        unified_env = unified_env.union(&e);
-    }
+    // Union all environments using optimized batch method
+    // This avoids N allocations in the common case where nothing was modified
+    let unified_env = original_env.union_all(&envs);
 
     // Generate lazy Cartesian product of all sub-expression results
     match cartesian_product_lazy(eval_results) {

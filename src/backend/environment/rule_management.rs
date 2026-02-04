@@ -32,7 +32,7 @@ use super::multiplicity::{
     add_atom, decrement_multiplicity, get_multiplicity, increment_multiplicity, set_multiplicity,
     Multiplicity,
 };
-use super::{Environment, MettaValue, Rule};
+use super::{HeapEnvironment, MettaValue, Rule};
 use crate::backend::models::{GenericRule, MettaValueFactory, MettaValueInner, MettaValueTrait};
 use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 use crate::backend::symbol::Symbol;
@@ -118,7 +118,7 @@ impl<V: Clone + Default + Send + Sync + Unpin> RulesIter<V> {
         };
 
         // Convert MORK expression to MettaValue
-        if let Ok(value) = Environment::mork_expr_to_metta_value(&expr, &self.space) {
+        if let Ok(value) = HeapEnvironment::mork_expr_to_metta_value(&expr, &self.space) {
             if let MettaValueInner::SExpr(items) = value.inner() {
                 if items.len() == 3 {
                     if let MettaValueInner::Atom(op) = items[0].inner() {
@@ -312,7 +312,7 @@ where
     }
 }
 
-impl Environment {
+impl HeapEnvironment {
     /// Get the number of rules in the environment
     /// Counts rules from the rule_index and wildcard_rules (thread-safe, avoids PathMap iteration)
     pub fn rule_count(&self) -> usize {

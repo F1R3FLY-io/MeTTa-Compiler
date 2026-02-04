@@ -8,7 +8,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use super::generic::GenericEnvironment;
-use super::Environment;
+use super::HeapEnvironment;
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 use crate::backend::modules::{LoadOptions, ModId};
 
@@ -57,7 +57,7 @@ where
 // MettaValue-specific Module Operations
 // ============================================================================
 
-impl Environment {
+impl HeapEnvironment {
     /// Check if a module is cached by path
     pub fn get_module_by_path(&self, path: &std::path::Path) -> Option<ModId> {
         self.shared

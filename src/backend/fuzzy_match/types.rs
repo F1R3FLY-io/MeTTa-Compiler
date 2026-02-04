@@ -1,7 +1,7 @@
 //! Types for fuzzy matching and smart suggestions.
 
 use crate::backend::models::MettaValue;
-use crate::backend::Environment;
+use crate::backend::HeapEnvironment;
 
 /// Result of a smart suggestion query with confidence level
 #[derive(Debug, Clone)]
@@ -38,12 +38,12 @@ pub struct SuggestionContext<'a> {
     /// Head of the parent expression (if symbol is not in head position)
     pub parent_head: Option<&'a str>,
     /// Environment for type inference
-    pub env: &'a Environment,
+    pub env: &'a HeapEnvironment,
 }
 
 impl<'a> SuggestionContext<'a> {
     /// Create a new context for head position
-    pub fn for_head(expr: &'a [MettaValue], env: &'a Environment) -> Self {
+    pub fn for_head(expr: &'a [MettaValue], env: &'a HeapEnvironment) -> Self {
         Self {
             expr,
             position: 0,
@@ -57,7 +57,7 @@ impl<'a> SuggestionContext<'a> {
         expr: &'a [MettaValue],
         position: usize,
         parent_head: &'a str,
-        env: &'a Environment,
+        env: &'a HeapEnvironment,
     ) -> Self {
         Self {
             expr,

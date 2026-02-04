@@ -1,5 +1,5 @@
 use crate::backend::compile::compile;
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner, Rule};
 use crate::backend::modules::{hash_content, resolve_module_path};
 
@@ -20,7 +20,7 @@ use super::EvalStep;
 /// - Two-pass loading: Indexes rules before evaluation (handles cyclic deps)
 ///
 /// Returns the result of the last expression
-pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_include(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("include", items, 1, env, "(include path)");
 
     let path_arg = &items[1];
@@ -193,7 +193,7 @@ pub(super) fn eval_include(items: Vec<MettaValue>, env: Environment) -> EvalResu
 /// 3. Optionally renaming the item in the current space
 ///
 /// Returns Unit on success
-pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_import(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     // (import! dest module [item [as alias]] [options...])
     if items.len() < 3 {
         let err = MettaValue::Error(
@@ -346,7 +346,7 @@ pub(super) fn eval_import(items: Vec<MettaValue>, env: Environment) -> EvalResul
 /// !(let $s (mod-space! "mymodule.metta")
 ///     (match $s (person $name) $name))
 /// ```
-pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     use crate::backend::models::SpaceHandle;
 
     require_args_with_usage!("mod-space!", items, 1, env, "(mod-space! module-path)");
@@ -373,7 +373,7 @@ pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: Environment) -> EvalRe
     let resolved_path = resolve_module_path(&module_path_str, env.current_module_dir());
 
     // Helper to create Space from module
-    let create_space = |mod_id, module_path: &str, env: &Environment| -> Option<MettaValue> {
+    let create_space = |mod_id, module_path: &str, env: &HeapEnvironment| -> Option<MettaValue> {
         env.get_module_space(mod_id).map(|space| {
             let handle = SpaceHandle::for_module(mod_id, module_path.to_string(), space);
             MettaValue::Space(handle)
@@ -427,7 +427,7 @@ pub(super) fn eval_mod_space(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// print-mods!: Print all loaded modules (debug utility)
 /// Usage: (print-mods!)
 /// Returns Unit
-pub(super) fn eval_print_mods(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_print_mods(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     // No arguments required
     if items.len() > 1 {
         let err = MettaValue::Error(
@@ -449,7 +449,7 @@ pub(super) fn eval_print_mods(items: Vec<MettaValue>, env: Environment) -> EvalR
 
 /// Step version of bind! - defers evaluation to trampoline.
 /// Usage: (bind! token atom)
-pub(crate) fn eval_bind_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(crate) fn eval_bind_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     if items.len() < 3 {
         let err = MettaValue::Error(
             format!(
@@ -502,7 +502,7 @@ pub(crate) fn eval_bind_step(items: Vec<MettaValue>, env: Environment, depth: us
 ///
 /// DEPRECATED: Use eval_bind_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_bind(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_bind(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("bind!", items, 2, env, "(bind! token atom)");
 
     let token = match items[1].inner() {
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_include_nonexistent_file() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let items = vec![
             MettaValue::Atom("include".to_string()),
             MettaValue::String("/nonexistent/path/file.metta".to_string()),
@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_include_with_module_notation() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let items = vec![
             MettaValue::Atom("include".to_string()),
             MettaValue::Atom("nonexistent:module".to_string()),
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_print_mods_no_modules() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let items = vec![MettaValue::Atom("print-mods!".to_string())];
 
         let (results, env) = eval_print_mods(items, env);
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_bind_simple_value() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let items = vec![
             MettaValue::Atom("bind!".to_string()),
             MettaValue::Atom("&my-value".to_string()),
@@ -630,7 +630,7 @@ mod tests {
     fn test_bind_atom_resolution() {
         use crate::backend::eval::eval;
 
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // First, bind a value
         let bind_items = vec![
@@ -652,7 +652,7 @@ mod tests {
     fn test_bind_with_expression() {
         use crate::backend::eval::eval;
 
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // bind! with an expression that gets evaluated: (bind! &sum (+ 2 3))
         let bind_items = vec![
@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_bind_error_non_symbol() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Try to bind with a non-symbol token
         let items = vec![
@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn test_bind_shadowing() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Bind &x to 1
         let bind1 = vec![
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_import_missing_args() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Only one argument - missing module path
         let items = vec![
@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_import_invalid_destination() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Invalid destination type
         let items = vec![
@@ -775,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_import_invalid_module_path() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Invalid module path type (Long instead of String/Atom)
         let items = vec![
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_import_nonexistent_module() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Try to import a module that doesn't exist
         let items = vec![
@@ -819,7 +819,7 @@ mod tests {
 
     #[test]
     fn test_import_with_alias_destination() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Import with alias - should fail since module doesn't exist
         let items = vec![
@@ -844,7 +844,7 @@ mod tests {
     fn test_import_selective_item_not_found() {
         // This tests the selective import path - trying to import a specific item
         // Since we can't create real files in unit tests, we test the error handling
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Try selective import (import! &self module item)
         let items = vec![
@@ -869,7 +869,7 @@ mod tests {
     #[test]
     fn test_import_selective_with_as_alias() {
         // Test selective import with "as" syntax
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (import! &self module item as new-name)
         let items = vec![
@@ -899,7 +899,7 @@ mod tests {
 
     #[test]
     fn test_mod_space_missing_args() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("mod-space!".to_string())];
 
@@ -916,7 +916,7 @@ mod tests {
 
     #[test]
     fn test_mod_space_invalid_path_type() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("mod-space!".to_string()),
@@ -936,7 +936,7 @@ mod tests {
 
     #[test]
     fn test_mod_space_nonexistent_module() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("mod-space!".to_string()),
@@ -961,7 +961,7 @@ mod tests {
 
     #[test]
     fn test_print_mods_with_extra_args() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("print-mods!".to_string()),
@@ -981,7 +981,7 @@ mod tests {
 
     #[test]
     fn test_print_mods_returns_unit() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("print-mods!".to_string())];
 
@@ -997,7 +997,7 @@ mod tests {
 
     #[test]
     fn test_include_missing_args() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("include".to_string())];
 
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[test]
     fn test_include_invalid_path_type() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("include".to_string()),
@@ -1038,7 +1038,7 @@ mod tests {
 
     #[test]
     fn test_strict_mode_default_is_permissive() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Default should be permissive (not strict)
         assert!(!env.is_strict_mode());
@@ -1046,7 +1046,7 @@ mod tests {
 
     #[test]
     fn test_strict_mode_can_be_enabled() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
         env.set_strict_mode(true);
 
         assert!(env.is_strict_mode());
@@ -1054,7 +1054,7 @@ mod tests {
 
     #[test]
     fn test_strict_mode_toggle() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Default is false
         assert!(!env.is_strict_mode());

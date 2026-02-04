@@ -41,7 +41,7 @@
 
 use bumpalo::Bump;
 
-use crate::backend::environment::{Environment, GenericEnvironment, HeapEnvironment};
+use crate::backend::environment::{GenericEnvironment, HeapEnvironment};
 use crate::backend::models::{
     ArenaValue, ArenaValueFactory, HeapMettaValueFactory, MettaValue, MettaValueFactory,
     MettaValueTrait,
@@ -132,7 +132,7 @@ impl HeapContext {
     /// a HeapEnvironment (the normal case). Used for backwards compatibility
     /// during migration.
     #[inline]
-    pub fn env_from_legacy(env: Environment) -> HeapEnvironment {
+    pub fn env_from_legacy(env: HeapEnvironment) -> HeapEnvironment {
         // Create a new HeapEnvironment and union with the legacy one
         // This shares the underlying Arc data
         let heap_env = HeapEnvironment::new(HeapMettaValueFactory);
@@ -146,11 +146,11 @@ impl HeapContext {
     ///
     /// Used for backwards compatibility with code that expects Environment.
     #[inline]
-    pub fn env_to_legacy(env: HeapEnvironment) -> Environment {
+    pub fn env_to_legacy(env: HeapEnvironment) -> HeapEnvironment {
         // Create a new Environment that shares state with the HeapEnvironment
         // For now, create fresh - full integration will share state
         drop(env);
-        Environment::default()
+        HeapEnvironment::default()
     }
 }
 
@@ -206,8 +206,8 @@ impl<'a> ArenaContext<'a> {
     /// that cannot be stored in the environment. Values are converted via
     /// serialization/deserialization at boundaries.
     #[inline]
-    pub fn new_env() -> Environment {
-        Environment::default()
+    pub fn new_env() -> HeapEnvironment {
+        HeapEnvironment::default()
     }
 }
 

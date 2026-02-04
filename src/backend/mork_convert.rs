@@ -741,7 +741,7 @@ pub fn mork_bindings_to_metta<V: Clone + Default + Send + Sync + Unpin>(
 ) -> Result<Bindings, String> {
     trace!(target: "mettatron::conversion::mork_bindings_to_metta", ?mork_bindings);
 
-    use super::environment::Environment;
+    use super::environment::HeapEnvironment;
 
     let mut bindings = Bindings::new();
     let mut conversion_errors: Vec<String> = Vec::new();
@@ -769,7 +769,7 @@ pub fn mork_bindings_to_metta<V: Clone + Default + Send + Sync + Unpin>(
         // FIXED: Use mork_expr_to_metta_value() instead of serialize2()
         // This avoids the "reserved byte" panic when bindings contain symbols with reserved bytes
         let expr: Expr = expr_env.subsexpr();
-        match Environment::mork_expr_to_metta_value(&expr, space) {
+        match HeapEnvironment::mork_expr_to_metta_value(&expr, space) {
             Ok(value) => {
                 bindings.insert(format!("${}", var_name), value);
             }
@@ -802,11 +802,11 @@ pub fn mork_bindings_to_metta<V: Clone + Default + Send + Sync + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::environment::Environment;
+    use crate::backend::environment::HeapEnvironment;
 
     #[test]
     fn test_simple_atom_conversion() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
@@ -817,7 +817,7 @@ mod tests {
 
     #[test]
     fn test_variable_conversion() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
@@ -831,7 +831,7 @@ mod tests {
 
     #[test]
     fn test_sexpr_conversion() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn test_repeated_variable() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
@@ -870,7 +870,7 @@ mod tests {
 
     #[test]
     fn test_generic_simple_atom_conversion() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
@@ -889,7 +889,7 @@ mod tests {
 
     #[test]
     fn test_generic_variable_conversion() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let space = env.create_space();
 
         let var = MettaValue::Atom("$x".to_string());
@@ -908,7 +908,7 @@ mod tests {
 
     #[test]
     fn test_generic_sexpr_conversion() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let space = env.create_space();
 
         // (double $x)
@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn test_generic_complex_nested_sexpr() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let space = env.create_space();
 
         // (exec P0 (, (a $x) (b $x)) (, (c $x)))
@@ -973,7 +973,7 @@ mod tests {
 
     #[test]
     fn test_generic_ground_types() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let space = env.create_space();
 
         // Test various ground types
@@ -1008,7 +1008,7 @@ mod tests {
 
     #[test]
     fn test_generic_error_conversion() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let space = env.create_space();
 
         // (error "test error" (details here))

@@ -13,7 +13,7 @@ use tracing::trace;
 
 use super::generic::GenericEnvironment;
 use super::multiplicity::Multiplicity;
-use super::{Environment, MettaValue};
+use super::{HeapEnvironment, MettaValue};
 use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 // ============================================================================
@@ -54,7 +54,7 @@ where
 // MettaValue-specific Type Operations (with MORK persistence)
 // ============================================================================
 
-impl Environment {
+impl HeapEnvironment {
     /// Add a type assertion
     /// Type assertions are stored as (: name type) in MORK Space
     /// Invalidates the type index cache

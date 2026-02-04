@@ -70,7 +70,7 @@ pub mod tree_sitter_parser;
 /// - **Environment**: Monotonic rule storage with union operations
 pub use backend::{
     compile,
-    environment::Environment,
+    environment::HeapEnvironment,
     eval,
     models::{MettaState, MettaValue, MettaValueInner, Rule},
 };

@@ -13,7 +13,7 @@
 //! - (cons-atom (+ 1 2) (a b)) returns ((+ 1 2) a b), NOT (3 a b)
 //! - This prevents infinite loops in recursive MeTTa programs
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 /// car-atom: (car-atom expr) -> first element
@@ -21,7 +21,7 @@ use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 /// Example: (car-atom (a b c)) -> a
 ///
 /// NOTE: This is a lazy operation - the argument is NOT evaluated first.
-pub(crate) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_car_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("car-atom", items, 1, env, "(car-atom expr)");
 
     let expr = &items[1];
@@ -55,7 +55,7 @@ pub(crate) fn eval_car_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// Example: (cdr-atom (a b c)) -> (b c)
 ///
 /// NOTE: This is a lazy operation - the argument is NOT evaluated first.
-pub(crate) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_cdr_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("cdr-atom", items, 1, env, "(cdr-atom expr)");
 
     let expr = &items[1];
@@ -98,7 +98,7 @@ pub(crate) fn eval_cdr_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 ///
 /// NOTE: This is a lazy operation - arguments are NOT evaluated first.
 /// (cons-atom (+ 1 2) (a b)) returns ((+ 1 2) a b), NOT (3 a b)
-pub(crate) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_cons_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("cons-atom", items, 2, env, "(cons-atom head tail)");
 
     let head = &items[1];
@@ -129,7 +129,7 @@ pub(crate) fn eval_cons_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// Example: (decons-atom (a b c)) -> (a (b c))
 ///
 /// NOTE: This is a lazy operation - the argument is NOT evaluated first.
-pub(crate) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_decons_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("decons-atom", items, 1, env, "(decons-atom expr)");
 
     let expr = &items[1];
@@ -163,7 +163,7 @@ pub(crate) fn eval_decons_atom(items: Vec<MettaValue>, env: Environment) -> Eval
 /// Example: (size-atom (a b c)) -> 3
 ///
 /// NOTE: This is a lazy operation - the argument is NOT evaluated first.
-pub(crate) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_size_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("size-atom", items, 1, env, "(size-atom expr)");
 
     let expr = &items[1];
@@ -189,7 +189,7 @@ pub(crate) fn eval_size_atom(items: Vec<MettaValue>, env: Environment) -> EvalRe
 /// Example: (max-atom (1 5 3 2)) -> 5
 ///
 /// NOTE: This is a lazy operation - the argument is NOT evaluated first.
-pub(crate) fn eval_max_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_max_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("max-atom", items, 1, env, "(max-atom expr)");
 
     let expr = &items[1];

@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::grounded::GroundedState;
 use crate::backend::models::{Bindings, EvalResult, MettaValue};
 
@@ -24,7 +24,7 @@ pub enum WorkItem {
     /// Evaluate a value and send result to continuation
     Eval {
         value: MettaValue,
-        env: Environment,
+        env: HeapEnvironment,
         depth: usize,
         cont_id: usize,
         /// If true, this is a tail call - don't increment depth
@@ -51,7 +51,7 @@ pub enum Continuation {
         /// Results collected so far: (results_vec, env)
         collected: Vec<EvalResult>,
         /// Original environment for the S-expression
-        original_env: Environment,
+        original_env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation to resume after processing
@@ -65,7 +65,7 @@ pub enum Continuation {
         /// Results accumulated so far
         results: Vec<MettaValue>,
         /// Environment
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -77,7 +77,7 @@ pub enum Continuation {
         /// State of the grounded operation (tracks which args have been evaluated)
         state: GroundedState,
         /// Environment for evaluating arguments
-        env: Environment,
+        env: HeapEnvironment,
         /// Parent continuation to resume after operation completes
         parent_cont: usize,
         /// Evaluation depth
@@ -94,7 +94,7 @@ pub enum Continuation {
         /// MettaValue clone is O(1) since it uses Arc internally
         pending_rule_matches: VecDeque<(MettaValue, Bindings)>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation to resume after all combinations processed
@@ -112,7 +112,7 @@ pub enum Continuation {
         /// Collected body evaluation results
         results: Vec<MettaValue>,
         /// Environment for body evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth (preserved for TCO)
         depth: usize,
         /// Parent continuation to resume after all values processed
@@ -131,7 +131,7 @@ pub enum Continuation {
         /// Evaluated results so far (corresponds to grounded_indices[0..current_idx])
         evaluated_results: Vec<MettaValue>,
         /// Environment
-        env: Environment,
+        env: HeapEnvironment,
         /// Depth
         depth: usize,
         /// Parent continuation
@@ -150,7 +150,7 @@ pub enum Continuation {
         /// Results collected so far
         collected_results: Vec<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation to resume after all elements processed
@@ -171,7 +171,7 @@ pub enum Continuation {
         /// Elements that passed the filter so far
         filtered_results: Vec<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation to resume after all elements processed
@@ -190,7 +190,7 @@ pub enum Continuation {
         /// Operation template to evaluate for each element
         operation: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation to resume after all elements processed
@@ -205,7 +205,7 @@ pub enum Continuation {
         /// Else branch (evaluated if condition is falsy)
         else_branch: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation to resume after branch evaluation
@@ -218,7 +218,7 @@ pub enum Continuation {
         /// Cases to match against (pattern-template pairs)
         cases: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation to resume after case evaluation
@@ -227,7 +227,7 @@ pub enum Continuation {
     /// Processing (eval expr) - awaits argument evaluation, then evaluates result.
     ProcessEvalEval {
         /// Environment for second evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -236,7 +236,7 @@ pub enum Continuation {
     /// Processing (return value) - awaits value evaluation, then wraps in return.
     ProcessReturn {
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -250,7 +250,7 @@ pub enum Continuation {
         /// Body template to instantiate and evaluate
         body: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -268,7 +268,7 @@ pub enum Continuation {
         /// Accumulated results so far
         results: Vec<MettaValue>,
         /// Environment (updated after each body evaluation)
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -280,7 +280,7 @@ pub enum Continuation {
         /// Iteration count
         iteration_count: usize,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -289,7 +289,7 @@ pub enum Continuation {
     /// Processing (is-error expr) - awaits expression evaluation to check for error.
     ProcessIsError {
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -301,7 +301,7 @@ pub enum Continuation {
         /// Default expression to evaluate if expr is error
         default: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -315,7 +315,7 @@ pub enum Continuation {
         /// Results accumulated so far (from previous goals)
         accumulated_results: Vec<MettaValue>,
         /// Environment for evaluation (updated after each goal)
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -331,7 +331,7 @@ pub enum Continuation {
         /// Failure body template
         failure_body: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -353,7 +353,7 @@ pub enum Continuation {
         /// Accumulated results from all pattern1 values processed so far
         all_results: Vec<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -373,7 +373,7 @@ pub enum Continuation {
         /// Failure body template
         failure_body: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation (should be ProcessUnifyPattern1Iter)
@@ -390,7 +390,7 @@ pub enum Continuation {
         /// Accumulated results from bodies evaluated so far (for this pattern1 value)
         results: Vec<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation (should be ProcessUnifyPattern1Iter)
@@ -399,7 +399,7 @@ pub enum Continuation {
     /// Processing collapse expression result - collects into list.
     ProcessCollapse {
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -408,7 +408,7 @@ pub enum Continuation {
     /// Processing collapse-bind expression result - collects ALL into list.
     ProcessCollapseBind {
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -421,7 +421,7 @@ pub enum Continuation {
         /// Accumulated results so far
         results: Vec<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -430,7 +430,7 @@ pub enum Continuation {
     /// Processing guard condition result.
     ProcessGuard {
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -441,7 +441,7 @@ pub enum Continuation {
         /// Original space reference for error messages
         space_ref: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -456,7 +456,7 @@ pub enum Continuation {
         /// Whether to cache only first result
         first_only: bool,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -471,7 +471,7 @@ pub enum Continuation {
         /// Whether to cache only first result
         first_only: bool,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -484,7 +484,7 @@ pub enum Continuation {
         /// Optional size argument to evaluate
         size_arg: Option<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -497,7 +497,7 @@ pub enum Continuation {
         /// Original size arg for error messages
         size_arg: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -510,7 +510,7 @@ pub enum Continuation {
         /// Operation type: "clear" or "stats"
         is_clear: bool,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -526,7 +526,7 @@ pub enum Continuation {
         /// Template to instantiate with bindings
         template: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -540,7 +540,7 @@ pub enum Continuation {
         /// Accumulated results so far
         results: Vec<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -553,7 +553,7 @@ pub enum Continuation {
         /// Atom to add (will be evaluated next)
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -566,7 +566,7 @@ pub enum Continuation {
         /// Original atom for error messages
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -579,7 +579,7 @@ pub enum Continuation {
         /// Atom to remove (will be evaluated next)
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -592,7 +592,7 @@ pub enum Continuation {
         /// Original atom for error messages
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -603,7 +603,7 @@ pub enum Continuation {
         /// Original initial value for error messages
         initial_value: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -614,7 +614,7 @@ pub enum Continuation {
         /// Original state reference for error messages
         state_ref: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -627,7 +627,7 @@ pub enum Continuation {
         /// New value to set (will be evaluated next)
         new_value: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -640,7 +640,7 @@ pub enum Continuation {
         /// Original new value for error messages
         new_value: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -651,7 +651,7 @@ pub enum Continuation {
         /// Original atom for error messages
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -664,7 +664,7 @@ pub enum Continuation {
         /// Args expression to evaluate next
         args_arg: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -677,7 +677,7 @@ pub enum Continuation {
         /// Original args arg for error messages
         args_arg: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -688,7 +688,7 @@ pub enum Continuation {
         /// Original atom for error messages
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -701,7 +701,7 @@ pub enum Continuation {
         /// Value expression to evaluate next
         value_expr: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -714,7 +714,7 @@ pub enum Continuation {
         /// Original value expr for error messages
         value_expr: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -725,7 +725,7 @@ pub enum Continuation {
         /// Original atom for error messages
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -736,7 +736,7 @@ pub enum Continuation {
         /// Token name to bind (e.g., "&kb")
         token: String,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation
@@ -753,7 +753,7 @@ pub enum Continuation {
         /// Accumulated results so far
         collected: Vec<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
         /// Parent continuation

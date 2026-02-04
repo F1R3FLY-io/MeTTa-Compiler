@@ -29,7 +29,7 @@
 //! 3. Binding application operates natively on the value type
 //! 4. Rule matching deserializes rules directly to the target type V
 
-use crate::backend::environment::{Environment, GenericEnvironment};
+use crate::backend::environment::{HeapEnvironment, GenericEnvironment};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
 // MettaValue only used in tests

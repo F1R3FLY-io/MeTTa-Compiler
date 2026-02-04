@@ -26,7 +26,7 @@ pub use builtin_signatures::{
     get_arg_types, get_return_type, get_signature, is_builtin, BuiltinSignature, TypeExpr,
 };
 pub use compile::{compile, compile_arena, compile_arena_with_path, compile_generic, compile_with_path};
-pub use environment::{Environment, GenericEnvironment, HeapEnvironment, ScopeTracker};
+pub use environment::{GenericEnvironment, HeapEnvironment, ScopeTracker};
 pub use eval::{eval, eval_arena, pattern_match};
 pub use eval::trampoline::{
     eval_trampoline_arena, ArenaEnvironment, StaticArenaContext,

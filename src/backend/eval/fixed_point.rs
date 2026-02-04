@@ -6,7 +6,7 @@
 //! - Detect convergence (fixed point reached)
 //! - Safety limits to prevent infinite loops
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::eval::priority::compare_priorities;
 use crate::backend::models::{MettaValue, MettaValueInner};
 
@@ -23,7 +23,7 @@ pub struct FixedPointResult {
     /// Total number of facts added during evaluation
     pub facts_added: usize,
     /// Final environment after evaluation
-    pub env: Environment,
+    pub env: HeapEnvironment,
 }
 
 /// Representation of an exec rule for fixed-point evaluation
@@ -121,7 +121,7 @@ pub fn sort_rules_by_priority(rules: &mut [ExecRule]) {
 /// ```
 pub fn eval_to_fixed_point(
     mut rules: Vec<ExecRule>,
-    mut env: Environment,
+    mut env: HeapEnvironment,
     max_iterations: usize,
 ) -> FixedPointResult {
     // Sort rules by priority
@@ -176,7 +176,7 @@ pub fn eval_to_fixed_point(
 ///
 /// Uses `match_space` which returns one `MultiplicityMatch` per unique atom,
 /// making `.len()` give the unique count directly without manual deduplication.
-fn count_facts(env: &Environment) -> usize {
+fn count_facts(env: &HeapEnvironment) -> usize {
     let wildcard = MettaValue::Atom("$_".to_string());
     env.match_space(&wildcard, &wildcard).len()
 }
@@ -185,7 +185,7 @@ fn count_facts(env: &Environment) -> usize {
 ///
 /// Evaluates the rule's antecedent against current facts.
 /// If successful, executes consequent and returns updated environment.
-fn try_fire_rule(rule: &ExecRule, env: Environment) -> Environment {
+fn try_fire_rule(rule: &ExecRule, env: HeapEnvironment) -> HeapEnvironment {
     use super::eval;
 
     // Evaluate the full exec expression
@@ -209,9 +209,9 @@ fn try_fire_rule(rule: &ExecRule, env: Environment) -> Environment {
 ///
 /// Updated environment and fixed-point result
 pub fn eval_env_to_fixed_point(
-    env: Environment,
+    env: HeapEnvironment,
     max_iterations: usize,
-) -> (Environment, FixedPointResult) {
+) -> (HeapEnvironment, FixedPointResult) {
     // Use default max iterations if 0
     let max_iter = if max_iterations == 0 {
         DEFAULT_MAX_ITERATIONS
@@ -242,7 +242,7 @@ pub fn eval_env_to_fixed_point(
 }
 
 /// Extract all exec rules from environment's fact space
-fn extract_exec_rules(env: &Environment) -> Vec<ExecRule> {
+fn extract_exec_rules(env: &HeapEnvironment) -> Vec<ExecRule> {
     // Match pattern: (exec $p $a $c)
     let exec_pattern = MettaValue::SExpr(vec![
         MettaValue::Atom("exec".to_string()),
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_empty_rules() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         let rules = vec![];
 
         let result = eval_to_fixed_point(rules, env, 10);
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_count_facts() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Initially no facts
         assert_eq!(count_facts(&env), 0);
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_extract_exec_rules() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add an exec rule as a fact
         let exec = compile("(exec (0 0) (, (parent $p $c)) (, (child $c $p)))").unwrap();
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn test_fixed_point_no_rules() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add initial facts
         let fact = compile("(parent Alice Bob)").unwrap();
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_iteration_limit() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Create a rule that generates infinite facts (if it fired)
         // For now, we just test that iteration limit works

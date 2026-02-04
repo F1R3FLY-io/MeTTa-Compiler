@@ -4,13 +4,13 @@
 //! other exec rules, enabling the meta-programming pattern from ancestor.mm2 lines 33-36.
 
 use mettatron::backend::compile::compile;
-use mettatron::backend::environment::Environment;
+use mettatron::backend::environment::HeapEnvironment;
 use mettatron::backend::eval::eval;
 use mettatron::backend::eval::fixed_point::{eval_env_to_fixed_point, ExecRule};
 
 #[test]
 fn test_exec_stored_as_fact() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Define an exec rule
     let exec_source = "(exec (0 0) (, (parent $p $c)) (, (child $c $p)))";
@@ -31,7 +31,7 @@ fn test_exec_stored_as_fact() {
 
 #[test]
 fn test_match_exec_in_antecedent() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add an exec rule as a fact
     let exec1 = compile("(exec (1 0) (, (a $x)) (, (b $x)))").unwrap();
@@ -47,7 +47,7 @@ fn test_match_exec_in_antecedent() {
 
 #[test]
 fn test_exec_in_consequent_not_executed() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Create a rule that generates an exec in its consequent
     // (exec (0 0) (, (trigger)) (, (exec (1 0) (, (a $x)) (, (b $x)))))
@@ -74,7 +74,7 @@ fn test_exec_in_consequent_not_executed() {
 
 #[test]
 fn test_simple_meta_programming() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Meta-rule: when we see (level Z), generate (exec ...) for next level
     // Simplified version of ancestor.mm2 lines 33-36
@@ -128,7 +128,7 @@ fn test_simple_meta_programming() {
 
 #[test]
 fn test_peano_successor_generation() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Rule that matches (level Z) and generates (level (S Z))
     let rule = compile(
@@ -156,7 +156,7 @@ fn test_peano_successor_generation() {
 
 #[test]
 fn test_generation_chain() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Rule that generates next generation
     // Simulates ancestor.mm2 pattern without full complexity
@@ -196,7 +196,7 @@ fn test_ancestor_mm2_pattern_simplified() {
     // The full pattern is: match exec rules with priority (1 $l),
     // then generate new exec rules with priority (1 (S $l))
 
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Initial exec rule for generation tracking
     let base_rule = compile(
@@ -245,7 +245,7 @@ fn test_ancestor_mm2_pattern_simplified() {
 
 #[test]
 fn test_fixed_point_convergence() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Rule that only fires once (no infinite generation)
     let rule = compile(
@@ -270,7 +270,7 @@ fn test_fixed_point_convergence() {
 
 #[test]
 fn test_iteration_limit_safety() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Rule that could generate infinite facts (if implemented poorly)
     // Our implementation should handle this gracefully
@@ -295,7 +295,7 @@ fn test_iteration_limit_safety() {
 
 #[test]
 fn test_priority_ordering_with_dynamic_exec() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Lower priority rule (executes first)
     let low = compile("(exec (0 0) (, (trigger)) (, (low)))").unwrap();

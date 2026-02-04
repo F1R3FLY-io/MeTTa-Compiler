@@ -35,7 +35,7 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use dashmap::DashMap;
 use lru::LruCache;
@@ -55,6 +55,31 @@ use crate::backend::models::{
 };
 use crate::backend::modules::{ModuleRegistry, Tokenizer};
 use crate::backend::symbol::Symbol;
+
+// ============================================================================
+// Static Sentinel for Unmodified Environments
+// ============================================================================
+
+/// Static sentinel for unmodified environments - avoids allocation.
+///
+/// Using a static `Arc<AtomicBool>` initialized to `false` allows us to avoid
+/// allocating a new `Arc<AtomicBool>` for every environment clone or union
+/// fast-path. This is significant because:
+///
+/// 1. The common case (pure evaluation) never modifies the environment
+/// 2. Union operations can return quickly when nothing was modified
+/// 3. Clone operations can share the sentinel instead of allocating
+///
+/// The sentinel is never mutated (it's always `false`), so sharing it across
+/// all unmodified environments is safe.
+static UNMODIFIED_SENTINEL: LazyLock<Arc<AtomicBool>> =
+    LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+
+/// Get a clone of the unmodified sentinel (zero allocation after first access).
+#[inline]
+fn unmodified_sentinel() -> Arc<AtomicBool> {
+    Arc::clone(&UNMODIFIED_SENTINEL)
+}
 
 // ============================================================================
 // Helper Functions for Environment Operations
@@ -534,7 +559,7 @@ where
             factory: self.factory.clone(),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: true,
-            modified: Arc::new(AtomicBool::new(false)),
+            modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
             current_module_path: self.current_module_path.clone(),
         }
     }
@@ -565,7 +590,7 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
-                modified: Arc::new(AtomicBool::new(false)),
+                modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
                 current_module_path: self.current_module_path.clone(),
             };
         }
@@ -580,7 +605,7 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
-                modified: Arc::new(AtomicBool::new(false)),
+                modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
                 current_module_path: self.current_module_path.clone(),
             };
         }
@@ -592,7 +617,7 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
-                modified: Arc::new(AtomicBool::new(false)),
+                modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
                 current_module_path: self.current_module_path.clone(),
             };
         }
@@ -604,7 +629,7 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: other.shared_mapping.clone(),
                 owns_data: false,
-                modified: Arc::new(AtomicBool::new(false)),
+                modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
                 current_module_path: other.current_module_path.clone(),
             };
         }
@@ -788,6 +813,371 @@ where
         }
     }
 
+    /// Union multiple environments in a single pass.
+    ///
+    /// This is an optimized batch version of `union()` that handles the common
+    /// case of unioning many child environments after parallel/nondeterministic
+    /// evaluation. Instead of N sequential `union()` calls with N allocations,
+    /// this method:
+    ///
+    /// 1. **Early exit**: If no environment was modified, returns a shared clone
+    ///    of self with zero allocations (the common case for pure evaluation).
+    ///
+    /// 2. **Single-modified fast path**: If only one environment was modified,
+    ///    returns a shared clone of that environment (one Arc clone, zero allocations).
+    ///
+    /// 3. **Batch merge**: For multiple modified environments, performs a single
+    ///    merged union instead of N binary merges.
+    ///
+    /// # Performance
+    ///
+    /// For N child environments:
+    /// - Common case (no modifications): O(N) checks, 0 allocations
+    /// - Single modification: O(N) checks, 1 Arc clone
+    /// - Multiple modifications: O(N) checks + single batch merge
+    ///
+    /// Compare to the naive loop pattern:
+    /// ```ignore
+    /// let mut unified = original;
+    /// for e in envs {
+    ///     unified = unified.union(&e); // N allocations even when nothing modified!
+    /// }
+    /// ```
+    pub fn union_all<'a, I>(&self, others: I) -> Self
+    where
+        I: IntoIterator<Item = &'a Self>,
+        Self: 'a,
+    {
+        trace!(target: "mettatron::generic_environment::union_all", "Batch unioning environments");
+
+        let others: Vec<&Self> = others.into_iter().collect();
+
+        // Fast path: empty iterator - return shared clone
+        if others.is_empty() {
+            return self.shared_clone();
+        }
+
+        // Collect modification status
+        let self_modified = self.owns_data && self.is_modified();
+        let modified_others: Vec<&Self> = others
+            .iter()
+            .filter(|e| e.owns_data && e.is_modified())
+            .copied()
+            .collect();
+
+        match (self_modified, modified_others.len()) {
+            // No modifications anywhere - return shared clone of self
+            (false, 0) => {
+                trace!(target: "mettatron::generic_environment::union_all", "Fast path: no modifications");
+                self.shared_clone()
+            }
+
+            // Only self modified - return shared clone of self
+            (true, 0) => {
+                trace!(target: "mettatron::generic_environment::union_all", "Fast path: only self modified");
+                self.shared_clone()
+            }
+
+            // Only one other modified - return shared clone of that
+            (false, 1) => {
+                trace!(target: "mettatron::generic_environment::union_all", "Fast path: single other modified");
+                modified_others[0].shared_clone()
+            }
+
+            // Self + one other both modified - delegate to binary union
+            (true, 1) => {
+                trace!(target: "mettatron::generic_environment::union_all", "Two modified: delegating to binary union");
+                self.union(modified_others[0])
+            }
+
+            // Multiple modified - batch merge
+            (self_mod, n) if n > 1 || (self_mod && n == 1) => {
+                trace!(target: "mettatron::generic_environment::union_all", "Batch merge: {} environments", n + if self_mod { 1 } else { 0 });
+                self.merge_all_modified(&modified_others, self_modified)
+            }
+
+            // Catch-all (shouldn't be reached, but be defensive)
+            _ => self.shared_clone(),
+        }
+    }
+
+    /// Create a shared clone using the static sentinel (zero allocation for flag).
+    ///
+    /// This is an internal helper that creates a clone sharing the same Arc data
+    /// with `owns_data = false` and using the static `UNMODIFIED_SENTINEL` instead
+    /// of allocating a new `Arc<AtomicBool>`.
+    #[inline]
+    fn shared_clone(&self) -> Self {
+        GenericEnvironment {
+            shared: Arc::clone(&self.shared),
+            factory: self.factory.clone(),
+            shared_mapping: self.shared_mapping.clone(),
+            owns_data: false,
+            modified: unmodified_sentinel(),
+            current_module_path: self.current_module_path.clone(),
+        }
+    }
+
+    /// Merge multiple modified environments in a single pass.
+    ///
+    /// This is the batch version of the merge logic in `union()`, optimized for
+    /// when we know we have multiple modified environments to combine.
+    fn merge_all_modified(&self, others: &[&Self], include_self: bool) -> Self {
+        trace!(target: "mettatron::generic_environment::merge_all_modified",
+               "Merging {} environments (include_self={})", others.len(), include_self);
+
+        // Helper to clone DashMap contents
+        fn clone_dashmap<K: Clone + Eq + std::hash::Hash, V: Clone>(
+            src: &DashMap<K, V>,
+        ) -> DashMap<K, V> {
+            let new_map = DashMap::with_capacity(src.len());
+            for entry in src.iter() {
+                new_map.insert(entry.key().clone(), entry.value().clone());
+            }
+            new_map
+        }
+
+        // Start with self's state or first other's state as base
+        let base = if include_self { self } else { others[0] };
+        let merge_start_idx = if include_self { 0 } else { 1 };
+
+        // Merge PathMaps by taking max multiplicity
+        let merged_btm = {
+            let mut result = base.shared.btm.read().clone();
+            for other in &others[merge_start_idx..] {
+                let other_btm = other.shared.btm.read();
+                result = merge_pathmaps_max(&result, &other_btm);
+            }
+            // If we started from self and include_self is true, we already have self's data
+            // Otherwise merge self's data too
+            if !include_self {
+                let self_btm = self.shared.btm.read();
+                result = merge_pathmaps_max(&result, &self_btm);
+            }
+            result
+        };
+
+        // Calculate total atoms from merged PathMap
+        let merged_total_atoms = {
+            use pathmap::zipper::*;
+            let mut rz = merged_btm.read_zipper();
+            let mut total = 0usize;
+            while rz.to_next_val() {
+                if let Some(mult) = rz.val() {
+                    total += mult.count() as usize;
+                }
+            }
+            total
+        };
+
+        // Merge rule indices
+        let merged_rule_index: DashMap<(Symbol, usize), Vec<GenericRule<V>>> = {
+            let base_rules = clone_dashmap(&base.shared.rule_index);
+
+            // Merge all others' rules
+            for other in &others[merge_start_idx..] {
+                for entry in other.shared.rule_index.iter() {
+                    let key = entry.key().clone();
+                    let other_rules = entry.value();
+                    base_rules
+                        .entry(key)
+                        .and_modify(|existing| {
+                            for rule in other_rules.iter() {
+                                let is_duplicate = existing.iter().any(|r| {
+                                    r.lhs.structurally_equivalent(&rule.lhs)
+                                });
+                                if !is_duplicate {
+                                    existing.push(rule.clone());
+                                }
+                            }
+                        })
+                        .or_insert_with(|| other_rules.clone());
+                }
+            }
+
+            // Merge self's rules if not included in base
+            if !include_self {
+                for entry in self.shared.rule_index.iter() {
+                    let key = entry.key().clone();
+                    let self_rules = entry.value();
+                    base_rules
+                        .entry(key)
+                        .and_modify(|existing| {
+                            for rule in self_rules.iter() {
+                                let is_duplicate = existing.iter().any(|r| {
+                                    r.lhs.structurally_equivalent(&rule.lhs)
+                                });
+                                if !is_duplicate {
+                                    existing.push(rule.clone());
+                                }
+                            }
+                        })
+                        .or_insert_with(|| self_rules.clone());
+                }
+            }
+
+            base_rules
+        };
+
+        // Merge wildcard rules
+        let merged_wildcard_rules = {
+            let mut merged = base.shared.wildcard_rules.read().clone();
+
+            for other in &others[merge_start_idx..] {
+                let other_wildcards = other.shared.wildcard_rules.read();
+                for rule in other_wildcards.iter() {
+                    let is_duplicate = merged.iter().any(|r| {
+                        r.lhs.structurally_equivalent(&rule.lhs)
+                    });
+                    if !is_duplicate {
+                        merged.push(rule.clone());
+                    }
+                }
+            }
+
+            if !include_self {
+                let self_wildcards = self.shared.wildcard_rules.read();
+                for rule in self_wildcards.iter() {
+                    let is_duplicate = merged.iter().any(|r| {
+                        r.lhs.structurally_equivalent(&rule.lhs)
+                    });
+                    if !is_duplicate {
+                        merged.push(rule.clone());
+                    }
+                }
+            }
+
+            merged
+        };
+        let has_wildcards = !merged_wildcard_rules.is_empty();
+
+        // Merge bindings (later environments take precedence)
+        let merged_bindings: DashMap<String, V> = {
+            let base_bindings = clone_dashmap(&base.shared.bindings);
+            for other in &others[merge_start_idx..] {
+                for entry in other.shared.bindings.iter() {
+                    base_bindings.insert(entry.key().clone(), entry.value().clone());
+                }
+            }
+            base_bindings
+        };
+
+        // Merge types (later environments take precedence)
+        let merged_types: DashMap<String, V> = {
+            let base_types = clone_dashmap(&base.shared.types);
+            for other in &others[merge_start_idx..] {
+                for entry in other.shared.types.iter() {
+                    base_types.insert(entry.key().clone(), entry.value().clone());
+                }
+            }
+            base_types
+        };
+
+        // Merge states (later environments take precedence)
+        let merged_states: DashMap<u64, V> = {
+            let base_states = clone_dashmap(&base.shared.states);
+            for other in &others[merge_start_idx..] {
+                for entry in other.shared.states.iter() {
+                    base_states.insert(*entry.key(), entry.value().clone());
+                }
+            }
+            base_states
+        };
+
+        // Merge named spaces
+        let merged_named_spaces: DashMap<u64, (String, Vec<V>)> = {
+            let base_spaces = clone_dashmap(&base.shared.named_spaces);
+            for other in &others[merge_start_idx..] {
+                for entry in other.shared.named_spaces.iter() {
+                    let (name, atoms) = entry.value();
+                    base_spaces
+                        .entry(*entry.key())
+                        .and_modify(|(_, existing_atoms)| {
+                            existing_atoms.extend(atoms.iter().cloned());
+                        })
+                        .or_insert_with(|| (name.clone(), atoms.clone()));
+                }
+            }
+            base_spaces
+        };
+
+        // Take max of ID counters
+        let mut max_state_id = base.shared.next_state_id.load(Ordering::Acquire);
+        let mut max_space_id = base.shared.next_space_id.load(Ordering::Acquire);
+        for other in &others[merge_start_idx..] {
+            max_state_id = max_state_id.max(other.shared.next_state_id.load(Ordering::Acquire));
+            max_space_id = max_space_id.max(other.shared.next_space_id.load(Ordering::Acquire));
+        }
+        if !include_self {
+            max_state_id = max_state_id.max(self.shared.next_state_id.load(Ordering::Acquire));
+            max_space_id = max_space_id.max(self.shared.next_space_id.load(Ordering::Acquire));
+        }
+
+        // Merge fuzzy matchers
+        let merged_fuzzy = {
+            let base_fuzzy = base.shared.fuzzy_matcher.read();
+            let merged = base_fuzzy.clone();
+            for other in &others[merge_start_idx..] {
+                let other_fuzzy = other.shared.fuzzy_matcher.read();
+                for term in other_fuzzy.pending_iter() {
+                    merged.insert(&term);
+                }
+            }
+            merged
+        };
+
+        // Get the last environment for scope tracker (later takes precedence)
+        let last_env = others.last().unwrap_or(&self);
+
+        // Create new shared state with merged data
+        let new_shared = Arc::new(GenericEnvironmentShared {
+            btm: RwLock::new(merged_btm),
+            symbols: Arc::clone(&self.shared.symbols), // Append-only, share
+            multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
+            states: merged_states,
+            next_state_id: AtomicU64::new(max_state_id),
+
+            rule_index: merged_rule_index,
+            wildcard_rules: RwLock::new(merged_wildcard_rules),
+            has_wildcard_rules: AtomicBool::new(has_wildcards),
+
+            named_spaces: merged_named_spaces,
+            next_space_id: AtomicU64::new(max_space_id),
+
+            bindings: merged_bindings,
+            types: merged_types,
+
+            // Share from self (typically static after init)
+            module_registry: RwLock::new(self.shared.module_registry.read().clone()),
+            tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
+            grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
+            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().clone()),
+            generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
+
+            // Clear/reset caches after merge
+            pattern_cache: RwLock::new(LruCache::new(
+                NonZeroUsize::new(1000).expect("1000 is non-zero"),
+            )),
+            type_index: RwLock::new(None), // Invalidate
+            type_index_dirty: AtomicBool::new(true),
+            large_expr_pathmap: RwLock::new(None), // TODO: merge these too
+
+            fuzzy_matcher: RwLock::new(merged_fuzzy),
+            scope_tracker: RwLock::new(last_env.shared.scope_tracker.read().clone()),
+            head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // Reset (will be rebuilt)
+            total_atoms: AtomicUsize::new(merged_total_atoms),
+        });
+
+        GenericEnvironment {
+            shared: new_shared,
+            factory: self.factory.clone(),
+            shared_mapping: self.shared_mapping.clone(),
+            owns_data: true,
+            modified: Arc::new(AtomicBool::new(true)),
+            current_module_path: last_env.current_module_path.clone().or_else(|| self.current_module_path.clone()),
+        }
+    }
+
     // ========================================================================
     // Accessors
     // ========================================================================
@@ -826,7 +1216,7 @@ where
             factory: self.factory.clone(),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: false, // CoW: clones do not own data initially
-            modified: Arc::new(AtomicBool::new(false)),
+            modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
             current_module_path: self.current_module_path.clone(),
         }
     }
@@ -1346,6 +1736,19 @@ where
 ///
 /// This is the default environment type for standard evaluation.
 /// MettaValue uses Arc internally, so clone is O(1).
+///
+/// ## Thread-Safe Copy-on-Write (CoW) Semantics
+///
+/// - Clones share data until first modification (owns_data = false)
+/// - First mutation triggers deep copy via make_owned() (owns_data = true)
+/// - parking_lot::RwLock enables concurrent reads
+/// - DashMap enables lock-free reads for rule/binding lookups
+///
+/// ## Performance
+///
+/// - Clone: O(1) - single Arc increment
+/// - First mutation after clone: O(n) deep copy
+/// - Subsequent mutations: O(1) in-place
 pub type HeapEnvironment = GenericEnvironment<MettaValue, crate::backend::models::HeapMettaValueFactory>;
 
 impl Default for HeapEnvironment {

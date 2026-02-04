@@ -3,7 +3,7 @@
 //! These types represent the results of a single evaluation step in the
 //! trampoline-based evaluator.
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::grounded::GroundedState;
 use crate::backend::models::{Bindings, EvalResult, MettaValue};
 
@@ -18,14 +18,14 @@ pub enum EvalStep {
     /// Need to evaluate S-expression items (iteratively)
     EvalSExpr {
         items: Vec<MettaValue>,
-        env: Environment,
+        env: HeapEnvironment,
         depth: usize,
     },
     /// Start TCO grounded operation (e.g., +, -, and, or)
     /// This defers evaluation to the trampoline for proper tail call handling
     StartGroundedOp {
         state: GroundedState,
-        env: Environment,
+        env: HeapEnvironment,
         depth: usize,
     },
     /// Start let binding - first evaluates value expression, then pattern matches
@@ -38,7 +38,7 @@ pub enum EvalStep {
         /// Body template to instantiate with bindings
         body: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth (preserved for TCO)
         depth: usize,
     },
@@ -48,7 +48,7 @@ pub enum EvalStep {
         /// Branch expression to evaluate (then or else)
         branch: MettaValue,
         /// Environment after condition evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth (preserved for TCO)
         depth: usize,
     },
@@ -60,7 +60,7 @@ pub enum EvalStep {
         /// MettaValue clone is O(1) since it uses Arc internally
         matches: Vec<(MettaValue, Bindings)>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -72,7 +72,7 @@ pub enum EvalStep {
         /// Indices of arguments that need evaluation (grounded ops)
         grounded_indices: Vec<usize>,
         /// Environment
-        env: Environment,
+        env: HeapEnvironment,
         /// Depth
         depth: usize,
     },
@@ -87,7 +87,7 @@ pub enum EvalStep {
         /// Template to evaluate for each element
         template: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -102,7 +102,7 @@ pub enum EvalStep {
         /// Predicate to evaluate for each element
         predicate: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -121,7 +121,7 @@ pub enum EvalStep {
         /// Operation template to evaluate for each element
         operation: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -135,7 +135,7 @@ pub enum EvalStep {
         /// Else branch (evaluated if condition is falsy)
         else_branch: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -147,7 +147,7 @@ pub enum EvalStep {
         /// Cases to match against (pattern-template pairs)
         cases: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -157,7 +157,7 @@ pub enum EvalStep {
         /// Template expression to evaluate (already instantiated with bindings)
         template: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -167,7 +167,7 @@ pub enum EvalStep {
         /// The argument expression to evaluate first
         arg: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -177,7 +177,7 @@ pub enum EvalStep {
         /// The value expression to evaluate
         value: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -191,7 +191,7 @@ pub enum EvalStep {
         /// The body template to instantiate and evaluate for each binding
         body: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -201,7 +201,7 @@ pub enum EvalStep {
         /// The expression to start evaluating
         expr: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -210,7 +210,7 @@ pub enum EvalStep {
         /// Expression to evaluate and check
         expr: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -222,7 +222,7 @@ pub enum EvalStep {
         /// Default expression to use if expr is error
         default: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -232,7 +232,7 @@ pub enum EvalStep {
         /// Goals to evaluate sequentially
         goals: Vec<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -248,7 +248,7 @@ pub enum EvalStep {
         /// Failure body to evaluate on no match
         failure_body: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -257,7 +257,7 @@ pub enum EvalStep {
         /// Expression to evaluate
         expr: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -266,7 +266,7 @@ pub enum EvalStep {
         /// Expression to evaluate
         expr: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -275,7 +275,7 @@ pub enum EvalStep {
         /// Alternatives to evaluate
         alternatives: Vec<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -284,7 +284,7 @@ pub enum EvalStep {
         /// Condition to evaluate
         condition: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -293,7 +293,7 @@ pub enum EvalStep {
         /// Space reference to evaluate
         space_ref: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -306,7 +306,7 @@ pub enum EvalStep {
         /// Whether to cache only first result (memo-first vs memo)
         first_only: bool,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -317,7 +317,7 @@ pub enum EvalStep {
         /// Optional size argument
         size_arg: Option<MettaValue>,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -328,7 +328,7 @@ pub enum EvalStep {
         /// Operation type: "clear" or "stats"
         op_type: MemoOpType,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -342,7 +342,7 @@ pub enum EvalStep {
         /// Template to instantiate with bindings
         template: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -353,7 +353,7 @@ pub enum EvalStep {
         /// Atom to add (will be evaluated)
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -364,7 +364,7 @@ pub enum EvalStep {
         /// Atom to remove (will be evaluated)
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -373,7 +373,7 @@ pub enum EvalStep {
         /// Initial value expression to evaluate
         initial_value: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -382,7 +382,7 @@ pub enum EvalStep {
         /// State reference to evaluate
         state_ref: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -393,7 +393,7 @@ pub enum EvalStep {
         /// New value to set
         new_value: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -402,7 +402,7 @@ pub enum EvalStep {
         /// Atom expression to evaluate
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -413,7 +413,7 @@ pub enum EvalStep {
         /// Args expression to evaluate
         args_arg: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -422,7 +422,7 @@ pub enum EvalStep {
         /// Atom expression to evaluate
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -433,7 +433,7 @@ pub enum EvalStep {
         /// Value expression to evaluate
         value_expr: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -442,7 +442,7 @@ pub enum EvalStep {
         /// Atom expression to evaluate
         atom: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -453,7 +453,7 @@ pub enum EvalStep {
         /// Atom expression to evaluate
         atom_expr: MettaValue,
         /// Environment for evaluation
-        env: Environment,
+        env: HeapEnvironment,
         /// Evaluation depth
         depth: usize,
     },
@@ -477,14 +477,14 @@ pub enum ProcessedSExpr {
     /// MettaValue clone is O(1) since it uses Arc internally
     EvalRuleMatches {
         matches: Vec<(MettaValue, Bindings)>,
-        env: Environment,
+        env: HeapEnvironment,
         depth: usize,
         base_results: Vec<MettaValue>,
     },
     /// Need to lazily process Cartesian product combinations
     EvalCombinations {
         combinations: CartesianProductIter,
-        env: Environment,
+        env: HeapEnvironment,
         depth: usize,
     },
     /// Need to re-dispatch through eval_sexpr_step for special form handling.
@@ -493,7 +493,7 @@ pub enum ProcessedSExpr {
     /// re-evaluated through the normal dispatch path.
     RedispatchSExpr {
         items: Vec<MettaValue>,
-        env: Environment,
+        env: HeapEnvironment,
         depth: usize,
     },
 }

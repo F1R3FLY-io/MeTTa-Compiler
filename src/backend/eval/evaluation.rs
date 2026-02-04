@@ -1,4 +1,4 @@
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use tracing::{trace, warn};
 
@@ -9,7 +9,7 @@ use super::{apply_bindings, eval, pattern_match, EvalStep};
 ///
 /// DEPRECATED: Use eval_eval_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_eval(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_eval", ?items);
     require_args_with_usage!("eval", items, 1, env, "(eval expr)");
 
@@ -24,7 +24,7 @@ pub(super) fn eval_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 }
 
 /// Step version of eval_eval that defers evaluation to trampoline.
-pub(super) fn eval_eval_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(super) fn eval_eval_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::eval::eval_eval_step", ?items);
     if items.len() != 2 {
         let err = MettaValue::Error(
@@ -53,7 +53,7 @@ pub(super) fn eval_eval_step(items: Vec<MettaValue>, env: Environment, depth: us
 ///
 /// This function is kept for backward compatibility and testing purposes.
 #[allow(dead_code)]
-pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn force_eval(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::force_eval", ?items);
     require_args_with_usage!("!", items, 1, env, "(! expr)");
     // Evaluate the expression after !
@@ -65,7 +65,7 @@ pub(super) fn force_eval(items: Vec<MettaValue>, env: Environment) -> EvalResult
 ///
 /// DEPRECATED: Use eval_function_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_function(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_function", ?items);
     require_args_with_usage!("function", items, 1, env, "(function expr)");
 
@@ -134,7 +134,7 @@ pub(super) fn eval_function(items: Vec<MettaValue>, env: Environment) -> EvalRes
 /// Step version of eval_function that defers evaluation to trampoline.
 pub(super) fn eval_function_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_function_step", ?items);
@@ -160,7 +160,7 @@ pub(super) fn eval_function_step(
 ///
 /// DEPRECATED: Use eval_return_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_return(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_return", ?items);
     require_args_with_usage!("return", items, 1, env, "(return value)");
 
@@ -180,7 +180,7 @@ pub(super) fn eval_return(items: Vec<MettaValue>, env: Environment) -> EvalResul
 }
 
 /// Step version of eval_return that defers evaluation to trampoline.
-pub(super) fn eval_return_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(super) fn eval_return_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::eval::eval_return_step", ?items);
     if items.len() != 2 {
         let err = MettaValue::Error(
@@ -208,7 +208,7 @@ pub(super) fn eval_return_step(items: Vec<MettaValue>, env: Environment, depth: 
 ///
 /// DEPRECATED: Use eval_chain_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_chain(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_chain", ?items);
     require_args_with_usage!("chain", items, 3, env, "(chain expr $var body)");
 
@@ -238,7 +238,7 @@ pub(super) fn eval_chain(items: Vec<MettaValue>, env: Environment) -> EvalResult
 }
 
 /// Step version of eval_chain that defers evaluation to trampoline.
-pub(super) fn eval_chain_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(super) fn eval_chain_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::eval::eval_chain_step", ?items);
     if items.len() != 4 {
         let err = MettaValue::Error(
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_force_eval_missing_argument() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (!) - missing argument
         let value = MettaValue::SExpr(vec![MettaValue::Atom("!".to_string())]);
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_eval_missing_argument() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (eval) - missing argument
         let value = MettaValue::SExpr(vec![MettaValue::Atom("eval".to_string())]);
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_evaluation_with_exclaim() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // First define a rule: (= (f) 42)
         let rule_def = MettaValue::SExpr(vec![
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_function_factorial_with_return() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Define factorial rule that only uses return for base case
         let factorial_rule = Rule::new(
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_function_fibonacci_with_return() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Use tail-recursive fibonacci with accumulator
         // (= (fib $n) (fib-helper $n 0 1))
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_function_power_with_return() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Use tail-recursive power with accumulator
         // (= (power $base $exp) (power-helper $base $exp 1))
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn test_chain_basic() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (chain (+ 1 2) $x (* $x 2)) should bind 3 to $x, then evaluate (* 3 2) = 6
         let value = MettaValue::SExpr(vec![
@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn test_chain_with_return() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (chain 42 $x (return (* $x 3))) should bind 42 to $x, then return (* 42 3) = 126 wrapped in return
         let value = MettaValue::SExpr(vec![
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn test_chain_with_function_and_return() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Define a simple increment rule: (= (inc $x) (+ $x 1))
         let inc_rule = Rule::new(
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn test_chain_variable_scoping() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (chain 10 $x (chain 20 $y (+ $x $y))) - nested chains with different variables
         let value = MettaValue::SExpr(vec![
@@ -745,7 +745,7 @@ mod tests {
 
     #[test]
     fn test_chain_complex_computation_pipeline() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Define helper functions for computation pipeline
         // (= (double $x) (* $x 2))
@@ -839,7 +839,7 @@ mod tests {
 
     #[test]
     fn test_chain_conditional_branching_with_function() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Define conditional computation with early termination
         // (= (process-number $n)

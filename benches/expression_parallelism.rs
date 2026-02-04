@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::environment::Environment;
+use mettatron::backend::environment::HeapEnvironment;
 use mettatron::backend::MettaValue;
 use mettatron::eval;
 
@@ -88,7 +88,7 @@ fn bench_simple_arithmetic(c: &mut Criterion) {
     // Test around the threshold boundary (currently 4)
     for num_ops in [2, 3, 4, 5, 6, 8, 10].iter() {
         let expr = generate_arithmetic_expr(*num_ops);
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
@@ -108,7 +108,7 @@ fn bench_nested_expressions(c: &mut Criterion) {
     // Test various nesting depths
     for depth in [2, 3, 4, 5, 6].iter() {
         let expr = generate_nested_expr(*depth);
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         group.bench_with_input(BenchmarkId::new("eval_depth", depth), depth, |b, _| {
             b.iter(|| {
@@ -127,7 +127,7 @@ fn bench_mixed_complexity(c: &mut Criterion) {
 
     for num_ops in [2, 4, 8, 12, 16, 20].iter() {
         let expr = generate_mixed_expr(*num_ops);
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
@@ -154,7 +154,7 @@ fn bench_threshold_tuning(c: &mut Criterion) {
     .iter()
     {
         let expr = generate_arithmetic_expr(*num_ops);
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         group.bench_with_input(BenchmarkId::new("operations", num_ops), num_ops, |b, _| {
             b.iter(|| {
@@ -196,7 +196,7 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     ]);
 
     group.bench_function("financial_calc", |b| {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         b.iter(|| {
             let result = eval(black_box(financial.clone()), black_box(env.clone()));
             black_box(result);
@@ -215,7 +215,7 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     let vector_expr = MettaValue::SExpr(vector_ops);
 
     group.bench_function("vector_dot_product", |b| {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         b.iter(|| {
             let result = eval(black_box(vector_expr.clone()), black_box(env.clone()));
             black_box(result);
@@ -238,7 +238,7 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     let complex_expr = MettaValue::SExpr(complex);
 
     group.bench_function("complex_formula", |b| {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
         b.iter(|| {
             let result = eval(black_box(complex_expr.clone()), black_box(env.clone()));
             black_box(result);
@@ -261,7 +261,7 @@ fn bench_parallel_overhead(c: &mut Criterion) {
             expr_vec.push(MettaValue::Long(i as i64));
         }
         let expr = MettaValue::SExpr(expr_vec);
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         group.bench_with_input(BenchmarkId::new("trivial_ops", num_ops), num_ops, |b, _| {
             b.iter(|| {
@@ -281,7 +281,7 @@ fn bench_scalability(c: &mut Criterion) {
 
     for num_ops in [4, 8, 16, 32, 64].iter() {
         let expr = generate_arithmetic_expr(*num_ops);
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         group.bench_with_input(BenchmarkId::new("scale", num_ops), num_ops, |b, _| {
             b.iter(|| {

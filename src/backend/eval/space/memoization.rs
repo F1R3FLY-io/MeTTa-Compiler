@@ -7,7 +7,7 @@
 //! - clear-memo!: Clear all cached entries
 //! - memo-stats: Get cache statistics
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MemoHandle, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
@@ -18,7 +18,7 @@ use super::super::{EvalStep, MemoOpType};
 /// Usage: (new-memo "name") or (new-memo "name" max-size)
 pub(crate) fn eval_new_memo_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     // Allow 1 or 2 arguments: name [max-size]
@@ -52,7 +52,7 @@ pub(crate) fn eval_new_memo_step(
 ///
 /// DEPRECATED: Use eval_new_memo_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_new_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_new_memo(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     // Allow 1 or 2 arguments: name [max-size]
     if items.len() < 2 || items.len() > 3 {
         let err = MettaValue::Error(
@@ -127,7 +127,7 @@ pub(crate) fn eval_new_memo(items: Vec<MettaValue>, env: Environment) -> EvalRes
 
 /// Step version of eval_memo - defers evaluation to trampoline.
 /// Usage: (memo memo-table expr)
-pub(crate) fn eval_memo_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(crate) fn eval_memo_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     if items.len() < 3 {
         let err = MettaValue::Error(
             "memo requires 2 arguments. Usage: (memo memo-table expr)".to_string(),
@@ -151,7 +151,7 @@ pub(crate) fn eval_memo_step(items: Vec<MettaValue>, env: Environment, depth: us
 ///
 /// DEPRECATED: Use eval_memo_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_memo(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("memo", items, 2, env, "(memo memo-table expr)");
 
     let memo_ref = &items[1];
@@ -201,7 +201,7 @@ pub(crate) fn eval_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 /// Usage: (memo-first memo-table expr)
 pub(crate) fn eval_memo_first_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 3 {
@@ -228,7 +228,7 @@ pub(crate) fn eval_memo_first_step(
 ///
 /// DEPRECATED: Use eval_memo_first_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_memo_first(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_memo_first(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("memo-first", items, 2, env, "(memo-first memo-table expr)");
 
     let memo_ref = &items[1];
@@ -278,7 +278,7 @@ pub(crate) fn eval_memo_first(items: Vec<MettaValue>, env: Environment) -> EvalR
 /// Usage: (clear-memo! memo-table)
 pub(crate) fn eval_clear_memo_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 2 {
@@ -303,7 +303,7 @@ pub(crate) fn eval_clear_memo_step(
 ///
 /// DEPRECATED: Use eval_clear_memo_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_clear_memo(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_clear_memo(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("clear-memo!", items, 1, env, "(clear-memo! memo-table)");
 
     let memo_ref = &items[1];
@@ -340,7 +340,7 @@ pub(crate) fn eval_clear_memo(items: Vec<MettaValue>, env: Environment) -> EvalR
 /// Usage: (memo-stats memo-table)
 pub(crate) fn eval_memo_stats_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 2 {
@@ -365,7 +365,7 @@ pub(crate) fn eval_memo_stats_step(
 ///
 /// DEPRECATED: Use eval_memo_stats_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_memo_stats(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_memo_stats(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("memo-stats", items, 1, env, "(memo-stats memo-table)");
 
     let memo_ref = &items[1];

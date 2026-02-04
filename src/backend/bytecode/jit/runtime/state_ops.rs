@@ -114,8 +114,8 @@ pub unsafe extern "C" fn jit_runtime_new_state(
     }
 
     // Cast env_ptr to Environment
-    use crate::backend::Environment;
-    let env = &mut *(ctx_ref.env_ptr as *mut Environment);
+    use crate::backend::HeapEnvironment;
+    let env = &mut *(ctx_ref.env_ptr as *mut HeapEnvironment);
 
     // Convert JIT value to MettaValue
     let jit_val = JitValue::from_raw(initial_value);
@@ -179,8 +179,8 @@ pub unsafe extern "C" fn jit_runtime_get_state(
     }
 
     // Cache miss: fetch from Environment
-    use crate::backend::Environment;
-    let env = &*(ctx_ref.env_ptr as *const Environment);
+    use crate::backend::HeapEnvironment;
+    let env = &*(ctx_ref.env_ptr as *const HeapEnvironment);
 
     // Get state value
     match env.get_state(state_id) {
@@ -252,8 +252,8 @@ pub unsafe extern "C" fn jit_runtime_change_state(
     let metta_new_val = jit_new_val.to_metta();
 
     // Cast env_ptr to Environment
-    use crate::backend::Environment;
-    let env = &mut *(ctx_ref.env_ptr as *mut Environment);
+    use crate::backend::HeapEnvironment;
+    let env = &mut *(ctx_ref.env_ptr as *mut HeapEnvironment);
 
     // Change state value
     if env.change_state(state_id, &metta_new_val) {

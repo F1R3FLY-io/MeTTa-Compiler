@@ -38,7 +38,7 @@ pub unsafe extern "C" fn jit_runtime_call_native(
     ip: u64,
 ) -> u64 {
     use crate::backend::bytecode::native_registry::{NativeContext, NativeRegistry};
-    use crate::backend::Environment;
+    use crate::backend::HeapEnvironment;
 
     if ctx.is_null() {
         return JitValue::nil().to_bits();
@@ -59,7 +59,7 @@ pub unsafe extern "C" fn jit_runtime_call_native(
     args.reverse(); // Restore argument order
 
     // Create native context
-    let native_ctx = NativeContext::new(Environment::default());
+    let native_ctx = NativeContext::new(HeapEnvironment::default());
 
     // In a full implementation, we would get the registry from the context
     // For now, use a default registry with stdlib functions

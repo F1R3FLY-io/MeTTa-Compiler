@@ -5,7 +5,7 @@
 //! - let*: Sequential bindings
 //! - let_step: TCO-enabled let for trampoline integration
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 use tracing::trace;
 
@@ -18,7 +18,7 @@ use super::super::{apply_bindings, eval, pattern_match, EvalStep};
 /// This version returns EvalStep to enable tail call optimization via the trampoline.
 pub(crate) fn eval_let_star_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     let args = &items[1..];
@@ -115,7 +115,7 @@ pub(crate) fn eval_let_star_step(
 ///
 /// DEPRECATED: Use eval_let_star_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_let_star(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_let_star(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     let args = &items[1..];
 
     if args.len() < 2 {
@@ -269,7 +269,7 @@ pub(crate) fn pattern_mismatch_suggestion(pattern: &MettaValue, value: &MettaVal
 ///
 /// DEPRECATED: Use eval_let_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_let(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     let args = &items[1..];
     trace!(target: "mettatron::eval::eval_let", ?args, ?items);
 
@@ -331,7 +331,7 @@ pub(crate) fn eval_let(items: Vec<MettaValue>, env: Environment) -> EvalResult {
 /// This is the TCO-enabled version of eval_let(). Instead of calling eval()
 /// directly for the value and body, it returns an EvalStep that the trampoline
 /// will process, preventing nested trampolines.
-pub(crate) fn eval_let_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(crate) fn eval_let_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     let args = &items[1..];
 
     // Validate arity - same as eval_let

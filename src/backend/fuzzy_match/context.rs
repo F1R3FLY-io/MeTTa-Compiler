@@ -1,7 +1,7 @@
 //! Context-aware suggestion methods for FuzzyMatcher.
 
 use crate::backend::builtin_signatures::{get_arg_types, get_signature, TypeExpr};
-use crate::backend::Environment;
+use crate::backend::HeapEnvironment;
 
 use super::helpers::{
     are_prefixes_compatible, compute_suggestion_confidence, is_likely_data_constructor,

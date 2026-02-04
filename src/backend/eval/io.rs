@@ -1,4 +1,4 @@
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
@@ -13,7 +13,7 @@ use super::EvalStep;
 /// Usage: (println! atom)
 pub(crate) fn eval_println_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 2 {
@@ -34,7 +34,7 @@ pub(crate) fn eval_println_step(
 
 /// Step version of eval_trace - defers evaluation to trampoline.
 /// Usage: (trace! message value)
-pub(crate) fn eval_trace_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(crate) fn eval_trace_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     if items.len() < 3 {
         let err = MettaValue::Error(
             format!(
@@ -63,7 +63,7 @@ pub(crate) fn eval_trace_step(items: Vec<MettaValue>, env: Environment, depth: u
 ///
 /// DEPRECATED: Use eval_println_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_println(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_println(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("println!", items, 1, env, "(println! atom)");
 
     let atom = &items[1];
@@ -91,7 +91,7 @@ pub(super) fn eval_println(items: Vec<MettaValue>, env: Environment) -> EvalResu
 ///
 /// DEPRECATED: Use eval_trace_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_trace(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_trace(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("trace!", items, 2, env, "(trace! message value)");
 
     let message = &items[1];
@@ -128,7 +128,7 @@ pub(super) fn eval_trace(items: Vec<MettaValue>, env: Environment) -> EvalResult
 /// nop: No operation - returns Unit immediately
 /// Usage: (nop) or (nop ...) - any arguments are ignored
 /// Always returns Unit
-pub(super) fn eval_nop(_items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_nop(_items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     // nop ignores all arguments and returns Unit
     (vec![MettaValue::Unit()], env)
 }
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_nop_returns_unit() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (nop)
         let items = vec![MettaValue::Atom("nop".to_string())];
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_nop_ignores_arguments() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (nop 1 2 3) - arguments should be ignored
         let items = vec![
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_println_basic_value() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (println! 42) - basic value printing
         let items = vec![
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_println_string() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (println! "Hello, World!")
         let items = vec![
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_println_atom() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (println! foo)
         let items = vec![
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_println_sexpr() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (println! (foo bar))
         let items = vec![
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_println_missing_args() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (println!) - missing argument
         let items = vec![MettaValue::Atom("println!".to_string())];
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_println_with_expression() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (println! (+ 2 3)) - prints the result of the expression
         let items = vec![
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_trace_returns_value() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (trace! "debug" 42) - should return 42
         let items = vec![
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn test_trace_with_complex_value() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (trace! "msg" (foo bar)) - should return (foo bar)
         let value = MettaValue::SExpr(vec![
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_trace_missing_args() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (trace! "msg") - missing value
         let items = vec![
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_trace_no_args() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (trace!) - missing both args
         let items = vec![MettaValue::Atom("trace!".to_string())];

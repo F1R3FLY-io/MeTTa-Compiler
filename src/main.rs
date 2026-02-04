@@ -255,7 +255,7 @@ fn eval_metta_heap(input: &str, options: &Options) -> Result<String, String> {
         .map(|s| s.as_str());
 
     // Create environment
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Set the current module path for relative includes
     if let Some(ref input_path) = options.input {
@@ -281,7 +281,7 @@ fn eval_metta_heap(input: &str, options: &Options) -> Result<String, String> {
     // Standard MettaValue evaluation
     let state = compile_with_path(input, file_path).map_err(|e| e.to_string())?;
     // Merge any rules from compilation into our environment
-    env = env.union(&state.environment);
+    // env = env.union(&state.environment);
 
     // Evaluate each expression
     let mut output = String::new();
@@ -323,7 +323,6 @@ fn eval_metta_heap(input: &str, options: &Options) -> Result<String, String> {
 /// Uses `StaticArenaContext::get_or_create_env()` to maintain state (rules, facts,
 /// bindings) across sequential evaluations, matching heap mode behavior.
 fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
-
     // Common setup: file path for error messages
     let file_path = options
         .input
@@ -433,7 +432,7 @@ fn run_repl(options: &Options) {
     // Create output highlighter
     let output_highlighter = QueryHighlighter::new().ok();
 
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Configure strict mode if requested
     if options.strict_mode {
@@ -468,7 +467,7 @@ fn run_repl(options: &Options) {
 
                 match compile(input) {
                     Ok(state) => {
-                        env = env.union(&state.environment);
+                        // env = env.union(&state.environment);
 
                         for sexpr in state.source {
                             // Only output results for S-expressions, not atoms or ground types

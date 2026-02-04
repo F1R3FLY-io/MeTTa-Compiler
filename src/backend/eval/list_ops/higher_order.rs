@@ -10,7 +10,7 @@
 
 use tracing::trace;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::super::step::EvalStep;
@@ -24,7 +24,7 @@ use super::helpers::suggest_variable_format;
 /// stack overflow for nested map operations.
 pub(crate) fn eval_map_atom_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_map_atom", ?items, items_len = items.len());
@@ -105,7 +105,7 @@ pub(crate) fn eval_map_atom_step(
 /// stack overflow for nested filter operations.
 pub(crate) fn eval_filter_atom_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_filter_atom", ?items);
@@ -186,7 +186,7 @@ pub(crate) fn eval_filter_atom_step(
 /// stack overflow for nested fold operations.
 pub(crate) fn eval_foldl_atom_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     trace!(target: "mettatron::eval::eval_foldl_atom", ?items);

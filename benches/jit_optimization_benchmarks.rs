@@ -831,7 +831,7 @@ fn create_state_mixed_chunk(ops: usize) -> BytecodeChunk {
 
 #[cfg(feature = "jit")]
 fn bench_state_operations(c: &mut Criterion) {
-    use mettatron::backend::Environment;
+    use mettatron::backend::HeapEnvironment;
 
     let mut group = c.benchmark_group("state_operations");
     configure_group(&mut group);

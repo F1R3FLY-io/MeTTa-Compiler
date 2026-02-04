@@ -45,7 +45,7 @@ where
 }
 
 // MettaValue-specific grounded operations
-impl super::Environment {
+impl super::HeapEnvironment {
     /// Execute a generic grounded operation step.
     ///
     /// This uses the generic grounded registry which works with any value type

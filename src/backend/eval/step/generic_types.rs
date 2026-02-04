@@ -17,7 +17,7 @@
 //! - `V: MettaValueTrait` - The value type (MettaValue or ArenaValue)
 //! - `E: Clone` - The environment type (Environment or GenericEnvironment<V>)
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::grounded::GenericGroundedState;
 use crate::backend::models::{Bindings, GenericBindings, MettaValue, MettaValueTrait};
 
@@ -35,7 +35,7 @@ use super::MemoOpType;
 /// - `V: MettaValueTrait` - The value type (MettaValue or ArenaValue)
 /// - `E: Clone` - The environment type (defaults to Environment for backward compatibility)
 #[derive(Debug)]
-pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = Environment> {
+pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = HeapEnvironment> {
     /// Evaluation complete, return this result
     Done(GenericEvalResult<V, E>),
 
@@ -540,7 +540,7 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = Environment> {
 /// - `E: Clone` - The environment type (defaults to Environment for backward compatibility)
 #[derive(Debug)]
 #[allow(dead_code)]
-pub enum GenericProcessedSExpr<V: MettaValueTrait, E: Clone = Environment> {
+pub enum GenericProcessedSExpr<V: MettaValueTrait, E: Clone = HeapEnvironment> {
     /// Processing complete, return this result
     Done(GenericEvalResult<V, E>),
 
@@ -589,11 +589,11 @@ pub enum GenericProcessedSExpr<V: MettaValueTrait, E: Clone = Environment> {
 
 /// EvalStep specialized for heap-allocated MettaValue with standard Environment
 #[allow(dead_code)]
-pub type HeapEvalStep = GenericEvalStep<MettaValue, Environment>;
+pub type HeapEvalStep = GenericEvalStep<MettaValue, HeapEnvironment>;
 
 /// ProcessedSExpr specialized for heap-allocated MettaValue with standard Environment
 #[allow(dead_code)]
-pub type HeapProcessedSExpr = GenericProcessedSExpr<MettaValue, Environment>;
+pub type HeapProcessedSExpr = GenericProcessedSExpr<MettaValue, HeapEnvironment>;
 
 // ============================================================================
 // Conversion utilities

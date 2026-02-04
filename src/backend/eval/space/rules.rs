@@ -4,11 +4,11 @@
 
 use tracing::trace;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, Rule};
 
 /// Rule definition: (= lhs rhs) - add to MORK Space and rule cache
-pub(crate) fn eval_add(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_add(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     trace!(target: "mettatron::eval::eval_add", ?items);
     require_args_with_usage!("=", items, 2, env, "(= pattern body)");
 

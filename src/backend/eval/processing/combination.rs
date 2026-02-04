@@ -3,7 +3,7 @@
 //! This module handles the processing of a single combination in the fast path
 //! for deterministic evaluation.
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::super::helpers::needs_special_form_redispatch;
@@ -21,7 +21,7 @@ use super::no_match::handle_no_rule_match;
 /// 3. (intensity red), (intensity green), (intensity blue) NOW match intensity rules
 pub fn process_single_combination(
     evaled_items: Vec<MettaValue>,
-    unified_env: Environment,
+    unified_env: HeapEnvironment,
     depth: usize,
 ) -> ProcessedSExpr {
     // Check if this is a grounded operation or special form

@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
-use crate::backend::Environment;
+use crate::backend::HeapEnvironment;
 
 /// Result type for native function calls
 pub type NativeResult = Result<Vec<MettaValue>, NativeError>;
@@ -450,19 +450,19 @@ where
 #[derive(Clone)]
 pub struct NativeContext {
     /// Current environment (for accessing bindings if needed)
-    pub env: Environment,
+    pub env: HeapEnvironment,
 }
 
 impl NativeContext {
     /// Create a new native context
-    pub fn new(env: Environment) -> Self {
+    pub fn new(env: HeapEnvironment) -> Self {
         Self { env }
     }
 
     /// Create a default context with empty environment
     pub fn default() -> Self {
         Self {
-            env: Environment::default(),
+            env: HeapEnvironment::default(),
         }
     }
 }

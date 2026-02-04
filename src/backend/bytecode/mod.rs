@@ -690,13 +690,13 @@ pub fn eval_bytecode_with_config(
 /// ```
 pub fn eval_bytecode_with_env(
     expr: &MettaValue,
-    env: crate::backend::Environment,
-) -> Result<(Vec<MettaValue>, crate::backend::Environment), BytecodeEvalError> {
+    env: crate::backend::HeapEnvironment,
+) -> Result<(Vec<MettaValue>, crate::backend::HeapEnvironment), BytecodeEvalError> {
     let chunk = compile_arc("eval", expr)?;
     let mut vm = BytecodeVM::with_env(chunk, env);
     let (results, modified_env) = vm.run_with_env()?;
     // Return the environment if present, otherwise create a new one
-    let final_env = modified_env.unwrap_or_else(|| crate::backend::Environment::new(crate::backend::models::HeapMettaValueFactory));
+    let final_env = modified_env.unwrap_or_else(|| crate::backend::HeapEnvironment::new(crate::backend::models::HeapMettaValueFactory));
     Ok((results, final_env))
 }
 
@@ -708,11 +708,11 @@ pub fn eval_bytecode_with_env(
 /// On failure, calls the fallback.
 pub fn try_bytecode_eval_with_env<F>(
     expr: &MettaValue,
-    env: crate::backend::Environment,
+    env: crate::backend::HeapEnvironment,
     fallback: F,
-) -> (Vec<MettaValue>, crate::backend::Environment)
+) -> (Vec<MettaValue>, crate::backend::HeapEnvironment)
 where
-    F: FnOnce(crate::backend::Environment) -> (Vec<MettaValue>, crate::backend::Environment),
+    F: FnOnce(crate::backend::HeapEnvironment) -> (Vec<MettaValue>, crate::backend::HeapEnvironment),
 {
     if can_compile_with_env(expr) {
         match eval_bytecode_with_env(expr, env.clone()) {

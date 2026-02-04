@@ -7,7 +7,7 @@
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 
-use crate::backend::environment::{Environment, GenericEnvironment};
+use crate::backend::environment::{HeapEnvironment, GenericEnvironment};
 use crate::backend::grounded::{execute_generic_grounded_op, has_generic_grounded_op, GenericGroundedState, GenericGroundedWork};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
@@ -182,11 +182,9 @@ where
     // Split results and environments
     let (eval_results, envs): (Vec<_>, Vec<_>) = collected.into_iter().unzip();
 
-    // Union all environments
-    let mut unified_env = original_env;
-    for e in envs {
-        unified_env = unified_env.union(&e);
-    }
+    // Union all environments using optimized batch method
+    // This avoids N allocations in the common case where nothing was modified
+    let unified_env = original_env.union_all(&envs);
 
     // Generate lazy Cartesian product of all sub-expression results
     match cartesian_product_lazy_generic(eval_results) {

@@ -1,4 +1,4 @@
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner};
 
 #[allow(unused_imports)]
@@ -11,7 +11,7 @@ use super::EvalStep;
 
 /// Step version of eval_repr - defers evaluation to trampoline.
 /// Usage: (repr atom)
-pub(crate) fn eval_repr_step(items: Vec<MettaValue>, env: Environment, depth: usize) -> EvalStep {
+pub(crate) fn eval_repr_step(items: Vec<MettaValue>, env: HeapEnvironment, depth: usize) -> EvalStep {
     if items.len() < 2 {
         let err = MettaValue::Error(
             format!(
@@ -32,7 +32,7 @@ pub(crate) fn eval_repr_step(items: Vec<MettaValue>, env: Environment, depth: us
 /// Usage: (format-args format-string args-expression)
 pub(crate) fn eval_format_args_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 3 {
@@ -63,7 +63,7 @@ pub(crate) fn eval_format_args_step(
 ///
 /// DEPRECATED: Use eval_repr_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_repr(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_repr(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("repr", items, 1, env, "(repr atom)");
 
     let atom = &items[1];
@@ -91,7 +91,7 @@ pub(super) fn eval_repr(items: Vec<MettaValue>, env: Environment) -> EvalResult 
 ///
 /// DEPRECATED: Use eval_format_args_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(super) fn eval_format_args(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(super) fn eval_format_args(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!(
         "format-args",
         items,
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_repr() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test with a simple value
         let items = vec![MettaValue::Atom("repr".to_string()), MettaValue::Long(42)];
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_repr_string_includes_quotes() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("repr".to_string()),
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_repr_bool() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("repr".to_string()), MettaValue::Bool(true)];
         let (results, _) = eval_repr(items, env);
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_repr_bool_false() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("repr".to_string()),
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_repr_sexpr() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("foo".to_string()),
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_repr_atom() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("repr".to_string()),
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_repr_nil() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("repr".to_string()), MettaValue::Nil()];
         let (results, _) = eval_repr(items, env);
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn test_repr_unit() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("repr".to_string()), MettaValue::Unit()];
         let (results, _) = eval_repr(items, env);
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_repr_float() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("repr".to_string()),
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_repr_missing_args() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("repr".to_string())];
         let (results, _) = eval_repr(items, env);
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_format_args_single() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (format-args "Hello, {}!" name) where name evaluates to "World"
         let items = vec![
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn test_format_args_multiple() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (format-args "{} + {} = {}" (1 2 3))
         let items = vec![
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_format_args_no_placeholders() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("format-args".to_string()),
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn test_format_args_missing_format_string() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![MettaValue::Atom("format-args".to_string())];
         let (results, _) = eval_format_args(items, env);
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn test_format_args_non_string_format() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // First arg must be a string
         let items = vec![
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_format_args_with_escaped_braces() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         let items = vec![
             MettaValue::Atom("format-args".to_string()),

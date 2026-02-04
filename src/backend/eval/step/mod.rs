@@ -27,7 +27,7 @@ pub use types::{EvalStep, MemoOpType, ProcessedSExpr};
 
 use tracing::trace;
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{MettaValue, MettaValueInner};
 
 use super::conjunction::eval_conjunction_step;
@@ -41,7 +41,7 @@ use super::conjunction::eval_conjunction_step;
 /// for preventing stack overflow. The previous MAX_EVAL_DEPTH check was incorrectly
 /// tracking work item count rather than recursion depth, causing legitimate
 /// iterative workloads (map-atom, filter-atom, foldl-atom over lists) to fail.
-pub fn eval_step(value: MettaValue, env: Environment, depth: usize) -> EvalStep {
+pub fn eval_step(value: MettaValue, env: HeapEnvironment, depth: usize) -> EvalStep {
     trace!(target: "mettatron::backend::eval::eval_step", ?value, depth);
 
     match value.inner() {

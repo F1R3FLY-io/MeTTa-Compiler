@@ -2,13 +2,13 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::environment::Environment;
+    use crate::backend::environment::HeapEnvironment;
     use crate::backend::models::{MettaValue, MettaValueInner};
     use crate::eval;
 
     #[test]
     fn test_add_missing_arguments() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (=) - missing both arguments
         let value = MettaValue::SExpr(vec![MettaValue::Atom("=".to_string())]);
@@ -26,7 +26,7 @@ mod tests {
 
     #[test]
     fn test_add_missing_one_argument() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (= lhs) - missing rhs
         let value = MettaValue::SExpr(vec![
@@ -47,7 +47,7 @@ mod tests {
 
     #[test]
     fn test_rule_definition() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (= (f) 42)
         let rule_def = MettaValue::SExpr(vec![
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn test_rule_definition_with_function_patterns() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test function rule: (= (double $x) (* $x 2))
         let function_rule = MettaValue::SExpr(vec![
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn test_rule_definition_with_variable_consistency() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test rule with repeated variables: (= (same $x $x) (duplicate $x))
         let consistency_rule = MettaValue::SExpr(vec![
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_multiple_rules_same_function() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Define multiple rules for the same function (factorial example)
         // (= (fact 0) 1)
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_rule_with_wildcard_patterns() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test rule with wildcard: (= (ignore _ $x) $x)
         let wildcard_rule = MettaValue::SExpr(vec![
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_match_basic_functionality() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add some facts to the space
         let fact1 = MettaValue::SExpr(vec![
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_match_with_specific_patterns() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add some facts
         let facts = vec![
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_match_with_complex_templates() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add facts
         let fact = MettaValue::SExpr(vec![
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_match_error_cases() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test match with insufficient arguments
         // Note: `& self` is preprocessed into `&self`, so (match & self) becomes (match &self)
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn test_rule_definition_with_errors_in_rhs() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test rule with error in RHS: (= (error-func $x) (error "always fails" $x))
         let error_rule = MettaValue::SExpr(vec![
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn test_rule_precedence_and_specificity() {
-        let mut env = Environment::default();
+        let mut env = HeapEnvironment::default();
 
         // Define general rule first: (= (test $x) (general $x))
         let general_rule = MettaValue::SExpr(vec![
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_recursive_rules() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Define recursive rule: (= (countdown $n) (if (> $n 0) (countdown (- $n 1)) done))
         let recursive_rule = MettaValue::SExpr(vec![
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn test_match_with_no_results() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test match with pattern that doesn't match anything
         let no_match = MettaValue::SExpr(vec![
@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn test_rule_with_different_variable_types() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test rule with different variable prefixes: (= (mixed $a &b 'c) (result $a &b 'c))
         let mixed_vars_rule = MettaValue::SExpr(vec![
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn test_rule_definition_in_fact_database() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Define a rule and verify it's added to the fact database
         let rule_def = MettaValue::SExpr(vec![
@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn test_space_name_case_sensitivity_suggestion() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test "&Self" (capital S) -> should error (unrecognized space reference)
         // Note: With the new space_ref token, &Self is a single atom, triggering new-style syntax
@@ -709,7 +709,7 @@ mod tests {
 
     #[test]
     fn test_space_name_typo_suggestion() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test "&slef" (typo) -> should error (unrecognized space reference)
         // Note: With the new space_ref token, &slef is a single atom, triggering new-style syntax
@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn test_space_name_no_suggestion_for_unrelated() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // Test "foobar" -> no suggestion (too different from "self")
         let match_expr = MettaValue::SExpr(vec![
@@ -769,7 +769,7 @@ mod tests {
 
     #[test]
     fn test_amb_with_multiple_alternatives() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (amb 1 2 3) should return 1, 2, 3 as separate results
         let amb_expr = MettaValue::SExpr(vec![
@@ -788,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_amb_empty_fails() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (amb) with no alternatives should return empty (nondeterministic failure)
         let amb_expr = MettaValue::SExpr(vec![MettaValue::Atom("amb".to_string())]);
@@ -799,7 +799,7 @@ mod tests {
 
     #[test]
     fn test_amb_single_alternative() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (amb 42) with single alternative
         let amb_expr = MettaValue::SExpr(vec![
@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn test_guard_passes_on_true() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (guard True) should return Unit
         let guard_expr = MettaValue::SExpr(vec![
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn test_guard_fails_on_false() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (guard False) should return empty (nondeterministic failure)
         let guard_expr = MettaValue::SExpr(vec![
@@ -846,7 +846,7 @@ mod tests {
 
     #[test]
     fn test_guard_type_error() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (guard 42) should return a type error
         let guard_expr = MettaValue::SExpr(vec![
@@ -870,7 +870,7 @@ mod tests {
 
     #[test]
     fn test_commit_returns_unit() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (commit) should return Unit
         let commit_expr = MettaValue::SExpr(vec![MettaValue::Atom("commit".to_string())]);
@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn test_backtrack_returns_empty() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (backtrack) should return empty (nondeterministic failure)
         let backtrack_expr = MettaValue::SExpr(vec![MettaValue::Atom("backtrack".to_string())]);
@@ -893,7 +893,7 @@ mod tests {
 
     #[test]
     fn test_amb_with_evaluated_expressions() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (amb (+ 1 1) (+ 2 2)) should evaluate each alternative
         let amb_expr = MettaValue::SExpr(vec![
@@ -918,7 +918,7 @@ mod tests {
 
     #[test]
     fn test_guard_with_evaluated_condition() {
-        let env = Environment::default();
+        let env = HeapEnvironment::default();
 
         // (guard (== 2 2)) should pass
         let guard_true_expr = MettaValue::SExpr(vec![

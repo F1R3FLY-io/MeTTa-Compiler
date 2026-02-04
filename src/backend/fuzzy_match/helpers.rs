@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::backend::builtin_signatures::TypeExpr;
 use crate::backend::models::{MettaValue, MettaValueInner};
-use crate::backend::Environment;
+use crate::backend::HeapEnvironment;
 
 use super::types::SuggestionConfidence;
 
@@ -91,7 +91,7 @@ pub fn are_prefixes_compatible(query: &str, suggestion: &str) -> bool {
 ///
 /// This performs structural type matching for fuzzy suggestion filtering.
 /// It uses simple heuristics to determine compatibility without full type inference.
-pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &Environment) -> bool {
+pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &HeapEnvironment) -> bool {
     match expected {
         // Universal types - accept anything
         TypeExpr::Any | TypeExpr::Pattern | TypeExpr::Bindings | TypeExpr::Expr => true,
@@ -170,7 +170,7 @@ pub fn is_type_name(s: &str) -> bool {
 pub fn validate_type_vars(
     args: &[MettaValue],
     expected_types: &[TypeExpr],
-    _env: &Environment,
+    _env: &HeapEnvironment,
 ) -> bool {
     let mut var_bindings: HashMap<&str, &MettaValue> = HashMap::new();
 

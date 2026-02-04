@@ -5,7 +5,7 @@
 //! - add-atom: Add an atom to a space
 //! - remove-atom: Remove an atom from a space
 
-use crate::backend::environment::Environment;
+use crate::backend::environment::HeapEnvironment;
 use crate::backend::models::{EvalResult, MettaValue, MettaValueInner, SpaceHandle};
 
 #[allow(unused_imports)]
@@ -16,7 +16,7 @@ use super::super::EvalStep;
 /// Usage: (add-atom space-ref atom)
 pub(crate) fn eval_add_atom_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 3 {
@@ -45,7 +45,7 @@ pub(crate) fn eval_add_atom_step(
 /// Usage: (remove-atom space-ref atom)
 pub(crate) fn eval_remove_atom_step(
     items: Vec<MettaValue>,
-    env: Environment,
+    env: HeapEnvironment,
     depth: usize,
 ) -> EvalStep {
     if items.len() < 3 {
@@ -73,7 +73,7 @@ pub(crate) fn eval_remove_atom_step(
 /// new-space: Create a new named space
 /// Returns a Space reference that can be used with add-atom, remove-atom, collapse
 /// Usage: (new-space) or (new-space "name")
-pub(crate) fn eval_new_space(items: Vec<MettaValue>, mut env: Environment) -> EvalResult {
+pub(crate) fn eval_new_space(items: Vec<MettaValue>, mut env: HeapEnvironment) -> EvalResult {
     let args = &items[1..];
 
     // Get optional name, default to "space-N"
@@ -107,7 +107,7 @@ pub(crate) fn eval_new_space(items: Vec<MettaValue>, mut env: Environment) -> Ev
 ///
 /// DEPRECATED: Use eval_add_atom_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("add-atom", items, 2, env, "(add-atom space atom)");
 
     let space_ref = &items[1];
@@ -160,7 +160,7 @@ pub(crate) fn eval_add_atom(items: Vec<MettaValue>, env: Environment) -> EvalRes
 ///
 /// DEPRECATED: Use eval_remove_atom_step for trampoline-based evaluation.
 #[allow(dead_code)]
-pub(crate) fn eval_remove_atom(items: Vec<MettaValue>, env: Environment) -> EvalResult {
+pub(crate) fn eval_remove_atom(items: Vec<MettaValue>, env: HeapEnvironment) -> EvalResult {
     require_args_with_usage!("remove-atom", items, 2, env, "(remove-atom space atom)");
 
     let space_ref = &items[1];

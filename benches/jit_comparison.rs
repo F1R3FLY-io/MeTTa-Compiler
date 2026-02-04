@@ -8,7 +8,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use mettatron::backend::bytecode::{compile, BytecodeVM};
 use mettatron::backend::eval::eval;
-use mettatron::backend::{Environment, MettaValue};
+use mettatron::backend::{HeapEnvironment, MettaValue};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +27,7 @@ fn sexpr(items: Vec<MettaValue>) -> MettaValue {
 
 /// Evaluate expression via tree-walking interpreter
 fn eval_tree_walker(expr: &MettaValue) -> Vec<MettaValue> {
-    let env = Environment::default();
+    let env = HeapEnvironment::default();
     let (results, _env) = eval(expr.clone(), env);
     results
 }

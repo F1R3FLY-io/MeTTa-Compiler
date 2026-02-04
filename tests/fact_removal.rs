@@ -4,12 +4,12 @@
 //! added for PR #1 (feature/mork-fact-removal).
 
 use mettatron::backend::compile::compile;
-use mettatron::backend::environment::Environment;
+use mettatron::backend::environment::HeapEnvironment;
 use mettatron::backend::eval::eval;
 
 #[test]
 fn test_remove_exact_fact() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add a fact
     let source = "(foo bar)";
@@ -33,7 +33,7 @@ fn test_remove_exact_fact() {
 
 #[test]
 fn test_remove_nonexistent_fact() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Try to remove a fact that doesn't exist (should not panic)
     let source = "(foo bar)";
@@ -45,7 +45,7 @@ fn test_remove_nonexistent_fact() {
 
 #[test]
 fn test_remove_from_multiple_facts() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add multiple facts
     let source = r#"
@@ -83,7 +83,7 @@ fn test_operation_remove_via_direct_api() {
     // The example file (examples/mork_removal_demo.metta) demonstrates
     // the full exec-based workflow with (O (+ fact)) and (O (- fact)).
 
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add a fact directly
     let source = "(temp foo)";
@@ -106,7 +106,7 @@ fn test_operation_remove_via_direct_api() {
 
 #[test]
 fn test_remove_and_readd() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     let source = "(data test)";
     let state = compile(source).unwrap();
@@ -134,7 +134,7 @@ fn test_remove_multiple_identical_facts() {
     // Removing once decrements multiplicity to N-1
     // match_space returns N copies for multiplicity N
 
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     let source = "(foo bar)";
     let state = compile(source).unwrap();
@@ -178,7 +178,7 @@ fn test_remove_multiple_identical_facts() {
 
 #[test]
 fn test_remove_complex_sexpr() {
-    let mut env = Environment::default();
+    let mut env = HeapEnvironment::default();
 
     // Add complex nested structure (ground fact - no variables)
     let source = "(rule (pattern (A (B C))) (body (D E)))";

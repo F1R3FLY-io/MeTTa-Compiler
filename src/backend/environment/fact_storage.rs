@@ -12,9 +12,9 @@ use pathmap::PathMap;
 use tracing::trace;
 
 use super::multiplicity::{add_atom, get_multiplicity, remove_atom, Multiplicity};
-use super::{Environment, MettaValue, MettaValueInner};
+use super::{HeapEnvironment, MettaValue, MettaValueInner};
 
-impl Environment {
+impl HeapEnvironment {
     /// Check if an atom fact exists (queries MORK Space)
     /// OPTIMIZED: Uses O(p) exact match via descend_to_check() where p = pattern depth
     ///

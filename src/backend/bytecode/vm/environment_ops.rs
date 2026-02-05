@@ -49,8 +49,8 @@ impl BytecodeVM {
 
     /// Load a global value from the environment by name.
     ///
-    /// Note: MeTTa doesn't have traditional globals - this is for future use
-    /// with module-level bindings or similar constructs.
+    /// Tries to resolve from environment bindings first. If no environment
+    /// or no binding found, pushes the atom itself as unresolved.
     ///
     /// Operand: constant index for the name (Atom)
     /// Stack: [] -> [value]
@@ -62,26 +62,42 @@ impl BytecodeVM {
             .ok_or(VmError::InvalidConstant(const_idx))?
             .clone();
 
-        // For now, just return the atom itself as unbound
-        // Full global support would require extending Environment
+        // Try to load from environment bindings
+        if let Some(ref env) = self.env {
+            if let MettaValueInner::Atom(sym) = name.inner() {
+                if let Some(value) = env.get_binding(sym) {
+                    self.push(value);
+                    return Ok(());
+                }
+            }
+        }
+
+        // No binding found - push the atom itself
         self.push(name);
         Ok(())
     }
 
     /// Store a value to a global in the environment.
     ///
-    /// Note: MeTTa doesn't have traditional globals - this is for future use
-    /// with module-level bindings or similar constructs.
+    /// Stores the value as a symbol binding in the environment.
     ///
     /// Operand: constant index for the name (Atom)
     /// Stack: [value] -> []
     pub(super) fn op_store_global(&mut self) -> VmResult<()> {
-        // Skip the constant index (name)
-        let _const_idx = self.read_u16()?;
-        // Pop and discard the value (no-op for now)
-        let _value = self.pop()?;
-        // Return success but don't actually store
-        // Full global support would require extending Environment
+        let const_idx = self.read_u16()?;
+        let value = self.pop()?;
+
+        let name = self
+            .chunk
+            .get_constant(const_idx)
+            .ok_or(VmError::InvalidConstant(const_idx))?;
+
+        // Store in environment bindings
+        if let Some(ref mut env) = self.env {
+            if let MettaValueInner::Atom(sym) = name.inner() {
+                env.bind(sym, value);
+            }
+        }
         Ok(())
     }
 

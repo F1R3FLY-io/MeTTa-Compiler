@@ -2285,3 +2285,401 @@ fn test_vm_call_external_multiple_args() {
 
     assert_eq!(results, vec![MettaValue::Long(42)]);
 }
+
+// =============================================================================
+// GenericBytecodeVM Tests
+// =============================================================================
+
+mod generic_vm_tests {
+    use std::sync::Arc;
+
+    use crate::backend::bytecode::chunk::GenericChunkBuilder;
+    use crate::backend::bytecode::opcodes::Opcode;
+    use crate::backend::bytecode::vm::GenericBytecodeVM;
+    use crate::backend::environment::GenericEnvironment;
+    use crate::backend::models::{
+        HeapMettaValueFactory, MettaValue, MettaValueFactory, MettaValueTrait,
+    };
+
+    fn factory() -> HeapMettaValueFactory {
+        HeapMettaValueFactory
+    }
+
+    /// Test basic arithmetic with the generic VM.
+    #[test]
+    fn test_generic_vm_arithmetic() {
+        let f = factory();
+        let mut builder = GenericChunkBuilder::new("test_arith", f.clone());
+        builder.emit_byte(Opcode::PushLongSmall, 10);
+        builder.emit_byte(Opcode::PushLongSmall, 32);
+        builder.emit(Opcode::Add);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = GenericBytecodeVM::new(chunk, f);
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].as_long(), Some(42));
+    }
+
+    /// Test that Call reads 3 bytes (u16 head_idx + u8 arity) and dispatches
+    /// via environment rules correctly.
+    #[test]
+    fn test_generic_vm_function_call() {
+        let f = factory();
+        let mut env = GenericEnvironment::new(f.clone());
+
+        // Define rule: (= (double $x) (+ $x $x))
+        let rule_lhs = f.sexpr(vec![f.atom("double"), f.atom("$x")]);
+        let rule_rhs = f.sexpr(vec![f.atom("+"), f.atom("$x"), f.atom("$x")]);
+        let rule = crate::backend::models::GenericRule::new(rule_lhs, rule_rhs);
+        env.add_generic_rule(rule);
+
+        // Bytecode: Call with head="double", arity=1, argument=5
+        let mut builder = GenericChunkBuilder::new("test_call", f.clone());
+        let head_idx = builder.add_constant(f.atom("double"));
+        builder.emit_byte(Opcode::PushLongSmall, 5); // Push argument
+        builder.emit_u16(Opcode::Call, head_idx);
+        builder.emit_raw(&[1]); // arity = 1
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = GenericBytecodeVM::with_env(chunk, env, f);
+        let results = vm.run().expect("VM should succeed");
+
+        // Should get (+ 5 5) after rule dispatch (bindings applied to body)
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        // The result should be an S-expression (+ 5 5) since we don't recursively evaluate
+        if let Some(items) = result.as_sexpr() {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0].as_atom(), Some("+"));
+            assert_eq!(items[1].as_long(), Some(5));
+            assert_eq!(items[2].as_long(), Some(5));
+        } else {
+            panic!("Expected S-expression result, got: {:?}", result.type_name());
+        }
+    }
+
+    /// Test that PushVariable resolves bindings from the bindings stack.
+    #[test]
+    fn test_generic_vm_variable_binding() {
+        let f = factory();
+        let mut builder = GenericChunkBuilder::new("test_var_binding", f.clone());
+
+        // Store a binding for "$x"
+        let var_idx = builder.add_constant(f.atom("$x"));
+        builder.emit_byte(Opcode::PushLongSmall, 42); // value to bind
+        builder.emit_u16(Opcode::StoreBinding, var_idx); // bind $x = 42
+
+        // Now push the variable - should resolve to 42
+        builder.emit_u16(Opcode::PushVariable, var_idx);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = GenericBytecodeVM::new(chunk, f);
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].as_long(), Some(42));
+    }
+
+    /// Test that PushVariable returns the variable symbol when not bound.
+    #[test]
+    fn test_generic_vm_unbound_variable() {
+        let f = factory();
+        let mut builder = GenericChunkBuilder::new("test_unbound", f.clone());
+
+        let var_idx = builder.add_constant(f.atom("$y"));
+        builder.emit_u16(Opcode::PushVariable, var_idx);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = GenericBytecodeVM::new(chunk, f);
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].as_atom(), Some("$y"));
+    }
+
+    /// Test DeconAtom returns (head, tail) pair.
+    #[test]
+    fn test_generic_vm_decon_atom() {
+        let f = factory();
+        let mut builder = GenericChunkBuilder::new("test_decon", f.clone());
+
+        // Push an S-expression (a b c)
+        let expr = f.sexpr(vec![f.atom("a"), f.atom("b"), f.atom("c")]);
+        let idx = builder.add_constant(expr);
+        builder.emit_u16(Opcode::PushConstant, idx);
+        builder.emit(Opcode::DeconAtom);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = GenericBytecodeVM::new(chunk, f);
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        // Should be (head tail) = (a (b c))
+        let pair = &results[0];
+        if let Some(items) = pair.as_sexpr() {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].as_atom(), Some("a"));
+            if let Some(tail_items) = items[1].as_sexpr() {
+                assert_eq!(tail_items.len(), 2);
+                assert_eq!(tail_items[0].as_atom(), Some("b"));
+                assert_eq!(tail_items[1].as_atom(), Some("c"));
+            } else {
+                panic!("Expected tail to be S-expression");
+            }
+        } else {
+            panic!("Expected pair S-expression");
+        }
+    }
+
+    /// Test SpaceGetAtoms returns atoms from the environment.
+    #[test]
+    fn test_generic_vm_space_get_atoms() {
+        let f = factory();
+        let mut env = GenericEnvironment::new(f.clone());
+
+        // Add atoms to the space
+        env.add_to_space(&f.atom("hello"));
+        env.add_to_space(&f.long(42));
+
+        let mut builder = GenericChunkBuilder::new("test_space", f.clone());
+        builder.emit(Opcode::SpaceGetAtoms);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = GenericBytecodeVM::with_env(chunk, env, f);
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        // Result should be an S-expression containing the atoms
+        if let Some(items) = results[0].as_sexpr() {
+            // Should have at least the atoms we added
+            assert!(items.len() >= 2, "Expected at least 2 atoms, got {}", items.len());
+        } else {
+            panic!("Expected S-expression result from SpaceGetAtoms");
+        }
+    }
+
+    /// Test CallNative dispatches to the generic native registry.
+    #[test]
+    fn test_generic_vm_call_native() {
+        use crate::backend::bytecode::native_registry::GenericNativeRegistry;
+
+        let f = factory();
+        let mut registry = GenericNativeRegistry::<MettaValue, HeapMettaValueFactory>::new();
+        let func_id = registry.register("add2", |args, _ctx| {
+            let a = args.get(0).and_then(|v| v.as_long()).unwrap_or(0);
+            let b = args.get(1).and_then(|v| v.as_long()).unwrap_or(0);
+            Ok(vec![MettaValue::Long(a + b)])
+        });
+
+        let mut builder = GenericChunkBuilder::new("test_native", f.clone());
+        builder.emit_byte(Opcode::PushLongSmall, 10);
+        builder.emit_byte(Opcode::PushLongSmall, 32);
+        builder.emit_u16(Opcode::CallNative, func_id);
+        builder.emit_raw(&[2]); // arity = 2
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let env = GenericEnvironment::new(f.clone());
+        let memo_cache = Arc::new(
+            crate::backend::bytecode::generic_memo_cache::GenericMemoCache::default(),
+        );
+        let ext_registry = Arc::new(
+            crate::backend::bytecode::external_registry::GenericExternalRegistry::new(),
+        );
+
+        let mut vm = GenericBytecodeVM::with_registries(
+            chunk,
+            env,
+            f,
+            Arc::new(registry),
+            ext_registry,
+            memo_cache,
+        );
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].as_long(), Some(42));
+    }
+
+    /// Test CallExternal dispatches to the generic external registry.
+    #[test]
+    fn test_generic_vm_call_external() {
+        use crate::backend::bytecode::external_registry::GenericExternalRegistry;
+
+        let f = factory();
+        let mut registry = GenericExternalRegistry::<MettaValue, HeapMettaValueFactory>::new();
+        registry.register("triple", |args, _ctx| {
+            let n = args.get(0).and_then(|v| v.as_long()).unwrap_or(0);
+            Ok(vec![MettaValue::Long(n * 3)])
+        });
+
+        let mut builder = GenericChunkBuilder::new("test_external", f.clone());
+        let name_idx = builder.add_constant(f.atom("triple"));
+        builder.emit_byte(Opcode::PushLongSmall, 14);
+        builder.emit_u16(Opcode::CallExternal, name_idx);
+        builder.emit_raw(&[1]); // arity = 1
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let env = GenericEnvironment::new(f.clone());
+        let native_registry = Arc::new(
+            crate::backend::bytecode::native_registry::GenericNativeRegistry::new(),
+        );
+        let memo_cache = Arc::new(
+            crate::backend::bytecode::generic_memo_cache::GenericMemoCache::default(),
+        );
+
+        let mut vm = GenericBytecodeVM::with_registries(
+            chunk,
+            env,
+            f,
+            native_registry,
+            Arc::new(registry),
+            memo_cache,
+        );
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].as_long(), Some(42));
+    }
+
+    /// Test CallCached uses the memo cache.
+    #[test]
+    fn test_generic_vm_call_cached() {
+        let f = factory();
+        let mut env = GenericEnvironment::new(f.clone());
+
+        // Define rule: (= (square $x) (* $x $x))
+        let rule_lhs = f.sexpr(vec![f.atom("square"), f.atom("$x")]);
+        let rule_rhs = f.sexpr(vec![f.atom("*"), f.atom("$x"), f.atom("$x")]);
+        let rule = crate::backend::models::GenericRule::new(rule_lhs, rule_rhs);
+        env.add_generic_rule(rule);
+
+        let memo_cache = Arc::new(
+            crate::backend::bytecode::generic_memo_cache::GenericMemoCache::<MettaValue>::new(1024),
+        );
+
+        let mut builder = GenericChunkBuilder::new("test_cached", f.clone());
+        let head_idx = builder.add_constant(f.atom("square"));
+        builder.emit_byte(Opcode::PushLongSmall, 7);
+        builder.emit_u16(Opcode::CallCached, head_idx);
+        builder.emit_raw(&[1]); // arity = 1
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let native_registry = Arc::new(
+            crate::backend::bytecode::native_registry::GenericNativeRegistry::new(),
+        );
+        let ext_registry = Arc::new(
+            crate::backend::bytecode::external_registry::GenericExternalRegistry::new(),
+        );
+
+        let mut vm = GenericBytecodeVM::with_registries(
+            chunk.clone(),
+            env.clone(),
+            f.clone(),
+            native_registry.clone(),
+            ext_registry.clone(),
+            memo_cache.clone(),
+        );
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        // Should get (* 7 7) after rule dispatch
+        if let Some(items) = results[0].as_sexpr() {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0].as_atom(), Some("*"));
+            assert_eq!(items[1].as_long(), Some(7));
+            assert_eq!(items[2].as_long(), Some(7));
+        } else {
+            panic!("Expected S-expression result");
+        }
+
+        // Verify it was cached
+        assert!(memo_cache.len() > 0, "Cache should have entries after call");
+
+        // Second call should hit cache
+        let mut vm2 = GenericBytecodeVM::with_registries(
+            chunk,
+            env,
+            f,
+            native_registry,
+            ext_registry,
+            memo_cache.clone(),
+        );
+        let results2 = vm2.run().expect("VM should succeed on cache hit");
+        assert_eq!(results, results2);
+
+        let stats = memo_cache.stats();
+        assert!(stats.hits > 0, "Should have cache hits on second call");
+    }
+
+    /// Test DefineRule + DispatchRules through the generic VM.
+    #[test]
+    fn test_generic_vm_define_and_dispatch() {
+        let f = factory();
+        let env = GenericEnvironment::new(f.clone());
+
+        let mut builder = GenericChunkBuilder::new("test_define_dispatch", f.clone());
+
+        // Define rule: (= (greet $x) (hello $x))
+        let pattern = f.sexpr(vec![f.atom("greet"), f.atom("$x")]);
+        let body = f.sexpr(vec![f.atom("hello"), f.atom("$x")]);
+        let pattern_idx = builder.add_constant(pattern);
+        let body_idx = builder.add_constant(body);
+
+        builder.emit_u16(Opcode::PushConstant, pattern_idx);
+        builder.emit_u16(Opcode::PushConstant, body_idx);
+        builder.emit(Opcode::DefineRule);
+        builder.emit(Opcode::Pop); // Pop the Unit from DefineRule
+
+        // Now dispatch (greet world)
+        let call_expr = f.sexpr(vec![f.atom("greet"), f.atom("world")]);
+        let call_idx = builder.add_constant(call_expr);
+        builder.emit_u16(Opcode::PushConstant, call_idx);
+        builder.emit(Opcode::DispatchRules);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm = GenericBytecodeVM::with_env(chunk, env, f);
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        // Should get (hello world) after rule dispatch with $x = world
+        if let Some(items) = results[0].as_sexpr() {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].as_atom(), Some("hello"));
+            assert_eq!(items[1].as_atom(), Some("world"));
+        } else {
+            panic!("Expected S-expression result from rule dispatch");
+        }
+    }
+
+    /// Test the HeapGenericBytecodeVM type alias works.
+    #[test]
+    fn test_heap_generic_vm_alias() {
+        use super::super::HeapGenericBytecodeVM;
+
+        let f = factory();
+        let mut builder = GenericChunkBuilder::new("test_alias", f.clone());
+        builder.emit_byte(Opcode::PushLongSmall, 7);
+        builder.emit(Opcode::Dup);
+        builder.emit(Opcode::Mul);
+        builder.emit(Opcode::Return);
+
+        let chunk = builder.build_arc();
+        let mut vm: HeapGenericBytecodeVM = GenericBytecodeVM::new(chunk, f);
+        let results = vm.run().expect("VM should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].as_long(), Some(49));
+    }
+}

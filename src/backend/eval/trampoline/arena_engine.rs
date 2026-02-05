@@ -1,36 +1,34 @@
 //! Arena-based Trampoline Engine
 //!
-//! This module provides zero-conversion arena evaluation using `StaticArenaContext`.
-//! By using `Box::leak` to create a `'static` arena, `ArenaValue<'static>` can satisfy
-//! the `'static` bound required by `GenericEnvironment`.
+//! This module provides zero-conversion arena evaluation using session-scoped
+//! dual-arena allocation with O(1) bulk deallocation.
 //!
-//! ## Design
+//! ## Dual Arena Model
 //!
-//! The key insight is that we can use `Box::leak` to create a `'static` arena:
-//! - Thread-local storage ensures each thread has its own arena
-//! - The `'static` lifetime allows `ArenaValue<'static>` to be stored in DashMap/PathMap
-//! - Unsafe `Send + Sync` implementations are safe because arena values are immutable
+//! - **Eval Arena**: Thread-local, generation-based reset for intermediates (~95% of allocations)
+//! - **Storage Arena**: Session-owned via ArenaState, O(1) bulk free on drop (~5% of allocations)
 //!
 //! ## Zero-Conversion Pipeline
 //!
 //! When `METTA_USE_ARENA=1`:
-//! 1. `compile_arena()` parses directly to `ArenaValue<'static>`
-//! 2. `eval_trampoline_arena()` evaluates `ArenaValue<'static>` throughout
+//! 1. `compile_arena()` compiles directly to `ArenaState` with `ArenaValue<'static>`
+//! 2. `eval_trampoline_arena()` evaluates `ArenaValue<'static>` using `SessionContext`
 //! 3. Results are `Vec<ArenaValue<'static>>` - no conversion needed
 //!
 //! ## Memory Management
 //!
-//! The static arena is never dropped (that's what `Box::leak` does). This is
-//! intentional for batch processing where all allocations happen during evaluation.
-//! For long-running processes, consider periodic arena resets.
+//! When `ArenaState` drops, ALL arena memory is freed instantly via O(1) bulk
+//! deallocation (no recursive tree traversal). The eval generation counter is
+//! incremented, causing thread-local eval arenas to reset lazily on next access.
 
 use bumpalo::Bump;
 
-use crate::backend::models::ArenaValue;
+use crate::backend::models::{ArenaState, ArenaValue};
 
 use super::context::{ArenaContext, ArenaEnvironment, StaticArenaContext};
 use super::generic_trampoline::eval_trampoline_generic;
 use super::generic_types::GenericEvalResult;
+use super::session_context::SessionContext;
 
 /// Type alias for arena evaluation result.
 ///
@@ -46,22 +44,23 @@ pub type ArenaEvalResult = GenericEvalResult<ArenaValue<'static>, ArenaEnvironme
 /// such as parsing or transformation within a specific scope.
 ///
 /// For evaluation that requires storage in `GenericEnvironment`, use
-/// `StaticArenaContext::get()` instead.
+/// `SessionContext::new()` or `StaticArenaContext::get()` instead.
 #[inline]
 pub fn create_arena_context(arena: &Bump) -> ArenaContext<'_> {
     ArenaContext::new(arena)
 }
 
-/// Zero-conversion arena evaluation.
+/// Zero-conversion arena evaluation using session-scoped dual-arena model.
 ///
 /// This function evaluates `ArenaValue<'static>` using the unified generic trampoline
-/// engine. No conversions are performed - values remain as `ArenaValue<'static>`
-/// throughout the entire evaluation process.
+/// engine with `SessionContext` for dual-arena allocation. No conversions are
+/// performed - values remain as `ArenaValue<'static>` throughout.
 ///
 /// # Arguments
 ///
 /// - `value`: The value to evaluate (must be `ArenaValue<'static>`)
 /// - `env`: The evaluation environment (`ArenaEnvironment`)
+/// - `state`: The `ArenaState` owning the storage arena
 ///
 /// # Returns
 ///
@@ -71,32 +70,36 @@ pub fn create_arena_context(arena: &Bump) -> ArenaContext<'_> {
 ///
 /// ```ignore
 /// use mettatron::backend::compile::compile_arena;
-/// use mettatron::backend::eval::trampoline::{eval_trampoline_arena, StaticArenaContext};
+/// use mettatron::backend::eval::trampoline::eval_trampoline_arena;
 ///
-/// // Compile directly to ArenaValue<'static>
-/// let exprs = compile_arena("!(+ 1 2)").unwrap();
+/// // Compile to ArenaState
+/// let state = compile_arena("!(+ 1 2)").unwrap();
 ///
 /// // Create arena environment
-/// let env = StaticArenaContext::new_env();
+/// let env = ArenaEnvironment::new(state.storage_factory().into());
 ///
 /// // Evaluate - zero conversions throughout
-/// for expr in exprs {
-///     let (results, env) = eval_trampoline_arena(expr, env);
+/// for &expr in state.source() {
+///     let (results, env) = eval_trampoline_arena(expr, env, &state);
 ///     for result in results {
 ///         println!("{}", result.friendly_repr());
 ///     }
 /// }
 /// ```
 #[inline]
-pub fn eval_trampoline_arena(value: ArenaValue<'static>, env: ArenaEnvironment) -> ArenaEvalResult {
-    let ctx = StaticArenaContext::get();
+pub fn eval_trampoline_arena(
+    value: ArenaValue<'static>,
+    env: ArenaEnvironment,
+    state: &ArenaState,
+) -> ArenaEvalResult {
+    let ctx = SessionContext::new(state);
     eval_trampoline_generic(value, env, &ctx)
 }
 
 /// Check if arena mode is available.
 ///
 /// Returns `true` - arena evaluation is now fully implemented using
-/// `StaticArenaContext` with `Box::leak` for `'static` arena.
+/// session-scoped dual-arena allocation.
 #[inline]
 pub fn is_arena_mode_available() -> bool {
     true
@@ -127,6 +130,17 @@ pub fn get_static_factory() -> crate::backend::models::ArenaValueFactory<'static
     StaticArenaContext::get_factory()
 }
 
+/// Create a new `ArenaEnvironment` for session-based evaluation.
+///
+/// The environment uses the eval arena factory from the `ArenaState`,
+/// which is appropriate since most environment operations (pattern matching,
+/// binding lookup) work with intermediates that don't need to persist.
+#[inline]
+pub fn new_arena_env() -> ArenaEnvironment {
+    use crate::backend::models::{get_eval_arena, ArenaValueFactory};
+    ArenaEnvironment::new(ArenaValueFactory::new(get_eval_arena()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,11 +169,12 @@ mod tests {
 
     #[test]
     fn test_eval_simple_atom() {
-        let factory = get_static_factory();
-        let env = StaticArenaContext::new_env();
+        let state = ArenaState::new();
+        let factory = state.storage_factory();
+        let env = new_arena_env();
         let value = factory.atom("hello");
 
-        let (results, _env) = eval_trampoline_arena(value, env);
+        let (results, _env) = eval_trampoline_arena(value, env, &state);
         assert_eq!(results.len(), 1);
         assert!(results[0].is_atom());
         assert_eq!(results[0].as_atom(), Some("hello"));
@@ -167,11 +182,12 @@ mod tests {
 
     #[test]
     fn test_eval_simple_number() {
-        let factory = get_static_factory();
-        let env = StaticArenaContext::new_env();
+        let state = ArenaState::new();
+        let factory = state.storage_factory();
+        let env = new_arena_env();
         let value = factory.long(42);
 
-        let (results, _env) = eval_trampoline_arena(value, env);
+        let (results, _env) = eval_trampoline_arena(value, env, &state);
         assert_eq!(results.len(), 1);
         assert!(results[0].is_long());
         assert_eq!(results[0].as_long(), Some(42));
@@ -179,8 +195,9 @@ mod tests {
 
     #[test]
     fn test_eval_simple_arithmetic() {
-        let factory = get_static_factory();
-        let env = StaticArenaContext::new_env();
+        let state = ArenaState::new();
+        let factory = state.storage_factory();
+        let env = new_arena_env();
 
         // Create (+ 1 2)
         let value = factory.sexpr(vec![
@@ -189,7 +206,7 @@ mod tests {
             factory.long(2),
         ]);
 
-        let (results, _env) = eval_trampoline_arena(value, env);
+        let (results, _env) = eval_trampoline_arena(value, env, &state);
         assert_eq!(results.len(), 1);
         assert!(results[0].is_long());
         assert_eq!(results[0].as_long(), Some(3));

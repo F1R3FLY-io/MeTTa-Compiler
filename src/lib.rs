@@ -82,6 +82,24 @@ pub use tree_sitter_parser::TreeSitterMettaParser;
 #[cfg(feature = "async")]
 pub use rholang_integration::run_state_async;
 
+// ============================================================================
+// Session-Based Arena Evaluation (O(1) Bulk Deallocation)
+// ============================================================================
+
+pub use backend::{
+    // ArenaState and related types
+    compile_arena, compile_arena_with_path,
+    // Evaluation functions
+    eval_arena, new_arena_env,
+    // Types
+    ArenaState, SessionContext, ArenaEnvironment, ArenaEvalResult,
+    // Arena utilities
+    clone_value, get_eval_arena, get_eval_factory, StorageFactory,
+};
+
+// Session-based evaluation API
+pub use rholang_integration::{eval_metta_session, eval_metta_session_raw};
+
 pub use pathmap_par_integration::{
     metta_error_to_par, metta_state_to_pathmap_par, metta_value_to_par, par_to_metta_value,
     pathmap_par_to_metta_state,

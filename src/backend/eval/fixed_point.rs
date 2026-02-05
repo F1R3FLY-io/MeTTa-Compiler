@@ -109,11 +109,11 @@ pub fn sort_rules_by_priority(rules: &mut [ExecRule]) {
 /// # Example
 ///
 /// ```rust
-/// use mettatron::backend::environment::Environment;
+/// use mettatron::backend::HeapEnvironment;
 /// use mettatron::backend::eval::fixed_point::{ExecRule, eval_to_fixed_point};
 /// use mettatron::backend::models::MettaValue;
 ///
-/// let mut env = Environment::default();
+/// let env = HeapEnvironment::default();
 /// let rules = vec![]; // Add exec rules here
 ///
 /// let result = eval_to_fixed_point(rules, env, 100);

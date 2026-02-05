@@ -100,6 +100,7 @@ pub mod cache;
 pub mod chunk;
 pub mod compiler;
 pub mod external_registry;
+pub mod generic_memo_cache;
 pub mod memo_cache;
 pub mod mork_bridge;
 pub mod native_registry;
@@ -133,6 +134,7 @@ pub use external_registry::{
     // Generic external registry for zero-conversion support
     GenericExternalContext, GenericExternalFn, GenericExternalRegistry, GenericExternalResult,
 };
+pub use generic_memo_cache::{GenericCacheStats, GenericMemoCache};
 pub use memo_cache::{CacheStats as MemoCacheStats, MemoCache};
 pub use mork_bridge::{BridgeStats, CompiledRule, MorkBridge};
 pub use native_registry::{
@@ -959,7 +961,7 @@ pub fn execute_generic<V, F>(
 ) -> VmResult<(Vec<V>, GenericEnvironment<V, F>)>
 where
     V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + PartialEq + 'static,
-    F: MettaValueFactory<V> + Clone,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
 {
     let factory = env.factory().clone();
     let mut vm = GenericBytecodeVM::with_env(chunk, env, factory.clone());
@@ -988,7 +990,7 @@ pub fn execute_generic_simple<V, F>(
 ) -> VmResult<Vec<V>>
 where
     V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + PartialEq + 'static,
-    F: MettaValueFactory<V> + Clone,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
 {
     let mut vm = GenericBytecodeVM::new(chunk, factory);
     vm.run()

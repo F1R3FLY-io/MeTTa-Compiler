@@ -227,15 +227,20 @@ pub type ArenaEvalResult = (Vec<ArenaValue<'static>>, ArenaEnvironment);
 
 /// Evaluate an ArenaValue with bytecode/JIT tiering.
 ///
-/// This function provides zero-conversion evaluation for ArenaValue expressions.
-/// It uses the arena tiered cache to track executions and trigger background
-/// bytecode compilation, then executes via:
-/// - Bytecode VM if bytecode is ready
-/// - Tree-walker interpreter otherwise
+/// This function provides zero-conversion evaluation for ArenaValue expressions
+/// using session-scoped dual-arena allocation. It uses the arena tiered cache
+/// to track executions and trigger background bytecode compilation, then
+/// executes via the highest available tier:
+///
+/// 1. JIT Stage 2 (native code, 500+ executions)
+/// 2. JIT Stage 1 (native code, 100+ executions)
+/// 3. Bytecode VM (2+ executions)
+/// 4. Tree-walker interpreter (fallback)
 ///
 /// # Arguments
 /// * `value` - The ArenaValue expression to evaluate
 /// * `env` - The arena-based environment
+/// * `arena_state` - The ArenaState owning the storage arena
 ///
 /// # Returns
 /// A tuple of (results, updated_environment) where results are `Vec<ArenaValue<'static>>`.
@@ -243,17 +248,22 @@ pub type ArenaEvalResult = (Vec<ArenaValue<'static>>, ArenaEnvironment);
 /// # Example
 /// ```ignore
 /// use mettatron::backend::compile::compile_arena;
-/// use mettatron::backend::eval::{eval_arena, trampoline::StaticArenaContext};
+/// use mettatron::backend::eval::eval_arena;
+/// use mettatron::backend::eval::trampoline::new_arena_env;
 ///
-/// let exprs = compile_arena("!(+ 1 2)").unwrap();
-/// let env = StaticArenaContext::new_env();
+/// let state = compile_arena("!(+ 1 2)").unwrap();
+/// let env = new_arena_env();
 ///
-/// for expr in exprs {
-///     let (results, env) = eval_arena(expr, env);
+/// for &expr in state.source() {
+///     let (results, env) = eval_arena(expr, env, &state);
 ///     println!("{:?}", results);
 /// }
 /// ```
-pub fn eval_arena(value: ArenaValue<'static>, env: ArenaEnvironment) -> ArenaEvalResult {
+pub fn eval_arena(
+    value: ArenaValue<'static>,
+    env: ArenaEnvironment,
+    arena_state: &crate::backend::models::ArenaState,
+) -> ArenaEvalResult {
     use crate::backend::bytecode::{
         can_compile_arena, can_compile_arena_with_env, eval_bytecode_arena_with_env,
         execute_arena, global_arena_tiered_cache,
@@ -262,16 +272,16 @@ pub fn eval_arena(value: ArenaValue<'static>, env: ArenaEnvironment) -> ArenaEva
 
     // Record execution in arena tiered cache
     // This triggers background bytecode and JIT compilation at thresholds
-    let state = global_arena_tiered_cache().record_execution(&value);
+    let compilation_state = global_arena_tiered_cache().record_execution(&value);
 
     // Check if this expression can be compiled to bytecode (pure expressions)
     if can_compile_arena(&value) {
         // Check for JIT execution first (highest tier)
         // JIT Stage 2 (very hot code, 500+ executions)
         // Now properly threads environment through execution.
-        if state.jit2_status() == TierStatusKind::Ready {
-            if let Some(code) = state.jit2_code() {
-                match execute_jit_arena_with_env(&state, code.ptr, env.clone()) {
+        if compilation_state.jit2_status() == TierStatusKind::Ready {
+            if let Some(code) = compilation_state.jit2_code() {
+                match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
                         global_arena_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage2);
@@ -286,9 +296,9 @@ pub fn eval_arena(value: ArenaValue<'static>, env: ArenaEnvironment) -> ArenaEva
 
         // JIT Stage 1 (hot code, 100+ executions)
         // Now properly threads environment through execution.
-        if state.jit1_status() == TierStatusKind::Ready {
-            if let Some(code) = state.jit1_code() {
-                match execute_jit_arena_with_env(&state, code.ptr, env.clone()) {
+        if compilation_state.jit1_status() == TierStatusKind::Ready {
+            if let Some(code) = compilation_state.jit1_code() {
+                match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
                         global_arena_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage1);
@@ -302,8 +312,8 @@ pub fn eval_arena(value: ArenaValue<'static>, env: ArenaEnvironment) -> ArenaEva
         }
 
         // Bytecode VM (warm code, 2+ executions)
-        if state.bytecode_status() == TierStatusKind::Ready {
-            if let Some(chunk) = state.bytecode_chunk() {
+        if compilation_state.bytecode_status() == TierStatusKind::Ready {
+            if let Some(chunk) = compilation_state.bytecode_chunk() {
                 // Execute via generic bytecode VM (zero-conversion)
                 match execute_arena(chunk, env.clone()) {
                     Ok((results, new_env)) => {
@@ -338,7 +348,7 @@ pub fn eval_arena(value: ArenaValue<'static>, env: ArenaEnvironment) -> ArenaEva
 
     // Tier 0: Tree-walker interpreter (cold code or fallback)
     global_arena_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
-    eval_trampoline_arena(value, env)
+    eval_trampoline_arena(value, env, arena_state)
 }
 
 /// Execute JIT-compiled code for arena expression with environment threading.

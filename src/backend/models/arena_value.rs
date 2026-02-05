@@ -855,6 +855,41 @@ impl<'a> MettaValueTrait for ArenaValue<'a> {
         buf
     }
 
+    #[inline]
+    fn hash_value(&self) -> u64 {
+        use std::hash::Hasher;
+        use xxhash_rust::xxh3::Xxh3;
+
+        // Golden ratio constant for good hash distribution
+        const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
+        const LONG_SEED: u64 = 0x517cc1b727220a95;
+        const BOOL_SEED: u64 = 0x2d358dccaa6c78a5;
+        const NIL_HASH: u64 = 0x6e696c5f_68617368;
+        const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
+        const UNIT_HASH: u64 = 0x756e6974_68617368;
+
+        // Fast path for primitives
+        if self.is_nil() { return NIL_HASH; }
+        if self.is_unit() { return UNIT_HASH; }
+        if let Some(b) = self.as_bool() {
+            return if b { BOOL_SEED.wrapping_mul(GOLDEN_RATIO) } else { BOOL_SEED };
+        }
+        if let Some(n) = self.as_long() {
+            let x = (n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+            return x ^ (x >> 32);
+        }
+        if let Some(f) = self.as_float() {
+            let bits = f.to_bits();
+            let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
+            return x ^ (x >> 32);
+        }
+
+        // Slow path - use xxHash3 for complex types
+        let mut hasher = Xxh3::new();
+        hash_arena_value_for_trait(self, &mut hasher);
+        hasher.finish()
+    }
+
     fn friendly_repr(&self) -> std::string::String {
         // Stack-based implementation to avoid recursion on deeply nested structures
         enum ReprWork<'a, 'bump> {
@@ -1106,6 +1141,45 @@ fn read_varint(bytes: &[u8]) -> Result<(usize, usize), std::string::String> {
         }
     }
     Err("unexpected end of varint".to_string())
+}
+
+/// Recursively hash an ArenaValue using trait-based accessors.
+///
+/// Used by `ArenaValue::hash_value()` for complex types (strings, atoms, s-expressions).
+fn hash_arena_value_for_trait<H: std::hash::Hasher>(value: &ArenaValue, hasher: &mut H) {
+    use std::hash::Hash;
+
+    // Hash type discriminant
+    let type_tag: u8 = if value.is_nil() { 0 }
+        else if value.is_unit() { 1 }
+        else if value.is_bool() { 2 }
+        else if value.is_long() { 3 }
+        else if value.is_float() { 4 }
+        else if value.is_string() { 5 }
+        else if value.is_atom() { 6 }
+        else if value.is_sexpr() { 7 }
+        else if value.is_error() { 8 }
+        else if value.is_empty() { 9 }
+        else { 10 };
+    type_tag.hash(hasher);
+
+    // Hash content
+    if let Some(b) = value.as_bool() {
+        b.hash(hasher);
+    } else if let Some(n) = value.as_long() {
+        n.hash(hasher);
+    } else if let Some(f) = value.as_float() {
+        f.to_bits().hash(hasher);
+    } else if let Some(s) = value.as_string() {
+        s.hash(hasher);
+    } else if let Some(s) = value.as_atom() {
+        s.hash(hasher);
+    } else if let Some(items) = value.as_sexpr() {
+        items.len().hash(hasher);
+        for item in items {
+            hash_arena_value_for_trait(item, hasher);
+        }
+    }
 }
 
 /// Serialize an ArenaValue to bytes

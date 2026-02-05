@@ -280,8 +280,6 @@ fn eval_metta_heap(input: &str, options: &Options) -> Result<String, String> {
 
     // Standard MettaValue evaluation
     let state = compile_with_path(input, file_path).map_err(|e| e.to_string())?;
-    // Merge any rules from compilation into our environment
-    // env = env.union(&state.environment);
 
     // Evaluate each expression
     let mut output = String::new();
@@ -308,20 +306,21 @@ fn eval_metta_heap(input: &str, options: &Options) -> Result<String, String> {
     Ok(output)
 }
 
-/// Arena-based evaluation (zero-conversion mode)
+/// Arena-based evaluation using session-scoped dual-arena model.
 ///
-/// Uses ArenaValue<'static> throughout: compile_arena → ArenaValue → eval_arena → ArenaValue
-/// No conversions between value types occur in this mode.
+/// Uses ArenaValue<'static> throughout with O(1) bulk deallocation:
 ///
-/// With bytecode/JIT tiering enabled:
-/// - First execution triggers background bytecode compilation
-/// - Subsequent executions use bytecode VM if ready
-/// - Falls back to tree-walker interpreter for cold code
+/// ```text
+/// compile_arena() → ArenaState → eval_arena() → ArenaValue<'static>
+/// ```
 ///
-/// ## Environment Persistence
+/// ## Dual Arena Model
 ///
-/// Uses `StaticArenaContext::get_or_create_env()` to maintain state (rules, facts,
-/// bindings) across sequential evaluations, matching heap mode behavior.
+/// - **Eval Arena**: Thread-local, generation-based reset for intermediates (~95% of allocations)
+/// - **Storage Arena**: Session-owned via ArenaState, O(1) bulk free on drop (~5% of allocations)
+///
+/// When the ArenaState drops at the end of this function, ALL arena memory is freed
+/// instantly via O(1) bulk deallocation (no recursive tree traversal).
 fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
     // Common setup: file path for error messages
     let file_path = options
@@ -330,22 +329,18 @@ fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
         .filter(|p| *p != "-")
         .map(|s| s.as_str());
 
-    // Get or create persistent arena environment.
-    // This maintains state across sequential evaluations, matching heap mode behavior.
-    // Uses thread-local storage to persist rules, facts, and bindings.
-    let mut env = StaticArenaContext::get_or_create_env();
+    // Create arena environment (uses eval arena factory)
+    let mut env = new_arena_env();
 
     // Set the current module path for relative includes
     if let Some(ref input_path) = options.input {
         if input_path != "-" {
             let path = Path::new(input_path);
-            // Canonicalize to get absolute path, then get parent directory
             if let Ok(canonical) = path.canonicalize() {
                 if let Some(parent) = canonical.parent() {
                     env.set_current_module_path(Some(parent.to_path_buf()));
                 }
             } else if let Some(parent) = path.parent() {
-                // Fallback if file doesn't exist yet (shouldn't happen, but be safe)
                 env.set_current_module_path(Some(parent.to_path_buf()));
             }
         }
@@ -356,17 +351,20 @@ fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
         env.set_strict_mode(true);
     }
 
-    // Compile directly to ArenaValue<'static>
-    let exprs = compile_arena_with_path(input, file_path).map_err(|e| e.to_string())?;
+    // Compile to ArenaState (acquires storage arena from pool)
+    let state = compile_arena_with_path(input, file_path)
+        .map_err(|e| e.to_string())?;
 
-    // Evaluate each expression using bytecode/JIT tiering
+    // Snapshot source expressions (ArenaValue is Copy)
+    let source_exprs: Vec<ArenaValue<'static>> = state.source().iter().copied().collect();
+
+    // Evaluate each expression using arena evaluation with bytecode/JIT tiering
     let mut output = String::new();
-    for expr in exprs {
+    for expr in source_exprs {
         // Only output results for S-expressions, not atoms or ground types
         let should_output = expr.is_sexpr();
 
-        // Use eval_arena for bytecode/JIT tiering (zero-conversion throughout)
-        let (results, new_env) = eval_arena(expr, env);
+        let (results, new_env) = eval_arena(expr, env, &state);
         env = new_env;
 
         // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
@@ -382,11 +380,9 @@ fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
         }
     }
 
-    // Persist the final environment state for subsequent evaluations.
-    // This is critical for arena mode correctness: without this, state changes
-    // (rules, facts, bindings) would be lost between evaluation batches.
-    StaticArenaContext::update_env(env);
-
+    // ArenaState drops here: O(1) bulk deallocation
+    // - Storage arena returned to pool (reset, not freed)
+    // - Eval generation incremented (lazy reset of eval arenas)
     Ok(output)
 }
 
@@ -467,8 +463,6 @@ fn run_repl(options: &Options) {
 
                 match compile(input) {
                     Ok(state) => {
-                        // env = env.union(&state.environment);
-
                         for sexpr in state.source {
                             // Only output results for S-expressions, not atoms or ground types
                             let should_output = matches!(sexpr.inner(), MettaValueInner::SExpr(_));

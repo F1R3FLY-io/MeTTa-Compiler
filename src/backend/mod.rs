@@ -25,12 +25,16 @@ pub mod varint_encoding;
 pub use builtin_signatures::{
     get_arg_types, get_return_type, get_signature, is_builtin, BuiltinSignature, TypeExpr,
 };
-pub use compile::{compile, compile_arena, compile_arena_with_path, compile_generic, compile_with_path};
+pub use compile::{
+    compile, compile_arena, compile_arena_with_path, compile_generic, compile_with_path,
+};
 pub use environment::{GenericEnvironment, HeapEnvironment, ScopeTracker};
 pub use eval::{eval, eval_arena, pattern_match};
 pub use eval::trampoline::{
-    eval_trampoline_arena, ArenaEnvironment, StaticArenaContext,
+    eval_trampoline_arena, new_arena_env, ArenaEnvironment, StaticArenaContext,
     get_static_arena, get_static_factory, is_arena_mode_enabled,
+    // Session-based evaluation context (dual-arena model)
+    SessionContext,
 };
 pub use eval::ArenaEvalResult;
 pub use fuzzy_match::FuzzyMatcher;

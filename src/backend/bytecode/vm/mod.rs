@@ -772,7 +772,7 @@ use super::chunk::GenericBytecodeChunk;
 pub struct GenericBytecodeVM<V, F>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
-    F: MettaValueFactory<V> + Clone,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
 {
     /// Value stack for operands and results
     pub(crate) value_stack: Vec<V>,
@@ -803,12 +803,21 @@ where
 
     /// Optional environment for rule definitions and lookups
     pub(crate) env: Option<GenericEnvironment<V, F>>,
+
+    /// Native function registry for CallNative opcode
+    pub(crate) native_registry: Arc<super::native_registry::GenericNativeRegistry<V, F>>,
+
+    /// External function registry for CallExternal opcode
+    pub(crate) external_registry: Arc<super::external_registry::GenericExternalRegistry<V, F>>,
+
+    /// Memoization cache for CallCached opcode
+    pub(crate) memo_cache: Arc<super::generic_memo_cache::GenericMemoCache<V>>,
 }
 
 impl<V, F> fmt::Debug for GenericBytecodeVM<V, F>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + fmt::Debug + 'static,
-    F: MettaValueFactory<V> + Clone + fmt::Debug,
+    F: MettaValueFactory<V> + Clone + Send + Sync + fmt::Debug + 'static,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GenericBytecodeVM")
@@ -827,7 +836,7 @@ where
 impl<V, F> GenericBytecodeVM<V, F>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
-    F: MettaValueFactory<V> + Clone,
+    F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
 {
     /// Create a new generic VM with the given chunk and factory.
     pub fn new(chunk: Arc<GenericBytecodeChunk<V>>, factory: F) -> Self {
@@ -847,6 +856,9 @@ where
             config,
             factory,
             env: None,
+            native_registry: Arc::new(super::native_registry::GenericNativeRegistry::new()),
+            external_registry: Arc::new(super::external_registry::GenericExternalRegistry::new()),
+            memo_cache: Arc::new(super::generic_memo_cache::GenericMemoCache::default()),
         }
     }
 
@@ -867,6 +879,35 @@ where
             config: VmConfig::default(),
             factory,
             env: Some(env),
+            native_registry: Arc::new(super::native_registry::GenericNativeRegistry::new()),
+            external_registry: Arc::new(super::external_registry::GenericExternalRegistry::new()),
+            memo_cache: Arc::new(super::generic_memo_cache::GenericMemoCache::default()),
+        }
+    }
+
+    /// Create a new generic VM with full configuration including registries.
+    pub fn with_registries(
+        chunk: Arc<GenericBytecodeChunk<V>>,
+        env: GenericEnvironment<V, F>,
+        factory: F,
+        native_registry: Arc<super::native_registry::GenericNativeRegistry<V, F>>,
+        external_registry: Arc<super::external_registry::GenericExternalRegistry<V, F>>,
+        memo_cache: Arc<super::generic_memo_cache::GenericMemoCache<V>>,
+    ) -> Self {
+        Self {
+            value_stack: Vec::with_capacity(256),
+            call_stack: Vec::with_capacity(64),
+            bindings_stack: vec![GenericBindingFrame::new(0)],
+            choice_points: Vec::new(),
+            results: Vec::new(),
+            ip: 0,
+            chunk,
+            config: VmConfig::default(),
+            factory,
+            env: Some(env),
+            native_registry,
+            external_registry,
+            memo_cache,
         }
     }
 
@@ -1763,10 +1804,25 @@ where
 
     fn op_push_variable(&mut self) -> VmResult<()> {
         let index = self.read_u16()?;
-        let value = self.chunk.get_constant(index)
+        let var = self.chunk.get_constant(index)
             .ok_or(VmError::InvalidConstant(index))?
             .clone();
-        self.push(value);
+
+        // Check if it's a pattern variable that should be resolved from bindings
+        if let Some(name) = var.as_atom() {
+            if name.starts_with('$') {
+                // Search bindings from innermost to outermost
+                for frame in self.bindings_stack.iter().rev() {
+                    if let Some(value) = frame.get(name) {
+                        self.push(value.clone());
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Not found in bindings or not a pattern variable - push as-is
+        self.push(var);
         Ok(())
     }
 
@@ -1811,27 +1867,52 @@ where
     }
 
     fn op_call(&mut self) -> VmResult<()> {
-        let chunk_idx = self.read_u16()?;
-        if let Some(sub_chunk) = self.chunk.get_chunk_constant(chunk_idx) {
-            let frame = GenericCallFrame {
-                return_ip: self.ip,
-                return_chunk: Arc::clone(&self.chunk),
-                base_ptr: self.value_stack.len(),
-                bindings_base: self.bindings_stack.len(),
-            };
-            self.call_stack.push(frame);
-            self.chunk = sub_chunk;
-            self.ip = 0;
+        let head_idx = self.read_u16()?;
+        let arity = self.read_u8()? as usize;
+
+        // Pop arguments in reverse order
+        let mut args = Vec::with_capacity(arity);
+        for _ in 0..arity {
+            args.push(self.pop()?);
         }
+        args.reverse();
+
+        // Build call expression from head + args
+        let head = self.chunk.get_constant(head_idx).cloned()
+            .ok_or(VmError::InvalidConstant(head_idx))?;
+        let mut items = Vec::with_capacity(arity + 1);
+        items.push(head);
+        items.extend(args);
+        let expr = self.make_sexpr(items);
+
+        // Dispatch via environment rules
+        self.push(expr);
+        self.op_dispatch_rules()?;
         Ok(())
     }
 
     fn op_tail_call(&mut self) -> VmResult<()> {
-        let chunk_idx = self.read_u16()?;
-        if let Some(sub_chunk) = self.chunk.get_chunk_constant(chunk_idx) {
-            self.chunk = sub_chunk;
-            self.ip = 0;
+        let head_idx = self.read_u16()?;
+        let arity = self.read_u8()? as usize;
+
+        // Pop arguments in reverse order
+        let mut args = Vec::with_capacity(arity);
+        for _ in 0..arity {
+            args.push(self.pop()?);
         }
+        args.reverse();
+
+        // Build call expression from head + args
+        let head = self.chunk.get_constant(head_idx).cloned()
+            .ok_or(VmError::InvalidConstant(head_idx))?;
+        let mut items = Vec::with_capacity(arity + 1);
+        items.push(head);
+        items.extend(args);
+        let expr = self.make_sexpr(items);
+
+        // Dispatch via environment rules (tail call - no new frame)
+        self.push(expr);
+        self.op_dispatch_rules()?;
         Ok(())
     }
 
@@ -2028,11 +2109,17 @@ where
     fn op_decon_atom(&mut self) -> VmResult<()> {
         let value = self.pop()?;
         if let Some(items) = value.as_sexpr() {
-            let list: Vec<V> = items.to_vec();
-            self.push(self.make_sexpr(list));
+            if items.is_empty() {
+                return Err(VmError::Runtime("decons-atom: empty expression".to_string()));
+            }
+            let head = items[0].clone();
+            let tail = self.make_sexpr(items[1..].to_vec());
+            // Return (head tail) pair - matching BytecodeVM semantics
+            self.push(self.factory.sexpr(vec![head, tail]));
         } else {
-            // Non-expression becomes single-element list
-            self.push(self.make_sexpr(vec![value]));
+            // Non-expression: return (atom ()) pair
+            let empty_tail = self.make_sexpr(vec![]);
+            self.push(self.factory.sexpr(vec![value, empty_tail]));
         }
         Ok(())
     }
@@ -2073,20 +2160,220 @@ where
         Ok(())
     }
 
+    /// Map a template chunk over each element of an S-expression.
+    /// Operand: u16 chunk_idx
+    /// Stack: [list] -> [mapped_list]
     fn op_map_atom(&mut self) -> VmResult<()> {
-        // Simplified: just return the expression as-is
-        // Full implementation would apply a function
+        let chunk_idx = self.read_u16()?;
+        let list = self.pop()?;
+
+        let items = list.as_sexpr().ok_or(VmError::TypeError {
+            expected: "list/S-expression",
+            got: "other",
+        })?;
+
+        let template_chunk = self
+            .chunk
+            .get_chunk_constant(chunk_idx)
+            .ok_or(VmError::InvalidConstant(chunk_idx))?;
+
+        let mut results = Vec::with_capacity(items.len());
+        for item in items {
+            let result =
+                self.execute_generic_template_with_binding(Arc::clone(&template_chunk), item.clone())?;
+            results.push(result);
+        }
+
+        self.push(self.factory.sexpr(results));
         Ok(())
     }
 
+    /// Filter elements of an S-expression using a predicate chunk.
+    /// Operand: u16 chunk_idx
+    /// Stack: [list] -> [filtered_list]
     fn op_filter_atom(&mut self) -> VmResult<()> {
-        // Simplified: just return the expression as-is
+        let chunk_idx = self.read_u16()?;
+        let list = self.pop()?;
+
+        let items = list.as_sexpr().ok_or(VmError::TypeError {
+            expected: "list/S-expression",
+            got: "other",
+        })?;
+
+        let predicate_chunk = self
+            .chunk
+            .get_chunk_constant(chunk_idx)
+            .ok_or(VmError::InvalidConstant(chunk_idx))?;
+
+        let mut results = Vec::new();
+        for item in items {
+            let result = self.execute_generic_template_with_binding(
+                Arc::clone(&predicate_chunk),
+                item.clone(),
+            )?;
+            // Check if predicate returned true
+            if result.as_bool() == Some(true) {
+                results.push(item.clone());
+            }
+        }
+
+        self.push(self.factory.sexpr(results));
         Ok(())
     }
 
+    /// Left fold over an S-expression using a template chunk.
+    /// Operand: u16 chunk_idx
+    /// Stack: [list, init] -> [result]
     fn op_foldl_atom(&mut self) -> VmResult<()> {
-        // Simplified: return accumulator
+        let chunk_idx = self.read_u16()?;
+        let init = self.pop()?;
+        let list = self.pop()?;
+
+        let items = list.as_sexpr().ok_or(VmError::TypeError {
+            expected: "list/S-expression",
+            got: "other",
+        })?;
+
+        let op_chunk = self
+            .chunk
+            .get_chunk_constant(chunk_idx)
+            .ok_or(VmError::InvalidConstant(chunk_idx))?;
+
+        let mut acc = init;
+        for item in items {
+            acc = self.execute_generic_foldl_template(Arc::clone(&op_chunk), acc, item.clone())?;
+        }
+
+        self.push(acc);
         Ok(())
+    }
+
+    // === Template Execution Helpers ===
+
+    /// Execute a template chunk with a single bound value (for map/filter).
+    /// Saves and restores VM state around execution.
+    fn execute_generic_template_with_binding(
+        &mut self,
+        chunk: Arc<GenericBytecodeChunk<V>>,
+        binding: V,
+    ) -> VmResult<V> {
+        // Save state
+        let saved_ip = self.ip;
+        let saved_chunk = Arc::clone(&self.chunk);
+        let saved_stack_base = self.value_stack.len();
+
+        // Setup for template execution
+        self.chunk = chunk;
+        self.ip = 0;
+        self.push(binding); // Push bound value as local slot 0
+
+        // Execute until Return or end of chunk
+        loop {
+            if self.ip >= self.chunk.len() {
+                break;
+            }
+            let opcode_byte = self
+                .chunk
+                .read_byte(self.ip)
+                .ok_or(VmError::IpOutOfBounds)?;
+            let opcode =
+                Opcode::from_byte(opcode_byte).ok_or(VmError::InvalidOpcode(opcode_byte))?;
+
+            if opcode == Opcode::Return {
+                break;
+            }
+
+            match self.step() {
+                Ok(ControlFlow::Continue(())) => {}
+                Ok(ControlFlow::Break(results)) => {
+                    self.ip = saved_ip;
+                    self.chunk = saved_chunk;
+                    self.value_stack.truncate(saved_stack_base);
+                    return Ok(results.into_iter().next().unwrap_or_else(|| self.factory.unit()));
+                }
+                Err(e) => {
+                    self.ip = saved_ip;
+                    self.chunk = saved_chunk;
+                    self.value_stack.truncate(saved_stack_base);
+                    return Err(e);
+                }
+            }
+        }
+
+        // Get result
+        let result = self.pop().unwrap_or_else(|_| self.factory.unit());
+
+        // Restore state
+        self.ip = saved_ip;
+        self.chunk = saved_chunk;
+
+        // Cleanup any remaining stack entries from template
+        self.value_stack.truncate(saved_stack_base);
+
+        Ok(result)
+    }
+
+    /// Execute a foldl template chunk with accumulator and item bindings.
+    /// Saves and restores VM state around execution.
+    fn execute_generic_foldl_template(
+        &mut self,
+        chunk: Arc<GenericBytecodeChunk<V>>,
+        acc: V,
+        item: V,
+    ) -> VmResult<V> {
+        // Save state
+        let saved_ip = self.ip;
+        let saved_chunk = Arc::clone(&self.chunk);
+        let saved_stack_base = self.value_stack.len();
+
+        // Setup for template execution
+        self.chunk = chunk;
+        self.ip = 0;
+        self.push(acc); // Local slot 0: accumulator
+        self.push(item); // Local slot 1: item
+
+        // Execute until Return or end of chunk
+        loop {
+            if self.ip >= self.chunk.len() {
+                break;
+            }
+            let opcode_byte = self
+                .chunk
+                .read_byte(self.ip)
+                .ok_or(VmError::IpOutOfBounds)?;
+            let opcode =
+                Opcode::from_byte(opcode_byte).ok_or(VmError::InvalidOpcode(opcode_byte))?;
+
+            if opcode == Opcode::Return {
+                break;
+            }
+
+            match self.step() {
+                Ok(ControlFlow::Continue(())) => {}
+                Ok(ControlFlow::Break(results)) => {
+                    self.ip = saved_ip;
+                    self.chunk = saved_chunk;
+                    self.value_stack.truncate(saved_stack_base);
+                    return Ok(results.into_iter().next().unwrap_or_else(|| self.factory.unit()));
+                }
+                Err(e) => {
+                    self.ip = saved_ip;
+                    self.chunk = saved_chunk;
+                    self.value_stack.truncate(saved_stack_base);
+                    return Err(e);
+                }
+            }
+        }
+
+        // Get result
+        let result = self.pop().unwrap_or_else(|_| self.factory.unit());
+
+        // Restore state
+        self.ip = saved_ip;
+        self.chunk = saved_chunk;
+        self.value_stack.truncate(saved_stack_base);
+
+        Ok(result)
     }
 
     fn op_index_atom(&mut self) -> VmResult<()> {
@@ -2298,19 +2585,152 @@ where
         self.choice_points.pop();
     }
 
-    // === Advanced Calls (stubs) ===
+    // === Advanced Calls ===
 
+    /// Call a native Rust function by ID.
+    /// Stack: [arg1, arg2, ..., argN] -> [result]
     fn op_call_native(&mut self) -> VmResult<()> {
-        // Native calls not yet implemented for generic VM
-        Err(VmError::Runtime("CallNative not implemented in generic VM".to_string()))
+        trace!(target: "mettatron::vm::call", ip = self.ip, "call_native (generic)");
+        use super::native_registry::GenericNativeContext;
+
+        let func_id = self.read_u16()?;
+        let arity = self.read_u8()? as usize;
+
+        // Pop arguments in reverse order
+        let mut args = Vec::with_capacity(arity);
+        for _ in 0..arity {
+            args.push(self.pop()?);
+        }
+        args.reverse();
+
+        // Create context for native function
+        let env = self
+            .env
+            .clone()
+            .unwrap_or_else(|| GenericEnvironment::new(self.factory.clone()));
+        let ctx = GenericNativeContext::new(env, self.factory.clone());
+
+        // Call through registry
+        let result = self
+            .native_registry
+            .call(func_id, &args, &ctx)
+            .map_err(|e| VmError::Runtime(e.to_string()))?;
+
+        // Push result(s)
+        if result.len() == 1 {
+            self.push(result.into_iter().next().expect("result has 1 element"));
+        } else if result.is_empty() {
+            self.push(self.factory.unit());
+        } else {
+            // Multiple results - push as S-expression
+            self.push(self.factory.sexpr(result));
+        }
+
+        Ok(())
     }
 
+    /// Call an external FFI function by name.
+    /// Stack: [arg1, arg2, ..., argN] -> [result]
     fn op_call_external(&mut self) -> VmResult<()> {
-        Err(VmError::Runtime("CallExternal not implemented in generic VM".to_string()))
+        trace!(target: "mettatron::vm::call", ip = self.ip, "call_external (generic)");
+        use super::external_registry::{ExternalError, GenericExternalContext};
+
+        let symbol_idx = self.read_u16()?;
+        let arity = self.read_u8()? as usize;
+
+        // Get function name from constant pool
+        let func_name = self
+            .chunk
+            .get_constant(symbol_idx)
+            .and_then(|v| v.as_atom().map(|s| s.to_string()))
+            .ok_or(VmError::InvalidConstant(symbol_idx))?;
+
+        // Pop arguments in reverse order
+        let mut args = Vec::with_capacity(arity);
+        for _ in 0..arity {
+            args.push(self.pop()?);
+        }
+        args.reverse();
+
+        // Create context for external function
+        let env = self
+            .env
+            .clone()
+            .unwrap_or_else(|| GenericEnvironment::new(self.factory.clone()));
+        let ctx = GenericExternalContext::new(env, self.factory.clone());
+
+        // Call through registry
+        match self.external_registry.call(&func_name, &args, &ctx) {
+            Ok(results) => {
+                if results.len() == 1 {
+                    self.push(results.into_iter().next().expect("results has 1 element"));
+                } else if results.is_empty() {
+                    self.push(self.factory.unit());
+                } else {
+                    self.push(self.factory.sexpr(results));
+                }
+                Ok(())
+            }
+            Err(ExternalError::NotFound(_)) => Err(VmError::Runtime(format!(
+                "External function '{}' not registered",
+                func_name
+            ))),
+            Err(e) => Err(VmError::Runtime(format!("External call error: {}", e))),
+        }
     }
 
+    /// Call a function with memoization.
+    /// Stack: [arg1, arg2, ..., argN] -> [result]
+    ///
+    /// Checks the memo cache first. On miss, builds the call expression,
+    /// dispatches via environment rules, and caches the result.
     fn op_call_cached(&mut self) -> VmResult<()> {
-        Err(VmError::Runtime("CallCached not implemented in generic VM".to_string()))
+        trace!(target: "mettatron::vm::call", ip = self.ip, "call_cached (generic)");
+
+        let head_idx = self.read_u16()?;
+        let arity = self.read_u8()? as usize;
+
+        let head = self
+            .chunk
+            .get_constant(head_idx)
+            .cloned()
+            .ok_or(VmError::InvalidConstant(head_idx))?;
+
+        // Extract head as string for cache key
+        let head_str = head
+            .as_atom()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| head.type_name().to_string());
+
+        // Pop arguments in reverse order
+        let mut args = Vec::with_capacity(arity);
+        for _ in 0..arity {
+            args.push(self.pop()?);
+        }
+        args.reverse();
+
+        // Check memo cache first
+        if let Some(cached) = self.memo_cache.get(&head_str, &args) {
+            self.push(cached);
+            return Ok(());
+        }
+
+        // Build the call expression
+        let mut items = Vec::with_capacity(arity + 1);
+        items.push(head);
+        items.extend(args.clone());
+        let expr = self.factory.sexpr(items);
+
+        // Dispatch via environment rules (push expr, dispatch pops and pushes result)
+        self.push(expr);
+        self.op_dispatch_rules()?;
+
+        // Cache the result (peek at top of stack)
+        if let Some(result) = self.value_stack.last() {
+            self.memo_cache.insert(&head_str, &args, result.clone());
+        }
+
+        Ok(())
     }
 
     // === Environment Operations ===
@@ -2513,9 +2933,12 @@ where
     }
 
     fn op_space_get_atoms(&mut self) -> VmResult<()> {
-        // get_atoms not directly available in GenericEnvironment
-        // Return empty list for now
-        self.push(self.make_sexpr(vec![]));
+        if let Some(env) = &self.env {
+            let atoms = env.get_all_atoms();
+            self.push(self.make_sexpr(atoms));
+        } else {
+            self.push(self.make_sexpr(vec![]));
+        }
         Ok(())
     }
 
@@ -2542,36 +2965,57 @@ where
         Ok(())
     }
 
-    // === State Operations (stubs) ===
+    // === State Operations ===
 
     fn op_new_state(&mut self) -> VmResult<()> {
         let initial = self.pop()?;
-        // State cells not implemented - just return the initial value wrapped
-        let state = self.make_sexpr(vec![self.make_atom("State"), initial]);
-        self.push(state);
+
+        let env = self.env.as_mut().ok_or_else(|| {
+            VmError::Runtime("new-state requires environment".to_string())
+        })?;
+
+        let state_id = env.create_state(&initial);
+        self.push(self.factory.state(state_id));
         Ok(())
     }
 
     fn op_get_state(&mut self) -> VmResult<()> {
-        let state = self.pop()?;
-        // Extract value from state cell
-        if let Some(items) = state.as_sexpr() {
-            if items.len() >= 2 {
-                self.push(items[1].clone());
-                return Ok(());
+        let state_ref = self.pop()?;
+
+        if let Some(state_id) = state_ref.as_state() {
+            let env = self.env.as_ref().ok_or_else(|| {
+                VmError::Runtime("get-state requires environment".to_string())
+            })?;
+
+            if let Some(value) = env.get_state(state_id) {
+                self.push(value);
+                Ok(())
+            } else {
+                Err(VmError::Runtime(format!("get-state: state {} not found", state_id)))
             }
+        } else {
+            Err(VmError::TypeError { expected: "State", got: state_ref.type_name() })
         }
-        self.push(self.make_nil());
-        Ok(())
     }
 
     fn op_change_state(&mut self) -> VmResult<()> {
         let new_value = self.pop()?;
-        let _state = self.pop()?;
-        // Return new state with updated value
-        let new_state = self.make_sexpr(vec![self.make_atom("State"), new_value]);
-        self.push(new_state);
-        Ok(())
+        let state_ref = self.pop()?;
+
+        if let Some(state_id) = state_ref.as_state() {
+            let env = self.env.as_mut().ok_or_else(|| {
+                VmError::Runtime("change-state! requires environment".to_string())
+            })?;
+
+            if env.change_state(state_id, &new_value) {
+                self.push(self.factory.state(state_id));
+                Ok(())
+            } else {
+                Err(VmError::Runtime(format!("change-state!: state {} not found", state_id)))
+            }
+        } else {
+            Err(VmError::TypeError { expected: "State", got: state_ref.type_name() })
+        }
     }
 
     // === Debug Operations ===

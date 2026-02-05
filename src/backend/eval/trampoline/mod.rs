@@ -44,12 +44,13 @@ mod engine;
 mod generic_engine;
 mod generic_trampoline;
 mod generic_types;
+pub mod session_context;
 mod types;
 
 // Primary entry points
 pub use arena_engine::{
     create_arena_context, eval_trampoline_arena, get_static_arena, get_static_factory,
-    is_arena_mode_available, ArenaEvalResult,
+    is_arena_mode_available, new_arena_env, ArenaEvalResult,
 };
 pub use engine::eval_trampoline;
 
@@ -80,3 +81,6 @@ pub use generic_engine::{
 // Re-export the unified generic trampoline engine
 #[allow(unused_imports)]
 pub use generic_trampoline::eval_trampoline_generic;
+
+// Re-export session context (dual-arena model)
+pub use session_context::SessionContext;

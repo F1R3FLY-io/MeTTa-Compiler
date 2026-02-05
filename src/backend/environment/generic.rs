@@ -35,7 +35,7 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use lru::LruCache;
@@ -60,26 +60,6 @@ use crate::backend::symbol::Symbol;
 // Static Sentinel for Unmodified Environments
 // ============================================================================
 
-/// Static sentinel for unmodified environments - avoids allocation.
-///
-/// Using a static `Arc<AtomicBool>` initialized to `false` allows us to avoid
-/// allocating a new `Arc<AtomicBool>` for every environment clone or union
-/// fast-path. This is significant because:
-///
-/// 1. The common case (pure evaluation) never modifies the environment
-/// 2. Union operations can return quickly when nothing was modified
-/// 3. Clone operations can share the sentinel instead of allocating
-///
-/// The sentinel is never mutated (it's always `false`), so sharing it across
-/// all unmodified environments is safe.
-static UNMODIFIED_SENTINEL: LazyLock<Arc<AtomicBool>> =
-    LazyLock::new(|| Arc::new(AtomicBool::new(false)));
-
-/// Get a clone of the unmodified sentinel (zero allocation after first access).
-#[inline]
-fn unmodified_sentinel() -> Arc<AtomicBool> {
-    Arc::clone(&UNMODIFIED_SENTINEL)
-}
 
 // ============================================================================
 // Helper Functions for Environment Operations
@@ -330,7 +310,7 @@ where
     pub(crate) owns_data: bool,
 
     /// CoW: Tracks if this environment has been modified
-    pub(crate) modified: Arc<AtomicBool>,
+    pub(crate) modified: AtomicBool,
 
     /// Current module path for relative path resolution
     pub(crate) current_module_path: Option<PathBuf>,
@@ -409,7 +389,7 @@ where
             factory,
             shared_mapping,
             owns_data: true,
-            modified: Arc::new(AtomicBool::new(false)),
+            modified: AtomicBool::new(false),
             current_module_path: None,
         }
     }
@@ -418,6 +398,12 @@ where
     #[inline]
     pub fn factory(&self) -> &F {
         &self.factory
+    }
+
+    /// Mark this environment as modified.
+    #[inline]
+    fn mark_modified(&self) {
+        self.modified.store(true, Ordering::Release);
     }
 
     /// CoW: Make this environment own its data (deep copy if sharing).
@@ -488,7 +474,7 @@ where
 
         self.shared = new_shared;
         self.owns_data = true;
-        self.modified.store(true, Ordering::Release);
+        self.mark_modified();
     }
 
     /// Create a forked environment for nondeterministic branch isolation.
@@ -559,8 +545,7 @@ where
             factory: self.factory.clone(),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: true,
-            modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
-            current_module_path: self.current_module_path.clone(),
+            modified: AtomicBool::new(false),            current_module_path: self.current_module_path.clone(),
         }
     }
 
@@ -590,8 +575,7 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
-                modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
-                current_module_path: self.current_module_path.clone(),
+                modified: AtomicBool::new(false),                current_module_path: self.current_module_path.clone(),
             };
         }
 
@@ -605,8 +589,7 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
-                modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
-                current_module_path: self.current_module_path.clone(),
+                modified: AtomicBool::new(false),                current_module_path: self.current_module_path.clone(),
             };
         }
 
@@ -617,8 +600,7 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
-                modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
-                current_module_path: self.current_module_path.clone(),
+                modified: AtomicBool::new(false),                current_module_path: self.current_module_path.clone(),
             };
         }
 
@@ -629,8 +611,7 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: other.shared_mapping.clone(),
                 owns_data: false,
-                modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
-                current_module_path: other.current_module_path.clone(),
+                modified: AtomicBool::new(false),                current_module_path: other.current_module_path.clone(),
             };
         }
 
@@ -808,7 +789,7 @@ where
             factory: self.factory.clone(),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: true,
-            modified: Arc::new(AtomicBool::new(true)),
+            modified: AtomicBool::new(true),
             current_module_path: other.current_module_path.clone().or_else(|| self.current_module_path.clone()),
         }
     }
@@ -901,11 +882,10 @@ where
         }
     }
 
-    /// Create a shared clone using the static sentinel (zero allocation for flag).
+    /// Create a shared clone with unmodified flag.
     ///
     /// This is an internal helper that creates a clone sharing the same Arc data
-    /// with `owns_data = false` and using the static `UNMODIFIED_SENTINEL` instead
-    /// of allocating a new `Arc<AtomicBool>`.
+    /// with `owns_data = false` and a fresh `modified = false` flag.
     #[inline]
     fn shared_clone(&self) -> Self {
         GenericEnvironment {
@@ -913,7 +893,7 @@ where
             factory: self.factory.clone(),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: false,
-            modified: unmodified_sentinel(),
+            modified: AtomicBool::new(false),
             current_module_path: self.current_module_path.clone(),
         }
     }
@@ -1173,7 +1153,7 @@ where
             factory: self.factory.clone(),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: true,
-            modified: Arc::new(AtomicBool::new(true)),
+            modified: AtomicBool::new(true),
             current_module_path: last_env.current_module_path.clone().or_else(|| self.current_module_path.clone()),
         }
     }
@@ -1216,8 +1196,7 @@ where
             factory: self.factory.clone(),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: false, // CoW: clones do not own data initially
-            modified: unmodified_sentinel(), // Use static sentinel (zero allocation)
-            current_module_path: self.current_module_path.clone(),
+            modified: AtomicBool::new(false),            current_module_path: self.current_module_path.clone(),
         }
     }
 }
@@ -1268,7 +1247,7 @@ where
         self.make_owned(); // CoW: ensure we own data before modifying
         *self.shared.btm.write() = space.btm;
         self.shared_mapping = space.sm;
-        self.modified.store(true, Ordering::Release); // CoW: mark as modified
+        self.mark_modified(); // CoW: mark as modified
     }
 
     /// Get the total atom count (O(1)).
@@ -1289,7 +1268,7 @@ where
         self.make_owned();
         self.shared.tokenizer.write().register_token_value(token, value);
         self.shared.fuzzy_matcher.write().insert(token);
-        self.modified.store(true, Ordering::Release);
+        self.mark_modified();
     }
 }
 
@@ -1520,7 +1499,7 @@ where
         }
 
         // Mark as modified for union() fast-path detection
-        self.modified.store(true, Ordering::Release);
+        self.mark_modified();
     }
 
     /// Remove a fact from MORK Space using interior mutability (no CoW copy).
@@ -1554,7 +1533,7 @@ where
                     drop(btm);
                     self.shared.total_atoms.fetch_sub(1, Ordering::Relaxed);
                     self.shared.head_arity_bloom.write().note_deletion();
-                    self.modified.store(true, Ordering::Release);
+                    self.mark_modified();
                     return;
                 }
 
@@ -1587,7 +1566,7 @@ where
         }
 
         // Mark as modified for union() fast-path detection
-        self.modified.store(true, Ordering::Release);
+        self.mark_modified();
     }
 
     /// Match pattern against all atoms in the Space.
@@ -1726,6 +1705,46 @@ where
         false
     }
 
+    /// Get all atoms from the Space (MORK PathMap + large expression fallback).
+    ///
+    /// This iterates the same data as `match_space()` but without pattern filtering,
+    /// returning every stored atom as-is.
+    ///
+    /// ## Zero-Conversion Architecture
+    ///
+    /// Uses `mork_bytes_to_generic_value()` for direct MORK bytes → V conversion.
+    pub fn get_all_atoms(&self) -> Vec<V> {
+        use super::mork_encoding::mork_bytes_to_generic_value;
+
+        let space = self.create_space();
+        use pathmap::zipper::*;
+        let mut rz = space.btm.read_zipper();
+        let mut atoms = Vec::new();
+
+        // Iterate through MORK PathMap
+        while rz.to_next_val() {
+            let path_bytes = rz.path();
+            if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                path_bytes,
+                &space,
+                &self.factory,
+            ) {
+                atoms.push(atom);
+            }
+        }
+
+        drop(space);
+
+        // Include large expression fallback PathMap (stores V directly)
+        let guard = self.shared.large_expr_pathmap.read();
+        if let Some(ref fallback) = *guard {
+            for (_key, stored_value) in fallback.iter() {
+                atoms.push(stored_value.clone());
+            }
+        }
+
+        atoms
+    }
 }
 
 // ============================================================================

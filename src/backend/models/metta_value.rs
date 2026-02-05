@@ -1349,6 +1349,15 @@ impl MettaValueTrait for MettaValue {
         buf
     }
 
+    #[inline]
+    fn hash_value(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+
     fn friendly_repr(&self) -> std::string::String {
         // Stack-based implementation to avoid recursion on deeply nested structures
         enum ReprWork<'a> {

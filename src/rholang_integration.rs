@@ -572,6 +572,175 @@ async fn evaluate_batch_parallel(
     results
 }
 
+// ============================================================================
+// Session-Based Arena Evaluation API
+// ============================================================================
+
+use crate::backend::compile::compile_arena;
+use crate::backend::eval::eval_arena;
+use crate::backend::eval::trampoline::new_arena_env;
+use crate::backend::models::{ArenaState, ArenaValue, MettaValueTrait};
+
+/// Evaluate MeTTa source using session-based dual-arena allocation.
+///
+/// This function provides the high-level API for session-based evaluation with
+/// O(1) bulk deallocation. It:
+/// 1. Compiles source to ArenaState (session-owned storage arena)
+/// 2. Evaluates using thread-local eval arena for intermediates
+/// 3. Returns results as strings (safe to use after ArenaState drops)
+///
+/// ## Memory Model
+///
+/// - **Storage Arena**: Session-owned, freed O(1) when ArenaState drops
+/// - **Eval Arena**: Thread-local, reset lazily on generation change
+/// - **Results**: Converted to owned strings before ArenaState drops
+///
+/// ## When to Use
+///
+/// Use this API when:
+/// - You need bounded memory usage (memory freed after each session)
+/// - You want O(1) bulk deallocation instead of recursive tree traversal
+/// - You're running many independent evaluations (arena pooling reduces allocation)
+///
+/// ## Example
+///
+/// ```ignore
+/// // Each session has its own bounded memory
+/// let results = eval_metta_session("!(+ 1 2)").unwrap();
+/// assert_eq!(results, vec!["3"]);
+///
+/// // Memory is freed instantly (O(1)) after each session
+/// for _ in 0..1000 {
+///     let _ = eval_metta_session("!(* 6 7)").unwrap();
+/// }
+/// ```
+///
+/// # Arguments
+///
+/// - `src`: MeTTa source code to compile and evaluate
+///
+/// # Returns
+///
+/// A vector of result strings, or a syntax error.
+#[instrument(level = "info", skip(src))]
+pub fn eval_metta_session(src: &str) -> Result<Vec<String>, SyntaxError> {
+    info!(
+        line_count = src.lines().count(),
+        "Evaluating MeTTa source using session arena"
+    );
+
+    // Compile to ArenaState (acquires storage arena from pool)
+    let mut state = compile_arena(src)?;
+
+    // Create arena environment (uses eval arena factory)
+    let mut env = new_arena_env();
+
+    // Take source expressions (we'll iterate over them)
+    let source_exprs: Vec<ArenaValue<'static>> = state.source().iter().copied().collect();
+
+    // Evaluate each source expression using arena evaluation with bytecode/JIT tiering
+    for expr in source_exprs {
+        let is_eval_expr = is_eval_expression(&expr);
+
+        let (results, new_env) = eval_arena(expr, env, &state);
+        env = new_env;
+
+        // Only collect output for evaluation expressions (!)
+        if is_eval_expr {
+            for result in &results {
+                state.output_mut().push(*result);
+            }
+        }
+    }
+
+    // Convert results to strings BEFORE ArenaState drops
+    // This ensures we have owned data that survives the arena
+    let result_strings: Vec<String> = state
+        .output()
+        .iter()
+        .map(|v| v.friendly_repr())
+        .collect();
+
+    info!(result_count = result_strings.len(), "Session evaluation complete");
+
+    // ArenaState drops here: O(1) bulk deallocation
+    // - Storage arena returned to pool (reset, not freed)
+    // - Eval generation incremented (lazy reset of eval arenas)
+    Ok(result_strings)
+}
+
+/// Check if an expression is an eval expression (! prefix).
+fn is_eval_expression(expr: &ArenaValue<'static>) -> bool {
+    if let Some(items) = expr.as_sexpr() {
+        if !items.is_empty() {
+            if let Some(head) = items[0].as_atom() {
+                return head == "!";
+            }
+        }
+    }
+    false
+}
+
+/// Evaluate MeTTa source using session-based allocation with raw ArenaValue output.
+///
+/// Unlike `eval_metta_session()` which returns strings, this function returns
+/// the ArenaState containing the raw ArenaValue results. The caller is responsible
+/// for extracting results before the ArenaState is dropped.
+///
+/// ## Warning
+///
+/// The returned ArenaValue references become invalid after ArenaState drops!
+/// Always extract data you need before dropping the state.
+///
+/// ## Example
+///
+/// ```ignore
+/// let state = eval_metta_session_raw("!(+ 1 2)").unwrap();
+///
+/// // Access results while state is alive
+/// for result in state.output() {
+///     println!("{}", result.friendly_repr());
+/// }
+///
+/// // After this point, state is dropped and results are invalid
+/// drop(state);
+/// ```
+#[instrument(level = "info", skip(src))]
+pub fn eval_metta_session_raw(src: &str) -> Result<ArenaState, SyntaxError> {
+    info!(
+        line_count = src.lines().count(),
+        "Evaluating MeTTa source using session arena (raw output)"
+    );
+
+    // Compile to ArenaState (acquires storage arena from pool)
+    let mut state = compile_arena(src)?;
+
+    // Create arena environment (uses eval arena factory)
+    let mut env = new_arena_env();
+
+    // Take source expressions (we'll iterate over them)
+    let source_exprs: Vec<ArenaValue<'static>> = state.source().iter().copied().collect();
+
+    // Evaluate each source expression using arena evaluation with bytecode/JIT tiering
+    for expr in source_exprs {
+        let is_eval_expr = is_eval_expression(&expr);
+
+        let (results, new_env) = eval_arena(expr, env, &state);
+        env = new_env;
+
+        // Only collect output for evaluation expressions (!)
+        if is_eval_expr {
+            for result in &results {
+                state.output_mut().push(*result);
+            }
+        }
+    }
+
+    info!(result_count = state.output().len(), "Session evaluation complete (raw)");
+
+    Ok(state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

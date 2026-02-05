@@ -234,6 +234,20 @@ pub trait MettaValue: Clone + Debug + PartialEq + Sized {
     fn serialize(&self) -> Vec<u8>;
 
     // =========================================================================
+    // Hashing
+    // =========================================================================
+
+    /// Compute a u64 hash of this value.
+    ///
+    /// This avoids requiring `Hash` as a supertrait (which causes orphan rule
+    /// issues with arena types) while still enabling hash-based caches like
+    /// `GenericMemoCache<V>`.
+    ///
+    /// Implementations should produce consistent hashes for structurally equal
+    /// values, matching the semantics of `PartialEq`.
+    fn hash_value(&self) -> u64;
+
+    // =========================================================================
     // Comparison methods
     // =========================================================================
 

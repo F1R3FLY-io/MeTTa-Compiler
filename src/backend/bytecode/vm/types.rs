@@ -70,6 +70,8 @@ pub enum VmError {
     IndexOutOfBounds { index: usize, len: usize },
     /// Compilation failed
     CompileError,
+    /// Guard evaluation failed (triggers backtracking)
+    GuardFailed,
 }
 
 impl std::fmt::Display for VmError {
@@ -98,6 +100,7 @@ impl std::fmt::Display for VmError {
                 )
             }
             Self::CompileError => write!(f, "Compilation failed"),
+            Self::GuardFailed => write!(f, "Guard evaluation failed"),
         }
     }
 }

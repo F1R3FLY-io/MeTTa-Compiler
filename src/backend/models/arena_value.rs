@@ -1537,6 +1537,10 @@ fn deserialize_arena_value<'a>(
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // Basic Constructor and Accessor Tests
+    // ========================================================================
+
     #[test]
     fn test_arena_atom() {
         let arena = Bump::new();
@@ -1598,5 +1602,885 @@ mod tests {
             ],
         );
         assert_eq!(format!("{}", v), "(+ 1 2)");
+    }
+
+    // ========================================================================
+    // All Type Variant Constructor Tests (Phase 1)
+    // ========================================================================
+
+    #[test]
+    fn test_arena_float() {
+        let arena = Bump::new();
+        let v = ArenaValue::float(&arena, 3.14);
+        assert!(v.is_float());
+        assert!(!v.is_long());
+        assert_eq!(v.as_float(), Some(3.14));
+        assert_eq!(v.as_long(), None);
+    }
+
+    #[test]
+    fn test_arena_string() {
+        let arena = Bump::new();
+        let v = ArenaValue::string(&arena, "hello world");
+        assert!(v.is_string());
+        assert!(!v.is_atom());
+        assert_eq!(v.as_string(), Some("hello world"));
+        assert_eq!(v.as_atom(), None);
+    }
+
+    #[test]
+    fn test_arena_nil() {
+        let arena = Bump::new();
+        let v = ArenaValue::nil(&arena);
+        assert!(v.is_nil());
+        assert!(!v.is_unit());
+        assert!(!v.is_empty());
+    }
+
+    #[test]
+    fn test_arena_unit() {
+        let arena = Bump::new();
+        let v = ArenaValue::unit(&arena);
+        assert!(v.is_unit());
+        assert!(!v.is_nil());
+        assert!(!v.is_empty());
+    }
+
+    #[test]
+    fn test_arena_empty() {
+        let arena = Bump::new();
+        let v = ArenaValue::empty(&arena);
+        assert!(v.is_empty());
+        assert!(!v.is_nil());
+        assert!(!v.is_unit());
+    }
+
+    #[test]
+    fn test_arena_error() {
+        let arena = Bump::new();
+        let details = ArenaValue::atom(&arena, "details");
+        let v = ArenaValue::error(&arena, "test error", details);
+        assert!(v.is_error());
+        let (msg, det) = v.as_error().expect("should be error");
+        assert_eq!(msg, "test error");
+        assert_eq!(det.as_atom(), Some("details"));
+    }
+
+    #[test]
+    fn test_arena_type() {
+        let arena = Bump::new();
+        let inner = ArenaValue::atom(&arena, "Number");
+        let v = ArenaValue::r#type(&arena, inner);
+        assert!(v.is_type());
+        let t = v.as_type().expect("should be type");
+        assert_eq!(t.as_atom(), Some("Number"));
+    }
+
+    #[test]
+    fn test_arena_conjunction() {
+        let arena = Bump::new();
+        let goals = vec![
+            ArenaValue::atom(&arena, "goal1"),
+            ArenaValue::atom(&arena, "goal2"),
+        ];
+        let v = ArenaValue::conjunction(&arena, goals);
+        assert!(v.is_conjunction());
+        let conj = v.as_conjunction().expect("should be conjunction");
+        assert_eq!(conj.len(), 2);
+    }
+
+    #[test]
+    fn test_arena_state() {
+        let arena = Bump::new();
+        let v = ArenaValue::state(&arena, 12345);
+        assert!(v.is_state());
+        assert_eq!(v.as_state(), Some(12345));
+    }
+
+    #[test]
+    fn test_arena_sexpr_empty() {
+        let arena = Bump::new();
+        let v = ArenaValue::sexpr_empty(&arena);
+        assert!(v.is_sexpr());
+        let items = v.as_sexpr().expect("should be sexpr");
+        assert!(items.is_empty());
+    }
+
+    // ========================================================================
+    // Type Check Method Coverage
+    // ========================================================================
+
+    #[test]
+    fn test_is_variable_true() {
+        let arena = Bump::new();
+        let v = ArenaValue::atom(&arena, "$x");
+        assert!(v.is_variable());
+    }
+
+    #[test]
+    fn test_is_variable_false() {
+        let arena = Bump::new();
+        let v = ArenaValue::atom(&arena, "foo");
+        assert!(!v.is_variable());
+    }
+
+    #[test]
+    fn test_is_ground_type() {
+        let arena = Bump::new();
+
+        // Ground types
+        assert!(ArenaValue::bool(&arena, true).is_ground_type());
+        assert!(ArenaValue::long(&arena, 42).is_ground_type());
+        assert!(ArenaValue::float(&arena, 3.14).is_ground_type());
+        assert!(ArenaValue::string(&arena, "hello").is_ground_type());
+        assert!(ArenaValue::nil(&arena).is_ground_type());
+
+        // Non-ground types
+        assert!(!ArenaValue::atom(&arena, "foo").is_ground_type());
+        assert!(!ArenaValue::sexpr_empty(&arena).is_ground_type());
+        assert!(!ArenaValue::unit(&arena).is_ground_type());
+    }
+
+    // ========================================================================
+    // PartialEq Tests for All Variant Combinations
+    // ========================================================================
+
+    #[test]
+    fn test_eq_long_long() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::long(&arena, 42);
+        let v2 = ArenaValue::long(&arena, 42);
+        let v3 = ArenaValue::long(&arena, 99);
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_eq_float_float() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::float(&arena, 3.14);
+        let v2 = ArenaValue::float(&arena, 3.14);
+        let v3 = ArenaValue::float(&arena, 2.71);
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_eq_bool_bool() {
+        let arena = Bump::new();
+        let t1 = ArenaValue::bool(&arena, true);
+        let t2 = ArenaValue::bool(&arena, true);
+        let f = ArenaValue::bool(&arena, false);
+        assert_eq!(t1, t2);
+        assert_ne!(t1, f);
+    }
+
+    #[test]
+    fn test_eq_atom_atom() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::atom(&arena, "foo");
+        let v2 = ArenaValue::atom(&arena, "foo");
+        let v3 = ArenaValue::atom(&arena, "bar");
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_eq_string_string() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::string(&arena, "hello");
+        let v2 = ArenaValue::string(&arena, "hello");
+        let v3 = ArenaValue::string(&arena, "world");
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_eq_nil_nil() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::nil(&arena);
+        let v2 = ArenaValue::nil(&arena);
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_eq_unit_unit() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::unit(&arena);
+        let v2 = ArenaValue::unit(&arena);
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_eq_empty_empty() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::empty(&arena);
+        let v2 = ArenaValue::empty(&arena);
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_eq_sexpr_sexpr() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::sexpr(&arena, vec![
+            ArenaValue::atom(&arena, "+"),
+            ArenaValue::long(&arena, 1),
+        ]);
+        let v2 = ArenaValue::sexpr(&arena, vec![
+            ArenaValue::atom(&arena, "+"),
+            ArenaValue::long(&arena, 1),
+        ]);
+        let v3 = ArenaValue::sexpr(&arena, vec![
+            ArenaValue::atom(&arena, "+"),
+            ArenaValue::long(&arena, 2),
+        ]);
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_eq_error_error() {
+        let arena = Bump::new();
+        let d1 = ArenaValue::atom(&arena, "d");
+        let d2 = ArenaValue::atom(&arena, "d");
+        let v1 = ArenaValue::error(&arena, "err", d1);
+        let v2 = ArenaValue::error(&arena, "err", d2);
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_eq_type_type() {
+        let arena = Bump::new();
+        let i1 = ArenaValue::atom(&arena, "Number");
+        let i2 = ArenaValue::atom(&arena, "Number");
+        let v1 = ArenaValue::r#type(&arena, i1);
+        let v2 = ArenaValue::r#type(&arena, i2);
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_eq_conjunction_conjunction() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::conjunction(&arena, vec![
+            ArenaValue::atom(&arena, "a"),
+        ]);
+        let v2 = ArenaValue::conjunction(&arena, vec![
+            ArenaValue::atom(&arena, "a"),
+        ]);
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_eq_state_state() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::state(&arena, 100);
+        let v2 = ArenaValue::state(&arena, 100);
+        let v3 = ArenaValue::state(&arena, 200);
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_ne_different_types() {
+        let arena = Bump::new();
+        let long = ArenaValue::long(&arena, 42);
+        let float = ArenaValue::float(&arena, 42.0);
+        let bool_val = ArenaValue::bool(&arena, true);
+        let atom = ArenaValue::atom(&arena, "42");
+        let string = ArenaValue::string(&arena, "42");
+
+        // Different types should never be equal
+        assert_ne!(long, float);
+        assert_ne!(long, bool_val);
+        assert_ne!(long, atom);
+        assert_ne!(float, string);
+        assert_ne!(atom, string);
+    }
+
+    // ========================================================================
+    // Accessor Method Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_accessor_wrong_type_returns_none() {
+        let arena = Bump::new();
+        let v = ArenaValue::long(&arena, 42);
+        assert_eq!(v.as_atom(), None);
+        assert_eq!(v.as_bool(), None);
+        assert_eq!(v.as_float(), None);
+        assert_eq!(v.as_string(), None);
+        assert_eq!(v.as_sexpr(), None);
+        assert_eq!(v.as_error(), None);
+        assert_eq!(v.as_type(), None);
+        assert_eq!(v.as_conjunction(), None);
+        assert_eq!(v.as_space(), None);
+        assert_eq!(v.as_state(), None);
+        assert_eq!(v.as_memo(), None);
+    }
+
+    // ========================================================================
+    // Type Name Tests
+    // ========================================================================
+
+    #[test]
+    fn test_type_name_variable() {
+        let arena = Bump::new();
+        let v = ArenaValue::atom(&arena, "$x");
+        assert_eq!(v.type_name(), "Variable");
+    }
+
+    #[test]
+    fn test_type_name_symbol() {
+        let arena = Bump::new();
+        let v = ArenaValue::atom(&arena, "foo");
+        assert_eq!(v.type_name(), "Symbol");
+    }
+
+    #[test]
+    fn test_type_name_bool() {
+        let arena = Bump::new();
+        let v = ArenaValue::bool(&arena, true);
+        assert_eq!(v.type_name(), "Bool");
+    }
+
+    #[test]
+    fn test_type_name_long() {
+        let arena = Bump::new();
+        let v = ArenaValue::long(&arena, 42);
+        assert_eq!(v.type_name(), "Number");
+    }
+
+    #[test]
+    fn test_type_name_float() {
+        let arena = Bump::new();
+        let v = ArenaValue::float(&arena, 3.14);
+        assert_eq!(v.type_name(), "Number");
+    }
+
+    #[test]
+    fn test_type_name_string() {
+        let arena = Bump::new();
+        let v = ArenaValue::string(&arena, "hello");
+        assert_eq!(v.type_name(), "String");
+    }
+
+    #[test]
+    fn test_type_name_sexpr() {
+        let arena = Bump::new();
+        let v = ArenaValue::sexpr_empty(&arena);
+        assert_eq!(v.type_name(), "Expression");
+    }
+
+    #[test]
+    fn test_type_name_nil() {
+        let arena = Bump::new();
+        let v = ArenaValue::nil(&arena);
+        assert_eq!(v.type_name(), "Nil");
+    }
+
+    #[test]
+    fn test_type_name_error() {
+        let arena = Bump::new();
+        let d = ArenaValue::nil(&arena);
+        let v = ArenaValue::error(&arena, "err", d);
+        assert_eq!(v.type_name(), "Error");
+    }
+
+    #[test]
+    fn test_type_name_type() {
+        let arena = Bump::new();
+        let i = ArenaValue::atom(&arena, "Int");
+        let v = ArenaValue::r#type(&arena, i);
+        assert_eq!(v.type_name(), "Type");
+    }
+
+    #[test]
+    fn test_type_name_conjunction() {
+        let arena = Bump::new();
+        let v = ArenaValue::conjunction(&arena, vec![]);
+        assert_eq!(v.type_name(), "Conjunction");
+    }
+
+    #[test]
+    fn test_type_name_state() {
+        let arena = Bump::new();
+        let v = ArenaValue::state(&arena, 1);
+        assert_eq!(v.type_name(), "State");
+    }
+
+    #[test]
+    fn test_type_name_unit() {
+        let arena = Bump::new();
+        let v = ArenaValue::unit(&arena);
+        assert_eq!(v.type_name(), "Unit");
+    }
+
+    #[test]
+    fn test_type_name_empty() {
+        let arena = Bump::new();
+        let v = ArenaValue::empty(&arena);
+        assert_eq!(v.type_name(), "Empty");
+    }
+
+    // ========================================================================
+    // Display Formatting Tests
+    // ========================================================================
+
+    #[test]
+    fn test_display_bool_true() {
+        let arena = Bump::new();
+        let v = ArenaValue::bool(&arena, true);
+        assert_eq!(format!("{}", v), "True");
+    }
+
+    #[test]
+    fn test_display_bool_false() {
+        let arena = Bump::new();
+        let v = ArenaValue::bool(&arena, false);
+        assert_eq!(format!("{}", v), "False");
+    }
+
+    #[test]
+    fn test_display_long() {
+        let arena = Bump::new();
+        let v = ArenaValue::long(&arena, -42);
+        assert_eq!(format!("{}", v), "-42");
+    }
+
+    #[test]
+    fn test_display_float() {
+        let arena = Bump::new();
+        let v = ArenaValue::float(&arena, 3.14);
+        assert_eq!(format!("{}", v), "3.14");
+    }
+
+    #[test]
+    fn test_display_string() {
+        let arena = Bump::new();
+        let v = ArenaValue::string(&arena, "hello");
+        assert_eq!(format!("{}", v), "\"hello\"");
+    }
+
+    #[test]
+    fn test_display_nil() {
+        let arena = Bump::new();
+        let v = ArenaValue::nil(&arena);
+        assert_eq!(format!("{}", v), "Nil");
+    }
+
+    #[test]
+    fn test_display_unit() {
+        let arena = Bump::new();
+        let v = ArenaValue::unit(&arena);
+        assert_eq!(format!("{}", v), "()");
+    }
+
+    #[test]
+    fn test_display_empty() {
+        let arena = Bump::new();
+        let v = ArenaValue::empty(&arena);
+        assert_eq!(format!("{}", v), "Empty");
+    }
+
+    #[test]
+    fn test_display_empty_sexpr() {
+        let arena = Bump::new();
+        let v = ArenaValue::sexpr_empty(&arena);
+        assert_eq!(format!("{}", v), "()");
+    }
+
+    #[test]
+    fn test_display_error() {
+        let arena = Bump::new();
+        let d = ArenaValue::atom(&arena, "details");
+        let v = ArenaValue::error(&arena, "msg", d);
+        assert_eq!(format!("{}", v), "(Error msg details)");
+    }
+
+    #[test]
+    fn test_display_type() {
+        let arena = Bump::new();
+        let i = ArenaValue::atom(&arena, "Int");
+        let v = ArenaValue::r#type(&arena, i);
+        assert_eq!(format!("{}", v), "(: Int)");
+    }
+
+    #[test]
+    fn test_display_conjunction() {
+        let arena = Bump::new();
+        let v = ArenaValue::conjunction(&arena, vec![
+            ArenaValue::atom(&arena, "a"),
+            ArenaValue::atom(&arena, "b"),
+        ]);
+        assert_eq!(format!("{}", v), "(, a b)");
+    }
+
+    #[test]
+    fn test_display_state() {
+        let arena = Bump::new();
+        let v = ArenaValue::state(&arena, 123);
+        assert_eq!(format!("{}", v), "<State:123>");
+    }
+
+    // ========================================================================
+    // Serialization Round-Trip Tests
+    // ========================================================================
+
+    #[test]
+    fn test_serialize_roundtrip_long() {
+        let arena = Bump::new();
+        let original = ArenaValue::long(&arena, 12345);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_float() {
+        let arena = Bump::new();
+        let original = ArenaValue::float(&arena, 3.14159);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_bool() {
+        let arena = Bump::new();
+        let original = ArenaValue::bool(&arena, true);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_atom() {
+        let arena = Bump::new();
+        let original = ArenaValue::atom(&arena, "hello-world");
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_string() {
+        let arena = Bump::new();
+        let original = ArenaValue::string(&arena, "test string");
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_nil() {
+        let arena = Bump::new();
+        let original = ArenaValue::nil(&arena);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_unit() {
+        let arena = Bump::new();
+        let original = ArenaValue::unit(&arena);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_empty() {
+        let arena = Bump::new();
+        let original = ArenaValue::empty(&arena);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_sexpr() {
+        let arena = Bump::new();
+        let original = ArenaValue::sexpr(&arena, vec![
+            ArenaValue::atom(&arena, "+"),
+            ArenaValue::long(&arena, 1),
+            ArenaValue::long(&arena, 2),
+        ]);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_nested_sexpr() {
+        let arena = Bump::new();
+        let inner = ArenaValue::sexpr(&arena, vec![
+            ArenaValue::atom(&arena, "*"),
+            ArenaValue::long(&arena, 2),
+            ArenaValue::long(&arena, 3),
+        ]);
+        let original = ArenaValue::sexpr(&arena, vec![
+            ArenaValue::atom(&arena, "+"),
+            ArenaValue::long(&arena, 1),
+            inner,
+        ]);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_error() {
+        let arena = Bump::new();
+        let details = ArenaValue::atom(&arena, "details");
+        let original = ArenaValue::error(&arena, "test error", details);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_type() {
+        let arena = Bump::new();
+        let inner = ArenaValue::atom(&arena, "Number");
+        let original = ArenaValue::r#type(&arena, inner);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_conjunction() {
+        let arena = Bump::new();
+        let original = ArenaValue::conjunction(&arena, vec![
+            ArenaValue::atom(&arena, "a"),
+            ArenaValue::atom(&arena, "b"),
+        ]);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_state() {
+        let arena = Bump::new();
+        let original = ArenaValue::state(&arena, 999);
+        let bytes = original.serialize();
+        let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    // ========================================================================
+    // Hash Value Tests
+    // ========================================================================
+
+    #[test]
+    fn test_hash_equal_values() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::long(&arena, 42);
+        let v2 = ArenaValue::long(&arena, 42);
+        assert_eq!(v1.hash_value(), v2.hash_value());
+    }
+
+    #[test]
+    fn test_hash_different_values() {
+        let arena = Bump::new();
+        let v1 = ArenaValue::long(&arena, 42);
+        let v2 = ArenaValue::long(&arena, 43);
+        assert_ne!(v1.hash_value(), v2.hash_value());
+    }
+
+    #[test]
+    fn test_hash_different_types() {
+        let arena = Bump::new();
+        let long = ArenaValue::long(&arena, 42);
+        let float = ArenaValue::float(&arena, 42.0);
+        // Different types should (almost certainly) have different hashes
+        assert_ne!(long.hash_value(), float.hash_value());
+    }
+
+    #[test]
+    fn test_hash_nil_unit_empty() {
+        let arena = Bump::new();
+        let nil = ArenaValue::nil(&arena);
+        let unit = ArenaValue::unit(&arena);
+        let empty = ArenaValue::empty(&arena);
+        // These special values should have distinct hashes
+        assert_ne!(nil.hash_value(), unit.hash_value());
+        assert_ne!(nil.hash_value(), empty.hash_value());
+        assert_ne!(unit.hash_value(), empty.hash_value());
+    }
+
+    // ========================================================================
+    // MettaValueTrait Method Tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_head_symbol_sexpr() {
+        let arena = Bump::new();
+        let v = ArenaValue::sexpr(&arena, vec![
+            ArenaValue::atom(&arena, "foo"),
+            ArenaValue::long(&arena, 1),
+        ]);
+        assert_eq!(v.get_head_symbol(), Some("foo"));
+    }
+
+    #[test]
+    fn test_get_head_symbol_variable_head() {
+        let arena = Bump::new();
+        let v = ArenaValue::sexpr(&arena, vec![
+            ArenaValue::atom(&arena, "$x"),
+            ArenaValue::long(&arena, 1),
+        ]);
+        // Variable as head returns None
+        assert_eq!(v.get_head_symbol(), None);
+    }
+
+    #[test]
+    fn test_get_head_symbol_bare_atom() {
+        let arena = Bump::new();
+        let v = ArenaValue::atom(&arena, "foo");
+        assert_eq!(v.get_head_symbol(), Some("foo"));
+    }
+
+    #[test]
+    fn test_get_arity_sexpr() {
+        let arena = Bump::new();
+        let v = ArenaValue::sexpr(&arena, vec![
+            ArenaValue::atom(&arena, "foo"),
+            ArenaValue::long(&arena, 1),
+            ArenaValue::long(&arena, 2),
+        ]);
+        // Arity is len - 1 (excluding head)
+        assert_eq!(v.get_arity(), 2);
+    }
+
+    #[test]
+    fn test_get_arity_atom() {
+        let arena = Bump::new();
+        let v = ArenaValue::atom(&arena, "foo");
+        assert_eq!(v.get_arity(), 0);
+    }
+
+    #[test]
+    fn test_friendly_repr() {
+        let arena = Bump::new();
+        let v = ArenaValue::sexpr(&arena, vec![
+            ArenaValue::atom(&arena, "+"),
+            ArenaValue::long(&arena, 1),
+            ArenaValue::long(&arena, 2),
+        ]);
+        assert_eq!(v.friendly_repr(), "(+ 1 2)");
+    }
+
+    #[test]
+    fn test_friendly_type_name() {
+        let arena = Bump::new();
+        assert_eq!(ArenaValue::long(&arena, 1).friendly_type_name(), "Number (integer)");
+        assert_eq!(ArenaValue::float(&arena, 1.0).friendly_type_name(), "Number (float)");
+        assert_eq!(ArenaValue::bool(&arena, true).friendly_type_name(), "Bool");
+    }
+
+    // ========================================================================
+    // Factory Tests
+    // ========================================================================
+
+    #[test]
+    fn test_factory_creates_values() {
+        let arena = Bump::new();
+        let factory = ArenaValueFactory::new(&arena);
+
+        let atom = factory.atom("test");
+        assert!(atom.is_atom());
+
+        let long = factory.long(42);
+        assert!(long.is_long());
+
+        let bool_val = factory.bool(true);
+        assert!(bool_val.is_bool());
+
+        let nil = factory.nil();
+        assert!(nil.is_nil());
+
+        let unit = factory.unit();
+        assert!(unit.is_unit());
+    }
+
+    #[test]
+    fn test_factory_sexpr_from_vec() {
+        let arena = Bump::new();
+        let factory = ArenaValueFactory::new(&arena);
+
+        let items = vec![
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
+        ];
+        let sexpr = factory.sexpr(items);
+        assert!(sexpr.is_sexpr());
+        assert_eq!(sexpr.as_sexpr().map(|s| s.len()), Some(3));
+    }
+
+    #[test]
+    fn test_factory_sexpr_from_slice() {
+        let arena = Bump::new();
+        let factory = ArenaValueFactory::new(&arena);
+
+        let items = [
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
+        ];
+        let sexpr = factory.sexpr_from_slice(&items);
+        assert!(sexpr.is_sexpr());
+        assert_eq!(sexpr.as_sexpr().map(|s| s.len()), Some(3));
+    }
+
+    // ========================================================================
+    // Deserialization Error Handling
+    // ========================================================================
+
+    #[test]
+    fn test_deserialize_empty_input() {
+        let arena = Bump::new();
+        let result = deserialize_arena_value(&arena, &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_unknown_tag() {
+        let arena = Bump::new();
+        let result = deserialize_arena_value(&arena, &[0xFF]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown tag"));
+    }
+
+    #[test]
+    fn test_deserialize_truncated_long() {
+        let arena = Bump::new();
+        // LONG tag but only 4 bytes (needs 8)
+        let result = deserialize_arena_value(&arena, &[0x03, 0x00, 0x00, 0x00, 0x00]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_truncated_float() {
+        let arena = Bump::new();
+        // FLOAT tag but only 4 bytes (needs 8)
+        let result = deserialize_arena_value(&arena, &[0x04, 0x00, 0x00, 0x00, 0x00]);
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Pointer Equality Fast Path
+    // ========================================================================
+
+    #[test]
+    fn test_pointer_equality_fast_path() {
+        let arena = Bump::new();
+        let v = ArenaValue::long(&arena, 42);
+        let v_copy = v; // Copy, same pointer
+        // Both should be equal via pointer comparison fast path
+        assert_eq!(v, v_copy);
     }
 }

@@ -13,3 +13,4 @@ flamegraph*.svg
 examples/sandbox.rs
 dev-notes.md
 benchmark_results/**/*.txt
+proptest-regressions/

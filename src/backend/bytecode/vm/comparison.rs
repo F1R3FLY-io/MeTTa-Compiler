@@ -15,9 +15,16 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (a.inner(), b.inner()) {
             (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Bool(x < y),
+            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => MettaValue::Bool(x < y),
+            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                MettaValue::Bool((*x as f64) < *y)
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                MettaValue::Bool(*x < (*y as f64))
+            }
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }
@@ -31,9 +38,16 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (a.inner(), b.inner()) {
             (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Bool(x <= y),
+            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => MettaValue::Bool(x <= y),
+            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                MettaValue::Bool((*x as f64) <= *y)
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                MettaValue::Bool(*x <= (*y as f64))
+            }
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }
@@ -47,9 +61,16 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (a.inner(), b.inner()) {
             (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Bool(x > y),
+            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => MettaValue::Bool(x > y),
+            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                MettaValue::Bool((*x as f64) > *y)
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                MettaValue::Bool(*x > (*y as f64))
+            }
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }
@@ -63,9 +84,16 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match (a.inner(), b.inner()) {
             (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Bool(x >= y),
+            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => MettaValue::Bool(x >= y),
+            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                MettaValue::Bool((*x as f64) >= *y)
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                MettaValue::Bool(*x >= (*y as f64))
+            }
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }

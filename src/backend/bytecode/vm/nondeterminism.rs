@@ -14,11 +14,12 @@ use crate::backend::models::{MettaValue, MettaValueInner};
 impl BytecodeVM {
     // === Nondeterminism Operations ===
 
-    pub(super) fn op_fork(&mut self) -> VmResult<()> {
+    pub(super) fn op_fork(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
         trace!(target: "mettatron::vm::nondet", ip = self.ip, "fork");
         let count = self.read_u16()? as usize;
         if count == 0 {
-            return self.op_fail().map(|_| ());
+            // Zero alternatives means immediate failure - propagate the ControlFlow properly
+            return self.op_fail();
         }
 
         // Read constant indices from bytecode (compiler emits u16 indices after Fork)
@@ -54,7 +55,7 @@ impl BytecodeVM {
             self.push(v.clone());
         }
 
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 
     pub(super) fn op_fail(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
@@ -90,8 +91,9 @@ impl BytecodeVM {
                     self.chunk = chunk;
                     self.ip = 0;
                 }
-                Alternative::Index(_) => {
-                    // TODO: Handle index alternatives
+                Alternative::Index(offset) => {
+                    // Set IP to indexed offset for computed gotos / rule dispatch
+                    self.ip = offset;
                 }
                 Alternative::RuleMatch { chunk, bindings } => {
                     // Execute rule with its bindings

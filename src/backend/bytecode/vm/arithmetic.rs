@@ -14,10 +14,19 @@ impl BytecodeVM {
         let b = self.pop()?;
         let a = self.pop()?;
         let result = match (a.inner(), b.inner()) {
-            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Long(x + y),
+            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
+                MettaValue::Long(x.wrapping_add(*y))
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => MettaValue::Float(x + y),
+            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                MettaValue::Float(*x as f64 + y)
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                MettaValue::Float(x + *y as f64)
+            }
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }
@@ -30,10 +39,19 @@ impl BytecodeVM {
         let b = self.pop()?;
         let a = self.pop()?;
         let result = match (a.inner(), b.inner()) {
-            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Long(x - y),
+            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
+                MettaValue::Long(x.wrapping_sub(*y))
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => MettaValue::Float(x - y),
+            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                MettaValue::Float(*x as f64 - y)
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                MettaValue::Float(x - *y as f64)
+            }
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }
@@ -46,10 +64,19 @@ impl BytecodeVM {
         let b = self.pop()?;
         let a = self.pop()?;
         let result = match (a.inner(), b.inner()) {
-            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => MettaValue::Long(x * y),
+            (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
+                MettaValue::Long(x.wrapping_mul(*y))
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => MettaValue::Float(x * y),
+            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                MettaValue::Float(*x as f64 * y)
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                MettaValue::Float(x * *y as f64)
+            }
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }
@@ -69,9 +96,27 @@ impl BytecodeVM {
                 Some(r) => MettaValue::Long(r),
                 None => return Err(VmError::ArithmeticOverflow),
             },
+            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+                if *y == 0.0 {
+                    return Err(VmError::DivisionByZero);
+                }
+                MettaValue::Float(x / y)
+            }
+            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                if *y == 0.0 {
+                    return Err(VmError::DivisionByZero);
+                }
+                MettaValue::Float(*x as f64 / y)
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                if *y == 0 {
+                    return Err(VmError::DivisionByZero);
+                }
+                MettaValue::Float(x / *y as f64)
+            }
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }
@@ -106,9 +151,10 @@ impl BytecodeVM {
         let a = self.pop()?;
         let result = match a.inner() {
             MettaValueInner::Long(x) => MettaValue::Long(-x),
+            MettaValueInner::Float(x) => MettaValue::Float(-x),
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }
@@ -127,9 +173,10 @@ impl BytecodeVM {
                 }
                 MettaValue::Long(x.abs())
             }
+            MettaValueInner::Float(x) => MettaValue::Float(x.abs()),
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }
@@ -148,9 +195,27 @@ impl BytecodeVM {
             (MettaValueInner::Long(x), MettaValueInner::Long(y)) => {
                 MettaValue::Long(x.div_euclid(*y))
             }
+            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => {
+                if *y == 0.0 {
+                    return Err(VmError::DivisionByZero);
+                }
+                MettaValue::Long((x / y).floor() as i64)
+            }
+            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                if *y == 0.0 {
+                    return Err(VmError::DivisionByZero);
+                }
+                MettaValue::Long((*x as f64 / y).floor() as i64)
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                if *y == 0 {
+                    return Err(VmError::DivisionByZero);
+                }
+                MettaValue::Long((x / *y as f64).floor() as i64)
+            }
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }
@@ -166,9 +231,16 @@ impl BytecodeVM {
             (MettaValueInner::Long(x), MettaValueInner::Long(y)) if *y >= 0 => {
                 MettaValue::Long(x.pow(*y as u32))
             }
+            (MettaValueInner::Float(x), MettaValueInner::Float(y)) => MettaValue::Float(x.powf(*y)),
+            (MettaValueInner::Long(x), MettaValueInner::Float(y)) => {
+                MettaValue::Float((*x as f64).powf(*y))
+            }
+            (MettaValueInner::Float(x), MettaValueInner::Long(y)) => {
+                MettaValue::Float(x.powi(*y as i32))
+            }
             _ => {
                 return Err(VmError::TypeError {
-                    expected: "Long with non-negative exponent",
+                    expected: "number (Long or Float)",
                     got: "other",
                 })
             }

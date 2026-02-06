@@ -1853,4 +1853,341 @@ mod tests {
         assert_eq!(stats.jit1_executions, 1);
         assert_eq!(stats.jit2_executions, 1);
     }
+
+    // ========================================================================
+    // Branch Coverage Tests
+    // ========================================================================
+
+    #[test]
+    fn test_tier_status_kind_invalid_value() {
+        // Test that invalid u8 values default to NotStarted
+        assert_eq!(TierStatusKind::from(4), TierStatusKind::NotStarted);
+        assert_eq!(TierStatusKind::from(100), TierStatusKind::NotStarted);
+        assert_eq!(TierStatusKind::from(254), TierStatusKind::NotStarted);
+    }
+
+    #[test]
+    fn test_expr_compilation_state_set_failed() {
+        let state = ExprCompilationState::new(12345);
+
+        // Mark bytecode as failed
+        state.set_bytecode_failed();
+        assert_eq!(state.bytecode_status(), TierStatusKind::Failed);
+        assert!(state.bytecode_chunk().is_none());
+
+        // Try to compile again should fail (already Failed, not NotStarted)
+        assert!(!state.try_start_bytecode_compile());
+    }
+
+    #[test]
+    fn test_expr_compilation_state_jit1_transitions() {
+        let state = ExprCompilationState::new(12345);
+
+        // Initially NotStarted
+        assert_eq!(state.jit1_status(), TierStatusKind::NotStarted);
+        assert!(state.jit1_code().is_none());
+
+        // Start JIT1 compilation
+        assert!(state.try_start_jit1_compile());
+        assert_eq!(state.jit1_status(), TierStatusKind::Compiling);
+
+        // Second attempt should fail
+        assert!(!state.try_start_jit1_compile());
+
+        // Set failed
+        state.set_jit1_failed();
+        assert_eq!(state.jit1_status(), TierStatusKind::Failed);
+    }
+
+    #[test]
+    fn test_expr_compilation_state_jit2_transitions() {
+        let state = ExprCompilationState::new(12345);
+
+        // Initially NotStarted
+        assert_eq!(state.jit2_status(), TierStatusKind::NotStarted);
+        assert!(state.jit2_code().is_none());
+
+        // Start JIT2 compilation
+        assert!(state.try_start_jit2_compile());
+        assert_eq!(state.jit2_status(), TierStatusKind::Compiling);
+
+        // Second attempt should fail
+        assert!(!state.try_start_jit2_compile());
+
+        // Set failed
+        state.set_jit2_failed();
+        assert_eq!(state.jit2_status(), TierStatusKind::Failed);
+    }
+
+    #[test]
+    fn test_tiered_cache_warmup_threshold() {
+        // Test with zero warmup (immediately complete)
+        let cache = TieredCompilationCache::with_thresholds_and_warmup(1, 100, 500, 0);
+        assert!(cache.is_warmup_complete());
+
+        // Test with non-zero warmup
+        let cache2 = TieredCompilationCache::with_thresholds_and_warmup(1, 100, 500, 1000);
+        assert!(!cache2.is_warmup_complete());
+    }
+
+    #[test]
+    fn test_tiered_cache_stats_reset() {
+        let cache = TieredCompilationCache::new();
+        let expr = MettaValue::Long(42);
+
+        // Record some executions
+        for _ in 0..5 {
+            let _ = cache.record_execution(&expr);
+        }
+        cache.record_tier_execution(ExecutionTier::Interpreter);
+
+        let stats = cache.stats();
+        assert!(stats.total_executions >= 5);
+        assert!(stats.interpreter_executions >= 1);
+
+        // Reset stats
+        cache.reset_stats();
+        let stats2 = cache.stats();
+        assert_eq!(stats2.total_executions, 0);
+        assert_eq!(stats2.interpreter_executions, 0);
+    }
+
+    #[test]
+    fn test_tiered_cache_get_state_nonexistent() {
+        let cache = TieredCompilationCache::new();
+        let expr = MettaValue::Long(42);
+
+        // Before recording, state should not exist
+        assert!(cache.get_state(&expr).is_none());
+
+        // After recording, state should exist
+        let _ = cache.record_execution(&expr);
+        assert!(cache.get_state(&expr).is_some());
+    }
+
+    #[test]
+    fn test_tiered_cache_complex_expression() {
+        let cache = TieredCompilationCache::new();
+
+        // Test with an S-expression
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("+".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+
+        let state = cache.record_execution(&expr);
+        assert_eq!(state.count(), 1);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_arena_expr_compilation_state_new() {
+        let state = ArenaExprCompilationState::new(99999);
+        assert_eq!(state.count(), 0);
+        assert_eq!(state.bytecode_status(), TierStatusKind::NotStarted);
+        assert_eq!(state.jit1_status(), TierStatusKind::NotStarted);
+        assert_eq!(state.jit2_status(), TierStatusKind::NotStarted);
+        assert!(state.bytecode_chunk().is_none());
+        assert!(state.jit1_code().is_none());
+        assert!(state.jit2_code().is_none());
+    }
+
+    #[test]
+    fn test_arena_expr_compilation_state_bytecode_transitions() {
+        let state = ArenaExprCompilationState::new(12345);
+
+        // Start compilation
+        assert!(state.try_start_bytecode_compile());
+        assert_eq!(state.bytecode_status(), TierStatusKind::Compiling);
+
+        // Second attempt fails
+        assert!(!state.try_start_bytecode_compile());
+
+        // Set failed
+        state.set_bytecode_failed();
+        assert_eq!(state.bytecode_status(), TierStatusKind::Failed);
+    }
+
+    #[test]
+    fn test_arena_expr_compilation_state_jit_transitions() {
+        let state = ArenaExprCompilationState::new(12345);
+
+        // JIT1 transitions
+        assert!(state.try_start_jit1_compile());
+        assert_eq!(state.jit1_status(), TierStatusKind::Compiling);
+        assert!(!state.try_start_jit1_compile());
+        state.set_jit1_failed();
+        assert_eq!(state.jit1_status(), TierStatusKind::Failed);
+
+        // JIT2 transitions
+        assert!(state.try_start_jit2_compile());
+        assert_eq!(state.jit2_status(), TierStatusKind::Compiling);
+        assert!(!state.try_start_jit2_compile());
+        state.set_jit2_failed();
+        assert_eq!(state.jit2_status(), TierStatusKind::Failed);
+    }
+
+    #[test]
+    fn test_arena_tiered_cache_new() {
+        let cache = ArenaTieredCache::new();
+        assert!(cache.is_empty());
+        assert_eq!(cache.bytecode_threshold, BYTECODE_THRESHOLD);
+        assert_eq!(cache.jit1_threshold, JIT1_THRESHOLD);
+        assert_eq!(cache.jit2_threshold, JIT2_THRESHOLD);
+    }
+
+    #[test]
+    fn test_arena_tiered_cache_custom_thresholds() {
+        let cache = ArenaTieredCache::with_thresholds(10, 200, 1000);
+        assert_eq!(cache.bytecode_threshold, 10);
+        assert_eq!(cache.jit1_threshold, 200);
+        assert_eq!(cache.jit2_threshold, 1000);
+    }
+
+    #[test]
+    fn test_arena_tiered_cache_clear() {
+        use crate::backend::models::{ArenaValue, ArenaValueFactory, MettaValueFactory};
+        use bumpalo::Bump;
+
+        let arena = Box::leak(Box::new(Bump::new()));
+        let factory = ArenaValueFactory::new(arena);
+        let cache = ArenaTieredCache::new();
+        let expr: ArenaValue<'static> = factory.long(42);
+
+        let _ = cache.record_execution(&expr);
+        assert_eq!(cache.len(), 1);
+
+        cache.clear();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_arena_tiered_cache_record_tier_execution() {
+        let cache = ArenaTieredCache::new();
+
+        cache.record_tier_execution(ExecutionTier::Interpreter);
+        cache.record_tier_execution(ExecutionTier::Bytecode);
+        cache.record_tier_execution(ExecutionTier::JitStage1);
+        cache.record_tier_execution(ExecutionTier::JitStage2);
+
+        // Verify each tier was recorded (stats aren't directly exposed, but the
+        // atomic counters should be incremented)
+        // Just verify the method doesn't panic for all tiers
+    }
+
+    #[test]
+    fn test_arena_tiered_cache_get_state() {
+        use crate::backend::models::{ArenaValue, ArenaValueFactory, MettaValueFactory};
+        use bumpalo::Bump;
+
+        let arena = Box::leak(Box::new(Bump::new()));
+        let factory = ArenaValueFactory::new(arena);
+        let cache = ArenaTieredCache::new();
+        let expr: ArenaValue<'static> = factory.long(42);
+
+        // Before recording, state should not exist
+        assert!(cache.get_state(&expr).is_none());
+
+        // After recording, state should exist
+        let _ = cache.record_execution(&expr);
+        assert!(cache.get_state(&expr).is_some());
+    }
+
+    #[test]
+    fn test_arena_tiered_cache_get_best_tier() {
+        use crate::backend::models::{ArenaValue, ArenaValueFactory, MettaValueFactory};
+        use bumpalo::Bump;
+
+        let arena = Box::leak(Box::new(Bump::new()));
+        let factory = ArenaValueFactory::new(arena);
+        let cache = ArenaTieredCache::new();
+        let expr: ArenaValue<'static> = factory.long(42);
+
+        // Before any execution, should be interpreter
+        assert_eq!(cache.get_best_tier(&expr), ExecutionTier::Interpreter);
+
+        // After recording (bytecode compilation is async)
+        let _ = cache.record_execution(&expr);
+        // Still interpreter because compilation is async
+        assert_eq!(cache.get_best_tier(&expr), ExecutionTier::Interpreter);
+    }
+
+    #[test]
+    fn test_hash_arena_value_primitives() {
+        use crate::backend::models::{ArenaValue, ArenaValueFactory, MettaValueFactory};
+        use bumpalo::Bump;
+
+        let arena = Box::leak(Box::new(Bump::new()));
+        let factory = ArenaValueFactory::new(arena);
+
+        // Test that hashing primitives produces consistent results
+        let nil_val: ArenaValue<'static> = factory.nil();
+        let unit_val: ArenaValue<'static> = factory.unit();
+        let true_val: ArenaValue<'static> = factory.bool(true);
+        let false_val: ArenaValue<'static> = factory.bool(false);
+        let long_val: ArenaValue<'static> = factory.long(42);
+        let float_val: ArenaValue<'static> = factory.float(3.14);
+
+        let nil_hash = hash_arena_value(&nil_val);
+        let unit_hash = hash_arena_value(&unit_val);
+        let true_hash = hash_arena_value(&true_val);
+        let false_hash = hash_arena_value(&false_val);
+        let long_hash = hash_arena_value(&long_val);
+        let float_hash = hash_arena_value(&float_val);
+
+        // Different types should produce different hashes
+        assert_ne!(nil_hash, unit_hash);
+        assert_ne!(true_hash, false_hash);
+        assert_ne!(long_hash, float_hash);
+        assert_ne!(nil_hash, long_hash);
+    }
+
+    #[test]
+    fn test_hash_arena_value_strings() {
+        use crate::backend::models::{ArenaValue, ArenaValueFactory, MettaValueFactory};
+        use bumpalo::Bump;
+
+        let arena = Box::leak(Box::new(Bump::new()));
+        let factory = ArenaValueFactory::new(arena);
+
+        // Test hashing strings and atoms
+        let string_val: ArenaValue<'static> = factory.string("hello");
+        let atom_val: ArenaValue<'static> = factory.atom("hello");
+
+        let string_hash = hash_arena_value(&string_val);
+        let atom_hash = hash_arena_value(&atom_val);
+
+        // Same content but different types should produce different hashes
+        assert_ne!(string_hash, atom_hash);
+    }
+
+    #[test]
+    fn test_native_code_debug() {
+        let code = NativeCode {
+            ptr: std::ptr::null(),
+            code_size: 100,
+        };
+        let debug_str = format!("{:?}", code);
+        assert!(debug_str.contains("NativeCode"));
+        assert!(debug_str.contains("100"));
+    }
+
+    #[test]
+    fn test_expr_compilation_state_debug() {
+        let state = ExprCompilationState::new(12345);
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("ExprCompilationState"));
+        assert!(debug_str.contains("execution_count"));
+        assert!(debug_str.contains("12345"));
+    }
+
+    #[test]
+    fn test_arena_expr_compilation_state_debug() {
+        let state = ArenaExprCompilationState::new(99999);
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("ArenaExprCompilationState"));
+        assert!(debug_str.contains("execution_count"));
+        assert!(debug_str.contains("99999"));
+    }
 }

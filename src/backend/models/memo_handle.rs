@@ -15,6 +15,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use xxhash_rust::xxh3::{xxh3_64, Xxh3};
+
 use super::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
 use super::{HeapMettaValueFactory, MettaValue};
 
@@ -95,19 +97,15 @@ impl MemoHandle {
     #[inline]
     #[allow(dead_code)]
     fn hash_expression_generic<V: MettaValueTrait + Hash>(expr: &V) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        let mut hasher = DefaultHasher::new();
-        expr.hash(&mut hasher);
-        hasher.finish()
+        let mut h = Xxh3::new();
+        expr.hash(&mut h);
+        h.finish()
     }
 
     /// Compute hash from serialized bytes
     #[inline]
     fn hash_bytes(bytes: &[u8]) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        let mut hasher = DefaultHasher::new();
-        bytes.hash(&mut hasher);
-        hasher.finish()
+        xxh3_64(bytes)
     }
 
     /// Compute hash for a MettaValue expression (legacy)

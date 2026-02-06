@@ -4,7 +4,7 @@
 //! enables O(1) bulk deallocation when the session ends. It implements a dual-arena
 //! model:
 //!
-//! 1. **Eval Arena** - Thread-local, generation-based reset for intermediates (~95% of allocations)
+//! 1. **Eval Arena** - Thread-local, per-thread session-counted reset for intermediates (~95%)
 //! 2. **Storage Arena** - Owned by ArenaState, O(1) bulk free on drop (~5% of allocations)
 //!
 //! ## Key Properties
@@ -32,61 +32,149 @@
 //! RUSTFLAGS="-Z sanitizer=address" cargo +nightly test
 //! ```
 
-use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::{Cell, RefCell};
 
 use bumpalo::Bump;
 
 use super::arena_value::{ArenaValue, ArenaValueFactory, ArenaValueInner};
-use super::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
+use super::metta_value_trait::MettaValueFactory;
 use super::{MemoHandle, SpaceHandle};
 
 // ============================================================================
-// Eval Arena Generation Tracking
+// Eval Arena Per-Thread Session Tracking
 // ============================================================================
-
-/// Global generation counter - incremented when any ArenaState drops.
-///
-/// This enables lazy reset of thread-local eval arenas: when a thread next
-/// accesses its eval arena and finds a generation mismatch, it resets the
-/// arena (O(1)) instead of requiring synchronization.
-static EVAL_GENERATION: AtomicU64 = AtomicU64::new(1);
+//
+// The eval arena uses per-thread session counting to safely manage memory:
+//
+// - Each thread has its own eval arena (thread-local, never shared)
+// - `ArenaState::new()` increments the thread-local active session count
+// - `ArenaState::drop()` decrements it; when it reaches 0, marks the arena for reset
+// - `get_eval_arena()` resets the arena only when marked AND no active sessions
+//
+// This prevents a race condition where one thread's ArenaState drop would
+// invalidate ArenaValues still in use on a different thread (or even on the
+// same thread in a different session).
+//
+// ## Important
+//
+// ArenaState should be created and dropped on the same thread. If moved between
+// threads, the per-thread session accounting will be incorrect (the creating
+// thread's count won't be decremented, and the dropping thread's count will
+// underflow via saturating_sub to 0). This is safe (no UB) but may delay
+// arena reset on the creating thread.
 
 thread_local! {
-    /// Eval arena with generation tracking - reset when stale.
+    /// Eval arena with reset tracking.
     ///
-    /// The tuple contains (arena, last_seen_generation).
-    /// When EVAL_GENERATION differs from last_seen_generation, the arena is reset.
-    static EVAL_ARENA: RefCell<(Box<Bump>, u64)> = RefCell::new((Box::new(Bump::new()), 1));
+    /// The tuple contains (arena, needs_reset).
+    /// When needs_reset is true and active sessions is 0, the arena is reset
+    /// on the next call to `get_eval_arena()`.
+    static EVAL_ARENA: RefCell<(Box<Bump>, bool)> = RefCell::new((Box::new(Bump::new()), false));
+
+    /// Number of active ArenaState sessions on this thread.
+    /// When this drops to 0, the eval arena is marked for reset.
+    static ACTIVE_EVAL_SESSIONS: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Get the thread-local eval arena, resetting if generation mismatch.
+/// Begin an eval session on this thread.
 ///
-/// This function provides O(1) access to the eval arena with automatic
-/// lazy reset when the global generation changes (i.e., when any ArenaState drops).
+/// Called by `ArenaState::new()` to register that this thread has an active
+/// session using the eval arena. While any session is active, the eval arena
+/// will not be reset.
+///
+/// If the arena was previously marked for reset (from a prior session ending)
+/// and no other sessions are active, the arena is reset before the new session
+/// begins. This ensures the new session starts with a clean arena.
+#[inline]
+fn begin_eval_session() {
+    ACTIVE_EVAL_SESSIONS.with(|count| {
+        let n = count.get();
+        if n == 0 {
+            // No active sessions — reset arena if it was marked
+            EVAL_ARENA.with(|cell| {
+                let mut guard = cell.borrow_mut();
+                if guard.1 {
+                    guard.0.reset(); // O(1) bulk deallocation
+                    guard.1 = false;
+                }
+            });
+        }
+        count.set(n + 1);
+    });
+}
+
+/// End an eval session on this thread.
+///
+/// Called by `ArenaState::drop()` to signal that a session has finished.
+/// When the last active session on this thread ends, the eval arena is
+/// marked for reset. The actual reset happens lazily on the next call to
+/// `begin_eval_session()` or `reset_eval_arena()`.
+#[inline]
+fn end_eval_session() {
+    ACTIVE_EVAL_SESSIONS.with(|count| {
+        let n = count.get().saturating_sub(1);
+        count.set(n);
+        if n == 0 {
+            // Last session on this thread ended — mark arena for reset
+            EVAL_ARENA.with(|cell| {
+                cell.borrow_mut().1 = true; // needs_reset
+            });
+        }
+    });
+}
+
+/// Get the thread-local eval arena.
+///
+/// This function provides O(1) access to the eval arena. The arena is
+/// never reset while any session is active on this thread (protected by
+/// per-thread session counting).
 ///
 /// # Safety
 ///
 /// The returned reference is valid for the current thread's lifetime.
-/// The 'static lifetime is achieved via pointer cast - the arena is truly
+/// The 'static lifetime is achieved via pointer cast — the arena is truly
 /// thread-local and persists for the thread's duration.
 #[inline]
 pub fn get_eval_arena() -> &'static Bump {
     EVAL_ARENA.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        let current_gen = EVAL_GENERATION.load(Ordering::Acquire);
-
-        if guard.1 != current_gen {
-            guard.0.reset(); // O(1) bulk deallocation
-            guard.1 = current_gen;
-        }
+        let guard = cell.borrow();
 
         // SAFETY: Arena is thread-local and lives for thread duration.
         // The 'static lifetime is valid because:
         // 1. Thread-local storage persists for the thread's lifetime
         // 2. We never return a reference that could escape the thread
+        // 3. The arena is only reset between sessions (never during)
         unsafe { &*(&*guard.0 as *const Bump) }
     })
+}
+
+/// Explicitly reset the eval arena on this thread.
+///
+/// Forces an immediate reset of the thread-local eval arena, regardless of
+/// session state. Only call this when you are certain no ArenaValues from
+/// the eval arena are still referenced.
+///
+/// This is primarily useful for the CLI's file evaluation mode, where
+/// results have already been formatted to strings and no ArenaValues
+/// remain in scope.
+///
+/// # Safety (logical)
+///
+/// After calling this, all previously allocated ArenaValues from the eval
+/// arena become dangling. Accessing them is undefined behavior.
+pub fn reset_eval_arena() {
+    EVAL_ARENA.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        guard.0.reset(); // O(1) bulk deallocation
+        guard.1 = false; // clear needs_reset flag
+    });
+}
+
+/// Get the number of active eval sessions on this thread.
+///
+/// Useful for debugging and testing session lifecycle.
+pub fn active_eval_sessions() -> usize {
+    ACTIVE_EVAL_SESSIONS.with(|c| c.get())
 }
 
 /// Get a factory for allocating in the thread-local eval arena.
@@ -271,10 +359,16 @@ impl MettaValueFactory<ArenaValue<'static>> for StorageFactory {
 
 /// Session-scoped arena state with O(1) bulk deallocation.
 ///
-/// Owns the storage arena and coordinates eval arena reset.
-/// When dropped, ALL arena memory is freed instantly:
+/// Owns the storage arena and coordinates eval arena lifecycle.
+/// When dropped:
 /// - Storage arena: returned to pool (O(1) reset)
-/// - Eval arenas: reset lazily on next access via generation counter
+/// - Eval arena: marked for lazy reset when last session on this thread ends
+///
+/// **Important**: Keep the ArenaState alive as long as you reference any
+/// ArenaValues allocated during its session (from either the storage or
+/// eval arena). Dropping the ArenaState while holding eval arena references
+/// from a different, still-active session is safe — the eval arena won't
+/// reset until all sessions on this thread have ended.
 ///
 /// ## Usage
 ///
@@ -310,7 +404,11 @@ pub struct ArenaState {
 
 impl ArenaState {
     /// Create a new ArenaState, acquiring storage arena from pool.
+    ///
+    /// This also begins an eval session on the current thread, preventing
+    /// the thread-local eval arena from being reset while this state is alive.
     pub fn new() -> Self {
+        begin_eval_session();
         let storage_arena = acquire_storage_arena();
         Self {
             storage_arena,
@@ -369,12 +467,12 @@ impl ArenaState {
         self.output.clear();
     }
 
-    /// Get the current eval generation.
+    /// Get the number of active eval sessions on this thread.
     ///
-    /// Useful for debugging and testing generation-based reset.
+    /// Useful for debugging and testing session lifecycle.
     #[inline]
-    pub fn current_generation() -> u64 {
-        EVAL_GENERATION.load(Ordering::Acquire)
+    pub fn active_sessions() -> usize {
+        active_eval_sessions()
     }
 }
 
@@ -386,8 +484,10 @@ impl Default for ArenaState {
 
 impl Drop for ArenaState {
     fn drop(&mut self) {
-        // Increment eval generation - all thread-local eval arenas reset lazily
-        EVAL_GENERATION.fetch_add(1, Ordering::Release);
+        // End the eval session on this thread.
+        // When the last session on this thread ends, the eval arena is marked
+        // for lazy reset (actual reset deferred to next begin_eval_session()).
+        end_eval_session();
 
         // Return storage arena to pool (reset + reuse)
         // Takes ownership by swapping with empty Box
@@ -517,20 +617,24 @@ mod tests {
     }
 
     #[test]
-    fn test_generation_increment_on_drop() {
-        // Capture generation immediately before and after, tolerating
-        // concurrent tests that also increment the generation counter.
-        let gen_before = ArenaState::current_generation();
+    fn test_session_count_lifecycle() {
+        // Session count starts at 0 on a fresh thread (or may be higher due to
+        // concurrent tests, so check relative changes).
+        let before = active_eval_sessions();
         {
             let _state = ArenaState::new();
+            // During the session, count should be higher
+            assert!(
+                active_eval_sessions() > before,
+                "session count should increase after new: before={}",
+                before,
+            );
         }
-        let gen_after = ArenaState::current_generation();
-        // Our drop should have incremented it by at least 1
-        assert!(
-            gen_after > gen_before,
-            "generation should increase after drop: before={}, after={}",
-            gen_before,
-            gen_after,
+        // After drop, count should return to previous value
+        assert_eq!(
+            active_eval_sessions(),
+            before,
+            "session count should return to original after drop",
         );
     }
 
@@ -796,46 +900,40 @@ mod tests {
     }
 
     // ========================================================================
-    // Generation Tracking
+    // Session Tracking
     // ========================================================================
 
     #[test]
-    fn test_multiple_generations() {
-        let gen_start = ArenaState::current_generation();
-
-        let n: u64 = 10;
-        for _ in 0..n {
+    fn test_multiple_sessions_sequential() {
+        // Each create/drop cycle should maintain correct session counts
+        let base = active_eval_sessions();
+        for _ in 0..10 {
             let _state = ArenaState::new();
+            assert_eq!(active_eval_sessions(), base + 1);
         }
-
-        let gen_end = ArenaState::current_generation();
-        // Our drops contribute at least n increments (concurrent tests may add more)
-        assert!(
-            gen_end >= gen_start + n,
-            "expected generation to increase by at least {}: start={}, end={}",
-            n,
-            gen_start,
-            gen_end,
-        );
+        assert_eq!(active_eval_sessions(), base);
     }
 
     #[test]
-    fn test_eval_arena_reset_on_generation_change() {
-        // Access eval arena to establish baseline generation
+    fn test_eval_arena_reset_after_session_end() {
+        // Access eval arena to establish baseline
         let arena1 = get_eval_arena();
         let ptr1 = arena1 as *const Bump;
 
-        // Drop an ArenaState to increment generation
+        // Create and drop an ArenaState (begin + end session)
         {
             let _state = ArenaState::new();
         }
 
-        // Access eval arena again - should have been reset
+        // Start a new session — this should trigger the deferred reset
+        let state2 = ArenaState::new();
+
+        // Access eval arena again — should be the same pointer (reset, not reallocated)
         let arena2 = get_eval_arena();
         let ptr2 = arena2 as *const Bump;
 
-        // Same thread-local arena pointer (not reallocated, just reset)
         assert_eq!(ptr1, ptr2, "eval arena should be the same pointer (reset, not reallocated)");
+        drop(state2);
     }
 
     // ========================================================================
@@ -844,35 +942,28 @@ mod tests {
 
     #[test]
     fn test_many_sessions_sequential() {
-        let gen_start = ArenaState::current_generation();
-
-        for i in 0..100 {
+        for _ in 0..100 {
             let mut state = ArenaState::new();
             let factory = state.storage_factory();
 
             // Allocate some data
             let expr = factory.sexpr(vec![
                 factory.atom("rule"),
-                factory.long(i as i64),
-                factory.string(&format!("value-{}", i)),
+                factory.long(42),
+                factory.string("value"),
             ]);
             state.source_mut().push(expr);
 
             // Output some results
-            state.output_mut().push(factory.long(i as i64 * 2));
+            state.output_mut().push(factory.long(84));
 
             // Verify values are accessible
             assert_eq!(state.source().len(), 1);
             assert_eq!(state.output().len(), 1);
         }
 
-        let gen_end = ArenaState::current_generation();
-        assert!(
-            gen_end >= gen_start + 100,
-            "expected generation to increase by at least 100: start={}, end={}",
-            gen_start,
-            gen_end,
-        );
+        // After all sessions, session count should be back to baseline
+        // (can't assert exact 0 due to concurrent tests on same thread)
 
         // Pool should be bounded
         STORAGE_ARENA_POOL.with(|pool| {
@@ -1076,6 +1167,7 @@ mod tests {
 
     #[test]
     fn test_compile_arena_rules() {
+        use crate::backend::models::metta_value_trait::MettaValue as MettaValueTrait;
         use crate::backend::compile::compile_arena;
         use crate::backend::eval::eval_arena;
         use crate::backend::eval::trampoline::new_arena_env;

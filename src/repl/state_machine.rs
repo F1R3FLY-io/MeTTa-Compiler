@@ -466,4 +466,302 @@ mod tests {
             _ => panic!("Expected incomplete status"),
         }
     }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_repl_state_equality() {
+        // Test Ready == Ready
+        assert_eq!(ReplState::Ready, ReplState::Ready);
+
+        // Test Evaluating equality
+        assert_eq!(
+            ReplState::Evaluating {
+                input: "test".to_string()
+            },
+            ReplState::Evaluating {
+                input: "test".to_string()
+            }
+        );
+        assert_ne!(
+            ReplState::Evaluating {
+                input: "test".to_string()
+            },
+            ReplState::Evaluating {
+                input: "other".to_string()
+            }
+        );
+
+        // Test DisplayingResults equality
+        assert_eq!(ReplState::DisplayingResults, ReplState::DisplayingResults);
+
+        // Test Error equality
+        assert_eq!(
+            ReplState::Error {
+                message: "err".to_string()
+            },
+            ReplState::Error {
+                message: "err".to_string()
+            }
+        );
+        assert_ne!(
+            ReplState::Error {
+                message: "err1".to_string()
+            },
+            ReplState::Error {
+                message: "err2".to_string()
+            }
+        );
+
+        // Test different states are not equal
+        assert_ne!(ReplState::Ready, ReplState::DisplayingResults);
+        assert_ne!(
+            ReplState::Ready,
+            ReplState::Evaluating {
+                input: "test".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_continuation_state_equality() {
+        let rope1 = Rope::from("(+ 1");
+        let rope2 = Rope::from("(+ 1");
+        let rope3 = Rope::from("(+ 2");
+
+        assert_eq!(
+            ReplState::Continuation {
+                buffer: rope1.clone()
+            },
+            ReplState::Continuation { buffer: rope2 }
+        );
+        assert_ne!(
+            ReplState::Continuation { buffer: rope1 },
+            ReplState::Continuation { buffer: rope3 }
+        );
+    }
+
+    #[test]
+    fn test_empty_line_no_change() {
+        let mut sm = ReplStateMachine::new();
+
+        // Empty line should cause no change
+        let transition = sm.process_event(ReplEvent::LineSubmitted("".to_string()));
+        assert!(matches!(transition, StateTransition::NoChange));
+        assert_eq!(sm.state(), &ReplState::Ready);
+
+        // Whitespace-only line should also cause no change
+        let transition = sm.process_event(ReplEvent::LineSubmitted("   \t  ".to_string()));
+        assert!(matches!(transition, StateTransition::NoChange));
+    }
+
+    #[test]
+    fn test_eof_event() {
+        let mut sm = ReplStateMachine::new();
+
+        let transition = sm.process_event(ReplEvent::Eof);
+        assert!(matches!(transition, StateTransition::NoChange));
+    }
+
+    #[test]
+    fn test_evaluation_complete() {
+        let mut sm = ReplStateMachine::new();
+
+        // Get to Evaluating state
+        sm.process_event(ReplEvent::LineSubmitted("(+ 1 2)".to_string()));
+
+        // Complete evaluation
+        let transition =
+            sm.process_event(ReplEvent::EvaluationComplete(vec!["3".to_string()]));
+        match transition {
+            StateTransition::Transition(ReplState::DisplayingResults) => {}
+            _ => panic!("Expected transition to DisplayingResults"),
+        }
+    }
+
+    #[test]
+    fn test_evaluation_failed() {
+        let mut sm = ReplStateMachine::new();
+
+        // Get to Evaluating state
+        sm.process_event(ReplEvent::LineSubmitted("(+ 1 2)".to_string()));
+
+        // Fail evaluation
+        let transition = sm.process_event(ReplEvent::EvaluationFailed("test error".to_string()));
+        match transition {
+            StateTransition::Transition(ReplState::Error { message }) => {
+                assert_eq!(message, "test error");
+            }
+            _ => panic!("Expected transition to Error"),
+        }
+    }
+
+    #[test]
+    fn test_results_displayed() {
+        let mut sm = ReplStateMachine::new();
+
+        // Get to DisplayingResults state
+        sm.process_event(ReplEvent::LineSubmitted("(+ 1 2)".to_string()));
+        sm.process_event(ReplEvent::EvaluationComplete(vec!["3".to_string()]));
+
+        // Display results
+        let transition = sm.process_event(ReplEvent::ResultsDisplayed);
+        match transition {
+            StateTransition::Transition(ReplState::Ready) => {}
+            _ => panic!("Expected transition to Ready"),
+        }
+    }
+
+    #[test]
+    fn test_error_state_reset() {
+        let mut sm = ReplStateMachine::new();
+
+        // Get to Error state via invalid input
+        sm.process_event(ReplEvent::LineSubmitted("(+ 1 2))".to_string()));
+        assert!(matches!(sm.state(), ReplState::Error { .. }));
+
+        // Any event should reset to Ready
+        let transition = sm.process_event(ReplEvent::LineSubmitted("(+ 1 2)".to_string()));
+        match transition {
+            StateTransition::Transition(ReplState::Ready) => {}
+            _ => panic!("Expected transition to Ready from Error state"),
+        }
+    }
+
+    #[test]
+    fn test_escape_sequences_in_strings() {
+        // String with escaped quote
+        assert_eq!(
+            ReplStateMachine::check_completeness(r#"(print "hello \"world\"")"#),
+            CompletenessStatus::Complete
+        );
+
+        // String with escaped backslash
+        assert_eq!(
+            ReplStateMachine::check_completeness(r#"(print "path\\file")"#),
+            CompletenessStatus::Complete
+        );
+
+        // String with escaped newline
+        assert_eq!(
+            ReplStateMachine::check_completeness(r#"(print "line1\nline2")"#),
+            CompletenessStatus::Complete
+        );
+    }
+
+    #[test]
+    fn test_invalid_extra_closing_brace() {
+        let status = ReplStateMachine::check_completeness("{a}}");
+        match status {
+            CompletenessStatus::Invalid { reason } => {
+                assert!(reason.contains("brace") || reason.contains("'}'"));
+            }
+            _ => panic!("Expected invalid status for extra closing brace"),
+        }
+    }
+
+    #[test]
+    fn test_default_implementation() {
+        let sm = ReplStateMachine::default();
+        assert_eq!(sm.state(), &ReplState::Ready);
+        assert_eq!(sm.continuation_prompt(), "...> ");
+    }
+
+    #[test]
+    fn test_set_continuation_prompt() {
+        let mut sm = ReplStateMachine::new();
+        sm.set_continuation_prompt(">>> ".to_string());
+        assert_eq!(sm.continuation_prompt(), ">>> ");
+    }
+
+    #[test]
+    fn test_continuation_to_invalid() {
+        let mut sm = ReplStateMachine::new();
+
+        // Start continuation
+        sm.process_event(ReplEvent::LineSubmitted("(+ 1".to_string()));
+
+        // Add line that causes invalid state (extra closing paren)
+        let transition = sm.process_event(ReplEvent::LineSubmitted("2))".to_string()));
+        match transition {
+            StateTransition::Transition(ReplState::Error { .. }) => {}
+            _ => panic!("Expected transition to Error"),
+        }
+    }
+
+    #[test]
+    fn test_comment_at_end_of_line() {
+        // Complete expression followed by comment
+        assert_eq!(
+            ReplStateMachine::check_completeness("(+ 1 2) ; result is 3"),
+            CompletenessStatus::Complete
+        );
+    }
+
+    #[test]
+    fn test_only_comment() {
+        // Only a comment (no actual expression)
+        assert_eq!(
+            ReplStateMachine::check_completeness("; this is a comment"),
+            CompletenessStatus::Complete
+        );
+    }
+
+    #[test]
+    fn test_nested_parens_and_braces() {
+        assert_eq!(
+            ReplStateMachine::check_completeness("(foo {bar (baz)})"),
+            CompletenessStatus::Complete
+        );
+
+        let status = ReplStateMachine::check_completeness("(foo {bar (baz)}");
+        match status {
+            CompletenessStatus::Incomplete {
+                missing_close_parens,
+                ..
+            } => assert_eq!(missing_close_parens, 1),
+            _ => panic!("Expected incomplete status"),
+        }
+    }
+
+    #[test]
+    fn test_continuation_stays_incomplete() {
+        let mut sm = ReplStateMachine::new();
+
+        // First line incomplete
+        sm.process_event(ReplEvent::LineSubmitted("(+ 1".to_string()));
+
+        // Second line still incomplete
+        let transition = sm.process_event(ReplEvent::LineSubmitted("(* 2".to_string()));
+        match transition {
+            StateTransition::TransitionWithPrompt {
+                new_state: ReplState::Continuation { .. },
+                ..
+            } => {}
+            _ => panic!("Expected to stay in Continuation"),
+        }
+    }
+
+    #[test]
+    fn test_invalid_event_in_ready_state() {
+        let mut sm = ReplStateMachine::new();
+
+        // EvaluationComplete in Ready state should be NoChange
+        let transition = sm.process_event(ReplEvent::EvaluationComplete(vec![]));
+        assert!(matches!(transition, StateTransition::NoChange));
+    }
+
+    #[test]
+    fn test_invalid_event_in_continuation_state() {
+        let mut sm = ReplStateMachine::new();
+
+        // Get to Continuation state
+        sm.process_event(ReplEvent::LineSubmitted("(+ 1".to_string()));
+
+        // EvaluationComplete in Continuation state should be NoChange
+        let transition = sm.process_event(ReplEvent::EvaluationComplete(vec![]));
+        assert!(matches!(transition, StateTransition::NoChange));
+    }
 }

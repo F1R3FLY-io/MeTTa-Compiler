@@ -1690,4 +1690,420 @@ mod tests {
 
         println!("✓ Source field with ! expression survives roundtrip");
     }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_metta_value_float_to_par() {
+        let float_val = MettaValue::Float(3.14);
+        let par = metta_value_to_par(&float_val);
+
+        // Float should be converted to string representation
+        assert_eq!(par.exprs.len(), 1);
+        if let Some(ExprInstance::GString(s)) = &par.exprs[0].expr_instance {
+            assert!(s.contains("3.14"), "Float should be represented as string");
+        } else {
+            panic!("Expected GString for Float");
+        }
+    }
+
+    #[test]
+    fn test_metta_value_nil_to_par() {
+        let nil_val = MettaValue::Nil();
+        let par = metta_value_to_par(&nil_val);
+
+        // Nil should be empty Par
+        assert!(par.exprs.is_empty(), "Nil should be empty Par");
+    }
+
+    #[test]
+    fn test_metta_value_bool_to_par() {
+        let true_val = MettaValue::Bool(true);
+        let false_val = MettaValue::Bool(false);
+
+        let true_par = metta_value_to_par(&true_val);
+        let false_par = metta_value_to_par(&false_val);
+
+        // Verify true
+        assert_eq!(true_par.exprs.len(), 1);
+        if let Some(ExprInstance::GBool(b)) = &true_par.exprs[0].expr_instance {
+            assert!(*b);
+        } else {
+            panic!("Expected GBool for true");
+        }
+
+        // Verify false
+        assert_eq!(false_par.exprs.len(), 1);
+        if let Some(ExprInstance::GBool(b)) = &false_par.exprs[0].expr_instance {
+            assert!(!*b);
+        } else {
+            panic!("Expected GBool for false");
+        }
+    }
+
+    #[test]
+    fn test_metta_value_unit_to_par() {
+        let unit_val = MettaValue::Unit();
+        let par = metta_value_to_par(&unit_val);
+
+        // Unit should be empty tuple
+        assert_eq!(par.exprs.len(), 1);
+        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
+            assert!(tuple.ps.is_empty(), "Unit should be empty tuple");
+        } else {
+            panic!("Expected ETupleBody for Unit");
+        }
+    }
+
+    #[test]
+    fn test_metta_value_empty_to_par() {
+        let empty_val = MettaValue::Empty();
+        let par = metta_value_to_par(&empty_val);
+
+        // Empty should be a tuple with single "empty" tag
+        assert_eq!(par.exprs.len(), 1);
+        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
+            assert_eq!(tuple.ps.len(), 1);
+            if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                .exprs
+                .first()
+                .and_then(|e| e.expr_instance.as_ref())
+            {
+                assert_eq!(tag, "empty");
+            } else {
+                panic!("Expected GString tag");
+            }
+        } else {
+            panic!("Expected ETupleBody for Empty");
+        }
+    }
+
+    #[test]
+    fn test_metta_value_type_to_par() {
+        let type_val = MettaValue::Type(MettaValue::Atom("Int".to_string()));
+        let par = metta_value_to_par(&type_val);
+
+        // Type should be tagged tuple: ("type", inner_value)
+        assert_eq!(par.exprs.len(), 1);
+        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
+            assert_eq!(tuple.ps.len(), 2);
+            // First should be "type" tag
+            if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                .exprs
+                .first()
+                .and_then(|e| e.expr_instance.as_ref())
+            {
+                assert_eq!(tag, "type");
+            }
+        } else {
+            panic!("Expected ETupleBody for Type");
+        }
+    }
+
+    #[test]
+    fn test_metta_value_conjunction_to_par() {
+        let conj = MettaValue::Conjunction(vec![
+            MettaValue::Atom("goal1".to_string()),
+            MettaValue::Atom("goal2".to_string()),
+        ]);
+        let par = metta_value_to_par(&conj);
+
+        // Conjunction should be tagged tuple: ("conjunction", goal1, goal2, ...)
+        assert_eq!(par.exprs.len(), 1);
+        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
+            assert_eq!(tuple.ps.len(), 3); // tag + 2 goals
+            // First should be "conjunction" tag
+            if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                .exprs
+                .first()
+                .and_then(|e| e.expr_instance.as_ref())
+            {
+                assert_eq!(tag, "conjunction");
+            }
+        } else {
+            panic!("Expected ETupleBody for Conjunction");
+        }
+    }
+
+    #[test]
+    fn test_metta_value_state_to_par() {
+        let state_val = MettaValue::State(42);
+        let par = metta_value_to_par(&state_val);
+
+        // State should be tagged tuple: ("state", id)
+        assert_eq!(par.exprs.len(), 1);
+        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
+            assert_eq!(tuple.ps.len(), 2);
+            // First should be "state" tag
+            if let Some(ExprInstance::GString(tag)) = tuple.ps[0]
+                .exprs
+                .first()
+                .and_then(|e| e.expr_instance.as_ref())
+            {
+                assert_eq!(tag, "state");
+            }
+            // Second should be state id
+            if let Some(ExprInstance::GInt(id)) = tuple.ps[1]
+                .exprs
+                .first()
+                .and_then(|e| e.expr_instance.as_ref())
+            {
+                assert_eq!(*id, 42);
+            }
+        } else {
+            panic!("Expected ETupleBody for State");
+        }
+    }
+
+    #[test]
+    fn test_metta_values_to_list_par_empty() {
+        let values: Vec<MettaValue> = vec![];
+        let par = metta_values_to_list_par(&values);
+
+        // Empty list
+        assert_eq!(par.exprs.len(), 1);
+        if let Some(ExprInstance::EListBody(list)) = &par.exprs[0].expr_instance {
+            assert!(list.ps.is_empty());
+        } else {
+            panic!("Expected EListBody");
+        }
+    }
+
+    #[test]
+    fn test_metta_values_to_list_par_mixed() {
+        let values = vec![
+            MettaValue::Long(1),
+            MettaValue::Bool(true),
+            MettaValue::Atom("test".to_string()),
+        ];
+        let par = metta_values_to_list_par(&values);
+
+        // List with 3 items
+        assert_eq!(par.exprs.len(), 1);
+        if let Some(ExprInstance::EListBody(list)) = &par.exprs[0].expr_instance {
+            assert_eq!(list.ps.len(), 3);
+        } else {
+            panic!("Expected EListBody");
+        }
+    }
+
+    #[test]
+    fn test_par_to_metta_value_list() {
+        // Create a list Par
+        let list_par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: vec![create_int_par(1), create_int_par(2), create_int_par(3)],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }]);
+
+        let result = par_to_metta_value(&list_par).unwrap();
+
+        // Lists are converted to S-expressions
+        if let MettaValueInner::SExpr(items) = result.inner() {
+            assert_eq!(items.len(), 3);
+        } else {
+            panic!("Expected SExpr from list");
+        }
+    }
+
+    #[test]
+    fn test_par_to_metta_value_empty_par() {
+        // Empty Par should return Nil
+        let empty_par = Par::default();
+        let result = par_to_metta_value(&empty_par).unwrap();
+
+        assert!(matches!(result.inner(), MettaValueInner::Nil));
+    }
+
+    #[test]
+    fn test_par_to_metta_value_no_expressions_error() {
+        // Par with sends but no expressions
+        let mut par = Par::default();
+        par.sends = vec![]; // Empty but different from empty Par check
+        par.exprs = vec![];
+        par.unforgeables = vec![];
+
+        // This should return Nil (empty Par case)
+        let result = par_to_metta_value(&par);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_par_to_metta_value_unsupported_type() {
+        // Create a Par with an unsupported expression type (e.g., EVarBody)
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(models::rhoapi::EMethod::default())),
+        }]);
+
+        let result = par_to_metta_value(&par);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Unsupported Par expression type"));
+    }
+
+    #[test]
+    fn test_par_to_environment_wrong_tuple_size() {
+        // Create a Par with wrong tuple size (1 instead of 2-3)
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![create_string_par("only_one".to_string())],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }]);
+
+        let result = par_to_environment(&par);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected 2 or 3 elements"));
+    }
+
+    #[test]
+    fn test_par_to_environment_not_etuple() {
+        // Create a Par that's not an ETuple
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString("not a tuple".to_string())),
+        }]);
+
+        let result = par_to_environment(&par);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected ETuple"));
+    }
+
+    #[test]
+    fn test_par_to_environment_empty_par() {
+        // Empty Par
+        let par = Par::default();
+
+        let result = par_to_environment(&par);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no expressions"));
+    }
+
+    #[test]
+    fn test_pathmap_par_to_metta_state_wrong_pathmap_size() {
+        // Create a PathMap with wrong size (2 instead of 1)
+        let pathmap = EPathMap {
+            ps: vec![Par::default(), Par::default()],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        };
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
+        }]);
+
+        let result = pathmap_par_to_metta_state(&par);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected 1 element"));
+    }
+
+    #[test]
+    fn test_pathmap_par_to_metta_state_not_pathmap() {
+        // Create a Par that's not a PathMap
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString("not a pathmap".to_string())),
+        }]);
+
+        let result = pathmap_par_to_metta_state(&par);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not contain EPathMap"));
+    }
+
+    #[test]
+    fn test_pathmap_par_to_metta_state_empty() {
+        // Empty Par
+        let par = Par::default();
+
+        let result = pathmap_par_to_metta_state(&par);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no expressions"));
+    }
+
+    #[test]
+    fn test_par_to_metta_value_tuple_small() {
+        // Small tuple (less than 2 elements) should become S-expr
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![create_int_par(42)],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }]);
+
+        let result = par_to_metta_value(&par).unwrap();
+
+        // Small tuples become S-exprs
+        if let MettaValueInner::SExpr(items) = result.inner() {
+            assert_eq!(items.len(), 1);
+        } else {
+            panic!("Expected SExpr from small tuple");
+        }
+    }
+
+    #[test]
+    fn test_par_to_metta_value_tuple_non_string_first() {
+        // Tuple where first element is not a string
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![create_int_par(1), create_int_par(2), create_int_par(3)],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }]);
+
+        let result = par_to_metta_value(&par).unwrap();
+
+        // Should become regular S-expr
+        if let MettaValueInner::SExpr(items) = result.inner() {
+            assert_eq!(items.len(), 3);
+        } else {
+            panic!("Expected SExpr from tuple with non-string first element");
+        }
+    }
+
+    #[test]
+    fn test_par_to_metta_value_tuple_atom_first() {
+        // Tuple where first element is an atom (unquoted string) - should be S-expr
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![
+                    create_string_par("add".to_string()), // unquoted = atom
+                    create_int_par(1),
+                    create_int_par(2),
+                ],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }]);
+
+        let result = par_to_metta_value(&par).unwrap();
+
+        // Atom as first element means regular S-expr
+        if let MettaValueInner::SExpr(items) = result.inner() {
+            assert_eq!(items.len(), 3);
+        } else {
+            panic!("Expected SExpr from tuple with atom first element");
+        }
+    }
+
+    #[test]
+    fn test_string_with_escape_sequences_roundtrip() {
+        // Test strings with escape sequences
+        let string_val = MettaValue::String("hello \"world\" with \\ backslash".to_string());
+        let par = metta_value_to_par(&string_val);
+
+        let roundtrip = par_to_metta_value(&par).unwrap();
+
+        if let MettaValueInner::String(s) = roundtrip.inner() {
+            assert_eq!(s, "hello \"world\" with \\ backslash");
+        } else {
+            panic!("Expected String after roundtrip");
+        }
+    }
 }

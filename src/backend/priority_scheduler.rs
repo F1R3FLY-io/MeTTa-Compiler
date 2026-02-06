@@ -22,10 +22,9 @@ use crossbeam_channel::Receiver;
 use dashmap::DashMap;
 use parking_lot::{Condvar, Mutex};
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BinaryHeap;
-use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::hash::Hash;
 use std::sync::{Arc, LazyLock};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -297,9 +296,11 @@ impl RuntimeTracker {
     }
 
     fn hash_task_type(&self, task_type: &TaskTypeId) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        task_type.hash(&mut hasher);
-        hasher.finish()
+        use std::hash::Hasher;
+        use xxhash_rust::xxh3::Xxh3;
+        let mut h = Xxh3::new();
+        task_type.hash(&mut h);
+        h.finish()
     }
 }
 

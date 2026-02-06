@@ -85,16 +85,13 @@ pub struct ChunkId(u64);
 impl ChunkId {
     /// Create a new chunk ID from a bytecode chunk
     pub fn from_chunk(chunk: &BytecodeChunk) -> Self {
-        use std::collections::hash_map::DefaultHasher;
-        let mut hasher = DefaultHasher::new();
+        use std::hash::Hasher;
+        use xxhash_rust::xxh3::Xxh3;
 
-        // Hash the bytecode content
-        chunk.code().hash(&mut hasher);
-
-        // Include constant pool size to differentiate chunks
-        chunk.constant_count().hash(&mut hasher);
-
-        ChunkId(hasher.finish())
+        // Hash bytecode content and constant pool size together
+        let mut h = Xxh3::new();
+        (chunk.code(), chunk.constant_count()).hash(&mut h);
+        ChunkId(h.finish())
     }
 
     /// Create a chunk ID from a generic bytecode chunk.
@@ -105,16 +102,13 @@ impl ChunkId {
     where
         V: crate::backend::models::MettaValueTrait + Clone + Send + Sync + 'static,
     {
-        use std::collections::hash_map::DefaultHasher;
-        let mut hasher = DefaultHasher::new();
+        use std::hash::Hasher;
+        use xxhash_rust::xxh3::Xxh3;
 
-        // Hash the bytecode content (identical regardless of value type)
-        chunk.code().hash(&mut hasher);
-
-        // Include constant pool size to differentiate chunks
-        chunk.constant_count().hash(&mut hasher);
-
-        ChunkId(hasher.finish())
+        // Hash bytecode content and constant pool size together
+        let mut h = Xxh3::new();
+        (chunk.code(), chunk.constant_count()).hash(&mut h);
+        ChunkId(h.finish())
     }
 
     /// Create a chunk ID from a raw u64

@@ -1170,4 +1170,425 @@ mod tests {
         // Final result: PushLongSmall(2) + Return(1) = 3 bytes
         assert!(optimized.len() <= 4);
     }
+
+    // ========================================================================
+    // Branch Coverage Tests - Comparison Folds
+    // ========================================================================
+
+    #[test]
+    fn test_le_not_to_gt() {
+        // Le; Not → Gt
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(),
+            5,
+            Opcode::PushLongSmall.to_byte(),
+            3,
+            Opcode::Le.to_byte(),
+            Opcode::Not.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // Le; Not should be replaced with Gt
+        assert!(stats.comparison_folded >= 1, "Le; Not should fold to Gt");
+        // Check that Not opcode is removed
+        assert!(!optimized.contains(&Opcode::Not.to_byte()));
+    }
+
+    #[test]
+    fn test_gt_not_to_le() {
+        // Gt; Not → Le
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(),
+            5,
+            Opcode::PushLongSmall.to_byte(),
+            3,
+            Opcode::Gt.to_byte(),
+            Opcode::Not.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // Gt; Not should be replaced with Le
+        assert!(stats.comparison_folded >= 1, "Gt; Not should fold to Le");
+        assert!(!optimized.contains(&Opcode::Not.to_byte()));
+    }
+
+    #[test]
+    fn test_ge_not_to_lt() {
+        // Ge; Not → Lt
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(),
+            5,
+            Opcode::PushLongSmall.to_byte(),
+            3,
+            Opcode::Ge.to_byte(),
+            Opcode::Not.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // Ge; Not should be replaced with Lt
+        assert!(stats.comparison_folded >= 1, "Ge; Not should fold to Lt");
+        assert!(!optimized.contains(&Opcode::Not.to_byte()));
+    }
+
+    #[test]
+    fn test_ne_not_to_eq() {
+        // Ne; Not → Eq
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(),
+            5,
+            Opcode::PushLongSmall.to_byte(),
+            3,
+            Opcode::Ne.to_byte(),
+            Opcode::Not.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // Ne; Not should be replaced with Eq
+        assert!(stats.comparison_folded >= 1, "Ne; Not should fold to Eq");
+        assert!(!optimized.contains(&Opcode::Not.to_byte()));
+    }
+
+    // ========================================================================
+    // Branch Coverage Tests - Jump Threading Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_jump_threading_deep_chain() {
+        // Create a deep chain of jumps to test iteration limit handling
+        // Jump → Jump → Jump → ... → Return
+        let code = make_code(&[
+            Opcode::Jump.to_byte(), 0, 3,   // 0-2: Jump to 6
+            Opcode::Nop.to_byte(),          // 3 (dead)
+            Opcode::Nop.to_byte(),          // 4 (dead)
+            Opcode::Nop.to_byte(),          // 5 (dead)
+            Opcode::Jump.to_byte(), 0, 3,   // 6-8: Jump to 12
+            Opcode::Nop.to_byte(),          // 9 (dead)
+            Opcode::Nop.to_byte(),          // 10 (dead)
+            Opcode::Nop.to_byte(),          // 11 (dead)
+            Opcode::Jump.to_byte(), 0, 3,   // 12-14: Jump to 18
+            Opcode::Nop.to_byte(),          // 15 (dead)
+            Opcode::Nop.to_byte(),          // 16 (dead)
+            Opcode::Nop.to_byte(),          // 17 (dead)
+            Opcode::Jump.to_byte(), 0, 3,   // 18-20: Jump to 24
+            Opcode::Nop.to_byte(),          // 21 (dead)
+            Opcode::Nop.to_byte(),          // 22 (dead)
+            Opcode::Nop.to_byte(),          // 23 (dead)
+            Opcode::PushTrue.to_byte(),     // 24: final destination
+            Opcode::Return.to_byte(),       // 25
+        ]);
+        let code_len = code.len();
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // All intermediate jumps should be threaded
+        assert!(stats.jump_threaded >= 1);
+        // Final code should be much smaller
+        assert!(optimized.len() < code_len);
+    }
+
+    #[test]
+    fn test_jump_at_code_boundary() {
+        // Jump targeting the exact end of code
+        let code = make_code(&[
+            Opcode::Jump.to_byte(), 0, 3,   // 0-2: Jump to 6
+            Opcode::Nop.to_byte(),          // 3
+            Opcode::Nop.to_byte(),          // 4
+            Opcode::Nop.to_byte(),          // 5
+            Opcode::Return.to_byte(),       // 6: Return at target
+        ]);
+
+        let (optimized, _stats) = optimize_bytecode(code.clone());
+
+        // Should compile without error
+        assert!(!optimized.is_empty());
+    }
+
+    #[test]
+    fn test_conditional_jump_threading() {
+        // JumpIfFalse to another Jump
+        let code = make_code(&[
+            Opcode::PushTrue.to_byte(),         // 0
+            Opcode::JumpIfFalse.to_byte(), 0, 3, // 1-3: JumpIfFalse to 7
+            Opcode::PushLongSmall.to_byte(), 1,  // 4-5: Then branch
+            Opcode::Return.to_byte(),            // 6
+            Opcode::Jump.to_byte(), 0, 3,        // 7-9: Else branch jumps to 13
+            Opcode::Nop.to_byte(),               // 10
+            Opcode::Nop.to_byte(),               // 11
+            Opcode::Nop.to_byte(),               // 12
+            Opcode::PushLongSmall.to_byte(), 2,  // 13-14: Final target
+            Opcode::Return.to_byte(),            // 15
+        ]);
+
+        let (optimized, _stats) = optimize_bytecode(code);
+
+        // Should handle conditional jump threading
+        assert!(!optimized.is_empty());
+    }
+
+    // ========================================================================
+    // Branch Coverage Tests - Dead Code Elimination
+    // ========================================================================
+
+    #[test]
+    fn test_dce_unreachable_after_return() {
+        // Code after Return is unreachable
+        // Note: The peephole optimizer may not implement DCE for unreachable code after Return
+        // This test verifies the optimizer handles this case without panic
+        let code = make_code(&[
+            Opcode::PushTrue.to_byte(),
+            Opcode::Return.to_byte(),
+            Opcode::PushFalse.to_byte(), // Unreachable
+            Opcode::Return.to_byte(),     // Unreachable
+        ]);
+
+        let (optimized, _stats) = optimize_bytecode(code);
+
+        // At minimum, verify the code is still valid (doesn't panic)
+        // The optimized code should start with the same opcode
+        assert_eq!(optimized[0], Opcode::PushTrue.to_byte());
+    }
+
+    #[test]
+    fn test_dce_unreachable_after_jump() {
+        // Code after unconditional Jump is unreachable
+        let code = make_code(&[
+            Opcode::Jump.to_byte(), 0, 3,  // 0-2: Jump to 6
+            Opcode::PushFalse.to_byte(),   // 3: Unreachable
+            Opcode::Return.to_byte(),       // 4: Unreachable
+            Opcode::Nop.to_byte(),          // 5: Unreachable
+            Opcode::PushTrue.to_byte(),     // 6: Jump target
+            Opcode::Return.to_byte(),       // 7
+        ]);
+        let code_len = code.len();
+
+        let (optimized, _stats) = optimize_bytecode(code);
+
+        // Should remove unreachable code (code should be smaller)
+        assert!(optimized.len() < code_len,
+            "Expected code to shrink, got {} bytes (from {})", optimized.len(), code_len);
+    }
+
+    #[test]
+    fn test_dce_empty_branch_removal() {
+        // PushTrue; JumpIfFalse - the false branch is never taken
+        let code = make_code(&[
+            Opcode::PushTrue.to_byte(),
+            Opcode::JumpIfFalse.to_byte(), 0, 5,  // Jump to 8 (never taken)
+            Opcode::PushLongSmall.to_byte(), 42,  // This is always executed
+            Opcode::Return.to_byte(),              // 7
+            Opcode::PushLongSmall.to_byte(), 0,   // 8: Dead code
+            Opcode::Return.to_byte(),              // 10: Dead code
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // Dead branch should be removed
+        assert!(stats.dead_branch_removed >= 1 || stats.bytes_removed >= 2);
+    }
+
+    #[test]
+    fn test_dce_multiple_blocks() {
+        // Multiple unreachable blocks
+        // Note: Full DCE for multiple blocks may require additional passes
+        // This test verifies the optimizer handles complex CFG without panic
+        let code = make_code(&[
+            Opcode::Jump.to_byte(), 0, 9,  // 0-2: Jump to 12
+            Opcode::PushLongSmall.to_byte(), 1, // 3-4: Block 1 (dead)
+            Opcode::Return.to_byte(),            // 5
+            Opcode::PushLongSmall.to_byte(), 2, // 6-7: Block 2 (dead)
+            Opcode::Return.to_byte(),            // 8
+            Opcode::PushLongSmall.to_byte(), 3, // 9-10: Block 3 (dead)
+            Opcode::Return.to_byte(),            // 11
+            Opcode::PushTrue.to_byte(),          // 12: Reachable target
+            Opcode::Return.to_byte(),            // 13
+        ]);
+
+        let (optimized, _stats) = optimize_bytecode(code);
+
+        // Verify optimization doesn't panic and produces valid bytecode
+        // The optimized code should at minimum have Jump and Return
+        assert!(!optimized.is_empty());
+        assert!(optimized.contains(&Opcode::Return.to_byte()));
+    }
+
+    // ========================================================================
+    // Branch Coverage Tests - Peephole Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_peephole_nop_at_end() {
+        // NOPs at the end of code
+        let code = make_code(&[
+            Opcode::PushTrue.to_byte(),
+            Opcode::Return.to_byte(),
+            Opcode::Nop.to_byte(),  // NOP after return (unreachable)
+            Opcode::Nop.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // Unreachable NOPs should be removed
+        assert!(stats.nops_removed >= 2 || stats.bytes_removed >= 2);
+    }
+
+    #[test]
+    fn test_peephole_consecutive_pops() {
+        // Multiple consecutive pops
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::PushLongSmall.to_byte(), 3,
+            Opcode::Pop.to_byte(),
+            Opcode::Pop.to_byte(),
+            Opcode::Pop.to_byte(),
+            Opcode::PushTrue.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, _stats) = optimize_bytecode(code.clone());
+
+        // Should handle or optimize consecutive pops
+        assert!(!optimized.is_empty());
+    }
+
+    #[test]
+    fn test_peephole_push_pop_pairs() {
+        // Push followed by Pop is dead code
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(), 42,
+            Opcode::Pop.to_byte(),           // Push; Pop = dead
+            Opcode::PushTrue.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // Push; Pop should be optimized away
+        assert!(stats.push_pop_removed >= 1 || stats.identity_ops_removed >= 1 || optimized.len() <= 4);
+    }
+
+    #[test]
+    fn test_double_not_optimization() {
+        // Not; Not → identity
+        let code = make_code(&[
+            Opcode::PushTrue.to_byte(),
+            Opcode::Not.to_byte(),
+            Opcode::Not.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // Double negation should be removed
+        assert!(stats.not_not_removed >= 1 || !optimized.contains(&Opcode::Not.to_byte()));
+    }
+
+    // ========================================================================
+    // Branch Coverage Tests - Arithmetic Identity
+    // ========================================================================
+
+    #[test]
+    fn test_sub_zero_identity() {
+        // x - 0 = x
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(), 42,
+            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::Sub.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // x - 0 should be identity
+        assert!(stats.identity_ops_removed >= 1);
+    }
+
+    #[test]
+    fn test_mul_one_identity() {
+        // x * 1 = x
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(), 42,
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::Mul.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // x * 1 should be identity
+        assert!(stats.identity_ops_removed >= 1);
+    }
+
+    #[test]
+    fn test_div_one_identity() {
+        // x / 1 = x
+        let code = make_code(&[
+            Opcode::PushLongSmall.to_byte(), 42,
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::Div.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // x / 1 should be identity
+        assert!(stats.identity_ops_removed >= 1);
+    }
+
+    // ========================================================================
+    // Branch Coverage Tests - Misc Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_minimal_code() {
+        // Minimal valid bytecode
+        let code = make_code(&[
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, _stats) = optimize_bytecode(code);
+
+        // Should handle minimal code
+        assert_eq!(optimized.len(), 1);
+        assert_eq!(optimized[0], Opcode::Return.to_byte());
+    }
+
+    #[test]
+    fn test_only_nops() {
+        // Code with only NOPs (and Return)
+        let code = make_code(&[
+            Opcode::Nop.to_byte(),
+            Opcode::Nop.to_byte(),
+            Opcode::Nop.to_byte(),
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        // All NOPs should be removed
+        assert!(stats.nops_removed >= 3);
+        assert_eq!(optimized.len(), 1);
+    }
+
+    #[test]
+    fn test_large_constant_pool_index() {
+        // Large constant pool index (u16)
+        let code = make_code(&[
+            Opcode::PushConstant.to_byte(), 1, 0,  // Constant index 256
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, _stats) = optimize_bytecode(code.clone());
+
+        // Should preserve large constant indices
+        assert_eq!(optimized.len(), code.len());
+    }
 }

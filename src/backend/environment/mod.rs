@@ -41,6 +41,8 @@ mod suggestions;
 mod symbol_bindings;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod proptests;
 mod type_system;
 
 pub use generic::{GenericEnvironment, GenericEnvironmentShared, HeapEnvironment, MultiplicityMatch as GenericMultiplicityMatch};

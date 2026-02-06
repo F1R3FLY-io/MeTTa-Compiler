@@ -91,44 +91,53 @@ impl MettaHelper {
     /// Note: Variable names are NOT extracted because they are normalized to MORK's
     /// internal variable names ($a, $b, etc.) and don't preserve their original names.
     /// Only function names (symbols) remain unchanged after compilation.
-    pub fn update_from_environment(&mut self, env: &crate::backend::HeapEnvironment) {
-        use crate::backend::MettaValueInner;
+    pub fn update_from_environment(&mut self, env: &crate::backend::ArenaEnvironment) {
+        use crate::backend::models::ArenaValueInner;
 
         // Clear previous definitions
         self.defined_functions.clear();
         self.defined_variables.clear();
 
-        // Extract function names from rules
-        for rule in env.iter_rules() {
-            // Extract function name from lhs (use .inner() to pattern match)
-            match rule.lhs.inner() {
-                MettaValueInner::SExpr(items) if !items.is_empty() => {
+        // Helper closure to extract function/constant names from a rule LHS
+        let mut extract_name = |lhs: &crate::backend::models::ArenaValue| {
+            match lhs.inner() {
+                ArenaValueInner::SExpr(items) if !items.is_empty() => {
                     // Pattern like (fibonacci $n) -> extract "fibonacci"
-                    if let MettaValueInner::Atom(name) = items[0].inner() {
+                    if let ArenaValueInner::Atom(name) = items[0].inner() {
                         if !name.starts_with('$')
                             && !name.starts_with('&')
                             && !name.starts_with('\'')
                         {
-                            // It's a function name, not a variable
-                            if !self.defined_functions.contains(name) {
-                                self.defined_functions.push(name.clone());
+                            let name_str = name.to_string();
+                            if !self.defined_functions.contains(&name_str) {
+                                self.defined_functions.push(name_str);
                             }
                         }
                     }
                 }
-                MettaValueInner::Atom(name) => {
+                ArenaValueInner::Atom(name) => {
                     // Simple constant like (= my-const 42) -> extract "my-const"
-                    // Variable names like $global-var get normalized to $a, $b, etc.
-                    // so we can't reliably complete them. Only constants/functions work.
                     if !name.starts_with('$') && !name.starts_with('&') && !name.starts_with('\'') {
-                        // It's a constant/function
-                        if !self.defined_functions.contains(name) {
-                            self.defined_functions.push(name.clone());
+                        let name_str = name.to_string();
+                        if !self.defined_functions.contains(&name_str) {
+                            self.defined_functions.push(name_str);
                         }
                     }
                 }
                 _ => {}
             }
+        };
+
+        // Extract function names from indexed rules (DashMap)
+        for entry in env.shared.rule_index.iter() {
+            for rule in entry.value() {
+                extract_name(&rule.lhs);
+            }
+        }
+
+        // Also check wildcard rules
+        for rule in env.shared.wildcard_rules.read().iter() {
+            extract_name(&rule.lhs);
         }
 
         // Sort for consistent ordering
@@ -428,10 +437,10 @@ mod tests {
 
     #[test]
     fn test_update_from_environment() {
-        use crate::backend::{compile, eval, HeapEnvironment};
+        use crate::backend::{compile_arena, eval_arena, new_arena_env};
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = HeapEnvironment::default();
+        let mut env = new_arena_env();
 
         // Initially no user-defined functions
         assert_eq!(helper.defined_functions.len(), 0);
@@ -439,29 +448,16 @@ mod tests {
         // Define a function
         let code =
             "(= (fibonacci $n) (if (< $n 2) $n (+ (fibonacci (- $n 1)) (fibonacci (- $n 2)))))";
-        let state = compile(code).unwrap();
-        // env = env.union(&state.environment);
+        let state = compile_arena(code).unwrap();
 
         // IMPORTANT: Rules are added to environment during evaluation
-        for sexpr in state.source {
-            let (_, updated_env) = eval(sexpr, env.clone());
+        for &expr in state.source() {
+            let (_, updated_env) = eval_arena(expr, env, &state);
             env = updated_env;
-        }
-
-        // Debug: print what's in the environment
-        println!("=== Environment rules ===");
-        for rule in env.iter_rules() {
-            println!("Rule lhs: {:?}", rule.lhs);
-            println!("Rule rhs: {:?}", rule.rhs);
         }
 
         // Update helper from environment
         helper.update_from_environment(&env);
-
-        // Debug: print what was extracted
-        println!("=== Extracted functions ===");
-        println!("Functions: {:?}", helper.defined_functions);
-        println!("Variables: {:?}", helper.defined_variables);
 
         // Should now have "fibonacci" in completions
         assert!(helper.defined_functions.contains(&"fibonacci".to_string()));
@@ -472,22 +468,21 @@ mod tests {
 
     #[test]
     fn test_completion_with_user_defined() {
-        use crate::backend::{compile, eval, HeapEnvironment};
+        use crate::backend::{compile_arena, eval_arena, new_arena_env};
         use rustyline::history::DefaultHistory;
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = HeapEnvironment::default();
+        let mut env = new_arena_env();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
 
         // Define a function
         let code = "(= (my-func $x) (* 2 $x))";
-        let state = compile(code).unwrap();
-        // env = env.union(&state.environment);
+        let state = compile_arena(code).unwrap();
 
         // Evaluate to add rules to environment
-        for sexpr in state.source {
-            let (_, updated_env) = eval(sexpr, env.clone());
+        for &expr in state.source() {
+            let (_, updated_env) = eval_arena(expr, env, &state);
             env = updated_env;
         }
 
@@ -501,22 +496,21 @@ mod tests {
 
     #[test]
     fn test_constant_completion() {
-        use crate::backend::{compile, eval, HeapEnvironment};
+        use crate::backend::{compile_arena, eval_arena, new_arena_env};
         use rustyline::history::DefaultHistory;
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = HeapEnvironment::default();
+        let mut env = new_arena_env();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
 
         // Define a constant (not a variable, since variable names get normalized)
         let code = "(= my-const 42)";
-        let state = compile(code).unwrap();
-        // env = env.union(&state.environment);
+        let state = compile_arena(code).unwrap();
 
         // Evaluate to add rules to environment
-        for sexpr in state.source {
-            let (_, updated_env) = eval(sexpr, env.clone());
+        for &expr in state.source() {
+            let (_, updated_env) = eval_arena(expr, env, &state);
             env = updated_env;
         }
 

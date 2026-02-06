@@ -156,13 +156,8 @@ pub unsafe extern "C" fn jit_runtime_load_space(
 
     // Fallback: create a standalone space with the name (not shared)
     // This maintains backwards compatibility when no registry is available
-    let space_id = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        space_name.hash(&mut hasher);
-        hasher.finish()
-    };
+    use xxhash_rust::xxh3::xxh3_64;
+    let space_id = xxh3_64(space_name.as_bytes());
     let space = SpaceHandle::new(space_id, space_name);
     metta_to_jit(&MettaValue::Space(space)).to_bits()
 }

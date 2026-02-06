@@ -3,7 +3,7 @@
 //! Demonstrates how to configure MeTTaTron's threading model for different workloads.
 
 use mettatron::config::EvalConfig;
-use mettatron::{compile, run_state_async, MettaState};
+use mettatron::{compile_arena, new_arena_env, run_state_async};
 
 #[tokio::main]
 async fn main() {
@@ -53,7 +53,7 @@ async fn main() {
 
 async fn demo_default_config() {
     // Default configuration is used if configure_eval is not called
-    let state = MettaState::new_empty();
+    let env = new_arena_env();
 
     // Compile multiple independent expressions
     let src = r#"
@@ -63,12 +63,13 @@ async fn demo_default_config() {
         !(/ 20 4)
     "#;
 
-    let compiled = compile(src).expect("Failed to compile");
-    let result = run_state_async(state, compiled)
+    let state = compile_arena(src).expect("Failed to compile");
+    let (_env, outputs) = run_state_async(env, &state)
         .await
         .expect("Failed to evaluate");
 
-    println!("  Results: {:?}", result.output);
+    let results: Vec<String> = outputs.iter().map(|v| format!("{:?}", v.inner())).collect();
+    println!("  Results: {:?}", results);
 }
 
 async fn demo_cpu_optimized() {
@@ -80,7 +81,7 @@ async fn demo_cpu_optimized() {
     println!("  Configuration created (not applied - already configured)");
     println!("  In real app, call configure_eval(_config) before any async operations");
 
-    let state = MettaState::new_empty();
+    let env = new_arena_env();
 
     // CPU-intensive pattern matching
     let src = r#"
@@ -91,19 +92,20 @@ async fn demo_cpu_optimized() {
         !(* 30 40)
     "#;
 
-    let compiled = compile(src).expect("Failed to compile");
-    let result = run_state_async(state, compiled)
+    let state = compile_arena(src).expect("Failed to compile");
+    let (_env, outputs) = run_state_async(env, &state)
         .await
         .expect("Failed to evaluate");
 
-    println!("  Results: {:?}", result.output);
+    let results: Vec<String> = outputs.iter().map(|v| format!("{:?}", v.inner())).collect();
+    println!("  Results: {:?}", results);
 }
 
 async fn demo_memory_optimized() {
     let config = EvalConfig::memory_optimized();
     println!("  Configuration: {:?}", config);
 
-    let state = MettaState::new_empty();
+    let env = new_arena_env();
 
     // Smaller batch of expressions
     let src = r#"
@@ -112,19 +114,20 @@ async fn demo_memory_optimized() {
         !(+ 3 3)
     "#;
 
-    let compiled = compile(src).expect("Failed to compile");
-    let result = run_state_async(state, compiled)
+    let state = compile_arena(src).expect("Failed to compile");
+    let (_env, outputs) = run_state_async(env, &state)
         .await
         .expect("Failed to evaluate");
 
-    println!("  Results: {:?}", result.output);
+    let results: Vec<String> = outputs.iter().map(|v| format!("{:?}", v.inner())).collect();
+    println!("  Results: {:?}", results);
 }
 
 async fn demo_throughput_optimized() {
     let config = EvalConfig::throughput_optimized();
     println!("  Configuration: {:?}", config);
 
-    let state = MettaState::new_empty();
+    let env = new_arena_env();
 
     // Large batch of independent expressions
     let mut src = String::new();
@@ -132,12 +135,12 @@ async fn demo_throughput_optimized() {
         src.push_str(&format!("!(+ {} {})\n", i, i));
     }
 
-    let compiled = compile(&src).expect("Failed to compile");
-    let result = run_state_async(state, compiled)
+    let state = compile_arena(&src).expect("Failed to compile");
+    let (_env, outputs) = run_state_async(env, &state)
         .await
         .expect("Failed to evaluate");
 
-    println!("  Results count: {} expressions", result.output.len());
+    println!("  Results count: {} expressions", outputs.len());
 }
 
 async fn demo_custom_config() {
@@ -147,7 +150,7 @@ async fn demo_custom_config() {
     };
     println!("  Configuration: {:?}", config);
 
-    let state = MettaState::new_empty();
+    let env = new_arena_env();
 
     // Mixed workload: rules and evaluations
     let src = r#"
@@ -159,10 +162,11 @@ async fn demo_custom_config() {
         !(triple 10)
     "#;
 
-    let compiled = compile(src).expect("Failed to compile");
-    let result = run_state_async(state, compiled)
+    let state = compile_arena(src).expect("Failed to compile");
+    let (_env, outputs) = run_state_async(env, &state)
         .await
         .expect("Failed to evaluate");
 
-    println!("  Results: {:?}", result.output);
+    let results: Vec<String> = outputs.iter().map(|v| format!("{:?}", v.inner())).collect();
+    println!("  Results: {:?}", results);
 }

@@ -167,11 +167,8 @@ pub unsafe extern "C" fn jit_runtime_try_rule(ctx: *mut JitContext, rule_idx: u6
 /// Simple hash function for binding names
 #[inline]
 pub(crate) fn hash_string(s: &str) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    s.hash(&mut hasher);
-    hasher.finish()
+    use xxhash_rust::xxh3::xxh3_64;
+    xxh3_64(s.as_bytes())
 }
 
 /// Advance to next matching rule in choice point

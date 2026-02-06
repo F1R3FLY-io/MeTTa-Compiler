@@ -11,9 +11,10 @@
 //! - Content-addressed via `MettaValueTrait::hash_value()`
 //! - Configurable maximum entries
 
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use xxhash_rust::xxh3::Xxh3;
 
 use dashmap::DashMap;
 
@@ -31,13 +32,13 @@ struct GenericMemoKey {
 impl GenericMemoKey {
     /// Create a new memo key from head symbol and generic arguments.
     fn new<V: MettaValueTrait>(head: &str, args: &[V]) -> Self {
-        let mut hasher = DefaultHasher::new();
-        for arg in args {
-            arg.hash_value().hash(&mut hasher);
-        }
+        // Collect all hash values into a buffer and hash them together
+        let hash_values: Vec<u64> = args.iter().map(|arg| arg.hash_value()).collect();
+        let mut h = Xxh3::new();
+        hash_values.hash(&mut h);
         GenericMemoKey {
             func_head: head.to_string(),
-            args_hash: hasher.finish(),
+            args_hash: h.finish(),
         }
     }
 }

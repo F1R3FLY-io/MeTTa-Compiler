@@ -30,6 +30,8 @@
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use xxhash_rust::xxh3::Xxh3;
+
 use dashmap::DashMap;
 
 use crate::backend::models::MettaValue;
@@ -46,15 +48,12 @@ struct MemoKey {
 impl MemoKey {
     /// Create a new memo key
     fn new(head: &str, args: &[MettaValue]) -> Self {
-        use std::collections::hash_map::DefaultHasher;
-        let mut hasher = DefaultHasher::new();
-        for arg in args {
-            // MettaValue implements Hash trait directly
-            arg.hash(&mut hasher);
-        }
+        // Hash the entire args slice as a single unit
+        let mut h = Xxh3::new();
+        args.hash(&mut h);
         MemoKey {
             func_head: head.to_string(),
-            args_hash: hasher.finish(),
+            args_hash: h.finish(),
         }
     }
 }

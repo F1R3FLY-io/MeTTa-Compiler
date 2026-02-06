@@ -1,21 +1,21 @@
-use crate::backend::compile::compile;
 /// Rholang Integration Module - Evaluation Functions
 ///
 /// **PRIMARY INTEGRATION**: Use `pathmap_par_integration` module for Rholang interop
 ///
 /// This module provides:
-/// 1. **JSON export** for debugging and inspection (`metta_state_to_json`)
+/// 1. **JSON export** for debugging and inspection (`arena_state_to_json`)
 /// 2. **State evaluation** for REPL-style interaction (`run_state`, `run_state_async`)
 /// 3. **Error handling** for safe compilation (`compile_safe`)
 ///
 /// **Note**: For Rholang integration, use the PathMap Par functions in
 /// `pathmap_par_integration` module, not the JSON functions here.
 use crate::backend::fuzzy_match::FuzzyMatcher;
-use crate::backend::models::{MettaState, MettaValue, MettaValueInner};
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 use std::sync::OnceLock;
 
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, warn};
+#[cfg(feature = "async")]
+use tracing::{error, trace};
 
 /// MeTTa built-in keywords for syntax-level "did you mean" suggestions
 const METTA_KEYWORDS: &[&str] = &[
@@ -84,27 +84,31 @@ fn keyword_matcher() -> &'static FuzzyMatcher {
 /// ```ignore
 /// // Valid MeTTa code
 /// let state = compile_safe("(+ 1 2)");
-/// assert_eq!(state.source.len(), 1);
+/// assert_eq!(state.source().len(), 1);
 ///
 /// // Invalid syntax - returns error s-expression
 /// let state = compile_safe("(+ 1 2");  // Unclosed parenthesis
-/// // state.source[0] == (error "Syntax error at line 1, column 7: ...")
+/// // state.source()[0] == (error "Syntax error at line 1, column 7: ...")
 /// ```
-pub fn compile_safe(src: &str) -> MettaState {
-    match compile(src) {
+pub fn compile_safe(src: &str) -> crate::backend::models::ArenaState {
+    use crate::backend::compile::compile_arena;
+    use crate::backend::models::{ArenaState, MettaValueFactory};
+
+    match compile_arena(src) {
         Ok(state) => state,
         Err(error) => {
             // Improve error message with additional context
             let improved_msg = improve_error_message(&error);
 
-            // Create error s-expression: (error "message")
-            let error_sexpr = MettaValue::SExpr(vec![
-                MettaValue::Atom("error".to_string()),
-                MettaValue::String(improved_msg),
+            // Create error s-expression in storage arena: (error "message")
+            let mut state = ArenaState::new();
+            let factory = state.storage_factory();
+            let error_sexpr = factory.sexpr(vec![
+                factory.atom("error"),
+                factory.string(&improved_msg),
             ]);
-
-            // Return a state containing the error
-            MettaState::from(error_sexpr)
+            state.source_mut().push(error_sexpr);
+            state
         }
     }
 }
@@ -191,61 +195,62 @@ fn matching_open(close: char) -> char {
     }
 }
 
-/// Convert MettaValue to a JSON-like string representation
+/// Convert ArenaValue to a JSON-like string representation
 /// Used for debugging and human-readable output
-fn metta_value_to_json_string(value: &MettaValue) -> String {
+fn arena_value_to_json_string(value: &ArenaValue<'static>) -> String {
+    use crate::backend::models::ArenaValueInner;
     match value.inner() {
-        MettaValueInner::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
-        MettaValueInner::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
-        MettaValueInner::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
-        MettaValueInner::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
-        MettaValueInner::String(s) => {
+        ArenaValueInner::Atom(s) => format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s)),
+        ArenaValueInner::Bool(b) => format!(r#"{{"type":"bool","value":{}}}"#, b),
+        ArenaValueInner::Long(n) => format!(r#"{{"type":"number","value":{}}}"#, n),
+        ArenaValueInner::Float(f) => format!(r#"{{"type":"number","value":{}}}"#, f),
+        ArenaValueInner::String(s) => {
             format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s))
         }
-        MettaValueInner::Nil => r#"{"type":"nil"}"#.to_string(),
-        MettaValueInner::SExpr(items) => {
-            let items_json: Vec<String> = items.iter().map(metta_value_to_json_string).collect();
+        ArenaValueInner::Nil => r#"{"type":"nil"}"#.to_string(),
+        ArenaValueInner::SExpr(items) => {
+            let items_json: Vec<String> = items.iter().map(arena_value_to_json_string).collect();
             format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
         }
-        MettaValueInner::Error(msg, details) => {
+        ArenaValueInner::Error(msg, details) => {
             format!(
                 r#"{{"type":"error","message":"{}","details":{}}}"#,
                 escape_json(msg),
-                metta_value_to_json_string(details)
+                arena_value_to_json_string(&details)
             )
         }
-        MettaValueInner::Type(t) => {
+        ArenaValueInner::Type(t) => {
             format!(
                 r#"{{"type":"metatype","value":{}}}"#,
-                metta_value_to_json_string(t)
+                arena_value_to_json_string(&t)
             )
         }
-        MettaValueInner::Conjunction(goals) => {
-            let goals_json: Vec<String> = goals.iter().map(metta_value_to_json_string).collect();
+        ArenaValueInner::Conjunction(goals) => {
+            let goals_json: Vec<String> = goals.iter().map(arena_value_to_json_string).collect();
             format!(
                 r#"{{"type":"conjunction","goals":[{}]}}"#,
                 goals_json.join(",")
             )
         }
-        MettaValueInner::Space(handle) => {
+        ArenaValueInner::Space(handle) => {
             format!(
                 r#"{{"type":"space","id":{},"name":"{}"}}"#,
                 handle.id,
                 escape_json(&handle.name)
             )
         }
-        MettaValueInner::State(id) => {
+        ArenaValueInner::State(id) => {
             format!(r#"{{"type":"state","id":{}}}"#, id)
         }
-        MettaValueInner::Unit => r#"{"type":"unit"}"#.to_string(),
-        MettaValueInner::Memo(handle) => {
+        ArenaValueInner::Unit => r#"{"type":"unit"}"#.to_string(),
+        ArenaValueInner::Memo(handle) => {
             format!(
                 r#"{{"type":"memo","id":{},"name":"{}"}}"#,
                 handle.id,
                 escape_json(&handle.name)
             )
         }
-        MettaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
+        ArenaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
     }
 }
 
@@ -258,98 +263,78 @@ fn escape_json(s: &str) -> String {
         .replace('\t', r"\t")
 }
 
-/// Convert MettaState to JSON representation for debugging
+/// Convert ArenaState to JSON representation for debugging
 ///
 /// Returns a JSON string with the format:
 /// ```json
 /// {
 ///   "source": [...],
-///   "environment": {"facts_count": N},
 ///   "output": [...]
 /// }
 /// ```
 ///
 /// **Use Case**: Debugging, logging, inspection
 /// **Not Recommended**: Rholang integration (use PathMap Par instead)
-pub fn metta_state_to_json(state: &MettaState) -> String {
+pub fn arena_state_to_json(state: &ArenaState) -> String {
     let source_json: Vec<String> = state
-        .source
+        .source()
         .iter()
-        .map(metta_value_to_json_string)
+        .map(arena_value_to_json_string)
         .collect();
 
     let outputs_json: Vec<String> = state
-        .output
+        .output()
         .iter()
-        .map(metta_value_to_json_string)
+        .map(arena_value_to_json_string)
         .collect();
 
-    // For environment, we'll serialize facts count as a placeholder
-    // Full serialization of MORK Space would require more complex handling
-    let env_json = format!(r#"{{"facts_count":{}}}"#, state.environment.rule_count());
-
     format!(
-        r#"{{"source":[{}],"environment":{},"output":[{}]}}"#,
+        r#"{{"source":[{}],"output":[{}]}}"#,
         source_json.join(","),
-        env_json,
         outputs_json.join(",")
     )
 }
 
-/// Run compiled state against accumulated state
+/// Run compiled state against accumulated environment
 ///
 /// This is the core evaluation function for REPL-style interaction.
 ///
-/// Takes two MettaState objects:
-/// - `accumulated_state`: State with accumulated environment and outputs
-/// - `compiled_state`: Fresh state with pending expressions to evaluate
+/// Takes:
+/// - `env`: Accumulated environment with rules/facts from previous calls
+/// - `compiled_state`: ArenaState with pending expressions to evaluate
 ///
-/// Returns a new accumulated state with:
-/// - Empty source (all evaluated)
+/// Returns:
 /// - Updated environment (merged with new rules/facts)
-/// - Fresh output (only results from THIS invocation's `!` evaluations)
+/// - Output values (only results from THIS invocation's `!` evaluations)
 ///
 /// **Threading**: Synchronous, single-threaded evaluation
-#[instrument(level = "info", skip(accumulated_state, compiled_state))]
+#[instrument(level = "info", skip(env, compiled_state))]
 pub fn run_state(
-    accumulated_state: MettaState,
-    compiled_state: MettaState,
-) -> Result<MettaState, String> {
-    use crate::backend::eval::eval;
-
+    env: ArenaEnvironment,
+    compiled_state: &ArenaState,
+) -> Result<(ArenaEnvironment, Vec<ArenaValue<'static>>), String> {
     info!("Run state");
-    debug!(
-        accumulated_state = ?accumulated_state,
-        compiled_state = ?compiled_state,
-        "Run state"
-    );
 
-    // Start with accumulated environment
-    let mut env = accumulated_state.environment;
-    // Start with empty outputs - each .run() returns only its own results
+    let mut env = env;
     let mut outputs = Vec::new();
 
-    // Evaluate each pending expression from compiled state
-    for expr in compiled_state.source {
-        let is_eval_expr = expr.is_eval_expr();
+    for &expr in compiled_state.source() {
+        let is_eval_expr = is_eval_expression(&expr);
 
-        let (results, new_env) = eval(expr, env);
+        let (results, new_env) = eval_arena(expr, env, compiled_state);
         env = new_env;
 
-        // Only extend outputs for evaluation expressions (!)
-        // Other S-expressions are added to the atom space but produce no outputs
         if is_eval_expr {
             outputs.extend(results);
         }
     }
 
     info!(
-        outputs = ?outputs,
-        "Run state completed with outputs"
+        output_count = outputs.len(),
+        "Run state completed"
     );
 
-    // Return new accumulated state
-    Ok(MettaState::new_accumulated(env, outputs))
+    Ok((env, outputs))
 }
 
 /// Async version of run_state with parallel evaluation of independent expressions
@@ -364,73 +349,36 @@ pub fn run_state(
 /// - Output ordering is preserved
 /// - Environment updates are atomic per batch
 ///
-/// **Threading Model:** Uses Tokio's async/await (same as Rholang)
-///
-/// **Thread Safety:** Environment now uses `Arc<Mutex<T>>` for thread-safe sharing
-#[instrument(level = "info", skip(accumulated_state, compiled_state))]
+/// **Threading Model:** Uses Rayon for parallel evaluation
+#[instrument(level = "info", skip(env, compiled_state))]
 #[cfg(feature = "async")]
 pub async fn run_state_async(
-    accumulated_state: MettaState,
-    compiled_state: MettaState,
-) -> Result<MettaState, String> {
-    use crate::backend::eval::eval;
-
-    // Start with accumulated environment, but if it's empty and compiled has data, use compiled's environment
-    use pathmap::zipper::ZipperIteration;
+    env: ArenaEnvironment,
+    compiled_state: &ArenaState,
+) -> Result<(ArenaEnvironment, Vec<ArenaValue<'static>>), String> {
+    use crate::backend::models::ArenaValueInner;
 
     info!("Run state async");
-    debug!(
-        accumulated_state = ?accumulated_state,
-        compiled_state = ?compiled_state,
-        "Run state async"
-    );
 
-    let acc_count = {
-        let space = accumulated_state.environment.create_space();
-        let mut rz = space.btm.read_zipper();
-        let mut count = 0;
-        while rz.to_next_val() {
-            count += 1;
-        }
-        count
-    };
-
-    let comp_count = {
-        let space = compiled_state.environment.create_space();
-        let mut rz = space.btm.read_zipper();
-        let mut count = 0;
-        while rz.to_next_val() {
-            count += 1;
-        }
-        count
-    };
-
-    // Use the environment that has data (prefer accumulated, fall back to compiled if accumulated is empty)
-    let mut env = if acc_count > 0 || comp_count == 0 {
-        accumulated_state.environment
-    } else {
-        compiled_state.environment.clone()
-    };
-    // Start with empty outputs - each .run() returns only its own results
+    let mut env = env;
     let mut outputs = Vec::new();
 
     // Batch expressions into parallelizable groups
-    let mut current_batch: Vec<(usize, MettaValue, bool)> = Vec::new();
+    let mut current_batch: Vec<(usize, ArenaValue<'static>, bool)> = Vec::new();
 
-    let exprs: Vec<_> = compiled_state.source.into_iter().enumerate().collect();
-
-    for (idx, expr) in exprs {
-        let is_eval_expr = expr.is_eval_expr();
-        let is_rule_def = expr.is_rule_def();
+    for (idx, &expr) in compiled_state.source().iter().enumerate() {
+        let is_eval_expr = is_eval_expression(&expr);
+        let is_rule_def = matches!(expr.inner(), ArenaValueInner::SExpr(items)
+            if items.len() >= 1 && matches!(items[0].inner(), ArenaValueInner::Atom("=")));
 
         // Check if this is a ground fact (S-expression that's not a rule and not an eval)
-        let is_ground_fact =
-            matches!(expr.inner(), MettaValueInner::SExpr(_)) && !is_rule_def && !is_eval_expr;
+        let is_ground_fact = expr.is_sexpr() && !is_rule_def && !is_eval_expr;
 
         // If this is a rule definition or ground fact and we have a batch, evaluate the batch first
         if (is_rule_def || is_ground_fact) && !current_batch.is_empty() {
-            // Evaluate parallel batch
-            let batch_results = evaluate_batch_parallel(current_batch, env.clone()).await;
+            let batch_results = evaluate_batch_parallel_arena(
+                current_batch, env.clone(),
+            ).await;
             for (_batch_idx, results, should_output) in batch_results {
                 if should_output {
                     outputs.extend(results);
@@ -440,22 +388,19 @@ pub async fn run_state_async(
         }
 
         // If this is a rule definition or ground fact, execute it sequentially
-        // (both modify the environment by adding to MORK Space)
         if is_rule_def || is_ground_fact {
-            let (_results, new_env) = eval(expr, env);
+            let (_results, new_env) = eval_arena(expr, env, compiled_state);
             env = new_env;
-            // Neither rule definitions nor ground facts produce output
-            // They only modify the environment by adding to MORK Space
-            // (Ground facts are not wrapped in !, so they shouldn't generate output)
         } else {
-            // Only eval expressions go in parallel batch
             current_batch.push((idx, expr, is_eval_expr));
         }
     }
 
     // Evaluate any remaining batch
     if !current_batch.is_empty() {
-        let batch_results = evaluate_batch_parallel(current_batch, env.clone()).await;
+        let batch_results = evaluate_batch_parallel_arena(
+            current_batch, env.clone(),
+        ).await;
         for (_batch_idx, results, should_output) in batch_results {
             if should_output {
                 outputs.extend(results);
@@ -464,41 +409,46 @@ pub async fn run_state_async(
     }
 
     info!(
-        outputs = ?outputs,
-        "Run state async completed with outputs"
+        output_count = outputs.len(),
+        "Run state async completed"
     );
 
-    Ok(MettaState::new_accumulated(env, outputs))
+    Ok((env, outputs))
 }
 
-/// Helper function to evaluate a batch of expressions in parallel
-/// Returns results in original order with their indices
+/// Helper function to evaluate a batch of arena expressions in parallel.
+/// Returns results in original order with their indices.
 ///
 /// Uses Rayon by default for compatibility with Rholang's shared scheduler.
 /// When `hybrid-p2-priority-scheduler` feature is enabled, uses the P2 priority
 /// scheduler with P² runtime estimation for intelligent task scheduling.
 #[cfg(all(feature = "async", feature = "hybrid-p2-priority-scheduler"))]
-async fn evaluate_batch_parallel(
-    batch: Vec<(usize, MettaValue, bool)>,
-    env: crate::backend::environment::HeapEnvironment,
-) -> Vec<(usize, Vec<MettaValue>, bool)> {
-    use crate::backend::eval::eval;
+async fn evaluate_batch_parallel_arena(
+    batch: Vec<(usize, ArenaValue<'static>, bool)>,
+    env: ArenaEnvironment,
+) -> Vec<(usize, Vec<ArenaValue<'static>>, bool)> {
     use crate::backend::priority_scheduler::global_priority_eval_pool;
 
     debug!(
-        batch = ?batch,
-        "Evaluate batch parallel (P2 scheduler)"
+        batch_size = batch.len(),
+        "Evaluate batch parallel arena (P2 scheduler)"
     );
 
     let pool = global_priority_eval_pool();
 
-    // Spawn parallel evaluation tasks with NORMAL priority (P² runtime estimation)
+    // ArenaValue is Copy+Send, ArenaEnvironment is Clone+Send
+    // StaticArenaContext uses thread-local leaked Bump arenas (one per thread),
+    // so each task gets its own independent arena without sharing &ArenaState.
     let receivers: Vec<_> = batch
         .into_iter()
         .map(|(idx, expr, should_output)| {
-            let env = env.clone(); // Arc clone is cheap
+            let env = env.clone();
             pool.spawn(move || {
-                let (results, _new_env) = eval(expr, env);
+                // For parallel evaluation, use StaticArenaContext which provides
+                // a thread-local leaked Bump arena per thread (Copy, Send-safe)
+                use crate::backend::eval::trampoline::{eval_trampoline_generic, StaticArenaContext};
+                let ctx = StaticArenaContext::get();
+                let (results, _new_env) = eval_trampoline_generic(expr, env, &ctx);
                 (idx, results, should_output)
             })
         })
@@ -509,7 +459,6 @@ async fn evaluate_batch_parallel(
         "Tasks spawned on priority pool"
     );
 
-    // Collect results from receivers
     let mut results = Vec::with_capacity(receivers.len());
     for receiver in receivers {
         match receiver.recv() {
@@ -523,52 +472,39 @@ async fn evaluate_batch_parallel(
         }
     }
 
-    // Sort results by original index to preserve order
     results.sort_by_key(|(idx, _, _)| *idx);
-
-    debug!(
-        results = ?results,
-        "Batch evaluated with results"
-    );
-
     results
 }
 
-/// Helper function to evaluate a batch of expressions in parallel
-/// Returns results in original order with their indices
+/// Helper function to evaluate a batch of arena expressions in parallel.
+/// Returns results in original order with their indices.
 ///
 /// Uses Rayon's work-stealing thread pool for parallel evaluation.
-/// This is the default implementation for compatibility with Rholang's shared schedulers.
 #[cfg(all(feature = "async", not(feature = "hybrid-p2-priority-scheduler")))]
-async fn evaluate_batch_parallel(
-    batch: Vec<(usize, MettaValue, bool)>,
-    env: crate::backend::environment::HeapEnvironment,
-) -> Vec<(usize, Vec<MettaValue>, bool)> {
-    use crate::backend::eval::eval;
+async fn evaluate_batch_parallel_arena(
+    batch: Vec<(usize, ArenaValue<'static>, bool)>,
+    env: ArenaEnvironment,
+) -> Vec<(usize, Vec<ArenaValue<'static>>, bool)> {
     use rayon::prelude::*;
 
     debug!(
-        batch = ?batch,
-        "Evaluate batch parallel (Rayon)"
+        batch_size = batch.len(),
+        "Evaluate batch parallel arena (Rayon)"
     );
 
-    // Use Rayon's parallel iterator for work-stealing parallelism
     let mut results: Vec<_> = batch
         .into_par_iter()
         .map(|(idx, expr, should_output)| {
-            let (results, _new_env) = eval(expr, env.clone());
+            // For parallel evaluation, use StaticArenaContext which provides
+            // a thread-local leaked Bump arena per thread (Copy, Send-safe)
+            use crate::backend::eval::trampoline::{eval_trampoline_generic, StaticArenaContext};
+            let ctx = StaticArenaContext::get();
+            let (results, _new_env) = eval_trampoline_generic(expr, env.clone(), &ctx);
             (idx, results, should_output)
         })
         .collect();
 
-    // Sort results by original index to preserve order
     results.sort_by_key(|(idx, _, _)| *idx);
-
-    debug!(
-        results = ?results,
-        "Batch evaluated with results"
-    );
-
     results
 }
 
@@ -578,7 +514,7 @@ async fn evaluate_batch_parallel(
 
 use crate::backend::compile::compile_arena;
 use crate::backend::eval::eval_arena;
-use crate::backend::eval::trampoline::new_arena_env;
+use crate::backend::eval::trampoline::{new_arena_env, ArenaEnvironment};
 use crate::backend::models::{ArenaState, ArenaValue, MettaValueTrait};
 
 /// Evaluate MeTTa source using session-based dual-arena allocation.
@@ -744,86 +680,93 @@ pub fn eval_metta_session_raw(src: &str) -> Result<ArenaState, SyntaxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::compile::compile;
-    use crate::backend::models::{MettaValue, MettaValueInner};
 
     #[test]
-    fn test_metta_state_to_json() {
+    fn test_arena_state_to_json() {
         let src = "(+ 1 2)";
-        let state = compile(src).unwrap();
-        let json = state.to_json_string();
+        let state = compile_arena(src).expect("compile failed");
+        let json = arena_state_to_json(&state);
 
-        // Should return full MettaState with source, environment, output
+        // Should return ArenaState with source and output
         assert!(json.contains(r#""source""#));
-        assert!(json.contains(r#""environment""#));
         assert!(json.contains(r#""output""#));
         assert!(json.contains(r#""type":"sexpr""#));
     }
 
     #[test]
-    fn test_metta_value_atom() {
-        let value = MettaValue::Atom("test".to_string());
-        let json = value.to_json_string();
+    fn test_arena_value_atom_json() {
+        use crate::backend::models::{get_eval_factory, MettaValueFactory};
+        let f = get_eval_factory();
+        let value = f.atom("test");
+        let json = arena_value_to_json_string(&value);
         assert_eq!(json, r#"{"type":"atom","value":"test"}"#);
     }
 
     #[test]
-    fn test_metta_value_number() {
-        let value = MettaValue::Long(42);
-        let json = value.to_json_string();
+    fn test_arena_value_number_json() {
+        use crate::backend::models::{get_eval_factory, MettaValueFactory};
+        let f = get_eval_factory();
+        let value = f.long(42);
+        let json = arena_value_to_json_string(&value);
         assert_eq!(json, r#"{"type":"number","value":42}"#);
     }
 
     #[test]
-    fn test_metta_value_bool() {
-        let value = MettaValue::Bool(true);
-        let json = value.to_json_string();
+    fn test_arena_value_bool_json() {
+        use crate::backend::models::{get_eval_factory, MettaValueFactory};
+        let f = get_eval_factory();
+        let value = f.bool(true);
+        let json = arena_value_to_json_string(&value);
         assert_eq!(json, r#"{"type":"bool","value":true}"#);
     }
 
     #[test]
-    fn test_metta_value_string() {
-        let value = MettaValue::String("hello".to_string());
-        let json = value.to_json_string();
+    fn test_arena_value_string_json() {
+        use crate::backend::models::{get_eval_factory, MettaValueFactory};
+        let f = get_eval_factory();
+        let value = f.string("hello");
+        let json = arena_value_to_json_string(&value);
         assert_eq!(json, r#"{"type":"string","value":"hello"}"#);
     }
 
     #[test]
-    fn test_metta_value_nil() {
-        let value = MettaValue::Nil();
-        let json = value.to_json_string();
+    fn test_arena_value_nil_json() {
+        use crate::backend::models::{get_eval_factory, MettaValueFactory};
+        let f = get_eval_factory();
+        let value = f.nil();
+        let json = arena_value_to_json_string(&value);
         assert_eq!(json, r#"{"type":"nil"}"#);
     }
 
     #[test]
-    fn test_metta_value_sexpr() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        let json = value.to_json_string();
+    fn test_arena_value_sexpr_json() {
+        use crate::backend::models::{get_eval_factory, MettaValueFactory};
+        let f = get_eval_factory();
+        let value = f.sexpr(vec![f.atom("+"), f.long(1), f.long(2)]);
+        let json = arena_value_to_json_string(&value);
         assert!(json.contains(r#""type":"sexpr""#));
         assert!(json.contains(r#""items""#));
     }
 
     #[test]
     fn test_escape_json() {
-        use crate::backend::metta_value::escape_json;
-
         let escaped = escape_json("hello\n\"world\"\\test");
         assert_eq!(escaped, r#"hello\n\"world\"\\test"#);
     }
 
     #[test]
     fn test_compile_safe_success() {
+        use crate::backend::models::ArenaValueInner;
         let state = compile_safe("(+ 1 2)");
-        assert_eq!(state.source.len(), 1);
+        assert_eq!(state.source().len(), 1);
         // Should be a valid S-expression, not an error
-        match state.source[0].inner() {
-            MettaValueInner::SExpr(items) => {
+        match state.source()[0].inner() {
+            ArenaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3);
-                assert_eq!(items[0], MettaValue::Atom("+".to_string()));
+                match items[0].inner() {
+                    ArenaValueInner::Atom("+") => {}
+                    other => panic!("Expected Atom('+'), got {:?}", other),
+                }
             }
             _ => panic!("Expected SExpr for valid input"),
         }
@@ -831,17 +774,21 @@ mod tests {
 
     #[test]
     fn test_compile_safe_syntax_error() {
+        use crate::backend::models::ArenaValueInner;
         let state = compile_safe("(+ 1 2");
-        assert_eq!(state.source.len(), 1);
+        assert_eq!(state.source().len(), 1);
         // Should be an error s-expression
-        match state.source[0].inner() {
-            MettaValueInner::SExpr(items) => {
+        match state.source()[0].inner() {
+            ArenaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 2);
-                assert_eq!(items[0], MettaValue::Atom("error".to_string()));
+                match items[0].inner() {
+                    ArenaValueInner::Atom("error") => {}
+                    other => panic!("Expected Atom('error'), got {:?}", other),
+                }
                 // Error message should be a string
-                assert!(matches!(items[1].inner(), MettaValueInner::String(_)));
+                assert!(matches!(items[1].inner(), ArenaValueInner::String(_)));
                 // Error message should mention the syntax issue
-                if let MettaValueInner::String(msg) = items[1].inner() {
+                if let ArenaValueInner::String(msg) = items[1].inner() {
                     assert!(msg.contains("Syntax error") || msg.contains("unexpected"));
                 }
             }
@@ -851,10 +798,11 @@ mod tests {
 
     #[test]
     fn test_compile_safe_improves_error_message() {
+        use crate::backend::models::ArenaValueInner;
         let state = compile_safe("(+ 1 2");
-        match state.source[0].inner() {
-            MettaValueInner::SExpr(items) => {
-                if let MettaValueInner::String(msg) = items[1].inner() {
+        match state.source()[0].inner() {
+            ArenaValueInner::SExpr(items) => {
+                if let ArenaValueInner::String(msg) = items[1].inner() {
                     // Should include hint about unclosed parenthesis
                     assert!(msg.contains("Hint") && msg.contains("unclosed"));
                 }
@@ -865,114 +813,143 @@ mod tests {
 
     #[test]
     fn test_run_state_simple() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile("!(+ 1 2)").unwrap();
+        use crate::backend::models::ArenaValueInner;
+        let env = new_arena_env();
+        let state = compile_arena("!(+ 1 2)").expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
-        // Should have output
-        assert!(!result.output.is_empty());
-        assert_eq!(result.output[0], MettaValue::Long(3));
+        assert!(!outputs.is_empty());
+        match outputs[0].inner() {
+            ArenaValueInner::Long(3) => {}
+            other => panic!("Expected Long(3), got {:?}", other),
+        }
     }
 
     #[test]
     fn test_run_state_with_rules() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        use crate::backend::models::ArenaValueInner;
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
             (= (double $x) (* $x 2))
             !(double 21)
             "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
-        // Should have output
-        assert!(!result.output.is_empty());
-        assert_eq!(result.output[0], MettaValue::Long(42));
+        assert!(!outputs.is_empty());
+        match outputs[0].inner() {
+            ArenaValueInner::Long(42) => {}
+            other => panic!("Expected Long(42), got {:?}", other),
+        }
     }
 
     // Async Parallel Evaluation Tests
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_simple() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile("!(+ 1 2)").unwrap();
+        use crate::backend::models::ArenaValueInner;
+        let env = new_arena_env();
+        let state = compile_arena("!(+ 1 2)").expect("compile failed");
 
-        let result = run_state_async(accumulated, compiled).await.unwrap();
+        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
 
         // Should have output
-        assert!(!result.output.is_empty());
-        assert_eq!(result.output[0], MettaValue::Long(3));
+        assert!(!outputs.is_empty());
+        match outputs[0].inner() {
+            ArenaValueInner::Long(3) => {}
+            other => panic!("Expected Long(3), got {:?}", other),
+        }
     }
 
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_parallel() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        use crate::backend::models::ArenaValueInner;
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
             !(+ 1 1)
             !(+ 2 2)
             !(+ 3 3)
             "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state_async(accumulated, compiled).await.unwrap();
+        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
 
         // Should have all outputs
-        assert_eq!(result.output.len(), 3);
-        assert_eq!(result.output[0], MettaValue::Long(2));
-        assert_eq!(result.output[1], MettaValue::Long(4));
-        assert_eq!(result.output[2], MettaValue::Long(6));
+        assert_eq!(outputs.len(), 3);
+        match outputs[0].inner() {
+            ArenaValueInner::Long(2) => {}
+            other => panic!("Expected Long(2), got {:?}", other),
+        }
+        match outputs[1].inner() {
+            ArenaValueInner::Long(4) => {}
+            other => panic!("Expected Long(4), got {:?}", other),
+        }
+        match outputs[2].inner() {
+            ArenaValueInner::Long(6) => {}
+            other => panic!("Expected Long(6), got {:?}", other),
+        }
     }
 
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_with_rules() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        use crate::backend::models::ArenaValueInner;
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
             (= (double $x) (* $x 2))
             !(double 5)
             !(double 10)
             "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state_async(accumulated, compiled).await.unwrap();
+        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
 
         // Should have outputs (parallel evaluation of both double calls)
-        assert_eq!(result.output.len(), 2);
-        assert_eq!(result.output[0], MettaValue::Long(10));
-        assert_eq!(result.output[1], MettaValue::Long(20));
+        assert_eq!(outputs.len(), 2);
+        match outputs[0].inner() {
+            ArenaValueInner::Long(10) => {}
+            other => panic!("Expected Long(10), got {:?}", other),
+        }
+        match outputs[1].inner() {
+            ArenaValueInner::Long(20) => {}
+            other => panic!("Expected Long(20), got {:?}", other),
+        }
     }
 
     #[test]
     fn test_ground_facts_not_in_output() {
         // Regression test: verify ground facts are NOT added to output
-        let mut accumulated = MettaState::new_empty();
+        let mut env = new_arena_env();
 
         // Add ground facts
-        let compiled1 = compile("(connected room_a room_b) (connected room_b room_c)").unwrap();
-        accumulated = run_state(accumulated, compiled1).unwrap();
+        let state1 = compile_arena("(connected room_a room_b) (connected room_b room_c)").expect("compile failed");
+        let (new_env, outputs1) = run_state(env, &state1).expect("run_state failed");
+        env = new_env;
         // Ground facts should NOT produce output
-        assert_eq!(accumulated.output.len(), 0);
+        assert_eq!(outputs1.len(), 0);
 
         // Verify ground facts are in environment (can be queried)
-        let compiled2 = compile("!(match &self (connected $from $to) ($from $to))").unwrap();
-        accumulated = run_state(accumulated, compiled2).unwrap();
+        let state2 = compile_arena("!(match &self (connected $from $to) ($from $to))").expect("compile failed");
+        let (_env, outputs2) = run_state(env, &state2).expect("run_state failed");
         // Now output should contain query results (2 matches)
-        assert_eq!(accumulated.output.len(), 2);
+        assert_eq!(outputs2.len(), 2);
     }
 
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_multiple_rules_sequential() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        use crate::backend::models::ArenaValueInner;
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
             (= (square $x) (* $x $x))
             !(square 3)
@@ -980,33 +957,43 @@ mod tests {
             !(double 3)
             "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state_async(accumulated, compiled).await.unwrap();
+        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
 
-        assert_eq!(result.output.len(), 2);
-        assert_eq!(result.output[0], MettaValue::Long(9));
-        assert_eq!(result.output[1], MettaValue::Long(6));
+        assert_eq!(outputs.len(), 2);
+        match outputs[0].inner() {
+            ArenaValueInner::Long(9) => {}
+            other => panic!("Expected Long(9), got {:?}", other),
+        }
+        match outputs[1].inner() {
+            ArenaValueInner::Long(6) => {}
+            other => panic!("Expected Long(6), got {:?}", other),
+        }
     }
 
     #[test]
     fn test_run_state_accumulated_state() {
+        use crate::backend::models::ArenaValueInner;
         // Test that rules persist across multiple run_state calls
-        let accumulated = MettaState::new_empty();
-        let compiled1 = compile("(= (double $x) (* $x 2))").unwrap();
-        let result1 = run_state(accumulated, compiled1).unwrap();
+        let env = new_arena_env();
+        let state1 = compile_arena("(= (double $x) (* $x 2))").expect("compile failed");
+        let (env, _outputs) = run_state(env, &state1).expect("run_state failed");
 
-        let compiled2 = compile("!(double 5)").unwrap();
-        let result2 = run_state(result1, compiled2).unwrap();
+        let state2 = compile_arena("!(double 5)").expect("compile failed");
+        let (_env, outputs) = run_state(env, &state2).expect("run_state failed");
 
-        assert!(!result2.output.is_empty());
-        assert_eq!(result2.output[0], MettaValue::Long(10));
+        assert!(!outputs.is_empty());
+        match outputs[0].inner() {
+            ArenaValueInner::Long(10) => {}
+            other => panic!("Expected Long(10), got {:?}", other),
+        }
     }
 
     #[test]
     fn test_run_state_rule_ordering() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
             (= (f special-value) catched)
             (= (f $x) $x)
@@ -1014,55 +1001,55 @@ mod tests {
             !(f special-value)
             "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Should have outputs for both calls
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[test]
     fn test_run_state_complex_nested() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
             (= (triple $x) ($x $x $x))
             (= (grid3x3 $x) (triple (triple $x)))
             !(grid3x3 (square (+ 1 2)))
             "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[test]
     fn test_run_state_recursive_function() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
             (= (factorial 0) 1)
             (= (factorial $x) (* $x (factorial (- $x 1))))
             !(factorial 5)
             "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
-        assert!(!result.output.is_empty());
-        // Note: This might need adjustment based on actual evaluation behavior
+        assert!(!outputs.is_empty());
         // Factorial of 5 should be 120
     }
 
     // Space Operations Tests - Adding Facts
     #[test]
     fn test_run_state_add_facts_to_space() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        use crate::backend::models::ArenaValueInner;
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Pam Bob)
@@ -1070,30 +1057,33 @@ mod tests {
                 !(+ 1 1)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Facts are added to space (no output), only eval expression produces output
-        assert_eq!(result.output.len(), 1);
-        assert_eq!(result.output[0], MettaValue::Long(2));
+        assert_eq!(outputs.len(), 1);
+        match outputs[0].inner() {
+            ArenaValueInner::Long(2) => {}
+            other => panic!("Expected Long(2), got {:?}", other),
+        }
     }
 
     #[test]
     fn test_run_state_facts_persist_across_runs() {
         // First run: add facts
-        let accumulated1 = MettaState::new_empty();
-        let compiled1 = compile(
+        let env = new_arena_env();
+        let state1 = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Bob Ann)
                 "#,
         )
-        .unwrap();
-        let result1 = run_state(accumulated1, compiled1).unwrap();
+        .expect("compile failed");
+        let (env, _outputs) = run_state(env, &state1).expect("run_state failed");
 
         // Second run: use facts via rules
-        let compiled2 = compile(
+        let state2 = compile_arena(
             r#"
                 (= (grandparent $gp $gc)
                    (match &self (Parent $gp $p)
@@ -1101,18 +1091,18 @@ mod tests {
                 !(grandparent Tom Ann)
                 "#,
         )
-        .unwrap();
-        let result2 = run_state(result1, compiled2).unwrap();
+        .expect("compile failed");
+        let (_env, outputs) = run_state(env, &state2).expect("run_state failed");
 
         // Should be able to query the facts
-        assert!(!result2.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     // Pattern Matching and Queries
     #[test]
     fn test_run_state_simple_pattern_match() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Pam Bob)
@@ -1122,18 +1112,18 @@ mod tests {
                 !(get-parents Bob)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Should find parents of Bob
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[test]
     fn test_run_state_pattern_match_with_variables() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Pam Bob)
@@ -1143,19 +1133,19 @@ mod tests {
                 !(find-parents Tom)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Should find all children of Tom
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     // Family Relationship Tests
     #[test]
     fn test_run_state_family_relationships() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (parent Tom Bob)
                 (parent Pam Bob)
@@ -1171,17 +1161,17 @@ mod tests {
                 !(grandparent Tom Ann)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[test]
     fn test_run_state_recursive_ancestor_relation() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (parent Tom Bob)
                 (parent Bob Ann)
@@ -1194,18 +1184,18 @@ mod tests {
                 !(ancestor Tom Sara)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Should find that Tom is an ancestor of Sara
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[test]
     fn test_run_state_complex_family_query() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (parent Tom Bob)
                 (parent Pam Bob)
@@ -1222,18 +1212,19 @@ mod tests {
                 !(sibling Ann Pat)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     // Constraint Solving Tests
     #[test]
     fn test_run_state_nondeterministic_choice() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        use crate::backend::models::ArenaValueInner;
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (= (small-digit) 1)
                 (= (small-digit) 2)
@@ -1241,15 +1232,15 @@ mod tests {
                 !(small-digit)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Should produce multiple results (nondeterministic)
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
         // All results should be valid digits
-        for output in &result.output {
-            if let MettaValueInner::Long(n) = output.inner() {
+        for output in &outputs {
+            if let ArenaValueInner::Long(n) = output.inner() {
                 assert!(*n >= 1 && *n <= 3);
             }
         }
@@ -1257,8 +1248,8 @@ mod tests {
 
     #[test]
     fn test_run_state_constraint_solving_pair() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (= (small-digit) 1)
                 (= (small-digit) 2)
@@ -1274,18 +1265,18 @@ mod tests {
                 !(solve-pair)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Should produce pairs where x != y
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[test]
     fn test_run_state_constraint_solving_triple() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (= (small-digit) 1)
                 (= (small-digit) 2)
@@ -1309,19 +1300,19 @@ mod tests {
                 !(solve-triple)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Should produce valid triples with constraints
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     // Knowledge Base Operations
     #[test]
     fn test_run_state_entity_relations() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (works alice acme)
                 (works bob beta)
@@ -1335,17 +1326,17 @@ mod tests {
                 !(find-colleagues alice)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[test]
     fn test_run_state_complex_pattern_matching() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Pam Bob)
@@ -1356,18 +1347,18 @@ mod tests {
                 !(get-parent-entries Tom $child)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Should find all children of Tom
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[test]
     fn test_run_state_nested_queries() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Bob Ann)
@@ -1379,17 +1370,17 @@ mod tests {
                 !(find-liked-grandchildren Tom)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[test]
     fn test_run_state_rule_with_multiple_matches() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Pam Bob)
@@ -1400,20 +1391,20 @@ mod tests {
                 !(get-all-children Bob)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Should find both Ann and Pat
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     // Async tests for space operations
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_add_facts_then_query() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Bob Ann)
@@ -1423,37 +1414,38 @@ mod tests {
                 !(grandparent Tom Ann)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state_async(accumulated, compiled).await.unwrap();
+        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
 
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_ground_facts_not_in_output_async() {
         // Regression test: verify ground facts are NOT added to output (async version)
-        let mut accumulated = MettaState::new_empty();
+        let mut env = new_arena_env();
 
         // Add ground facts
-        let compiled1 = compile("(connected room_a room_b) (connected room_b room_c)").unwrap();
-        accumulated = run_state_async(accumulated, compiled1).await.unwrap();
+        let state1 = compile_arena("(connected room_a room_b) (connected room_b room_c)").expect("compile failed");
+        let (new_env, outputs1) = run_state_async(env, &state1).await.expect("run_state_async failed");
+        env = new_env;
         // Ground facts should NOT produce output
-        assert_eq!(accumulated.output.len(), 0);
+        assert_eq!(outputs1.len(), 0);
 
         // Verify ground facts are in environment (can be queried)
-        let compiled2 = compile("!(match &self (connected $from $to) ($from $to))").unwrap();
-        accumulated = run_state_async(accumulated, compiled2).await.unwrap();
+        let state2 = compile_arena("!(match &self (connected $from $to) ($from $to))").expect("compile failed");
+        let (_env, outputs2) = run_state_async(env, &state2).await.expect("run_state_async failed");
         // Now output should contain query results (2 matches)
-        assert_eq!(accumulated.output.len(), 2);
+        assert_eq!(outputs2.len(), 2);
     }
 
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_parallel_queries() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Pam Bob)
@@ -1464,36 +1456,36 @@ mod tests {
                 !(get-parents Ann)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state_async(accumulated, compiled).await.unwrap();
+        let (_env, outputs) = run_state_async(env, &state).await.expect("run_state_async failed");
 
         // Both queries should execute in parallel
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     #[test]
     fn test_run_state_facts_only_no_output() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Pam Bob)
                 (Parent Bob Ann)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
         // Facts are added to space but produce no output
-        assert_eq!(result.output.len(), 0);
+        assert_eq!(outputs.len(), 0);
     }
 
     #[test]
     fn test_run_state_mixed_facts_and_rules() {
-        let accumulated = MettaState::new_empty();
-        let compiled = compile(
+        let env = new_arena_env();
+        let state = compile_arena(
             r#"
                 (Parent Tom Bob)
                 (Parent Bob Ann)
@@ -1503,11 +1495,11 @@ mod tests {
                 !(grandparent Tom Ann)
                 "#,
         )
-        .unwrap();
+        .expect("compile failed");
 
-        let result = run_state(accumulated, compiled).unwrap();
+        let (_env, outputs) = run_state(env, &state).expect("run_state failed");
 
-        assert!(!result.output.is_empty());
+        assert!(!outputs.is_empty());
     }
 
     // Tests for improve_error_message with different SyntaxErrorKind variants

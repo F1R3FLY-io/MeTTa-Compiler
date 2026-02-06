@@ -31,6 +31,7 @@ pub fn pattern_matches(pattern: &MettaValue, value: &MettaValue) -> bool {
         (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
         // Exact match for literals
         (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
+        (MettaValueInner::Float(a), MettaValueInner::Float(b)) => a == b,
         (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
         (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
         (MettaValueInner::Nil, MettaValueInner::Nil) => true,
@@ -76,6 +77,9 @@ fn pattern_match_bind_impl(
         // Exact match for literals
         (MettaValueInner::Long(a), val) => {
             matches!(val.inner(), MettaValueInner::Long(b) if a == b)
+        }
+        (MettaValueInner::Float(a), val) => {
+            matches!(val.inner(), MettaValueInner::Float(b) if a == b)
         }
         (MettaValueInner::Bool(a), val) => {
             matches!(val.inner(), MettaValueInner::Bool(b) if a == b)

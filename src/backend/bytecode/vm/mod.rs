@@ -54,6 +54,9 @@ mod value_ops;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod proptests;
+
 // === Re-exports ===
 
 pub use pattern::{pattern_match_bind, pattern_matches, unify};
@@ -605,7 +608,7 @@ impl BytecodeVM {
             Opcode::MaxAtom => self.op_max_atom()?,
 
             // Nondeterminism
-            Opcode::Fork => self.op_fork()?,
+            Opcode::Fork => return self.op_fork(),
             Opcode::Fail => return self.op_fail(),
             Opcode::Cut => self.op_cut(),
             Opcode::Collect => self.op_collect()?,
@@ -1630,7 +1633,7 @@ where
             Opcode::MaxAtom => self.op_max_atom()?,
 
             // === Nondeterminism ===
-            Opcode::Fork => self.op_fork()?,
+            Opcode::Fork => return self.op_fork(),
             Opcode::Fail => return self.op_fail(),
             Opcode::Cut => self.op_cut(),
             Opcode::Collect => self.op_collect()?,
@@ -2439,9 +2442,15 @@ where
 
     // === Nondeterminism Stubs ===
 
-    fn op_fork(&mut self) -> VmResult<()> {
+    fn op_fork(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         // Create choice point with alternatives from sub-chunks
         let num_alts = self.read_u8()? as usize;
+
+        // Zero alternatives means immediate failure
+        if num_alts == 0 {
+            return self.op_fail();
+        }
+
         let mut alternatives = Vec::with_capacity(num_alts);
 
         for _ in 0..num_alts {
@@ -2462,7 +2471,7 @@ where
             };
             self.choice_points.push(choice_point);
         }
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 
     fn op_fail(&mut self) -> VmResult<ControlFlow<Vec<V>>> {

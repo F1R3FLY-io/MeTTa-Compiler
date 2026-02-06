@@ -257,4 +257,165 @@ mod tests {
             "Expected variable highlighting"
         );
     }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_highlight_number() {
+        let mut highlighter = QueryHighlighter::new().unwrap();
+        let source = "42";
+        let highlighted = highlighter.highlight_code(source);
+
+        // Should contain number color
+        assert!(
+            highlighted.contains(colors::NUMBER),
+            "Expected number highlighting"
+        );
+    }
+
+    #[test]
+    fn test_highlight_boolean_true() {
+        let mut highlighter = QueryHighlighter::new().unwrap();
+        let source = "True";
+        let highlighted = highlighter.highlight_code(source);
+
+        // Should contain boolean color
+        assert!(
+            highlighted.contains(colors::BOOLEAN),
+            "Expected boolean highlighting"
+        );
+    }
+
+    #[test]
+    fn test_highlight_boolean_false() {
+        let mut highlighter = QueryHighlighter::new().unwrap();
+        let source = "False";
+        let highlighted = highlighter.highlight_code(source);
+
+        // Should contain boolean color
+        assert!(
+            highlighted.contains(colors::BOOLEAN),
+            "Expected boolean highlighting"
+        );
+    }
+
+    #[test]
+    fn test_highlight_empty_input() {
+        let mut highlighter = QueryHighlighter::new().unwrap();
+        let source = "";
+        let highlighted = highlighter.highlight_code(source);
+
+        // Empty input should return empty string
+        assert_eq!(highlighted, "");
+    }
+
+    #[test]
+    fn test_highlight_whitespace_only() {
+        let mut highlighter = QueryHighlighter::new().unwrap();
+        let source = "   \t\n  ";
+        let highlighted = highlighter.highlight_code(source);
+
+        // Whitespace-only should return whitespace as-is
+        assert_eq!(highlighted, source);
+    }
+
+    #[test]
+    fn test_highlight_nested_expression() {
+        let mut highlighter = QueryHighlighter::new().unwrap();
+        let source = "(foo (bar (baz $x)))";
+        let highlighted = highlighter.highlight_code(source);
+
+        // Should contain ANSI codes
+        assert!(highlighted.contains("\x1b["), "Expected ANSI color codes");
+    }
+
+    #[test]
+    fn test_highlight_multiple_expressions() {
+        let mut highlighter = QueryHighlighter::new().unwrap();
+        let source = "(+ 1 2)\n(- 3 4)";
+        let highlighted = highlighter.highlight_code(source);
+
+        // Should contain ANSI codes
+        assert!(highlighted.contains("\x1b["), "Expected ANSI color codes");
+    }
+
+    #[test]
+    fn test_highlight_mixed_content() {
+        let mut highlighter = QueryHighlighter::new().unwrap();
+        let source = r#"(= (factorial $n) ; recursive factorial
+            (if (== $n 0)
+                1
+                (* $n (factorial (- $n 1)))))"#;
+        let highlighted = highlighter.highlight_code(source);
+
+        // Should contain various color codes
+        assert!(
+            highlighted.contains(colors::COMMENT),
+            "Expected comment highlighting"
+        );
+        assert!(
+            highlighted.contains(colors::VARIABLE),
+            "Expected variable highlighting"
+        );
+        assert!(
+            highlighted.contains(colors::NUMBER),
+            "Expected number highlighting"
+        );
+    }
+
+    #[test]
+    fn test_highlight_special_variable() {
+        let mut highlighter = QueryHighlighter::new().unwrap();
+        let source = "&self";
+        let highlighted = highlighter.highlight_code(source);
+
+        // &self may or may not have special highlighting depending on grammar
+        // Just verify it returns something (no crash)
+        assert!(!highlighted.is_empty(), "Expected non-empty result");
+    }
+
+    #[test]
+    fn test_capture_to_color_unknown() {
+        let highlighter = QueryHighlighter::new().unwrap();
+        // Unknown capture names should return RESET
+        assert_eq!(highlighter.capture_to_color("unknown_type"), colors::RESET);
+    }
+
+    #[test]
+    fn test_capture_to_color_operator_type() {
+        let highlighter = QueryHighlighter::new().unwrap();
+        assert_eq!(highlighter.capture_to_color("operator.type"), colors::OPERATOR);
+    }
+
+    #[test]
+    fn test_capture_to_color_keyword_operator() {
+        let highlighter = QueryHighlighter::new().unwrap();
+        assert_eq!(highlighter.capture_to_color("keyword.operator"), colors::KEYWORD);
+    }
+
+    #[test]
+    fn test_capture_to_color_number_float() {
+        let highlighter = QueryHighlighter::new().unwrap();
+        assert_eq!(highlighter.capture_to_color("number.float"), colors::NUMBER);
+    }
+
+    #[test]
+    fn test_capture_to_color_punctuation_bracket() {
+        let highlighter = QueryHighlighter::new().unwrap();
+        assert_eq!(
+            highlighter.capture_to_color("punctuation.bracket"),
+            colors::PUNCTUATION
+        );
+    }
+
+    #[test]
+    fn test_capture_to_color_punctuation_delimiter() {
+        let highlighter = QueryHighlighter::new().unwrap();
+        assert_eq!(
+            highlighter.capture_to_color("punctuation.delimiter"),
+            colors::PUNCTUATION
+        );
+    }
 }

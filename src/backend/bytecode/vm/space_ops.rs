@@ -7,9 +7,9 @@
 //! - SpaceMatch: Match pattern against atoms in a space
 //! - LoadSpace: Load a space by name
 
-use std::hash::{Hash, Hasher};
+use xxhash_rust::xxh3::xxh3_64;
 
-use super::pattern::pattern_matches;
+use super::pattern::{pattern_match_bind, pattern_matches};
 use super::types::{VmError, VmResult};
 use super::BytecodeVM;
 use crate::backend::models::{MettaValue, MettaValueInner, SpaceHandle};
@@ -71,16 +71,18 @@ impl BytecodeVM {
         }
     }
 
-    /// Match pattern against atoms in a space.
+    /// Match pattern against atoms in a space and instantiate template with bindings.
+    ///
     /// Stack: [space, pattern, template] -> [results...]
     ///
-    /// Note: This is a simplified implementation that doesn't support
-    /// full nondeterministic matching with template evaluation yet.
-    /// For now, it returns matched atoms without template instantiation.
+    /// For each atom in the space that matches the pattern:
+    /// 1. Extract variable bindings from the pattern match
+    /// 2. Substitute bindings into the template
+    /// 3. Add the instantiated template to results
+    ///
+    /// This is the full implementation with template instantiation and binding extraction.
     pub(super) fn op_space_match(&mut self) -> VmResult<()> {
-        // TODO: Full implementation requires recursive evaluation
-        // For now, use simplified matching that returns atoms without templates
-        let _template = self.pop()?;
+        let template = self.pop()?;
         let pattern = self.pop()?;
         let space = self.pop()?;
 
@@ -89,10 +91,12 @@ impl BytecodeVM {
                 let atoms = handle.collapse();
                 let mut results = Vec::new();
 
-                // Simple pattern matching against atoms
+                // Match pattern against each atom and instantiate template
                 for atom in &atoms {
-                    if pattern_matches(&pattern, atom) {
-                        results.push(atom.clone());
+                    if let Some(bindings) = pattern_match_bind(&pattern, atom) {
+                        // Substitute bindings into template
+                        let instantiated = self.substitute_bindings(&template, &bindings);
+                        results.push(instantiated);
                     }
                 }
 
@@ -104,6 +108,38 @@ impl BytecodeVM {
                 expected: "Space",
                 got: space.type_name(),
             }),
+        }
+    }
+
+    /// Substitute variable bindings into a template expression.
+    ///
+    /// Replaces all variable references (atoms starting with '$') in the template
+    /// with their corresponding values from the bindings.
+    fn substitute_bindings(
+        &self,
+        template: &MettaValue,
+        bindings: &[(String, MettaValue)],
+    ) -> MettaValue {
+        match template.inner() {
+            // Variables are substituted with bound values
+            MettaValueInner::Atom(name) if name.starts_with('$') => {
+                // Look up the variable in bindings
+                bindings
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_else(|| template.clone())
+            }
+            // S-expressions are recursively substituted
+            MettaValueInner::SExpr(items) => {
+                let substituted: Vec<MettaValue> = items
+                    .iter()
+                    .map(|item| self.substitute_bindings(item, bindings))
+                    .collect();
+                MettaValue::SExpr(substituted)
+            }
+            // All other values pass through unchanged
+            _ => template.clone(),
         }
     }
 
@@ -123,13 +159,7 @@ impl BytecodeVM {
             MettaValueInner::Atom(space_name) => {
                 // Create a placeholder space with the given name
                 // In full integration, this would lookup from Environment
-                let handle = SpaceHandle::new(
-                    std::hash::BuildHasher::build_hasher(
-                        &std::collections::hash_map::RandomState::new(),
-                    )
-                    .finish(),
-                    space_name.clone(),
-                );
+                let handle = SpaceHandle::new(xxh3_64(space_name.as_bytes()), space_name.clone());
                 self.push(MettaValue::Space(handle));
                 Ok(())
             }

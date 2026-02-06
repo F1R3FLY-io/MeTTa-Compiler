@@ -577,6 +577,30 @@ impl ChunkBuilder {
         self.code.extend_from_slice(bytes);
     }
 
+    /// Emit an opcode with a signed 2-byte operand (big-endian)
+    /// Used for jump offsets which can be negative
+    pub fn emit_i16(&mut self, opcode: Opcode, operand: i16) {
+        self.check_nondeterminism(opcode);
+        self.emit_line_info();
+        self.code.push(opcode.to_byte());
+        self.code.extend_from_slice(&operand.to_be_bytes());
+    }
+
+    /// Emit an opcode with a signed 1-byte operand
+    /// Used for short jump offsets which can be negative
+    pub fn emit_i8(&mut self, opcode: Opcode, operand: i8) {
+        self.check_nondeterminism(opcode);
+        self.emit_line_info();
+        self.code.push(opcode.to_byte());
+        self.code.push(operand as u8);
+    }
+
+    /// Emit a single raw byte (for testing invalid opcodes etc)
+    #[cfg(test)]
+    pub fn emit_raw_byte(&mut self, byte: u8) {
+        self.code.push(byte);
+    }
+
     /// Add a constant to the pool, returns its index
     pub fn add_constant(&mut self, value: MettaValue) -> u16 {
         // Check if constant already exists

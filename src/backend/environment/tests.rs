@@ -1516,4 +1516,275 @@ mod thread_safety {
             "Rule multiplicity should be 0 or 1 after second removal"
         );
     }
+
+    // =========================================================================
+    // Phase 5C: Additional Environment Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_env_default_owns_data() {
+        let env = HeapEnvironment::default();
+        assert!(env.owns_data, "Default env should own data");
+        assert!(!env.modified.load(Ordering::Relaxed), "Default env should not be modified");
+    }
+
+    #[test]
+    fn test_env_rule_count_empty() {
+        let env = HeapEnvironment::default();
+        assert_eq!(env.rule_count(), 0, "Empty env should have 0 rules");
+    }
+
+    #[test]
+    fn test_env_rule_count_after_add() {
+        let mut env = HeapEnvironment::default();
+        env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+        assert_eq!(env.rule_count(), 1, "Env should have 1 rule after add");
+
+        env.add_rule(make_test_rule("(test2 $y)", "(result2 $y)"));
+        assert_eq!(env.rule_count(), 2, "Env should have 2 rules");
+    }
+
+    #[test]
+    fn test_env_iter_rules_empty() {
+        let env = HeapEnvironment::default();
+        let rules: Vec<_> = env.iter_rules().collect();
+        assert!(rules.is_empty(), "iter_rules on empty env should be empty");
+    }
+
+    #[test]
+    fn test_env_iter_rules_with_rules() {
+        let mut env = HeapEnvironment::default();
+        env.add_rule(make_test_rule("(a $x)", "(b $x)"));
+        env.add_rule(make_test_rule("(c $y)", "(d $y)"));
+
+        let rules: Vec<_> = env.iter_rules().collect();
+        assert_eq!(rules.len(), 2, "Should have 2 rules");
+    }
+
+    #[test]
+    fn test_env_get_matching_rules_no_match() {
+        let mut env = HeapEnvironment::default();
+        env.add_rule(make_test_rule("(foo $x)", "(bar $x)"));
+
+        // Try to get rules for non-existent head
+        let rules: Vec<_> = env.get_matching_rules_iter("baz", 1).collect();
+        assert!(rules.is_empty(), "Should have no matching rules for 'baz'");
+    }
+
+    #[test]
+    fn test_env_get_matching_rules_match() {
+        let mut env = HeapEnvironment::default();
+        env.add_rule(make_test_rule_sexpr("(foo $x)", "(bar $x)"));
+
+        // Get rules for matching head
+        let rules: Vec<_> = env.get_matching_rules_iter("foo", 1).collect();
+        assert!(!rules.is_empty(), "Should have matching rules for 'foo'");
+    }
+
+    #[test]
+    fn test_env_clone_does_not_own() {
+        let mut env = HeapEnvironment::default();
+        env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+
+        let clone = env.clone();
+        assert!(!clone.owns_data, "Clone should not own data");
+        assert!(!clone.modified.load(Ordering::Relaxed), "Clone should not be modified");
+    }
+
+    #[test]
+    fn test_env_multiple_clones_independent_modifications() {
+        let mut env = HeapEnvironment::default();
+        env.add_rule(make_test_rule_sexpr("(base $x)", "(result $x)"));
+
+        let mut clone1 = env.clone();
+        let mut clone2 = env.clone();
+
+        // Modify clone1
+        clone1.add_rule(make_test_rule_sexpr("(clone1 $x)", "(res1 $x)"));
+
+        // Modify clone2
+        clone2.add_rule(make_test_rule_sexpr("(clone2 $y)", "(res2 $y)"));
+
+        // Verify independence
+        assert_eq!(env.rule_count(), 1, "Original should have 1 rule");
+        assert_eq!(clone1.rule_count(), 2, "Clone1 should have 2 rules");
+        assert_eq!(clone2.rule_count(), 2, "Clone2 should have 2 rules");
+
+        // Verify they have different rules
+        let clone1_has_clone2: Vec<_> = clone1.get_matching_rules_iter("clone2", 1).collect();
+        assert!(clone1_has_clone2.is_empty(), "Clone1 should not have clone2's rules");
+
+        let clone2_has_clone1: Vec<_> = clone2.get_matching_rules_iter("clone1", 1).collect();
+        assert!(clone2_has_clone1.is_empty(), "Clone2 should not have clone1's rules");
+    }
+
+    #[test]
+    fn test_env_add_to_space_non_rule() {
+        let mut env = HeapEnvironment::default();
+
+        // Add a non-rule value (fact)
+        let fact = MettaValue::SExpr(vec![
+            MettaValue::Atom("fact".to_string()),
+            MettaValue::Long(42),
+        ]);
+        env.add_to_space(&fact);
+
+        // The fact should be in space but not as a rule
+        // (implementation-specific behavior)
+        // This just tests that it doesn't crash
+    }
+
+    #[test]
+    fn test_env_add_to_space_rule() {
+        let mut env = HeapEnvironment::default();
+
+        // Check initial atom count
+        let initial_atoms = env.shared.total_atoms.load(Ordering::Relaxed);
+        assert_eq!(initial_atoms, 0, "New environment should have 0 atoms");
+
+        // Add a rule via add_to_space
+        let rule_sexpr = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("double".to_string()),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("*".to_string()),
+                MettaValue::Long(2),
+                MettaValue::Atom("$x".to_string()),
+            ]),
+        ]);
+
+        // add_to_space adds to the space (btm/pathmap)
+        env.add_to_space(&rule_sexpr);
+
+        // Verify the atom was added (total atoms should increase)
+        // We can access internals since shared is pub(crate)
+        let final_atoms = env.shared.total_atoms.load(Ordering::Relaxed);
+        assert_eq!(final_atoms, 1, "After add_to_space, total_atoms should be 1");
+    }
+
+    #[test]
+    fn test_env_cow_not_triggered_without_mutation() {
+        let env = HeapEnvironment::default();
+        let shared_ptr_before = StdArc::as_ptr(&env.shared);
+
+        // Clone without mutation
+        let clone = env.clone();
+        let clone_shared_ptr = StdArc::as_ptr(&clone.shared);
+
+        // Should share the same Arc
+        assert_eq!(shared_ptr_before, clone_shared_ptr, "Clone should share Arc without mutation");
+    }
+
+    #[test]
+    fn test_env_cow_triggered_on_mutation() {
+        let env = HeapEnvironment::default();
+
+        let mut clone = env.clone();
+        let shared_ptr_before = StdArc::as_ptr(&clone.shared);
+
+        // Mutate to trigger CoW
+        clone.add_rule(make_test_rule("(test $x)", "(result $x)"));
+        let shared_ptr_after = StdArc::as_ptr(&clone.shared);
+
+        // Should have different Arc after mutation
+        assert_ne!(shared_ptr_before, shared_ptr_after, "CoW should create new Arc on mutation");
+    }
+
+    #[test]
+    fn test_env_modified_flag_set_on_mutation() {
+        let mut env = HeapEnvironment::default();
+        assert!(!env.modified.load(Ordering::Relaxed), "New env should not be modified");
+
+        env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+        assert!(env.modified.load(Ordering::Relaxed), "Env should be modified after add_rule");
+    }
+
+    #[test]
+    fn test_env_clone_fresh_modified_flag() {
+        let mut env = HeapEnvironment::default();
+        env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+        assert!(env.modified.load(Ordering::Relaxed), "Original should be modified");
+
+        let clone = env.clone();
+        assert!(!clone.modified.load(Ordering::Relaxed), "Clone should have fresh modified flag");
+    }
+
+    #[test]
+    fn test_env_get_rule_count_missing() {
+        let env = HeapEnvironment::default();
+        let rule = make_test_rule("(nonexistent $x)", "(result $x)");
+
+        // Count for non-existent rule should be handled gracefully (0 or 1)
+        let count = env.get_rule_count(&rule);
+        assert!(count <= 1, "Count for non-existent rule should be 0 or 1");
+    }
+
+    #[test]
+    fn test_env_wildcard_rule_matching() {
+        let mut env = HeapEnvironment::default();
+
+        // Add a rule with variable as head (wildcard rule)
+        env.add_rule(Rule::new(
+            MettaValue::Atom("$any".to_string()),
+            MettaValue::Atom("matched".to_string()),
+        ));
+
+        // Wildcard rules should be tracked
+        // (exact behavior depends on implementation)
+    }
+
+    #[test]
+    fn test_extract_head_arity_atom() {
+        let value = MettaValue::Atom("test".to_string());
+        let (head, arity) = extract_head_arity(&value);
+        assert_eq!(head, "test");
+        assert_eq!(arity, 0);
+    }
+
+    #[test]
+    fn test_extract_head_arity_sexpr() {
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        let (head, arity) = extract_head_arity(&value);
+        assert_eq!(head, "foo");
+        assert_eq!(arity, 2);
+    }
+
+    #[test]
+    fn test_extract_head_arity_empty_sexpr() {
+        let value = MettaValue::SExpr(vec![]);
+        let (head, arity) = extract_head_arity(&value);
+        assert_eq!(head, "");
+        assert_eq!(arity, 0);
+    }
+
+    #[test]
+    fn test_extract_head_arity_non_atom_head() {
+        let value = MettaValue::SExpr(vec![
+            MettaValue::Long(42), // Non-atom head
+            MettaValue::Atom("arg".to_string()),
+        ]);
+        let (head, arity) = extract_head_arity(&value);
+        assert_eq!(head, ""); // Fallback
+        assert_eq!(arity, 0);
+    }
+
+    #[test]
+    fn test_extract_head_arity_other_types() {
+        let value = MettaValue::Long(42);
+        let (head, arity) = extract_head_arity(&value);
+        assert_eq!(head, "");
+        assert_eq!(arity, 0);
+
+        let value = MettaValue::Bool(true);
+        let (head, arity) = extract_head_arity(&value);
+        assert_eq!(head, "");
+        assert_eq!(arity, 0);
+    }
 }

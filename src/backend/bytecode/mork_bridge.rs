@@ -54,12 +54,12 @@ struct RuleCacheKey {
 
 impl RuleCacheKey {
     fn from_rhs(rhs: &MettaValue) -> Self {
-        use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        rhs.hash(&mut hasher);
+        use xxhash_rust::xxh3::Xxh3;
+        let mut h = Xxh3::new();
+        rhs.hash(&mut h);
         Self {
-            rhs_hash: hasher.finish(),
+            rhs_hash: h.finish(),
         }
     }
 }

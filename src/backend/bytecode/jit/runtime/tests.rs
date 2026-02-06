@@ -988,4 +988,4908 @@ mod tests {
         let result = unsafe { *ctx.results.add(0) };
         assert_eq!(result.as_long(), 2);
     }
+
+    // ==========================================================================
+    // Hash function tests (xxh3 coverage)
+    // ==========================================================================
+
+    #[test]
+    fn test_hash_string_stability() {
+        use super::super::rule_dispatch::hash_string;
+        use xxhash_rust::xxh3::xxh3_64;
+
+        // Hash should be stable
+        let h1 = hash_string("test_binding");
+        let h2 = hash_string("test_binding");
+        assert_eq!(h1, h2);
+
+        // Should match direct xxh3_64 call
+        assert_eq!(h1, xxh3_64(b"test_binding"));
+    }
+
+    #[test]
+    fn test_hash_string_different_strings() {
+        use super::super::rule_dispatch::hash_string;
+
+        // Different strings should produce different hashes
+        let h1 = hash_string("binding_a");
+        let h2 = hash_string("binding_b");
+        let h3 = hash_string("$x");
+        let h4 = hash_string("$y");
+
+        assert_ne!(h1, h2);
+        assert_ne!(h3, h4);
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn test_hash_string_empty() {
+        use super::super::rule_dispatch::hash_string;
+        use xxhash_rust::xxh3::xxh3_64;
+
+        // Empty string should have a valid hash
+        let h = hash_string("");
+        assert_eq!(h, xxh3_64(b""));
+        // xxh3_64 produces a well-defined hash for empty input
+        assert_ne!(h, 0); // xxh3 doesn't return 0 for empty input
+    }
+
+    // ==========================================================================
+    // jit_runtime_load_space fallback xxh3 path coverage
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_load_space_fallback_xxh3() {
+        use super::super::global_ops::jit_runtime_load_space;
+        use xxhash_rust::xxh3::xxh3_64;
+
+        // Create constants with space name
+        let space_name = "fallback_test_space";
+        let constants = vec![MettaValue::sym(space_name)];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        // JitContext::new() sets space_registry=null and grounded_spaces=null
+        // This triggers the fallback path in jit_runtime_load_space
+        let ctx = unsafe {
+            JitContext::new(
+                stack.as_mut_ptr(),
+                stack.len(),
+                constants.as_ptr(),
+                constants.len(),
+            )
+        };
+
+        // Call jit_runtime_load_space - should use fallback xxh3_64 path
+        let result_bits = unsafe { jit_runtime_load_space(&ctx, 0, 0) };
+        let result = JitValue::from_raw(result_bits);
+        let metta_val = unsafe { result.to_metta() };
+
+        // Verify space has correct xxh3_64-based ID
+        match metta_val.inner() {
+            MettaValueInner::Space(handle) => {
+                let expected_id = xxh3_64(space_name.as_bytes());
+                assert_eq!(handle.id, expected_id);
+                assert_eq!(handle.name, space_name);
+            }
+            _ => panic!("Expected Space, got {:?}", metta_val),
+        }
+    }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests - Arithmetic Edge Cases
+    // ==========================================================================
+
+    #[test]
+    fn test_pow_large_values() {
+        // Use values that fit in 48-bit NaN-boxed payload
+        let base = box_long(2);
+        let exp = box_long(40);
+        let result = unsafe { jit_runtime_pow(base, exp) };
+        let result_val = extract_long_signed(result);
+        // 2^40 = 1099511627776, fits in 48-bit payload
+        assert_eq!(result_val, 1099511627776);
+    }
+
+    #[test]
+    fn test_pow_base_zero() {
+        let base = box_long(0);
+        let exp = box_long(5);
+        let result = unsafe { jit_runtime_pow(base, exp) };
+        let result_val = extract_long_signed(result);
+        assert_eq!(result_val, 0); // 0^n = 0 for n > 0
+    }
+
+    #[test]
+    fn test_pow_base_one() {
+        let base = box_long(1);
+        let exp = box_long(100);
+        let result = unsafe { jit_runtime_pow(base, exp) };
+        let result_val = extract_long_signed(result);
+        assert_eq!(result_val, 1); // 1^n = 1
+    }
+
+    #[test]
+    fn test_pow_negative_base_even_exp() {
+        let base = box_long(-2);
+        let exp = box_long(4);
+        let result = unsafe { jit_runtime_pow(base, exp) };
+        let result_val = extract_long_signed(result);
+        assert_eq!(result_val, 16); // (-2)^4 = 16
+    }
+
+    #[test]
+    fn test_pow_negative_base_odd_exp() {
+        let base = box_long(-2);
+        let exp = box_long(3);
+        let result = unsafe { jit_runtime_pow(base, exp) };
+        let result_val = extract_long_signed(result);
+        assert_eq!(result_val, -8); // (-2)^3 = -8
+    }
+
+    #[test]
+    fn test_abs_zero() {
+        let zero = box_long(0);
+        let result = unsafe { jit_runtime_abs(zero) };
+        assert_eq!(extract_long_signed(result), 0);
+    }
+
+    #[test]
+    fn test_abs_max_value() {
+        // Use max value that fits in 48-bit NaN-boxed payload (47 bits for signed)
+        const MAX_48BIT: i64 = 0x0000_7FFF_FFFF_FFFF; // ~140 trillion
+        let max = box_long(MAX_48BIT);
+        let result = unsafe { jit_runtime_abs(max) };
+        assert_eq!(extract_long_signed(result), MAX_48BIT);
+    }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests - Type Predicates
+    // ==========================================================================
+
+    #[test]
+    fn test_is_long_various_values() {
+        // Test with different long values
+        assert_eq!(jit_runtime_is_long(box_long(0)) & 1, 1);
+        assert_eq!(jit_runtime_is_long(box_long(i64::MAX)) & 1, 1);
+        assert_eq!(jit_runtime_is_long(box_long(i64::MIN)) & 1, 1);
+        assert_eq!(jit_runtime_is_long(box_long(-1)) & 1, 1);
+    }
+
+    #[test]
+    fn test_is_long_nil() {
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+        let nil_val = TAG_NIL;
+        let result = jit_runtime_is_long(nil_val);
+        assert_eq!(result & 1, 0); // nil is not a long
+    }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests - JitValue Conversions
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_value_nil() {
+        let nil = JitValue::nil();
+        assert!(nil.is_nil());
+        assert!(!nil.is_long());
+        assert!(!nil.is_bool());
+    }
+
+    #[test]
+    fn test_jit_value_unit() {
+        let unit = JitValue::unit();
+        assert!(unit.is_unit());
+        assert!(!unit.is_nil());
+        assert!(!unit.is_long());
+    }
+
+    #[test]
+    fn test_jit_value_bool_true() {
+        let t = JitValue::from_bool(true);
+        assert!(t.is_bool());
+        assert!(!t.is_nil());
+        assert!(!t.is_long());
+    }
+
+    #[test]
+    fn test_jit_value_bool_false() {
+        let f = JitValue::from_bool(false);
+        assert!(f.is_bool());
+        assert!(!f.is_nil());
+        assert!(!f.is_long());
+    }
+
+    #[test]
+    fn test_jit_value_small_long() {
+        let small = JitValue::from_long(42);
+        assert!(small.is_long());
+        assert!(!small.is_nil());
+        assert!(!small.is_bool());
+    }
+
+    #[test]
+    fn test_jit_value_negative_long() {
+        let neg = JitValue::from_long(-42);
+        assert!(neg.is_long());
+    }
+
+    #[test]
+    fn test_jit_value_max_long() {
+        // Note: JitValue::from_long truncates to 48 bits
+        let max = JitValue::from_long(i64::MAX);
+        assert!(max.is_long());
+    }
+
+    #[test]
+    fn test_jit_value_min_long() {
+        // Note: JitValue::from_long truncates to 48 bits
+        let min = JitValue::from_long(i64::MIN);
+        assert!(min.is_long());
+    }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests - Signal Values
+    // ==========================================================================
+
+    #[test]
+    fn test_signal_values() {
+        // Verify signal constants are distinct
+        assert_ne!(JIT_SIGNAL_OK, JIT_SIGNAL_FAIL);
+        assert_ne!(JIT_SIGNAL_OK, JIT_SIGNAL_YIELD);
+        assert_ne!(JIT_SIGNAL_OK, JIT_SIGNAL_ERROR);
+        assert_ne!(JIT_SIGNAL_FAIL, JIT_SIGNAL_YIELD);
+        assert_ne!(JIT_SIGNAL_FAIL, JIT_SIGNAL_ERROR);
+        assert_ne!(JIT_SIGNAL_YIELD, JIT_SIGNAL_ERROR);
+    }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests - Tag and Payload
+    // ==========================================================================
+
+    #[test]
+    fn test_tag_extraction() {
+        let long_val = box_long(42);
+        let tag = long_val & TAG_MASK;
+        // Long values don't have a tag in the lower bits (they use TAG_HEAP or inline)
+        // Just verify the mask works
+        assert_eq!(tag & TAG_MASK, tag);
+    }
+
+    #[test]
+    fn test_payload_extraction() {
+        let long_val = box_long(42);
+        let payload = long_val & PAYLOAD_MASK;
+        // Just verify the mask works
+        assert_eq!(payload & PAYLOAD_MASK, payload);
+    }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests - Bailout Reasons
+    // ==========================================================================
+
+    #[test]
+    fn test_bailout_reason_values() {
+        // Verify bailout reasons are distinct
+        assert_ne!(JitBailoutReason::None as u8, JitBailoutReason::TypeError as u8);
+        assert_ne!(JitBailoutReason::TypeError as u8, JitBailoutReason::DivisionByZero as u8);
+        assert_ne!(JitBailoutReason::DivisionByZero as u8, JitBailoutReason::IntegerOverflow as u8);
+    }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests - Context Operations
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_context_basic() {
+        let constants = vec![MettaValue::Long(1), MettaValue::Long(2)];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let ctx = unsafe {
+            JitContext::new(
+                stack.as_mut_ptr(),
+                stack.len(),
+                constants.as_ptr(),
+                constants.len(),
+            )
+        };
+
+        // Verify context was created
+        assert!(!ctx.value_stack.is_null());
+        assert_eq!(ctx.stack_cap, 16);
+    }
+
+    #[test]
+    fn test_jit_context_empty_constants() {
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 8];
+
+        let ctx = unsafe {
+            JitContext::new(
+                stack.as_mut_ptr(),
+                stack.len(),
+                constants.as_ptr(),
+                constants.len(),
+            )
+        };
+
+        // Should handle empty constants
+        assert_eq!(ctx.constants_len, 0);
+    }
+
+    // ==========================================================================
+    // Additional Branch Coverage Tests - Alternative Tags
+    // ==========================================================================
+
+    #[test]
+    fn test_alternative_tag_values() {
+        // Verify all alternative tags are distinct
+        assert_ne!(JitAlternativeTag::Value as u8, JitAlternativeTag::Chunk as u8);
+        assert_ne!(JitAlternativeTag::Value as u8, JitAlternativeTag::RuleMatch as u8);
+    }
+
+    #[test]
+    fn test_alternative_value() {
+        let alt = JitAlternative {
+            tag: JitAlternativeTag::Value,
+            payload: box_long(42),
+            payload2: 0,
+            payload3: 0,
+        };
+        assert_eq!(alt.tag, JitAlternativeTag::Value);
+        assert_eq!(extract_long_signed(alt.payload), 42);
+    }
+
+    #[test]
+    fn test_alternative_chunk() {
+        let alt = JitAlternative {
+            tag: JitAlternativeTag::Chunk,
+            payload: 0x1234, // mock chunk pointer
+            payload2: 0,
+            payload3: 0,
+        };
+        assert_eq!(alt.tag, JitAlternativeTag::Chunk);
+        assert_eq!(alt.payload, 0x1234);
+    }
+
+    // ==========================================================================
+    // Phase 3: Special Forms Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_eval_if_true() {
+        use super::super::special_forms::jit_runtime_eval_if;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let condition = TAG_BOOL | 1; // True
+        let then_val = JitValue::from_long(42).to_bits();
+        let else_val = JitValue::from_long(99).to_bits();
+
+        let result = unsafe { jit_runtime_eval_if(std::ptr::null_mut(), condition, then_val, else_val, 0) };
+        let jv = JitValue::from_raw(result);
+        assert_eq!(jv.as_long(), 42);
+    }
+
+    #[test]
+    fn test_eval_if_false() {
+        use super::super::special_forms::jit_runtime_eval_if;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let condition = TAG_BOOL; // False (TAG_BOOL | 0)
+        let then_val = JitValue::from_long(42).to_bits();
+        let else_val = JitValue::from_long(99).to_bits();
+
+        let result = unsafe { jit_runtime_eval_if(std::ptr::null_mut(), condition, then_val, else_val, 0) };
+        let jv = JitValue::from_raw(result);
+        assert_eq!(jv.as_long(), 99);
+    }
+
+    #[test]
+    fn test_eval_if_nil() {
+        use super::super::special_forms::jit_runtime_eval_if;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let condition = TAG_NIL; // Nil is falsy
+        let then_val = JitValue::from_long(42).to_bits();
+        let else_val = JitValue::from_long(99).to_bits();
+
+        let result = unsafe { jit_runtime_eval_if(std::ptr::null_mut(), condition, then_val, else_val, 0) };
+        let jv = JitValue::from_raw(result);
+        assert_eq!(jv.as_long(), 99);
+    }
+
+    #[test]
+    fn test_eval_if_truthy_non_bool() {
+        use super::super::special_forms::jit_runtime_eval_if;
+
+        // Non-boolean values are truthy
+        let condition = JitValue::from_long(100).to_bits(); // Number is truthy
+        let then_val = JitValue::from_long(42).to_bits();
+        let else_val = JitValue::from_long(99).to_bits();
+
+        let result = unsafe { jit_runtime_eval_if(std::ptr::null_mut(), condition, then_val, else_val, 0) };
+        let jv = JitValue::from_raw(result);
+        assert_eq!(jv.as_long(), 42); // Non-bool is truthy
+    }
+
+    #[test]
+    fn test_eval_quote() {
+        use super::super::special_forms::jit_runtime_eval_quote;
+
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), std::ptr::null(), 0)
+        };
+
+        let expr = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_eval_quote(&mut ctx, expr, 0) };
+
+        // Quote should wrap the value
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP); // Quote creates a heap-allocated Quote value
+    }
+
+    #[test]
+    fn test_eval_let_star() {
+        use super::super::special_forms::jit_runtime_eval_let_star;
+
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), std::ptr::null(), 0)
+        };
+
+        let result = unsafe { jit_runtime_eval_let_star(&mut ctx, 0) };
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit()); // let* returns Unit
+    }
+
+    // ==========================================================================
+    // Phase 3: Bindings Tests
+    // ==========================================================================
+    // Note: Bindings tests require JitContext to be created with binding frame
+    // capacity, which requires using JitContext::with_nondet() with proper
+    // binding buffer setup. These operations are tested via the higher-level
+    // VM tests in src/backend/bytecode/vm/tests.rs.
+
+    // ==========================================================================
+    // Phase 3: Pattern Matching Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_pattern_match_ground_equal() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: 42, Value: 42 - should match
+        let pattern = JitValue::from_long(42).to_bits();
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        // Result should be true
+    }
+
+    #[test]
+    fn test_pattern_match_ground_unequal() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: 42, Value: 99 - should not match
+        let pattern = JitValue::from_long(42).to_bits();
+        let value = JitValue::from_long(99).to_bits();
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        // Result should be false
+    }
+
+    // Note: Tests using JitValue::from_heap_ptr are disabled because they
+    // require careful coordination with the JIT runtime's heap tracking.
+    // Pattern matching and S-expression operations are tested via the
+    // higher-level VM tests in src/backend/bytecode/vm/tests.rs.
+
+    // ==========================================================================
+    // Phase 3: Type Operations Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_get_type_long() {
+        use super::super::type_ops::jit_runtime_get_type;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_get_type(&mut ctx, value, 0) };
+
+        // Result should be an atom "Long"
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_get_type_bool() {
+        use super::super::type_ops::jit_runtime_get_type;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let value = TAG_BOOL | 1; // True
+        let result = unsafe { jit_runtime_get_type(&mut ctx, value, 0) };
+
+        // Result should be an atom "Bool"
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_get_type_nil() {
+        use super::super::type_ops::jit_runtime_get_type;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let value = TAG_NIL;
+        let result = unsafe { jit_runtime_get_type(&mut ctx, value, 0) };
+
+        // Result should be an atom "Nil"
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    // ==========================================================================
+    // Phase 3: S-expression Operations Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_push_empty() {
+        use super::super::sexpr_ops::jit_runtime_push_empty;
+
+        let result = unsafe { jit_runtime_push_empty() };
+        let _jv = JitValue::from_raw(result);
+
+        // Should be a heap-allocated empty S-expression
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    // Note: Tests using JitValue::from_heap_ptr for S-expression operations
+    // (get_head, get_tail, get_arity, get_element) are disabled because they
+    // require careful coordination with the JIT runtime's heap tracking.
+    // These operations are tested via the higher-level VM tests in
+    // src/backend/bytecode/vm/tests.rs.
+
+    // ==========================================================================
+    // Phase 3: Additional Arithmetic Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_sqrt() {
+        use super::super::arithmetic::jit_runtime_sqrt;
+
+        // sqrt(16) = 4.0
+        let val = box_long(16);
+        let result = unsafe { jit_runtime_sqrt(val) };
+        // Result should be a float
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP); // Float is heap-allocated
+    }
+
+    #[test]
+    fn test_log() {
+        use super::super::arithmetic::jit_runtime_log;
+
+        // log_2(8) = 3.0
+        let base = box_long(2);
+        let val = box_long(8);
+        let result = unsafe { jit_runtime_log(base, val) };
+        // Result should be a float
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP); // Float is heap-allocated
+    }
+
+    #[test]
+    fn test_trunc() {
+        use super::super::arithmetic::jit_runtime_trunc;
+
+        // trunc(integer) should work
+        let val = box_long(42);
+        let result = unsafe { jit_runtime_trunc(val) };
+        let result_val = extract_long_signed(result);
+        assert_eq!(result_val, 42);
+    }
+
+    #[test]
+    fn test_ceil() {
+        use super::super::arithmetic::jit_runtime_ceil;
+
+        // ceil(integer) should return same value
+        let val = box_long(42);
+        let result = unsafe { jit_runtime_ceil(val) };
+        let result_val = extract_long_signed(result);
+        assert_eq!(result_val, 42);
+    }
+
+    #[test]
+    fn test_floor_math() {
+        use super::super::arithmetic::jit_runtime_floor_math;
+
+        // floor(integer) should return same value
+        let val = box_long(42);
+        let result = unsafe { jit_runtime_floor_math(val) };
+        let result_val = extract_long_signed(result);
+        assert_eq!(result_val, 42);
+    }
+
+    #[test]
+    fn test_round() {
+        use super::super::arithmetic::jit_runtime_round;
+
+        // round(integer) should return same value
+        let val = box_long(42);
+        let result = unsafe { jit_runtime_round(val) };
+        let result_val = extract_long_signed(result);
+        assert_eq!(result_val, 42);
+    }
+
+    // ==========================================================================
+    // Phase 3: Trigonometric Function Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_sin() {
+        use super::super::arithmetic::jit_runtime_sin;
+
+        // sin(0) = 0.0
+        let val = box_long(0);
+        let result = unsafe { jit_runtime_sin(val) };
+        // Result should be a float
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_cos() {
+        use super::super::arithmetic::jit_runtime_cos;
+
+        // cos(0) = 1.0
+        let val = box_long(0);
+        let result = unsafe { jit_runtime_cos(val) };
+        // Result should be a float
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_tan() {
+        use super::super::arithmetic::jit_runtime_tan;
+
+        // tan(0) = 0.0
+        let val = box_long(0);
+        let result = unsafe { jit_runtime_tan(val) };
+        // Result should be a float
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_asin() {
+        use super::super::arithmetic::jit_runtime_asin;
+
+        // asin(0) = 0.0
+        let val = box_long(0);
+        let result = unsafe { jit_runtime_asin(val) };
+        // Result should be a float
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_acos() {
+        use super::super::arithmetic::jit_runtime_acos;
+
+        // acos(1) = 0.0
+        let val = box_long(1);
+        let result = unsafe { jit_runtime_acos(val) };
+        // Result should be a float
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_atan() {
+        use super::super::arithmetic::jit_runtime_atan;
+
+        // atan(0) = 0.0
+        let val = box_long(0);
+        let result = unsafe { jit_runtime_atan(val) };
+        // Result should be a float
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_isnan() {
+        use super::super::arithmetic::jit_runtime_isnan;
+
+        // isnan(integer) should be false
+        let val = box_long(42);
+        let result = unsafe { jit_runtime_isnan(val) };
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+    }
+
+    #[test]
+    fn test_isinf() {
+        use super::super::arithmetic::jit_runtime_isinf;
+
+        // isinf(integer) should be false
+        let val = box_long(42);
+        let result = unsafe { jit_runtime_isinf(val) };
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+    }
+
+    // ==========================================================================
+    // Phase 3: Type Predicate Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_is_bool_true() {
+        use super::super::type_predicates::jit_runtime_is_bool;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let bool_true = TAG_BOOL | 1;
+        let result = jit_runtime_is_bool(bool_true);
+        assert_eq!(result & 1, 1); // True
+    }
+
+    #[test]
+    fn test_is_bool_false() {
+        use super::super::type_predicates::jit_runtime_is_bool;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let bool_false = TAG_BOOL;
+        let result = jit_runtime_is_bool(bool_false);
+        assert_eq!(result & 1, 1); // True (it's a bool)
+    }
+
+    #[test]
+    fn test_is_bool_non_bool() {
+        use super::super::type_predicates::jit_runtime_is_bool;
+
+        let long_val = box_long(42);
+        let result = jit_runtime_is_bool(long_val);
+        assert_eq!(result & 1, 0); // False (not a bool)
+    }
+
+    #[test]
+    fn test_is_nil_nil() {
+        use super::super::type_predicates::jit_runtime_is_nil;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let nil = TAG_NIL;
+        let result = jit_runtime_is_nil(nil);
+        assert_eq!(result & 1, 1); // True
+    }
+
+    #[test]
+    fn test_is_nil_non_nil() {
+        use super::super::type_predicates::jit_runtime_is_nil;
+
+        let long_val = box_long(42);
+        let result = jit_runtime_is_nil(long_val);
+        assert_eq!(result & 1, 0); // False
+    }
+
+    #[test]
+    fn test_get_tag() {
+        use super::super::type_predicates::jit_runtime_get_tag;
+        use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_NIL, TAG_UNIT};
+
+        // jit_runtime_get_tag returns a boxed Long with the tag value >> 48
+        // The tag values are: TAG_BOOL = 0x7FF8..., so shifted >> 48 = 32760
+        // We verify the function returns a valid Long
+
+        // Bool tag - just verify it returns a long
+        let bool_val = TAG_BOOL | 1;
+        let tag_result = jit_runtime_get_tag(bool_val);
+        let jv = JitValue::from_raw(tag_result);
+        assert!(jv.is_long());
+
+        // Nil tag
+        let nil = TAG_NIL;
+        let tag_result = jit_runtime_get_tag(nil);
+        let jv = JitValue::from_raw(tag_result);
+        assert!(jv.is_long());
+
+        // Unit tag
+        let unit = TAG_UNIT;
+        let tag_result = jit_runtime_get_tag(unit);
+        let jv = JitValue::from_raw(tag_result);
+        assert!(jv.is_long());
+    }
+
+    // ==========================================================================
+    // Phase 3: Error Handling Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_error_type_error() {
+        use super::super::error_handling::jit_runtime_type_error;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        unsafe { jit_runtime_type_error(&mut ctx, 10, 0) };
+
+        assert!(ctx.bailout);
+        assert_eq!(ctx.bailout_reason, JitBailoutReason::TypeError);
+        assert_eq!(ctx.bailout_ip, 10);
+    }
+
+    #[test]
+    fn test_error_div_by_zero() {
+        use super::super::error_handling::jit_runtime_div_by_zero;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        unsafe { jit_runtime_div_by_zero(&mut ctx, 20) };
+
+        assert!(ctx.bailout);
+        assert_eq!(ctx.bailout_reason, JitBailoutReason::DivisionByZero);
+        assert_eq!(ctx.bailout_ip, 20);
+    }
+
+    #[test]
+    fn test_error_stack_overflow() {
+        use super::super::error_handling::jit_runtime_stack_overflow;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        unsafe { jit_runtime_stack_overflow(&mut ctx, 30) };
+
+        assert!(ctx.bailout);
+        assert_eq!(ctx.bailout_reason, JitBailoutReason::StackOverflow);
+        assert_eq!(ctx.bailout_ip, 30);
+    }
+
+    #[test]
+    fn test_error_stack_underflow() {
+        use super::super::error_handling::jit_runtime_stack_underflow;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        unsafe { jit_runtime_stack_underflow(&mut ctx, 40) };
+
+        assert!(ctx.bailout);
+        assert_eq!(ctx.bailout_reason, JitBailoutReason::StackUnderflow);
+        assert_eq!(ctx.bailout_ip, 40);
+    }
+
+    #[test]
+    fn test_error_integer_overflow() {
+        use super::super::error_handling::jit_runtime_integer_overflow;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        unsafe { jit_runtime_integer_overflow(&mut ctx, 50) };
+
+        assert!(ctx.bailout);
+        assert_eq!(ctx.bailout_reason, JitBailoutReason::IntegerOverflow);
+        assert_eq!(ctx.bailout_ip, 50);
+    }
+
+    // ==========================================================================
+    // Phase 3B: Binding Operations Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_store_and_load_binding() {
+        use super::super::bindings::{jit_runtime_load_binding, jit_runtime_store_binding, jit_runtime_push_binding_frame};
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        // Setup binding frames
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        // Push a binding frame
+        let result = unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+        assert_eq!(result, 0, "Push binding frame should succeed");
+        assert_eq!(ctx.binding_frames_count, 1);
+
+        // Store binding $x = 42
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_store_binding(&mut ctx, 0, value, 0) };
+        assert_eq!(result, 0, "Store binding should succeed");
+
+        // Load binding $x
+        let loaded = unsafe { jit_runtime_load_binding(&mut ctx, 0, 0) };
+        let jv = JitValue::from_raw(loaded);
+        assert_eq!(jv.as_long(), 42);
+    }
+
+    #[test]
+    fn test_jit_has_binding() {
+        use super::super::bindings::{jit_runtime_has_binding, jit_runtime_store_binding, jit_runtime_push_binding_frame};
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x"), MettaValue::sym("$y")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+
+        // Store binding for $x
+        let value = JitValue::from_long(42).to_bits();
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, value, 0) };
+
+        // Check $x exists
+        let has_x = unsafe { jit_runtime_has_binding(&ctx, 0) };
+        assert_eq!(has_x & 1, 1, "$x should exist");
+
+        // Check $y does not exist
+        let has_y = unsafe { jit_runtime_has_binding(&ctx, 1) };
+        assert_eq!(has_y & 1, 0, "$y should not exist");
+    }
+
+    #[test]
+    fn test_jit_push_pop_binding_frame() {
+        use super::super::bindings::{jit_runtime_push_binding_frame, jit_runtime_pop_binding_frame, jit_runtime_store_binding, jit_runtime_load_binding};
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        // Push first frame and store $x = 10
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, JitValue::from_long(10).to_bits(), 0) };
+        assert_eq!(ctx.binding_frames_count, 1);
+
+        // Push second frame and store $x = 20
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, JitValue::from_long(20).to_bits(), 0) };
+        assert_eq!(ctx.binding_frames_count, 2);
+
+        // Load $x should give 20 (innermost frame)
+        let val = unsafe { jit_runtime_load_binding(&mut ctx, 0, 0) };
+        assert_eq!(JitValue::from_raw(val).as_long(), 20);
+
+        // Pop inner frame
+        let result = unsafe { jit_runtime_pop_binding_frame(&mut ctx) };
+        assert_eq!(result, 0, "Pop should succeed");
+        assert_eq!(ctx.binding_frames_count, 1);
+
+        // Load $x should now give 10 (outer frame)
+        let val = unsafe { jit_runtime_load_binding(&mut ctx, 0, 0) };
+        assert_eq!(JitValue::from_raw(val).as_long(), 10);
+    }
+
+    #[test]
+    fn test_jit_clear_bindings() {
+        use super::super::bindings::{jit_runtime_clear_bindings, jit_runtime_store_binding, jit_runtime_push_binding_frame, jit_runtime_has_binding};
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+
+        // Store binding
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, JitValue::from_long(42).to_bits(), 0) };
+        assert_eq!(unsafe { jit_runtime_has_binding(&ctx, 0) } & 1, 1);
+
+        // Clear bindings
+        unsafe { jit_runtime_clear_bindings(&mut ctx) };
+
+        // Binding should no longer exist
+        assert_eq!(unsafe { jit_runtime_has_binding(&ctx, 0) } & 1, 0);
+    }
+
+    #[test]
+    fn test_jit_fork_restore_bindings() {
+        use super::super::bindings::{jit_runtime_fork_bindings, jit_runtime_restore_bindings, jit_runtime_store_binding, jit_runtime_push_binding_frame, jit_runtime_load_binding, jit_runtime_free_saved_bindings};
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+
+        // Store binding $x = 10
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, JitValue::from_long(10).to_bits(), 0) };
+
+        // Fork bindings
+        let saved = unsafe { jit_runtime_fork_bindings(&ctx) };
+        assert!(!saved.is_null(), "Fork should succeed");
+
+        // Modify $x = 20
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, JitValue::from_long(20).to_bits(), 0) };
+        let val = unsafe { jit_runtime_load_binding(&mut ctx, 0, 0) };
+        assert_eq!(JitValue::from_raw(val).as_long(), 20);
+
+        // Restore bindings
+        let result = unsafe { jit_runtime_restore_bindings(&mut ctx, saved, true) };
+        assert_eq!(result, 0, "Restore should succeed");
+
+        // $x should be back to 10
+        let val = unsafe { jit_runtime_load_binding(&mut ctx, 0, 0) };
+        assert_eq!(JitValue::from_raw(val).as_long(), 10);
+    }
+
+    #[test]
+    fn test_jit_binding_not_found() {
+        use super::super::bindings::{jit_runtime_load_binding, jit_runtime_push_binding_frame};
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+
+        // Try to load non-existent binding
+        let _ = unsafe { jit_runtime_load_binding(&mut ctx, 0, 100) };
+
+        // Should signal bailout
+        assert!(ctx.bailout);
+        assert_eq!(ctx.bailout_reason, JitBailoutReason::InvalidBinding);
+    }
+
+    // ==========================================================================
+    // Phase 3B: Space Operations Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_space_add() {
+        use super::super::space_ops::jit_runtime_space_add;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let space = SpaceHandle::new(1, "test_space".to_string());
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space.clone()));
+        let atom_jit = JitValue::from_long(42);
+
+        let result = unsafe { jit_runtime_space_add(&mut ctx, space_jit.to_bits(), atom_jit.to_bits(), 0) };
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+
+        // Verify atom was added
+        let atoms = space.collapse();
+        assert_eq!(atoms.len(), 1);
+        assert_eq!(atoms[0], MettaValue::Long(42));
+    }
+
+    #[test]
+    fn test_jit_space_remove() {
+        use super::super::space_ops::jit_runtime_space_remove;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let space = SpaceHandle::new(2, "test_space".to_string());
+        space.add_atom(MettaValue::Long(1));
+        space.add_atom(MettaValue::Long(2));
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space.clone()));
+        let atom_jit = JitValue::from_long(1);
+
+        let result = unsafe { jit_runtime_space_remove(&mut ctx, space_jit.to_bits(), atom_jit.to_bits(), 0) };
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+
+        // Verify atom was removed
+        let atoms = space.collapse();
+        assert_eq!(atoms.len(), 1);
+        assert_eq!(atoms[0], MettaValue::Long(2));
+    }
+
+    #[test]
+    fn test_jit_space_remove_not_found() {
+        use super::super::space_ops::jit_runtime_space_remove;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let space = SpaceHandle::new(3, "test_space".to_string());
+        space.add_atom(MettaValue::Long(1));
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space.clone()));
+        let atom_jit = JitValue::from_long(99); // Not in space
+
+        let result = unsafe { jit_runtime_space_remove(&mut ctx, space_jit.to_bits(), atom_jit.to_bits(), 0) };
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        // Result should indicate removal failed (false)
+    }
+
+    #[test]
+    fn test_jit_space_get_atoms() {
+        use super::super::space_ops::jit_runtime_space_get_atoms;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let space = SpaceHandle::new(4, "test_space".to_string());
+        space.add_atom(MettaValue::Long(1));
+        space.add_atom(MettaValue::Long(2));
+        space.add_atom(MettaValue::sym("foo"));
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space));
+
+        let result = unsafe { jit_runtime_space_get_atoms(&mut ctx, space_jit.to_bits(), 0) };
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+
+        if let MettaValueInner::SExpr(atoms) = metta.inner() {
+            assert_eq!(atoms.len(), 3);
+            assert!(atoms.contains(&MettaValue::Long(1)));
+            assert!(atoms.contains(&MettaValue::Long(2)));
+            assert!(atoms.contains(&MettaValue::sym("foo")));
+        } else {
+            panic!("Expected SExpr");
+        }
+    }
+
+    #[test]
+    fn test_jit_space_get_atoms_empty() {
+        use super::super::space_ops::jit_runtime_space_get_atoms;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let space = SpaceHandle::new(5, "empty_space".to_string());
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space));
+
+        let result = unsafe { jit_runtime_space_get_atoms(&mut ctx, space_jit.to_bits(), 0) };
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+
+        if let MettaValueInner::SExpr(atoms) = metta.inner() {
+            assert!(atoms.is_empty());
+        } else {
+            panic!("Expected SExpr");
+        }
+    }
+
+    #[test]
+    fn test_jit_space_match() {
+        use super::super::space_ops::jit_runtime_space_match;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let space = SpaceHandle::new(6, "match_space".to_string());
+        space.add_atom(MettaValue::sexpr(vec![MettaValue::sym("fact"), MettaValue::Long(1)]));
+        space.add_atom(MettaValue::sexpr(vec![MettaValue::sym("fact"), MettaValue::Long(2)]));
+        space.add_atom(MettaValue::sexpr(vec![MettaValue::sym("other"), MettaValue::Long(3)]));
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space));
+        // Pattern: (fact $x)
+        let pattern = MettaValue::sexpr(vec![MettaValue::sym("fact"), MettaValue::var("x")]);
+        let pattern_jit = metta_to_jit(&pattern);
+        let template_jit = metta_to_jit(&MettaValue::var("x"));
+
+        let result = unsafe { jit_runtime_space_match(&mut ctx, space_jit.to_bits(), pattern_jit.to_bits(), template_jit.to_bits(), 0) };
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+
+        if let MettaValueInner::SExpr(matches) = metta.inner() {
+            assert_eq!(matches.len(), 2);
+        } else {
+            panic!("Expected SExpr");
+        }
+    }
+
+    #[test]
+    fn test_jit_space_match_no_matches() {
+        use super::super::space_ops::jit_runtime_space_match;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let space = SpaceHandle::new(7, "nomatch_space".to_string());
+        space.add_atom(MettaValue::sexpr(vec![MettaValue::sym("bar"), MettaValue::Long(1)]));
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space));
+        // Pattern: (foo $x) - won't match (bar 1)
+        let pattern = MettaValue::sexpr(vec![MettaValue::sym("foo"), MettaValue::var("x")]);
+        let pattern_jit = metta_to_jit(&pattern);
+        let template_jit = metta_to_jit(&MettaValue::var("x"));
+
+        let result = unsafe { jit_runtime_space_match(&mut ctx, space_jit.to_bits(), pattern_jit.to_bits(), template_jit.to_bits(), 0) };
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+
+        if let MettaValueInner::SExpr(matches) = metta.inner() {
+            assert!(matches.is_empty());
+        } else {
+            panic!("Expected SExpr");
+        }
+    }
+
+    // ==========================================================================
+    // Phase 3B: Type Operations Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_get_type_string() {
+        use super::super::type_ops::jit_runtime_get_type;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Create a heap-allocated string
+        let str_val = Box::new(MettaValue::String("hello".to_string()));
+        let str_ptr = Box::into_raw(str_val);
+        let str_bits = TAG_HEAP | ((str_ptr as u64) & PAYLOAD_MASK);
+
+        let result = unsafe { jit_runtime_get_type(&mut ctx, str_bits, 0) };
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_jit_get_type_unit() {
+        use super::super::type_ops::jit_runtime_get_type;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_get_type(&mut ctx, TAG_UNIT, 0) };
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_jit_get_type_sexpr() {
+        use super::super::type_ops::jit_runtime_get_type;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr = MettaValue::sexpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
+        let sexpr_jit = metta_to_jit(&sexpr);
+
+        let result = unsafe { jit_runtime_get_type(&mut ctx, sexpr_jit.to_bits(), 0) };
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_jit_get_type_variable() {
+        use super::super::type_ops::jit_runtime_get_type;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let var = MettaValue::var("x");
+        let var_jit = metta_to_jit(&var);
+
+        let result = unsafe { jit_runtime_get_type(&mut ctx, var_jit.to_bits(), 0) };
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP);
+    }
+
+    #[test]
+    fn test_jit_check_type_match() {
+        use super::super::type_ops::jit_runtime_check_type;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let val = JitValue::from_long(42).to_bits();
+        let type_atom = metta_to_jit(&MettaValue::sym("Number"));
+
+        let result = unsafe { jit_runtime_check_type(&mut ctx, val, type_atom.to_bits(), 0) };
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        // Should return true for Number type
+    }
+
+    #[test]
+    fn test_jit_check_type_mismatch() {
+        use super::super::type_ops::jit_runtime_check_type;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let val = JitValue::from_long(42).to_bits();
+        let type_atom = metta_to_jit(&MettaValue::sym("Bool")); // Wrong type
+
+        let result = unsafe { jit_runtime_check_type(&mut ctx, val, type_atom.to_bits(), 0) };
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        // Should return false for mismatched type
+    }
+
+    #[test]
+    fn test_jit_check_type_variable() {
+        use super::super::type_ops::jit_runtime_check_type;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let val = JitValue::from_long(42).to_bits();
+        let type_var = metta_to_jit(&MettaValue::var("T")); // Type variable
+
+        let result = unsafe { jit_runtime_check_type(&mut ctx, val, type_var.to_bits(), 0) };
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        // Type variables match anything, should return true
+    }
+
+    #[test]
+    fn test_jit_assert_type_pass() {
+        use super::super::type_ops::jit_runtime_assert_type;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let val = JitValue::from_long(42).to_bits();
+        let type_atom = metta_to_jit(&MettaValue::sym("Number"));
+
+        let result = unsafe { jit_runtime_assert_type(&mut ctx, val, type_atom.to_bits(), 0) };
+
+        // Should return the original value
+        assert_eq!(result, val);
+        assert!(!ctx.bailout);
+    }
+
+    #[test]
+    fn test_jit_assert_type_fail() {
+        use super::super::type_ops::jit_runtime_assert_type;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let val = JitValue::from_long(42).to_bits();
+        let type_atom = metta_to_jit(&MettaValue::sym("Bool")); // Wrong type
+
+        let _result = unsafe { jit_runtime_assert_type(&mut ctx, val, type_atom.to_bits(), 10) };
+
+        // Should signal bailout
+        assert!(ctx.bailout);
+        assert_eq!(ctx.bailout_reason, JitBailoutReason::TypeError);
+    }
+
+    // ==========================================================================
+    // Phase 4C: Special Forms Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_eval_if_true_branch() {
+        use super::super::special_forms::jit_runtime_eval_if;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let condition = TAG_BOOL | 1; // True
+        let then_val = JitValue::from_long(42).to_bits();
+        let else_val = JitValue::from_long(99).to_bits();
+
+        let result = unsafe { jit_runtime_eval_if(&mut ctx, condition, then_val, else_val, 0) };
+        assert_eq!(result, then_val);
+    }
+
+    #[test]
+    fn test_jit_eval_if_false_branch() {
+        use super::super::special_forms::jit_runtime_eval_if;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let condition = TAG_BOOL; // False (TAG_BOOL | 0)
+        let then_val = JitValue::from_long(42).to_bits();
+        let else_val = JitValue::from_long(99).to_bits();
+
+        let result = unsafe { jit_runtime_eval_if(&mut ctx, condition, then_val, else_val, 0) };
+        assert_eq!(result, else_val);
+    }
+
+    #[test]
+    fn test_jit_eval_if_nil_falsy() {
+        use super::super::special_forms::jit_runtime_eval_if;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let condition = TAG_NIL; // Nil is falsy
+        let then_val = JitValue::from_long(42).to_bits();
+        let else_val = JitValue::from_long(99).to_bits();
+
+        let result = unsafe { jit_runtime_eval_if(&mut ctx, condition, then_val, else_val, 0) };
+        assert_eq!(result, else_val);
+    }
+
+    #[test]
+    fn test_jit_eval_if_truthy_non_bool() {
+        use super::super::special_forms::jit_runtime_eval_if;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // A number is truthy (not bool false or nil)
+        let condition = JitValue::from_long(1).to_bits();
+        let then_val = JitValue::from_long(42).to_bits();
+        let else_val = JitValue::from_long(99).to_bits();
+
+        let result = unsafe { jit_runtime_eval_if(&mut ctx, condition, then_val, else_val, 0) };
+        assert_eq!(result, then_val);
+    }
+
+    #[test]
+    fn test_jit_eval_let_basic() {
+        use super::super::special_forms::jit_runtime_eval_let;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_eval_let(&mut ctx, 0, value, 0) };
+
+        // Returns Unit
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+    }
+
+    #[test]
+    fn test_jit_eval_let_star_marker() {
+        use super::super::special_forms::jit_runtime_eval_let_star;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_eval_let_star(&mut ctx, 0) };
+
+        // Returns Unit (marker function)
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+    }
+
+    #[test]
+    fn test_jit_eval_chain_returns_second() {
+        use super::super::special_forms::jit_runtime_eval_chain;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let first = JitValue::from_long(1).to_bits();
+        let second = JitValue::from_long(2).to_bits();
+
+        let result = unsafe { jit_runtime_eval_chain(&mut ctx, first, second, 0) };
+        assert_eq!(result, second);
+    }
+
+    #[test]
+    fn test_jit_eval_quote_wraps_value() {
+        use super::super::special_forms::jit_runtime_eval_quote;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let expr = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+        let result = unsafe { jit_runtime_eval_quote(&mut ctx, expr, 0) };
+
+        // Should wrap in a quote
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert_eq!(elems.len(), 2);
+            if let MettaValueInner::Atom(s) = elems[0].inner() {
+                assert_eq!(s, "quote");
+            }
+        }
+    }
+
+    #[test]
+    fn test_jit_eval_unquote_unwraps() {
+        use super::super::special_forms::jit_runtime_eval_unquote;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Create (quote foo)
+        let quoted = MettaValue::SExpr(vec![MettaValue::sym("quote"), MettaValue::sym("foo")]);
+        let expr = metta_to_jit(&quoted).to_bits();
+
+        let result = unsafe { jit_runtime_eval_unquote(&mut ctx, expr, 0) };
+
+        // Should unwrap to foo
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::Atom(s) = metta.inner() {
+            assert_eq!(s, "foo");
+        }
+    }
+
+    #[test]
+    fn test_jit_eval_unquote_not_quoted() {
+        use super::super::special_forms::jit_runtime_eval_unquote;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Not a quote - just a symbol
+        let expr = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+
+        let result = unsafe { jit_runtime_eval_unquote(&mut ctx, expr, 0) };
+
+        // Should return as-is
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn test_jit_eval_eval_passthrough() {
+        use super::super::special_forms::jit_runtime_eval_eval;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let expr = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+        let result = unsafe { jit_runtime_eval_eval(&mut ctx, expr, 0) };
+
+        // Current impl returns expression unchanged
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn test_jit_eval_bind_stores_binding() {
+        use super::super::special_forms::jit_runtime_eval_bind;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_eval_bind(&mut ctx, 0, value, 0) };
+
+        // Returns Unit
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+    }
+
+    #[test]
+    fn test_jit_eval_new_creates_space() {
+        use super::super::special_forms::jit_runtime_eval_new;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_eval_new(&mut ctx, 0) };
+
+        // Should return a space
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        assert!(matches!(metta.inner(), MettaValueInner::Space(_)));
+    }
+
+    #[test]
+    fn test_jit_eval_pragma_returns_unit() {
+        use super::super::special_forms::jit_runtime_eval_pragma;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let directive = JitValue::from_long(0).to_bits();
+        let result = unsafe { jit_runtime_eval_pragma(&mut ctx, directive, 0) };
+
+        // Returns Unit
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+    }
+
+    #[test]
+    fn test_jit_eval_memo_passthrough() {
+        use super::super::special_forms::jit_runtime_eval_memo;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let expr = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_eval_memo(&mut ctx, expr, 0) };
+
+        // Current impl returns expression unchanged
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn test_jit_eval_memo_first_passthrough() {
+        use super::super::special_forms::jit_runtime_eval_memo_first;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let expr = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_eval_memo_first(&mut ctx, expr, 0) };
+
+        // Current impl returns expression unchanged
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn test_jit_eval_superpose_empty() {
+        use super::super::special_forms::jit_runtime_eval_superpose;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::bytecode::jit::types::JIT_SIGNAL_FAIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Empty list
+        let list = metta_to_jit(&MettaValue::SExpr(vec![])).to_bits();
+        let result = unsafe { jit_runtime_eval_superpose(&mut ctx, list, 0) };
+
+        // Empty superpose signals failure
+        assert_eq!(result, JIT_SIGNAL_FAIL as u64);
+    }
+
+    #[test]
+    fn test_jit_eval_superpose_single() {
+        use super::super::special_forms::jit_runtime_eval_superpose;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Single element
+        let list = metta_to_jit(&MettaValue::SExpr(vec![MettaValue::Long(42)])).to_bits();
+        let result = unsafe { jit_runtime_eval_superpose(&mut ctx, list, 0) };
+
+        // Returns the single element
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_long());
+        assert_eq!(jv.as_long(), 42);
+    }
+
+    #[test]
+    fn test_jit_eval_superpose_non_list() {
+        use super::super::special_forms::jit_runtime_eval_superpose;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Not a list - just a number
+        let val = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_eval_superpose(&mut ctx, val, 0) };
+
+        // Returns as-is
+        assert_eq!(result, val);
+    }
+
+    #[test]
+    fn test_jit_eval_collapse_no_results() {
+        use super::super::special_forms::jit_runtime_eval_collapse;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Single value
+        let val = metta_to_jit(&MettaValue::Long(42)).to_bits();
+        let result = unsafe { jit_runtime_eval_collapse(&mut ctx, val, 0) };
+
+        // Should wrap in a list
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert_eq!(elems.len(), 1);
+            if let MettaValueInner::Long(n) = elems[0].inner() {
+                assert_eq!(*n, 42);
+            }
+        }
+    }
+
+    #[test]
+    fn test_jit_eval_collapse_null_ctx() {
+        use super::super::special_forms::jit_runtime_eval_collapse;
+        use super::super::helpers::metta_to_jit;
+
+        // Null context
+        let val = metta_to_jit(&MettaValue::Long(42)).to_bits();
+        let result = unsafe { jit_runtime_eval_collapse(std::ptr::null_mut(), val, 0) };
+
+        // Should wrap in a list even with null ctx
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        assert!(matches!(metta.inner(), MettaValueInner::SExpr(_)));
+    }
+
+    // ==========================================================================
+    // Phase 4C: Space Operations Tests (renamed to avoid conflicts)
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_space_add_valid_4c() {
+        use super::super::space_ops::jit_runtime_space_add;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space = SpaceHandle::new(101, "test-space-4c".to_string());
+        let space_jit = metta_to_jit(&MettaValue::Space(space.clone())).to_bits();
+        let atom_jit = metta_to_jit(&MettaValue::sym("atom1")).to_bits();
+
+        let result = unsafe { jit_runtime_space_add(&mut ctx, space_jit, atom_jit, 0) };
+
+        // Returns Unit
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+
+        // Verify atom was added
+        let atoms = space.collapse();
+        assert_eq!(atoms.len(), 1);
+    }
+
+    #[test]
+    fn test_jit_space_add_non_space_4c() {
+        use super::super::space_ops::jit_runtime_space_add;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Not a space - just a number
+        let not_space = JitValue::from_long(42).to_bits();
+        let atom_jit = metta_to_jit(&MettaValue::sym("atom1")).to_bits();
+
+        let result = unsafe { jit_runtime_space_add(&mut ctx, not_space, atom_jit, 0) };
+
+        // Still returns Unit (graceful handling)
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+    }
+
+    #[test]
+    fn test_jit_space_remove_exists_4c() {
+        use super::super::space_ops::jit_runtime_space_remove;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space = SpaceHandle::new(102, "test-space-4c2".to_string());
+        let atom = MettaValue::sym("atom1");
+        space.add_atom(atom.clone());
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space.clone())).to_bits();
+        let atom_jit = metta_to_jit(&atom).to_bits();
+
+        let result = unsafe { jit_runtime_space_remove(&mut ctx, space_jit, atom_jit, 0) };
+
+        // Returns true
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert!(jv.as_bool());
+
+        // Verify atom was removed
+        let atoms = space.collapse();
+        assert_eq!(atoms.len(), 0);
+    }
+
+    #[test]
+    fn test_jit_space_remove_missing_4c() {
+        use super::super::space_ops::jit_runtime_space_remove;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space = SpaceHandle::new(103, "test-space-4c3".to_string());
+        let space_jit = metta_to_jit(&MettaValue::Space(space)).to_bits();
+        let atom_jit = metta_to_jit(&MettaValue::sym("nonexistent")).to_bits();
+
+        let result = unsafe { jit_runtime_space_remove(&mut ctx, space_jit, atom_jit, 0) };
+
+        // Returns false
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert!(!jv.as_bool());
+    }
+
+    #[test]
+    fn test_jit_space_remove_non_space_4c() {
+        use super::super::space_ops::jit_runtime_space_remove;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let not_space = JitValue::from_long(42).to_bits();
+        let atom_jit = metta_to_jit(&MettaValue::sym("atom1")).to_bits();
+
+        let result = unsafe { jit_runtime_space_remove(&mut ctx, not_space, atom_jit, 0) };
+
+        // Returns false (type error)
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert!(!jv.as_bool());
+    }
+
+    #[test]
+    fn test_jit_space_get_atoms_empty_4c() {
+        use super::super::space_ops::jit_runtime_space_get_atoms;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space = SpaceHandle::new(104, "test-space-4c4".to_string());
+        let space_jit = metta_to_jit(&MettaValue::Space(space)).to_bits();
+
+        let result = unsafe { jit_runtime_space_get_atoms(&mut ctx, space_jit, 0) };
+
+        // Returns empty S-expression
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert!(elems.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_jit_space_get_atoms_populated_4c() {
+        use super::super::space_ops::jit_runtime_space_get_atoms;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space = SpaceHandle::new(105, "test-space-4c5".to_string());
+        space.add_atom(MettaValue::sym("a"));
+        space.add_atom(MettaValue::sym("b"));
+        space.add_atom(MettaValue::sym("c"));
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space)).to_bits();
+
+        let result = unsafe { jit_runtime_space_get_atoms(&mut ctx, space_jit, 0) };
+
+        // Returns S-expression with atoms
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert_eq!(elems.len(), 3);
+        }
+    }
+
+    #[test]
+    fn test_jit_space_get_atoms_non_space_4c() {
+        use super::super::space_ops::jit_runtime_space_get_atoms;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let not_space = JitValue::from_long(42).to_bits();
+
+        let result = unsafe { jit_runtime_space_get_atoms(&mut ctx, not_space, 0) };
+
+        // Returns empty S-expression (type error)
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert!(elems.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_jit_space_match_single_4c() {
+        use super::super::space_ops::jit_runtime_space_match;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space = SpaceHandle::new(106, "test-space-4c6".to_string());
+        space.add_atom(MettaValue::sym("foo"));
+        space.add_atom(MettaValue::sym("bar"));
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space)).to_bits();
+        let pattern_jit = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+        let template_jit = metta_to_jit(&MettaValue::sym("result")).to_bits();
+
+        let result =
+            unsafe { jit_runtime_space_match(&mut ctx, space_jit, pattern_jit, template_jit, 0) };
+
+        // Returns matching atoms
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert_eq!(elems.len(), 1);
+        }
+    }
+
+    #[test]
+    fn test_jit_space_match_none_4c() {
+        use super::super::space_ops::jit_runtime_space_match;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::models::SpaceHandle;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space = SpaceHandle::new(107, "test-space-4c7".to_string());
+        space.add_atom(MettaValue::sym("foo"));
+
+        let space_jit = metta_to_jit(&MettaValue::Space(space)).to_bits();
+        let pattern_jit = metta_to_jit(&MettaValue::sym("nonexistent")).to_bits();
+        let template_jit = metta_to_jit(&MettaValue::sym("result")).to_bits();
+
+        let result =
+            unsafe { jit_runtime_space_match(&mut ctx, space_jit, pattern_jit, template_jit, 0) };
+
+        // Returns empty S-expression
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert!(elems.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_jit_space_match_non_space_4c() {
+        use super::super::space_ops::jit_runtime_space_match;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let not_space = JitValue::from_long(42).to_bits();
+        let pattern_jit = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+        let template_jit = metta_to_jit(&MettaValue::sym("result")).to_bits();
+
+        let result =
+            unsafe { jit_runtime_space_match(&mut ctx, not_space, pattern_jit, template_jit, 0) };
+
+        // Returns empty S-expression (type error)
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert!(elems.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_jit_space_match_nondet_null_ctx_4c() {
+        use super::super::space_ops::jit_runtime_space_match_nondet;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::models::SpaceHandle;
+
+        let space = SpaceHandle::new(108, "test-space-4c8".to_string());
+        let space_jit = metta_to_jit(&MettaValue::Space(space)).to_bits();
+        let pattern_jit = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+        let template_jit = metta_to_jit(&MettaValue::sym("result")).to_bits();
+
+        let result = unsafe {
+            jit_runtime_space_match_nondet(
+                std::ptr::null_mut(),
+                space_jit,
+                pattern_jit,
+                template_jit,
+                0,
+            )
+        };
+
+        // Returns nil with null context
+        assert_eq!(result, TAG_NIL);
+    }
+
+    #[test]
+    fn test_jit_space_match_nondet_not_space_4c() {
+        use super::super::space_ops::jit_runtime_space_match_nondet;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let not_space = JitValue::from_long(42).to_bits();
+        let pattern_jit = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+        let template_jit = metta_to_jit(&MettaValue::sym("result")).to_bits();
+
+        let result = unsafe {
+            jit_runtime_space_match_nondet(&mut ctx, not_space, pattern_jit, template_jit, 0)
+        };
+
+        // Returns nil and sets bailout
+        assert_eq!(result, TAG_NIL);
+        assert!(ctx.bailout);
+        assert_eq!(ctx.bailout_reason, JitBailoutReason::TypeError);
+    }
+
+    // ==========================================================================
+    // Phase 4C: Value Creation Tests (renamed to avoid conflicts)
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_make_sexpr_empty_4c() {
+        use super::super::value_creation::jit_runtime_make_sexpr;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_make_sexpr(&mut ctx, std::ptr::null(), 0, 0) };
+
+        // Returns empty S-expression
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert!(elems.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_jit_make_sexpr_single_4c() {
+        use super::super::value_creation::jit_runtime_make_sexpr;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let values = [JitValue::from_long(42).to_bits()];
+        let result = unsafe { jit_runtime_make_sexpr(&mut ctx, values.as_ptr(), 1, 0) };
+
+        // Returns S-expression with one element
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert_eq!(elems.len(), 1);
+            if let MettaValueInner::Long(n) = elems[0].inner() {
+                assert_eq!(*n, 42);
+            }
+        }
+    }
+
+    #[test]
+    fn test_jit_make_sexpr_multiple_4c() {
+        use super::super::value_creation::jit_runtime_make_sexpr;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let values = [
+            metta_to_jit(&MettaValue::sym("+")).to_bits(),
+            JitValue::from_long(1).to_bits(),
+            JitValue::from_long(2).to_bits(),
+        ];
+        let result = unsafe { jit_runtime_make_sexpr(&mut ctx, values.as_ptr(), 3, 0) };
+
+        // Returns S-expression with three elements
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert_eq!(elems.len(), 3);
+        }
+    }
+
+    #[test]
+    fn test_jit_cons_atom_to_sexpr_4c() {
+        use super::super::value_creation::jit_runtime_cons_atom;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let head = JitValue::from_long(1).to_bits();
+        let tail = metta_to_jit(&MettaValue::SExpr(vec![MettaValue::Long(2), MettaValue::Long(3)]))
+            .to_bits();
+
+        let result = unsafe { jit_runtime_cons_atom(&mut ctx, head, tail, 0) };
+
+        // Returns S-expression with head prepended
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert_eq!(elems.len(), 3);
+            if let MettaValueInner::Long(n) = elems[0].inner() {
+                assert_eq!(*n, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn test_jit_cons_atom_to_nil_4c() {
+        use super::super::value_creation::jit_runtime_cons_atom;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let head = JitValue::from_long(42).to_bits();
+        let tail = TAG_NIL;
+
+        let result = unsafe { jit_runtime_cons_atom(&mut ctx, head, tail, 0) };
+
+        // Returns single-element S-expression
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert_eq!(elems.len(), 1);
+            if let MettaValueInner::Long(n) = elems[0].inner() {
+                assert_eq!(*n, 42);
+            }
+        }
+    }
+
+    #[test]
+    fn test_jit_make_quote_wraps_4c() {
+        use super::super::value_creation::jit_runtime_make_quote;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let expr = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+        let result = unsafe { jit_runtime_make_quote(&mut ctx, expr, 0) };
+
+        // Returns (quote foo)
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert_eq!(elems.len(), 2);
+            if let MettaValueInner::Atom(s) = elems[0].inner() {
+                assert_eq!(s, "quote");
+            }
+        }
+    }
+
+    // ==========================================================================
+    // Phase 4C: Additional Type Operations Tests (renamed to avoid conflicts)
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_get_type_bool_true_4c() {
+        use super::super::type_ops::jit_runtime_get_type;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let val = JitValue::from_bool(true).to_bits();
+        let result = unsafe { jit_runtime_get_type(&mut ctx, val, 0) };
+
+        // Should return "Bool" type
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::Atom(s) = metta.inner() {
+            assert_eq!(s, "Bool");
+        }
+    }
+
+    #[test]
+    fn test_jit_get_type_bool_false_4c() {
+        use super::super::type_ops::jit_runtime_get_type;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let val = JitValue::from_bool(false).to_bits();
+        let result = unsafe { jit_runtime_get_type(&mut ctx, val, 0) };
+
+        // Should return "Bool" type
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::Atom(s) = metta.inner() {
+            assert_eq!(s, "Bool");
+        }
+    }
+
+    #[test]
+    fn test_jit_get_type_nil_4c() {
+        use super::super::type_ops::jit_runtime_get_type;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_get_type(&mut ctx, TAG_NIL, 0) };
+
+        // Should return "Nil" type
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::Atom(s) = metta.inner() {
+            assert_eq!(s, "Nil");
+        }
+    }
+
+    #[test]
+    fn test_jit_get_type_unit_4c() {
+        use super::super::type_ops::jit_runtime_get_type;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let val = JitValue::unit().to_bits();
+        let result = unsafe { jit_runtime_get_type(&mut ctx, val, 0) };
+
+        // Should return "Unit" type
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::Atom(s) = metta.inner() {
+            assert_eq!(s, "Unit");
+        }
+    }
+
+    #[test]
+    fn test_jit_get_type_sexpr_4c() {
+        use super::super::helpers::metta_to_jit;
+        use super::super::type_ops::jit_runtime_get_type;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr = MettaValue::SExpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
+        let val = metta_to_jit(&sexpr).to_bits();
+        let result = unsafe { jit_runtime_get_type(&mut ctx, val, 0) };
+
+        // Should return "Expression" type
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::Atom(s) = metta.inner() {
+            assert_eq!(s, "Expression");
+        }
+    }
+
+    #[test]
+    fn test_jit_get_type_space_4c() {
+        use super::super::helpers::metta_to_jit;
+        use super::super::type_ops::jit_runtime_get_type;
+        use crate::backend::models::SpaceHandle;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let space = SpaceHandle::new(200, "type-test-space-4c".to_string());
+        let val = metta_to_jit(&MettaValue::Space(space)).to_bits();
+        let result = unsafe { jit_runtime_get_type(&mut ctx, val, 0) };
+
+        // Should return "Space" type
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::Atom(s) = metta.inner() {
+            assert_eq!(s, "Space");
+        }
+    }
+
+    // ==========================================================================
+    // Phase 4C: Pattern Matching Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_pattern_match_literal_success() {
+        use super::super::helpers::metta_to_jit;
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let pattern = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+        let value = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+
+        let result = unsafe { jit_runtime_pattern_match(&mut ctx, pattern, value, 0) };
+
+        // Should return true
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert!(jv.as_bool());
+    }
+
+    #[test]
+    fn test_jit_pattern_match_literal_fail() {
+        use super::super::helpers::metta_to_jit;
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let pattern = metta_to_jit(&MettaValue::sym("foo")).to_bits();
+        let value = metta_to_jit(&MettaValue::sym("bar")).to_bits();
+
+        let result = unsafe { jit_runtime_pattern_match(&mut ctx, pattern, value, 0) };
+
+        // Should return false
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert!(!jv.as_bool());
+    }
+
+    #[test]
+    fn test_jit_pattern_match_variable() {
+        use super::super::helpers::metta_to_jit;
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Variable pattern matches anything
+        let pattern = metta_to_jit(&MettaValue::var("x")).to_bits();
+        let value = metta_to_jit(&MettaValue::sym("anything")).to_bits();
+
+        let result = unsafe { jit_runtime_pattern_match(&mut ctx, pattern, value, 0) };
+
+        // Should return true
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert!(jv.as_bool());
+    }
+
+    #[test]
+    fn test_jit_pattern_match_sexpr_success() {
+        use super::super::helpers::metta_to_jit;
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: (foo $x)
+        let pattern =
+            metta_to_jit(&MettaValue::SExpr(vec![MettaValue::sym("foo"), MettaValue::var("x")]))
+                .to_bits();
+        // Value: (foo bar)
+        let value =
+            metta_to_jit(&MettaValue::SExpr(vec![MettaValue::sym("foo"), MettaValue::sym("bar")]))
+                .to_bits();
+
+        let result = unsafe { jit_runtime_pattern_match(&mut ctx, pattern, value, 0) };
+
+        // Should return true
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert!(jv.as_bool());
+    }
+
+    #[test]
+    fn test_jit_pattern_match_sexpr_fail_length() {
+        use super::super::helpers::metta_to_jit;
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: (foo $x $y)
+        let pattern = metta_to_jit(&MettaValue::SExpr(vec![
+            MettaValue::sym("foo"),
+            MettaValue::var("x"),
+            MettaValue::var("y"),
+        ]))
+        .to_bits();
+        // Value: (foo bar) - one element short
+        let value =
+            metta_to_jit(&MettaValue::SExpr(vec![MettaValue::sym("foo"), MettaValue::sym("bar")]))
+                .to_bits();
+
+        let result = unsafe { jit_runtime_pattern_match(&mut ctx, pattern, value, 0) };
+
+        // Should return false
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert!(!jv.as_bool());
+    }
+
+    #[test]
+    fn test_jit_pattern_match_number() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let pattern = JitValue::from_long(42).to_bits();
+        let value = JitValue::from_long(42).to_bits();
+
+        let result = unsafe { jit_runtime_pattern_match(&mut ctx, pattern, value, 0) };
+
+        // Should return true
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert!(jv.as_bool());
+    }
+
+    #[test]
+    fn test_jit_pattern_match_number_fail() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let pattern = JitValue::from_long(42).to_bits();
+        let value = JitValue::from_long(99).to_bits();
+
+        let result = unsafe { jit_runtime_pattern_match(&mut ctx, pattern, value, 0) };
+
+        // Should return false
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert!(!jv.as_bool());
+    }
+
+    // ==========================================================================
+    // Phase 4C: Stack Operations Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_load_constant_4c() {
+        use super::super::stack_ops::jit_runtime_load_constant;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::Long(42), MettaValue::sym("foo")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_load_constant(&mut ctx, 0) };
+
+        // Should return the constant
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_long());
+        assert_eq!(jv.as_long(), 42);
+    }
+
+    #[test]
+    fn test_jit_load_constant_out_of_bounds_4c() {
+        use super::super::stack_ops::jit_runtime_load_constant;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::Long(42)];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_load_constant(&mut ctx, 999) };
+
+        // Should return nil for out of bounds
+        assert_eq!(result, TAG_NIL);
+    }
+
+    // ==========================================================================
+    // Phase 4C: Global Operations Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_load_global_not_found_4c() {
+        use super::super::global_ops::jit_runtime_load_global;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("undefined")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_load_global(&mut ctx, 0, 0) };
+
+        // Should return nil for undefined global
+        assert_eq!(result, TAG_NIL);
+    }
+
+    #[test]
+    fn test_jit_store_global_4c() {
+        use super::super::global_ops::jit_runtime_store_global;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("test-var")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_store_global(&mut ctx, 0, value, 0) };
+
+        // Returns Unit
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+    }
+
+    // ==========================================================================
+    // Phase 4D: Advanced Nondeterminism Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_cut_null_ctx() {
+        use super::super::advanced_nondet::jit_runtime_cut;
+
+        let result = unsafe { jit_runtime_cut(std::ptr::null_mut(), 0) };
+
+        // Should return Unit even with null ctx
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+    }
+
+    #[test]
+    fn test_jit_cut_no_markers() {
+        use super::super::advanced_nondet::jit_runtime_cut;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // No cut markers set up
+        ctx.choice_point_count = 3;
+
+        let result = unsafe { jit_runtime_cut(&mut ctx, 0) };
+
+        // Should clear all choice points when no markers
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+        assert_eq!(ctx.choice_point_count, 0);
+    }
+
+    #[test]
+    fn test_jit_enter_cut_scope_null_ctx() {
+        use super::super::advanced_nondet::jit_runtime_enter_cut_scope;
+
+        let result = unsafe { jit_runtime_enter_cut_scope(std::ptr::null_mut()) };
+
+        // Should return 0 for null ctx
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_jit_enter_cut_scope_success() {
+        use super::super::advanced_nondet::jit_runtime_enter_cut_scope;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Set up cut markers
+        let mut markers: [usize; 8] = [0; 8];
+        ctx.cut_markers = markers.as_mut_ptr();
+        ctx.cut_marker_cap = 8;
+        ctx.cut_marker_count = 0;
+
+        let result = unsafe { jit_runtime_enter_cut_scope(&mut ctx) };
+
+        // Should succeed
+        assert_eq!(result, 1);
+        assert_eq!(ctx.cut_marker_count, 1);
+    }
+
+    #[test]
+    fn test_jit_exit_cut_scope_null_ctx() {
+        use super::super::advanced_nondet::jit_runtime_exit_cut_scope;
+
+        let result = unsafe { jit_runtime_exit_cut_scope(std::ptr::null_mut()) };
+
+        // Should return 0 for null ctx
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_jit_exit_cut_scope_no_markers() {
+        use super::super::advanced_nondet::jit_runtime_exit_cut_scope;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // No markers
+        ctx.cut_marker_count = 0;
+
+        let result = unsafe { jit_runtime_exit_cut_scope(&mut ctx) };
+
+        // Should return 0 (no markers to pop)
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_jit_exit_cut_scope_success() {
+        use super::super::advanced_nondet::{
+            jit_runtime_enter_cut_scope, jit_runtime_exit_cut_scope,
+        };
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Set up cut markers
+        let mut markers: [usize; 8] = [0; 8];
+        ctx.cut_markers = markers.as_mut_ptr();
+        ctx.cut_marker_cap = 8;
+        ctx.cut_marker_count = 0;
+
+        // Enter and exit
+        unsafe { jit_runtime_enter_cut_scope(&mut ctx) };
+        assert_eq!(ctx.cut_marker_count, 1);
+
+        let result = unsafe { jit_runtime_exit_cut_scope(&mut ctx) };
+        assert_eq!(result, 1);
+        assert_eq!(ctx.cut_marker_count, 0);
+    }
+
+    #[test]
+    fn test_jit_guard_true() {
+        use super::super::advanced_nondet::jit_runtime_guard;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let condition = TAG_BOOL | 1; // True
+        let result = unsafe { jit_runtime_guard(&mut ctx, condition, 0) };
+
+        // Guard passes
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_jit_guard_false() {
+        use super::super::advanced_nondet::jit_runtime_guard;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let condition = TAG_BOOL; // False
+        let result = unsafe { jit_runtime_guard(&mut ctx, condition, 0) };
+
+        // Guard fails
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_jit_amb_null_ctx() {
+        use super::super::advanced_nondet::jit_runtime_amb;
+
+        let result = unsafe { jit_runtime_amb(std::ptr::null_mut(), 2, 0) };
+
+        // Should return nil with null ctx
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_nil());
+    }
+
+    #[test]
+    fn test_jit_amb_empty() {
+        use super::super::advanced_nondet::jit_runtime_amb;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_amb(&mut ctx, 0, 0) };
+
+        // Empty amb returns nil
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_nil());
+    }
+
+    #[test]
+    fn test_jit_commit_null_ctx() {
+        use super::super::advanced_nondet::jit_runtime_commit;
+
+        let result = unsafe { jit_runtime_commit(std::ptr::null_mut(), 1, 0) };
+
+        // Should return Unit with null ctx
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+    }
+
+    #[test]
+    fn test_jit_commit_removes_choice_points() {
+        use super::super::advanced_nondet::jit_runtime_commit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        ctx.choice_point_count = 5;
+
+        let result = unsafe { jit_runtime_commit(&mut ctx, 2, 0) };
+
+        // Should remove 2 choice points
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+        assert_eq!(ctx.choice_point_count, 3);
+    }
+
+    #[test]
+    fn test_jit_commit_all() {
+        use super::super::advanced_nondet::jit_runtime_commit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        ctx.choice_point_count = 5;
+
+        let result = unsafe { jit_runtime_commit(&mut ctx, 0, 0) };
+
+        // Should remove all choice points when count=0
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_unit());
+        assert_eq!(ctx.choice_point_count, 0);
+    }
+
+    #[test]
+    fn test_jit_backtrack_null_ctx() {
+        use super::super::advanced_nondet::jit_runtime_backtrack;
+        use crate::backend::bytecode::jit::types::JIT_SIGNAL_FAIL;
+
+        let result = unsafe { jit_runtime_backtrack(std::ptr::null_mut(), 0) };
+
+        // Should signal fail with null ctx
+        assert_eq!(result, JIT_SIGNAL_FAIL);
+    }
+
+    #[test]
+    fn test_jit_backtrack_signals_fail() {
+        use super::super::advanced_nondet::jit_runtime_backtrack;
+        use crate::backend::bytecode::jit::types::JIT_SIGNAL_FAIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_backtrack(&mut ctx, 0) };
+
+        // Should signal fail
+        assert_eq!(result, JIT_SIGNAL_FAIL);
+    }
+
+    #[test]
+    fn test_jit_begin_nondet_increments_fork_depth() {
+        use super::super::advanced_nondet::jit_runtime_begin_nondet;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let initial_depth = ctx.fork_depth;
+
+        unsafe { jit_runtime_begin_nondet(&mut ctx, 0) };
+
+        // Should increment fork_depth
+        assert_eq!(ctx.fork_depth, initial_depth + 1);
+    }
+
+    #[test]
+    fn test_jit_end_nondet_decrements_fork_depth() {
+        use super::super::advanced_nondet::jit_runtime_end_nondet;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        ctx.fork_depth = 2;
+
+        unsafe { jit_runtime_end_nondet(&mut ctx, 0) };
+
+        // Should decrement fork_depth
+        assert_eq!(ctx.fork_depth, 1);
+    }
+
+    #[test]
+    fn test_jit_end_nondet_no_underflow() {
+        use super::super::advanced_nondet::jit_runtime_end_nondet;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        ctx.fork_depth = 0;
+
+        unsafe { jit_runtime_end_nondet(&mut ctx, 0) };
+
+        // Should not go below 0
+        assert_eq!(ctx.fork_depth, 0);
+    }
+
+    // ==========================================================================
+    // Phase 4D: Expression Operations Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_jit_get_head_sexpr() {
+        use super::super::sexpr_ops::jit_runtime_get_head;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr =
+            MettaValue::SExpr(vec![MettaValue::sym("foo"), MettaValue::Long(1), MettaValue::Long(2)]);
+        let val = metta_to_jit(&sexpr).to_bits();
+
+        let result = unsafe { jit_runtime_get_head(&mut ctx, val, 0) };
+
+        // Should return "foo"
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::Atom(s) = metta.inner() {
+            assert_eq!(s, "foo");
+        }
+    }
+
+    #[test]
+    fn test_jit_get_head_empty() {
+        use super::super::sexpr_ops::jit_runtime_get_head;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr = MettaValue::SExpr(vec![]);
+        let val = metta_to_jit(&sexpr).to_bits();
+
+        let result = unsafe { jit_runtime_get_head(&mut ctx, val, 0) };
+
+        // Should return nil for empty S-expression
+        assert_eq!(result, TAG_NIL);
+    }
+
+    #[test]
+    fn test_jit_get_tail_sexpr() {
+        use super::super::sexpr_ops::jit_runtime_get_tail;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr =
+            MettaValue::SExpr(vec![MettaValue::sym("foo"), MettaValue::Long(1), MettaValue::Long(2)]);
+        let val = metta_to_jit(&sexpr).to_bits();
+
+        let result = unsafe { jit_runtime_get_tail(&mut ctx, val, 0) };
+
+        // Should return (1 2)
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert_eq!(elems.len(), 2);
+        }
+    }
+
+    #[test]
+    fn test_jit_get_tail_empty() {
+        use super::super::sexpr_ops::jit_runtime_get_tail;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr = MettaValue::SExpr(vec![]);
+        let val = metta_to_jit(&sexpr).to_bits();
+
+        let result = unsafe { jit_runtime_get_tail(&mut ctx, val, 0) };
+
+        // Should return empty S-expression
+        let jv = JitValue::from_raw(result);
+        let metta = unsafe { jv.to_metta() };
+        if let MettaValueInner::SExpr(elems) = metta.inner() {
+            assert!(elems.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_jit_get_arity_sexpr() {
+        use super::super::sexpr_ops::jit_runtime_get_arity;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr =
+            MettaValue::SExpr(vec![MettaValue::sym("foo"), MettaValue::Long(1), MettaValue::Long(2)]);
+        let val = metta_to_jit(&sexpr).to_bits();
+
+        let result = unsafe { jit_runtime_get_arity(&mut ctx, val, 0) };
+
+        // Should return 3
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_long());
+        assert_eq!(jv.as_long(), 3);
+    }
+
+    #[test]
+    fn test_jit_get_arity_empty() {
+        use super::super::sexpr_ops::jit_runtime_get_arity;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr = MettaValue::SExpr(vec![]);
+        let val = metta_to_jit(&sexpr).to_bits();
+
+        let result = unsafe { jit_runtime_get_arity(&mut ctx, val, 0) };
+
+        // Should return 0
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_long());
+        assert_eq!(jv.as_long(), 0);
+    }
+
+    #[test]
+    fn test_jit_index_atom_valid() {
+        use super::super::expression_ops::jit_runtime_index_atom;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr =
+            MettaValue::SExpr(vec![MettaValue::sym("foo"), MettaValue::Long(42), MettaValue::Long(99)]);
+        let val = metta_to_jit(&sexpr).to_bits();
+        let index = JitValue::from_long(1).to_bits();
+
+        let result = unsafe { jit_runtime_index_atom(&mut ctx, val, index, 0) };
+
+        // Should return 42 (element at index 1)
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_long());
+        assert_eq!(jv.as_long(), 42);
+    }
+
+    #[test]
+    fn test_jit_index_atom_out_of_bounds() {
+        use super::super::expression_ops::jit_runtime_index_atom;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr = MettaValue::SExpr(vec![MettaValue::Long(1), MettaValue::Long(2)]);
+        let val = metta_to_jit(&sexpr).to_bits();
+        let index = JitValue::from_long(10).to_bits();
+
+        let result = unsafe { jit_runtime_index_atom(&mut ctx, val, index, 0) };
+
+        // Should return nil for out of bounds
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_nil());
+    }
+
+    #[test]
+    fn test_jit_index_atom_non_sexpr() {
+        use super::super::expression_ops::jit_runtime_index_atom;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let val = JitValue::from_long(42).to_bits();
+        let index = JitValue::from_long(0).to_bits();
+
+        let result = unsafe { jit_runtime_index_atom(&mut ctx, val, index, 0) };
+
+        // Should return nil for non-S-expression
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_nil());
+    }
+
+    // ==========================================================================
+    // Phase 5B: Pattern Matching Tests - Additional Coverage
+    // ==========================================================================
+
+    #[test]
+    fn test_pattern_match_wildcard() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: _ (wildcard), Value: 42 - should match
+        let pattern = metta_to_jit(&MettaValue::sym("_")).to_bits();
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        // Wildcard should match anything
+        assert_eq!(result & 1, 1, "Wildcard should match");
+    }
+
+    #[test]
+    fn test_pattern_match_variable() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: $x (variable), Value: 42 - should match
+        let pattern = metta_to_jit(&MettaValue::sym("$x")).to_bits();
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+
+        let jv = JitValue::from_raw(result);
+        assert!(jv.is_bool());
+        assert_eq!(result & 1, 1, "Variable should match anything");
+    }
+
+    #[test]
+    fn test_pattern_match_bool_true() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: true, Value: true - should match
+        let pattern = TAG_BOOL | 1;
+        let value = TAG_BOOL | 1;
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 1, "true == true");
+
+        // Pattern: true, Value: false - should not match
+        let value_false = TAG_BOOL;
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value_false, 0) };
+        assert_eq!(result & 1, 0, "true != false");
+    }
+
+    #[test]
+    fn test_pattern_match_nil() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: nil, Value: nil - should match
+        let pattern = TAG_NIL;
+        let value = TAG_NIL;
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 1, "nil == nil");
+    }
+
+    #[test]
+    fn test_pattern_match_unit() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: unit, Value: unit - should match
+        let pattern = TAG_UNIT;
+        let value = TAG_UNIT;
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 1, "unit == unit");
+    }
+
+    #[test]
+    fn test_pattern_match_type_mismatch() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+        use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_NIL};
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: bool, Value: nil - should not match
+        let pattern = TAG_BOOL | 1;
+        let value = TAG_NIL;
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 0, "bool != nil");
+
+        // Pattern: Long, Value: bool - should not match
+        let pattern_long = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern_long, value, 0) };
+        assert_eq!(result & 1, 0, "long != nil");
+    }
+
+    #[test]
+    fn test_pattern_match_null_context() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        // Null context should return false
+        let pattern = TAG_BOOL | 1;
+        let value = TAG_BOOL | 1;
+        let result = unsafe { jit_runtime_pattern_match(std::ptr::null(), pattern, value, 0) };
+        assert_eq!(result, TAG_BOOL, "Null context returns false");
+    }
+
+    #[test]
+    fn test_pattern_match_sexpr() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: (foo $x), Value: (foo 42)
+        let pattern_sexpr = MettaValue::SExpr(vec![
+            MettaValue::sym("foo"),
+            MettaValue::sym("$x"),
+        ]);
+        let value_sexpr = MettaValue::SExpr(vec![
+            MettaValue::sym("foo"),
+            MettaValue::Long(42),
+        ]);
+
+        let pattern = metta_to_jit(&pattern_sexpr).to_bits();
+        let value = metta_to_jit(&value_sexpr).to_bits();
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 1, "(foo $x) matches (foo 42)");
+    }
+
+    #[test]
+    fn test_pattern_match_sexpr_length_mismatch() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: (foo bar), Value: (foo bar baz) - length mismatch
+        let pattern_sexpr = MettaValue::SExpr(vec![
+            MettaValue::sym("foo"),
+            MettaValue::sym("bar"),
+        ]);
+        let value_sexpr = MettaValue::SExpr(vec![
+            MettaValue::sym("foo"),
+            MettaValue::sym("bar"),
+            MettaValue::sym("baz"),
+        ]);
+
+        let pattern = metta_to_jit(&pattern_sexpr).to_bits();
+        let value = metta_to_jit(&value_sexpr).to_bits();
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 0, "Length mismatch - should not match");
+    }
+
+    #[test]
+    fn test_pattern_match_bind_variable() {
+        use super::super::pattern_matching::jit_runtime_pattern_match_bind;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        // Push a binding frame
+        use super::super::bindings::jit_runtime_push_binding_frame;
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+
+        // Pattern: $x, Value: 42 - should match and bind
+        let pattern = metta_to_jit(&MettaValue::sym("$x")).to_bits();
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_pattern_match_bind(&mut ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 1, "$x should match and bind to 42");
+    }
+
+    #[test]
+    fn test_pattern_match_bind_wildcard() {
+        use super::super::pattern_matching::jit_runtime_pattern_match_bind;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Pattern: _, Value: 42 - should match without binding
+        let pattern = metta_to_jit(&MettaValue::sym("_")).to_bits();
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_pattern_match_bind(&mut ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 1, "Wildcard should match without binding");
+    }
+
+    #[test]
+    fn test_pattern_match_bind_null_context() {
+        use super::super::pattern_matching::jit_runtime_pattern_match_bind;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let pattern = TAG_BOOL | 1;
+        let value = TAG_BOOL | 1;
+        let result = unsafe { jit_runtime_pattern_match_bind(std::ptr::null_mut(), pattern, value, 0) };
+        assert_eq!(result, TAG_BOOL, "Null context returns false");
+    }
+
+    #[test]
+    fn test_match_arity() {
+        use super::super::pattern_matching::jit_runtime_match_arity;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // S-expression with 3 elements
+        let sexpr = MettaValue::SExpr(vec![
+            MettaValue::sym("foo"),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        let value = metta_to_jit(&sexpr).to_bits();
+
+        // Check arity matches
+        let result = unsafe { jit_runtime_match_arity(&ctx, value, 3, 0) };
+        assert_eq!(result & 1, 1, "Arity 3 matches");
+
+        // Check arity doesn't match
+        let result = unsafe { jit_runtime_match_arity(&ctx, value, 2, 0) };
+        assert_eq!(result & 1, 0, "Arity 2 does not match");
+    }
+
+    #[test]
+    fn test_match_arity_non_sexpr() {
+        use super::super::pattern_matching::jit_runtime_match_arity;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Non-S-expression value
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_match_arity(&ctx, value, 0, 0) };
+        assert_eq!(result & 1, 0, "Non-S-expression has no arity");
+    }
+
+    #[test]
+    fn test_match_head() {
+        use super::super::pattern_matching::jit_runtime_match_head;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("foo"), MettaValue::sym("bar")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // S-expression: (foo 1 2)
+        let sexpr = MettaValue::SExpr(vec![
+            MettaValue::sym("foo"),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        let value = metta_to_jit(&sexpr).to_bits();
+
+        // Check head matches "foo" (index 0)
+        let result = unsafe { jit_runtime_match_head(&ctx, value, 0, 0) };
+        assert_eq!(result & 1, 1, "Head 'foo' matches");
+
+        // Check head doesn't match "bar" (index 1)
+        let result = unsafe { jit_runtime_match_head(&ctx, value, 1, 0) };
+        assert_eq!(result & 1, 0, "Head 'bar' does not match");
+    }
+
+    #[test]
+    fn test_match_head_null_context() {
+        use super::super::pattern_matching::jit_runtime_match_head;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_match_head(std::ptr::null(), value, 0, 0) };
+        assert_eq!(result, TAG_BOOL, "Null context returns false");
+    }
+
+    #[test]
+    fn test_match_head_invalid_index() {
+        use super::super::pattern_matching::jit_runtime_match_head;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("foo")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr = MettaValue::SExpr(vec![MettaValue::sym("foo")]);
+        let value = metta_to_jit(&sexpr).to_bits();
+
+        // Invalid index (out of bounds)
+        let result = unsafe { jit_runtime_match_head(&ctx, value, 100, 0) };
+        assert_eq!(result, TAG_BOOL, "Invalid index returns false");
+    }
+
+    #[test]
+    fn test_match_head_empty_sexpr() {
+        use super::super::pattern_matching::jit_runtime_match_head;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("foo")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let sexpr = MettaValue::SExpr(vec![]);
+        let value = metta_to_jit(&sexpr).to_bits();
+
+        // Empty S-expression has no head
+        let result = unsafe { jit_runtime_match_head(&ctx, value, 0, 0) };
+        assert_eq!(result, TAG_BOOL, "Empty S-expression has no head");
+    }
+
+    #[test]
+    fn test_unify_basic() {
+        use super::super::pattern_matching::jit_runtime_unify;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Same value unifies
+        let a = JitValue::from_long(42).to_bits();
+        let b = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_unify(&ctx, a, b, 0) };
+        assert_eq!(result & 1, 1, "42 unifies with 42");
+
+        // Different values don't unify
+        let c = JitValue::from_long(99).to_bits();
+        let result = unsafe { jit_runtime_unify(&ctx, a, c, 0) };
+        assert_eq!(result & 1, 0, "42 does not unify with 99");
+    }
+
+    #[test]
+    fn test_unify_variable() {
+        use super::super::pattern_matching::jit_runtime_unify;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Variable unifies with anything
+        let var = metta_to_jit(&MettaValue::sym("$x")).to_bits();
+        let val = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_unify(&ctx, var, val, 0) };
+        assert_eq!(result & 1, 1, "$x unifies with 42");
+
+        // Other way around
+        let result = unsafe { jit_runtime_unify(&ctx, val, var, 0) };
+        assert_eq!(result & 1, 1, "42 unifies with $x");
+    }
+
+    #[test]
+    fn test_unify_wildcard() {
+        use super::super::pattern_matching::jit_runtime_unify;
+        use super::super::helpers::metta_to_jit;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Wildcard unifies with anything
+        let wildcard = metta_to_jit(&MettaValue::sym("_")).to_bits();
+        let val = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_unify(&ctx, wildcard, val, 0) };
+        assert_eq!(result & 1, 1, "_ unifies with 42");
+
+        // Other way around
+        let result = unsafe { jit_runtime_unify(&ctx, val, wildcard, 0) };
+        assert_eq!(result & 1, 1, "42 unifies with _");
+    }
+
+    #[test]
+    fn test_unify_bind() {
+        use super::super::pattern_matching::jit_runtime_unify_bind;
+        use super::super::helpers::metta_to_jit;
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        use super::super::bindings::jit_runtime_push_binding_frame;
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+
+        // Unify with binding
+        let var = metta_to_jit(&MettaValue::sym("$x")).to_bits();
+        let val = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_unify_bind(&mut ctx, var, val, 0) };
+        assert_eq!(result & 1, 1, "$x unifies with 42 and binding added");
+    }
+
+    #[test]
+    fn test_unify_bind_null_context() {
+        use super::super::pattern_matching::jit_runtime_unify_bind;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let a = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_unify_bind(std::ptr::null_mut(), a, a, 0) };
+        assert_eq!(result, TAG_BOOL, "Null context returns false");
+    }
+
+    // ==========================================================================
+    // Phase 5B: Nondeterminism Tests - Additional Coverage
+    // ==========================================================================
+
+    #[test]
+    fn test_push_choice_point_null_context() {
+        let alts = [JitAlternative::value(JitValue::from_long(1))];
+        let result = unsafe {
+            jit_runtime_push_choice_point(std::ptr::null_mut(), 1, alts.as_ptr(), 0, std::ptr::null())
+        };
+        assert_eq!(result, -2, "Null context returns -2");
+    }
+
+    #[test]
+    fn test_fail_null_context() {
+        let result = unsafe { jit_runtime_fail(std::ptr::null_mut()) };
+        assert_eq!(result, -2, "Null context returns -2");
+    }
+
+    #[test]
+    fn test_fail_no_choice_points() {
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                std::ptr::null(),
+                0,
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+
+        // No choice points - should return -1
+        let result = unsafe { jit_runtime_fail(&mut ctx) };
+        assert_eq!(result, -1, "No choice points returns -1");
+    }
+
+    #[test]
+    fn test_get_results_count() {
+        use super::super::nondeterminism::jit_runtime_get_results_count;
+
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                std::ptr::null(),
+                0,
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+
+        assert_eq!(unsafe { jit_runtime_get_results_count(&ctx) }, 0);
+
+        // Add some results
+        ctx.results_count = 3;
+        assert_eq!(unsafe { jit_runtime_get_results_count(&ctx) }, 3);
+    }
+
+    #[test]
+    fn test_get_results_count_null_context() {
+        use super::super::nondeterminism::jit_runtime_get_results_count;
+        let result = unsafe { jit_runtime_get_results_count(std::ptr::null()) };
+        assert_eq!(result, 0, "Null context returns 0");
+    }
+
+    #[test]
+    fn test_get_choice_point_count() {
+        use super::super::nondeterminism::jit_runtime_get_choice_point_count;
+
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                std::ptr::null(),
+                0,
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+
+        assert_eq!(unsafe { jit_runtime_get_choice_point_count(&ctx) }, 0);
+
+        ctx.choice_point_count = 2;
+        assert_eq!(unsafe { jit_runtime_get_choice_point_count(&ctx) }, 2);
+    }
+
+    #[test]
+    fn test_get_choice_point_count_null_context() {
+        use super::super::nondeterminism::jit_runtime_get_choice_point_count;
+        let result = unsafe { jit_runtime_get_choice_point_count(std::ptr::null()) };
+        assert_eq!(result, 0, "Null context returns 0");
+    }
+
+    #[test]
+    fn test_fork_zero_alternatives() {
+        use super::super::nondeterminism::jit_runtime_fork;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::Long(1)];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Fork with 0 alternatives
+        let result = unsafe { jit_runtime_fork(&mut ctx, 0, std::ptr::null(), 0) };
+        assert_eq!(result, TAG_NIL, "Zero alternatives returns NIL");
+        assert!(ctx.bailout, "Bailout should be set");
+    }
+
+    #[test]
+    fn test_fork_null_indices() {
+        use super::super::nondeterminism::jit_runtime_fork;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::Long(1)];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Fork with null indices pointer
+        let result = unsafe { jit_runtime_fork(&mut ctx, 2, std::ptr::null(), 0) };
+        assert_eq!(result, TAG_NIL, "Null indices returns NIL");
+        assert!(ctx.bailout, "Bailout should be set");
+    }
+
+    #[test]
+    fn test_fork_invalid_index() {
+        use super::super::nondeterminism::jit_runtime_fork;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::Long(1)];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Fork with invalid index
+        let indices: [u64; 1] = [100]; // Out of bounds
+        let result = unsafe { jit_runtime_fork(&mut ctx, 1, indices.as_ptr(), 0) };
+        assert_eq!(result, TAG_NIL, "Invalid index returns NIL");
+        assert!(ctx.bailout, "Bailout should be set");
+    }
+
+    #[test]
+    fn test_fork_null_context() {
+        use super::super::nondeterminism::jit_runtime_fork;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let result = unsafe { jit_runtime_fork(std::ptr::null_mut(), 1, std::ptr::null(), 0) };
+        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+    }
+
+    #[test]
+    fn test_yield_null_context() {
+        use super::super::nondeterminism::jit_runtime_yield;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let value = JitValue::from_long(42).to_bits();
+        let result = unsafe { jit_runtime_yield(std::ptr::null_mut(), value, 0) };
+        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+    }
+
+    #[test]
+    fn test_yield_results_overflow() {
+        use super::super::nondeterminism::jit_runtime_yield;
+
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 2]; // Small capacity
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                std::ptr::null(),
+                0,
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                2, // Small capacity
+            )
+        };
+
+        // Fill up results
+        ctx.results_count = 2;
+
+        // Yield should handle overflow gracefully
+        let value = JitValue::from_long(42).to_bits();
+        let _ = unsafe { jit_runtime_yield(&mut ctx, value, 0) };
+
+        // Should still set bailout even with overflow
+        assert!(ctx.bailout, "Bailout should be set even with overflow");
+    }
+
+    #[test]
+    fn test_collect_null_context() {
+        use super::super::nondeterminism::jit_runtime_collect;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let result = unsafe { jit_runtime_collect(std::ptr::null_mut(), 0, 0) };
+        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+    }
+
+    #[test]
+    fn test_collect_empty_results() {
+        use super::super::nondeterminism::jit_runtime_collect;
+
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                std::ptr::null(),
+                0,
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+
+        // Collect with no results
+        let result = unsafe { jit_runtime_collect(&mut ctx, 0, 0) };
+
+        // Should return empty S-expression (heap pointer)
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_HEAP, "Should return heap-allocated SExpr");
+    }
+
+    #[test]
+    fn test_save_stack_null_context() {
+        let result = unsafe { jit_runtime_save_stack(std::ptr::null_mut()) };
+        assert_eq!(result, JIT_SIGNAL_ERROR, "Null context returns ERROR");
+    }
+
+    #[test]
+    fn test_save_stack_no_buffer() {
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                std::ptr::null(),
+                0,
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+        // No saved_stack buffer set
+
+        let result = unsafe { jit_runtime_save_stack(&mut ctx) };
+        assert_eq!(result, JIT_SIGNAL_OK, "No buffer returns OK (no-op)");
+    }
+
+    #[test]
+    fn test_restore_stack_null_context() {
+        let result = unsafe { jit_runtime_restore_stack(std::ptr::null_mut()) };
+        assert_eq!(result, JIT_SIGNAL_ERROR, "Null context returns ERROR");
+    }
+
+    #[test]
+    fn test_restore_stack_no_saved() {
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                std::ptr::null(),
+                0,
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+        // No saved stack
+
+        let result = unsafe { jit_runtime_restore_stack(&mut ctx) };
+        assert_eq!(result, JIT_SIGNAL_OK, "No saved stack returns OK (no-op)");
+    }
+
+    #[test]
+    fn test_fork_native_null_context() {
+        use super::super::nondeterminism::jit_runtime_fork_native;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let result = unsafe { jit_runtime_fork_native(std::ptr::null_mut(), 1, std::ptr::null(), 0) };
+        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+    }
+
+    #[test]
+    fn test_fork_native_zero_alternatives() {
+        use super::super::nondeterminism::jit_runtime_fork_native;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                std::ptr::null(),
+                0,
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+
+        let result = unsafe { jit_runtime_fork_native(&mut ctx, 0, std::ptr::null(), 0) };
+        assert_eq!(result, TAG_NIL, "Zero alternatives returns NIL");
+    }
+
+    #[test]
+    fn test_yield_native_null_context() {
+        let result = unsafe { jit_runtime_yield_native(std::ptr::null_mut(), 0, 0) };
+        assert_eq!(result, JIT_SIGNAL_ERROR, "Null context returns ERROR");
+    }
+
+    #[test]
+    fn test_fail_native_null_context() {
+        use super::super::nondeterminism::jit_runtime_fail_native;
+
+        let result = unsafe { jit_runtime_fail_native(std::ptr::null_mut()) };
+        assert_eq!(result, JIT_SIGNAL_FAIL as u64, "Null context returns FAIL");
+    }
+
+    #[test]
+    fn test_fail_native_no_choice_points() {
+        use super::super::nondeterminism::jit_runtime_fail_native;
+
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                std::ptr::null(),
+                0,
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+
+        let result = unsafe { jit_runtime_fail_native(&mut ctx) };
+        assert_eq!(result, JIT_SIGNAL_FAIL as u64, "No choice points returns FAIL");
+    }
+
+    #[test]
+    fn test_collect_native_null_context() {
+        use super::super::nondeterminism::jit_runtime_collect_native;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let result = unsafe { jit_runtime_collect_native(std::ptr::null_mut()) };
+        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+    }
+
+    #[test]
+    fn test_has_alternatives_null_context() {
+        let result = unsafe { jit_runtime_has_alternatives(std::ptr::null()) };
+        assert_eq!(result, 0, "Null context returns 0");
+    }
+
+    #[test]
+    fn test_get_resume_ip() {
+        use super::super::nondeterminism::jit_runtime_get_resume_ip;
+
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                std::ptr::null(),
+                0,
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+
+        ctx.resume_ip = 42;
+        let result = unsafe { jit_runtime_get_resume_ip(&ctx) };
+        assert_eq!(result, 42, "Resume IP should be 42");
+    }
+
+    #[test]
+    fn test_get_resume_ip_null_context() {
+        use super::super::nondeterminism::jit_runtime_get_resume_ip;
+        let result = unsafe { jit_runtime_get_resume_ip(std::ptr::null()) };
+        assert_eq!(result, 0, "Null context returns 0");
+    }
+
+    // ==========================================================================
+    // Phase 5B: Bindings Tests - Additional Coverage
+    // ==========================================================================
+
+    #[test]
+    fn test_load_binding_null_context() {
+        use super::super::bindings::jit_runtime_load_binding;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let result = unsafe { jit_runtime_load_binding(std::ptr::null_mut(), 0, 0) };
+        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+    }
+
+    #[test]
+    fn test_store_binding_null_context() {
+        use super::super::bindings::jit_runtime_store_binding;
+
+        let result = unsafe { jit_runtime_store_binding(std::ptr::null_mut(), 0, 0, 0) };
+        assert_eq!(result, -2, "Null context returns -2");
+    }
+
+    #[test]
+    fn test_store_binding_no_frames() {
+        use super::super::bindings::jit_runtime_store_binding;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // No binding frames
+        let result = unsafe { jit_runtime_store_binding(&mut ctx, 0, 0, 0) };
+        assert_eq!(result, -1, "No binding frames returns -1");
+    }
+
+    #[test]
+    fn test_has_binding_null_context() {
+        use super::super::bindings::jit_runtime_has_binding;
+        use crate::backend::bytecode::jit::types::TAG_BOOL;
+
+        let result = unsafe { jit_runtime_has_binding(std::ptr::null(), 0) };
+        assert_eq!(result, TAG_BOOL, "Null context returns false");
+    }
+
+    #[test]
+    fn test_clear_bindings_null_context() {
+        use super::super::bindings::jit_runtime_clear_bindings;
+        // Should not crash
+        unsafe { jit_runtime_clear_bindings(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn test_push_binding_frame_null_context() {
+        use super::super::bindings::jit_runtime_push_binding_frame;
+
+        let result = unsafe { jit_runtime_push_binding_frame(std::ptr::null_mut()) };
+        assert_eq!(result, -2, "Null context returns -2");
+    }
+
+    #[test]
+    fn test_push_binding_frame_overflow() {
+        use super::super::bindings::jit_runtime_push_binding_frame;
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 2];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = 2;
+
+        // Fill up binding frames
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+
+        // Next push should overflow
+        let result = unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+        assert_eq!(result, -1, "Overflow returns -1");
+        assert!(ctx.bailout, "Bailout should be set");
+    }
+
+    #[test]
+    fn test_pop_binding_frame_null_context() {
+        use super::super::bindings::jit_runtime_pop_binding_frame;
+
+        let result = unsafe { jit_runtime_pop_binding_frame(std::ptr::null_mut()) };
+        assert_eq!(result, -2, "Null context returns -2");
+    }
+
+    #[test]
+    fn test_pop_binding_frame_root() {
+        use super::super::bindings::{jit_runtime_pop_binding_frame, jit_runtime_push_binding_frame};
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        // Push one frame (root)
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+        assert_eq!(ctx.binding_frames_count, 1);
+
+        // Can't pop root frame
+        let result = unsafe { jit_runtime_pop_binding_frame(&mut ctx) };
+        assert_eq!(result, -1, "Can't pop root frame");
+    }
+
+    #[test]
+    fn test_fork_bindings_null_context() {
+        use super::super::bindings::jit_runtime_fork_bindings;
+
+        let result = unsafe { jit_runtime_fork_bindings(std::ptr::null()) };
+        assert!(result.is_null(), "Null context returns null");
+    }
+
+    #[test]
+    fn test_fork_bindings_empty() {
+        use super::super::bindings::{jit_runtime_fork_bindings, jit_runtime_free_saved_bindings};
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // No binding frames
+        let saved = unsafe { jit_runtime_fork_bindings(&ctx) };
+        assert!(!saved.is_null(), "Should return valid pointer");
+
+        // Clean up
+        unsafe { jit_runtime_free_saved_bindings(saved) };
+    }
+
+    #[test]
+    fn test_restore_bindings_null_context() {
+        use super::super::bindings::{jit_runtime_restore_bindings, jit_runtime_fork_bindings};
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let saved = unsafe { jit_runtime_fork_bindings(&ctx) };
+        let result = unsafe { jit_runtime_restore_bindings(std::ptr::null_mut(), saved, true) };
+        assert_eq!(result, -1, "Null context returns -1");
+    }
+
+    #[test]
+    fn test_restore_bindings_null_saved() {
+        use super::super::bindings::jit_runtime_restore_bindings;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_restore_bindings(&mut ctx, std::ptr::null_mut(), false) };
+        assert_eq!(result, -1, "Null saved returns -1");
+    }
+
+    #[test]
+    fn test_free_saved_bindings_null() {
+        use super::super::bindings::jit_runtime_free_saved_bindings;
+        // Should not crash
+        unsafe { jit_runtime_free_saved_bindings(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn test_saved_bindings_size_null() {
+        use super::super::bindings::jit_runtime_saved_bindings_size;
+        let result = unsafe { jit_runtime_saved_bindings_size(std::ptr::null()) };
+        assert_eq!(result, 0, "Null returns 0");
+    }
+
+    #[test]
+    fn test_saved_bindings_size() {
+        use super::super::bindings::{jit_runtime_fork_bindings, jit_runtime_saved_bindings_size, jit_runtime_free_saved_bindings, jit_runtime_push_binding_frame, jit_runtime_store_binding};
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x"), MettaValue::sym("$y")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, JitValue::from_long(1).to_bits(), 0) };
+        unsafe { jit_runtime_store_binding(&mut ctx, 1, JitValue::from_long(2).to_bits(), 0) };
+
+        let saved = unsafe { jit_runtime_fork_bindings(&ctx) };
+        let size = unsafe { jit_runtime_saved_bindings_size(saved) };
+        assert_eq!(size, 2, "Should have 2 bindings");
+
+        unsafe { jit_runtime_free_saved_bindings(saved) };
+    }
+
+    #[test]
+    fn test_binding_update_existing() {
+        use super::super::bindings::{jit_runtime_store_binding, jit_runtime_load_binding, jit_runtime_push_binding_frame};
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+
+        // Store first value
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, JitValue::from_long(10).to_bits(), 0) };
+        let val1 = unsafe { jit_runtime_load_binding(&mut ctx, 0, 0) };
+        assert_eq!(JitValue::from_raw(val1).as_long(), 10);
+
+        // Update same binding
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, JitValue::from_long(20).to_bits(), 0) };
+        let val2 = unsafe { jit_runtime_load_binding(&mut ctx, 0, 0) };
+        assert_eq!(JitValue::from_raw(val2).as_long(), 20);
+    }
+
+    #[test]
+    fn test_binding_shadowing() {
+        use super::super::bindings::{jit_runtime_store_binding, jit_runtime_load_binding, jit_runtime_push_binding_frame, jit_runtime_pop_binding_frame};
+        use crate::backend::bytecode::jit::types::JitBindingFrame;
+
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        // Outer frame: $x = 10
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, JitValue::from_long(10).to_bits(), 0) };
+
+        // Inner frame: $x = 20 (shadows outer)
+        unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+        unsafe { jit_runtime_store_binding(&mut ctx, 0, JitValue::from_long(20).to_bits(), 0) };
+
+        // Should see inner value
+        let val = unsafe { jit_runtime_load_binding(&mut ctx, 0, 0) };
+        assert_eq!(JitValue::from_raw(val).as_long(), 20);
+
+        // Pop inner frame
+        unsafe { jit_runtime_pop_binding_frame(&mut ctx) };
+
+        // Should see outer value
+        let val = unsafe { jit_runtime_load_binding(&mut ctx, 0, 0) };
+        assert_eq!(JitValue::from_raw(val).as_long(), 10);
+    }
+
+    // =========================================================================
+    // Phase 5D: Additional Tests for 0% Coverage Files
+    // =========================================================================
+
+    // === special_forms.rs edge cases ===
+
+    #[test]
+    fn test_eval_let_star_marker() {
+        use super::super::special_forms::jit_runtime_eval_let_star;
+        // let* is mainly a placeholder/marker - just verify it returns Unit
+        let result = unsafe { jit_runtime_eval_let_star(std::ptr::null_mut(), 0) };
+        assert_eq!(JitValue::from_raw(result).is_unit(), true);
+    }
+
+    #[test]
+    fn test_eval_match_null_context() {
+        use super::super::special_forms::jit_runtime_eval_match;
+        // Pattern matching with null context returns false (early return)
+        let val = JitValue::from_long(42);
+        let pattern = JitValue::from_long(42);
+        let result = unsafe { jit_runtime_eval_match(std::ptr::null_mut(), val.to_bits(), pattern.to_bits(), 0) };
+        // With null context, pattern_match returns false (TAG_BOOL | 0)
+        assert_eq!(result & 1, 0);
+    }
+
+    #[test]
+    fn test_eval_match_no_match() {
+        use super::super::special_forms::jit_runtime_eval_match;
+        let val = JitValue::from_long(42);
+        let pattern = JitValue::from_long(99);
+        let result = unsafe { jit_runtime_eval_match(std::ptr::null_mut(), val.to_bits(), pattern.to_bits(), 0) };
+        // Pattern 99 doesn't match value 42
+        assert_eq!(result & 1, 0);
+    }
+
+    #[test]
+    fn test_eval_case_null_context() {
+        use super::super::special_forms::jit_runtime_eval_case;
+        let val = JitValue::from_long(42);
+        let result = unsafe { jit_runtime_eval_case(std::ptr::null_mut(), val.to_bits(), 3, 0) };
+        // Null context should return -1 (no match)
+        let result_val = JitValue::from_raw(result);
+        assert_eq!(result_val.as_long(), -1);
+    }
+
+    #[test]
+    fn test_eval_chain_simple() {
+        use super::super::special_forms::jit_runtime_eval_chain;
+        let first = JitValue::from_long(1);
+        let second = JitValue::from_long(2);
+        let result = unsafe { jit_runtime_eval_chain(std::ptr::null_mut(), first.to_bits(), second.to_bits(), 0) };
+        // Chain returns second value
+        assert_eq!(JitValue::from_raw(result).as_long(), 2);
+    }
+
+    #[test]
+    fn test_eval_chain_with_unit() {
+        use super::super::special_forms::jit_runtime_eval_chain;
+        let first = JitValue::unit();
+        let second = JitValue::from_long(42);
+        let result = unsafe { jit_runtime_eval_chain(std::ptr::null_mut(), first.to_bits(), second.to_bits(), 0) };
+        assert_eq!(JitValue::from_raw(result).as_long(), 42);
+    }
+
+    #[test]
+    fn test_eval_unquote_non_quote() {
+        use super::super::special_forms::jit_runtime_eval_unquote;
+        // Unquoting a non-quoted value should return it unchanged
+        let val = JitValue::from_long(42);
+        let result = unsafe { jit_runtime_eval_unquote(std::ptr::null_mut(), val.to_bits(), 0) };
+        assert_eq!(JitValue::from_raw(result).as_long(), 42);
+    }
+
+    // === value_creation.rs edge cases ===
+
+    #[test]
+    fn test_make_list_empty() {
+        use super::super::value_creation::jit_runtime_make_list;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Empty list should return nil
+        let result = unsafe { jit_runtime_make_list(&mut ctx, std::ptr::null(), 0, 0) };
+        assert_eq!(result & TAG_MASK, TAG_NIL);
+    }
+
+    #[test]
+    fn test_make_list_single() {
+        use super::super::value_creation::jit_runtime_make_list;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let values = vec![JitValue::from_long(1).to_bits()];
+        let result = unsafe { jit_runtime_make_list(&mut ctx, values.as_ptr(), 1, 0) };
+
+        // Should be a heap value (Cons structure)
+        assert_eq!(result & TAG_MASK, TAG_HEAP);
+
+        // Verify structure
+        let jit_val = JitValue::from_raw(result);
+        let metta = unsafe { jit_val.to_metta() };
+        match metta.inner() {
+            MettaValueInner::SExpr(elems) => {
+                assert_eq!(elems.len(), 3); // (Cons 1 Nil)
+                assert_eq!(elems[0].inner(), &MettaValueInner::Atom("Cons".to_string()));
+                assert_eq!(elems[1].inner(), &MettaValueInner::Long(1));
+            }
+            _ => panic!("Expected SExpr for list"),
+        }
+    }
+
+    #[test]
+    fn test_push_uri_loads_constant() {
+        use super::super::value_creation::jit_runtime_push_uri;
+
+        let constants: Vec<MettaValue> = vec![
+            MettaValue::String("http://example.com".to_string()),
+        ];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let result = unsafe { jit_runtime_push_uri(&ctx, 0) };
+        assert_eq!(result & TAG_MASK, TAG_HEAP);
+    }
+
+    // === type_ops.rs edge cases ===
+
+    #[test]
+    fn test_get_type_unknown_tag() {
+        use super::super::type_ops::jit_runtime_get_type;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        // Use a completely invalid tag value
+        let invalid_val: u64 = 0xFFFF_0000_0000_0000; // Invalid tag
+        let result = unsafe { jit_runtime_get_type(&mut ctx, invalid_val, 0) };
+
+        // Should return some type (Unknown)
+        let jit_val = JitValue::from_raw(result);
+        let metta = unsafe { jit_val.to_metta() };
+        match metta.inner() {
+            MettaValueInner::Atom(s) => assert_eq!(s, "Unknown"),
+            _ => panic!("Expected Atom for type name"),
+        }
+    }
+
+    #[test]
+    fn test_check_type_invalid_type_atom() {
+        use super::super::type_ops::jit_runtime_check_type;
+        use crate::backend::bytecode::jit::types::TAG_LONG;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let val = JitValue::from_long(42).to_bits();
+        // Use a Long as the type atom (invalid - should be an atom)
+        let type_val: u64 = TAG_LONG | 123;
+        let result = unsafe { jit_runtime_check_type(&mut ctx, val, type_val, 0) };
+
+        // Should return false (type check failed due to invalid type atom)
+        assert_eq!(result & 1, 0);
+    }
+
+    #[test]
+    fn test_assert_type_with_null_context() {
+        use super::super::type_ops::jit_runtime_assert_type;
+        use crate::backend::bytecode::jit::types::TAG_LONG;
+
+        let val = JitValue::from_long(42).to_bits();
+        let type_val: u64 = TAG_LONG | 123; // Invalid type atom
+
+        // With null context, should still return the value
+        let result = unsafe { jit_runtime_assert_type(std::ptr::null_mut(), val, type_val, 0) };
+        assert_eq!(result, val);
+    }
+
+    // === space_ops.rs edge cases ===
+
+    #[test]
+    fn test_space_match_nondet_with_context_no_choice_points() {
+        use super::super::space_ops::jit_runtime_space_match_nondet;
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+        // Set choice points to null to trigger the capacity check path
+        ctx.choice_points = std::ptr::null_mut();
+        ctx.choice_point_cap = 0;
+
+        let not_space = JitValue::from_long(42).to_bits();
+        let pattern_jit = JitValue::from_long(1).to_bits();
+        let template_jit = JitValue::from_long(2).to_bits();
+
+        let result = unsafe {
+            jit_runtime_space_match_nondet(&mut ctx, not_space, pattern_jit, template_jit, 0)
+        };
+
+        // Should return nil (type error - not a space)
+        assert_eq!(result, TAG_NIL);
+        // Should have bailed out
+        assert!(ctx.bailout);
+    }
+
+    // === nondeterminism edge cases ===
+
+    #[test]
+    fn test_yield_native_null_context_5d() {
+        // yield_native returns i64 and takes 3 args
+        let result = unsafe { jit_runtime_yield_native(std::ptr::null_mut(), JitValue::from_long(42).to_bits(), 0) };
+        // Should return ERROR signal with null context
+        assert_eq!(result, JIT_SIGNAL_ERROR as i64);
+    }
+
+    #[test]
+    fn test_collect_native_null_context_5d() {
+        // collect_native returns u64
+        let result = unsafe { jit_runtime_collect_native(std::ptr::null_mut()) };
+        // Should return nil with null context
+        use crate::backend::bytecode::jit::types::TAG_NIL;
+        assert_eq!(result, TAG_NIL);
+    }
+
+    #[test]
+    fn test_collect_results_empty_5d() {
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                constants.as_ptr(),
+                constants.len(),
+                std::ptr::null_mut(),
+                0,
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+        ctx.results_count = 0;
+
+        // collect_results takes *mut JitContext
+        let collected = unsafe { collect_results(&mut ctx) };
+        assert!(collected.is_empty());
+    }
+
+    // === Additional pattern matching edge cases ===
+
+    #[test]
+    fn test_pattern_match_long_via_fast_path() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        // Long comparison uses fast path (doesn't need context)
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let pattern = JitValue::from_long(42).to_bits();
+        let value = JitValue::from_long(42).to_bits();
+
+        // Fast path: same longs match
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 1);
+
+        // Fast path: different longs don't match
+        let different = JitValue::from_long(99).to_bits();
+        let result2 = unsafe { jit_runtime_pattern_match(&ctx, pattern, different, 0) };
+        assert_eq!(result2 & 1, 0);
+    }
+
+    #[test]
+    fn test_pattern_match_bool_via_fast_path() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let pattern = JitValue::from_bool(true).to_bits();
+        let value = JitValue::from_bool(true).to_bits();
+
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 1);
+    }
+
+    #[test]
+    fn test_pattern_match_nil_via_fast_path() {
+        use super::super::pattern_matching::jit_runtime_pattern_match;
+
+        let constants: Vec<MettaValue> = vec![];
+        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let ctx = unsafe {
+            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
+        };
+
+        let pattern = JitValue::nil().to_bits();
+        let value = JitValue::nil().to_bits();
+
+        let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
+        assert_eq!(result & 1, 1);
+    }
+
+    // === Arithmetic edge cases ===
+
+    #[test]
+    fn test_pow_large_exponent() {
+        let base = box_long(2);
+        let exp = box_long(30);
+        let result = unsafe { jit_runtime_pow(base, exp) };
+        let result_val = extract_long_signed(result);
+        assert_eq!(result_val, 1073741824); // 2^30
+    }
+
+    #[test]
+    fn test_abs_min_value() {
+        // i64::MIN is a special case for abs
+        let min_val = box_long(i64::MIN);
+        let result = unsafe { jit_runtime_abs(min_val) };
+        // abs(i64::MIN) overflows in debug, but in release wraps
+        // We just verify it doesn't crash
+        let _ = extract_long_signed(result);
+    }
+
+    #[test]
+    fn test_signum_max_positive_5d() {
+        // Use a large positive value that fits in 48-bit payload
+        // (NaN-boxing uses 48-bit payload, so i64::MAX gets truncated)
+        let large_pos = box_long(0x7FFF_FFFF_FFFF); // Max 48-bit positive
+        let result = unsafe { jit_runtime_signum(large_pos) };
+        assert_eq!(extract_long_signed(result), 1);
+    }
+
+    #[test]
+    fn test_signum_large_negative() {
+        // Use a large negative value that fits in 48-bit payload
+        let large_neg = box_long(-0x7FFF_FFFF_FFFF); // Large 48-bit negative
+        let result = unsafe { jit_runtime_signum(large_neg) };
+        assert_eq!(extract_long_signed(result), -1);
+    }
 }

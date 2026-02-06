@@ -44,11 +44,37 @@ impl BytecodeVM {
         Ok(())
     }
 
+    /// Match head symbol of an S-expression for fast dispatch optimization.
+    ///
+    /// Reads an expected symbol index from the bytecode, pops a value from the stack,
+    /// and checks if the value is an S-expression whose first element matches the
+    /// expected symbol. Pushes Bool(true) if it matches, Bool(false) otherwise.
+    ///
+    /// Stack: [value] -> [bool]
+    /// Bytecode: MatchHead expected_index:u8
     pub(super) fn op_match_head(&mut self) -> VmResult<()> {
         trace!(target: "mettatron::vm::match", ip = self.ip, "match_head");
-        let _expected_index = self.read_u8()?;
-        // TODO: Implement head matching
-        Err(VmError::Runtime("MatchHead not yet implemented".into()))
+        let expected_index = self.read_u8()? as u16;
+
+        // Get expected symbol from constant pool and clone it to avoid borrow issues
+        let expected = self
+            .chunk
+            .get_constant(expected_index)
+            .ok_or(VmError::InvalidConstant(expected_index))?
+            .clone();
+
+        let value = self.pop()?;
+
+        // Check if value is an S-expression with matching head
+        let matches = match (expected.inner(), value.inner()) {
+            (MettaValueInner::Atom(exp_sym), MettaValueInner::SExpr(items)) if !items.is_empty() => {
+                matches!(items[0].inner(), MettaValueInner::Atom(head_sym) if head_sym == exp_sym)
+            }
+            _ => false,
+        };
+
+        self.push(MettaValue::Bool(matches));
+        Ok(())
     }
 
     pub(super) fn op_match_arity(&mut self) -> VmResult<()> {
@@ -63,11 +89,46 @@ impl BytecodeVM {
         Ok(())
     }
 
+    /// Evaluate a guard expression and backtrack if it returns false.
+    ///
+    /// Reads a chunk index from the bytecode, executes the guard chunk,
+    /// and if the result is Bool(false), triggers a backtrack via op_fail().
+    /// If the result is Bool(true), execution continues normally.
+    ///
+    /// Stack: [] -> [] (guard success) or backtrack (guard failure)
+    /// Bytecode: MatchGuard guard_chunk_index:u16
     pub(super) fn op_match_guard(&mut self) -> VmResult<()> {
         trace!(target: "mettatron::vm::match", ip = self.ip, "match_guard");
-        let _guard_index = self.read_u16()?;
-        // TODO: Implement guard evaluation
-        Err(VmError::Runtime("MatchGuard not yet implemented".into()))
+        let guard_index = self.read_u16()?;
+
+        // Get the guard chunk from the sub-chunk pool
+        let guard_chunk = self
+            .chunk
+            .get_chunk_constant(guard_index)
+            .ok_or(VmError::InvalidConstant(guard_index))?;
+
+        // Execute the guard chunk and get result
+        // We use a dummy binding value since the guard should use bindings from the current frame
+        let result = self.execute_template_with_binding(guard_chunk, MettaValue::Unit())?;
+
+        // Check if guard passed
+        match result.inner() {
+            MettaValueInner::Bool(true) => {
+                // Guard passed, continue execution
+                Ok(())
+            }
+            MettaValueInner::Bool(false) => {
+                // Guard failed, backtrack
+                // We need to trigger a fail, but op_fail returns ControlFlow
+                // Instead, we return an error that will be caught and converted to backtracking
+                Err(VmError::GuardFailed)
+            }
+            _ => {
+                // Guard returned non-boolean, treat as failure
+                debug!(target: "mettatron::vm::match", ip = self.ip, "match_guard returned non-boolean: {:?}", result);
+                Err(VmError::GuardFailed)
+            }
+        }
     }
 
     pub(super) fn op_unify(&mut self) -> VmResult<()> {

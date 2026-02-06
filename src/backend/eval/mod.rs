@@ -40,6 +40,8 @@ pub(crate) mod types_generic;
 mod utilities;
 
 #[cfg(test)]
+mod dual_tests;
+#[cfg(test)]
 mod eval_tests;
 
 use tracing::debug;

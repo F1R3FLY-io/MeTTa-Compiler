@@ -235,93 +235,6 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         return Ok(output);
     }
 
-    // Choose evaluation mode based on METTA_USE_ARENA environment variable
-    if is_arena_mode_enabled() {
-        eval_metta_arena(input, options)
-    } else {
-        eval_metta_heap(input, options)
-    }
-}
-
-/// Heap-based evaluation (default mode)
-///
-/// Uses MettaValue throughout: compile → MettaValue → eval → MettaValue
-fn eval_metta_heap(input: &str, options: &Options) -> Result<String, String> {
-    // Common setup: file path for error messages
-    let file_path = options
-        .input
-        .as_ref()
-        .filter(|p| *p != "-")
-        .map(|s| s.as_str());
-
-    // Create environment
-    let mut env = HeapEnvironment::default();
-
-    // Set the current module path for relative includes
-    if let Some(ref input_path) = options.input {
-        if input_path != "-" {
-            let path = Path::new(input_path);
-            // Canonicalize to get absolute path, then get parent directory
-            if let Ok(canonical) = path.canonicalize() {
-                if let Some(parent) = canonical.parent() {
-                    env.set_current_module_path(Some(parent.to_path_buf()));
-                }
-            } else if let Some(parent) = path.parent() {
-                // Fallback if file doesn't exist yet (shouldn't happen, but be safe)
-                env.set_current_module_path(Some(parent.to_path_buf()));
-            }
-        }
-    }
-
-    // Configure strict mode if requested
-    if options.strict_mode {
-        env.set_strict_mode(true);
-    }
-
-    // Standard MettaValue evaluation
-    let state = compile_with_path(input, file_path).map_err(|e| e.to_string())?;
-
-    // Evaluate each expression
-    let mut output = String::new();
-    for sexpr in state.source {
-        // Only output results for S-expressions, not atoms or ground types
-        let should_output = matches!(sexpr.inner(), MettaValueInner::SExpr(_));
-
-        let (results, new_env) = eval(sexpr, env);
-        env = new_env;
-
-        // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
-        let filtered_results: Vec<MettaValue> = results
-            .into_iter()
-            .filter(|v| !matches!(v.inner(), MettaValueInner::Empty))
-            .collect();
-
-        // Print results with list notation (only for S-expressions)
-        // HE-compatible: print [] for empty result sets
-        if should_output {
-            output.push_str(&format!("{}\n", format_results(&filtered_results)));
-        }
-    }
-
-    Ok(output)
-}
-
-/// Arena-based evaluation using session-scoped dual-arena model.
-///
-/// Uses ArenaValue<'static> throughout with O(1) bulk deallocation:
-///
-/// ```text
-/// compile_arena() → ArenaState → eval_arena() → ArenaValue<'static>
-/// ```
-///
-/// ## Dual Arena Model
-///
-/// - **Eval Arena**: Thread-local, generation-based reset for intermediates (~95% of allocations)
-/// - **Storage Arena**: Session-owned via ArenaState, O(1) bulk free on drop (~5% of allocations)
-///
-/// When the ArenaState drops at the end of this function, ALL arena memory is freed
-/// instantly via O(1) bulk deallocation (no recursive tree traversal).
-fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
     // Common setup: file path for error messages
     let file_path = options
         .input
@@ -382,7 +295,14 @@ fn eval_metta_arena(input: &str, options: &Options) -> Result<String, String> {
 
     // ArenaState drops here: O(1) bulk deallocation
     // - Storage arena returned to pool (reset, not freed)
-    // - Eval generation incremented (lazy reset of eval arenas)
+    // - Eval arena marked for lazy reset (deferred to next session)
+    //
+    // All ArenaValues have been formatted to String, so it's safe to
+    // explicitly reset the eval arena now to free intermediates.
+    drop(state);
+    drop(env);
+    mettatron::backend::models::reset_eval_arena();
+
     Ok(output)
 }
 
@@ -428,7 +348,7 @@ fn run_repl(options: &Options) {
     // Create output highlighter
     let output_highlighter = QueryHighlighter::new().ok();
 
-    let mut env = HeapEnvironment::default();
+    let mut env = new_arena_env();
 
     // Configure strict mode if requested
     if options.strict_mode {
@@ -461,25 +381,25 @@ fn run_repl(options: &Options) {
                     helper.add_to_history(input.to_string());
                 }
 
-                match compile(input) {
+                match compile_arena(input) {
                     Ok(state) => {
-                        for sexpr in state.source {
+                        for &expr in state.source() {
                             // Only output results for S-expressions, not atoms or ground types
-                            let should_output = matches!(sexpr.inner(), MettaValueInner::SExpr(_));
+                            let should_output = expr.is_sexpr();
 
-                            let (results, updated_env) = eval(sexpr.clone(), env.clone());
+                            let (results, updated_env) = eval_arena(expr, env, &state);
                             env = updated_env;
 
                             // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
-                            let filtered_results: Vec<MettaValue> = results
+                            let filtered_results: Vec<ArenaValue> = results
                                 .into_iter()
-                                .filter(|v| !matches!(v.inner(), MettaValueInner::Empty))
+                                .filter(|v| !v.is_empty())
                                 .collect();
 
                             // Print results with syntax highlighting (only for S-expressions)
                             // HE-compatible: print [] for empty result sets
                             if should_output {
-                                let output = format_results(&filtered_results);
+                                let output = format_results_arena(&filtered_results);
                                 let highlighted =
                                     highlight_output(&output, output_highlighter.as_ref());
                                 println!("{}", highlighted);

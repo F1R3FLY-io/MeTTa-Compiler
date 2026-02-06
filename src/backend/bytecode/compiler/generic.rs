@@ -809,9 +809,10 @@ where
         // Compile the body (in original tail position)
         self.compile(body)?;
 
-        // End scope
+        // End scope - use Swap; Pop to preserve body result
         let local_count = self.context.end_scope();
         for _ in 0..local_count {
+            self.builder.emit(Opcode::Swap);
             self.builder.emit(Opcode::Pop);
         }
 
@@ -857,9 +858,10 @@ where
         // Compile body
         self.compile(body)?;
 
-        // End scope
+        // End scope - use Swap; Pop to preserve body result
         let local_count = self.context.end_scope();
         for _ in 0..local_count {
+            self.builder.emit(Opcode::Swap);
             self.builder.emit(Opcode::Pop);
         }
 
@@ -870,10 +872,32 @@ where
     fn bind_pattern(&mut self, pattern: &V) -> CompileResult<()> {
         if let Some(name) = pattern.as_atom() {
             if let Some(var_name) = name.strip_prefix('$') {
-                // Variable binding
-                self.context.declare_local(var_name.to_string())?;
+                // Variable binding - declare local AND emit StoreLocal
+                let slot = self.context.declare_local(var_name.to_string())?;
+                if slot <= 255 {
+                    self.builder.emit_byte(Opcode::StoreLocal, slot as u8);
+                } else {
+                    self.builder.emit_u16(Opcode::StoreLocalWide, slot);
+                }
                 return Ok(());
             }
+            // Wildcard - just pop the value
+            if name == "_" {
+                self.builder.emit(Opcode::Pop);
+                return Ok(());
+            }
+        }
+        // Handle destructuring patterns (S-expressions)
+        if let Some(items) = pattern.as_sexpr() {
+            // For each element, dup the value, extract element, bind
+            for (i, item) in items.iter().enumerate() {
+                self.builder.emit(Opcode::Dup);
+                self.builder.emit_byte(Opcode::GetElement, i as u8);
+                self.bind_pattern(item)?;
+            }
+            // Pop the original value
+            self.builder.emit(Opcode::Pop);
+            return Ok(());
         }
         // Non-variable pattern - just pop for now
         self.builder.emit(Opcode::Pop);
@@ -963,9 +987,10 @@ where
         // Compile body
         self.compile(body)?;
 
-        // End scope
+        // End scope - use Swap; Pop to preserve body result
         let local_count = self.context.end_scope();
         for _ in 0..local_count {
+            self.builder.emit(Opcode::Swap);
             self.builder.emit(Opcode::Pop);
         }
 

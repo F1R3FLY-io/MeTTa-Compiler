@@ -9,9 +9,10 @@
 //! - Symlinks and copies of the same file share a single loaded module
 //! - Path-based lookups are O(1) after first load
 
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+
+use xxhash_rust::xxh3::xxh3_64;
 
 /// Module descriptor for caching and identity.
 ///
@@ -93,9 +94,7 @@ impl Hash for ModuleDescriptor {
 /// Uses the path's byte representation for consistent hashing.
 #[inline]
 pub fn hash_path(path: &Path) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    path.as_os_str().as_encoded_bytes().hash(&mut hasher);
-    hasher.finish()
+    xxh3_64(path.as_os_str().as_encoded_bytes())
 }
 
 /// Hash content string to a u64.
@@ -103,18 +102,7 @@ pub fn hash_path(path: &Path) -> u64 {
 /// Used for content-based deduplication.
 #[inline]
 pub fn hash_content(content: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    hasher.finish()
-}
-
-/// Hash arbitrary bytes to a u64.
-#[inline]
-#[allow(dead_code)]
-pub fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
+    xxh3_64(content.as_bytes())
 }
 
 #[cfg(test)]

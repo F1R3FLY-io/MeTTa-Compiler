@@ -213,7 +213,7 @@ where
 /// checks for grounded operations and rule matches without converting values.
 pub fn process_single_combination_generic<V, F>(
     evaled_items: Vec<V>,
-    unified_env: GenericEnvironment<V, F>,
+    mut unified_env: GenericEnvironment<V, F>,
     depth: usize,
     factory: &F,
 ) -> GenericProcessedSExpr<V, F>
@@ -272,27 +272,34 @@ where
         };
     }
 
-    // No rules matched - return as data constructor
-    let result = handle_no_rule_match_generic(evaled_items, factory, &unified_env);
+    // No rules matched - add to space at top level and return as data constructor
+    let result = handle_no_rule_match_generic(evaled_items, factory, &mut unified_env, depth);
     GenericProcessedSExpr::Done((vec![result], unified_env))
 }
 
 /// Handle no rule match (generic version).
 ///
-/// When no rules match, the expression is returned as a data constructor.
-/// This version works with any value type without conversion.
+/// **ADD Mode Semantics**: Only top-level expressions (depth == 0) are added to space.
+/// Nested sub-expressions evaluated as arguments are NOT added to space.
+/// This matches the heap path behavior in `handle_no_rule_match`.
 fn handle_no_rule_match_generic<V, F>(
     evaled_items: Vec<V>,
     factory: &F,
-    _env: &GenericEnvironment<V, F>,
+    env: &mut GenericEnvironment<V, F>,
+    depth: usize,
 ) -> V
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
 {
-    // TODO: Add "Did you mean?" suggestions for typos
-    // For now, just return the S-expression as a data constructor
-    factory.sexpr(evaled_items)
+    let sexpr = factory.sexpr(evaled_items);
+    // ADD mode: add to space and return unreduced s-expression
+    // In official MeTTa's default ADD mode, bare expressions are automatically added to &self
+    // Only add top-level expressions (depth == 0) to space, not nested sub-expressions
+    if depth == 0 {
+        env.add_to_space(&sexpr);
+    }
+    sexpr
 }
 
 #[cfg(test)]

@@ -13,7 +13,8 @@ pub mod multiset;
 pub mod space_handle;
 
 pub use arena_state::{
-    clone_value, get_eval_arena, get_eval_factory, ArenaState, StorageFactory,
+    active_eval_sessions, clone_value, get_eval_arena, get_eval_factory, reset_eval_arena,
+    ArenaState, StorageFactory,
 };
 pub use arena_value::{ArenaValue, ArenaValueFactory, ArenaValueInner};
 pub use atom_id::{AtomId, SymbolTable};

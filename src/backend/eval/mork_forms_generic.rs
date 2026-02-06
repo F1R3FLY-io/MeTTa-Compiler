@@ -812,4 +812,334 @@ mod tests {
         let (results, _) = eval_rulify_generic(items, env, &factory);
         assert!(!results.is_empty());
     }
+
+    // ========================================================================
+    // Error Path Tests (Phase 6: Branch Coverage)
+    // ========================================================================
+
+    #[test]
+    fn test_exec_wrong_arity() {
+        // exec requires 3 arguments: priority, antecedent, consequent
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        // Only 2 arguments (missing consequent)
+        let items = vec![
+            MettaValue::Atom("exec".to_string()),
+            MettaValue::Atom("P0".to_string()),
+            MettaValue::Conjunction(vec![]),
+        ];
+
+        let (results, _) = eval_exec_generic(items, env.clone(), &factory);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error(), "Should return error for wrong arity");
+
+        // Only 1 argument
+        let items2 = vec![
+            MettaValue::Atom("exec".to_string()),
+            MettaValue::Atom("P0".to_string()),
+        ];
+        let (results2, _) = eval_exec_generic(items2, env, &factory);
+        assert!(results2[0].is_error());
+    }
+
+    #[test]
+    fn test_exec_antecedent_not_conjunction() {
+        // exec antecedent must be a conjunction
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        let items = vec![
+            MettaValue::Atom("exec".to_string()),
+            MettaValue::Atom("P0".to_string()),
+            MettaValue::Atom("not_a_conjunction".to_string()), // Not a conjunction
+            MettaValue::Conjunction(vec![MettaValue::Long(42)]),
+        ];
+
+        let (results, _) = eval_exec_generic(items, env, &factory);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error(), "Should return error for non-conjunction antecedent");
+    }
+
+    #[test]
+    fn test_coalg_wrong_arity() {
+        // coalg requires 2 arguments: pattern and templates
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        // Only 1 argument (missing templates)
+        let items = vec![
+            MettaValue::Atom("coalg".to_string()),
+            MettaValue::Atom("pattern".to_string()),
+        ];
+
+        let (results, _) = eval_coalg_generic(items, env.clone(), &factory);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error(), "Should return error for wrong arity");
+
+        // No arguments
+        let items2 = vec![MettaValue::Atom("coalg".to_string())];
+        let (results2, _) = eval_coalg_generic(items2, env, &factory);
+        assert!(results2[0].is_error());
+    }
+
+    #[test]
+    fn test_coalg_templates_not_conjunction() {
+        // coalg templates must be a conjunction
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        let items = vec![
+            MettaValue::Atom("coalg".to_string()),
+            MettaValue::Atom("pattern".to_string()),
+            MettaValue::Atom("not_a_conjunction".to_string()), // Not a conjunction
+        ];
+
+        let (results, _) = eval_coalg_generic(items, env, &factory);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error(), "Should return error for non-conjunction templates");
+    }
+
+    #[test]
+    fn test_lookup_wrong_arity() {
+        // lookup requires 3 arguments: pattern, success-goals, failure-goals
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        // Only 2 arguments
+        let items = vec![
+            MettaValue::Atom("lookup".to_string()),
+            MettaValue::Atom("pattern".to_string()),
+            MettaValue::Conjunction(vec![]),
+        ];
+
+        let (results, _) = eval_lookup_generic(items, env.clone(), &factory);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error(), "Should return error for wrong arity");
+
+        // Only 1 argument
+        let items2 = vec![
+            MettaValue::Atom("lookup".to_string()),
+            MettaValue::Atom("pattern".to_string()),
+        ];
+        let (results2, _) = eval_lookup_generic(items2, env, &factory);
+        assert!(results2[0].is_error());
+    }
+
+    #[test]
+    fn test_lookup_success_not_conjunction() {
+        // lookup success branch must be a conjunction
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        let items = vec![
+            MettaValue::Atom("lookup".to_string()),
+            MettaValue::Atom("pattern".to_string()),
+            MettaValue::Atom("not_a_conjunction".to_string()), // Not a conjunction
+            MettaValue::Conjunction(vec![]),
+        ];
+
+        let (results, _) = eval_lookup_generic(items, env, &factory);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error(), "Should return error for non-conjunction success branch");
+    }
+
+    #[test]
+    fn test_lookup_failure_not_conjunction() {
+        // lookup failure branch must be a conjunction
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        let items = vec![
+            MettaValue::Atom("lookup".to_string()),
+            MettaValue::Atom("pattern".to_string()),
+            MettaValue::Conjunction(vec![]),
+            MettaValue::Atom("not_a_conjunction".to_string()), // Not a conjunction
+        ];
+
+        let (results, _) = eval_lookup_generic(items, env, &factory);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error(), "Should return error for non-conjunction failure branch");
+    }
+
+    #[test]
+    fn test_lookup_variable_pattern() {
+        // lookup with variable pattern takes failure branch
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        let items = vec![
+            MettaValue::Atom("lookup".to_string()),
+            MettaValue::Atom("$x".to_string()), // Variable pattern
+            MettaValue::Conjunction(vec![MettaValue::Atom("success".to_string())]),
+            MettaValue::Conjunction(vec![MettaValue::Atom("failure".to_string())]),
+        ];
+
+        let (results, _) = eval_lookup_generic(items, env, &factory);
+        // Variable pattern means "not found", so failure branch should be taken
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_rulify_wrong_arity() {
+        // rulify requires 5 arguments
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        // Only 4 arguments
+        let items = vec![
+            MettaValue::Atom("rulify".to_string()),
+            MettaValue::Atom("name".to_string()),
+            MettaValue::Conjunction(vec![MettaValue::Atom("$p0".to_string())]),
+            MettaValue::Conjunction(vec![MettaValue::Atom("$t0".to_string())]),
+            MettaValue::Conjunction(vec![]),
+        ];
+
+        let (results, _) = eval_rulify_generic(items, env.clone(), &factory);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error(), "Should return error for wrong arity");
+
+        // Only 3 arguments
+        let items2 = vec![
+            MettaValue::Atom("rulify".to_string()),
+            MettaValue::Atom("name".to_string()),
+            MettaValue::Conjunction(vec![MettaValue::Atom("$p0".to_string())]),
+            MettaValue::Conjunction(vec![MettaValue::Atom("$t0".to_string())]),
+        ];
+        let (results2, _) = eval_rulify_generic(items2, env, &factory);
+        assert!(results2[0].is_error());
+    }
+
+    #[test]
+    fn test_rulify_pattern_not_unary_conjunction() {
+        // rulify pattern must be a unary conjunction
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        // Empty conjunction
+        let items = vec![
+            MettaValue::Atom("rulify".to_string()),
+            MettaValue::Atom("name".to_string()),
+            MettaValue::Conjunction(vec![]), // Empty, not unary
+            MettaValue::Conjunction(vec![MettaValue::Atom("$t0".to_string())]),
+            MettaValue::Conjunction(vec![]),
+            MettaValue::Atom("consequent".to_string()),
+        ];
+
+        let (results, _) = eval_rulify_generic(items, env.clone(), &factory);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error(), "Should return error for non-unary conjunction");
+
+        // Binary conjunction
+        let items2 = vec![
+            MettaValue::Atom("rulify".to_string()),
+            MettaValue::Atom("name".to_string()),
+            MettaValue::Conjunction(vec![
+                MettaValue::Atom("$p0".to_string()),
+                MettaValue::Atom("$p1".to_string()),
+            ]), // Binary, not unary
+            MettaValue::Conjunction(vec![MettaValue::Atom("$t0".to_string())]),
+            MettaValue::Conjunction(vec![]),
+            MettaValue::Atom("consequent".to_string()),
+        ];
+        let (results2, _) = eval_rulify_generic(items2, env.clone(), &factory);
+        assert!(results2[0].is_error());
+
+        // Not a conjunction at all
+        let items3 = vec![
+            MettaValue::Atom("rulify".to_string()),
+            MettaValue::Atom("name".to_string()),
+            MettaValue::Atom("not_a_conjunction".to_string()),
+            MettaValue::Conjunction(vec![MettaValue::Atom("$t0".to_string())]),
+            MettaValue::Conjunction(vec![]),
+            MettaValue::Atom("consequent".to_string()),
+        ];
+        let (results3, _) = eval_rulify_generic(items3, env, &factory);
+        assert!(results3[0].is_error());
+    }
+
+    #[test]
+    fn test_rulify_templates_not_conjunction() {
+        // rulify templates must be a conjunction
+        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = HeapMettaValueFactory;
+
+        let items = vec![
+            MettaValue::Atom("rulify".to_string()),
+            MettaValue::Atom("name".to_string()),
+            MettaValue::Conjunction(vec![MettaValue::Atom("$p0".to_string())]),
+            MettaValue::Atom("not_a_conjunction".to_string()), // Not a conjunction
+            MettaValue::Conjunction(vec![]),
+            MettaValue::Atom("consequent".to_string()),
+        ];
+
+        let (results, _) = eval_rulify_generic(items, env, &factory);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error(), "Should return error for non-conjunction templates");
+    }
+
+    #[test]
+    fn test_is_operation_form_generic() {
+        // Test the O operation form checker
+        let op_form = MettaValue::SExpr(vec![
+            MettaValue::Atom("O".to_string()),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("+".to_string()),
+                MettaValue::Atom("fact".to_string()),
+            ]),
+        ]);
+        assert!(is_operation_form_generic(&op_form));
+
+        let not_op_form = MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("bar".to_string()),
+        ]);
+        assert!(!is_operation_form_generic(&not_op_form));
+
+        // Empty s-expr
+        let empty = MettaValue::SExpr(vec![]);
+        assert!(!is_operation_form_generic(&empty));
+    }
+
+    #[test]
+    fn test_has_variables_conjunction() {
+        // Test has_variables_generic with Conjunction variant
+        let conj_with_var = MettaValue::Conjunction(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+        assert!(has_variables_generic(&conj_with_var));
+
+        let conj_no_var = MettaValue::Conjunction(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("bar".to_string()),
+        ]);
+        assert!(!has_variables_generic(&conj_no_var));
+    }
+
+    #[test]
+    fn test_has_variables_error() {
+        // Test has_variables_generic with Error variant
+        let err_with_var = MettaValue::Error(
+            "test".to_string(),
+            MettaValue::Atom("$x".to_string()),
+        );
+        assert!(has_variables_generic(&err_with_var));
+
+        let err_no_var = MettaValue::Error(
+            "test".to_string(),
+            MettaValue::Atom("foo".to_string()),
+        );
+        assert!(!has_variables_generic(&err_no_var));
+    }
+
+    #[test]
+    fn test_has_variables_ampersand_and_quote() {
+        // Test other variable prefixes
+        let amp_var = MettaValue::Atom("&x".to_string());
+        assert!(has_variables_generic(&amp_var));
+
+        let quote_var = MettaValue::Atom("'x".to_string());
+        assert!(has_variables_generic(&quote_var));
+    }
 }

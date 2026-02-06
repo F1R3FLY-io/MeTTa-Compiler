@@ -81,10 +81,40 @@ impl BytecodeVM {
         Ok(())
     }
 
+    /// Multi-way branch via jump table.
+    ///
+    /// Reads a table index from bytecode, pops a selector value from stack,
+    /// looks up the corresponding offset in the jump table, and jumps to it.
+    /// If the selector doesn't match any entry, jumps to the default offset.
+    ///
+    /// Stack: [selector] -> []
+    /// Bytecode: JumpTable table_index:u16
     pub(super) fn op_jump_table(&mut self) -> VmResult<()> {
-        let _table_index = self.read_u16()?;
-        // TODO: Implement jump table
-        Err(VmError::Runtime("Jump table not yet implemented".into()))
+        let table_index = self.read_u16()? as usize;
+        let selector = self.pop()?;
+
+        // Get jump table from chunk
+        let jump_table = self
+            .chunk
+            .get_jump_table(table_index)
+            .ok_or_else(|| VmError::Runtime(format!("Invalid jump table index: {}", table_index)))?;
+
+        // Compute hash of selector value for table lookup
+        use xxhash_rust::xxh3::xxh3_64;
+        // Hash the selector value - we use the string representation for consistent hashing
+        let selector_hash = xxh3_64(format!("{:?}", selector).as_bytes());
+
+        // Look up in jump table entries
+        let target_offset = jump_table
+            .entries
+            .iter()
+            .find(|(hash, _)| *hash == selector_hash)
+            .map(|(_, offset)| *offset)
+            .unwrap_or(jump_table.default_offset);
+
+        // Jump to target
+        self.ip = target_offset;
+        Ok(())
     }
 
     // === Call Operations ===
@@ -294,18 +324,159 @@ impl BytecodeVM {
         Ok(())
     }
 
+    /// Call with N arguments where the head is on the stack (not constant pool).
+    ///
+    /// Pops the head and N arguments from the stack, builds a call expression,
+    /// and dispatches to MORK for rule matching.
+    ///
+    /// Stack: [head, arg1, arg2, ..., argN] -> [result]
+    /// Bytecode: CallN arity:u8
     pub(super) fn op_call_n(&mut self) -> VmResult<()> {
         trace!(target: "mettatron::vm::call", ip = self.ip, "call_n");
-        let _n = self.read_u8()?;
-        // TODO: Implement call with N args
-        Err(VmError::Runtime("CallN not yet implemented".into()))
+        let arity = self.read_u8()? as usize;
+
+        // Pop arguments and head from stack
+        // Stack order: head is pushed first, then args left-to-right
+        // So we need to pop args first, then head
+        if self.value_stack.len() < arity + 1 {
+            return Err(VmError::StackUnderflow);
+        }
+
+        // Pop arguments (in reverse order, then reverse to get correct order)
+        let mut args: Vec<MettaValue> = self
+            .value_stack
+            .drain(self.value_stack.len() - arity..)
+            .collect();
+
+        // Pop head
+        let head = self.pop()?;
+
+        // Extract head symbol if it's an atom
+        let head_symbol = match head.inner() {
+            MettaValueInner::Atom(s) => s.clone(),
+            _ => {
+                // Head is not an atom - return expression as data
+                let mut items = Vec::with_capacity(arity + 1);
+                items.push(head);
+                items.extend(args);
+                self.push(MettaValue::SExpr(items));
+                return Ok(());
+            }
+        };
+
+        // Build the call expression
+        let mut items = Vec::with_capacity(arity + 1);
+        items.push(MettaValue::Atom(head_symbol.clone()));
+        items.extend(args);
+        let expr = MettaValue::SExpr(items);
+
+        // Dispatch via MORK bridge if available
+        if let Some(ref bridge) = self.bridge {
+            let matches = bridge.dispatch_rules(&expr);
+
+            if matches.is_empty() {
+                // No rules match - return expression unchanged (irreducible)
+                self.push(expr);
+                return Ok(());
+            }
+
+            if matches.len() == 1 {
+                // Single match - execute directly
+                let rule = &matches[0];
+                return self.execute_rule_body(&rule.body, &rule.bindings);
+            }
+
+            // Multiple matches - create choice point for backtracking
+            let alternatives: Vec<Alternative> = matches[1..]
+                .iter()
+                .map(|rule| Alternative::RuleMatch {
+                    chunk: Arc::clone(&rule.body),
+                    bindings: rule.bindings.clone(),
+                })
+                .collect();
+
+            let choice_point = ChoicePoint {
+                value_stack_height: self.value_stack.len(),
+                call_stack_height: self.call_stack.len(),
+                bindings_stack_height: self.bindings_stack.len(),
+                ip: self.ip,
+                chunk: Arc::clone(&self.chunk),
+                alternatives,
+            };
+            self.choice_points.push(choice_point);
+
+            // Execute first matching rule
+            let rule = &matches[0];
+            return self.execute_rule_body(&rule.body, &rule.bindings);
+        }
+
+        // No bridge - return expression as data (irreducible)
+        self.push(expr);
+        Ok(())
     }
 
+    /// Tail call with N arguments where the head is on the stack.
+    ///
+    /// Same as CallN but uses tail call optimization (reuses current call frame).
+    ///
+    /// Stack: [head, arg1, arg2, ..., argN] -> [result]
+    /// Bytecode: TailCallN arity:u8
     pub(super) fn op_tail_call_n(&mut self) -> VmResult<()> {
         trace!(target: "mettatron::vm::call", ip = self.ip, "tail_call_n");
-        let _n = self.read_u8()?;
-        // TODO: Implement tail call with N args
-        Err(VmError::Runtime("TailCallN not yet implemented".into()))
+        let arity = self.read_u8()? as usize;
+
+        // Pop arguments and head from stack
+        if self.value_stack.len() < arity + 1 {
+            return Err(VmError::StackUnderflow);
+        }
+
+        // Pop arguments
+        let mut args: Vec<MettaValue> = self
+            .value_stack
+            .drain(self.value_stack.len() - arity..)
+            .collect();
+
+        // Pop head
+        let head = self.pop()?;
+
+        // Extract head symbol if it's an atom
+        let head_symbol = match head.inner() {
+            MettaValueInner::Atom(s) => s.clone(),
+            _ => {
+                // Head is not an atom - return expression as data
+                let mut items = Vec::with_capacity(arity + 1);
+                items.push(head);
+                items.extend(args);
+                self.push(MettaValue::SExpr(items));
+                return Ok(());
+            }
+        };
+
+        // Build the call expression
+        let mut items = Vec::with_capacity(arity + 1);
+        items.push(MettaValue::Atom(head_symbol.clone()));
+        items.extend(args);
+        let expr = MettaValue::SExpr(items);
+
+        // Dispatch via MORK bridge if available
+        if let Some(ref bridge) = self.bridge {
+            let matches = bridge.dispatch_rules(&expr);
+
+            if matches.is_empty() {
+                // No rules match - return expression unchanged (irreducible)
+                self.push(expr);
+                return Ok(());
+            }
+
+            // For tail call, execute first match with TCO (no choice points for now)
+            // Full nondeterminism support can be added later
+            let rule = &matches[0];
+            return self.execute_rule_body_tail(&rule.body, &rule.bindings);
+        }
+
+        // No bridge - return expression as data (irreducible)
+        self.push(expr);
+        Ok(())
     }
 
     // === Return Operations ===

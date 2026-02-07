@@ -13,7 +13,7 @@
 //!
 //! # Thread Safety
 //!
-//! All shared state uses RwLock/DashMap for concurrent read/exclusive write access.
+//! All shared state uses RwLock for concurrent read/exclusive write access.
 //! Clone operations are O(1) via Arc sharing until first mutation.
 //!
 //! # Generic Environment

@@ -22,11 +22,9 @@ where
     pub fn bind(&mut self, symbol: &str, value: V) {
         self.make_owned();
 
-        // DashMap - use .insert() directly
-        self.shared.bindings.insert(symbol.to_string(), value);
+        self.shared.bindings.write().insert(symbol.to_string(), value);
 
         // Also register in fuzzy matcher for suggestions
-        // parking_lot::RwLock - no .expect()
         self.shared.fuzzy_matcher.write().insert(symbol);
 
         self.modified.store(true, Ordering::Release);
@@ -35,14 +33,12 @@ where
     /// Get the value bound to a symbol
     /// Used for symbol resolution
     pub fn get_binding(&self, symbol: &str) -> Option<V> {
-        // DashMap - use .get() directly, returns Ref which needs .value()
-        self.shared.bindings.get(symbol).map(|r| r.value().clone())
+        self.shared.bindings.read().get(symbol).cloned()
     }
 
     /// Check if a symbol is bound
     pub fn has_binding(&self, symbol: &str) -> bool {
-        // DashMap - use .contains_key() directly
-        self.shared.bindings.contains_key(symbol)
+        self.shared.bindings.read().contains_key(symbol)
     }
 
     // ============================================================

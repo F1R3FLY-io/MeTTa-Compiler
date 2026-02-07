@@ -591,7 +591,7 @@ mod regression_tests {
     }
 
     /// Test: State operations are SHARED between clones (not CoW)
-    /// Note: States use DashMap and are explicitly NOT copy-on-write
+    /// Note: States use RwLock<HashMap> and are explicitly NOT copy-on-write
     #[test]
     fn test_state_clone_shared() {
         let mut env = HeapEnvironment::default();

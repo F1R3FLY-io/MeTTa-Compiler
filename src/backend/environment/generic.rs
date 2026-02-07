@@ -16,28 +16,28 @@
 //! ```ignore
 //! GenericEnvironment<V>
 //!   └── Arc<GenericEnvironmentShared<V>>
-//!         ├── rule_index: DashMap<(Symbol, usize), Vec<GenericRule<V>>>
+//!         ├── rule_index: RwLock<HashMap<(Symbol, usize), Vec<GenericRule<V>>>>
 //!         ├── wildcard_rules: RwLock<Vec<GenericRule<V>>>
-//!         ├── named_spaces: DashMap<u64, (String, Vec<V>)>
-//!         ├── bindings: DashMap<String, V>
+//!         ├── named_spaces: RwLock<HashMap<u64, (String, Vec<V>)>>
+//!         ├── bindings: RwLock<HashMap<String, V>>
 //!         └── ... (type-agnostic fields: btm, symbols, states, etc.)
 //! ```
 //!
 //! ## Thread Safety
 //!
 //! Uses non-blocking concurrent data structures for maximum parallelism:
-//! - `DashMap` for concurrent HashMap access (lock-free reads, sharded writes)
+//! - `parking_lot::RwLock<HashMap>` for concurrent map access (single-threaded workloads)
 //! - `parking_lot::RwLock` for structures requiring exclusive access (PathMap, LruCache)
 //! - `AtomicBool`/`AtomicUsize` for simple flags and counters
 //!
 //! Clone operations are O(1) via Arc sharing until first mutation (CoW).
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use lru::LruCache;
 use mork_interning::SharedMappingHandle;
 use parking_lot::RwLock;
@@ -152,11 +152,14 @@ impl<V: Clone> MultiplicityMatch<V> {
 /// Parameterized over `V: MettaValueTrait` to enable zero-conversion evaluation.
 /// Values are stored natively in their concrete type (MettaValue or ArenaValue).
 ///
-/// ## Thread Safety - Non-Blocking Concurrent Access
+/// ## Thread Safety
 ///
-/// Uses lock-free and low-contention structures for maximum parallelism:
-/// - `DashMap`: Sharded concurrent HashMap with lock-free reads
-/// - `parking_lot::RwLock`: Fast reader-writer lock for non-DashMap structures
+/// Uses `parking_lot::RwLock<HashMap>` for environment-owned maps (bindings, types,
+/// rule_index, named_spaces, states). These maps are protected by CoW semantics:
+/// after `make_owned()`, only a single writer accesses the new HashMap.
+///
+/// Other structures use:
+/// - `parking_lot::RwLock`: For PathMap, LruCache, and other non-HashMap structures
 /// - `AtomicU64`/`AtomicBool`/`AtomicUsize`: Lock-free counters and flags
 pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> {
     // ========================================================================
@@ -175,8 +178,8 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     pub(crate) multiplicities: RwLock<IndexedMultiset>,
 
     /// Mutable state cells registry (stores V directly - no serialization)
-    /// Uses DashMap for lock-free concurrent access
-    pub(crate) states: DashMap<u64, V>,
+    /// Uses RwLock<HashMap> — protected by CoW semantics
+    pub(crate) states: RwLock<HashMap<u64, V>>,
 
     /// Counter for generating unique state IDs (lock-free atomic)
     pub(crate) next_state_id: AtomicU64,
@@ -185,9 +188,9 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     // Generic Rule Storage (parameterized over V)
     // ========================================================================
     /// Rule index: Maps (head_symbol, arity) -> Vec<GenericRule<V>>
-    /// Uses DashMap for lock-free concurrent read access
+    /// Uses RwLock<HashMap> — protected by CoW semantics
     #[allow(clippy::type_complexity)]
-    pub(crate) rule_index: DashMap<(Symbol, usize), Vec<GenericRule<V>>>,
+    pub(crate) rule_index: RwLock<HashMap<(Symbol, usize), Vec<GenericRule<V>>>>,
 
     /// Wildcard rules: Rules without a clear head symbol
     /// Uses RwLock since wildcard rules are rarely modified
@@ -200,9 +203,9 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     // Generic Named Spaces (parameterized over V)
     // ========================================================================
     /// Named spaces registry: Maps space_id -> (name, atoms)
-    /// Uses DashMap for lock-free concurrent access
+    /// Uses RwLock<HashMap> — protected by CoW semantics
     #[allow(clippy::type_complexity)]
-    pub(crate) named_spaces: DashMap<u64, (String, Vec<V>)>,
+    pub(crate) named_spaces: RwLock<HashMap<u64, (String, Vec<V>)>>,
 
     /// Counter for generating unique space IDs (lock-free atomic)
     pub(crate) next_space_id: AtomicU64,
@@ -211,12 +214,12 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     // Generic Symbol Bindings (parameterized over V)
     // ========================================================================
     /// Symbol bindings registry: Maps name -> V
-    /// Uses DashMap for lock-free concurrent access
-    pub(crate) bindings: DashMap<String, V>,
+    /// Uses RwLock<HashMap> — protected by CoW semantics
+    pub(crate) bindings: RwLock<HashMap<String, V>>,
 
     /// Type assertions: Maps symbol name -> type value V (no serialization)
-    /// Uses DashMap for lock-free concurrent access
-    pub(crate) types: DashMap<String, V>,
+    /// Uses RwLock<HashMap> — protected by CoW semantics
+    pub(crate) types: RwLock<HashMap<String, V>>,
 
     // ========================================================================
     // Type-Agnostic Registries and Caches
@@ -348,23 +351,23 @@ where
             btm: RwLock::new(PathMap::new()),
             symbols,
             multiplicities: RwLock::new(IndexedMultiset::new()),
-            states: DashMap::new(),
+            states: RwLock::new(HashMap::new()),
             next_state_id: AtomicU64::new(1),
 
             // Generic rule storage
-            rule_index: DashMap::with_capacity(128),
+            rule_index: RwLock::new(HashMap::with_capacity(128)),
             wildcard_rules: RwLock::new(Vec::new()),
             has_wildcard_rules: AtomicBool::new(false),
 
             // Generic named spaces
-            named_spaces: DashMap::new(),
+            named_spaces: RwLock::new(HashMap::new()),
             next_space_id: AtomicU64::new(1),
 
             // Generic symbol bindings
-            bindings: DashMap::new(),
+            bindings: RwLock::new(HashMap::new()),
 
             // Type assertions storage
-            types: DashMap::new(),
+            types: RwLock::new(HashMap::new()),
 
             // Type-agnostic registries
             module_registry: RwLock::new(ModuleRegistry::new()),
@@ -416,43 +419,32 @@ where
         }
         trace!(target: "mettatron::generic_environment::make_owned", "Deep copying CoW data");
 
-        // Helper to clone DashMap contents
-        fn clone_dashmap<K: Clone + Eq + std::hash::Hash, V: Clone>(
-            src: &DashMap<K, V>,
-        ) -> DashMap<K, V> {
-            let new_map = DashMap::with_capacity(src.len());
-            for entry in src.iter() {
-                new_map.insert(entry.key().clone(), entry.value().clone());
-            }
-            new_map
-        }
-
         let new_shared = Arc::new(GenericEnvironmentShared {
             // Type-agnostic storage - deep copy (parking_lot::RwLock doesn't use Result)
             btm: RwLock::new(self.shared.btm.read().clone()),
             symbols: Arc::clone(&self.shared.symbols), // Share symbol table (append-only)
             multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
-            // DashMap - iterate and clone
-            states: clone_dashmap(&self.shared.states),
+            // RwLock<HashMap> - read lock + clone
+            states: RwLock::new(self.shared.states.read().clone()),
             // Atomic - load and create new
             next_state_id: AtomicU64::new(self.shared.next_state_id.load(Ordering::Acquire)),
 
-            // Generic rule storage - DashMap for rule_index
-            rule_index: clone_dashmap(&self.shared.rule_index),
+            // Generic rule storage - RwLock<HashMap>
+            rule_index: RwLock::new(self.shared.rule_index.read().clone()),
             wildcard_rules: RwLock::new(self.shared.wildcard_rules.read().clone()),
             has_wildcard_rules: AtomicBool::new(
                 self.shared.has_wildcard_rules.load(Ordering::Acquire),
             ),
 
-            // Generic named spaces - DashMap
-            named_spaces: clone_dashmap(&self.shared.named_spaces),
+            // Generic named spaces - RwLock<HashMap>
+            named_spaces: RwLock::new(self.shared.named_spaces.read().clone()),
             next_space_id: AtomicU64::new(self.shared.next_space_id.load(Ordering::Acquire)),
 
-            // Generic symbol bindings - DashMap
-            bindings: clone_dashmap(&self.shared.bindings),
+            // Generic symbol bindings - RwLock<HashMap>
+            bindings: RwLock::new(self.shared.bindings.read().clone()),
 
-            // Type assertions - DashMap
-            types: clone_dashmap(&self.shared.types),
+            // Type assertions - RwLock<HashMap>
+            types: RwLock::new(self.shared.types.read().clone()),
 
             // Type-agnostic registries - parking_lot::RwLock (no .expect())
             module_registry: RwLock::new(self.shared.module_registry.read().clone()),
@@ -483,41 +475,30 @@ where
     pub fn fork_for_nondeterminism(&self) -> Self {
         trace!(target: "mettatron::generic_environment::fork", "Forking environment for nondeterminism");
 
-        // Helper to clone DashMap contents
-        fn clone_dashmap<K: Clone + Eq + std::hash::Hash, V: Clone>(
-            src: &DashMap<K, V>,
-        ) -> DashMap<K, V> {
-            let new_map = DashMap::with_capacity(src.len());
-            for entry in src.iter() {
-                new_map.insert(entry.key().clone(), entry.value().clone());
-            }
-            new_map
-        }
-
         let new_shared = Arc::new(GenericEnvironmentShared {
             // Type-agnostic storage (parking_lot::RwLock - no .expect())
             btm: RwLock::new(self.shared.btm.read().clone()),
             symbols: Arc::clone(&self.shared.symbols),
             multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
-            states: clone_dashmap(&self.shared.states),
+            states: RwLock::new(self.shared.states.read().clone()),
             next_state_id: AtomicU64::new(self.shared.next_state_id.load(Ordering::Acquire)),
 
-            // Generic rule storage - DashMap
-            rule_index: clone_dashmap(&self.shared.rule_index),
+            // Generic rule storage - RwLock<HashMap>
+            rule_index: RwLock::new(self.shared.rule_index.read().clone()),
             wildcard_rules: RwLock::new(self.shared.wildcard_rules.read().clone()),
             has_wildcard_rules: AtomicBool::new(
                 self.shared.has_wildcard_rules.load(Ordering::Acquire),
             ),
 
-            // Generic named spaces - DashMap
-            named_spaces: clone_dashmap(&self.shared.named_spaces),
+            // Generic named spaces - RwLock<HashMap>
+            named_spaces: RwLock::new(self.shared.named_spaces.read().clone()),
             next_space_id: AtomicU64::new(self.shared.next_space_id.load(Ordering::Acquire)),
 
-            // Generic symbol bindings - DashMap
-            bindings: clone_dashmap(&self.shared.bindings),
+            // Generic symbol bindings - RwLock<HashMap>
+            bindings: RwLock::new(self.shared.bindings.read().clone()),
 
-            // Type assertions - DashMap
-            types: clone_dashmap(&self.shared.types),
+            // Type assertions - RwLock<HashMap>
+            types: RwLock::new(self.shared.types.read().clone()),
 
             // Type-agnostic registries (parking_lot::RwLock - no .expect())
             module_registry: RwLock::new(self.shared.module_registry.read().clone()),
@@ -639,32 +620,26 @@ where
         };
 
         // Merge rule indices
-        let merged_rule_index: DashMap<(Symbol, usize), Vec<GenericRule<V>>> = DashMap::new();
-        // Add self's rules
-        for entry in self.shared.rule_index.iter() {
-            let key = entry.key().clone();
-            let rules = entry.value().clone();
-            merged_rule_index.insert(key, rules);
-        }
-        // Merge other's rules (deduplicate by comparing LHS via MettaValueTrait)
-        for entry in other.shared.rule_index.iter() {
-            let key = entry.key().clone();
-            let other_rules = entry.value();
-            merged_rule_index
-                .entry(key)
-                .and_modify(|existing| {
-                    for rule in other_rules.iter() {
-                        // Deduplicate by comparing LHS (zero-conversion via MettaValueTrait)
-                        let is_duplicate = existing.iter().any(|r| {
-                            r.lhs.structurally_equivalent(&rule.lhs)
-                        });
-                        if !is_duplicate {
-                            existing.push(rule.clone());
+        let merged_rule_index: HashMap<(Symbol, usize), Vec<GenericRule<V>>> = {
+            let mut merged = self.shared.rule_index.read().clone();
+            // Merge other's rules (deduplicate by comparing LHS via MettaValueTrait)
+            for (key, other_rules) in other.shared.rule_index.read().iter() {
+                merged
+                    .entry(key.clone())
+                    .and_modify(|existing| {
+                        for rule in other_rules.iter() {
+                            let is_duplicate = existing.iter().any(|r| {
+                                r.lhs.structurally_equivalent(&rule.lhs)
+                            });
+                            if !is_duplicate {
+                                existing.push(rule.clone());
+                            }
                         }
-                    }
-                })
-                .or_insert_with(|| other_rules.clone());
-        }
+                    })
+                    .or_insert_with(|| other_rules.clone());
+            }
+            merged
+        };
 
         // Merge wildcard rules (deduplicate by comparing LHS via MettaValueTrait)
         let merged_wildcard_rules = {
@@ -685,46 +660,45 @@ where
         let has_wildcards = !merged_wildcard_rules.is_empty();
 
         // Merge bindings (other takes precedence)
-        let merged_bindings: DashMap<String, V> = DashMap::new();
-        for entry in self.shared.bindings.iter() {
-            merged_bindings.insert(entry.key().clone(), entry.value().clone());
-        }
-        for entry in other.shared.bindings.iter() {
-            merged_bindings.insert(entry.key().clone(), entry.value().clone());
-        }
+        let merged_bindings: HashMap<String, V> = {
+            let mut merged = self.shared.bindings.read().clone();
+            for (k, v) in other.shared.bindings.read().iter() {
+                merged.insert(k.clone(), v.clone());
+            }
+            merged
+        };
 
         // Merge types (other takes precedence)
-        let merged_types: DashMap<String, V> = DashMap::new();
-        for entry in self.shared.types.iter() {
-            merged_types.insert(entry.key().clone(), entry.value().clone());
-        }
-        for entry in other.shared.types.iter() {
-            merged_types.insert(entry.key().clone(), entry.value().clone());
-        }
+        let merged_types: HashMap<String, V> = {
+            let mut merged = self.shared.types.read().clone();
+            for (k, v) in other.shared.types.read().iter() {
+                merged.insert(k.clone(), v.clone());
+            }
+            merged
+        };
 
         // Merge states (other takes precedence)
-        let merged_states: DashMap<u64, V> = DashMap::new();
-        for entry in self.shared.states.iter() {
-            merged_states.insert(*entry.key(), entry.value().clone());
-        }
-        for entry in other.shared.states.iter() {
-            merged_states.insert(*entry.key(), entry.value().clone());
-        }
+        let merged_states: HashMap<u64, V> = {
+            let mut merged = self.shared.states.read().clone();
+            for (k, v) in other.shared.states.read().iter() {
+                merged.insert(*k, v.clone());
+            }
+            merged
+        };
 
         // Merge named spaces (combine atoms within same space)
-        let merged_named_spaces: DashMap<u64, (String, Vec<V>)> = DashMap::new();
-        for entry in self.shared.named_spaces.iter() {
-            merged_named_spaces.insert(*entry.key(), entry.value().clone());
-        }
-        for entry in other.shared.named_spaces.iter() {
-            let (name, atoms) = entry.value();
-            merged_named_spaces
-                .entry(*entry.key())
-                .and_modify(|(_, existing_atoms)| {
-                    existing_atoms.extend(atoms.iter().cloned());
-                })
-                .or_insert_with(|| (name.clone(), atoms.clone()));
-        }
+        let merged_named_spaces: HashMap<u64, (String, Vec<V>)> = {
+            let mut merged = self.shared.named_spaces.read().clone();
+            for (id, (name, atoms)) in other.shared.named_spaces.read().iter() {
+                merged
+                    .entry(*id)
+                    .and_modify(|(_, existing_atoms)| {
+                        existing_atoms.extend(atoms.iter().cloned());
+                    })
+                    .or_insert_with(|| (name.clone(), atoms.clone()));
+            }
+            merged
+        };
 
         // Take max of ID counters to avoid collisions
         let max_state_id = self.shared.next_state_id.load(Ordering::Acquire)
@@ -750,18 +724,18 @@ where
             btm: RwLock::new(merged_btm),
             symbols: Arc::clone(&self.shared.symbols), // Append-only, share
             multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
-            states: merged_states,
+            states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
 
-            rule_index: merged_rule_index,
+            rule_index: RwLock::new(merged_rule_index),
             wildcard_rules: RwLock::new(merged_wildcard_rules),
             has_wildcard_rules: AtomicBool::new(has_wildcards),
 
-            named_spaces: merged_named_spaces,
+            named_spaces: RwLock::new(merged_named_spaces),
             next_space_id: AtomicU64::new(max_space_id),
 
-            bindings: merged_bindings,
-            types: merged_types,
+            bindings: RwLock::new(merged_bindings),
+            types: RwLock::new(merged_types),
 
             // Share from self (these are typically static after initialization)
             module_registry: RwLock::new(self.shared.module_registry.read().clone()),
@@ -906,17 +880,6 @@ where
         trace!(target: "mettatron::generic_environment::merge_all_modified",
                "Merging {} environments (include_self={})", others.len(), include_self);
 
-        // Helper to clone DashMap contents
-        fn clone_dashmap<K: Clone + Eq + std::hash::Hash, V: Clone>(
-            src: &DashMap<K, V>,
-        ) -> DashMap<K, V> {
-            let new_map = DashMap::with_capacity(src.len());
-            for entry in src.iter() {
-                new_map.insert(entry.key().clone(), entry.value().clone());
-            }
-            new_map
-        }
-
         // Start with self's state or first other's state as base
         let base = if include_self { self } else { others[0] };
         let merge_start_idx = if include_self { 0 } else { 1 };
@@ -951,16 +914,14 @@ where
         };
 
         // Merge rule indices
-        let merged_rule_index: DashMap<(Symbol, usize), Vec<GenericRule<V>>> = {
-            let base_rules = clone_dashmap(&base.shared.rule_index);
+        let merged_rule_index: HashMap<(Symbol, usize), Vec<GenericRule<V>>> = {
+            let mut base_rules = base.shared.rule_index.read().clone();
 
             // Merge all others' rules
             for other in &others[merge_start_idx..] {
-                for entry in other.shared.rule_index.iter() {
-                    let key = entry.key().clone();
-                    let other_rules = entry.value();
+                for (key, other_rules) in other.shared.rule_index.read().iter() {
                     base_rules
-                        .entry(key)
+                        .entry(key.clone())
                         .and_modify(|existing| {
                             for rule in other_rules.iter() {
                                 let is_duplicate = existing.iter().any(|r| {
@@ -977,11 +938,9 @@ where
 
             // Merge self's rules if not included in base
             if !include_self {
-                for entry in self.shared.rule_index.iter() {
-                    let key = entry.key().clone();
-                    let self_rules = entry.value();
+                for (key, self_rules) in self.shared.rule_index.read().iter() {
                     base_rules
-                        .entry(key)
+                        .entry(key.clone())
                         .and_modify(|existing| {
                             for rule in self_rules.iter() {
                                 let is_duplicate = existing.iter().any(|r| {
@@ -1032,46 +991,45 @@ where
         let has_wildcards = !merged_wildcard_rules.is_empty();
 
         // Merge bindings (later environments take precedence)
-        let merged_bindings: DashMap<String, V> = {
-            let base_bindings = clone_dashmap(&base.shared.bindings);
+        let merged_bindings: HashMap<String, V> = {
+            let mut base_bindings = base.shared.bindings.read().clone();
             for other in &others[merge_start_idx..] {
-                for entry in other.shared.bindings.iter() {
-                    base_bindings.insert(entry.key().clone(), entry.value().clone());
+                for (k, v) in other.shared.bindings.read().iter() {
+                    base_bindings.insert(k.clone(), v.clone());
                 }
             }
             base_bindings
         };
 
         // Merge types (later environments take precedence)
-        let merged_types: DashMap<String, V> = {
-            let base_types = clone_dashmap(&base.shared.types);
+        let merged_types: HashMap<String, V> = {
+            let mut base_types = base.shared.types.read().clone();
             for other in &others[merge_start_idx..] {
-                for entry in other.shared.types.iter() {
-                    base_types.insert(entry.key().clone(), entry.value().clone());
+                for (k, v) in other.shared.types.read().iter() {
+                    base_types.insert(k.clone(), v.clone());
                 }
             }
             base_types
         };
 
         // Merge states (later environments take precedence)
-        let merged_states: DashMap<u64, V> = {
-            let base_states = clone_dashmap(&base.shared.states);
+        let merged_states: HashMap<u64, V> = {
+            let mut base_states = base.shared.states.read().clone();
             for other in &others[merge_start_idx..] {
-                for entry in other.shared.states.iter() {
-                    base_states.insert(*entry.key(), entry.value().clone());
+                for (k, v) in other.shared.states.read().iter() {
+                    base_states.insert(*k, v.clone());
                 }
             }
             base_states
         };
 
         // Merge named spaces
-        let merged_named_spaces: DashMap<u64, (String, Vec<V>)> = {
-            let base_spaces = clone_dashmap(&base.shared.named_spaces);
+        let merged_named_spaces: HashMap<u64, (String, Vec<V>)> = {
+            let mut base_spaces = base.shared.named_spaces.read().clone();
             for other in &others[merge_start_idx..] {
-                for entry in other.shared.named_spaces.iter() {
-                    let (name, atoms) = entry.value();
+                for (id, (name, atoms)) in other.shared.named_spaces.read().iter() {
                     base_spaces
-                        .entry(*entry.key())
+                        .entry(*id)
                         .and_modify(|(_, existing_atoms)| {
                             existing_atoms.extend(atoms.iter().cloned());
                         })
@@ -1114,18 +1072,18 @@ where
             btm: RwLock::new(merged_btm),
             symbols: Arc::clone(&self.shared.symbols), // Append-only, share
             multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
-            states: merged_states,
+            states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
 
-            rule_index: merged_rule_index,
+            rule_index: RwLock::new(merged_rule_index),
             wildcard_rules: RwLock::new(merged_wildcard_rules),
             has_wildcard_rules: AtomicBool::new(has_wildcards),
 
-            named_spaces: merged_named_spaces,
+            named_spaces: RwLock::new(merged_named_spaces),
             next_space_id: AtomicU64::new(max_space_id),
 
-            bindings: merged_bindings,
-            types: merged_types,
+            bindings: RwLock::new(merged_bindings),
+            types: RwLock::new(merged_types),
 
             // Share from self (typically static after init)
             module_registry: RwLock::new(self.shared.module_registry.read().clone()),
@@ -1417,7 +1375,7 @@ where
     // Interior Mutability Space Operations (for CoW-safe shared access)
     // ========================================================================
     //
-    // These methods use interior mutability via RwLock/DashMap to mutate shared
+    // These methods use interior mutability via RwLock to mutate shared
     // state WITHOUT triggering the CoW deep copy in make_owned(). This is essential
     // for arena mode correctness where environments are cloned but should share
     // the underlying space state.
@@ -1761,7 +1719,7 @@ where
 /// - Clones share data until first modification (owns_data = false)
 /// - First mutation triggers deep copy via make_owned() (owns_data = true)
 /// - parking_lot::RwLock enables concurrent reads
-/// - DashMap enables lock-free reads for rule/binding lookups
+/// - RwLock<HashMap> enables efficient rule/binding lookups
 ///
 /// ## Performance
 ///

@@ -128,9 +128,9 @@ impl MettaHelper {
             }
         };
 
-        // Extract function names from indexed rules (DashMap)
-        for entry in env.shared.rule_index.iter() {
-            for rule in entry.value() {
+        // Extract function names from indexed rules
+        for (_key, rules) in env.shared.rule_index.read().iter() {
+            for rule in rules {
                 extract_name(&rule.lhs);
             }
         }

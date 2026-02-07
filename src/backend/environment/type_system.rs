@@ -27,26 +27,25 @@ where
 {
     /// Add a type assertion (generic version).
     ///
-    /// Stores the type in the `types` DashMap for generic lookups.
+    /// Stores the type in the `types` HashMap for generic lookups.
     /// For MettaValue environments that need MORK persistence, use
     /// `Environment::add_type` which also stores in MORK Space.
     pub fn add_type_generic(&mut self, name: &str, typ: V) {
         trace!(target: "mettatron::environment::add_type_generic", name);
         self.make_owned();
 
-        // Store in types DashMap
-        self.shared.types.insert(name.to_string(), typ);
+        self.shared.types.write().insert(name.to_string(), typ);
 
         self.modified.store(true, Ordering::Release);
     }
 
     /// Get type for a symbol (generic version).
     ///
-    /// Looks up the type in the `types` DashMap.
+    /// Looks up the type in the `types` HashMap.
     /// For MettaValue environments, prefer `Environment::get_type` which
     /// uses the optimized MORK index.
     pub fn get_type_generic(&self, name: &str) -> Option<V> {
-        self.shared.types.get(name).map(|r| r.value().clone())
+        self.shared.types.read().get(name).cloned()
     }
 }
 

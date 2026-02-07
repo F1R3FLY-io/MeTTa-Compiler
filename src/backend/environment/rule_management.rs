@@ -11,7 +11,7 @@
 //!
 //! # Iteration
 //!
-//! Rule iterators collect data from DashMap/RwLock and iterate over the collected
+//! Rule iterators collect data from RwLock<HashMap> and iterate over the collected
 //! data, releasing locks quickly to maximize concurrency.
 //!
 //! # Generic Rule Storage
@@ -39,8 +39,7 @@ use crate::backend::symbol::Symbol;
 
 /// Iterator over rule heads with their arities and counts.
 ///
-/// With DashMap, we collect the data into a Vec for iteration since DashMap
-/// doesn't support the OwningHandle pattern. The data is collected during creation.
+/// Data is collected into a Vec during creation for iteration.
 ///
 /// # Performance
 /// - Memory overhead: O(k) where k = number of distinct (head, arity) pairs
@@ -155,7 +154,7 @@ impl<V: Clone + Default + Send + Sync + Unpin> Iterator for RulesIter<V> {
 
 /// Iterator over matching rules for a given head symbol and arity.
 ///
-/// With DashMap for rule_index, we collect the rules into a Vec for iteration.
+/// Rules are collected into a Vec for iteration.
 /// This yields owned Rules rather than references.
 ///
 /// # Performance
@@ -232,9 +231,10 @@ where
             // Use Symbol for O(1) comparison when symbol-interning is enabled
             let head_sym = Symbol::new(head);
 
-            // Store in rule index - DashMap entry API
+            // Store in rule index
             self.shared
                 .rule_index
+                .write()
                 .entry((head_sym, arity))
                 .or_default()
                 .push(rule.clone());
@@ -277,12 +277,13 @@ where
     pub fn get_matching_rules_vec(&self, head: &str, arity: usize) -> Vec<GenericRule<V>> {
         let key = (Symbol::new(head), arity);
 
-        // Collect indexed rules from DashMap
+        // Collect indexed rules
         let mut rules: Vec<GenericRule<V>> = self
             .shared
             .rule_index
+            .read()
             .get(&key)
-            .map(|entry| entry.value().clone())
+            .cloned()
             .unwrap_or_default();
 
         // Fast-path: Check if we have any wildcard rules
@@ -316,12 +317,13 @@ impl HeapEnvironment {
     /// Get the number of rules in the environment
     /// Counts rules from the rule_index and wildcard_rules (thread-safe, avoids PathMap iteration)
     pub fn rule_count(&self) -> usize {
-        // Count rules from the indexed rules - DashMap iteration
+        // Count rules from the indexed rules
         let index_count: usize = self
             .shared
             .rule_index
-            .iter()
-            .map(|entry| entry.value().len())
+            .read()
+            .values()
+            .map(|v| v.len())
             .sum();
 
         // Count wildcard rules - parking_lot::RwLock - no .expect()
@@ -355,14 +357,14 @@ impl HeapEnvironment {
     /// let heads: Vec<_> = env.iter_rule_heads().collect();
     /// ```
     pub fn iter_rule_heads(&self) -> RuleHeadsIter {
-        // Collect from DashMap - iteration is lock-free per-shard
+        // Collect from rule_index
         let items: Vec<(String, usize, usize)> = self
             .shared
             .rule_index
+            .read()
             .iter()
-            .map(|entry| {
-                let (head, arity) = entry.key();
-                (head.to_string(), *arity, entry.value().len())
+            .map(|((head, arity), rules)| {
+                (head.to_string(), *arity, rules.len())
             })
             .collect();
 
@@ -404,8 +406,8 @@ impl HeapEnvironment {
         trace!(target: "mettatron::environment::rebuild_rule_index", "Rebuilding rule index");
         self.make_owned(); // CoW: ensure we own data before modifying
 
-        // Clear existing indices - DashMap and RwLock
-        self.shared.rule_index.clear();
+        // Clear existing indices
+        self.shared.rule_index.write().clear();
         self.shared.wildcard_rules.write().clear();
         // Reset wildcard flag - will be set again if wildcards are added
         self.shared
@@ -427,9 +429,10 @@ impl HeapEnvironment {
                 // Use Symbol for O(1) comparison when symbol-interning is enabled
                 let head_sym = Symbol::new(head);
 
-                // Store in rule index - DashMap entry API
+                // Store in rule index
                 self.shared
                     .rule_index
+                    .write()
                     .entry((head_sym, arity))
                     .or_default()
                     .push(generic_rule);
@@ -498,9 +501,10 @@ impl HeapEnvironment {
             // Use Symbol for O(1) comparison when symbol-interning is enabled
             let head_sym = Symbol::new(head);
 
-            // Store in rule index - DashMap entry API
+            // Store in rule index
             self.shared
                 .rule_index
+                .write()
                 .entry((head_sym, arity))
                 .or_default()
                 .push(generic_rule);
@@ -612,13 +616,15 @@ impl HeapEnvironment {
         // Apply all updates in batch (minimize critical sections)
         // Note: With value-based multiplicity, PathMap's join uses pjoin which adds multiplicities
 
-        // Update rule index - DashMap entry API
-        for ((head, arity), mut rules) in rule_index_updates {
-            self.shared
-                .rule_index
-                .entry((head, arity))
-                .or_default()
-                .append(&mut rules);
+        // Update rule index
+        {
+            let mut rule_index = self.shared.rule_index.write();
+            for ((head, arity), mut rules) in rule_index_updates {
+                rule_index
+                    .entry((head, arity))
+                    .or_default()
+                    .append(&mut rules);
+            }
         }
 
         // Update wildcard rules
@@ -727,12 +733,12 @@ impl HeapEnvironment {
 
     /// Get rules matching a specific head symbol and arity.
     ///
-    /// Returns an iterator over owned Rules. With DashMap, we collect
-    /// the rules into a Vec for iteration.
+    /// Returns an iterator over owned Rules. Rules are collected
+    /// into a Vec for iteration.
     ///
     /// # Performance
-    /// - Data collected from DashMap
-    /// - Rules cloned during iteration
+    /// - Data collected from rule_index
+    /// - Rules cloned during collection
     ///
     /// # Example
     /// ```ignore
@@ -744,13 +750,14 @@ impl HeapEnvironment {
     pub fn get_matching_rules_iter(&self, head: &str, arity: usize) -> MatchingRulesIter {
         let key = (Symbol::new(head), arity);
 
-        // Collect indexed rules from DashMap
+        // Collect indexed rules
         let mut rules: Vec<Rule> = self
             .shared
             .rule_index
+            .read()
             .get(&key)
-            .map(|entry| {
-                entry.value().iter().map(|gr| Rule {
+            .map(|rules_vec| {
+                rules_vec.iter().map(|gr| Rule {
                     lhs: gr.lhs.clone(),
                     rhs: gr.rhs.clone(),
                     multiplicity_idx: gr.multiplicity_idx,
@@ -812,12 +819,13 @@ impl HeapEnvironment {
     {
         let key = (Symbol::new(head), arity);
 
-        // Collect rules from rule_index (canonical storage) - DashMap
+        // Collect rules from rule_index (canonical storage)
         let indexed_rules: Vec<GenericRule<MettaValue>> = self
             .shared
             .rule_index
+            .read()
             .get(&key)
-            .map(|entry| entry.value().clone())
+            .cloned()
             .unwrap_or_default();
 
         // Also get wildcard rules if they exist
@@ -881,14 +889,17 @@ impl HeapEnvironment {
         if let (Some(head), Some(lhs_val)) = (head, lhs) {
             let key = (Symbol::new(&head), arity);
 
-            // Find the rule with matching LHS to get its multiplicity_idx - DashMap
+            // Find the rule with matching LHS to get its multiplicity_idx
             let mut found_idx: Option<u32> = None;
-            if let Some(entry) = self.shared.rule_index.get(&key) {
-                for rule in entry.value() {
-                    // Check if this rule's LHS matches
-                    if rule.lhs.structurally_equivalent(lhs_val) {
-                        found_idx = rule.multiplicity_idx;
-                        break;
+            {
+                let rule_index = self.shared.rule_index.read();
+                if let Some(rules_vec) = rule_index.get(&key) {
+                    for rule in rules_vec {
+                        // Check if this rule's LHS matches
+                        if rule.lhs.structurally_equivalent(lhs_val) {
+                            found_idx = rule.multiplicity_idx;
+                            break;
+                        }
                     }
                 }
             }
@@ -977,14 +988,17 @@ impl HeapEnvironment {
         if let (Some(head), Some(lhs_val)) = (head, lhs) {
             let key = (Symbol::new(&head), arity);
 
-            // Find the rule with matching LHS to get its multiplicity_idx - DashMap
+            // Find the rule with matching LHS to get its multiplicity_idx
             let mut found_idx: Option<u32> = None;
-            if let Some(entry) = self.shared.rule_index.get(&key) {
-                for rule in entry.value() {
-                    // Check if this rule's LHS matches
-                    if rule.lhs.structurally_equivalent(lhs_val) {
-                        found_idx = rule.multiplicity_idx;
-                        break;
+            {
+                let rule_index = self.shared.rule_index.read();
+                if let Some(rules_vec) = rule_index.get(&key) {
+                    for rule in rules_vec {
+                        // Check if this rule's LHS matches
+                        if rule.lhs.structurally_equivalent(lhs_val) {
+                            found_idx = rule.multiplicity_idx;
+                            break;
+                        }
                     }
                 }
             }

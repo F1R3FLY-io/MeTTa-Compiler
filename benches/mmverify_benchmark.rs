@@ -17,7 +17,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use mettatron::config::{configure_eval, EvalConfig};
-use mettatron::{compile, run_state, MettaState};
+use mettatron::{compile, compile_arena, new_arena_env, run_state};
 use std::sync::Once;
 use std::time::Duration;
 
@@ -41,9 +41,9 @@ fn build_mmverify_program() -> String {
 
 /// Run a complete MeTTa program synchronously
 fn run_program(src: &str) {
-    let state = MettaState::new_empty();
-    let program = compile(src).expect("Failed to compile mmverify program");
-    let result = run_state(state, program).expect("Failed to run mmverify program");
+    let state = compile_arena(src).expect("Failed to compile mmverify program");
+    let env = new_arena_env();
+    let result = run_state(env, &state).expect("Failed to run mmverify program");
     black_box(result);
 }
 

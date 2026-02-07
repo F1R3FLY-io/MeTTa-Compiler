@@ -51,6 +51,23 @@ where
             .write()
             .set_options(options);
     }
+
+    /// Get the number of loaded modules
+    pub fn module_count(&self) -> usize {
+        self.shared
+            .module_registry
+            .read()
+            .module_count()
+    }
+
+    /// Check if strict mode is enabled
+    pub fn is_strict_mode(&self) -> bool {
+        self.shared
+            .module_registry
+            .read()
+            .options()
+            .strict_mode
+    }
 }
 
 // ============================================================================
@@ -120,14 +137,6 @@ impl HeapEnvironment {
             .add_path_alias(path, mod_id);
     }
 
-    /// Get the number of loaded modules
-    pub fn module_count(&self) -> usize {
-        self.shared
-            .module_registry
-            .read()
-            .module_count()
-    }
-
     /// Get a module's space by its ModId.
     ///
     /// Returns an Arc reference to the module's ModuleSpace for live access.
@@ -139,14 +148,5 @@ impl HeapEnvironment {
         // parking_lot::RwLock - no .expect()
         let registry = self.shared.module_registry.read();
         registry.get(mod_id).map(|module| module.space().clone())
-    }
-
-    /// Check if strict mode is enabled
-    pub fn is_strict_mode(&self) -> bool {
-        self.shared
-            .module_registry
-            .read()
-            .options()
-            .strict_mode
     }
 }

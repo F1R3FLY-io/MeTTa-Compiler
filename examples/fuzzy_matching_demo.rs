@@ -3,7 +3,7 @@
 //! This example shows how MeTTaTron tracks defined symbols and provides
 //! helpful suggestions when encountering typos or misspellings.
 
-use mettatron::backend::{compile, eval};
+use mettatron::{compile_arena, eval_arena, new_arena_env};
 
 fn main() {
     let source = r#"
@@ -18,8 +18,8 @@ fn main() {
         (= (hello-world) "Hello, World!")
     "#;
 
-    // Compile source to MettaState
-    let state = match compile(source) {
+    // Compile source to ArenaState
+    let state = match compile_arena(source) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error compiling: {}", e);
@@ -28,16 +28,13 @@ fn main() {
     };
 
     // Evaluate to populate environment with rules
-    let env = {
-        let mut current_env = state.environment.clone();
-        for expr in state.source {
-            let (_results, new_env) = eval(expr, current_env);
-            current_env = new_env;
-        }
-        current_env
-    };
+    let mut env = new_arena_env();
+    for &expr in state.source() {
+        let (_, updated_env) = eval_arena(expr, env, &state);
+        env = updated_env;
+    }
 
-    println!("✓ Loaded function definitions\n");
+    println!("Loaded function definitions\n");
 
     // Test fuzzy matching with typos
     println!("=== Fuzzy Matching Demonstrations ===\n");
@@ -46,27 +43,27 @@ fn main() {
     let typo1 = "fibonaci"; // Missing 'c' in fibonacci
     println!("Typo: '{}'", typo1);
     if let Some(suggestion) = env.did_you_mean(typo1, 2) {
-        println!("  → {}\n", suggestion);
+        println!("  -> {}\n", suggestion);
     } else {
-        println!("  → No suggestions found\n");
+        println!("  -> No suggestions found\n");
     }
 
     // Test 2: Transposition
     let typo2 = "factoral"; // Transposed 'or' in factorial
     println!("Typo: '{}'", typo2);
     if let Some(suggestion) = env.did_you_mean(typo2, 2) {
-        println!("  → {}\n", suggestion);
+        println!("  -> {}\n", suggestion);
     } else {
-        println!("  → No suggestions found\n");
+        println!("  -> No suggestions found\n");
     }
 
     // Test 3: Different separator
     let typo3 = "hello_world"; // Underscore instead of hyphen
     println!("Typo: '{}'", typo3);
     if let Some(suggestion) = env.did_you_mean(typo3, 2) {
-        println!("  → {}\n", suggestion);
+        println!("  -> {}\n", suggestion);
     } else {
-        println!("  → No suggestions found\n");
+        println!("  -> No suggestions found\n");
     }
 
     // Test 4: Abbreviation
@@ -74,22 +71,22 @@ fn main() {
     println!("Typo: '{}'", typo4);
     let suggestions = env.suggest_similar_symbols(typo4, 5);
     if !suggestions.is_empty() {
-        println!("  → Found {} suggestions:", suggestions.len());
+        println!("  -> Found {} suggestions:", suggestions.len());
         for (term, distance) in suggestions.iter().take(3) {
             println!("     - {} (distance: {})", term, distance);
         }
         println!();
     } else {
-        println!("  → No suggestions found\n");
+        println!("  -> No suggestions found\n");
     }
 
     // Test 5: Completely wrong symbol (should find nothing)
     let typo5 = "xyz";
     println!("Typo: '{}'", typo5);
     if let Some(suggestion) = env.did_you_mean(typo5, 2) {
-        println!("  → {}\n", suggestion);
+        println!("  -> {}\n", suggestion);
     } else {
-        println!("  → No suggestions found (as expected)\n");
+        println!("  -> No suggestions found (as expected)\n");
     }
 
     // Show all tracked symbols

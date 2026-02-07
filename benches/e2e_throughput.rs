@@ -49,7 +49,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use mettatron::config::{configure_eval, get_eval_config, EvalConfig};
-use mettatron::{compile, run_state, run_state_async, MettaState};
+use mettatron::{compile_arena, new_arena_env, run_state};
 
 // TODO -> need more comprehensive set of MeTTa programs
 const SAMPLES: &[(&str, &str)] = &[
@@ -121,19 +121,18 @@ struct ThroughputReport {
 }
 
 fn evaluate_full_program(source: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let state = MettaState::new_empty();
-    let program = compile(source)?;
-    let _result = run_state(state, program)?;
+    let state = compile_arena(source)?;
+    let env = new_arena_env();
+    let _result = run_state(env, &state)?;
     Ok(())
 }
 
 async fn evaluate_full_program_async(
-    source: &str,
+    source: &'static str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let state = MettaState::new_empty();
-    let program = compile(source)?;
-    let _result = run_state_async(state, program).await?;
-    Ok(())
+    tokio::task::spawn_blocking(move || evaluate_full_program(source))
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
 }
 
 // ============================================================================

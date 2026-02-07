@@ -1,84 +1,58 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::environment::HeapEnvironment;
-use mettatron::backend::MettaValue;
-use mettatron::eval;
+use mettatron::backend::compile::compile_arena;
+use mettatron::backend::eval::eval_arena;
+use mettatron::backend::eval::trampoline::new_arena_env;
 
-/// Generate nested arithmetic expressions for benchmarking
-/// Example: (+ (* 2 3) (/ 10 5) (- 8 4) (* 7 2))
-fn generate_arithmetic_expr(num_operations: usize) -> MettaValue {
+/// Generate nested arithmetic expressions as MeTTa text for benchmarking.
+/// Example: (+ (* 1 2) (- 3 4) (* 5 6) (/ 7 8))
+fn generate_arithmetic_text(num_operations: usize) -> String {
     let operations = ["+", "-", "*", "/"];
     let mut sub_exprs = Vec::new();
 
     for i in 0..num_operations {
         let op = operations[i % operations.len()];
-        let left = (i * 2 + 1) as i64;
-        let right = (i * 2 + 2) as i64;
-
-        sub_exprs.push(MettaValue::SExpr(vec![
-            MettaValue::Atom(op.to_string()),
-            MettaValue::Long(left),
-            MettaValue::Long(right),
-        ]));
+        let left = i * 2 + 1;
+        let right = i * 2 + 2;
+        sub_exprs.push(format!("({} {} {})", op, left, right));
     }
 
     // Wrap in outer addition
-    let mut full_expr = vec![MettaValue::Atom("+".to_string())];
-    full_expr.extend(sub_exprs);
-
-    MettaValue::SExpr(full_expr)
+    format!("(+ {})", sub_exprs.join(" "))
 }
 
-/// Generate deeply nested expressions
+/// Generate deeply nested expressions as MeTTa text.
 /// Example: (+ (+ (+ 1 2) (+ 3 4)) (+ (+ 5 6) (+ 7 8)))
-fn generate_nested_expr(depth: usize) -> MettaValue {
+fn generate_nested_text(depth: usize) -> String {
     if depth == 0 {
-        return MettaValue::Long(1);
+        return "1".to_string();
     }
-
-    MettaValue::SExpr(vec![
-        MettaValue::Atom("+".to_string()),
-        generate_nested_expr(depth - 1),
-        generate_nested_expr(depth - 1),
-    ])
+    format!(
+        "(+ {} {})",
+        generate_nested_text(depth - 1),
+        generate_nested_text(depth - 1)
+    )
 }
 
-/// Generate mixed complexity expressions
-/// Combines arithmetic, comparisons, and nested operations
-fn generate_mixed_expr(num_operations: usize) -> MettaValue {
-    let mut sub_exprs = vec![MettaValue::Atom("+".to_string())];
+/// Generate mixed complexity expressions as MeTTa text.
+/// Combines arithmetic, comparisons, and nested operations.
+fn generate_mixed_text(num_operations: usize) -> String {
+    let mut sub_exprs = Vec::new();
 
     for i in 0..num_operations {
         let inner = if i % 3 == 0 {
             // Arithmetic
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("*".to_string()),
-                MettaValue::Long((i * 2) as i64),
-                MettaValue::Long((i * 3) as i64),
-            ])
+            format!("(* {} {})", i * 2, i * 3)
         } else if i % 3 == 1 {
             // Nested arithmetic
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("-".to_string()),
-                MettaValue::SExpr(vec![
-                    MettaValue::Atom("+".to_string()),
-                    MettaValue::Long((i * 4) as i64),
-                    MettaValue::Long((i * 5) as i64),
-                ]),
-                MettaValue::Long((i * 2) as i64),
-            ])
+            format!("(- (+ {} {}) {})", i * 4, i * 5, i * 2)
         } else {
             // Simple division
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("/".to_string()),
-                MettaValue::Long((i * 10 + 10) as i64),
-                MettaValue::Long(2),
-            ])
+            format!("(/ {} 2)", i * 10 + 10)
         };
-
         sub_exprs.push(inner);
     }
 
-    MettaValue::SExpr(sub_exprs)
+    format!("(+ {})", sub_exprs.join(" "))
 }
 
 /// Benchmark: Simple arithmetic expressions (threshold boundary testing)
@@ -87,12 +61,17 @@ fn bench_simple_arithmetic(c: &mut Criterion) {
 
     // Test around the threshold boundary (currently 4)
     for num_ops in [2, 3, 4, 5, 6, 8, 10].iter() {
-        let expr = generate_arithmetic_expr(*num_ops);
-        let env = HeapEnvironment::default();
+        let text = generate_arithmetic_text(*num_ops);
+        let state = compile_arena(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
-                let result = eval(black_box(expr.clone()), black_box(env.clone()));
+                let env = new_arena_env();
+                let (result, _) = eval_arena(
+                    black_box(state.source()[0]),
+                    black_box(env),
+                    black_box(&state),
+                );
                 black_box(result);
             });
         });
@@ -107,12 +86,17 @@ fn bench_nested_expressions(c: &mut Criterion) {
 
     // Test various nesting depths
     for depth in [2, 3, 4, 5, 6].iter() {
-        let expr = generate_nested_expr(*depth);
-        let env = HeapEnvironment::default();
+        let text = generate_nested_text(*depth);
+        let state = compile_arena(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("eval_depth", depth), depth, |b, _| {
             b.iter(|| {
-                let result = eval(black_box(expr.clone()), black_box(env.clone()));
+                let env = new_arena_env();
+                let (result, _) = eval_arena(
+                    black_box(state.source()[0]),
+                    black_box(env),
+                    black_box(&state),
+                );
                 black_box(result);
             });
         });
@@ -126,12 +110,17 @@ fn bench_mixed_complexity(c: &mut Criterion) {
     let mut group = c.benchmark_group("mixed_complexity");
 
     for num_ops in [2, 4, 8, 12, 16, 20].iter() {
-        let expr = generate_mixed_expr(*num_ops);
-        let env = HeapEnvironment::default();
+        let text = generate_mixed_text(*num_ops);
+        let state = compile_arena(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
-                let result = eval(black_box(expr.clone()), black_box(env.clone()));
+                let env = new_arena_env();
+                let (result, _) = eval_arena(
+                    black_box(state.source()[0]),
+                    black_box(env),
+                    black_box(&state),
+                );
                 black_box(result);
             });
         });
@@ -153,12 +142,17 @@ fn bench_threshold_tuning(c: &mut Criterion) {
     ]
     .iter()
     {
-        let expr = generate_arithmetic_expr(*num_ops);
-        let env = HeapEnvironment::default();
+        let text = generate_arithmetic_text(*num_ops);
+        let state = compile_arena(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("operations", num_ops), num_ops, |b, _| {
             b.iter(|| {
-                let result = eval(black_box(expr.clone()), black_box(env.clone()));
+                let env = new_arena_env();
+                let (result, _) = eval_arena(
+                    black_box(state.source()[0]),
+                    black_box(env),
+                    black_box(&state),
+                );
                 black_box(result);
             });
         });
@@ -173,74 +167,53 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     let mut group = c.benchmark_group("realistic_expressions");
 
     // Case 1: Financial calculation (4 operations)
-    let financial = MettaValue::SExpr(vec![
-        MettaValue::Atom("+".to_string()),
-        // Principal
-        MettaValue::Long(10000),
-        // Interest
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("*".to_string()),
-            MettaValue::Long(10000),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("/".to_string()),
-                MettaValue::Long(5),
-                MettaValue::Long(100),
-            ]),
-        ]),
-        // Fees
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("-".to_string()),
-            MettaValue::Long(100),
-            MettaValue::Long(25),
-        ]),
-    ]);
+    let financial_text = "(+ 10000 (* 10000 (/ 5 100)) (- 100 25))";
+    let financial_state = compile_arena(financial_text).expect("Failed to compile");
 
     group.bench_function("financial_calc", |b| {
-        let env = HeapEnvironment::default();
         b.iter(|| {
-            let result = eval(black_box(financial.clone()), black_box(env.clone()));
+            let env = new_arena_env();
+            let (result, _) = eval_arena(
+                black_box(financial_state.source()[0]),
+                black_box(env),
+                black_box(&financial_state),
+            );
             black_box(result);
         });
     });
 
     // Case 2: Vector operations (8 operations)
-    let mut vector_ops = vec![MettaValue::Atom("+".to_string())];
-    for i in 0..8 {
-        vector_ops.push(MettaValue::SExpr(vec![
-            MettaValue::Atom("*".to_string()),
-            MettaValue::Long(i),
-            MettaValue::Long(i + 1),
-        ]));
-    }
-    let vector_expr = MettaValue::SExpr(vector_ops);
+    let vector_parts: Vec<String> = (0..8).map(|i| format!("(* {} {})", i, i + 1)).collect();
+    let vector_text = format!("(+ {})", vector_parts.join(" "));
+    let vector_state = compile_arena(&vector_text).expect("Failed to compile");
 
     group.bench_function("vector_dot_product", |b| {
-        let env = HeapEnvironment::default();
         b.iter(|| {
-            let result = eval(black_box(vector_expr.clone()), black_box(env.clone()));
+            let env = new_arena_env();
+            let (result, _) = eval_arena(
+                black_box(vector_state.source()[0]),
+                black_box(env),
+                black_box(&vector_state),
+            );
             black_box(result);
         });
     });
 
     // Case 3: Complex formula (12 operations)
-    let mut complex = vec![MettaValue::Atom("+".to_string())];
-    for i in 0..12 {
-        complex.push(MettaValue::SExpr(vec![
-            MettaValue::Atom("*".to_string()),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("+".to_string()),
-                MettaValue::Long(i * 2),
-                MettaValue::Long(i * 3),
-            ]),
-            MettaValue::Long(i + 1),
-        ]));
-    }
-    let complex_expr = MettaValue::SExpr(complex);
+    let complex_parts: Vec<String> = (0..12)
+        .map(|i| format!("(* (+ {} {}) {})", i * 2, i * 3, i + 1))
+        .collect();
+    let complex_text = format!("(+ {})", complex_parts.join(" "));
+    let complex_state = compile_arena(&complex_text).expect("Failed to compile");
 
     group.bench_function("complex_formula", |b| {
-        let env = HeapEnvironment::default();
         b.iter(|| {
-            let result = eval(black_box(complex_expr.clone()), black_box(env.clone()));
+            let env = new_arena_env();
+            let (result, _) = eval_arena(
+                black_box(complex_state.source()[0]),
+                black_box(env),
+                black_box(&complex_state),
+            );
             black_box(result);
         });
     });
@@ -256,16 +229,18 @@ fn bench_parallel_overhead(c: &mut Criterion) {
 
     // Very simple expressions to measure pure overhead
     for num_ops in [1, 2, 3, 4, 5, 6].iter() {
-        let mut expr_vec = vec![MettaValue::Atom("+".to_string())];
-        for i in 0..*num_ops {
-            expr_vec.push(MettaValue::Long(i as i64));
-        }
-        let expr = MettaValue::SExpr(expr_vec);
-        let env = HeapEnvironment::default();
+        let items: Vec<String> = (0..*num_ops).map(|i| format!("{}", i)).collect();
+        let text = format!("(+ {})", items.join(" "));
+        let state = compile_arena(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("trivial_ops", num_ops), num_ops, |b, _| {
             b.iter(|| {
-                let result = eval(black_box(expr.clone()), black_box(env.clone()));
+                let env = new_arena_env();
+                let (result, _) = eval_arena(
+                    black_box(state.source()[0]),
+                    black_box(env),
+                    black_box(&state),
+                );
                 black_box(result);
             });
         });
@@ -280,12 +255,17 @@ fn bench_scalability(c: &mut Criterion) {
     let mut group = c.benchmark_group("scalability");
 
     for num_ops in [4, 8, 16, 32, 64].iter() {
-        let expr = generate_arithmetic_expr(*num_ops);
-        let env = HeapEnvironment::default();
+        let text = generate_arithmetic_text(*num_ops);
+        let state = compile_arena(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("scale", num_ops), num_ops, |b, _| {
             b.iter(|| {
-                let result = eval(black_box(expr.clone()), black_box(env.clone()));
+                let env = new_arena_env();
+                let (result, _) = eval_arena(
+                    black_box(state.source()[0]),
+                    black_box(env),
+                    black_box(&state),
+                );
                 black_box(result);
             });
         });

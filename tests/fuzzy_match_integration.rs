@@ -6,7 +6,10 @@
 use mettatron::backend::builtin_signatures::{builtin_names, get_signature, is_builtin, TypeExpr};
 use mettatron::backend::fuzzy_match::{SuggestionConfidence, SuggestionContext};
 use mettatron::backend::models::MettaValue;
-use mettatron::backend::{compile, eval, HeapEnvironment, FuzzyMatcher};
+use mettatron::backend::{compile, HeapEnvironment, FuzzyMatcher};
+
+// Arena API imports for evaluation tests
+use mettatron::{compile_arena, eval_arena, new_arena_env, ArenaValueInner};
 
 // ============================================================================
 // Test Helpers
@@ -108,19 +111,19 @@ fn test_arity_if_typo() {
     // so short words like "iff" do get matched here.
     assert!(
         would_suggest_for_arity("iff", "if", 3),
-        "iff→if with arity 3 should be suggested (arity matches)"
+        "iff->if with arity 3 should be suggested (arity matches)"
     );
 
     // With arity 1, "if" should NOT be suggested (arity too low)
     assert!(
         !would_suggest_for_arity("iff", "if", 1),
-        "iff→if with arity 1 should NOT be suggested (needs 3)"
+        "iff->if with arity 1 should NOT be suggested (needs 3)"
     );
 
     // With arity 4, "if" should NOT be suggested (arity too high)
     assert!(
         !would_suggest_for_arity("iff", "if", 4),
-        "iff→if with arity 4 should NOT be suggested (max is 3)"
+        "iff->if with arity 4 should NOT be suggested (max is 3)"
     );
 }
 
@@ -129,25 +132,25 @@ fn test_arity_match_typo() {
     // (metch space pattern body) has arity 3, matches match (min 3, max 4)
     assert!(
         would_suggest_for_arity("metch", "match", 3),
-        "metch→match with arity 3 should be suggested"
+        "metch->match with arity 3 should be suggested"
     );
 
     // (metch space pattern body default) has arity 4, also valid for match
     assert!(
         would_suggest_for_arity("metch", "match", 4),
-        "metch→match with arity 4 should be suggested"
+        "metch->match with arity 4 should be suggested"
     );
 
     // (metch space) has arity 1, doesn't match (below min_arity 3)
     assert!(
         !would_suggest_for_arity("metch", "match", 1),
-        "metch→match with arity 1 should NOT be suggested"
+        "metch->match with arity 1 should NOT be suggested"
     );
 
     // Arity 5 exceeds max_arity 4
     assert!(
         !would_suggest_for_arity("metch", "match", 5),
-        "metch→match with arity 5 should NOT be suggested"
+        "metch->match with arity 5 should NOT be suggested"
     );
 }
 
@@ -505,62 +508,57 @@ fn test_compile_multiple_expressions() {
 }
 
 // ============================================================================
-// Evaluation Tests
+// Evaluation Tests (Arena API)
 // ============================================================================
 
 #[test]
 fn test_eval_arithmetic() {
-    let env = HeapEnvironment::default();
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("+".to_string()),
-        MettaValue::Long(1),
-        MettaValue::Long(2),
-    ]);
+    let state = compile_arena("(+ 1 2)").expect("compile failed");
+    let env = new_arena_env();
+    let (results, _) = eval_arena(state.source()[0], env, &state);
 
-    use mettatron::backend::models::MettaValueInner;
-    let (results, _) = eval(expr, env);
     assert!(!results.is_empty(), "Should have results");
-
-    if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
+    if let ArenaValueInner::Long(n) = results.first().expect("results").inner() {
         assert_eq!(*n, 3, "1 + 2 should be 3");
+    } else {
+        panic!(
+            "Expected Long(3), got {:?}",
+            results.first().expect("results").inner()
+        );
     }
 }
 
 #[test]
 fn test_eval_if_true() {
-    let env = HeapEnvironment::default();
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("if".to_string()),
-        MettaValue::Bool(true),
-        MettaValue::Long(1),
-        MettaValue::Long(2),
-    ]);
+    let state = compile_arena("(if True 1 2)").expect("compile failed");
+    let env = new_arena_env();
+    let (results, _) = eval_arena(state.source()[0], env, &state);
 
-    use mettatron::backend::models::MettaValueInner;
-    let (results, _) = eval(expr, env);
-    assert!(!results.is_empty());
-
-    if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
+    assert!(!results.is_empty(), "Should have results");
+    if let ArenaValueInner::Long(n) = results.first().expect("results").inner() {
         assert_eq!(*n, 1, "if True should return then branch");
+    } else {
+        panic!(
+            "Expected Long(1), got {:?}",
+            results.first().expect("results").inner()
+        );
     }
 }
 
 #[test]
 fn test_eval_if_false() {
-    let env = HeapEnvironment::default();
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("if".to_string()),
-        MettaValue::Bool(false),
-        MettaValue::Long(1),
-        MettaValue::Long(2),
-    ]);
+    let state = compile_arena("(if False 1 2)").expect("compile failed");
+    let env = new_arena_env();
+    let (results, _) = eval_arena(state.source()[0], env, &state);
 
-    use mettatron::backend::models::MettaValueInner;
-    let (results, _) = eval(expr, env);
-    assert!(!results.is_empty());
-
-    if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
+    assert!(!results.is_empty(), "Should have results");
+    if let ArenaValueInner::Long(n) = results.first().expect("results").inner() {
         assert_eq!(*n, 2, "if False should return else branch");
+    } else {
+        panic!(
+            "Expected Long(2), got {:?}",
+            results.first().expect("results").inner()
+        );
     }
 }
 
@@ -601,7 +599,7 @@ fn test_full_context_match_with_space() {
 
     assert!(
         would_suggest_with_context("metch", "match", &args),
-        "metch→match should be suggested with proper space argument"
+        "metch->match should be suggested with proper space argument"
     );
 }
 
@@ -618,7 +616,7 @@ fn test_full_context_match_without_space() {
 
     assert!(
         !would_suggest_with_context("metch", "match", &args),
-        "metch→match should NOT be suggested without proper space argument"
+        "metch->match should NOT be suggested without proper space argument"
     );
 }
 
@@ -634,7 +632,7 @@ fn test_full_context_let_with_proper_types() {
 
     assert!(
         would_suggest_with_context("lett", "let", &args),
-        "lett→let should be suggested with proper types"
+        "lett->let should be suggested with proper types"
     );
 }
 
@@ -651,7 +649,7 @@ fn test_full_context_arithmetic_correct_types() {
     // Short typo is filtered out
     assert!(
         !would_suggest_with_context("++", "+", &args),
-        "++→+ should be filtered due to short query length"
+        "++->+ should be filtered due to short query length"
     );
 }
 
@@ -666,7 +664,7 @@ fn test_full_context_catch_with_proper_types() {
 
     assert!(
         would_suggest_with_context("catsh", "catch", &args),
-        "catsh→catch should be suggested with proper types"
+        "catsh->catch should be suggested with proper types"
     );
 }
 
@@ -681,7 +679,7 @@ fn test_full_context_catch_wrong_arity() {
     // This fails arity check (needs 2 args, has 1)
     assert!(
         !would_suggest_with_context("catsh", "catch", &args),
-        "catsh→catch should NOT be suggested with wrong arity"
+        "catsh->catch should NOT be suggested with wrong arity"
     );
 }
 
@@ -697,7 +695,7 @@ fn test_full_context_arithmetic_wrong_types() {
 
     assert!(
         !would_suggest_with_context("++", "+", &args),
-        "++→+ should NOT be suggested with string arguments"
+        "++->+ should NOT be suggested with string arguments"
     );
 }
 

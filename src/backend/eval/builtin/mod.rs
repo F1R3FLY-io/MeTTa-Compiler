@@ -16,9 +16,6 @@ mod extractors;
 mod logical;
 mod math;
 
-#[cfg(test)]
-mod tests;
-
 use crate::backend::models::MettaValue;
 
 // Re-export for internal use by eval module

@@ -5,8 +5,10 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use mettatron::backend::bytecode::{compile, BytecodeVM};
-use mettatron::backend::eval::eval;
-use mettatron::backend::{HeapEnvironment, MettaValue};
+use mettatron::backend::compile::compile_arena;
+use mettatron::backend::eval::eval_arena;
+use mettatron::backend::eval::trampoline::new_arena_env;
+use mettatron::backend::MettaValue;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,11 +29,13 @@ fn eval_bytecode(expr: &MettaValue) -> Vec<MettaValue> {
     vm.run().expect("VM execution failed")
 }
 
-/// Evaluate expression via tree-walking interpreter
-fn eval_tree_walker(expr: &MettaValue) -> Vec<MettaValue> {
-    let env = HeapEnvironment::default();
-    let (results, _env) = eval(expr.clone(), env);
-    results
+/// Evaluate expression via tree-walking interpreter (arena-based)
+fn eval_tree_walker(expr: &MettaValue) -> Vec<String> {
+    let src = format!("{}", expr);
+    let state = compile_arena(&src).expect("Failed to compile");
+    let env = new_arena_env();
+    let (results, _env) = eval_arena(state.source()[0], env, &state);
+    results.iter().map(|v| format!("{}", v)).collect()
 }
 
 // ============================================================================

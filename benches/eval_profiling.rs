@@ -14,10 +14,9 @@
 //!   perf report
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use mettatron::backend::compile::compile;
-use mettatron::backend::environment::HeapEnvironment;
-use mettatron::backend::eval::eval;
-use mettatron::backend::MettaValue;
+use mettatron::backend::compile::compile_arena;
+use mettatron::backend::eval::eval_arena;
+use mettatron::backend::eval::trampoline::new_arena_env;
 use std::time::Duration;
 
 // Include stress test program sources
@@ -29,12 +28,12 @@ const GROUNDED_TCO_STRESS: &str = include_str!("metta_samples/grounded_tco_stres
 
 /// Run a complete MeTTa program and return the number of evaluations
 fn run_program(src: &str) -> usize {
-    let state = compile(src).expect("Failed to compile");
-    let mut env = state.environment;
+    let state = compile_arena(src).expect("Failed to compile");
+    let mut env = new_arena_env();
     let mut eval_count = 0;
 
-    for expr in state.source {
-        let (_, new_env) = eval(black_box(expr), env);
+    for &expr in state.source() {
+        let (_, new_env) = eval_arena(black_box(expr), env, &state);
         env = new_env;
         eval_count += 1;
     }
@@ -54,25 +53,22 @@ fn generate_countdown(depth: usize) -> String {
     )
 }
 
-/// Generate wide arithmetic expression (many siblings)
-fn generate_wide_arithmetic(width: usize) -> MettaValue {
-    let mut items = vec![MettaValue::Atom("+".to_string())];
-    for i in 1..=width {
-        items.push(MettaValue::Long(i as i64));
-    }
-    MettaValue::SExpr(items)
+/// Generate wide arithmetic expression as MeTTa text (many siblings)
+fn generate_wide_arithmetic_text(width: usize) -> String {
+    let items: Vec<String> = (1..=width).map(|i| format!("{}", i)).collect();
+    format!("(+ {})", items.join(" "))
 }
 
-/// Generate deep nested arithmetic (binary tree shape)
-fn generate_deep_arithmetic(depth: usize) -> MettaValue {
+/// Generate deep nested arithmetic as MeTTa text (binary tree shape)
+fn generate_deep_arithmetic_text(depth: usize) -> String {
     if depth == 0 {
-        return MettaValue::Long(1);
+        return "1".to_string();
     }
-    MettaValue::SExpr(vec![
-        MettaValue::Atom("+".to_string()),
-        generate_deep_arithmetic(depth - 1),
-        MettaValue::Long(depth as i64),
-    ])
+    format!(
+        "(+ {} {})",
+        generate_deep_arithmetic_text(depth - 1),
+        depth
+    )
 }
 
 /// Generate nondeterministic choice program with specified choice count and depth
@@ -179,23 +175,29 @@ fn bench_trampoline_workstack(c: &mut Criterion) {
 
     // Wide arithmetic expressions (many siblings)
     for width in [5, 10, 20, 50, 100].iter() {
-        let expr = generate_wide_arithmetic(*width);
-        let env = HeapEnvironment::default();
+        let text = generate_wide_arithmetic_text(*width);
+        let state = compile_arena(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*width as u64));
         group.bench_with_input(BenchmarkId::new("wide_arithmetic", width), width, |b, _| {
-            b.iter(|| eval(black_box(expr.clone()), env.clone()));
+            let env = new_arena_env();
+            b.iter(|| {
+                eval_arena(black_box(state.source()[0]), env.clone(), &state)
+            });
         });
     }
 
     // Deep nested arithmetic (binary tree shape)
     for depth in [5, 10, 15, 20, 25].iter() {
-        let expr = generate_deep_arithmetic(*depth);
-        let env = HeapEnvironment::default();
+        let text = generate_deep_arithmetic_text(*depth);
+        let state = compile_arena(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*depth as u64));
         group.bench_with_input(BenchmarkId::new("deep_arithmetic", depth), depth, |b, _| {
-            b.iter(|| eval(black_box(expr.clone()), env.clone()));
+            let env = new_arena_env();
+            b.iter(|| {
+                eval_arena(black_box(state.source()[0]), env.clone(), &state)
+            });
         });
     }
 
@@ -261,54 +263,43 @@ fn bench_grounded_tco(c: &mut Criterion) {
     let mut group = c.benchmark_group("grounded_tco");
     group.measurement_time(Duration::from_secs(10));
 
-    // Generate add chains of different lengths
+    // Generate add chains of different lengths as MeTTa text
     for chain_len in [2, 4, 8, 16, 32].iter() {
-        let mut expr = MettaValue::Long(1);
+        // Build: (+ (+ (+ 1 2) 3) 4) ...
+        let mut text = "1".to_string();
         for i in 2..=*chain_len {
-            expr = MettaValue::SExpr(vec![
-                MettaValue::Atom("+".to_string()),
-                expr,
-                MettaValue::Long(i),
-            ]);
+            text = format!("(+ {} {})", text, i);
         }
-        let env = HeapEnvironment::default();
+        let state = compile_arena(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*chain_len as u64));
         group.bench_with_input(
             BenchmarkId::new("add_chain", chain_len),
             chain_len,
             |b, _| {
-                b.iter(|| eval(black_box(expr.clone()), env.clone()));
+                let env = new_arena_env();
+                b.iter(|| eval_arena(black_box(state.source()[0]), env.clone(), &state));
             },
         );
     }
 
-    // Generate comparison chains
+    // Generate comparison chains as MeTTa text
     for chain_len in [2, 4, 8].iter() {
         // Build: (and (< 1 2) (and (< 2 3) ...))
-        let mut expr = MettaValue::SExpr(vec![
-            MettaValue::Atom("<".to_string()),
-            MettaValue::Long(*chain_len as i64),
-            MettaValue::Long(*chain_len as i64 + 1),
-        ]);
-
-        for i in (1..*chain_len).rev() {
-            let cmp = MettaValue::SExpr(vec![
-                MettaValue::Atom("<".to_string()),
-                MettaValue::Long(i as i64),
-                MettaValue::Long(i as i64 + 1),
-            ]);
-            expr = MettaValue::SExpr(vec![MettaValue::Atom("and".to_string()), cmp, expr]);
+        let n = *chain_len;
+        let mut text = format!("(< {} {})", n, n + 1);
+        for i in (1..n).rev() {
+            text = format!("(and (< {} {}) {})", i, i + 1, text);
         }
-
-        let env = HeapEnvironment::default();
+        let state = compile_arena(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*chain_len as u64));
         group.bench_with_input(
             BenchmarkId::new("comparison_chain", chain_len),
             chain_len,
             |b, _| {
-                b.iter(|| eval(black_box(expr.clone()), env.clone()));
+                let env = new_arena_env();
+                b.iter(|| eval_arena(black_box(state.source()[0]), env.clone(), &state));
             },
         );
     }
@@ -361,7 +352,7 @@ fn bench_continuation_overhead(c: &mut Criterion) {
         let mut program = String::new();
 
         // Build nested let expression
-        let mut expr = format!("(+ ");
+        let mut expr = String::from("(+ ");
         for i in 0..*let_count {
             expr = format!("(let $v{} (+ {} {}) {}", i, i * 2, i * 2 + 1, expr);
         }

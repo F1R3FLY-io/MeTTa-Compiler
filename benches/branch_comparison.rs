@@ -3,15 +3,17 @@
 //!
 //! This benchmark is designed to compare branches (e.g., current vs main) to validate:
 //!
-//! - Phase 3a: Prefix-based fast path (1,024× speedup expected)
-//! - Phase 5: Bulk insertion optimization (2.0× speedup expected)
-//! - Phase 3c: Rayon removal (2-6× improvement expected)
-//! - CoW Environment: Clone cost reduction (~100× expected)
+//! - Phase 3a: Prefix-based fast path (1,024x speedup expected)
+//! - Phase 5: Bulk insertion optimization (2.0x speedup expected)
+//! - Phase 3c: Rayon removal (2-6x improvement expected)
+//! - CoW Environment: Clone cost reduction (~100x expected)
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use mettatron::backend::compile::compile_arena;
 use mettatron::backend::environment::HeapEnvironment;
+use mettatron::backend::eval::eval_arena;
+use mettatron::backend::eval::trampoline::new_arena_env;
 use mettatron::backend::{MettaValue, Rule};
-use mettatron::eval;
 
 // ============================================================================
 // Helper Functions
@@ -54,7 +56,19 @@ fn generate_pattern_with_vars(n: usize) -> MettaValue {
     MettaValue::SExpr(items)
 }
 
-/// Generate nested expression of given depth
+/// Generate nested expression of given depth as MeTTa text
+fn generate_nested_text(depth: usize) -> String {
+    if depth == 0 {
+        return "42".to_string();
+    }
+    format!(
+        "(+ {} {})",
+        generate_nested_text(depth - 1),
+        generate_nested_text(depth - 1)
+    )
+}
+
+/// Generate nested MettaValue expression of given depth (for non-eval benchmarks)
 fn generate_nested_expr(depth: usize) -> MettaValue {
     if depth == 0 {
         return MettaValue::Long(42);
@@ -71,7 +85,7 @@ fn generate_nested_expr(depth: usize) -> MettaValue {
 // ============================================================================
 
 /// Benchmark: Environment lookups with ground patterns (prefix fast path)
-/// Expected: 1,024× speedup on current branch vs main
+/// Expected: 1,024x speedup on current branch vs main
 fn bench_prefix_fast_path(c: &mut Criterion) {
     let mut group = c.benchmark_group("prefix_fast_path");
 
@@ -111,7 +125,7 @@ fn bench_prefix_fast_path(c: &mut Criterion) {
 // ============================================================================
 
 /// Benchmark: Bulk fact insertion
-/// Expected: 2.0× speedup on current branch vs main
+/// Expected: 2.0x speedup on current branch vs main
 fn bench_bulk_insertion(c: &mut Criterion) {
     let mut group = c.benchmark_group("bulk_insertion");
 
@@ -154,7 +168,7 @@ fn bench_bulk_insertion(c: &mut Criterion) {
 // ============================================================================
 
 /// Benchmark: Environment cloning cost
-/// Expected: ~100× faster clones on current branch (<50ns vs O(n))
+/// Expected: ~100x faster clones on current branch (<50ns vs O(n))
 fn bench_cow_clone(c: &mut Criterion) {
     let mut group = c.benchmark_group("cow_clone");
 
@@ -267,7 +281,7 @@ fn bench_rule_matching(c: &mut Criterion) {
 // ============================================================================
 
 /// Benchmark: Type lookup performance
-/// Expected: ~1.1× faster on current branch
+/// Expected: ~1.1x faster on current branch
 fn bench_type_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("type_lookup");
 
@@ -309,31 +323,37 @@ fn bench_evaluation(c: &mut Criterion) {
     let mut group = c.benchmark_group("evaluation");
 
     // Simple arithmetic
-    let simple_expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("+".to_string()),
-        MettaValue::Long(40),
-        MettaValue::Long(2),
-    ]);
+    let simple_text = "(+ 40 2)";
+    let simple_state = compile_arena(simple_text).expect("Failed to compile");
 
     group.bench_function("simple_arithmetic", |b| {
-        let env = HeapEnvironment::default();
         b.iter(|| {
-            let result = eval(black_box(simple_expr.clone()), black_box(env.clone()));
+            let env = new_arena_env();
+            let (result, _) = eval_arena(
+                black_box(simple_state.source()[0]),
+                black_box(env),
+                black_box(&simple_state),
+            );
             black_box(result);
         });
     });
 
     // Nested arithmetic (sequential evaluation)
     for depth in [3, 5, 7].iter() {
-        let nested_expr = generate_nested_expr(*depth);
+        let nested_text = generate_nested_text(*depth);
+        let nested_state = compile_arena(&nested_text).expect("Failed to compile");
 
         group.bench_with_input(
             BenchmarkId::new("nested_arithmetic", depth),
             depth,
             |b, _| {
-                let env = HeapEnvironment::default();
                 b.iter(|| {
-                    let result = eval(black_box(nested_expr.clone()), black_box(env.clone()));
+                    let env = new_arena_env();
+                    let (result, _) = eval_arena(
+                        black_box(nested_state.source()[0]),
+                        black_box(env),
+                        black_box(&nested_state),
+                    );
                     black_box(result);
                 });
             },

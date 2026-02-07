@@ -21,7 +21,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use mettatron::backend::environment::HeapEnvironment;
-use mettatron::backend::{MettaValue, Rule};
+use mettatron::backend::{MettaValue, MettaValueInner, Rule};
 
 // ================================================================================================
 // Helper Functions
@@ -293,15 +293,22 @@ fn bench_cow_clone_after_new_data(c: &mut Criterion) {
 
     for size in [100, 500, 1000].iter() {
         let facts1 = create_test_facts(*size);
-        let mut facts2 = create_test_facts(*size);
-        // Make facts2 different
-        for fact in &mut facts2 {
-            if let MettaValue::SExpr(ref mut items) = fact {
-                if items.len() >= 2 {
-                    items[1] = MettaValue::Long(999999);
+        let facts2: Vec<MettaValue> = create_test_facts(*size)
+            .into_iter()
+            .map(|fact| {
+                if let MettaValueInner::SExpr(items) = fact.inner() {
+                    if items.len() >= 2 {
+                        let mut new_items: Vec<MettaValue> = items.clone();
+                        new_items[1] = MettaValue::Long(999999);
+                        MettaValue::SExpr(new_items)
+                    } else {
+                        fact
+                    }
+                } else {
+                    fact
                 }
-            }
-        }
+            })
+            .collect();
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
@@ -352,17 +359,21 @@ fn bench_type_lookup_after_new_facts(c: &mut Criterion) {
 
     for size in [100, 500, 1000].iter() {
         let type_facts1 = create_test_type_facts(*size);
-        let mut type_facts2 = create_test_type_facts(*size);
-        // Make type_facts2 different
-        for fact in &mut type_facts2 {
-            if let MettaValue::SExpr(ref mut items) = fact {
-                if items.len() >= 2 {
-                    if let MettaValue::Atom(ref mut name) = items[1] {
-                        *name = format!("{}_new", name);
+        let type_facts2: Vec<MettaValue> = create_test_type_facts(*size)
+            .into_iter()
+            .map(|fact| {
+                if let MettaValueInner::SExpr(items) = fact.inner() {
+                    if items.len() >= 2 {
+                        if let MettaValueInner::Atom(name) = items[1].inner() {
+                            let mut new_items: Vec<MettaValue> = items.clone();
+                            new_items[1] = MettaValue::Atom(format!("{}_new", name));
+                            return MettaValue::SExpr(new_items);
+                        }
                     }
                 }
-            }
-        }
+                fact
+            })
+            .collect();
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {

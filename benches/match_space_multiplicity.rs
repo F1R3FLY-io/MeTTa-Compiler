@@ -12,9 +12,7 @@
 //! ```
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::compile::compile;
 use mettatron::backend::environment::HeapEnvironment;
-use mettatron::backend::eval::eval;
 use mettatron::backend::MettaValue;
 use std::time::Duration;
 
@@ -31,16 +29,16 @@ fn bench_match_space_single_multiplicity(c: &mut Criterion) {
 
     // Reduced ranges to avoid OOM: [100, 500, 1000, 5000] -> [50, 100, 200, 500]
     for atom_count in [50, 100, 200, 500].iter() {
-        // Pre-populate environment with atoms
-        let env = HeapEnvironment::default();
+        // Pre-populate environment with atoms directly
+        let mut env = HeapEnvironment::default();
 
-        // Add unique atoms to the Space
         for i in 0..*atom_count {
-            let fact_src = format!("!(add-atom &space (fact {} value-{}))", i, i);
-            let fact_state = compile(&fact_src).expect("Failed to compile fact");
-            for fact_expr in fact_state.source {
-                eval(fact_expr, env.clone());
-            }
+            let fact = MettaValue::SExpr(vec![
+                MettaValue::Atom("fact".to_string()),
+                MettaValue::Long(i as i64),
+                MettaValue::Atom(format!("value-{}", i)),
+            ]);
+            env.add_to_space(&fact);
         }
 
         // Pattern that matches all facts: (fact $x $y)
@@ -98,16 +96,17 @@ fn bench_match_space_high_multiplicity(c: &mut Criterion) {
 
     // Test with different multiplicities - reduced to avoid OOM: [1, 2, 5, 10] -> [1, 2, 3, 5]
     for multiplicity in [1, 2, 3, 5].iter() {
-        let env = HeapEnvironment::default();
+        let mut env = HeapEnvironment::default();
 
         // Reduced unique atom count to avoid OOM: 100 -> 50
         for i in 0..50 {
             for _ in 0..*multiplicity {
-                let fact_src = format!("!(add-atom &space (data {} info-{}))", i, i);
-                let fact_state = compile(&fact_src).expect("Failed to compile fact");
-                for fact_expr in fact_state.source {
-                    eval(fact_expr, env.clone());
-                }
+                let fact = MettaValue::SExpr(vec![
+                    MettaValue::Atom("data".to_string()),
+                    MettaValue::Long(i as i64),
+                    MettaValue::Atom(format!("info-{}", i)),
+                ]);
+                env.add_to_space(&fact);
             }
         }
 
@@ -136,16 +135,17 @@ fn bench_match_space_high_multiplicity(c: &mut Criterion) {
     // Reduced to avoid OOM: [50, 100, 500, 1000] -> [25, 50, 100, 200]
     // Reduced multiplicity: 5 -> 3
     for atom_count in [25, 50, 100, 200].iter() {
-        let env = HeapEnvironment::default();
+        let mut env = HeapEnvironment::default();
         let multiplicity = 3;
 
         for i in 0..*atom_count {
             for _ in 0..multiplicity {
-                let fact_src = format!("!(add-atom &space (item {} val-{}))", i, i);
-                let fact_state = compile(&fact_src).expect("Failed to compile fact");
-                for fact_expr in fact_state.source {
-                    eval(fact_expr, env.clone());
-                }
+                let fact = MettaValue::SExpr(vec![
+                    MettaValue::Atom("item".to_string()),
+                    MettaValue::Long(i as i64),
+                    MettaValue::Atom(format!("val-{}", i)),
+                ]);
+                env.add_to_space(&fact);
             }
         }
 
@@ -179,15 +179,16 @@ fn bench_match_space_first(c: &mut Criterion) {
 
     // Reduced ranges to avoid OOM: [100, 500, 1000, 5000] -> [50, 100, 200, 500]
     for atom_count in [50, 100, 200, 500].iter() {
-        let env = HeapEnvironment::default();
+        let mut env = HeapEnvironment::default();
 
         // Add atoms - target is in the middle
         for i in 0..*atom_count {
-            let fact_src = format!("!(add-atom &space (entry {} data-{}))", i, i);
-            let fact_state = compile(&fact_src).expect("Failed to compile fact");
-            for fact_expr in fact_state.source {
-                eval(fact_expr, env.clone());
-            }
+            let fact = MettaValue::SExpr(vec![
+                MettaValue::Atom("entry".to_string()),
+                MettaValue::Long(i as i64),
+                MettaValue::Atom(format!("data-{}", i)),
+            ]);
+            env.add_to_space(&fact);
         }
 
         // Pattern that matches first atom
@@ -261,14 +262,15 @@ fn bench_match_space_exists(c: &mut Criterion) {
 
     // Reduced ranges to avoid OOM: [100, 500, 1000, 5000] -> [50, 100, 200, 500]
     for atom_count in [50, 100, 200, 500].iter() {
-        let env = HeapEnvironment::default();
+        let mut env = HeapEnvironment::default();
 
         for i in 0..*atom_count {
-            let fact_src = format!("!(add-atom &space (record {} field-{}))", i, i);
-            let fact_state = compile(&fact_src).expect("Failed to compile fact");
-            for fact_expr in fact_state.source {
-                eval(fact_expr, env.clone());
-            }
+            let fact = MettaValue::SExpr(vec![
+                MettaValue::Atom("record".to_string()),
+                MettaValue::Long(i as i64),
+                MettaValue::Atom(format!("field-{}", i)),
+            ]);
+            env.add_to_space(&fact);
         }
 
         // Check existence of first record

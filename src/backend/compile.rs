@@ -695,18 +695,21 @@ mod tests {
 
     #[test]
     fn test_error_with_atom_message() {
-        use crate::backend::compile::compile;
-        use crate::backend::eval::eval;
+        use crate::backend::compile::compile_arena;
+        use crate::backend::eval::eval_arena;
+        use crate::backend::eval::trampoline::new_arena_env;
+        use crate::backend::models::ArenaValueInner;
 
-        let input = r#"(error failure-code 42)"#;
-        let state = compile(input).unwrap();
-        let (results, _env) = eval(state.source[0].clone(), state.environment);
+        let input = r#"!(error failure-code 42)"#;
+        let state = compile_arena(input).expect("compile failed");
+        let env = new_arena_env();
+        let (results, _env) = eval_arena(state.source()[0], env, &state);
 
         assert_eq!(results.len(), 1);
-        if let MettaValueInner::Error(msg, _) = results[0].inner() {
-            assert_eq!(msg, "failure-code");
+        if let ArenaValueInner::Error(msg, _) = results[0].inner() {
+            assert_eq!(*msg, "failure-code");
         } else {
-            panic!("Expected error");
+            panic!("Expected error, got: {:?}", results[0]);
         }
     }
 

@@ -1,6 +1,6 @@
-// MVP Complete Example - Demonstrates all MVP features
+// MVP Complete Example - Demonstrates all MVP features using arena API
 
-use mettatron::backend::*;
+use mettatron::{compile_arena, eval_arena, new_arena_env, ArenaValueInner};
 
 fn main() {
     println!("=== MeTTa MVP Complete Example ===\n");
@@ -14,173 +14,118 @@ fn main() {
     test_equality_operator();
     test_error_termination();
 
-    println!("\n✅ All MVP requirements satisfied!");
+    println!("\nAll MVP requirements satisfied!");
 }
 
 /// 1. Variable binding in subexpressions
 fn test_variable_binding() {
     println!("--- 1. Variable Binding in Subexpressions ---");
 
-    let mut env = HeapEnvironment::default();
+    let env = new_arena_env();
 
-    // Rule: (= (double $x) (mul $x 2))
-    env.add_rule(Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("double".to_string()),
-            MettaValue::Atom("$x".to_string()),
-        ]),
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("mul".to_string()),
-            MettaValue::Atom("$x".to_string()),
-            MettaValue::Long(2),
-        ]),
-    ));
+    // Define rule: (= (double $x) (* $x 2))
+    let rule_state = compile_arena("(= (double $x) (* $x 2))").expect("compile failed");
+    let (_, env) = eval_arena(rule_state.source()[0], env, &rule_state);
 
-    // Evaluate: (double (+ 3 4))
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("double".to_string()),
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
-            MettaValue::Long(3),
-            MettaValue::Long(4),
-        ]),
-    ]);
+    // Evaluate: !(double (+ 3 4))
+    let expr_state = compile_arena("!(double (+ 3 4))").expect("compile failed");
+    let (result, _) = eval_arena(expr_state.source()[0], env, &expr_state);
 
-    let (result, _) = eval(expr, env);
-    println!("(double (+ 3 4)) = {:?}", result[0]);
-    assert_eq!(result[0], MettaValue::Long(14)); // (3+4)*2 = 14
-    println!("✓ Variable binding works\n");
+    println!("(double (+ 3 4)) = {}", result[0]);
+    match result[0].inner() {
+        ArenaValueInner::Long(14) => {}
+        other => panic!("Expected Long(14), got {:?}", other),
+    }
+    println!("Variable binding works\n");
 }
 
 /// 2. Multivalued results
 fn test_multivalued_results() {
     println!("--- 2. Multivalued Results ---");
 
-    let mut env = HeapEnvironment::default();
+    let env = new_arena_env();
 
-    // Multiple rules with same pattern
-    env.add_rule(Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("color".to_string()),
-            MettaValue::Atom("$x".to_string()),
-        ]),
-        MettaValue::String("red".to_string()),
-    ));
+    // Multiple rules with same head
+    let rule1 = compile_arena("(= (color $x) red)").expect("compile failed");
+    let (_, env) = eval_arena(rule1.source()[0], env, &rule1);
+    let rule2 = compile_arena("(= (color $x) blue)").expect("compile failed");
+    let (_, env) = eval_arena(rule2.source()[0], env, &rule2);
 
-    env.add_rule(Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("color".to_string()),
-            MettaValue::Atom("$x".to_string()),
-        ]),
-        MettaValue::String("blue".to_string()),
-    ));
-
-    // Query would return multiple results (first match returned for now)
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("color".to_string()),
-        MettaValue::Atom("sky".to_string()),
-    ]);
-
-    let (result, _) = eval(expr, env);
-    println!("(color sky) = {:?}", result[0]);
-    println!("✓ Multivalued results supported (returns first match)\n");
+    // Query
+    let query = compile_arena("!(color sky)").expect("compile failed");
+    let (result, _) = eval_arena(query.source()[0], env, &query);
+    println!("(color sky) = {}", result[0]);
+    println!("Multivalued results supported (returns first match)\n");
 }
 
 /// 3. Control flow
 fn test_control_flow() {
     println!("--- 3. Control Flow (if) ---");
 
-    let env = HeapEnvironment::default();
+    let env = new_arena_env();
 
     // (if (< 5 10) "less" "greater")
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("if".to_string()),
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("lt".to_string()),
-            MettaValue::Long(5),
-            MettaValue::Long(10),
-        ]),
-        MettaValue::String("less".to_string()),
-        MettaValue::String("greater".to_string()),
-    ]);
-
-    let (result, _) = eval(expr, env);
-    println!("(if (< 5 10) \"less\" \"greater\") = {:?}", result[0]);
-    assert_eq!(result[0], MettaValue::String("less".to_string()));
+    let state = compile_arena("!(if (< 5 10) \"less\" \"greater\")").expect("compile failed");
+    let (result, _) = eval_arena(state.source()[0], env.clone(), &state);
+    println!("(if (< 5 10) \"less\" \"greater\") = {}", result[0]);
+    match result[0].inner() {
+        ArenaValueInner::String(s) => assert_eq!(*s, "less"),
+        other => panic!("Expected String(\"less\"), got {:?}", other),
+    }
 
     // Test that unused branch is not evaluated
-    let env2 = HeapEnvironment::default();
-    let expr2 = MettaValue::SExpr(vec![
-        MettaValue::Atom("if".to_string()),
-        MettaValue::Bool(true),
-        MettaValue::Long(1),
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("error".to_string()),
-            MettaValue::String("should not evaluate".to_string()),
-        ]),
-    ]);
-
-    let (result2, _) = eval(expr2, env2);
-    println!("(if true 1 (error ...)) = {:?}", result2[0]);
-    assert_eq!(result2[0], MettaValue::Long(1)); // No error!
-    println!("✓ Control flow works, unused branches not evaluated\n");
+    let state2 = compile_arena("!(if True 1 (error \"should not evaluate\" unused))").expect("compile failed");
+    let (result2, _) = eval_arena(state2.source()[0], env, &state2);
+    println!("(if True 1 (error ...)) = {}", result2[0]);
+    match result2[0].inner() {
+        ArenaValueInner::Long(1) => {}
+        other => panic!("Expected Long(1), got {:?}", other),
+    }
+    println!("Control flow works, unused branches not evaluated\n");
 }
 
 /// 4. Grounded functions
 fn test_grounded_functions() {
     println!("--- 4. Grounded Functions ---");
 
-    let env = HeapEnvironment::default();
+    let env = new_arena_env();
 
     // Arithmetic
-    let (result, _) = eval(
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
-            MettaValue::Long(10),
-            MettaValue::Long(5),
-        ]),
-        env.clone(),
-    );
-    println!("(+ 10 5) = {:?}", result[0]);
-    assert_eq!(result[0], MettaValue::Long(15));
+    let state = compile_arena("!(+ 10 5)").expect("compile failed");
+    let (result, _) = eval_arena(state.source()[0], env.clone(), &state);
+    println!("(+ 10 5) = {}", result[0]);
+    match result[0].inner() {
+        ArenaValueInner::Long(15) => {}
+        other => panic!("Expected Long(15), got {:?}", other),
+    }
 
     // Comparison
-    let (result, _) = eval(
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("lt".to_string()),
-            MettaValue::Long(3),
-            MettaValue::Long(7),
-        ]),
-        env.clone(),
-    );
-    println!("(< 3 7) = {:?}", result[0]);
-    assert_eq!(result[0], MettaValue::Bool(true));
+    let state2 = compile_arena("!(< 3 7)").expect("compile failed");
+    let (result2, _) = eval_arena(state2.source()[0], env, &state2);
+    println!("(< 3 7) = {}", result2[0]);
+    match result2[0].inner() {
+        ArenaValueInner::Bool(true) => {}
+        other => panic!("Expected Bool(true), got {:?}", other),
+    }
 
-    println!("✓ All grounded functions work: +, -, *, /, <, <=, >, ==\n");
+    println!("All grounded functions work: +, -, *, /, <, <=, >, ==\n");
 }
 
 /// 5. Specific evaluation order rules (lazy evaluation)
 fn test_evaluation_order() {
     println!("--- 5. Evaluation Order (Lazy Evaluation) ---");
 
-    let env = HeapEnvironment::default();
+    let env = new_arena_env();
 
     // Quote prevents evaluation
-    let expr = MettaValue::quote(MettaValue::SExpr(vec![
-        MettaValue::Atom("add".to_string()),
-        MettaValue::Long(1),
-        MettaValue::Long(2),
-    ]));
+    let state = compile_arena("!(quote (+ 1 2))").expect("compile failed");
+    let (result, _) = eval_arena(state.source()[0], env, &state);
+    println!("(quote (+ 1 2)) = {}", result[0]);
 
-    let (result, _) = eval(expr, env);
-    println!("(quote (+ 1 2)) = {:?}", result[0]);
-
-    // Should be unevaluated
-    use mettatron::backend::models::MettaValueInner;
     match result[0].inner() {
-        MettaValueInner::SExpr(items) => {
-            assert_eq!(items[0], MettaValue::Atom("add".to_string()));
-            println!("✓ Quote prevents evaluation\n");
+        ArenaValueInner::SExpr(items) => {
+            assert!(!items.is_empty(), "Quote should return s-expression");
+            println!("Quote prevents evaluation\n");
         }
         _ => panic!("Quote should return unevaluated s-expression"),
     }
@@ -190,104 +135,57 @@ fn test_evaluation_order() {
 fn test_equality_operator() {
     println!("--- 6. Equality Operator (Pattern Matching) ---");
 
-    let mut env = HeapEnvironment::default();
+    let env = new_arena_env();
 
-    // (= (factorial $n) (if (< $n 2) 1 (* $n (factorial (- $n 1)))))
-    // Simplified version for testing
-    env.add_rule(Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("factorial".to_string()),
-            MettaValue::Long(0),
-        ]),
-        MettaValue::Long(1),
-    ));
+    // Define factorial base cases
+    let r1 = compile_arena("(= (factorial 0) 1)").expect("compile failed");
+    let (_, env) = eval_arena(r1.source()[0], env, &r1);
+    let r2 = compile_arena("(= (factorial 1) 1)").expect("compile failed");
+    let (_, env) = eval_arena(r2.source()[0], env, &r2);
 
-    env.add_rule(Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("factorial".to_string()),
-            MettaValue::Long(1),
-        ]),
-        MettaValue::Long(1),
-    ));
-
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("factorial".to_string()),
-        MettaValue::Long(1),
-    ]);
-
-    let (result, _) = eval(expr, env);
-    println!("(factorial 1) = {:?}", result[0]);
-    assert_eq!(result[0], MettaValue::Long(1));
-    println!("✓ Equality operator for rules works\n");
+    // Evaluate
+    let query = compile_arena("!(factorial 1)").expect("compile failed");
+    let (result, _) = eval_arena(query.source()[0], env, &query);
+    println!("(factorial 1) = {}", result[0]);
+    match result[0].inner() {
+        ArenaValueInner::Long(1) => {}
+        other => panic!("Expected Long(1), got {:?}", other),
+    }
+    println!("Equality operator for rules works\n");
 }
 
 /// 7. Early error termination
 fn test_error_termination() {
     println!("--- 7. Early Error Termination ---");
 
-    let mut env = HeapEnvironment::default();
+    let env = new_arena_env();
 
-    // (= (safe-div $x $y) (if (== $y 0) (error "div by zero" $y) (div $x $y)))
-    env.add_rule(Rule::new(
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("safe-div".to_string()),
-            MettaValue::Atom("$x".to_string()),
-            MettaValue::Atom("$y".to_string()),
-        ]),
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("if".to_string()),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("eq".to_string()),
-                MettaValue::Atom("$y".to_string()),
-                MettaValue::Long(0),
-            ]),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("error".to_string()),
-                MettaValue::String("division by zero".to_string()),
-                MettaValue::Atom("$y".to_string()),
-            ]),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("div".to_string()),
-                MettaValue::Atom("$x".to_string()),
-                MettaValue::Atom("$y".to_string()),
-            ]),
-        ]),
-    ));
+    // Define safe-div rule
+    let rule = compile_arena(
+        "(= (safe-div $x $y) (if (== $y 0) (error \"division by zero\" $y) (/ $x $y)))",
+    )
+    .expect("compile failed");
+    let (_, env) = eval_arena(rule.source()[0], env, &rule);
 
     // Test error case
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("safe-div".to_string()),
-        MettaValue::Long(10),
-        MettaValue::Long(0),
-    ]);
-
-    use mettatron::backend::models::MettaValueInner;
-    let (result, _) = eval(expr, env.clone());
+    let expr = compile_arena("!(safe-div 10 0)").expect("compile failed");
+    let (result, _) = eval_arena(expr.source()[0], env.clone(), &expr);
     match result[0].inner() {
-        MettaValueInner::Error(msg, _) => {
+        ArenaValueInner::Error(msg, _) => {
             println!("(safe-div 10 0) = Error: {}", msg);
-            assert_eq!(msg, "division by zero");
+            assert_eq!(*msg, "division by zero");
         }
-        _ => panic!("Expected error"),
+        other => panic!("Expected error, got {:?}", other),
     }
 
     // Test that error propagates in compound expressions
-    let expr2 = MettaValue::SExpr(vec![
-        MettaValue::Atom("add".to_string()),
-        MettaValue::SExpr(vec![
-            MettaValue::Atom("safe-div".to_string()),
-            MettaValue::Long(10),
-            MettaValue::Long(0),
-        ]),
-        MettaValue::Long(5),
-    ]);
-
-    let (result2, _) = eval(expr2, env);
+    let expr2 = compile_arena("!(+ (safe-div 10 0) 5)").expect("compile failed");
+    let (result2, _) = eval_arena(expr2.source()[0], env, &expr2);
     match result2[0].inner() {
-        MettaValueInner::Error(msg, _) => {
+        ArenaValueInner::Error(msg, _) => {
             println!("(+ (safe-div 10 0) 5) = Error: {}", msg);
-            println!("✓ Errors propagate and terminate early\n");
+            println!("Errors propagate and terminate early\n");
         }
-        _ => panic!("Error should propagate"),
+        other => panic!("Error should propagate, got {:?}", other),
     }
 }

@@ -25,7 +25,7 @@ use bumpalo::Bump;
 
 use crate::backend::models::{ArenaState, ArenaValue};
 
-use super::context::{ArenaContext, ArenaEnvironment, StaticArenaContext};
+use super::context::{ArenaEnvironment, StaticArenaContext};
 use super::generic_trampoline::eval_trampoline_generic;
 use super::generic_types::GenericEvalResult;
 use super::session_context::SessionContext;
@@ -36,19 +36,6 @@ use super::session_context::SessionContext;
 /// - `Vec<ArenaValue<'static>>`: The evaluation results
 /// - `ArenaEnvironment`: The updated environment
 pub type ArenaEvalResult = GenericEvalResult<ArenaValue<'static>, ArenaEnvironment>;
-
-/// Create an arena context for short-lived operations.
-///
-/// Helper function to create an ArenaContext from a Bump arena.
-/// This is useful for operations that don't need the static arena,
-/// such as parsing or transformation within a specific scope.
-///
-/// For evaluation that requires storage in `GenericEnvironment`, use
-/// `SessionContext::new()` or `StaticArenaContext::get()` instead.
-#[inline]
-pub fn create_arena_context(arena: &Bump) -> ArenaContext<'_> {
-    ArenaContext::new(arena)
-}
 
 /// Zero-conversion arena evaluation using session-scoped dual-arena model.
 ///

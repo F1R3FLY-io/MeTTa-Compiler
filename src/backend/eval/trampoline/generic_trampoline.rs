@@ -16,10 +16,9 @@
 //!
 //! - `eval_trampoline_generic`: Generic evaluation for any `EvalContext`
 //!
-//! Both heap and arena modes use the SAME generic engine, differing only in:
-//! - The `EvalContext` implementation (HeapContext vs ArenaContext)
-//! - Value allocation strategy (Arc-wrapped vs arena-allocated)
-//! - Factory type (HeapMettaValueFactory vs ArenaValueFactory)
+//! The generic engine is parameterized by the `EvalContext` trait, which determines
+//! the value type and factory. The production implementation uses `StaticArenaContext`
+//! with arena-allocated `ArenaValue<'static>` values.
 
 use std::collections::VecDeque;
 
@@ -53,7 +52,7 @@ use super::super::processing::{
 ///
 /// # Type Parameters
 ///
-/// - `C`: The evaluation context (HeapContext or ArenaContext)
+/// - `C`: The evaluation context (e.g., `StaticArenaContext` or `SessionContext`)
 ///
 /// # Arguments
 ///

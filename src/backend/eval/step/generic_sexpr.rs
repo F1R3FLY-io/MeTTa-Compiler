@@ -40,7 +40,7 @@ use super::grounded::find_grounded_arg_indices_generic;
 ///
 /// # Type Parameters
 ///
-/// - `C`: The evaluation context (HeapContext or ArenaContext)
+/// - `C`: The evaluation context (e.g., `StaticArenaContext`)
 ///
 /// # Arguments
 ///
@@ -1431,14 +1431,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::environment::HeapEnvironment;
-    use crate::backend::eval::trampoline::HeapContext;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::eval::trampoline::StaticArenaContext;
+    use crate::backend::models::MettaValueFactory;
 
     #[test]
     fn test_eval_sexpr_step_generic_empty() {
-        let ctx = HeapContext;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let ctx = StaticArenaContext::get();
+        let env = StaticArenaContext::new_env();
 
         match eval_sexpr_step_generic(vec![], env, 0, &ctx) {
             GenericEvalStep::Done((results, _)) => {
@@ -1452,12 +1451,13 @@ mod tests {
 
     #[test]
     fn test_eval_sexpr_step_generic_quote() {
-        let ctx = HeapContext;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let ctx = StaticArenaContext::get();
+        let env = StaticArenaContext::new_env();
+        let factory = ctx.factory();
 
         let items = vec![
-            MettaValue::Atom("quote".to_string()),
-            MettaValue::Atom("foo".to_string()),
+            factory.atom("quote"),
+            factory.atom("foo"),
         ];
 
         match eval_sexpr_step_generic(items, env, 0, &ctx) {
@@ -1471,14 +1471,15 @@ mod tests {
 
     #[test]
     fn test_eval_sexpr_step_generic_if_returns_condition_step() {
-        let ctx = HeapContext;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let ctx = StaticArenaContext::get();
+        let env = StaticArenaContext::new_env();
+        let factory = ctx.factory();
 
         let items = vec![
-            MettaValue::Atom("if".to_string()),
-            MettaValue::Bool(true),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
+            factory.atom("if"),
+            factory.bool(true),
+            factory.long(1),
+            factory.long(2),
         ];
 
         match eval_sexpr_step_generic(items, env, 0, &ctx) {
@@ -1493,13 +1494,14 @@ mod tests {
 
     #[test]
     fn test_preprocess_space_refs_generic() {
-        let ctx = HeapContext;
+        let ctx = StaticArenaContext::get();
+        let factory = ctx.factory();
 
         let items = vec![
-            MettaValue::Atom("match".to_string()),
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("self".to_string()),
-            MettaValue::Atom("foo".to_string()),
+            factory.atom("match"),
+            factory.atom("&"),
+            factory.atom("self"),
+            factory.atom("foo"),
         ];
 
         let result = preprocess_space_refs_generic(items, &ctx);

@@ -144,49 +144,8 @@ fn write_output(output: Option<&str>, content: &str) -> Result<(), String> {
     }
 }
 
-fn format_result(value: &MettaValue) -> String {
-    match value.inner() {
-        MettaValueInner::Atom(s) => s.clone(),
-        MettaValueInner::Bool(b) => b.to_string(),
-        MettaValueInner::Long(n) => n.to_string(),
-        MettaValueInner::Float(f) => f.to_string(),
-        MettaValueInner::String(s) => format!("\"{}\"", s),
-        MettaValueInner::Nil => "Nil".to_string(),
-        MettaValueInner::Error(msg, details) => {
-            // Format as (Error "msg" details) to match MeTTa spec
-            format!("(Error {} {})", msg, format_result(details))
-        }
-        MettaValueInner::Type(t) => format!("Type({})", format_result(t)),
-        MettaValueInner::SExpr(items) => {
-            let formatted: Vec<String> = items.iter().map(format_result).collect();
-            format!("({})", formatted.join(" "))
-        }
-        MettaValueInner::Conjunction(goals) => {
-            let formatted: Vec<String> = goals.iter().map(format_result).collect();
-            format!("(, {})", formatted.join(" "))
-        }
-        MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-        MettaValueInner::State(id) => format!("(State {})", id),
-        MettaValueInner::Unit => "()".to_string(),
-        MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
-        MettaValueInner::Empty => "Empty".to_string(),
-    }
-}
-
-fn format_results(results: &[MettaValue]) -> String {
-    if results.is_empty() {
-        return "[]".to_string();
-    }
-    let formatted: Vec<String> = results.iter().map(format_result).collect();
-    format!("[{}]", formatted.join(", "))
-}
-
-// ============================================================================
-// Arena-based evaluation functions (zero-conversion path)
-// ============================================================================
-
-/// Format an ArenaValue result for display (mirrors format_result for MettaValue)
-fn format_result_arena(value: &ArenaValue) -> String {
+/// Format an ArenaValue result for display.
+fn format_result(value: &ArenaValue) -> String {
     match value.inner() {
         ArenaValueInner::Atom(s) => s.to_string(),
         ArenaValueInner::Bool(b) => b.to_string(),
@@ -195,15 +154,15 @@ fn format_result_arena(value: &ArenaValue) -> String {
         ArenaValueInner::String(s) => format!("\"{}\"", s),
         ArenaValueInner::Nil => "Nil".to_string(),
         ArenaValueInner::Error(msg, details) => {
-            format!("(Error {} {})", msg, format_result_arena(details))
+            format!("(Error {} {})", msg, format_result(details))
         }
-        ArenaValueInner::Type(t) => format!("Type({})", format_result_arena(t)),
+        ArenaValueInner::Type(t) => format!("Type({})", format_result(t)),
         ArenaValueInner::SExpr(items) => {
-            let formatted: Vec<String> = items.iter().map(format_result_arena).collect();
+            let formatted: Vec<String> = items.iter().map(format_result).collect();
             format!("({})", formatted.join(" "))
         }
         ArenaValueInner::Conjunction(goals) => {
-            let formatted: Vec<String> = goals.iter().map(format_result_arena).collect();
+            let formatted: Vec<String> = goals.iter().map(format_result).collect();
             format!("(, {})", formatted.join(" "))
         }
         ArenaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
@@ -214,11 +173,11 @@ fn format_result_arena(value: &ArenaValue) -> String {
     }
 }
 
-fn format_results_arena(results: &[ArenaValue]) -> String {
+fn format_results(results: &[ArenaValue]) -> String {
     if results.is_empty() {
         return "[]".to_string();
     }
-    let formatted: Vec<String> = results.iter().map(format_result_arena).collect();
+    let formatted: Vec<String> = results.iter().map(format_result).collect();
     format!("[{}]", formatted.join(", "))
 }
 
@@ -289,7 +248,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         // Print results with list notation (only for S-expressions)
         // HE-compatible: print [] for empty result sets
         if should_output {
-            output.push_str(&format!("{}\n", format_results_arena(&filtered_results)));
+            output.push_str(&format!("{}\n", format_results(&filtered_results)));
         }
     }
 
@@ -399,7 +358,7 @@ fn run_repl(options: &Options) {
                             // Print results with syntax highlighting (only for S-expressions)
                             // HE-compatible: print [] for empty result sets
                             if should_output {
-                                let output = format_results_arena(&filtered_results);
+                                let output = format_results(&filtered_results);
                                 let highlighted =
                                     highlight_output(&output, output_highlighter.as_ref());
                                 println!("{}", highlighted);

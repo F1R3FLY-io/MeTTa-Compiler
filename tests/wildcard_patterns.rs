@@ -2,88 +2,99 @@
 //!
 //! Tests that wildcard patterns ($_ and _) work correctly in all contexts
 
-use mettatron::backend::compile::compile;
-use mettatron::backend::environment::HeapEnvironment;
-use mettatron::backend::eval::eval;
+use mettatron::{compile_arena, eval_arena, new_arena_env};
 
 #[test]
 fn test_underscore_wildcard() {
-    let mut env = HeapEnvironment::default();
+    let mut env = new_arena_env();
 
-    // Add facts
-    env.add_to_space(&compile("(data 1 foo)").unwrap().source[0]);
-    env.add_to_space(&compile("(data 2 bar)").unwrap().source[0]);
-    env.add_to_space(&compile("(data 3 baz)").unwrap().source[0]);
+    // Add facts (each compile_arena creates an ArenaState that must stay alive)
+    let fact1 = compile_arena("(data 1 foo)").expect("compile failed");
+    let fact2 = compile_arena("(data 2 bar)").expect("compile failed");
+    let fact3 = compile_arena("(data 3 baz)").expect("compile failed");
+    env.add_to_space(&fact1.source()[0]);
+    env.add_to_space(&fact2.source()[0]);
+    env.add_to_space(&fact3.source()[0]);
 
     // Match with underscore wildcard (should match anything, but not bind)
-    let query = compile("(match &self (data _ $value) $value)").unwrap();
-    let (results, _) = eval(query.source[0].clone(), env);
+    let query_state = compile_arena("(match &self (data _ $value) $value)").expect("compile failed");
+    let (results, _) = eval_arena(query_state.source()[0], env, &query_state);
 
     assert_eq!(results.len(), 3, "Should match all three facts");
 }
 
 #[test]
 fn test_dollar_underscore_wildcard() {
-    let mut env = HeapEnvironment::default();
+    let mut env = new_arena_env();
 
     // Add generation facts like in ancestor.mm2 line 38
-    env.add_to_space(&compile("(generation Z Alice Bob)").unwrap().source[0]);
-    env.add_to_space(&compile("(generation (S Z) Bob Carol)").unwrap().source[0]);
-    env.add_to_space(&compile("(generation (S (S Z)) Carol Dave)").unwrap().source[0]);
+    let fact1 = compile_arena("(generation Z Alice Bob)").expect("compile failed");
+    let fact2 = compile_arena("(generation (S Z) Bob Carol)").expect("compile failed");
+    let fact3 = compile_arena("(generation (S (S Z)) Carol Dave)").expect("compile failed");
+    env.add_to_space(&fact1.source()[0]);
+    env.add_to_space(&fact2.source()[0]);
+    env.add_to_space(&fact3.source()[0]);
 
     // Match with $_ wildcard (should match anything and bind, but value is ignored)
-    let query = compile("(match &self (generation $_ $p $a) (ancestor $p $a))").unwrap();
-    let (results, _) = eval(query.source[0].clone(), env);
+    let query_state = compile_arena("(match &self (generation $_ $p $a) (ancestor $p $a))").expect("compile failed");
+    let (results, _) = eval_arena(query_state.source()[0], env, &query_state);
 
     assert_eq!(results.len(), 3, "Should match all generation levels");
 }
 
 #[test]
 fn test_multiple_wildcards() {
-    let mut env = HeapEnvironment::default();
+    let mut env = new_arena_env();
 
     // Add facts with multiple fields
-    env.add_to_space(&compile("(record 1 foo 100 alpha)").unwrap().source[0]);
-    env.add_to_space(&compile("(record 2 bar 200 beta)").unwrap().source[0]);
+    let fact1 = compile_arena("(record 1 foo 100 alpha)").expect("compile failed");
+    let fact2 = compile_arena("(record 2 bar 200 beta)").expect("compile failed");
+    env.add_to_space(&fact1.source()[0]);
+    env.add_to_space(&fact2.source()[0]);
 
     // Match with multiple wildcards
-    let query = compile("(match &self (record _ $name _ $code) (item $name $code))").unwrap();
-    let (results, _) = eval(query.source[0].clone(), env);
+    let query_state = compile_arena("(match &self (record _ $name _ $code) (item $name $code))").expect("compile failed");
+    let (results, _) = eval_arena(query_state.source()[0], env, &query_state);
 
     assert_eq!(results.len(), 2, "Should match both records");
 }
 
 #[test]
 fn test_wildcard_in_nested_pattern() {
-    let mut env = HeapEnvironment::default();
+    let mut env = new_arena_env();
 
     // Add nested facts
-    env.add_to_space(&compile("(data (info 1 foo) result)").unwrap().source[0]);
-    env.add_to_space(&compile("(data (info 2 bar) result)").unwrap().source[0]);
+    let fact1 = compile_arena("(data (info 1 foo) result)").expect("compile failed");
+    let fact2 = compile_arena("(data (info 2 bar) result)").expect("compile failed");
+    env.add_to_space(&fact1.source()[0]);
+    env.add_to_space(&fact2.source()[0]);
 
     // Match with wildcard in nested position
-    let query = compile("(match &self (data (info _ $x) result) $x)").unwrap();
-    let (results, _) = eval(query.source[0].clone(), env);
+    let query_state = compile_arena("(match &self (data (info _ $x) result) $x)").expect("compile failed");
+    let (results, _) = eval_arena(query_state.source()[0], env, &query_state);
 
     assert_eq!(results.len(), 2, "Should match both nested patterns");
 }
 
 #[test]
 fn test_wildcard_vs_variable() {
-    let mut env = HeapEnvironment::default();
+    let mut env = new_arena_env();
 
     // Add facts
-    env.add_to_space(&compile("(pair 1 1)").unwrap().source[0]);
-    env.add_to_space(&compile("(pair 1 2)").unwrap().source[0]);
-    env.add_to_space(&compile("(pair 2 2)").unwrap().source[0]);
+    let fact1 = compile_arena("(pair 1 1)").expect("compile failed");
+    let fact2 = compile_arena("(pair 1 2)").expect("compile failed");
+    let fact3 = compile_arena("(pair 2 2)").expect("compile failed");
+    env.add_to_space(&fact1.source()[0]);
+    env.add_to_space(&fact2.source()[0]);
+    env.add_to_space(&fact3.source()[0]);
 
     // Match with variable (requires both to be same)
-    let query1 = compile("(match &self (pair $x $x) (same $x))").unwrap();
-    let (results1, _) = eval(query1.source[0].clone(), env.clone());
+    let query1_state = compile_arena("(match &self (pair $x $x) (same $x))").expect("compile failed");
+    let (results1, _) = eval_arena(query1_state.source()[0], env.clone(), &query1_state);
     assert_eq!(results1.len(), 2, "Should match pairs with same values");
 
     // Match with wildcard (ignores first value)
-    let query2 = compile("(match &self (pair _ $y) $y)").unwrap();
-    let (results2, _) = eval(query2.source[0].clone(), env);
+    let query2_state = compile_arena("(match &self (pair _ $y) $y)").expect("compile failed");
+    let (results2, _) = eval_arena(query2_state.source()[0], env, &query2_state);
     assert_eq!(results2.len(), 3, "Should match all pairs");
 }

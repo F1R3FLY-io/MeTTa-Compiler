@@ -1,23 +1,25 @@
-// Interactive MeTTa REPL using the new backend
+// Interactive MeTTa REPL using the arena-based backend
 
-use mettatron::backend::*;
+use mettatron::{compile_arena, eval_arena, new_arena_env, ArenaValueInner};
 use std::io::{self, Write};
 
 fn main() {
     println!("=== MeTTa Backend REPL ===");
     println!("Enter MeTTa expressions. Type 'exit' to quit.\n");
 
-    let mut env = HeapEnvironment::default();
+    let mut env = new_arena_env();
     let mut line_num = 1;
 
     loop {
         // Print prompt
         print!("metta[{}]> ", line_num);
-        io::stdout().flush().unwrap();
+        io::stdout().flush().expect("failed to flush stdout");
 
         // Read input
         let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
+        io::stdin()
+            .read_line(&mut input)
+            .expect("failed to read line");
         let input = input.trim();
 
         // Check for exit
@@ -31,19 +33,19 @@ fn main() {
         }
 
         // Compile and evaluate
-        match compile(input) {
+        match compile_arena(input) {
             Ok(state) => {
-                // Merge new environment
-                env = env.union(&state.environment);
-
                 // Evaluate each expression
-                for sexpr in state.source {
-                    let (results, updated_env) = eval(sexpr.clone(), env.clone());
+                for &expr in state.source() {
+                    let (results, updated_env) = eval_arena(expr, env.clone(), &state);
                     env = updated_env;
 
                     // Print results
-                    for result in results {
-                        println!("{:?}", result);
+                    for result in &results {
+                        match result.inner() {
+                            ArenaValueInner::Nil => {}
+                            _ => println!("{}", result),
+                        }
                     }
                 }
             }

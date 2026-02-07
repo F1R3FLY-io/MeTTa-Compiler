@@ -13,7 +13,7 @@ use crate::backend::fuzzy_match::SuggestionConfidence;
 use crate::backend::models::{MettaValue, MettaValueInner};
 
 #[cfg(feature = "fuzzy-suggestions")]
-use super::super::suggest_special_form_with_context;
+use crate::backend::eval::helpers::suggest_special_form_with_context;
 
 /// Handle the case where no rule matches an s-expression
 ///

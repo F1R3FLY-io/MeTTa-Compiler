@@ -9,7 +9,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use mettatron::backend::models::{MettaValue, Rule};
 use mettatron::backend::HeapEnvironment;
-use std::sync::Arc;
+
 
 // ============================================================================
 // Helper Functions
@@ -17,24 +17,24 @@ use std::sync::Arc;
 
 /// Create a test rule for benchmarking with varying structure
 fn make_test_rule(pattern: &str, body: &str) -> Rule {
-    Rule::from_arc(
-        Arc::new(MettaValue::sym(pattern)),
-        Arc::new(MettaValue::sym(body)),
+    Rule::new(
+        MettaValue::sym(pattern),
+        MettaValue::sym(body),
     )
 }
 
 /// Create a rule with S-expression structure (more realistic)
 fn make_sexpr_rule(head: &str, idx: usize) -> Rule {
-    Rule::from_arc(
-        Arc::new(MettaValue::sexpr(vec![
+    Rule::new(
+        MettaValue::sexpr(vec![
             MettaValue::sym(head),
             MettaValue::sym(&format!("arg{}", idx)),
             MettaValue::var(&format!("x{}", idx)),
-        ])),
-        Arc::new(MettaValue::sexpr(vec![
+        ]),
+        MettaValue::sexpr(vec![
             MettaValue::sym("result"),
             MettaValue::var(&format!("x{}", idx)),
-        ])),
+        ]),
     )
 }
 

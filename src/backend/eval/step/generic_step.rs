@@ -31,7 +31,7 @@ use super::generic_types::GenericEvalStep;
 ///
 /// # Type Parameters
 ///
-/// - `C`: The evaluation context (HeapContext or ArenaContext)
+/// - `C`: The evaluation context (e.g., `StaticArenaContext`)
 ///
 /// # Arguments
 ///
@@ -142,18 +142,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::environment::HeapEnvironment;
-    use crate::backend::eval::trampoline::HeapContext;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::eval::trampoline::StaticArenaContext;
+    use crate::backend::models::MettaValueFactory;
 
     #[test]
     fn test_eval_step_generic_ground_types() {
-        let ctx = HeapContext;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let ctx = StaticArenaContext::get();
+        let env = StaticArenaContext::new_env();
+        let factory = ctx.factory();
 
         // Bool
-        let value = MettaValue::Bool(true);
-        match eval_step_generic(value.clone(), env.clone(), 0, &ctx) {
+        let value = factory.bool(true);
+        match eval_step_generic(value, env.clone(), 0, &ctx) {
             GenericEvalStep::Done((results, _)) => {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].as_bool(), Some(true));
@@ -162,8 +162,8 @@ mod tests {
         }
 
         // Long
-        let value = MettaValue::Long(42);
-        match eval_step_generic(value.clone(), env.clone(), 0, &ctx) {
+        let value = factory.long(42);
+        match eval_step_generic(value, env.clone(), 0, &ctx) {
             GenericEvalStep::Done((results, _)) => {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].as_long(), Some(42));
@@ -174,11 +174,12 @@ mod tests {
 
     #[test]
     fn test_eval_step_generic_atom() {
-        let ctx = HeapContext;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let ctx = StaticArenaContext::get();
+        let env = StaticArenaContext::new_env();
+        let factory = ctx.factory();
 
-        let value = MettaValue::Atom("foo".to_string());
-        match eval_step_generic(value.clone(), env.clone(), 0, &ctx) {
+        let value = factory.atom("foo");
+        match eval_step_generic(value, env.clone(), 0, &ctx) {
             GenericEvalStep::Done((results, _)) => {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].as_atom(), Some("foo"));
@@ -189,14 +190,15 @@ mod tests {
 
     #[test]
     fn test_eval_step_generic_sexpr() {
-        let ctx = HeapContext;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let ctx = StaticArenaContext::get();
+        let env = StaticArenaContext::new_env();
+        let factory = ctx.factory();
 
         // S-expression should dispatch to eval_sexpr_step_generic
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
+        let value = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
         ]);
         let result = eval_step_generic(value, env, 0, &ctx);
         // Should return some step that's not Done (needs more work)
@@ -213,14 +215,12 @@ mod tests {
 
     #[test]
     fn test_eval_step_generic_error_propagation() {
-        let ctx = HeapContext;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let ctx = StaticArenaContext::get();
+        let env = StaticArenaContext::new_env();
+        let factory = ctx.factory();
 
-        let error = MettaValue::Error(
-            "test error".to_string(),
-            MettaValue::Atom("TestError".to_string()),
-        );
-        match eval_step_generic(error.clone(), env, 0, &ctx) {
+        let error = factory.error("test error", factory.atom("TestError"));
+        match eval_step_generic(error, env, 0, &ctx) {
             GenericEvalStep::Done((results, _)) => {
                 assert_eq!(results.len(), 1);
                 assert!(results[0].is_error());
@@ -231,10 +231,11 @@ mod tests {
 
     #[test]
     fn test_eval_step_generic_empty() {
-        let ctx = HeapContext;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let ctx = StaticArenaContext::get();
+        let env = StaticArenaContext::new_env();
+        let factory = ctx.factory();
 
-        let value = MettaValue::Empty();
+        let value = factory.empty();
         match eval_step_generic(value, env, 0, &ctx) {
             GenericEvalStep::Done((results, _)) => {
                 assert!(results.is_empty());

@@ -7,69 +7,53 @@
 //! ## Generic Evaluation
 //!
 //! The evaluation engine is generic over the allocation strategy via the `EvalContext`
-//! trait. This enables writing evaluation logic once that works with both:
-//! - `HeapContext`: Standard heap-allocated MettaValue (Arc-wrapped)
-//! - `StaticArenaContext`: Arena-allocated ArenaValue with 'static lifetime
+//! trait. The production implementation uses `StaticArenaContext` with arena-allocated
+//! `ArenaValue<'static>` values.
 //!
 //! ## Unified Generic Engine
 //!
 //! The `generic_trampoline` module provides a truly generic engine that uses
 //! `GenericWorkItem<V>` and `GenericContinuation<V>`, enabling the same evaluation
-//! logic to work with both heap and arena allocation strategies.
+//! logic to work with any `EvalContext` implementation.
 //!
 //! ## Entry Points
 //!
-//! - `eval_trampoline`: Heap-based evaluation (MettaValue → MettaValue)
 //! - `eval_trampoline_arena`: Arena-based evaluation (ArenaValue<'static> → ArenaValue<'static>)
+//! - `eval_trampoline_generic`: Generic evaluation for any `EvalContext`
 //!
 //! ## Zero-Conversion Architecture
 //!
-//! When `METTA_USE_ARENA=1`, the entire evaluation pipeline uses ArenaValue<'static>:
+//! The entire evaluation pipeline uses ArenaValue<'static>:
 //!
 //! ```text
 //! compile_arena() → ArenaValue<'static> → eval_trampoline_arena() → ArenaValue<'static>
 //! ```
 //!
-//! When unset (default), the entire pipeline uses MettaValue:
-//!
-//! ```text
-//! compile() → MettaValue → eval_trampoline() → MettaValue
-//! ```
-//!
-//! No conversions between value types are performed in either mode.
+//! No conversions between value types are performed.
 
 mod arena_engine;
 mod context;
-mod engine;
 mod generic_engine;
 mod generic_trampoline;
 mod generic_types;
 pub mod session_context;
-mod types;
 
 // Primary entry points
 pub use arena_engine::{
-    create_arena_context, eval_trampoline_arena, get_static_arena, get_static_factory,
+    eval_trampoline_arena, get_static_arena, get_static_factory,
     is_arena_mode_available, new_arena_env, ArenaEvalResult,
 };
-pub use engine::eval_trampoline;
-
-// Re-export heap-based types (for backward compatibility)
-#[allow(unused_imports)]
-pub use types::{Continuation, WorkItem, MAX_EVAL_DEPTH};
 
 // Re-export evaluation context types
 #[allow(unused_imports)]
 pub use context::{
-    ArenaContext, ArenaEnvironment, ContextEnv, EvalContext, HeapContext, StaticArenaContext,
-    is_arena_mode_enabled,
+    ArenaEnvironment, ContextEnv, EvalContext, StaticArenaContext,
 };
 
 // Re-export generic types for the unified engine
 #[allow(unused_imports)]
 pub use generic_types::{
-    GenericContinuation, GenericEvalResult, GenericWorkItem, HeapContinuation, HeapEvalResult,
-    HeapWorkItem,
+    GenericContinuation, GenericEvalResult, GenericWorkItem,
 };
 
 // Re-export generic engine functions (zero-conversion evaluation)

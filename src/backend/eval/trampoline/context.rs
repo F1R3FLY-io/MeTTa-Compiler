@@ -32,18 +32,16 @@
 //! }
 //! ```
 //!
-//! ## Environment Runtime Selection
+//! ## Context Implementation
 //!
-//! The runtime evaluation mode (heap vs arena) can be controlled via the
-//! `METTA_USE_ARENA` environment variable:
-//! - `METTA_USE_ARENA=1`: Use arena-based evaluation (faster, no GC overhead)
-//! - Unset or `METTA_USE_ARENA=0`: Use heap-based evaluation (default)
+//! `StaticArenaContext` is the production arena context using thread-local `'static`
+//! arenas for zero-conversion evaluation.
 
 use bumpalo::Bump;
 
-use crate::backend::environment::{GenericEnvironment, HeapEnvironment};
+use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{
-    ArenaValue, ArenaValueFactory, HeapMettaValueFactory, MettaValue, MettaValueFactory,
+    ArenaValue, ArenaValueFactory, MettaValueFactory,
     MettaValueTrait,
 };
 
@@ -52,7 +50,7 @@ use crate::backend::models::{
 /// This trait enables writing generic evaluation code that works with
 /// both heap and arena allocation strategies. The context provides:
 ///
-/// - `Value`: The concrete value type (MettaValue or ArenaValue)
+/// - `Value`: The concrete value type (e.g., ArenaValue)
 /// - `Factory`: The factory type for constructing values
 /// - `factory()`: Access to the factory instance
 ///
@@ -63,14 +61,6 @@ use crate::backend::models::{
 ///
 /// Implementations specify the value type and factory type, ensuring
 /// consistency between how values are created and stored.
-///
-/// # Environment Types
-///
-/// - `HeapContext`: Uses `HeapEnvironment` = `GenericEnvironment<MettaValue, HeapMettaValueFactory>`
-/// - `ArenaContext`: Uses `Environment` for storage (with generic conversion methods)
-///
-/// For zero-conversion evaluation, both heap and arena contexts can work with
-/// `GenericEnvironment` directly using the trait methods.
 pub trait EvalContext {
     /// The value type used during evaluation
     type Value: MettaValueTrait + Clone + Send + Sync + Unpin + 'static;
@@ -85,131 +75,6 @@ pub trait EvalContext {
 /// Type alias for the environment associated with an EvalContext.
 /// This is always `GenericEnvironment<C::Value, C::Factory>` for any context C.
 pub type ContextEnv<C> = GenericEnvironment<<C as EvalContext>::Value, <C as EvalContext>::Factory>;
-
-/// Standard heap-based evaluation context.
-///
-/// This is a zero-sized type that provides access to `HeapMettaValueFactory`.
-/// Since both the context and factory are zero-sized, there's no runtime
-/// overhead for passing them around.
-///
-/// Uses `HeapEnvironment` = `GenericEnvironment<MettaValue, HeapMettaValueFactory>`
-/// for type-safe rule and binding storage.
-///
-/// # Example
-///
-/// ```ignore
-/// let ctx = HeapContext;
-/// let env = HeapEnvironment::new(HeapMettaValueFactory);
-/// let value = ctx.factory().atom("hello");
-/// assert!(value.is_atom());
-/// ```
-#[derive(Debug, Clone, Copy, Default)]
-pub struct HeapContext;
-
-/// The singleton factory instance for heap allocation.
-static HEAP_FACTORY: HeapMettaValueFactory = HeapMettaValueFactory;
-
-impl EvalContext for HeapContext {
-    type Value = MettaValue;
-    type Factory = HeapMettaValueFactory;
-
-    #[inline]
-    fn factory(&self) -> &HeapMettaValueFactory {
-        &HEAP_FACTORY
-    }
-}
-
-impl HeapContext {
-    /// Create a new HeapEnvironment for this context.
-    #[inline]
-    pub fn new_env() -> HeapEnvironment {
-        HeapEnvironment::new(HeapMettaValueFactory)
-    }
-
-    /// Convert an Environment to HeapEnvironment.
-    ///
-    /// This is a zero-cost conversion when the Environment is backed by
-    /// a HeapEnvironment (the normal case). Used for backwards compatibility
-    /// during migration.
-    #[inline]
-    pub fn env_from_legacy(env: HeapEnvironment) -> HeapEnvironment {
-        // Create a new HeapEnvironment and union with the legacy one
-        // This shares the underlying Arc data
-        let heap_env = HeapEnvironment::new(HeapMettaValueFactory);
-        // The shared state is compatible since both use the same MORK storage
-        // For now, create fresh - full integration will share state
-        drop(env);
-        heap_env
-    }
-
-    /// Convert a HeapEnvironment to Environment.
-    ///
-    /// Used for backwards compatibility with code that expects Environment.
-    #[inline]
-    pub fn env_to_legacy(env: HeapEnvironment) -> HeapEnvironment {
-        // Create a new Environment that shares state with the HeapEnvironment
-        // For now, create fresh - full integration will share state
-        drop(env);
-        HeapEnvironment::default()
-    }
-}
-
-/// Arena-based evaluation context.
-///
-/// This holds a reference to the arena and provides an `ArenaValueFactory`
-/// for constructing arena-allocated values.
-///
-/// # Lifetime
-///
-/// The `'a` lifetime ties the context and all values it produces to the
-/// arena's lifetime, ensuring memory safety.
-///
-/// # Environment
-///
-/// Currently uses `Environment` for storage, which stores values in MORK format
-/// and provides generic access methods. In the future, this may use
-/// `GenericEnvironment<ArenaValue, ArenaValueFactory>` for full zero-conversion.
-///
-/// # Example
-///
-/// ```ignore
-/// let arena = bumpalo::Bump::new();
-/// let ctx = ArenaContext::new(&arena);
-/// let value = ctx.factory().atom("hello");
-/// assert!(value.is_atom());
-/// // `value` cannot outlive `arena`
-/// ```
-#[derive(Debug, Clone, Copy)]
-pub struct ArenaContext<'a> {
-    factory: ArenaValueFactory<'a>,
-}
-
-impl<'a> ArenaContext<'a> {
-    /// Create a new arena context from an arena reference.
-    #[inline]
-    pub fn new(arena: &'a Bump) -> Self {
-        Self {
-            factory: ArenaValueFactory::new(arena),
-        }
-    }
-
-    /// Get the underlying arena.
-    #[inline]
-    #[allow(dead_code)]
-    pub fn arena(&self) -> &'a Bump {
-        self.factory.arena()
-    }
-
-    /// Create a new Environment for arena-based evaluation.
-    ///
-    /// ArenaContext uses Environment for storage since ArenaValue has a lifetime
-    /// that cannot be stored in the environment. Values are converted via
-    /// serialization/deserialization at boundaries.
-    #[inline]
-    pub fn new_env() -> HeapEnvironment {
-        HeapEnvironment::default()
-    }
-}
 
 // ============================================================================
 // Static Arena Context - Zero-Conversion Arena Evaluation
@@ -374,72 +239,15 @@ impl EvalContext for StaticArenaContext {
     }
 }
 
-// ============================================================================
-// Runtime Selection Helpers
-// ============================================================================
-
-/// Check if arena-based evaluation is enabled via environment variable.
-///
-/// Returns `true` if `METTA_USE_ARENA=1` is set, `false` otherwise.
-/// This allows runtime selection of evaluation mode without recompilation.
-#[inline]
-pub fn is_arena_mode_enabled() -> bool {
-    std::env::var("METTA_USE_ARENA")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_heap_context_factory() {
-        let ctx = HeapContext;
-        let value = ctx.factory().atom("test");
-        assert!(value.is_atom());
-        assert_eq!(MettaValueTrait::as_atom(&value), Some("test"));
-    }
-
-    #[test]
-    fn test_heap_context_is_zero_sized() {
-        assert_eq!(std::mem::size_of::<HeapContext>(), 0);
-        assert_eq!(std::mem::size_of::<HeapMettaValueFactory>(), 0);
-    }
-
-    #[test]
-    fn test_arena_context_factory() {
-        let arena = Bump::new();
-        let ctx = ArenaContext::new(&arena);
-        // Access factory directly (ArenaContext doesn't implement EvalContext due to lifetime constraints)
-        let factory = ctx.factory;
-        let value = factory.atom("test");
-        assert!(value.is_atom());
-        assert_eq!(MettaValueTrait::as_atom(&value), Some("test"));
-    }
-
-    #[test]
-    fn test_arena_context_size() {
-        // ArenaContext should be pointer-sized (holds one reference)
-        assert_eq!(
-            std::mem::size_of::<ArenaContext<'_>>(),
-            std::mem::size_of::<&Bump>()
-        );
-    }
 
     fn generic_create_error<C: EvalContext>(ctx: &C, msg: &str) -> C::Value {
         let details = ctx.factory().atom("details");
         ctx.factory().error(msg, details)
     }
 
-    #[test]
-    fn test_generic_function_heap() {
-        let ctx = HeapContext;
-        let error = generic_create_error(&ctx, "test error");
-        assert!(error.is_error());
-    }
-
-    // Test StaticArenaContext which DOES implement EvalContext (uses 'static lifetime)
     #[test]
     fn test_generic_function_static_arena() {
         let ctx = StaticArenaContext::get();
@@ -465,31 +273,8 @@ mod tests {
     }
 
     #[test]
-    fn test_heap_context_env() {
-        let _env = HeapContext::new_env();
-        // Basic smoke test - env can be created
-    }
-
-    #[test]
-    fn test_arena_context_env() {
-        let _env = ArenaContext::new_env();
-        // Basic smoke test - env can be created
-    }
-
-    #[test]
     fn test_static_arena_context_env() {
         let _env = StaticArenaContext::new_env();
-        // Basic smoke test - static arena env can be created
-    }
-
-    #[test]
-    fn test_arena_mode_env_var() {
-        // Test with unset variable (should be false)
-        // Note: This test is environment-dependent
-        // In CI, METTA_USE_ARENA should not be set
-        let enabled = is_arena_mode_enabled();
-        // Don't assert specific value since it depends on environment
-        let _ = enabled;
     }
 
     #[test]

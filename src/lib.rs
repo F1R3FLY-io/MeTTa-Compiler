@@ -68,18 +68,6 @@ pub mod tree_sitter_parser;
 /// - **Pattern Matching**: Automatic variable binding in rule application
 /// - **Error Propagation**: First error stops evaluation immediately
 /// - **Environment**: Monotonic rule storage with union operations
-// ============================================================================
-// Deprecated Heap-Based API (will be removed in a future release)
-// ============================================================================
-// These exports are retained for backward compatibility with benchmarks and
-// external tests. Prefer the arena-based API below.
-pub use backend::{
-    compile,
-    environment::HeapEnvironment,
-    eval,
-    models::{MettaState, MettaValue, MettaValueInner, Rule},
-};
-
 pub use ir::{MettaExpr, Position, SExpr, Span};
 pub use tree_sitter_parser::TreeSitterMettaParser;
 
@@ -88,15 +76,19 @@ pub use tree_sitter_parser::TreeSitterMettaParser;
 // ============================================================================
 
 pub use backend::{
-    // Compilation
+    // Compilation (parse-only: MeTTa source → MettaValue expressions)
+    compile, compile_with_path,
+    // Arena compilation (MeTTa source → ArenaState with ArenaValue expressions)
     compile_arena, compile_arena_with_path,
     // Evaluation
     eval_arena, new_arena_env,
-    // Types
+    // Arena types
     ArenaState, SessionContext, ArenaEnvironment, ArenaEvalResult,
     ArenaValue, ArenaValueInner,
     // Arena utilities
     clone_value, get_eval_arena, get_eval_factory, StorageFactory,
+    // Data model types (used by bytecode VM, JIT, and tiered cache internals)
+    models::{MettaState, MettaValue, MettaValueInner, Rule},
 };
 
 // State evaluation API

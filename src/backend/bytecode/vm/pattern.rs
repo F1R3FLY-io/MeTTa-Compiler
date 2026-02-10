@@ -34,7 +34,6 @@ pub fn pattern_matches(pattern: &MettaValue, value: &MettaValue) -> bool {
         (MettaValueInner::Float(a), MettaValueInner::Float(b)) => a == b,
         (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
         (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
-        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
         (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         // S-expression matching
         (MettaValueInner::SExpr(ps), MettaValueInner::SExpr(vs)) => {
@@ -87,7 +86,6 @@ fn pattern_match_bind_impl(
         (MettaValueInner::String(a), val) => {
             matches!(val.inner(), MettaValueInner::String(b) if a == b)
         }
-        (MettaValueInner::Nil, val) => matches!(val.inner(), MettaValueInner::Nil),
         (MettaValueInner::Unit, val) => matches!(val.inner(), MettaValueInner::Unit),
         // S-expression matching
         (MettaValueInner::SExpr(ps), val) => {
@@ -131,7 +129,6 @@ fn unify_impl(a: &MettaValue, b: &MettaValue, bindings: &mut Vec<(String, MettaV
         (MettaValueInner::Long(x), MettaValueInner::Long(y)) => x == y,
         (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => x == y,
         (MettaValueInner::String(x), MettaValueInner::String(y)) => x == y,
-        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
         (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         (MettaValueInner::SExpr(xs), MettaValueInner::SExpr(ys)) => {
             xs.len() == ys.len()

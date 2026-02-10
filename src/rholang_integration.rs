@@ -207,7 +207,7 @@ fn arena_value_to_json_string(value: &ArenaValue<'static>) -> String {
         ArenaValueInner::String(s) => {
             format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s))
         }
-        ArenaValueInner::Nil => r#"{"type":"nil"}"#.to_string(),
+        ArenaValueInner::Unit => r#"{"type":"unit"}"#.to_string(),
         ArenaValueInner::SExpr(items) => {
             let items_json: Vec<String> = items.iter().map(arena_value_to_json_string).collect();
             format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
@@ -242,7 +242,6 @@ fn arena_value_to_json_string(value: &ArenaValue<'static>) -> String {
         ArenaValueInner::State(id) => {
             format!(r#"{{"type":"state","id":{}}}"#, id)
         }
-        ArenaValueInner::Unit => r#"{"type":"unit"}"#.to_string(),
         ArenaValueInner::Memo(handle) => {
             format!(
                 r#"{{"type":"memo","id":{},"name":"{}"}}"#,
@@ -730,12 +729,12 @@ mod tests {
     }
 
     #[test]
-    fn test_arena_value_nil_json() {
+    fn test_arena_value_unit_json() {
         use crate::backend::models::{get_eval_factory, MettaValueFactory};
         let f = get_eval_factory();
-        let value = f.nil();
+        let value = f.unit();
         let json = arena_value_to_json_string(&value);
-        assert_eq!(json, r#"{"type":"nil"}"#);
+        assert_eq!(json, r#"{"type":"unit"}"#);
     }
 
     #[test]

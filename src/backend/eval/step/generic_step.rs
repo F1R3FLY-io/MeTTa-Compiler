@@ -66,7 +66,6 @@ where
         || value.is_long()
         || value.is_float()
         || value.is_string()
-        || value.is_nil()
         || value.is_space()
         || value.is_state()
         || value.is_unit()

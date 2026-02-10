@@ -9,7 +9,6 @@
 //! Run with: cargo test --lib proptests
 
 use proptest::prelude::*;
-use std::sync::Arc;
 
 use super::pattern::{pattern_match_bind, pattern_matches, unify};
 use super::BytecodeVM;
@@ -50,6 +49,7 @@ fn arb_string() -> impl Strategy<Value = MettaValue> {
 }
 
 /// Generate arbitrary Variable values ($x, $foo, etc.)
+#[allow(dead_code)]
 fn arb_variable() -> impl Strategy<Value = MettaValue> {
     "[a-z]{1,5}".prop_map(|s| MettaValue::var(&s))
 }
@@ -62,7 +62,7 @@ fn arb_simple_value() -> impl Strategy<Value = MettaValue> {
         arb_bool(),
         arb_symbol(),
         arb_string(),
-        Just(MettaValue::Nil()),
+        Just(MettaValue::Unit()),
         Just(MettaValue::Unit()),
     ]
 }
@@ -84,11 +84,13 @@ fn arb_metta_value(depth: usize) -> BoxedStrategy<MettaValue> {
 }
 
 /// Generate S-expressions of numbers for arithmetic testing
+#[allow(dead_code)]
 fn arb_numeric_sexpr(len: usize) -> impl Strategy<Value = MettaValue> {
     prop::collection::vec(arb_long(), len).prop_map(MettaValue::SExpr)
 }
 
 /// Generate patterns with variables
+#[allow(dead_code)]
 fn arb_pattern(depth: usize) -> BoxedStrategy<MettaValue> {
     if depth == 0 {
         prop_oneof![
@@ -138,7 +140,7 @@ fn run_vm_binary_op(a: i64, b: i64, opcode: Opcode) -> Result<MettaValue, String
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    vm.run().map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+    vm.run().map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
         .map_err(|e| format!("{}", e))
 }
 
@@ -158,7 +160,7 @@ fn run_vm_unary_op(a: i64, opcode: Opcode) -> Result<MettaValue, String> {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    vm.run().map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+    vm.run().map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
         .map_err(|e| format!("{}", e))
 }
 
@@ -1153,7 +1155,7 @@ fn run_vm_binary_op_values(a: MettaValue, b: MettaValue, opcode: Opcode) -> Resu
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
     vm.run()
-        .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+        .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
         .map_err(|e| format!("{}", e))
 }
 
@@ -1170,7 +1172,7 @@ fn run_vm_unary_op_value(a: MettaValue, opcode: Opcode) -> Result<MettaValue, St
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
     vm.run()
-        .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+        .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
         .map_err(|e| format!("{}", e))
 }
 
@@ -1614,7 +1616,7 @@ fn run_vm_log(base: MettaValue, value: MettaValue) -> Result<MettaValue, String>
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
     vm.run()
-        .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+        .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
         .map_err(|e| format!("{}", e))
 }
 
@@ -1775,7 +1777,7 @@ proptest! {
         let head_idx = builder.add_constant(head.clone());
         builder.emit_u16(Opcode::PushConstant, head_idx);
 
-        let nil_idx = builder.add_constant(MettaValue::Nil());
+        let nil_idx = builder.add_constant(MettaValue::Unit());
         builder.emit_u16(Opcode::PushConstant, nil_idx);
 
         builder.emit(Opcode::ConsAtom);
@@ -2114,15 +2116,16 @@ proptest! {
 
     #[test]
     fn prop_get_metatype_nil(_unit: ()) {
+        // After Nil/Unit merge, Nil() returns Unit, so metatype is "Unit"
         let mut builder = ChunkBuilder::new("test");
-        let idx = builder.add_constant(MettaValue::Nil());
+        let idx = builder.add_constant(MettaValue::Unit());
         builder.emit_u16(Opcode::PushConstant, idx);
         builder.emit(Opcode::GetMetaType);
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();
         prop_assert!(result.is_ok());
-        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Nil"));
+        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Unit"));
     }
 
     #[test]
@@ -2200,7 +2203,7 @@ proptest! {
         arb_bool(),
         arb_symbol(),
         arb_string(),
-        Just(MettaValue::Nil()),
+        Just(MettaValue::Unit()),
         Just(MettaValue::Unit()),
     ]) {
         let mut builder = ChunkBuilder::new("test");
@@ -2301,8 +2304,9 @@ proptest! {
     /// repr on Nil produces "Nil"
     #[test]
     fn prop_repr_nil(_unit: ()) {
+        // After Nil/Unit merge, Nil() returns Unit, whose repr is "()"
         let mut builder = ChunkBuilder::new("test");
-        let idx = builder.add_constant(MettaValue::Nil());
+        let idx = builder.add_constant(MettaValue::Unit());
         builder.emit_u16(Opcode::PushConstant, idx);
         builder.emit(Opcode::Repr);
         builder.emit(Opcode::Return);
@@ -2311,7 +2315,7 @@ proptest! {
         prop_assert!(result.is_ok());
         match result.unwrap()[0].inner() {
             MettaValueInner::String(s) => {
-                prop_assert_eq!(s, "Nil");
+                prop_assert_eq!(s, "()");
             }
             _ => return Err(TestCaseError::fail("Expected String result")),
         }
@@ -2641,8 +2645,8 @@ mod control_flow_unit_tests {
     #[test]
     fn test_jump_if_nil_takes_branch() {
         let result = run_vm_chunk(|builder| {
-            builder.emit(Opcode::PushNil);
-            builder.emit_i16(Opcode::JumpIfNil, 3);
+            builder.emit(Opcode::PushUnit);
+            builder.emit_i16(Opcode::JumpIfUnit, 3);
             builder.emit_byte(Opcode::PushLongSmall, 42);
             builder.emit(Opcode::Return);
             builder.emit_byte(Opcode::PushLongSmall, 100);
@@ -2738,7 +2742,7 @@ proptest! {
         let mut builder = ChunkBuilder::new("test");
         let idx = builder.add_constant(MettaValue::Long(val));
         builder.emit_u16(Opcode::PushConstant, idx);
-        builder.emit_i16(Opcode::JumpIfNil, 3);
+        builder.emit_i16(Opcode::JumpIfUnit, 3);
         builder.emit_byte(Opcode::PushLongSmall, 1); // not jumped = 1
         builder.emit(Opcode::Return);
         builder.emit_byte(Opcode::PushLongSmall, 2); // jumped = 2
@@ -2918,7 +2922,7 @@ mod nondeterminism_unit_tests {
             builder.emit_byte(Opcode::Amb, 0);
             builder.emit(Opcode::Return);
         });
-        assert_eq!(result.unwrap(), vec![MettaValue::Nil()]);
+        assert_eq!(result.unwrap(), vec![MettaValue::Unit()]);
     }
 }
 
@@ -2941,7 +2945,7 @@ fn arb_non_bool() -> impl Strategy<Value = MettaValue> {
         arb_float(),
         arb_symbol(),
         arb_string(),
-        Just(MettaValue::Nil()),
+        Just(MettaValue::Unit()),
         Just(MettaValue::Unit()),
     ]
 }
@@ -3075,14 +3079,14 @@ proptest! {
         prop_assert_eq!(result.unwrap().len(), values.len());
     }
 
-    /// A3: Amb(0) pushes Nil
+    /// A3: Amb(0) pushes Unit
     #[test]
-    fn prop_amb_zero_is_nil(val in -100i8..100i8) {
+    fn prop_amb_zero_is_unit(val in -100i8..100i8) {
         let mut builder = ChunkBuilder::new("test");
         // Push a value that Amb(0) should NOT consume
         builder.emit_byte(Opcode::PushLongSmall, val as u8);
         builder.emit_byte(Opcode::Amb, 0u8);
-        // Now stack has: [val, Nil], top is Nil
+        // Now stack has: [val, Unit], top is Unit
         builder.emit(Opcode::Return);
 
         let chunk = builder.build_arc();
@@ -3091,8 +3095,8 @@ proptest! {
 
         prop_assert!(result.is_ok());
         let results = result.unwrap();
-        // Returns Nil (top of stack after Amb(0))
-        prop_assert!(matches!(results[0].inner(), MettaValueInner::Nil));
+        // Returns Unit (top of stack after Amb(0))
+        prop_assert!(matches!(results[0].inner(), MettaValueInner::Unit));
     }
 
     /// A4: Amb(1) ≡ identity
@@ -3393,7 +3397,7 @@ proptest! {
             indices.push(builder.add_constant(MettaValue::Long(i as i64)));
         }
         for _ in 0..nil_count {
-            indices.push(builder.add_constant(MettaValue::Nil()));
+            indices.push(builder.add_constant(MettaValue::Unit()));
         }
 
         builder.emit_u16(Opcode::Fork, indices.len() as u16);
@@ -3414,7 +3418,7 @@ proptest! {
         for r in &results {
             if let MettaValueInner::SExpr(items) = r.inner() {
                 for item in items {
-                    prop_assert!(!matches!(item.inner(), MettaValueInner::Nil));
+                    prop_assert!(!matches!(item.inner(), MettaValueInner::Unit));
                 }
             }
         }
@@ -3757,7 +3761,6 @@ mod tests {
                 MettaValueInner::Bool(_) |
                 MettaValueInner::Atom(_) |
                 MettaValueInner::String(_) |
-                MettaValueInner::Nil |
                 MettaValueInner::Unit => Ok(()),
                 _ => Err(TestCaseError::fail("Unexpected value type")),
             }
@@ -3792,6 +3795,7 @@ mod multi_tier_tests {
     // =========================================================================
 
     /// Execution tier identifier
+    #[allow(dead_code)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Tier {
         /// Tree-walker tier: Grounded operations via GroundedOp trait
@@ -3814,7 +3818,7 @@ mod multi_tier_tests {
         let env = HeapEnvironment::default();
         let args = vec![a, b];
         op.execute_raw(&args, &env, &mock_eval)
-            .map(|results| results.into_iter().next().map(|(v, _)| v).unwrap_or(MettaValue::Nil()))
+            .map(|results| results.into_iter().next().map(|(v, _)| v).unwrap_or(MettaValue::Unit()))
             .map_err(|e| format!("grounded error: {:?}", e))
     }
 
@@ -3826,7 +3830,7 @@ mod multi_tier_tests {
         let env = HeapEnvironment::default();
         let args = vec![a];
         op.execute_raw(&args, &env, &mock_eval)
-            .map(|results| results.into_iter().next().map(|(v, _)| v).unwrap_or(MettaValue::Nil()))
+            .map(|results| results.into_iter().next().map(|(v, _)| v).unwrap_or(MettaValue::Unit()))
             .map_err(|e| format!("grounded error: {:?}", e))
     }
 
@@ -3836,6 +3840,7 @@ mod multi_tier_tests {
     }
 
     /// Execute a unary operation via bytecode VM tier
+    #[allow(dead_code)]
     fn run_vm_unary(a: i64, opcode: Opcode) -> Result<MettaValue, String> {
         run_vm_unary_op(a, opcode)
     }
@@ -3996,7 +4001,7 @@ mod multi_tier_tests {
         let chunk = builder.build_arc();
         let mut vm = BytecodeVM::new(chunk);
         vm.run()
-            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
             .map_err(|e| format!("{}", e))
     }
 
@@ -4010,7 +4015,7 @@ mod multi_tier_tests {
         let chunk = builder.build_arc();
         let mut vm = BytecodeVM::new(chunk);
         vm.run()
-            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
             .map_err(|e| format!("{}", e))
     }
 
@@ -4252,7 +4257,6 @@ mod three_tier_tests {
         ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
     };
     use crate::backend::models::{MettaValue, MettaValueInner};
-    use proptest::prelude::*;
     use std::sync::Arc;
 
     // =========================================================================
@@ -4278,7 +4282,7 @@ mod three_tier_tests {
                     .into_iter()
                     .next()
                     .map(|(v, _)| v)
-                    .unwrap_or(MettaValue::Nil())
+                    .unwrap_or(MettaValue::Unit())
             })
             .map_err(|e| format!("grounded error: {:?}", e))
     }
@@ -4296,7 +4300,7 @@ mod three_tier_tests {
                     .into_iter()
                     .next()
                     .map(|(v, _)| v)
-                    .unwrap_or(MettaValue::Nil())
+                    .unwrap_or(MettaValue::Unit())
             })
             .map_err(|e| format!("grounded error: {:?}", e))
     }
@@ -4325,7 +4329,7 @@ mod three_tier_tests {
         let chunk = builder.build_arc();
         let mut vm = BytecodeVM::new(chunk);
         vm.run()
-            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
             .map_err(|e| format!("{}", e))
     }
 
@@ -4346,7 +4350,7 @@ mod three_tier_tests {
         let chunk = builder.build_arc();
         let mut vm = BytecodeVM::new(chunk);
         vm.run()
-            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
             .map_err(|e| format!("{}", e))
     }
 
@@ -4361,7 +4365,7 @@ mod three_tier_tests {
         let chunk = builder.build_arc();
         let mut vm = BytecodeVM::new(chunk);
         vm.run()
-            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
             .map_err(|e| format!("{}", e))
     }
 
@@ -4375,7 +4379,7 @@ mod three_tier_tests {
         let chunk = builder.build_arc();
         let mut vm = BytecodeVM::new(chunk);
         vm.run()
-            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
             .map_err(|e| format!("{}", e))
     }
 
@@ -4461,11 +4465,12 @@ mod three_tier_tests {
         let chunk = builder.build_arc();
         let mut vm = BytecodeVM::new(chunk);
         vm.run()
-            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
             .map_err(|e| format!("{}", e))
     }
 
     /// Execute a float binary operation via JIT (Tier 2/3)
+    #[allow(dead_code)]
     fn run_jit_float_binary(a: f64, b: f64, opcode: Opcode) -> Result<MettaValue, String> {
         let mut builder = ChunkBuilder::new("jit_test");
         let idx_a = builder.add_constant(MettaValue::Float(a));
@@ -4490,7 +4495,7 @@ mod three_tier_tests {
         let chunk = builder.build_arc();
         let mut vm = BytecodeVM::new(chunk);
         vm.run()
-            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+            .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
             .map_err(|e| format!("{}", e))
     }
 
@@ -4521,7 +4526,7 @@ mod three_tier_tests {
         };
 
         // Set up JIT context with minimal buffers
-        let mut stack = vec![JitValue::nil(); 64];
+        let mut stack = vec![JitValue::unit(); 64];
         let constants = chunk.constants();
 
         // Create JIT context
@@ -5327,7 +5332,7 @@ mod three_tier_tests {
                 builder.emit(Opcode::Return);
                 let chunk = builder.build_arc();
                 let mut vm = BytecodeVM::new(chunk);
-                vm.run().map(|r| r.into_iter().next().unwrap_or(MettaValue::Nil()))
+                vm.run().map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
             };
 
             let jit = {

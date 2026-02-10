@@ -20,7 +20,7 @@ mod tags {
     pub const BOOL_TRUE: u8 = 0x05;
     pub const BOOL_FALSE: u8 = 0x06;
     pub const STRING: u8 = 0x07;
-    pub const NIL: u8 = 0x08;
+    pub const UNIT_LEGACY: u8 = 0x08;
     pub const UNIT: u8 = 0x09;
     pub const ERROR: u8 = 0x0A;
     pub const TYPE: u8 = 0x0B;
@@ -72,9 +72,6 @@ fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
         MettaValueInner::String(s) => {
             buf.push(tags::STRING);
             encode_string(buf, s);
-        }
-        MettaValueInner::Nil => {
-            buf.push(tags::NIL);
         }
         MettaValueInner::Unit => {
             buf.push(tags::UNIT);
@@ -203,7 +200,7 @@ pub fn varint_key_to_metta(bytes: &[u8]) -> Option<(MettaValue, usize)> {
             let (s, consumed) = decode_string(&bytes[offset..])?;
             Some((MettaValue::String(s), offset + consumed))
         }
-        tags::NIL => Some((MettaValue::Nil(), offset)),
+        tags::UNIT_LEGACY => Some((MettaValue::Unit(), offset)),
         tags::UNIT => Some((MettaValue::Unit(), offset)),
         tags::ERROR => {
             let (msg, consumed1) = decode_string(&bytes[offset..])?;
@@ -343,12 +340,6 @@ fn encode_value_generic<V: MettaValueTrait>(buf: &mut Vec<u8>, value: &V) {
         return;
     }
 
-    // Nil
-    if value.is_nil() {
-        buf.push(tags::NIL);
-        return;
-    }
-
     // Unit
     if value.is_unit() {
         buf.push(tags::UNIT);
@@ -399,8 +390,8 @@ fn encode_value_generic<V: MettaValueTrait>(buf: &mut Vec<u8>, value: &V) {
         return;
     }
 
-    // Fallback for unknown types - encode as nil
-    buf.push(tags::NIL);
+    // Fallback for unknown types - encode as unit
+    buf.push(tags::UNIT);
 }
 
 #[cfg(test)]
@@ -444,7 +435,7 @@ mod tests {
             MettaValue::Long(-1),
             MettaValue::Bool(true),
             MettaValue::Bool(false),
-            MettaValue::Nil(),
+            MettaValue::Unit(),
             MettaValue::Unit(),
             MettaValue::Atom("hello".to_string()),
             MettaValue::String("world".to_string()),

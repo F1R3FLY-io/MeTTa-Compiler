@@ -41,7 +41,7 @@ fn run_jit_benchmark(iterations: usize) {
 
     if let Ok(code_ptr) = compiler.compile(&chunk) {
         let constants = chunk.constants();
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
         for i in 0..iterations {
             let mut ctx = unsafe {

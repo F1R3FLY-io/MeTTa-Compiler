@@ -9,7 +9,7 @@
 //! - fork/restore_bindings - Nondeterministic backtracking support
 
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitBindingEntry, JitBindingFrame, JitContext, JitValue, TAG_BOOL, TAG_NIL,
+    JitBailoutReason, JitBindingEntry, JitBindingFrame, JitContext, JitValue, TAG_BOOL, TAG_UNIT,
 };
 
 // =============================================================================
@@ -39,7 +39,7 @@ pub unsafe extern "C" fn jit_runtime_load_binding(
 ) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     let name_idx_u32 = name_idx as u32;
@@ -67,7 +67,7 @@ pub unsafe extern "C" fn jit_runtime_load_binding(
     ctx_ref.bailout_ip = ip as usize;
     ctx_ref.bailout_reason = JitBailoutReason::InvalidBinding;
 
-    TAG_NIL
+    TAG_UNIT
 }
 
 /// Store a binding in the current (innermost) binding frame.

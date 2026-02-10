@@ -90,7 +90,7 @@ impl HybridExecutor {
         Self {
             jit_cache: Arc::new(JitCache::new()),
             tiered_compiler: Arc::new(TieredCompiler::new()),
-            jit_stack: vec![JitValue::nil(); config.jit_stack_capacity],
+            jit_stack: vec![JitValue::unit(); config.jit_stack_capacity],
             jit_choice_points: Vec::with_capacity(config.jit_choice_point_capacity),
             jit_results: Vec::with_capacity(config.jit_results_capacity),
             jit_binding_frames: Vec::with_capacity(config.jit_binding_frames_capacity),
@@ -105,7 +105,7 @@ impl HybridExecutor {
             grounded_spaces: [std::ptr::null(); 3],
             grounded_space_storage: Vec::with_capacity(3),
             template_results: Vec::with_capacity(64),
-            jit_stack_save_pool: vec![JitValue::nil(); pool_capacity],
+            jit_stack_save_pool: vec![JitValue::unit(); pool_capacity],
             config,
         }
     }
@@ -120,7 +120,7 @@ impl HybridExecutor {
         Self {
             jit_cache: cache,
             tiered_compiler: compiler,
-            jit_stack: vec![JitValue::nil(); config.jit_stack_capacity],
+            jit_stack: vec![JitValue::unit(); config.jit_stack_capacity],
             jit_choice_points: Vec::with_capacity(config.jit_choice_point_capacity),
             jit_results: Vec::with_capacity(config.jit_results_capacity),
             jit_binding_frames: Vec::with_capacity(config.jit_binding_frames_capacity),
@@ -135,7 +135,7 @@ impl HybridExecutor {
             grounded_spaces: [std::ptr::null(); 3],
             grounded_space_storage: Vec::with_capacity(3),
             template_results: Vec::with_capacity(64),
-            jit_stack_save_pool: vec![JitValue::nil(); pool_capacity],
+            jit_stack_save_pool: vec![JitValue::unit(); pool_capacity],
             config,
         }
     }
@@ -447,7 +447,7 @@ impl HybridExecutor {
 
         // Reset buffers
         for v in &mut self.jit_stack {
-            *v = JitValue::nil();
+            *v = JitValue::unit();
         }
         self.jit_choice_points.clear();
         self.jit_results.clear();
@@ -461,7 +461,7 @@ impl HybridExecutor {
             JitChoicePoint::default(),
         );
         self.jit_results
-            .resize(self.config.jit_results_capacity, JitValue::nil());
+            .resize(self.config.jit_results_capacity, JitValue::unit());
         self.jit_binding_frames.resize(
             self.config.jit_binding_frames_capacity,
             JitBindingFrame::default(),

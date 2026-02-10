@@ -301,7 +301,7 @@ impl BytecodeVM {
         // slots must exist before the first StoreLocal executes.
         let local_count = self.chunk.local_count() as usize;
         if local_count > 0 && self.value_stack.len() < local_count {
-            self.value_stack.resize(local_count, MettaValue::Nil());
+            self.value_stack.resize(local_count, MettaValue::Unit());
         }
 
         // JIT execution path
@@ -383,7 +383,7 @@ impl BytecodeVM {
         // (each push adds at most 1, and typical ops consume before producing)
         let required_stack = self.chunk.code().len().max(64).min(4096);
         let constants = self.chunk.constants();
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); required_stack];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); required_stack];
 
         // SAFETY: stack is valid for the lifetime of this function call
         let mut ctx = unsafe {
@@ -488,7 +488,6 @@ impl BytecodeVM {
             Opcode::PopN => self.op_pop_n()?,
 
             // Value creation
-            Opcode::PushNil => self.push(MettaValue::Nil()),
             Opcode::PushTrue => self.push(MettaValue::Bool(true)),
             Opcode::PushFalse => self.push(MettaValue::Bool(false)),
             Opcode::PushUnit => self.push(MettaValue::Unit()),
@@ -522,7 +521,7 @@ impl BytecodeVM {
             Opcode::Jump => self.op_jump()?,
             Opcode::JumpIfFalse => self.op_jump_if_false()?,
             Opcode::JumpIfTrue => self.op_jump_if_true()?,
-            Opcode::JumpIfNil => self.op_jump_if_nil()?,
+            Opcode::JumpIfUnit => self.op_jump_if_unit()?,
             Opcode::JumpIfError => self.op_jump_if_error()?,
             Opcode::JumpShort => self.op_jump_short()?,
             Opcode::JumpIfFalseShort => self.op_jump_if_false_short()?,
@@ -665,7 +664,7 @@ impl BytecodeVM {
     fn handle_chunk_end(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
         if let Some(frame) = self.call_stack.pop() {
             // Return to caller
-            let value = self.pop().unwrap_or(MettaValue::Nil());
+            let value = self.pop().unwrap_or(MettaValue::Unit());
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
@@ -1016,12 +1015,6 @@ where
 
     // === Value Construction Helpers ===
 
-    /// Create a nil value using the factory.
-    #[inline]
-    pub fn make_nil(&self) -> V {
-        self.factory.nil()
-    }
-
     /// Create a unit value using the factory.
     #[inline]
     pub fn make_unit(&self) -> V {
@@ -1113,7 +1106,7 @@ where
         // Pre-allocate local variable slots
         let local_count = self.chunk.local_count() as usize;
         if local_count > 0 && self.value_stack.len() < local_count {
-            let nil = self.make_nil();
+            let nil = self.make_unit();
             self.value_stack.resize(local_count, nil);
         }
 
@@ -1157,7 +1150,6 @@ where
             Opcode::PopN => self.op_pop_n()?,
 
             // === Value Creation ===
-            Opcode::PushNil => self.push(self.make_nil()),
             Opcode::PushUnit => self.push(self.make_unit()),
             Opcode::PushTrue => self.push(self.make_bool(true)),
             Opcode::PushFalse => self.push(self.make_bool(false)),
@@ -1211,7 +1203,7 @@ where
                 let index = self.read_u8()? as usize;
                 let value = self.pop()?;
                 if index >= self.value_stack.len() {
-                    self.value_stack.resize(index + 1, self.make_nil());
+                    self.value_stack.resize(index + 1, self.make_unit());
                 }
                 self.value_stack[index] = value;
             }
@@ -1226,7 +1218,7 @@ where
                 let index = self.read_u16()? as usize;
                 let value = self.pop()?;
                 if index >= self.value_stack.len() {
-                    self.value_stack.resize(index + 1, self.make_nil());
+                    self.value_stack.resize(index + 1, self.make_unit());
                 }
                 self.value_stack[index] = value;
             }
@@ -1237,7 +1229,7 @@ where
                     .ok_or(VmError::InvalidConstant(index))?;
                 let value = self.get_binding(&name)
                     .cloned()
-                    .unwrap_or_else(|| self.make_nil());
+                    .unwrap_or_else(|| self.make_unit());
                 self.push(value);
             }
             Opcode::StoreBinding => {
@@ -1282,7 +1274,7 @@ where
             Opcode::JumpIfFalse => {
                 let offset = self.read_i16()?;
                 let cond = self.pop()?;
-                if cond.as_bool() == Some(false) || cond.is_nil() {
+                if cond.as_bool() == Some(false) || cond.is_unit() {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1293,10 +1285,10 @@ where
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
-            Opcode::JumpIfNil => {
+            Opcode::JumpIfUnit => {
                 let offset = self.read_i16()?;
                 let value = self.pop()?;
-                if value.is_nil() {
+                if value.is_unit() {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1315,7 +1307,7 @@ where
             Opcode::JumpIfFalseShort => {
                 let offset = self.read_i8()?;
                 let cond = self.pop()?;
-                if cond.as_bool() == Some(false) || cond.is_nil() {
+                if cond.as_bool() == Some(false) || cond.is_unit() {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1581,10 +1573,10 @@ where
                     if let Some(first) = items.first() {
                         self.push(first.clone());
                     } else {
-                        self.push(self.make_nil());
+                        self.push(self.make_unit());
                     }
                 } else {
-                    self.push(self.make_nil());
+                    self.push(self.make_unit());
                 }
             }
             Opcode::GetTail => {
@@ -1597,7 +1589,7 @@ where
                         self.push(self.make_sexpr(vec![]));
                     }
                 } else {
-                    self.push(self.make_nil());
+                    self.push(self.make_unit());
                 }
             }
             Opcode::GetArity => {
@@ -1615,10 +1607,10 @@ where
                     if i >= 0 && (i as usize) < items.len() {
                         self.push(items[i as usize].clone());
                     } else {
-                        self.push(self.make_nil());
+                        self.push(self.make_unit());
                     }
                 } else {
-                    self.push(self.make_nil());
+                    self.push(self.make_unit());
                 }
             }
             Opcode::DeconAtom => self.op_decon_atom()?,
@@ -1690,7 +1682,7 @@ where
     fn handle_chunk_end(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         if let Some(frame) = self.call_stack.pop() {
             // Return to caller
-            let value = self.pop().unwrap_or_else(|_| self.make_nil());
+            let value = self.pop().unwrap_or_else(|_| self.make_unit());
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
@@ -1930,7 +1922,7 @@ where
 
     fn op_return(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         if let Some(frame) = self.call_stack.pop() {
-            let value = self.pop().unwrap_or_else(|_| self.make_nil());
+            let value = self.pop().unwrap_or_else(|_| self.make_unit());
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
@@ -2391,7 +2383,7 @@ where
                 self.push(error);
             }
         } else {
-            self.push(self.make_nil());
+            self.push(self.make_unit());
         }
         Ok(())
     }
@@ -2411,9 +2403,9 @@ where
                     min = Some(item.clone());
                 }
             }
-            self.push(min.unwrap_or_else(|| self.make_nil()));
+            self.push(min.unwrap_or_else(|| self.make_unit()));
         } else {
-            self.push(self.make_nil());
+            self.push(self.make_unit());
         }
         Ok(())
     }
@@ -2433,9 +2425,9 @@ where
                     max = Some(item.clone());
                 }
             }
-            self.push(max.unwrap_or_else(|| self.make_nil()));
+            self.push(max.unwrap_or_else(|| self.make_unit()));
         } else {
-            self.push(self.make_nil());
+            self.push(self.make_unit());
         }
         Ok(())
     }
@@ -2780,7 +2772,7 @@ where
                 return Ok(());
             }
         }
-        self.push(self.make_nil());
+        self.push(self.make_unit());
         Ok(())
     }
 

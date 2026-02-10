@@ -1,7 +1,7 @@
 //! Control flow handlers for JIT compilation
 //!
 //! Handles: Return, Jump, JumpIfFalse, JumpIfTrue, JumpShort, JumpIfFalseShort,
-//! JumpIfTrueShort, JumpIfNil, JumpIfError, JumpTable, Halt
+//! JumpIfTrueShort, JumpIfUnit, JumpIfError, JumpTable, Halt
 
 use cranelift::prelude::*;
 
@@ -15,7 +15,7 @@ use crate::backend::bytecode::jit::codegen::CodegenContext;
 use crate::backend::bytecode::jit::types::{JitError, JitResult};
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
-use crate::backend::bytecode::jit::types::TAG_NIL;
+use crate::backend::bytecode::jit::types::TAG_UNIT;
 
 use crate::backend::bytecode::jit::types::TAG_ERROR;
 
@@ -419,9 +419,9 @@ pub fn compile_jump_if_true_short<'a, 'b>(
     }
 }
 
-/// Compile JumpIfNil opcode
+/// Compile JumpIfUnit opcode (formerly JumpIfNil)
 
-pub fn compile_jump_if_nil<'a, 'b>(
+pub fn compile_jump_if_unit<'a, 'b>(
     codegen: &mut CodegenContext<'a, 'b>,
     chunk: &BytecodeChunk,
     op: Opcode,
@@ -429,18 +429,18 @@ pub fn compile_jump_if_nil<'a, 'b>(
     offset_to_block: &HashMap<usize, Block>,
     merge_blocks: &HashMap<usize, bool>,
 ) -> JitResult<()> {
-    // Conditional jump if top of stack is nil (pops the value)
+    // Conditional jump if top of stack is unit (pops the value)
     let val = codegen.pop()?;
     let instr_size = 1 + op.immediate_size();
     let next_ip = offset + instr_size;
     let rel_offset = chunk.read_i16(offset + 1).unwrap_or(0);
     let target = (next_ip as isize + rel_offset as isize) as usize;
 
-    // Check if value is nil: tag == TAG_NIL
+    // Check if value is unit: tag == TAG_UNIT
     // icmp returns i8 (0 or 1), suitable for brif
     let tag = codegen.extract_tag(val);
-    let nil_tag = codegen.builder.ins().iconst(types::I64, TAG_NIL as i64);
-    let cond_i8 = codegen.builder.ins().icmp(IntCC::Equal, tag, nil_tag);
+    let unit_tag = codegen.builder.ins().iconst(types::I64, TAG_UNIT as i64);
+    let cond_i8 = codegen.builder.ins().icmp(IntCC::Equal, tag, unit_tag);
 
     // Get stack value for merge blocks (use previous stack top since we popped)
     let stack_top = codegen
@@ -454,7 +454,7 @@ pub fn compile_jump_if_nil<'a, 'b>(
     if let (Some(&target_block), Some(&fallthrough_block)) =
         (offset_to_block.get(&target), offset_to_block.get(&next_ip))
     {
-        // brif branches to first block if cond is true (is_nil)
+        // brif branches to first block if cond is truthy (not unit/false)
         let target_args: &[BlockArg] = if target_is_merge {
             &[BlockArg::Value(stack_top)]
         } else {
@@ -490,7 +490,7 @@ pub fn compile_jump_if_nil<'a, 'b>(
         Ok(())
     } else {
         Err(JitError::CompilationError(format!(
-            "JumpIfNil target {} not found in block map",
+            "JumpIfUnit target {} not found in block map",
             target
         )))
     }

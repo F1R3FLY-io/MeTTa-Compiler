@@ -43,7 +43,7 @@ fn main() {
                     // Print results
                     for result in &results {
                         match result.inner() {
-                            ArenaValueInner::Nil => {}
+                            ArenaValueInner::Unit => {}
                             _ => println!("{}", result),
                         }
                     }

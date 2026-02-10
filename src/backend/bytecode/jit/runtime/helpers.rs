@@ -58,7 +58,6 @@ pub fn metta_to_jit(val: &MettaValue) -> JitValue {
     match val.inner() {
         MettaValueInner::Long(n) => JitValue::from_long(*n),
         MettaValueInner::Bool(b) => JitValue::from_bool(*b),
-        MettaValueInner::Nil => JitValue::nil(),
         MettaValueInner::Unit => JitValue::unit(),
         // For complex types, box and return heap pointer
         _ => {
@@ -80,7 +79,6 @@ pub unsafe fn metta_to_jit_tracked(val: &MettaValue, ctx: *mut JitContext) -> Ji
     match val.inner() {
         MettaValueInner::Long(n) => JitValue::from_long(*n),
         MettaValueInner::Bool(b) => JitValue::from_bool(*b),
-        MettaValueInner::Nil => JitValue::nil(),
         MettaValueInner::Unit => JitValue::unit(),
         // For complex types, box, track, and return heap pointer
         _ => {
@@ -103,7 +101,7 @@ pub unsafe fn metta_to_jit_tracked(val: &MettaValue, ctx: *mut JitContext) -> Ji
 ///
 /// Creates a heap-allocated Error value and returns it as a NaN-boxed pointer.
 pub fn make_jit_error(msg: &str) -> u64 {
-    let error_val = MettaValue::Error(msg.to_string(), MettaValue::Nil());
+    let error_val = MettaValue::Error(msg.to_string(), MettaValue::Unit());
     let boxed = Box::new(error_val);
     let ptr = Box::into_raw(boxed);
     ((TAG_HEAP as u64) << 48) | (ptr as u64 & PAYLOAD_MASK)
@@ -151,9 +149,6 @@ where
     if let Some(b) = val.as_bool() {
         return JitValue::from_bool(b);
     }
-    if val.is_nil() {
-        return JitValue::nil();
-    }
     if val.is_unit() {
         return JitValue::unit();
     }
@@ -198,12 +193,11 @@ where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
 {
-    use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_NIL, TAG_UNIT};
+    use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_UNIT};
 
     match jit_val.tag() {
         TAG_LONG => factory.long(jit_val.as_long()),
         TAG_BOOL => factory.bool(jit_val.as_bool()),
-        TAG_NIL => factory.nil(),
         TAG_UNIT => factory.unit(),
         TAG_HEAP => {
             let ptr = (jit_val.to_bits() & PAYLOAD_MASK) as *const V;
@@ -221,7 +215,7 @@ where
                 "jit_to_value_generic: Unknown tag {:#x}",
                 jit_val.tag()
             );
-            factory.nil()
+            factory.unit()
         }
     }
 }
@@ -250,9 +244,6 @@ where
     }
     if let Some(b) = val.as_bool() {
         return JitValue::from_bool(b);
-    }
-    if val.is_nil() {
-        return JitValue::nil();
     }
     if val.is_unit() {
         return JitValue::unit();

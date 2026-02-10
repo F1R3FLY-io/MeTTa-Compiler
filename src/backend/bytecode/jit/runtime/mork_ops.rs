@@ -24,12 +24,12 @@ use crate::backend::models::{MettaValue, MettaValueInner};
 /// * `_ip` - Instruction pointer
 ///
 /// # Returns
-/// NaN-boxed value from MORK, or Nil if not found
+/// NaN-boxed value from MORK, or Unit if not found
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_mork_lookup(ctx: *mut JitContext, path: u64, _ip: u64) -> u64 {
     let ctx_ref = match ctx.as_ref() {
         Some(c) => c,
-        None => return JitValue::nil().to_bits(),
+        None => return JitValue::unit().to_bits(),
     };
 
     // Convert path to MettaValue
@@ -57,7 +57,7 @@ pub unsafe extern "C" fn jit_runtime_mork_lookup(ctx: *mut JitContext, path: u64
     }
 
     // Not found
-    JitValue::nil().to_bits()
+    JitValue::unit().to_bits()
 }
 
 /// Match a pattern against MORK space

@@ -306,7 +306,7 @@ where
     F: MettaValueFactory<V> + Copy + Clone,
 {
     if goals.is_empty() {
-        return (vec![factory.nil()], env);
+        return (vec![factory.unit()], env);
     }
 
     // Pass 1: Collect bindings by matching goals against space

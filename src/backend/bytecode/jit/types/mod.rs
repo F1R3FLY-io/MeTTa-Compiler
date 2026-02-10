@@ -43,7 +43,6 @@ pub use constants::{
     TAG_HEAP,
     TAG_LONG,
     TAG_MASK,
-    TAG_NIL,
     TAG_UNIT,
     TAG_VAR,
     VAR_INDEX_CACHE_SIZE,

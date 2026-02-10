@@ -47,14 +47,9 @@ fn test_nan_boxing_bool() {
 }
 
 #[test]
-fn test_nan_boxing_nil_unit() {
-    let nil = JitValue::nil();
-    assert!(nil.is_nil());
-    assert!(!nil.is_unit());
-
+fn test_nan_boxing_unit() {
     let unit = JitValue::unit();
     assert!(unit.is_unit());
-    assert!(!unit.is_nil());
 }
 
 #[test]
@@ -65,7 +60,7 @@ fn test_nan_boxing_constants() {
     assert!(JitValue::FALSE.is_bool());
     assert!(!JitValue::FALSE.as_bool());
 
-    assert!(JitValue::NIL.is_nil());
+    assert!(JitValue::UNIT.is_unit());
     assert!(JitValue::UNIT.is_unit());
 
     assert!(JitValue::ZERO.is_long());
@@ -87,10 +82,10 @@ fn test_try_from_metta() {
     assert!(v.is_some());
     assert!(v.unwrap().as_bool());
 
-    // Nil
-    let v = JitValue::try_from_metta(&MettaValue::Nil());
+    // Unit value
+    let v = JitValue::try_from_metta(&MettaValue::Unit());
     assert!(v.is_some());
-    assert!(v.unwrap().is_nil());
+    assert!(v.unwrap().is_unit());
 
     // Unit
     let v = JitValue::try_from_metta(&MettaValue::Unit());
@@ -112,17 +107,16 @@ fn test_to_metta_roundtrip() {
     let back = unsafe { jit.to_metta() };
     assert!(matches!(back.inner(), MettaValueInner::Bool(true)));
 
-    // Nil
-    let orig = MettaValue::Nil();
+    // Unit
+    let orig = MettaValue::Unit();
     let jit = JitValue::try_from_metta(&orig).unwrap();
     let back = unsafe { jit.to_metta() };
-    assert!(matches!(back.inner(), MettaValueInner::Nil));
+    assert!(matches!(back.inner(), MettaValueInner::Unit));
 }
 
 #[test]
 fn test_tag_extraction() {
     assert_eq!(JitValue::from_long(42).tag(), TAG_LONG);
     assert_eq!(JitValue::from_bool(true).tag(), TAG_BOOL);
-    assert_eq!(JitValue::nil().tag(), TAG_NIL);
     assert_eq!(JitValue::unit().tag(), TAG_UNIT);
 }

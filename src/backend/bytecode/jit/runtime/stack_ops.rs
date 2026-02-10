@@ -7,7 +7,7 @@
 //! - debug_print, debug_stack - Debugging utilities
 
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_NIL,
+    JitBailoutReason, JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_UNIT,
 };
 use crate::backend::models::MettaValue;
 use tracing::trace;
@@ -53,12 +53,12 @@ pub unsafe extern "C" fn jit_runtime_pop(ctx: *mut JitContext) -> u64 {
             // Stack underflow - signal bailout for graceful fallback
             ctx.bailout = true;
             ctx.bailout_reason = JitBailoutReason::StackUnderflow;
-            return TAG_NIL;
+            return TAG_UNIT;
         }
         ctx.sp -= 1;
         (*ctx.value_stack.add(ctx.sp)).to_bits()
     } else {
-        TAG_NIL
+        TAG_UNIT
     }
 }
 
@@ -104,7 +104,7 @@ pub unsafe extern "C" fn jit_runtime_load_constant(ctx: *const JitContext, index
                 "JIT runtime: constant pool out of bounds (index={}, len={})",
                 idx, ctx.constants_len
             );
-            return TAG_NIL;
+            return TAG_UNIT;
         }
 
         let constant = &*ctx.constants.add(idx);
@@ -119,7 +119,7 @@ pub unsafe extern "C" fn jit_runtime_load_constant(ctx: *const JitContext, index
             }
         }
     } else {
-        TAG_NIL
+        TAG_UNIT
     }
 }
 

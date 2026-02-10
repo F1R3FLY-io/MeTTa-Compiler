@@ -50,8 +50,6 @@ pub enum ArenaValueInner<'a> {
     String(&'a str),
     /// An s-expression (list of values) - Vec allocated in arena
     SExpr(BumpVec<'a, ArenaValue<'a>>),
-    /// Nil/empty
-    Nil,
     /// An error with message and details
     Error(&'a str, ArenaValue<'a>),
     /// A type (first-class types as atoms)
@@ -181,14 +179,6 @@ impl<'a> ArenaValue<'a> {
         }
     }
 
-    /// Create a Nil variant
-    #[inline]
-    pub fn nil(arena: &'a Bump) -> Self {
-        ArenaValue {
-            inner: arena.alloc(ArenaValueInner::Nil),
-        }
-    }
-
     /// Create an Error variant
     #[inline]
     pub fn error(arena: &'a Bump, msg: &str, details: ArenaValue<'a>) -> Self {
@@ -297,12 +287,6 @@ impl<'a> ArenaValue<'a> {
     #[inline]
     pub fn is_sexpr(&self) -> bool {
         matches!(self.inner, ArenaValueInner::SExpr(_))
-    }
-
-    /// Check if this is a Nil variant
-    #[inline]
-    pub fn is_nil(&self) -> bool {
-        matches!(self.inner, ArenaValueInner::Nil)
     }
 
     /// Check if this is an Error variant
@@ -481,13 +465,12 @@ impl<'a> ArenaValue<'a> {
             ArenaValueInner::Float(_) => "Number",
             ArenaValueInner::String(_) => "String",
             ArenaValueInner::SExpr(_) => "Expression",
-            ArenaValueInner::Nil => "Nil",
+            ArenaValueInner::Unit => "Unit",
             ArenaValueInner::Error(_, _) => "Error",
             ArenaValueInner::Type(_) => "Type",
             ArenaValueInner::Conjunction(_) => "Conjunction",
             ArenaValueInner::Space(_) => "Space",
             ArenaValueInner::State(_) => "State",
-            ArenaValueInner::Unit => "Unit",
             ArenaValueInner::Memo(_) => "Memo",
             ArenaValueInner::Empty => "Empty",
         }
@@ -522,7 +505,7 @@ impl<'a> fmt::Display for ArenaValue<'a> {
                 }
                 write!(f, ")")
             }
-            ArenaValueInner::Nil => write!(f, "Nil"),
+            ArenaValueInner::Unit => write!(f, "()"),
             ArenaValueInner::Error(msg, details) => write!(f, "(Error {} {})", msg, details),
             ArenaValueInner::Type(inner) => write!(f, "(: {})", inner),
             ArenaValueInner::Conjunction(goals) => {
@@ -534,7 +517,6 @@ impl<'a> fmt::Display for ArenaValue<'a> {
             }
             ArenaValueInner::Space(handle) => write!(f, "<Space:{}>", handle.name),
             ArenaValueInner::State(id) => write!(f, "<State:{}>", id),
-            ArenaValueInner::Unit => write!(f, "()"),
             ArenaValueInner::Memo(handle) => write!(f, "<Memo:{}>", handle.name),
             ArenaValueInner::Empty => write!(f, "Empty"),
         }
@@ -557,13 +539,12 @@ impl<'a> PartialEq for ArenaValueInner<'a> {
             (ArenaValueInner::Float(a), ArenaValueInner::Float(b)) => a == b,
             (ArenaValueInner::String(a), ArenaValueInner::String(b)) => a == b,
             (ArenaValueInner::SExpr(a), ArenaValueInner::SExpr(b)) => a == b,
-            (ArenaValueInner::Nil, ArenaValueInner::Nil) => true,
+            (ArenaValueInner::Unit, ArenaValueInner::Unit) => true,
             (ArenaValueInner::Error(ma, da), ArenaValueInner::Error(mb, db)) => ma == mb && da == db,
             (ArenaValueInner::Type(a), ArenaValueInner::Type(b)) => a == b,
             (ArenaValueInner::Conjunction(a), ArenaValueInner::Conjunction(b)) => a == b,
             (ArenaValueInner::Space(a), ArenaValueInner::Space(b)) => a.id == b.id,
             (ArenaValueInner::State(a), ArenaValueInner::State(b)) => a == b,
-            (ArenaValueInner::Unit, ArenaValueInner::Unit) => true,
             (ArenaValueInner::Memo(a), ArenaValueInner::Memo(b)) => a.id == b.id,
             (ArenaValueInner::Empty, ArenaValueInner::Empty) => true,
             _ => false,
@@ -609,11 +590,6 @@ impl<'a> MettaValueTrait for ArenaValue<'a> {
     #[inline]
     fn is_sexpr(&self) -> bool {
         matches!(self.inner, ArenaValueInner::SExpr(_))
-    }
-
-    #[inline]
-    fn is_nil(&self) -> bool {
-        matches!(self.inner, ArenaValueInner::Nil)
     }
 
     #[inline]
@@ -663,13 +639,13 @@ impl<'a> MettaValueTrait for ArenaValue<'a> {
 
     #[inline]
     fn is_ground_type(&self) -> bool {
+        // Unit/() is NOT a ground type — it's an expression in MeTTa HE
         matches!(
             self.inner,
             ArenaValueInner::Bool(_)
                 | ArenaValueInner::Long(_)
                 | ArenaValueInner::Float(_)
                 | ArenaValueInner::String(_)
-                | ArenaValueInner::Nil
         )
     }
 
@@ -778,13 +754,12 @@ impl<'a> MettaValueTrait for ArenaValue<'a> {
             ArenaValueInner::Float(_) => "Number",
             ArenaValueInner::String(_) => "String",
             ArenaValueInner::SExpr(_) => "Expression",
-            ArenaValueInner::Nil => "Nil",
+            ArenaValueInner::Unit => "Unit",
             ArenaValueInner::Error(_, _) => "Error",
             ArenaValueInner::Type(_) => "Type",
             ArenaValueInner::Conjunction(_) => "Conjunction",
             ArenaValueInner::Space(_) => "Space",
             ArenaValueInner::State(_) => "State",
-            ArenaValueInner::Unit => "Unit",
             ArenaValueInner::Memo(_) => "Memo",
             ArenaValueInner::Empty => "Empty",
         }
@@ -797,14 +772,13 @@ impl<'a> MettaValueTrait for ArenaValue<'a> {
             ArenaValueInner::Bool(_) => "Bool",
             ArenaValueInner::String(_) => "String",
             ArenaValueInner::Atom(_) => "Atom",
-            ArenaValueInner::Nil => "Nil",
+            ArenaValueInner::Unit => "Unit",
             ArenaValueInner::SExpr(_) => "S-expression",
             ArenaValueInner::Error(_, _) => "Error",
             ArenaValueInner::Type(_) => "Type",
             ArenaValueInner::Conjunction(_) => "Conjunction",
             ArenaValueInner::Space(_) => "Space",
             ArenaValueInner::State(_) => "State",
-            ArenaValueInner::Unit => "Unit",
             ArenaValueInner::Memo(_) => "Memo",
             ArenaValueInner::Empty => "Empty",
         }
@@ -864,12 +838,10 @@ impl<'a> MettaValueTrait for ArenaValue<'a> {
         const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
         const LONG_SEED: u64 = 0x517cc1b727220a95;
         const BOOL_SEED: u64 = 0x2d358dccaa6c78a5;
-        const NIL_HASH: u64 = 0x6e696c5f_68617368;
         const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
         const UNIT_HASH: u64 = 0x756e6974_68617368;
 
         // Fast path for primitives
-        if self.is_nil() { return NIL_HASH; }
         if self.is_unit() { return UNIT_HASH; }
         if let Some(b) = self.as_bool() {
             return if b { BOOL_SEED.wrapping_mul(GOLDEN_RATIO) } else { BOOL_SEED };
@@ -917,7 +889,6 @@ impl<'a> MettaValueTrait for ArenaValue<'a> {
                     }
                     ArenaValueInner::String(s) => result_stack.push(format!("\"{}\"", s)),
                     ArenaValueInner::Atom(a) => result_stack.push(a.to_string()),
-                    ArenaValueInner::Nil => result_stack.push("Nil".to_string()),
                     ArenaValueInner::Unit => result_stack.push("()".to_string()),
                     ArenaValueInner::Empty => result_stack.push("Empty".to_string()),
                     ArenaValueInner::Space(handle) => {
@@ -1017,7 +988,6 @@ impl<'a> MettaValueTrait for ArenaValue<'a> {
                     // Key difference: strings printed without quotes for display
                     ArenaValueInner::String(s) => result_stack.push(s.to_string()),
                     ArenaValueInner::Atom(a) => result_stack.push(a.to_string()),
-                    ArenaValueInner::Nil => result_stack.push("Nil".to_string()),
                     ArenaValueInner::Unit => result_stack.push("()".to_string()),
                     ArenaValueInner::Empty => result_stack.push("Empty".to_string()),
                     ArenaValueInner::Space(handle) => {
@@ -1101,7 +1071,7 @@ mod serialize_tags {
     pub const FLOAT: u8 = 0x04;
     pub const STRING: u8 = 0x05;
     pub const SEXPR: u8 = 0x06;
-    pub const NIL: u8 = 0x07;
+    pub const UNIT_LEGACY: u8 = 0x07;
     pub const ERROR: u8 = 0x08;
     pub const TYPE: u8 = 0x09;
     pub const CONJUNCTION: u8 = 0x0A;
@@ -1150,8 +1120,7 @@ fn hash_arena_value_for_trait<H: std::hash::Hasher>(value: &ArenaValue, hasher: 
     use std::hash::Hash;
 
     // Hash type discriminant
-    let type_tag: u8 = if value.is_nil() { 0 }
-        else if value.is_unit() { 1 }
+    let type_tag: u8 = if value.is_unit() { 0 }
         else if value.is_bool() { 2 }
         else if value.is_long() { 3 }
         else if value.is_float() { 4 }
@@ -1215,8 +1184,8 @@ fn serialize_arena_value(value: &ArenaValue, buf: &mut Vec<u8>) {
                 serialize_arena_value(item, buf);
             }
         }
-        ArenaValueInner::Nil => {
-            buf.push(NIL);
+        ArenaValueInner::Unit => {
+            buf.push(UNIT_LEGACY);
         }
         ArenaValueInner::Error(msg, details) => {
             buf.push(ERROR);
@@ -1234,9 +1203,6 @@ fn serialize_arena_value(value: &ArenaValue, buf: &mut Vec<u8>) {
             for goal in goals.iter() {
                 serialize_arena_value(goal, buf);
             }
-        }
-        ArenaValueInner::Unit => {
-            buf.push(UNIT);
         }
         ArenaValueInner::Empty => {
             buf.push(EMPTY);
@@ -1334,11 +1300,6 @@ impl<'a> MettaValueFactory<ArenaValue<'a>> for ArenaValueFactory<'a> {
     #[inline]
     fn sexpr_from_slice(&self, items: &[ArenaValue<'a>]) -> ArenaValue<'a> {
         ArenaValue::sexpr(self.arena, items.iter().copied())
-    }
-
-    #[inline]
-    fn nil(&self) -> ArenaValue<'a> {
-        ArenaValue::nil(self.arena)
     }
 
     #[inline]
@@ -1454,7 +1415,7 @@ fn deserialize_arena_value<'a>(
             }
             Ok((ArenaValue::sexpr(arena, items), offset))
         }
-        NIL => Ok((ArenaValue::nil(arena), 1)),
+        UNIT_LEGACY => Ok((ArenaValue::unit(arena), 1)),
         ERROR => {
             let (msg_len, varint_size) = read_varint(rest)?;
             let msg_start = varint_size;
@@ -1631,9 +1592,9 @@ mod tests {
     #[test]
     fn test_arena_nil() {
         let arena = Bump::new();
-        let v = ArenaValue::nil(&arena);
-        assert!(v.is_nil());
-        assert!(!v.is_unit());
+        let v = ArenaValue::unit(&arena);
+        // After Nil/Unit merge, nil() returns Unit
+        assert!(v.is_unit());
         assert!(!v.is_empty());
     }
 
@@ -1642,7 +1603,6 @@ mod tests {
         let arena = Bump::new();
         let v = ArenaValue::unit(&arena);
         assert!(v.is_unit());
-        assert!(!v.is_nil());
         assert!(!v.is_empty());
     }
 
@@ -1651,7 +1611,6 @@ mod tests {
         let arena = Bump::new();
         let v = ArenaValue::empty(&arena);
         assert!(v.is_empty());
-        assert!(!v.is_nil());
         assert!(!v.is_unit());
     }
 
@@ -1733,11 +1692,12 @@ mod tests {
         assert!(ArenaValue::long(&arena, 42).is_ground_type());
         assert!(ArenaValue::float(&arena, 3.14).is_ground_type());
         assert!(ArenaValue::string(&arena, "hello").is_ground_type());
-        assert!(ArenaValue::nil(&arena).is_ground_type());
 
         // Non-ground types
         assert!(!ArenaValue::atom(&arena, "foo").is_ground_type());
         assert!(!ArenaValue::sexpr_empty(&arena).is_ground_type());
+        // After Nil/Unit merge, Unit/() is NOT a ground type (it's an expression in MeTTa HE)
+        assert!(!ArenaValue::unit(&arena).is_ground_type());
         assert!(!ArenaValue::unit(&arena).is_ground_type());
     }
 
@@ -1798,8 +1758,8 @@ mod tests {
     #[test]
     fn test_eq_nil_nil() {
         let arena = Bump::new();
-        let v1 = ArenaValue::nil(&arena);
-        let v2 = ArenaValue::nil(&arena);
+        let v1 = ArenaValue::unit(&arena);
+        let v2 = ArenaValue::unit(&arena);
         assert_eq!(v1, v2);
     }
 
@@ -1973,15 +1933,16 @@ mod tests {
 
     #[test]
     fn test_type_name_nil() {
+        // After Nil/Unit merge, nil() returns Unit which has type_name "Unit"
         let arena = Bump::new();
-        let v = ArenaValue::nil(&arena);
-        assert_eq!(v.type_name(), "Nil");
+        let v = ArenaValue::unit(&arena);
+        assert_eq!(v.type_name(), "Unit");
     }
 
     #[test]
     fn test_type_name_error() {
         let arena = Bump::new();
-        let d = ArenaValue::nil(&arena);
+        let d = ArenaValue::unit(&arena);
         let v = ArenaValue::error(&arena, "err", d);
         assert_eq!(v.type_name(), "Error");
     }
@@ -2063,9 +2024,10 @@ mod tests {
 
     #[test]
     fn test_display_nil() {
+        // After Nil/Unit merge, nil() returns Unit which displays as "()"
         let arena = Bump::new();
-        let v = ArenaValue::nil(&arena);
-        assert_eq!(format!("{}", v), "Nil");
+        let v = ArenaValue::unit(&arena);
+        assert_eq!(format!("{}", v), "()");
     }
 
     #[test]
@@ -2174,7 +2136,7 @@ mod tests {
     #[test]
     fn test_serialize_roundtrip_nil() {
         let arena = Bump::new();
-        let original = ArenaValue::nil(&arena);
+        let original = ArenaValue::unit(&arena);
         let bytes = original.serialize();
         let (decoded, _) = deserialize_arena_value(&arena, &bytes).expect("deserialize");
         assert_eq!(original, decoded);
@@ -2302,12 +2264,12 @@ mod tests {
     #[test]
     fn test_hash_nil_unit_empty() {
         let arena = Bump::new();
-        let nil = ArenaValue::nil(&arena);
+        let nil = ArenaValue::unit(&arena);
         let unit = ArenaValue::unit(&arena);
         let empty = ArenaValue::empty(&arena);
-        // These special values should have distinct hashes
-        assert_ne!(nil.hash_value(), unit.hash_value());
-        assert_ne!(nil.hash_value(), empty.hash_value());
+        // After Nil/Unit merge, nil and unit are the same value
+        assert_eq!(nil.hash_value(), unit.hash_value());
+        // Empty is still distinct from unit
         assert_ne!(unit.hash_value(), empty.hash_value());
     }
 
@@ -2399,8 +2361,8 @@ mod tests {
         let bool_val = factory.bool(true);
         assert!(bool_val.is_bool());
 
-        let nil = factory.nil();
-        assert!(nil.is_nil());
+        let nil = factory.unit();
+        assert!(nil.is_unit()); // nil() returns Unit after Nil/Unit merge
 
         let unit = factory.unit();
         assert!(unit.is_unit());

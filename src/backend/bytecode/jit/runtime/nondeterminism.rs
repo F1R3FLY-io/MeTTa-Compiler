@@ -9,7 +9,7 @@
 use crate::backend::bytecode::jit::types::{
     JitAlternative, JitAlternativeTag, JitBailoutReason, JitChoicePoint, JitContext, JitValue,
     JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, MAX_ALTERNATIVES_INLINE,
-    MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, TAG_HEAP, TAG_NIL,
+    MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, TAG_HEAP, TAG_UNIT,
 };
 use crate::backend::models::{MettaValue, MettaValueInner};
 
@@ -207,7 +207,7 @@ pub unsafe extern "C" fn jit_runtime_fork(
 ) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     let count = count as usize;
@@ -217,7 +217,7 @@ pub unsafe extern "C" fn jit_runtime_fork(
         ctx_ref.bailout = true;
         ctx_ref.bailout_ip = ip as usize;
         ctx_ref.bailout_reason = JitBailoutReason::Fork;
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     // Get the first alternative from constant pool
@@ -227,14 +227,14 @@ pub unsafe extern "C" fn jit_runtime_fork(
         ctx_ref.bailout = true;
         ctx_ref.bailout_ip = ip as usize;
         ctx_ref.bailout_reason = JitBailoutReason::Fork;
-        return TAG_NIL;
+        return TAG_UNIT;
     };
 
     if first_index >= ctx_ref.constants_len {
         ctx_ref.bailout = true;
         ctx_ref.bailout_ip = ip as usize;
         ctx_ref.bailout_reason = JitBailoutReason::UnsupportedOperation;
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     let first_value = &*ctx_ref.constants.add(first_index);
@@ -268,7 +268,7 @@ pub unsafe extern "C" fn jit_runtime_fork(
 /// * `ip` - Instruction pointer
 ///
 /// # Returns
-/// Always returns Nil (the VM will handle backtracking)
+/// Always returns Unit (the VM will handle backtracking)
 ///
 /// # Safety
 /// The context pointer must be valid.
@@ -276,7 +276,7 @@ pub unsafe extern "C" fn jit_runtime_fork(
 pub unsafe extern "C" fn jit_runtime_yield(ctx: *mut JitContext, value: u64, ip: u64) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     // Store the result if there's space
@@ -299,7 +299,7 @@ pub unsafe extern "C" fn jit_runtime_yield(ctx: *mut JitContext, value: u64, ip:
     ctx_ref.bailout_ip = ip as usize;
     ctx_ref.bailout_reason = JitBailoutReason::Yield;
 
-    TAG_NIL
+    TAG_UNIT
 }
 
 /// Runtime function for Collect opcode
@@ -324,7 +324,7 @@ pub unsafe extern "C" fn jit_runtime_collect(
 ) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     // Signal bailout - VM needs to complete nondeterministic execution
@@ -339,8 +339,8 @@ pub unsafe extern "C" fn jit_runtime_collect(
         for i in 0..ctx_ref.results_count {
             let jit_val = *ctx_ref.results.add(i);
             let metta_val = jit_val.to_metta();
-            // Filter out Nil values (matches VM collapse semantics)
-            if !matches!(*metta_val.inner(), MettaValueInner::Nil) {
+            // Filter out Unit values (matches VM collapse semantics)
+            if !matches!(*metta_val.inner(), MettaValueInner::Unit) {
                 items.push(metta_val);
             }
         }
@@ -454,14 +454,14 @@ pub unsafe extern "C" fn jit_runtime_fork_native(
 ) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     let count = count as usize;
 
-    // If no alternatives, return Nil (fail case)
+    // If no alternatives, return Unit (fail case)
     if count == 0 {
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     // Check if we have nondet support
@@ -470,18 +470,18 @@ pub unsafe extern "C" fn jit_runtime_fork_native(
         ctx_ref.bailout = true;
         ctx_ref.bailout_ip = ip as usize;
         ctx_ref.bailout_reason = JitBailoutReason::Fork;
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     // Get the first alternative from constant pool
     let first_index = if !indices_ptr.is_null() {
         *indices_ptr as usize
     } else {
-        return TAG_NIL;
+        return TAG_UNIT;
     };
 
     if first_index >= ctx_ref.constants_len {
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     let first_value = &*ctx_ref.constants.add(first_index);
@@ -723,7 +723,7 @@ pub unsafe extern "C" fn jit_runtime_fail_native(ctx: *mut JitContext) -> u64 {
 pub unsafe extern "C" fn jit_runtime_collect_native(ctx: *mut JitContext) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     // Build SExpr from collected results
@@ -732,8 +732,8 @@ pub unsafe extern "C" fn jit_runtime_collect_native(ctx: *mut JitContext) -> u64
         for i in 0..ctx_ref.results_count {
             let jit_val = *ctx_ref.results.add(i);
             let metta_val = jit_val.to_metta();
-            // Filter out Nil values (matches VM collapse semantics)
-            if !matches!(*metta_val.inner(), MettaValueInner::Nil) {
+            // Filter out Unit values (matches VM collapse semantics)
+            if !matches!(*metta_val.inner(), MettaValueInner::Unit) {
                 items.push(metta_val);
             }
         }

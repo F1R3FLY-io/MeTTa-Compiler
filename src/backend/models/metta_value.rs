@@ -36,8 +36,6 @@ pub enum MettaValueInner {
     String(StdString),
     /// An s-expression (list of values)
     SExpr(Vec<MettaValue>),
-    /// Nil/empty
-    Nil,
     /// An error with message and details
     Error(StdString, MettaValue),
     /// A type (first-class types as atoms)
@@ -139,13 +137,6 @@ impl MettaValue {
     #[inline]
     pub fn SExpr(items: Vec<MettaValue>) -> Self {
         MettaValue(Arc::new(MettaValueInner::SExpr(items)))
-    }
-
-    /// Create a Nil variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Nil() -> Self {
-        MettaValue(Arc::new(MettaValueInner::Nil))
     }
 
     /// Create an Error variant
@@ -286,12 +277,6 @@ impl MettaValue {
     #[inline]
     pub fn is_sexpr(&self) -> bool {
         matches!(self.inner(), MettaValueInner::SExpr(_))
-    }
-
-    /// Check if this is a Nil variant
-    #[inline]
-    pub fn is_nil(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Nil)
     }
 
     /// Check if this is an Error variant
@@ -470,13 +455,12 @@ impl MettaValue {
             MettaValueInner::Float(_) => "Number",
             MettaValueInner::String(_) => "String",
             MettaValueInner::SExpr(_) => "Expression",
-            MettaValueInner::Nil => "Nil",
+            MettaValueInner::Unit => "Expression",
             MettaValueInner::Error(_, _) => "Error",
             MettaValueInner::Type(_) => "Type",
             MettaValueInner::Conjunction(_) => "Conjunction",
             MettaValueInner::Space(_) => "Space",
             MettaValueInner::State(_) => "State",
-            MettaValueInner::Unit => "Unit",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
         }
@@ -507,13 +491,13 @@ impl MettaValue {
     /// Ground types: Bool, Long, Float, String, Nil
     /// Returns true if the value doesn't require further evaluation
     pub fn is_ground_type(&self) -> bool {
+        // Unit/() is NOT a ground type — it's an expression in MeTTa HE
         matches!(
             self.inner(),
             MettaValueInner::Bool(_)
                 | MettaValueInner::Long(_)
                 | MettaValueInner::Float(_)
                 | MettaValueInner::String(_)
-                | MettaValueInner::Nil
         )
     }
 
@@ -526,14 +510,13 @@ impl MettaValue {
             MettaValueInner::Bool(_) => "Bool",
             MettaValueInner::String(_) => "String",
             MettaValueInner::Atom(_) => "Atom",
-            MettaValueInner::Nil => "Nil",
+            MettaValueInner::Unit => "Expression",
             MettaValueInner::SExpr(_) => "S-expression",
             MettaValueInner::Error(_, _) => "Error",
             MettaValueInner::Type(_) => "Type",
             MettaValueInner::Conjunction(_) => "Conjunction",
             MettaValueInner::Space(_) => "Space",
             MettaValueInner::State(_) => "State",
-            MettaValueInner::Unit => "Unit",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
         }
@@ -595,7 +578,7 @@ impl MettaValue {
             (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
             (MettaValueInner::Float(a), MettaValueInner::Float(b)) => a == b,
             (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
-            (MettaValueInner::Nil, MettaValueInner::Nil) => true,
+            (MettaValueInner::Unit, MettaValueInner::Unit) => true,
 
             // S-expressions must have same structure
             (MettaValueInner::SExpr(a_items), MettaValueInner::SExpr(b_items)) => {
@@ -633,9 +616,6 @@ impl MettaValue {
 
             // States must have same id
             (MettaValueInner::State(a_id), MettaValueInner::State(b_id)) => a_id == b_id,
-
-            // Unit matches unit
-            (MettaValueInner::Unit, MettaValueInner::Unit) => true,
 
             // Empty matches empty
             (MettaValueInner::Empty, MettaValueInner::Empty) => true,
@@ -721,7 +701,7 @@ impl MettaValue {
                     .join(" ");
                 format!("({})", inner)
             }
-            MettaValueInner::Nil => "()".to_string(),
+            MettaValueInner::Unit => "()".to_string(),
             MettaValueInner::Error(msg, details) => {
                 format!("(error \"{}\" {})", msg, details.to_mork_string())
             }
@@ -736,7 +716,6 @@ impl MettaValue {
             }
             MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
             MettaValueInner::State(id) => format!("(State {})", id),
-            MettaValueInner::Unit => "()".to_string(),
             MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
             MettaValueInner::Empty => "Empty".to_string(),
         }
@@ -755,7 +734,7 @@ impl MettaValue {
             MettaValueInner::String(s) => {
                 format!(r#"{{"type":"string","value":"{}"}}"#, escape_json(s))
             }
-            MettaValueInner::Nil => r#"{"type":"nil"}"#.to_string(),
+            MettaValueInner::Unit => r#"{"type":"unit"}"#.to_string(),
             MettaValueInner::SExpr(items) => {
                 let items_json: Vec<StdString> =
                     items.iter().map(|value| value.to_json_string()).collect();
@@ -789,7 +768,6 @@ impl MettaValue {
             MettaValueInner::State(id) => {
                 format!(r#"{{"type":"state","id":{}}}"#, id)
             }
-            MettaValueInner::Unit => r#"{"type":"unit"}"#.to_string(),
             MettaValueInner::Memo(handle) => {
                 format!(
                     r#"{{"type":"memo","id":{},"name":"{}"}}"#,
@@ -834,11 +812,11 @@ fn drop_iterative(initial: Vec<MettaValue>) {
                     work_stack.extend(std::mem::take(goals));
                 }
                 MettaValueInner::Error(_, details) => {
-                    let d = std::mem::replace(details, MettaValue::Nil());
+                    let d = std::mem::replace(details, MettaValue::Unit());
                     work_stack.push(d);
                 }
                 MettaValueInner::Type(inner_type) => {
-                    let t = std::mem::replace(inner_type, MettaValue::Nil());
+                    let t = std::mem::replace(inner_type, MettaValue::Unit());
                     work_stack.push(t);
                 }
                 _ => {}
@@ -876,11 +854,11 @@ impl Drop for MettaValue {
             }
             MettaValueInner::Error(_, details) => {
                 // Take ownership of details
-                let details = std::mem::replace(details, MettaValue::Nil());
+                let details = std::mem::replace(details, MettaValue::Unit());
                 drop_iterative(vec![details]);
             }
             MettaValueInner::Type(inner_type) => {
-                let inner_type = std::mem::replace(inner_type, MettaValue::Nil());
+                let inner_type = std::mem::replace(inner_type, MettaValue::Unit());
                 drop_iterative(vec![inner_type]);
             }
             _ => {} // Non-compound types: normal drop is fine
@@ -927,7 +905,7 @@ impl std::fmt::Display for MettaValue {
                 }
                 write!(f, ")")
             }
-            MettaValueInner::Nil => write!(f, "Nil"),
+            MettaValueInner::Unit => write!(f, "()"),
             MettaValueInner::Error(msg, details) => write!(f, "(Error {} {})", msg, details),
             MettaValueInner::Type(inner) => write!(f, "(: {})", inner),
             MettaValueInner::Conjunction(goals) => {
@@ -939,7 +917,6 @@ impl std::fmt::Display for MettaValue {
             }
             MettaValueInner::Space(handle) => write!(f, "<Space:{}>", handle.name),
             MettaValueInner::State(id) => write!(f, "<State:{}>", id),
-            MettaValueInner::Unit => write!(f, "()"),
             MettaValueInner::Memo(handle) => write!(f, "<Memo:{}>", handle.name),
             MettaValueInner::Empty => write!(f, "Empty"),
         }
@@ -978,7 +955,7 @@ impl std::hash::Hash for MettaValueInner {
                 5u8.hash(state);
                 items.hash(state);
             }
-            MettaValueInner::Nil => {
+            MettaValueInner::Unit => {
                 6u8.hash(state);
             }
             MettaValueInner::Error(msg, details) => {
@@ -1001,9 +978,6 @@ impl std::hash::Hash for MettaValueInner {
             MettaValueInner::State(id) => {
                 13u8.hash(state);
                 id.hash(state);
-            }
-            MettaValueInner::Unit => {
-                12u8.hash(state);
             }
             MettaValueInner::Memo(handle) => {
                 14u8.hash(state);
@@ -1053,7 +1027,7 @@ impl From<&str> for MettaValue {
 impl From<Vec<MettaValue>> for MettaValue {
     fn from(items: Vec<MettaValue>) -> Self {
         if items.is_empty() {
-            MettaValue::Nil()
+            MettaValue::Unit()
         } else {
             MettaValue::SExpr(items)
         }
@@ -1104,11 +1078,6 @@ impl MettaValueTrait for MettaValue {
     }
 
     #[inline]
-    fn is_nil(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Nil)
-    }
-
-    #[inline]
     fn is_error(&self) -> bool {
         matches!(self.inner(), MettaValueInner::Error(_, _))
     }
@@ -1155,13 +1124,13 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn is_ground_type(&self) -> bool {
+        // Unit/() is NOT a ground type — it's an expression in MeTTa HE
         matches!(
             self.inner(),
             MettaValueInner::Bool(_)
                 | MettaValueInner::Long(_)
                 | MettaValueInner::Float(_)
                 | MettaValueInner::String(_)
-                | MettaValueInner::Nil
         )
     }
 
@@ -1270,13 +1239,12 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::Float(_) => "Number",
             MettaValueInner::String(_) => "String",
             MettaValueInner::SExpr(_) => "Expression",
-            MettaValueInner::Nil => "Nil",
+            MettaValueInner::Unit => "Expression",
             MettaValueInner::Error(_, _) => "Error",
             MettaValueInner::Type(_) => "Type",
             MettaValueInner::Conjunction(_) => "Conjunction",
             MettaValueInner::Space(_) => "Space",
             MettaValueInner::State(_) => "State",
-            MettaValueInner::Unit => "Unit",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
         }
@@ -1289,14 +1257,13 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::Bool(_) => "Bool",
             MettaValueInner::String(_) => "String",
             MettaValueInner::Atom(_) => "Atom",
-            MettaValueInner::Nil => "Nil",
+            MettaValueInner::Unit => "Expression",
             MettaValueInner::SExpr(_) => "S-expression",
             MettaValueInner::Error(_, _) => "Error",
             MettaValueInner::Type(_) => "Type",
             MettaValueInner::Conjunction(_) => "Conjunction",
             MettaValueInner::Space(_) => "Space",
             MettaValueInner::State(_) => "State",
-            MettaValueInner::Unit => "Unit",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
         }
@@ -1385,7 +1352,6 @@ impl MettaValueTrait for MettaValue {
                     }
                     MettaValueInner::String(s) => result_stack.push(format!("\"{}\"", s)),
                     MettaValueInner::Atom(a) => result_stack.push(a.clone()),
-                    MettaValueInner::Nil => result_stack.push("Nil".to_string()),
                     MettaValueInner::Unit => result_stack.push("()".to_string()),
                     MettaValueInner::Empty => result_stack.push("Empty".to_string()),
                     MettaValueInner::Space(handle) => {
@@ -1485,7 +1451,6 @@ impl MettaValueTrait for MettaValue {
                     // Key difference: strings printed without quotes for display
                     MettaValueInner::String(s) => result_stack.push(s.clone()),
                     MettaValueInner::Atom(a) => result_stack.push(a.clone()),
-                    MettaValueInner::Nil => result_stack.push("Nil".to_string()),
                     MettaValueInner::Unit => result_stack.push("()".to_string()),
                     MettaValueInner::Empty => result_stack.push("Empty".to_string()),
                     MettaValueInner::Space(handle) => {
@@ -1569,7 +1534,7 @@ mod serialize_tags {
     pub const FLOAT: u8 = 0x04;
     pub const STRING: u8 = 0x05;
     pub const SEXPR: u8 = 0x06;
-    pub const NIL: u8 = 0x07;
+    pub const UNIT_LEGACY: u8 = 0x07;
     pub const ERROR: u8 = 0x08;
     pub const TYPE: u8 = 0x09;
     pub const CONJUNCTION: u8 = 0x0A;
@@ -1644,8 +1609,8 @@ fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
                 serialize_value(item, buf);
             }
         }
-        MettaValueInner::Nil => {
-            buf.push(NIL);
+        MettaValueInner::Unit => {
+            buf.push(UNIT_LEGACY);
         }
         MettaValueInner::Error(msg, details) => {
             buf.push(ERROR);
@@ -1663,9 +1628,6 @@ fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
             for goal in goals.iter() {
                 serialize_value(goal, buf);
             }
-        }
-        MettaValueInner::Unit => {
-            buf.push(UNIT);
         }
         MettaValueInner::Empty => {
             buf.push(EMPTY);
@@ -1736,11 +1698,6 @@ impl MettaValueFactory<MettaValue> for HeapMettaValueFactory {
     #[inline]
     fn sexpr_from_slice(&self, items: &[MettaValue]) -> MettaValue {
         MettaValue::SExpr(items.to_vec())
-    }
-
-    #[inline]
-    fn nil(&self) -> MettaValue {
-        MettaValue::Nil()
     }
 
     #[inline]
@@ -1853,7 +1810,7 @@ fn deserialize_metta_value(bytes: &[u8]) -> Result<(MettaValue, usize), std::str
             }
             Ok((MettaValue::SExpr(items), offset))
         }
-        NIL => Ok((MettaValue::Nil(), 1)),
+        UNIT_LEGACY => Ok((MettaValue::Unit(), 1)),
         ERROR => {
             let (msg_len, varint_size) = read_varint(rest)?;
             let msg_start = varint_size;
@@ -1959,8 +1916,9 @@ mod tests {
     }
 
     #[test]
-    fn test_is_ground_type_nil() {
-        assert!(MettaValue::Nil().is_ground_type());
+    fn test_is_ground_type_unit() {
+        // Unit is not a ground type — it's an expression type () in MeTTa HE
+        assert!(!MettaValue::Unit().is_ground_type());
     }
 
     #[test]
@@ -1975,7 +1933,7 @@ mod tests {
 
     #[test]
     fn test_is_ground_type_error() {
-        assert!(!MettaValue::Error("msg".to_string(), MettaValue::Nil()).is_ground_type());
+        assert!(!MettaValue::Error("msg".to_string(), MettaValue::Unit()).is_ground_type());
     }
 
     #[test]
@@ -2040,7 +1998,7 @@ mod tests {
         assert!(!MettaValue::Bool(true).is_eval_expr());
         assert!(!MettaValue::Long(42).is_eval_expr());
         assert!(!MettaValue::String("!".to_string()).is_eval_expr());
-        assert!(!MettaValue::Nil().is_eval_expr());
+        assert!(!MettaValue::Unit().is_eval_expr());
     }
 
     #[test]
@@ -2111,7 +2069,7 @@ mod tests {
         assert!(!MettaValue::Bool(true).is_rule_def());
         assert!(!MettaValue::Long(42).is_rule_def());
         assert!(!MettaValue::String("=".to_string()).is_rule_def());
-        assert!(!MettaValue::Nil().is_rule_def());
+        assert!(!MettaValue::Unit().is_rule_def());
     }
 
     #[test]
@@ -2213,7 +2171,7 @@ mod tests {
         assert!(!MettaValue::String("hello".to_string())
             .structurally_equivalent(&MettaValue::String("world".to_string())));
 
-        assert!(MettaValue::Nil().structurally_equivalent(&MettaValue::Nil()));
+        assert!(MettaValue::Unit().structurally_equivalent(&MettaValue::Unit()));
     }
 
     #[test]
@@ -2278,7 +2236,7 @@ mod tests {
         // Different enum variants are not equivalent
         assert!(!MettaValue::Bool(true).structurally_equivalent(&MettaValue::Long(1)));
         assert!(!MettaValue::Atom("x".to_string()).structurally_equivalent(&MettaValue::Long(1)));
-        assert!(!MettaValue::Nil().structurally_equivalent(&MettaValue::Long(0)));
+        assert!(!MettaValue::Unit().structurally_equivalent(&MettaValue::Long(0)));
     }
 
     // Tests for get_head_symbol
@@ -2369,7 +2327,7 @@ mod tests {
             MettaValue::String("test".to_string()).get_head_symbol(),
             None
         );
-        assert_eq!(MettaValue::Nil().get_head_symbol(), None);
+        assert_eq!(MettaValue::Unit().get_head_symbol(), None);
     }
 
     // Tests for to_mork_string
@@ -2452,7 +2410,7 @@ mod tests {
 
     #[test]
     fn test_to_mork_string_nil() {
-        assert_eq!(MettaValue::Nil().to_mork_string(), "()");
+        assert_eq!(MettaValue::Unit().to_mork_string(), "()");
     }
 
     #[test]
@@ -2544,10 +2502,10 @@ mod tests {
     }
 
     #[test]
-    fn test_to_json_string_nil() {
-        let value = MettaValue::Nil();
+    fn test_to_json_string_unit() {
+        let value = MettaValue::Unit();
         let json = value.to_json_string();
-        assert_eq!(json, r#"{"type":"nil"}"#);
+        assert_eq!(json, r#"{"type":"unit"}"#);
     }
 
     #[test]

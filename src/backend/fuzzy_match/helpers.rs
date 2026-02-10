@@ -123,8 +123,6 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &HeapEnviron
 
         TypeExpr::Unit => matches!(actual.inner(), MettaValueInner::Unit),
 
-        TypeExpr::Nil => matches!(actual.inner(), MettaValueInner::Nil),
-
         TypeExpr::Error => matches!(actual.inner(), MettaValueInner::Error(_, _)),
 
         TypeExpr::Type => {
@@ -203,7 +201,6 @@ pub fn values_compatible(a: &MettaValue, b: &MettaValue) -> bool {
         }
         (Bool(_), Bool(_)) => true,
         (String(_), String(_)) => true,
-        (Nil, Nil) => true,
         (Unit, Unit) => true,
 
         // Atoms - could be same type

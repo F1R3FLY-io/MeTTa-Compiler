@@ -37,8 +37,6 @@ pub enum TypeExpr {
     State,
     /// Unit type (empty result)
     Unit,
-    /// Nil type
-    Nil,
     /// Error type
     Error,
     /// Type type (type expressions themselves)

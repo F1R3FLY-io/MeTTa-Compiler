@@ -32,8 +32,6 @@ pub enum Opcode {
     PopN = 0x07,
 
     // === Value Creation (0x10-0x2F) ===
-    /// Push Nil value
-    PushNil = 0x10,
     /// Push Bool(true)
     PushTrue = 0x11,
     /// Push Bool(false)
@@ -122,8 +120,8 @@ pub enum Opcode {
     JumpIfFalse = 0x51,
     /// Jump if top is Bool(true), offset is next 2 bytes
     JumpIfTrue = 0x52,
-    /// Jump if top is Nil, offset is next 2 bytes
-    JumpIfNil = 0x53,
+    /// Jump if top is Unit, offset is next 2 bytes
+    JumpIfUnit = 0x53,
     /// Jump if top is Error, offset is next 2 bytes
     JumpIfError = 0x54,
     /// Multi-way branch via jump table
@@ -413,7 +411,6 @@ impl Opcode {
             | Self::Swap
             | Self::Rot3
             | Self::Over
-            | Self::PushNil
             | Self::PushTrue
             | Self::PushFalse
             | Self::PushUnit
@@ -567,7 +564,7 @@ impl Opcode {
             | Self::Jump
             | Self::JumpIfFalse
             | Self::JumpIfTrue
-            | Self::JumpIfNil
+            | Self::JumpIfUnit
             | Self::JumpIfError
             | Self::JumpTable
             | Self::MatchGuard
@@ -599,7 +596,6 @@ impl Opcode {
             Self::Over => "over",
             Self::DupN => "dupn",
             Self::PopN => "popn",
-            Self::PushNil => "push_nil",
             Self::PushTrue => "push_true",
             Self::PushFalse => "push_false",
             Self::PushUnit => "push_unit",
@@ -641,7 +637,7 @@ impl Opcode {
             Self::Jump => "jump",
             Self::JumpIfFalse => "jump_if_false",
             Self::JumpIfTrue => "jump_if_true",
-            Self::JumpIfNil => "jump_if_nil",
+            Self::JumpIfUnit => "jump_if_unit",
             Self::JumpIfError => "jump_if_error",
             Self::JumpTable => "jump_table",
             Self::JumpShort => "jump_short",
@@ -774,7 +770,7 @@ impl Opcode {
             Self::Jump
                 | Self::JumpIfFalse
                 | Self::JumpIfTrue
-                | Self::JumpIfNil
+                | Self::JumpIfUnit
                 | Self::JumpIfError
                 | Self::JumpTable
                 | Self::JumpShort
@@ -830,7 +826,6 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x07] = Some(Opcode::PopN);
 
     // Value creation
-    table[0x10] = Some(Opcode::PushNil);
     table[0x11] = Some(Opcode::PushTrue);
     table[0x12] = Some(Opcode::PushFalse);
     table[0x13] = Some(Opcode::PushUnit);
@@ -878,7 +873,7 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x50] = Some(Opcode::Jump);
     table[0x51] = Some(Opcode::JumpIfFalse);
     table[0x52] = Some(Opcode::JumpIfTrue);
-    table[0x53] = Some(Opcode::JumpIfNil);
+    table[0x53] = Some(Opcode::JumpIfUnit);
     table[0x54] = Some(Opcode::JumpIfError);
     table[0x55] = Some(Opcode::JumpTable);
     table[0x56] = Some(Opcode::JumpShort);
@@ -1036,7 +1031,6 @@ mod tests {
             Opcode::Pop,
             Opcode::Dup,
             Opcode::Swap,
-            Opcode::PushNil,
             Opcode::PushTrue,
             Opcode::PushFalse,
             Opcode::PushLong,

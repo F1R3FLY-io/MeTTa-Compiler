@@ -245,10 +245,8 @@ where
                     print!("{}", n);
                 } else if let Some(b) = arg.as_bool() {
                     print!("{}", if b { "True" } else { "False" });
-                } else if arg.is_nil() {
-                    print!("()");
                 } else if arg.is_unit() {
-                    print!("Unit");
+                    print!("()");
                 } else if let Some(name) = arg.as_atom() {
                     print!("{}", name);
                 } else {

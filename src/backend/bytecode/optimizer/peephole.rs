@@ -398,10 +398,10 @@ impl PeepholeOptimizer {
                 };
             }
 
-            // PushNil/PushUnit/PushTrue/PushFalse/PushEmpty; Pop → remove both
+            // PushUnit/PushTrue/PushFalse/PushEmpty; Pop → remove both
             let is_simple_push = matches!(
                 Opcode::from_byte(op),
-                Some(Opcode::PushNil)
+                Some(Opcode::PushUnit)
                     | Some(Opcode::PushTrue)
                     | Some(Opcode::PushFalse)
                     | Some(Opcode::PushUnit)
@@ -703,7 +703,7 @@ impl PeepholeOptimizer {
                 Opcode::Jump
                 | Opcode::JumpIfFalse
                 | Opcode::JumpIfTrue
-                | Opcode::JumpIfNil
+                | Opcode::JumpIfUnit
                 | Opcode::JumpIfError => {
                     if offset + 2 < code.len() {
                         let old_jump_offset =

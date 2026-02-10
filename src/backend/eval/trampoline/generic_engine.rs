@@ -159,8 +159,8 @@ where
             return Some(bindings);
         }
 
-        // Empty atom pattern matches Nil (HE-compatible: Empty pattern matches () values)
-        if pattern_name == "Empty" && value.is_nil() {
+        // Empty atom pattern matches Empty sentinel
+        if pattern_name == "Empty" && value.is_empty() {
             return Some(GenericBindings::new());
         }
 
@@ -182,10 +182,6 @@ where
                 if value_items.is_empty() {
                     return Some(GenericBindings::new());
                 }
-            }
-            // Empty S-expr matches Nil
-            if value.is_nil() {
-                return Some(GenericBindings::new());
             }
             // Empty S-expr matches Unit
             if value.is_unit() {
@@ -290,38 +286,20 @@ where
         };
     }
 
-    // Nil pattern matches various "empty" values (HE-compatible)
-    if pattern.is_nil() {
-        // Nil matches Nil
-        if value.is_nil() {
-            return Some(GenericBindings::new());
-        }
-        // Nil matches Unit (HE-compatible: both represent "nothing")
+    // Unit pattern matches Unit and empty S-expr
+    if pattern.is_unit() {
         if value.is_unit() {
             return Some(GenericBindings::new());
         }
-        // Nil matches empty S-expr
         if let Some(items) = value.as_sexpr() {
             if items.is_empty() {
                 return Some(GenericBindings::new());
             }
         }
-        // Nil matches Atom("Empty") (HE-compatible: () pattern in case matches Empty)
         if let Some(name) = value.as_atom() {
             if name == "Empty" {
                 return Some(GenericBindings::new());
             }
-        }
-        return None;
-    }
-
-    // Unit matches Unit and Nil
-    if pattern.is_unit() {
-        if value.is_unit() {
-            return Some(GenericBindings::new());
-        }
-        if value.is_nil() {
-            return Some(GenericBindings::new());
         }
         return None;
     }
@@ -380,7 +358,7 @@ pub fn pattern_specificity_generic<V: MettaValueTrait>(pattern: &V) -> usize {
         }
 
         // Ground types contribute 0
-        if val.is_bool() || val.is_long() || val.is_float() || val.is_string() || val.is_nil() {
+        if val.is_bool() || val.is_long() || val.is_float() || val.is_string() || val.is_unit() {
             continue;
         }
 
@@ -713,57 +691,48 @@ mod tests {
     }
 
     #[test]
-    fn test_pattern_match_nil_unit_cross_match() {
-        // Nil pattern matches Unit (HE-compatible)
-        let pattern = MettaValue::Nil();
+    fn test_pattern_match_unit_unit() {
+        // Unit pattern matches Unit
+        let pattern = MettaValue::Unit();
         let value = MettaValue::Unit();
         let bindings = pattern_match_generic(&pattern, &value);
         assert!(bindings.is_some());
     }
 
     #[test]
-    fn test_pattern_match_unit_nil_cross_match() {
-        // Unit pattern matches Nil
+    fn test_pattern_match_unit_empty_sexpr() {
+        // Unit pattern matches empty S-expression (SExpr([]) normalizes to Unit)
         let pattern = MettaValue::Unit();
-        let value = MettaValue::Nil();
-        let bindings = pattern_match_generic(&pattern, &value);
-        assert!(bindings.is_some());
-    }
-
-    #[test]
-    fn test_pattern_match_nil_empty_sexpr() {
-        // Nil pattern matches empty S-expression
-        let pattern = MettaValue::Nil();
         let value = MettaValue::SExpr(vec![]);
         let bindings = pattern_match_generic(&pattern, &value);
         assert!(bindings.is_some());
     }
 
     #[test]
-    fn test_pattern_match_empty_sexpr_nil() {
-        // Empty S-expression pattern matches Nil
+    fn test_pattern_match_empty_sexpr_unit() {
+        // Empty S-expression pattern matches Unit (SExpr([]) normalizes to Unit)
         let pattern = MettaValue::SExpr(vec![]);
-        let value = MettaValue::Nil();
+        let value = MettaValue::Unit();
         let bindings = pattern_match_generic(&pattern, &value);
         assert!(bindings.is_some());
     }
 
     #[test]
-    fn test_pattern_match_nil_empty_atom() {
-        // Nil pattern matches Atom("Empty")
-        let pattern = MettaValue::Nil();
+    fn test_pattern_match_unit_empty_atom() {
+        // Unit pattern matches Atom("Empty")
+        let pattern = MettaValue::Unit();
         let value = MettaValue::Atom("Empty".to_string());
         let bindings = pattern_match_generic(&pattern, &value);
         assert!(bindings.is_some());
     }
 
     #[test]
-    fn test_pattern_match_empty_atom_nil() {
-        // Atom("Empty") pattern matches Nil
+    fn test_pattern_match_empty_atom_unit() {
+        // Atom("Empty") does NOT match Unit -- they are different values.
         let pattern = MettaValue::Atom("Empty".to_string());
-        let value = MettaValue::Nil();
+        let value = MettaValue::Unit();
         let bindings = pattern_match_generic(&pattern, &value);
-        assert!(bindings.is_some());
+        assert!(bindings.is_none());
     }
 
     #[test]

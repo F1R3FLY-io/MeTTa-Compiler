@@ -29,7 +29,7 @@ use crate::backend::models::{MettaValue, MettaValueInner};
 /// - ctx must be a valid pointer to a JitContext
 ///
 /// # Returns
-/// NaN-boxed value of the global, or Nil if not found
+/// NaN-boxed value of the global, or Unit if not found
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_load_global(
     ctx: *const JitContext,
@@ -38,7 +38,7 @@ pub unsafe extern "C" fn jit_runtime_load_global(
 ) -> u64 {
     let ctx_ref = match ctx.as_ref() {
         Some(c) => c,
-        None => return JitValue::nil().to_bits(),
+        None => return JitValue::unit().to_bits(),
     };
 
     // Get symbol name from constants
@@ -55,7 +55,7 @@ pub unsafe extern "C" fn jit_runtime_load_global(
 
     let name = match symbol_name {
         Some(n) => n,
-        None => return JitValue::nil().to_bits(),
+        None => return JitValue::unit().to_bits(),
     };
 
     // Try to look up through the bridge if available
@@ -78,8 +78,8 @@ pub unsafe extern "C" fn jit_runtime_load_global(
         }
     }
 
-    // Not found - return Nil
-    JitValue::nil().to_bits()
+    // Not found - return Unit
+    JitValue::unit().to_bits()
 }
 
 /// Phase 1.5: Store global variable by symbol index
@@ -112,7 +112,7 @@ pub unsafe extern "C" fn jit_runtime_store_global(
 /// - ctx must be a valid pointer to a JitContext
 ///
 /// # Returns
-/// NaN-boxed space handle (currently returns Nil as placeholder)
+/// NaN-boxed space handle (currently returns Unit as placeholder)
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_load_space(
     ctx: *const JitContext,
@@ -133,11 +133,11 @@ pub unsafe extern "C" fn jit_runtime_load_space(
             MettaValueInner::String(name) => name.clone(),
             _ => {
                 // Not a valid space name
-                return JitValue::nil().to_bits();
+                return JitValue::unit().to_bits();
             }
         }
     } else {
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     };
 
     // Space Ops Phase 2: Check for grounded references first
@@ -189,18 +189,18 @@ pub unsafe extern "C" fn jit_runtime_load_grounded_space(
     // Check bounds
     let index = index as usize;
     if index >= ctx.grounded_spaces_count {
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     // Check if grounded spaces are set
     if ctx.grounded_spaces.is_null() {
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     // Load the pre-resolved space handle pointer
     let space_ptr = *ctx.grounded_spaces.add(index);
     if space_ptr.is_null() {
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     // The space_ptr points to a SpaceHandle
@@ -250,7 +250,7 @@ pub fn is_grounded_ref(name: &str) -> bool {
 /// - ctx must be a valid pointer to a JitContext
 ///
 /// # Returns
-/// NaN-boxed value from the closure environment, or Nil if not found
+/// NaN-boxed value from the closure environment, or Unit if not found
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_load_upvalue(
     ctx: *const JitContext,
@@ -267,7 +267,7 @@ pub unsafe extern "C" fn jit_runtime_load_upvalue(
 
     // Calculate target frame (binding frames are in reverse order)
     if ctx.binding_frames_count <= depth {
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     let frame_idx = ctx.binding_frames_count - 1 - depth;
@@ -281,5 +281,5 @@ pub unsafe extern "C" fn jit_runtime_load_upvalue(
         return entry_ref.value.to_bits();
     }
 
-    JitValue::nil().to_bits()
+    JitValue::unit().to_bits()
 }

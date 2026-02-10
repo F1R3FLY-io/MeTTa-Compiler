@@ -302,11 +302,6 @@ impl MettaValueFactory<ArenaValue<'static>> for StorageFactory {
     }
 
     #[inline]
-    fn nil(&self) -> ArenaValue<'static> {
-        ArenaValue::nil(self.arena)
-    }
-
-    #[inline]
     fn error(&self, msg: &str, details: ArenaValue<'static>) -> ArenaValue<'static> {
         ArenaValue::error(self.arena, msg, details)
     }
@@ -551,7 +546,6 @@ where
                 .collect();
             target_factory.sexpr(cloned)
         }
-        ArenaValueInner::Nil => target_factory.nil(),
         ArenaValueInner::Unit => target_factory.unit(),
         ArenaValueInner::Empty => target_factory.empty(),
         ArenaValueInner::Conjunction(goals) => {
@@ -772,10 +766,10 @@ mod tests {
         let c = clone_value(&v, &storage_factory);
         assert_eq!(c.as_string(), Some("world"));
 
-        // Nil
-        let v = eval_factory.nil();
+        // Unit
+        let v = eval_factory.unit();
         let c = clone_value(&v, &storage_factory);
-        assert!(c.is_nil());
+        assert!(c.is_unit());
 
         // Unit
         let v = eval_factory.unit();

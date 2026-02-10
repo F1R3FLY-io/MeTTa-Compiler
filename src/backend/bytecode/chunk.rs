@@ -402,7 +402,7 @@ impl BytecodeChunk {
                     Opcode::Jump
                     | Opcode::JumpIfFalse
                     | Opcode::JumpIfTrue
-                    | Opcode::JumpIfNil
+                    | Opcode::JumpIfUnit
                     | Opcode::JumpIfError => {
                         let target = (offset as isize + 3 + (value as i16) as isize) as usize;
                         format!(" -> {:04x}", target)
@@ -1335,13 +1335,13 @@ mod tests {
     #[test]
     fn test_chunk_builder_basic() {
         let mut builder = ChunkBuilder::new("test");
-        builder.emit(Opcode::PushNil);
+        builder.emit(Opcode::PushUnit);
         builder.emit(Opcode::PushTrue);
         builder.emit(Opcode::Return);
 
         let chunk = builder.build();
         assert_eq!(chunk.len(), 3);
-        assert_eq!(chunk.read_opcode(0), Some(Opcode::PushNil));
+        assert_eq!(chunk.read_opcode(0), Some(Opcode::PushUnit));
         assert_eq!(chunk.read_opcode(1), Some(Opcode::PushTrue));
         assert_eq!(chunk.read_opcode(2), Some(Opcode::Return));
     }
@@ -1370,7 +1370,7 @@ mod tests {
         // if (cond) { body } else { else_body }
         builder.emit(Opcode::PushTrue);
         let else_jump = builder.emit_jump(Opcode::JumpIfFalse);
-        builder.emit(Opcode::PushNil); // then body
+        builder.emit(Opcode::PushUnit); // then body
         let end_jump = builder.emit_jump(Opcode::Jump);
         builder.patch_jump(else_jump);
         builder.emit(Opcode::PushFalse); // else body
@@ -1389,7 +1389,7 @@ mod tests {
     fn test_chunk_line_info() {
         let mut builder = ChunkBuilder::new("test");
         builder.set_line(1);
-        builder.emit(Opcode::PushNil);
+        builder.emit(Opcode::PushUnit);
         builder.set_line(2);
         builder.emit(Opcode::PushTrue);
         builder.emit(Opcode::PushFalse);
@@ -1577,7 +1577,7 @@ mod tests {
         let mut builder = ChunkBuilder::new("test_control");
         builder.emit(Opcode::PushTrue);
         let else_jump = builder.emit_jump(Opcode::JumpIfFalse);
-        builder.emit(Opcode::PushNil);
+        builder.emit(Opcode::PushUnit);
         let end_jump = builder.emit_jump(Opcode::Jump);
         builder.patch_jump(else_jump);
         builder.emit(Opcode::PushFalse);

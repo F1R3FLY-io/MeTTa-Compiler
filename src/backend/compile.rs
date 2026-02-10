@@ -99,7 +99,7 @@ where
         MettaExpr::Float(f, _span) => Ok(factory.float(*f)),
         MettaExpr::List(items, _span) => {
             if items.is_empty() {
-                // HE-compatible: () is an empty S-expression, not Nil
+                // HE-compatible: () is an empty S-expression, not unit
                 Ok(factory.sexpr(vec![]))
             } else {
                 // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
@@ -352,7 +352,7 @@ impl TryFrom<&MettaExpr> for MettaValue {
             MettaExpr::Float(f, _span) => Ok(MettaValue::Float(*f)),
             MettaExpr::List(items, _span) => {
                 if items.is_empty() {
-                    // HE-compatible: () is an empty S-expression, not Nil
+                    // HE-compatible: () is an empty S-expression, not unit
                     // This allows collapse to produce (()) and () to evaluate to ()
                     Ok(MettaValue::SExpr(vec![]))
                 } else {

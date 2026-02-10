@@ -39,10 +39,10 @@ impl BytecodeVM {
         Ok(())
     }
 
-    pub(super) fn op_jump_if_nil(&mut self) -> VmResult<()> {
+    pub(super) fn op_jump_if_unit(&mut self) -> VmResult<()> {
         let offset = self.read_i16()?;
         let cond = self.pop()?;
-        if matches!(cond.inner(), MettaValueInner::Nil) {
+        if matches!(cond.inner(), MettaValueInner::Unit) {
             self.ip = (self.ip as isize + offset as isize) as usize;
         }
         Ok(())

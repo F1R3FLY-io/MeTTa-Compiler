@@ -226,14 +226,10 @@ pub(crate) fn values_equal(a: &MettaValue, b: &MettaValue) -> bool {
         (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => x == y,
         (MettaValueInner::String(x), MettaValueInner::String(y)) => x == y,
         (MettaValueInner::Atom(x), MettaValueInner::Atom(y)) => x == y,
-        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
         (MettaValueInner::Unit, MettaValueInner::Unit) => true,
-        // HE compatibility: Nil equals empty SExpr
-        (MettaValueInner::Nil, MettaValueInner::SExpr(items))
-        | (MettaValueInner::SExpr(items), MettaValueInner::Nil) => items.is_empty(),
-        // HE compatibility: Nil equals Unit
-        (MettaValueInner::Nil, MettaValueInner::Unit)
-        | (MettaValueInner::Unit, MettaValueInner::Nil) => true,
+        // HE compatibility: Unit equals empty SExpr
+        (MettaValueInner::Unit, MettaValueInner::SExpr(items))
+        | (MettaValueInner::SExpr(items), MettaValueInner::Unit) => items.is_empty(),
         (MettaValueInner::SExpr(x), MettaValueInner::SExpr(y)) => {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
         }

@@ -50,8 +50,8 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 s.replace("\\", "\\\\").replace("\"", "\\\"")
             ))
         }
-        MettaValueInner::Nil => {
-            // Represent Nil as empty Par
+        MettaValueInner::Unit => {
+            // Represent Unit as empty Par
             Par::default()
         }
         MettaValueInner::SExpr(items) => {
@@ -132,16 +132,6 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
             Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple {
                     ps,
-                    locally_free: Vec::new(),
-                    connective_used: false,
-                })),
-            }])
-        }
-        MettaValueInner::Unit => {
-            // Represent unit as empty tuple
-            Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-                    ps: vec![],
                     locally_free: Vec::new(),
                     connective_used: false,
                 })),
@@ -476,7 +466,7 @@ pub fn metta_state_to_pathmap_par(state: &MettaState) -> Par {
 /// Returns a PathMap containing the error (to maintain consistent type)
 pub fn metta_error_to_par(error_msg: &str) -> Par {
     // Create an error MettaValue
-    let error_value = MettaValue::Error(error_msg.to_string(), MettaValue::Nil());
+    let error_value = MettaValue::Error(error_msg.to_string(), MettaValue::Unit());
 
     // Create a MettaState with the error in output
     let error_state = MettaState {
@@ -494,7 +484,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
     trace!(target: "mettatron::rholang_integration::par_to_metta_value", ?par, "Par value");
     // Handle empty Par (Nil)
     if par.exprs.is_empty() && par.unforgeables.is_empty() && par.sends.is_empty() {
-        return Ok(MettaValue::Nil());
+        return Ok(MettaValue::Unit());
     }
 
     // Get the first expression
@@ -1697,12 +1687,12 @@ mod tests {
     }
 
     #[test]
-    fn test_metta_value_nil_to_par() {
-        let nil_val = MettaValue::Nil();
-        let par = metta_value_to_par(&nil_val);
+    fn test_metta_value_unit_to_par_empty() {
+        let unit_val = MettaValue::Unit();
+        let par = metta_value_to_par(&unit_val);
 
-        // Nil should be empty Par
-        assert!(par.exprs.is_empty(), "Nil should be empty Par");
+        // Unit should be empty Par
+        assert!(par.exprs.is_empty(), "Unit should be empty Par");
     }
 
     #[test]
@@ -1735,13 +1725,8 @@ mod tests {
         let unit_val = MettaValue::Unit();
         let par = metta_value_to_par(&unit_val);
 
-        // Unit should be empty tuple
-        assert_eq!(par.exprs.len(), 1);
-        if let Some(ExprInstance::ETupleBody(tuple)) = &par.exprs[0].expr_instance {
-            assert!(tuple.ps.is_empty(), "Unit should be empty tuple");
-        } else {
-            panic!("Expected ETupleBody for Unit");
-        }
+        // Unit maps to empty Par (no expressions)
+        assert_eq!(par.exprs.len(), 0);
     }
 
     #[test]
@@ -1900,11 +1885,11 @@ mod tests {
 
     #[test]
     fn test_par_to_metta_value_empty_par() {
-        // Empty Par should return Nil
+        // Empty Par should return Unit
         let empty_par = Par::default();
         let result = par_to_metta_value(&empty_par).unwrap();
 
-        assert!(matches!(result.inner(), MettaValueInner::Nil));
+        assert!(matches!(result.inner(), MettaValueInner::Unit));
     }
 
     #[test]
@@ -1915,7 +1900,7 @@ mod tests {
         par.exprs = vec![];
         par.unforgeables = vec![];
 
-        // This should return Nil (empty Par case)
+        // This should return Unit (empty Par case)
         let result = par_to_metta_value(&par);
         assert!(result.is_ok());
     }

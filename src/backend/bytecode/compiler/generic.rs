@@ -77,11 +77,6 @@ where
     /// Compile a value expression
     pub fn compile(&mut self, expr: &V) -> CompileResult<()> {
         // Dispatch based on value type using trait methods
-        if expr.is_nil() {
-            self.builder.emit(Opcode::PushNil);
-            return Ok(());
-        }
-
         if expr.is_unit() {
             self.builder.emit(Opcode::PushUnit);
             return Ok(());
@@ -773,7 +768,7 @@ where
         if args.len() == 3 {
             self.compile(&args[2])?;
         } else {
-            self.builder.emit(Opcode::PushNil);
+            self.builder.emit(Opcode::PushUnit);
         }
 
         self.builder.patch_jump(end_jump);

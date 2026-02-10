@@ -41,7 +41,7 @@ pub unsafe extern "C" fn jit_runtime_call_native(
     use crate::backend::HeapEnvironment;
 
     if ctx.is_null() {
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
     let ctx_ref = &mut *ctx;
 
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn jit_runtime_call_native(
     for _i in 0..arg_count as usize {
         if ctx_ref.sp < 1 {
             warn!(target: "mettatron::jit::runtime::call", ip, "Stack underflow in call_native");
-            return JitValue::nil().to_bits();
+            return JitValue::unit().to_bits();
         }
         ctx_ref.sp -= 1;
         let val = *ctx_ref.value_stack.add(ctx_ref.sp);
@@ -78,7 +78,7 @@ pub unsafe extern "C" fn jit_runtime_call_native(
         }
         Err(e) => {
             warn!(target: "mettatron::jit::runtime::call", ip, error = %e, "Native call error");
-            JitValue::nil().to_bits()
+            JitValue::unit().to_bits()
         }
     }
 }
@@ -103,7 +103,7 @@ pub unsafe extern "C" fn jit_runtime_call_external(
     ip: u64,
 ) -> u64 {
     if ctx.is_null() {
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
     let ctx_ref = &mut *ctx;
 
@@ -127,7 +127,7 @@ pub unsafe extern "C" fn jit_runtime_call_external(
                 ctx_ref.sp -= 1;
             }
         }
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     let name_constant = &*ctx_ref.constants.add(name_index);
@@ -141,7 +141,7 @@ pub unsafe extern "C" fn jit_runtime_call_external(
                     ctx_ref.sp -= 1;
                 }
             }
-            return JitValue::nil().to_bits();
+            return JitValue::unit().to_bits();
         }
     };
 
@@ -152,7 +152,7 @@ pub unsafe extern "C" fn jit_runtime_call_external(
     // Pop arguments from stack in reverse order
     if ctx_ref.sp < arg_count_usize {
         warn!(target: "mettatron::jit::runtime::call", ip, "Stack underflow in call_external");
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     // Read arguments in correct order (oldest first)
@@ -221,7 +221,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
     use crate::backend::bytecode::memo_cache::MemoCache;
 
     if ctx.is_null() {
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
     let ctx_ref = &mut *ctx;
 
@@ -234,7 +234,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
                 ctx_ref.sp -= 1;
             }
         }
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     let head_constant = &*ctx_ref.constants.add(head_index);
@@ -247,7 +247,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
                     ctx_ref.sp -= 1;
                 }
             }
-            return JitValue::nil().to_bits();
+            return JitValue::unit().to_bits();
         }
     };
 
@@ -255,7 +255,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
     let arg_count_usize = arg_count as usize;
     if ctx_ref.sp < arg_count_usize {
         warn!(target: "mettatron::jit::runtime::call", ip, "Stack underflow in call_cached");
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     let stack_base = ctx_ref.sp - arg_count_usize;

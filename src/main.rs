@@ -152,7 +152,6 @@ fn format_result(value: &ArenaValue) -> String {
         ArenaValueInner::Long(n) => n.to_string(),
         ArenaValueInner::Float(f) => f.to_string(),
         ArenaValueInner::String(s) => format!("\"{}\"", s),
-        ArenaValueInner::Nil => "Nil".to_string(),
         ArenaValueInner::Error(msg, details) => {
             format!("(Error {} {})", msg, format_result(details))
         }

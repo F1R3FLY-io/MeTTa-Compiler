@@ -29,7 +29,7 @@ fn run_jit_iterations(iterations: usize) {
 
         if let Ok(code_ptr) = compiler.compile(&chunk) {
             let constants = chunk.constants();
-            let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+            let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
             // Execute the compiled code
             let mut ctx = unsafe {

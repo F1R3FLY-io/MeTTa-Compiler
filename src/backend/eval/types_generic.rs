@@ -38,8 +38,8 @@ where
     if expr.is_string() {
         return factory.atom("String");
     }
-    if expr.is_nil() {
-        return factory.atom("Nil");
+    if expr.is_unit() {
+        return factory.atom("Expression");
     }
 
     // Type values have type Type
@@ -60,11 +60,6 @@ where
     // State references have State type
     if expr.is_state() {
         return factory.atom("State");
-    }
-
-    // Unit has Unit type
-    if expr.is_unit() {
-        return factory.atom("Unit");
     }
 
     // Memo tables have Memo type
@@ -96,7 +91,7 @@ where
     // For s-expressions, try to infer from function application
     if let Some(items) = expr.as_sexpr() {
         if items.is_empty() {
-            return factory.atom("Nil");
+            return factory.atom("Expression");
         }
 
         // Get the operator/function
@@ -138,7 +133,7 @@ where
     // For conjunctions, type is the type of the last goal
     if let Some(goals) = expr.as_conjunction() {
         if goals.is_empty() {
-            return factory.atom("Nil");
+            return factory.atom("Expression");
         }
         if let Some(last) = goals.last() {
             return infer_type_generic(last, factory, env);
@@ -163,7 +158,6 @@ where
         TypeExpr::Space => factory.atom("Space"),
         TypeExpr::State => factory.atom("State"),
         TypeExpr::Unit => factory.atom("Unit"),
-        TypeExpr::Nil => factory.atom("Nil"),
         TypeExpr::Error => factory.atom("Error"),
         TypeExpr::Type => factory.atom("Type"),
         TypeExpr::Any => factory.atom("Any"),
@@ -251,8 +245,8 @@ fn types_match_generic<V: MettaValueTrait>(actual: &V, expected: &V) -> bool {
             .all(|(a, e)| types_match_generic(a, e));
     }
 
-    // Nil matches Nil
-    if actual.is_nil() && expected.is_nil() {
+    // Unit matches Unit
+    if actual.is_unit() && expected.is_unit() {
         return true;
     }
 

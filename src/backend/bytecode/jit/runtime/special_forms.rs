@@ -58,16 +58,16 @@ pub unsafe extern "C" fn jit_runtime_eval_if(
     else_val: u64,
     _ip: u64,
 ) -> u64 {
-    use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_NIL};
+    use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_UNIT};
 
     // True is TAG_BOOL | 1, False is TAG_BOOL | 0
     let tag_bool_true = TAG_BOOL | 1;
     let tag_bool_false = TAG_BOOL;
 
-    // Check condition - True returns then_val, False/Nil returns else_val
+    // Check condition - True returns then_val, False/Unit returns else_val
     if condition == tag_bool_true {
         then_val
-    } else if condition == tag_bool_false || condition == TAG_NIL {
+    } else if condition == tag_bool_false || condition == TAG_UNIT {
         else_val
     } else {
         // Non-boolean truthy - return then branch

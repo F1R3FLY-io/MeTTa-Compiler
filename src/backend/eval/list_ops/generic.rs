@@ -44,7 +44,7 @@ where
         )];
     }
 
-    if expr.is_nil() {
+    if expr.is_unit() {
         return vec![factory.error(
             "car-atom expects a non-empty expression as argument",
             expr.clone(),
@@ -89,7 +89,7 @@ where
         )];
     }
 
-    if expr.is_nil() {
+    if expr.is_unit() {
         return vec![factory.error(
             "cdr-atom expects a non-empty expression as argument",
             expr.clone(),
@@ -129,7 +129,7 @@ where
         return vec![factory.sexpr(result)];
     }
 
-    if tail.is_nil() {
+    if tail.is_unit() {
         return vec![factory.sexpr(vec![head.clone()])];
     }
 
@@ -169,7 +169,7 @@ where
         return vec![];
     }
 
-    if expr.is_nil() || expr.is_unit() {
+    if expr.is_unit() || expr.is_unit() {
         // Empty/Unit - nondeterministic failure (return nothing)
         return vec![];
     }
@@ -204,7 +204,7 @@ where
         return vec![factory.long(elements.len() as i64)];
     }
 
-    if expr.is_nil() {
+    if expr.is_unit() {
         return vec![factory.long(0)];
     }
 
@@ -259,7 +259,7 @@ where
         }
     }
 
-    if expr.is_nil() {
+    if expr.is_unit() {
         return vec![factory.error(
             "max-atom expects a non-empty expression",
             expr.clone(),
@@ -316,7 +316,7 @@ where
         }
     }
 
-    if expr.is_nil() {
+    if expr.is_unit() {
         return vec![factory.error(
             "min-atom expects a non-empty expression",
             expr.clone(),

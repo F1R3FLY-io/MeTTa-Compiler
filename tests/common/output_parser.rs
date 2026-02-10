@@ -37,7 +37,7 @@ impl MettaValueTestExt for MettaValue {
             MettaValueInner::Error(msg, details) => {
                 format!("(error \"{}\" {})", msg, details.to_display_string())
             }
-            MettaValueInner::Nil => "()".to_string(),
+            MettaValueInner::Unit => "()".to_string(),
             MettaValueInner::Type(t) => format!("Type({})", t.to_display_string()),
             MettaValueInner::Conjunction(goals) => {
                 let inner: Vec<String> = goals.iter().map(|g| g.to_display_string()).collect();
@@ -45,7 +45,6 @@ impl MettaValueTestExt for MettaValue {
             }
             MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
             MettaValueInner::State(id) => format!("(State {})", id),
-            MettaValueInner::Unit => "()".to_string(),
             MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
             MettaValueInner::Empty => "Empty".to_string(),
         }
@@ -63,12 +62,11 @@ impl MettaValueTestExt for MettaValue {
             MettaValueInner::Atom(sym) => sym == s,
             MettaValueInner::SExpr(_) => self.to_display_string() == s,
             MettaValueInner::Error(_, _) => self.to_display_string() == s,
-            MettaValueInner::Nil => s == "()" || s == "Nil",
+            MettaValueInner::Unit => s == "()",
             MettaValueInner::Type(_) => self.to_display_string() == s,
             MettaValueInner::Conjunction(_) => self.to_display_string() == s,
             MettaValueInner::Space(_) => self.to_display_string() == s,
             MettaValueInner::State(_) => self.to_display_string() == s,
-            MettaValueInner::Unit => s == "()",
             MettaValueInner::Memo(_) => self.to_display_string() == s,
             MettaValueInner::Empty => s == "Empty",
         }
@@ -154,8 +152,8 @@ fn parse_string_literal(input: &str) -> IResult<&str, MettaValue> {
 /// Parse Nil literal
 fn parse_nil(input: &str) -> IResult<&str, MettaValue> {
     alt((
-        value(MettaValue::Nil(), tag("()")),
-        value(MettaValue::Nil(), tag("Nil")),
+        value(MettaValue::Unit(), tag("()")),
+        value(MettaValue::Unit(), tag("Nil")),
     ))(input)
 }
 
@@ -189,7 +187,7 @@ fn parse_tuple(input: &str) -> IResult<&str, MettaValue> {
         ),
         |elements| {
             if elements.is_empty() {
-                MettaValue::Nil()
+                MettaValue::Unit()
             } else {
                 MettaValue::SExpr(elements)
             }

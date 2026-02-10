@@ -126,10 +126,10 @@ impl BytecodeVM {
         let _chunk_index = self.read_u16()?;
 
         // Collect all results accumulated so far via Yield
-        // Filter out Nil values (matches collapse semantics)
+        // Filter out Unit values (matches collapse semantics)
         let collected: Vec<MettaValue> = std::mem::take(&mut self.results)
             .into_iter()
-            .filter(|v| !matches!(v.inner(), MettaValueInner::Nil))
+            .filter(|v| !matches!(v.inner(), MettaValueInner::Unit))
             .collect();
 
         // Push the collected results as a single S-expression
@@ -146,7 +146,7 @@ impl BytecodeVM {
         // Take up to N results
         let collected: Vec<MettaValue> = std::mem::take(&mut self.results)
             .into_iter()
-            .filter(|v| !matches!(v.inner(), MettaValueInner::Nil))
+            .filter(|v| !matches!(v.inner(), MettaValueInner::Unit))
             .take(n)
             .collect();
 
@@ -222,7 +222,7 @@ impl BytecodeVM {
 
         if count == 0 {
             // Empty amb - push Nil (will fail on subsequent op_fail)
-            self.push(MettaValue::Nil());
+            self.push(MettaValue::Unit());
             return Ok(());
         }
 

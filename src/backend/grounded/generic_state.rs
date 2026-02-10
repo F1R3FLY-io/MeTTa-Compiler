@@ -194,7 +194,7 @@ mod tests {
 
         let values_with_error = vec![
             MettaValue::Long(1),
-            MettaValue::Error("test error".to_string(), MettaValue::Nil()),
+            MettaValue::Error("test error".to_string(), MettaValue::Unit()),
         ];
         let err = find_error_generic(&values_with_error);
         assert!(err.is_some());

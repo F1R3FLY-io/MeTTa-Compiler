@@ -236,14 +236,14 @@ fn test_vm_pop_n() {
 #[test]
 fn test_vm_push_nil() {
     let mut builder = ChunkBuilder::new("test");
-    builder.emit(Opcode::PushNil);
+    builder.emit(Opcode::PushUnit);
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
 
-    assert_eq!(results[0], MettaValue::Nil());
+    assert_eq!(results[0], MettaValue::Unit());
 }
 
 #[test]
@@ -985,8 +985,8 @@ fn test_vm_jump_short() {
 #[test]
 fn test_vm_jump_if_nil() {
     let mut builder = ChunkBuilder::new("test");
-    builder.emit(Opcode::PushNil);
-    let jump_label = builder.emit_jump(Opcode::JumpIfNil);
+    builder.emit(Opcode::PushUnit);
+    let jump_label = builder.emit_jump(Opcode::JumpIfUnit);
     builder.emit_byte(Opcode::PushLongSmall, 1); // skipped
     let end_label = builder.emit_jump(Opcode::Jump);
     builder.patch_jump(jump_label);
@@ -1331,9 +1331,9 @@ fn test_vm_collect_filters_nil() {
 
     // Add results including Nil
     vm.push_result(MettaValue::Long(1));
-    vm.push_result(MettaValue::Nil());
+    vm.push_result(MettaValue::Unit());
     vm.push_result(MettaValue::Long(2));
-    vm.push_result(MettaValue::Nil());
+    vm.push_result(MettaValue::Unit());
 
     let results = vm.run().expect("VM should succeed");
 
@@ -2799,7 +2799,7 @@ mod generic_vm_tests {
     use crate::backend::bytecode::vm::GenericBytecodeVM;
     use crate::backend::environment::GenericEnvironment;
     use crate::backend::models::{
-        HeapMettaValueFactory, MettaValue, MettaValueFactory, MettaValueTrait,
+        HeapMettaValueFactory, MettaValue, MettaValueFactory,
     };
 
     fn factory() -> HeapMettaValueFactory {
@@ -3513,10 +3513,10 @@ fn test_vm_load_local_uninitialized() {
     let mut vm = BytecodeVM::new(chunk);
     let result = vm.run();
 
-    // Should return Nil or error depending on implementation
+    // Should return Unit or error depending on implementation
     // The default value for uninitialized locals is Nil in this VM
     match result {
-        Ok(results) => assert_eq!(results[0], MettaValue::Nil()),
+        Ok(results) => assert_eq!(results[0], MettaValue::Unit()),
         Err(_) => {} // Error is also acceptable
     }
 }
@@ -4681,7 +4681,7 @@ fn test_vm_repr_sexpr() {
 /// Test DefineRule opcode adds a rule to the environment.
 #[test]
 fn test_vm_define_rule_with_env() {
-    use crate::backend::models::{HeapMettaValueFactory, Rule};
+    use crate::backend::models::{HeapMettaValueFactory};
 
     let mut builder = ChunkBuilder::new("test_define_rule");
 
@@ -4857,7 +4857,7 @@ fn test_vm_store_global_update() {
 /// Test DispatchRules with single matching rule.
 #[test]
 fn test_vm_dispatch_rules_single_match() {
-    use crate::backend::models::{HeapMettaValueFactory, Rule};
+    use crate::backend::models::{HeapMettaValueFactory};
 
     let mut builder = ChunkBuilder::new("test_dispatch_rules");
 
@@ -5358,7 +5358,7 @@ fn test_vm_space_get_atoms_non_space() {
 fn test_vm_space_match_non_space() {
     let mut builder = ChunkBuilder::new("test_space_match_non_space");
 
-    builder.emit(Opcode::PushNil); // Not a Space
+    builder.emit(Opcode::PushUnit); // Not a Space
     let pattern = builder.add_constant(MettaValue::var("x"));
     let template = builder.add_constant(MettaValue::var("x"));
     builder.emit_u16(Opcode::PushConstant, pattern);
@@ -5740,7 +5740,7 @@ fn test_vm_amb_zero() {
     let results = vm.run().expect("VM should succeed");
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Nil());
+    assert_eq!(results[0], MettaValue::Unit());
 }
 
 /// Test Amb with single alternative (no choice point) - Phase 5A variant.
@@ -5988,7 +5988,8 @@ fn test_pattern_matches_string() {
 #[test]
 fn test_pattern_matches_unit() {
     assert!(pattern_matches(&MettaValue::Unit(), &MettaValue::Unit()));
-    assert!(!pattern_matches(&MettaValue::Unit(), &MettaValue::Nil()));
+    // After Nil/Unit merge, Nil() returns Unit, so Unit matches Nil
+    assert!(pattern_matches(&MettaValue::Unit(), &MettaValue::Unit()));
 }
 
 /// Test unify with both variables.
@@ -6249,7 +6250,7 @@ fn test_vm_cons_atom_nil() {
     let head_val = builder.add_constant(MettaValue::sym("only"));
 
     builder.emit_u16(Opcode::PushConstant, head_val);
-    builder.emit(Opcode::PushNil);
+    builder.emit(Opcode::PushUnit);
     builder.emit(Opcode::ConsAtom);
     builder.emit(Opcode::Return);
 
@@ -6670,8 +6671,8 @@ fn test_vm_unify_bind_opcode() {
 fn test_vm_jump_if_nil_true() {
     let mut builder = ChunkBuilder::new("test_jump_if_nil");
 
-    builder.emit(Opcode::PushNil);
-    let jump = builder.emit_jump(Opcode::JumpIfNil);
+    builder.emit(Opcode::PushUnit);
+    let jump = builder.emit_jump(Opcode::JumpIfUnit);
     builder.emit_byte(Opcode::PushLongSmall, 0);
     let end = builder.emit_jump(Opcode::Jump);
     builder.patch_jump(jump);
@@ -6693,7 +6694,7 @@ fn test_vm_jump_if_nil_false() {
     let mut builder = ChunkBuilder::new("test_jump_if_nil_false");
 
     builder.emit_byte(Opcode::PushLongSmall, 42);
-    let jump = builder.emit_jump(Opcode::JumpIfNil);
+    let jump = builder.emit_jump(Opcode::JumpIfUnit);
     builder.emit_byte(Opcode::PushLongSmall, 0);
     let end = builder.emit_jump(Opcode::Jump);
     builder.patch_jump(jump);

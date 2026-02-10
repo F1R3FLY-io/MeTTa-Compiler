@@ -19,7 +19,7 @@ fn mock_eval_with_error(
             return (
                 vec![MettaValue::Error(
                     "test error".to_string(),
-                    MettaValue::Nil(),
+                    MettaValue::Unit(),
                 )],
                 env,
             );
@@ -90,7 +90,7 @@ fn test_equality() {
     let env = HeapEnvironment::default();
 
     // Test Nil == ()
-    let args = vec![MettaValue::Nil(), MettaValue::SExpr(vec![])];
+    let args = vec![MettaValue::Unit(), MettaValue::SExpr(vec![])];
     let result = eq.execute_raw(&args, &env, &mock_eval).unwrap();
 
     assert_eq!(result.len(), 1);
@@ -867,14 +867,14 @@ fn test_friendly_type_name_all_types() {
         friendly_type_name(&MettaValue::SExpr(vec![])),
         "Expression"
     );
-    assert_eq!(friendly_type_name(&MettaValue::Nil()), "Nil");
-    assert_eq!(friendly_type_name(&MettaValue::Unit()), "Unit");
+    // Unit type name is "Expression" (matches MeTTa HE where () is an expression)
+    assert_eq!(friendly_type_name(&MettaValue::Unit()), "Expression");
     assert_eq!(
-        friendly_type_name(&MettaValue::Error("err".to_string(), MettaValue::Nil())),
+        friendly_type_name(&MettaValue::Error("err".to_string(), MettaValue::Unit())),
         "Error"
     );
     assert_eq!(
-        friendly_type_name(&MettaValue::Type(MettaValue::Nil())),
+        friendly_type_name(&MettaValue::Type(MettaValue::Unit())),
         "Type"
     );
     assert_eq!(
@@ -889,7 +889,7 @@ fn test_friendly_type_name_all_types() {
 fn test_find_error_with_error() {
     let results = vec![
         MettaValue::Long(1),
-        MettaValue::Error("test".to_string(), MettaValue::Nil()),
+        MettaValue::Error("test".to_string(), MettaValue::Unit()),
         MettaValue::Long(2),
     ];
     let error = find_error(&results);

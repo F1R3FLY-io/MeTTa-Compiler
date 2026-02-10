@@ -163,7 +163,7 @@ where
                 let details = if items.len() > 2 {
                     items[2].clone()
                 } else {
-                    ctx.factory().nil()
+                    ctx.factory().unit()
                 };
                 return GenericEvalStep::Done((vec![ctx.factory().error(&msg, details)], env));
             }
@@ -423,7 +423,7 @@ where
                 // Extract bindings list
                 let bindings = match bindings_expr.as_sexpr() {
                     Some(items) => items,
-                    None if bindings_expr.is_nil() => {
+                    None if bindings_expr.is_unit() => {
                         // Empty bindings - evaluate body via trampoline (tail call)
                         return GenericEvalStep::EvalIfBranch {
                             branch: body.clone(),
@@ -623,7 +623,7 @@ where
                 };
 
                 // Extract elements from list (Nil is treated as empty list)
-                let elements: Vec<C::Value> = if list_arg.is_nil() {
+                let elements: Vec<C::Value> = if list_arg.is_unit() {
                     vec![]
                 } else {
                     match list_arg.as_sexpr() {
@@ -692,7 +692,7 @@ where
                 };
 
                 // Extract elements from list (Nil is treated as empty list)
-                let elements: Vec<C::Value> = if list_arg.is_nil() {
+                let elements: Vec<C::Value> = if list_arg.is_unit() {
                     vec![]
                 } else {
                     match list_arg.as_sexpr() {
@@ -790,7 +790,7 @@ where
                 };
 
                 // Extract elements from list (Nil is treated as empty list)
-                let elements: Vec<C::Value> = if list_arg.is_nil() {
+                let elements: Vec<C::Value> = if list_arg.is_unit() {
                     vec![]
                 } else {
                     match list_arg.as_sexpr() {
@@ -964,8 +964,8 @@ where
                     // Return each element as a separate result (nondeterministic)
                     return GenericEvalStep::Done((elements.to_vec(), env));
                 }
-                if expr.is_nil() {
-                    // Nil superposes to empty (no results)
+                if expr.is_unit() {
+                    // Unit superposes to empty (no results)
                     return GenericEvalStep::Done((vec![], env));
                 }
                 // Single value superposes to itself

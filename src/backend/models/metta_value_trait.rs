@@ -79,9 +79,6 @@ pub trait MettaValue: Clone + Debug + PartialEq + Sized {
     /// Check if this is an SExpr variant
     fn is_sexpr(&self) -> bool;
 
-    /// Check if this is a Nil variant
-    fn is_nil(&self) -> bool;
-
     /// Check if this is an Error variant
     fn is_error(&self) -> bool;
 
@@ -99,6 +96,7 @@ pub trait MettaValue: Clone + Debug + PartialEq + Sized {
 
     /// Check if this is a Unit variant
     fn is_unit(&self) -> bool;
+
 
     /// Check if this is a Memo variant
     fn is_memo(&self) -> bool;
@@ -369,8 +367,8 @@ pub trait MettaValue: Clone + Debug + PartialEq + Sized {
             return true;
         }
 
-        // Both nil?
-        if self.is_nil() && other.is_nil() {
+        // Both unit?
+        if self.is_unit() && other.is_unit() {
             return true;
         }
 
@@ -417,9 +415,6 @@ pub trait MettaValueFactory<V: MettaValue> {
 
     /// Create an SExpr variant from a slice of values
     fn sexpr_from_slice(&self, items: &[V]) -> V;
-
-    /// Create a Nil variant
-    fn nil(&self) -> V;
 
     /// Create an Error variant
     fn error(&self, msg: &str, details: V) -> V;
@@ -523,11 +518,6 @@ impl<V: MettaValue, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
     #[inline]
     fn sexpr_from_slice(&self, items: &[V]) -> V {
         (*self).sexpr_from_slice(items)
-    }
-
-    #[inline]
-    fn nil(&self) -> V {
-        (*self).nil()
     }
 
     #[inline]

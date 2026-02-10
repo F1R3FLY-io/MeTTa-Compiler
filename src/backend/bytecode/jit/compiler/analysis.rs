@@ -38,7 +38,7 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::PopN => {}
 
             // Value creation (Stage 1: simple constants, Stage 2+13: via runtime calls)
-            Opcode::PushNil
+            Opcode::PushUnit
             | Opcode::PushTrue
             | Opcode::PushFalse
             | Opcode::PushUnit
@@ -116,7 +116,7 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::StoreLocalWide => {}
 
             // Type-based jumps
-            Opcode::JumpIfNil
+            Opcode::JumpIfUnit
             | Opcode::JumpIfError => {}
 
             // Type predicates
@@ -279,10 +279,10 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
 /// - Arithmetic: Add, Sub, Mul, Div, Mod, Neg, Abs, FloorDiv, Pow (runtime call)
 /// - Boolean: And, Or, Not, Xor
 /// - Comparisons: Lt, Le, Gt, Ge, Eq, Ne
-/// - Constants: PushLongSmall, PushTrue, PushFalse, PushNil, PushConstant (runtime call)
+/// - Constants: PushLongSmall, PushTrue, PushFalse, PushUnit, PushConstant (runtime call)
 /// - Control: Return, Jump, JumpIfFalse, JumpIfTrue, JumpShort, JumpIfFalseShort, JumpIfTrueShort
 /// - Stage 4: Local variables - LoadLocal, StoreLocal, LoadLocalWide, StoreLocalWide
-/// - Stage 5: Type jumps - JumpIfNil, JumpIfError
+/// - Stage 5: Type jumps - JumpIfUnit, JumpIfError
 /// - Stage 6: Type predicates - IsVariable, IsSExpr, IsSymbol
 /// - Phase A: Bindings - LoadBinding, StoreBinding, HasBinding, ClearBindings, PushBindingFrame, PopBindingFrame
 /// - Phase B: Pattern matching - Match, MatchBind, MatchHead, MatchArity, MatchGuard, Unify, UnifyBind
@@ -319,7 +319,7 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             | Opcode::PopN => {}
 
             // Value creation (Stage 1: simple constants, Stage 2+13: via runtime calls)
-            Opcode::PushNil
+            Opcode::PushUnit
             | Opcode::PushTrue
             | Opcode::PushFalse
             | Opcode::PushUnit
@@ -399,7 +399,7 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             | Opcode::StoreLocalWide => {}
 
             // Stage 5: Type-based jumps
-            Opcode::JumpIfNil
+            Opcode::JumpIfUnit
             | Opcode::JumpIfError => {}
 
             // Stage 6: Type predicates
@@ -605,7 +605,7 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
             Opcode::Jump
             | Opcode::JumpIfFalse
             | Opcode::JumpIfTrue
-            | Opcode::JumpIfNil
+            | Opcode::JumpIfUnit
             | Opcode::JumpIfError => {
                 // 2-byte signed offset, relative to next_ip
                 let rel_offset = chunk.read_i16(offset + 1).unwrap_or(0);
@@ -676,7 +676,7 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
                 | Opcode::JumpIfTrue
                 | Opcode::JumpIfFalseShort
                 | Opcode::JumpIfTrueShort
-                | Opcode::JumpIfNil
+                | Opcode::JumpIfUnit
                 | Opcode::JumpIfError
         );
         if has_fallthrough_to_next && next_ip < code.len() && targets.contains(&next_ip) {

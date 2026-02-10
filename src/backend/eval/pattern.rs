@@ -101,31 +101,24 @@ pub(crate) fn pattern_match_impl(
             (MettaValueInner::Long(p), MettaValueInner::Long(v)) => p == v,
             (MettaValueInner::Float(p), MettaValueInner::Float(v)) => p == v,
             (MettaValueInner::String(p), MettaValueInner::String(v)) => p == v,
-            (MettaValueInner::Nil, MettaValueInner::Nil) => true,
-            // Nil also matches Unit (HE-compatible: both represent "nothing")
-            (MettaValueInner::Nil, MettaValueInner::Unit) => true,
-            // Nil pattern matches Empty atom (HE-compatible: () pattern in case matches Empty)
-            // This is needed because case converts empty results to Atom("Empty") internally
-            (MettaValueInner::Nil, MettaValueInner::Atom(v)) if v == "Empty" => true,
-            // Empty atom pattern matches Nil (symmetry: Empty pattern matches () values)
-            (MettaValueInner::Atom(p), MettaValueInner::Nil) if p == "Empty" => true,
-            // Unit also matches Nil and other Units
             (MettaValueInner::Unit, MettaValueInner::Unit) => true,
-            (MettaValueInner::Unit, MettaValueInner::Nil) => true,
+            // Unit pattern matches Empty atom (HE-compatible: () pattern in case matches Empty)
+            // This is needed because case converts empty results to Atom("Empty") internally
+            (MettaValueInner::Unit, MettaValueInner::Atom(v)) if v == "Empty" => true,
+            // Empty atom pattern matches Unit (symmetry: Empty pattern matches () values)
+            (MettaValueInner::Atom(p), MettaValueInner::Unit) if p == "Empty" => true,
 
-            // Nil pattern matches only empty values (Nil, Unit, empty S-expr, or Empty atom)
+            // Unit pattern matches only empty values (Unit, empty S-expr, or Empty atom)
             // For discard pattern, use wildcard _ instead
-            (MettaValueInner::Nil, MettaValueInner::SExpr(v_items)) if v_items.is_empty() => true,
-            (MettaValueInner::Nil, MettaValueInner::Atom(v)) if v == "Empty" => true,
+            (MettaValueInner::Unit, MettaValueInner::SExpr(v_items)) if v_items.is_empty() => true,
 
-            // Empty S-expression () matches only empty values (empty S-expr, Nil, Unit, or Empty atom)
+            // Empty S-expression () matches only empty values (empty S-expr, Unit, or Empty atom)
             // For discard pattern, use wildcard _ instead
             (MettaValueInner::SExpr(p_items), MettaValueInner::SExpr(v_items))
                 if p_items.is_empty() && v_items.is_empty() =>
             {
                 true
             }
-            (MettaValueInner::SExpr(p_items), MettaValueInner::Nil) if p_items.is_empty() => true,
             (MettaValueInner::SExpr(p_items), MettaValueInner::Unit) if p_items.is_empty() => true,
             (MettaValueInner::SExpr(p_items), MettaValueInner::Atom(v))
                 if p_items.is_empty() && v == "Empty" =>

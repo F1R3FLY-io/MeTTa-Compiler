@@ -126,9 +126,9 @@ mod tests {
     #[test]
     fn test_push_choice_point_success() {
         // Create context with choice point support
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -162,9 +162,9 @@ mod tests {
     #[test]
     fn test_push_choice_point_overflow() {
         // Create context with only 1 choice point slot
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 1];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -197,9 +197,9 @@ mod tests {
 
     #[test]
     fn test_fail_with_alternatives() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -250,9 +250,9 @@ mod tests {
 
     #[test]
     fn test_yield_stores_result_and_signals_bailout() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -285,9 +285,9 @@ mod tests {
 
     #[test]
     fn test_cut_clears_choice_points() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -320,13 +320,13 @@ mod tests {
     #[test]
     fn test_context_has_nondet_support() {
         // Context without nondet support
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe { JitContext::new(stack.as_mut_ptr(), stack.len(), std::ptr::null(), 0) };
         assert!(!ctx.has_nondet_support());
 
         // Context with nondet support
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::with_nondet(
                 stack.as_mut_ptr(),
@@ -348,9 +348,9 @@ mod tests {
 
     #[test]
     fn test_yield_native_stores_result() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -383,9 +383,9 @@ mod tests {
 
     #[test]
     fn test_collect_native_gathers_results() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -433,9 +433,9 @@ mod tests {
 
     #[test]
     fn test_has_alternatives() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -471,9 +471,9 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn test_fail_native_exhausts_alternatives() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -527,10 +527,10 @@ mod tests {
 
     #[test]
     fn test_save_restore_stack() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
-        let mut saved_stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
+        let mut saved_stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -601,9 +601,9 @@ mod tests {
     #[test]
     fn test_collect_results() {
         // Test the collect_results helper function
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -639,9 +639,9 @@ mod tests {
     fn test_execute_once() {
         // Test the execute_once helper function with a simple JIT function
         // that just returns a constant
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -682,10 +682,10 @@ mod tests {
     #[test]
     fn test_fork_yield_collect_full_cycle() {
         // Create context with nondeterminism support
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 32];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 32];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 16];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 32];
-        let mut saved_stack: Vec<JitValue> = vec![JitValue::nil(); 32];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 32];
+        let mut saved_stack: Vec<JitValue> = vec![JitValue::unit(); 32];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -800,10 +800,10 @@ mod tests {
         // For each outer, inner fork: alternatives 1, 2
         // Expected results: (A 1), (A 2), (B 1), (B 2)
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 16];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 64];
-        let mut saved_stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 64];
+        let mut saved_stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -921,9 +921,9 @@ mod tests {
         // Test that cut properly terminates nondeterministic search
         // Fork with 5 alternatives, but cut after finding the first even number
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 32];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 32];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 16];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 32];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 32];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -1046,7 +1046,7 @@ mod tests {
         // Create constants with space name
         let space_name = "fallback_test_space";
         let constants = vec![MettaValue::sym(space_name)];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         // JitContext::new() sets space_registry=null and grounded_spaces=null
         // This triggers the fallback path in jit_runtime_load_space
@@ -1157,8 +1157,8 @@ mod tests {
 
     #[test]
     fn test_is_long_nil() {
-        use crate::backend::bytecode::jit::types::TAG_NIL;
-        let nil_val = TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
+        let nil_val = TAG_UNIT;
         let result = jit_runtime_is_long(nil_val);
         assert_eq!(result & 1, 0); // nil is not a long
     }
@@ -1169,8 +1169,9 @@ mod tests {
 
     #[test]
     fn test_jit_value_nil() {
-        let nil = JitValue::nil();
-        assert!(nil.is_nil());
+        // After Nil/Unit merge, nil() produces Unit
+        let nil = JitValue::unit();
+        assert!(nil.is_unit());
         assert!(!nil.is_long());
         assert!(!nil.is_bool());
     }
@@ -1179,7 +1180,6 @@ mod tests {
     fn test_jit_value_unit() {
         let unit = JitValue::unit();
         assert!(unit.is_unit());
-        assert!(!unit.is_nil());
         assert!(!unit.is_long());
     }
 
@@ -1187,7 +1187,7 @@ mod tests {
     fn test_jit_value_bool_true() {
         let t = JitValue::from_bool(true);
         assert!(t.is_bool());
-        assert!(!t.is_nil());
+        assert!(!t.is_unit());
         assert!(!t.is_long());
     }
 
@@ -1195,7 +1195,7 @@ mod tests {
     fn test_jit_value_bool_false() {
         let f = JitValue::from_bool(false);
         assert!(f.is_bool());
-        assert!(!f.is_nil());
+        assert!(!f.is_unit());
         assert!(!f.is_long());
     }
 
@@ -1203,7 +1203,7 @@ mod tests {
     fn test_jit_value_small_long() {
         let small = JitValue::from_long(42);
         assert!(small.is_long());
-        assert!(!small.is_nil());
+        assert!(!small.is_unit());
         assert!(!small.is_bool());
     }
 
@@ -1282,7 +1282,7 @@ mod tests {
     #[test]
     fn test_jit_context_basic() {
         let constants = vec![MettaValue::Long(1), MettaValue::Long(2)];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let ctx = unsafe {
             JitContext::new(
@@ -1301,7 +1301,7 @@ mod tests {
     #[test]
     fn test_jit_context_empty_constants() {
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 8];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 8];
 
         let ctx = unsafe {
             JitContext::new(
@@ -1386,9 +1386,9 @@ mod tests {
     #[test]
     fn test_eval_if_nil() {
         use super::super::special_forms::jit_runtime_eval_if;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
-        let condition = TAG_NIL; // Nil is falsy
+        let condition = TAG_UNIT; // Unit is falsy
         let then_val = JitValue::from_long(42).to_bits();
         let else_val = JitValue::from_long(99).to_bits();
 
@@ -1415,7 +1415,7 @@ mod tests {
     fn test_eval_quote() {
         use super::super::special_forms::jit_runtime_eval_quote;
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), std::ptr::null(), 0)
         };
@@ -1432,7 +1432,7 @@ mod tests {
     fn test_eval_let_star() {
         use super::super::special_forms::jit_runtime_eval_let_star;
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), std::ptr::null(), 0)
         };
@@ -1459,7 +1459,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -1479,7 +1479,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -1508,7 +1508,7 @@ mod tests {
         use super::super::type_ops::jit_runtime_get_type;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -1527,7 +1527,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_BOOL;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -1543,15 +1543,15 @@ mod tests {
     #[test]
     fn test_get_type_nil() {
         use super::super::type_ops::jit_runtime_get_type;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
-        let value = TAG_NIL;
+        let value = TAG_UNIT;
         let result = unsafe { jit_runtime_get_type(&mut ctx, value, 0) };
 
         // Result should be an atom "Nil"
@@ -1786,28 +1786,28 @@ mod tests {
     }
 
     #[test]
-    fn test_is_nil_nil() {
-        use super::super::type_predicates::jit_runtime_is_nil;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+    fn test_is_unit_with_legacy_nil_tag() {
+        use super::super::type_predicates::jit_runtime_is_unit;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
-        let nil = TAG_NIL;
-        let result = jit_runtime_is_nil(nil);
-        assert_eq!(result & 1, 1); // True
+        let nil = TAG_UNIT;
+        let result = jit_runtime_is_unit(nil);
+        assert_eq!(result & 1, 1); // True — legacy TAG_UNIT is treated as unit
     }
 
     #[test]
-    fn test_is_nil_non_nil() {
-        use super::super::type_predicates::jit_runtime_is_nil;
+    fn test_is_unit_non_unit() {
+        use super::super::type_predicates::jit_runtime_is_unit;
 
         let long_val = box_long(42);
-        let result = jit_runtime_is_nil(long_val);
-        assert_eq!(result & 1, 0); // False
+        let result = jit_runtime_is_unit(long_val);
+        assert_eq!(result & 1, 0); // False — Long is not unit
     }
 
     #[test]
     fn test_get_tag() {
         use super::super::type_predicates::jit_runtime_get_tag;
-        use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_NIL, TAG_UNIT};
+        use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_UNIT};
 
         // jit_runtime_get_tag returns a boxed Long with the tag value >> 48
         // The tag values are: TAG_BOOL = 0x7FF8..., so shifted >> 48 = 32760
@@ -1819,8 +1819,8 @@ mod tests {
         let jv = JitValue::from_raw(tag_result);
         assert!(jv.is_long());
 
-        // Nil tag
-        let nil = TAG_NIL;
+        // Unit tag
+        let nil = TAG_UNIT;
         let tag_result = jit_runtime_get_tag(nil);
         let jv = JitValue::from_raw(tag_result);
         assert!(jv.is_long());
@@ -1841,7 +1841,7 @@ mod tests {
         use super::super::error_handling::jit_runtime_type_error;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -1858,7 +1858,7 @@ mod tests {
         use super::super::error_handling::jit_runtime_div_by_zero;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -1875,7 +1875,7 @@ mod tests {
         use super::super::error_handling::jit_runtime_stack_overflow;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -1892,7 +1892,7 @@ mod tests {
         use super::super::error_handling::jit_runtime_stack_underflow;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -1909,7 +1909,7 @@ mod tests {
         use super::super::error_handling::jit_runtime_integer_overflow;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -1931,7 +1931,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -1963,7 +1963,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x"), MettaValue::sym("$y")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -1993,7 +1993,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -2032,7 +2032,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -2056,11 +2056,11 @@ mod tests {
 
     #[test]
     fn test_jit_fork_restore_bindings() {
-        use super::super::bindings::{jit_runtime_fork_bindings, jit_runtime_restore_bindings, jit_runtime_store_binding, jit_runtime_push_binding_frame, jit_runtime_load_binding, jit_runtime_free_saved_bindings};
+        use super::super::bindings::{jit_runtime_fork_bindings, jit_runtime_restore_bindings, jit_runtime_store_binding, jit_runtime_push_binding_frame, jit_runtime_load_binding};
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -2098,7 +2098,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -2129,7 +2129,7 @@ mod tests {
 
         let space = SpaceHandle::new(1, "test_space".to_string());
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -2159,7 +2159,7 @@ mod tests {
         space.add_atom(MettaValue::Long(2));
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -2188,7 +2188,7 @@ mod tests {
         space.add_atom(MettaValue::Long(1));
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -2215,7 +2215,7 @@ mod tests {
         space.add_atom(MettaValue::sym("foo"));
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -2246,7 +2246,7 @@ mod tests {
         let space = SpaceHandle::new(5, "empty_space".to_string());
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -2277,7 +2277,7 @@ mod tests {
         space.add_atom(MettaValue::sexpr(vec![MettaValue::sym("other"), MettaValue::Long(3)]));
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -2310,7 +2310,7 @@ mod tests {
         space.add_atom(MettaValue::sexpr(vec![MettaValue::sym("bar"), MettaValue::Long(1)]));
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -2342,7 +2342,7 @@ mod tests {
         use super::super::type_ops::jit_runtime_get_type;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2363,7 +2363,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2379,7 +2379,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2398,7 +2398,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2417,7 +2417,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2437,7 +2437,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2457,7 +2457,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2477,7 +2477,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2498,7 +2498,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2523,7 +2523,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_BOOL;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2542,7 +2542,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_BOOL;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2558,15 +2558,15 @@ mod tests {
     #[test]
     fn test_jit_eval_if_nil_falsy() {
         use super::super::special_forms::jit_runtime_eval_if;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
-        let condition = TAG_NIL; // Nil is falsy
+        let condition = TAG_UNIT; // Unit is falsy
         let then_val = JitValue::from_long(42).to_bits();
         let else_val = JitValue::from_long(99).to_bits();
 
@@ -2579,7 +2579,7 @@ mod tests {
         use super::super::special_forms::jit_runtime_eval_if;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2598,7 +2598,7 @@ mod tests {
         use super::super::special_forms::jit_runtime_eval_let;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2616,7 +2616,7 @@ mod tests {
         use super::super::special_forms::jit_runtime_eval_let_star;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2633,7 +2633,7 @@ mod tests {
         use super::super::special_forms::jit_runtime_eval_chain;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2651,7 +2651,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2676,7 +2676,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2701,7 +2701,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2721,7 +2721,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2738,7 +2738,7 @@ mod tests {
         use super::super::special_forms::jit_runtime_eval_bind;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2756,7 +2756,7 @@ mod tests {
         use super::super::special_forms::jit_runtime_eval_new;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2774,7 +2774,7 @@ mod tests {
         use super::super::special_forms::jit_runtime_eval_pragma;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2792,7 +2792,7 @@ mod tests {
         use super::super::special_forms::jit_runtime_eval_memo;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2809,7 +2809,7 @@ mod tests {
         use super::super::special_forms::jit_runtime_eval_memo_first;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2828,7 +2828,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JIT_SIGNAL_FAIL;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2847,7 +2847,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2867,7 +2867,7 @@ mod tests {
         use super::super::special_forms::jit_runtime_eval_superpose;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2886,7 +2886,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2932,7 +2932,7 @@ mod tests {
         use crate::backend::models::SpaceHandle;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2958,7 +2958,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -2981,7 +2981,7 @@ mod tests {
         use crate::backend::models::SpaceHandle;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3012,7 +3012,7 @@ mod tests {
         use crate::backend::models::SpaceHandle;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3035,7 +3035,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3058,7 +3058,7 @@ mod tests {
         use crate::backend::models::SpaceHandle;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3083,7 +3083,7 @@ mod tests {
         use crate::backend::models::SpaceHandle;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3110,7 +3110,7 @@ mod tests {
         use super::super::space_ops::jit_runtime_space_get_atoms;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3134,7 +3134,7 @@ mod tests {
         use crate::backend::models::SpaceHandle;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3165,7 +3165,7 @@ mod tests {
         use crate::backend::models::SpaceHandle;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3194,7 +3194,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3218,7 +3218,7 @@ mod tests {
     fn test_jit_space_match_nondet_null_ctx_4c() {
         use super::super::space_ops::jit_runtime_space_match_nondet;
         use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
         use crate::backend::models::SpaceHandle;
 
         let space = SpaceHandle::new(108, "test-space-4c8".to_string());
@@ -3237,17 +3237,17 @@ mod tests {
         };
 
         // Returns nil with null context
-        assert_eq!(result, TAG_NIL);
+        assert_eq!(result, TAG_UNIT);
     }
 
     #[test]
     fn test_jit_space_match_nondet_not_space_4c() {
         use super::super::space_ops::jit_runtime_space_match_nondet;
         use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3261,7 +3261,7 @@ mod tests {
         };
 
         // Returns nil and sets bailout
-        assert_eq!(result, TAG_NIL);
+        assert_eq!(result, TAG_UNIT);
         assert!(ctx.bailout);
         assert_eq!(ctx.bailout_reason, JitBailoutReason::TypeError);
     }
@@ -3275,7 +3275,7 @@ mod tests {
         use super::super::value_creation::jit_runtime_make_sexpr;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3295,7 +3295,7 @@ mod tests {
         use super::super::value_creation::jit_runtime_make_sexpr;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3320,7 +3320,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3346,7 +3346,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3371,16 +3371,16 @@ mod tests {
     #[test]
     fn test_jit_cons_atom_to_nil_4c() {
         use super::super::value_creation::jit_runtime_cons_atom;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
         let head = JitValue::from_long(42).to_bits();
-        let tail = TAG_NIL;
+        let tail = TAG_UNIT;
 
         let result = unsafe { jit_runtime_cons_atom(&mut ctx, head, tail, 0) };
 
@@ -3401,7 +3401,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3429,7 +3429,7 @@ mod tests {
         use super::super::type_ops::jit_runtime_get_type;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3450,7 +3450,7 @@ mod tests {
         use super::super::type_ops::jit_runtime_get_type;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3467,32 +3467,11 @@ mod tests {
     }
 
     #[test]
-    fn test_jit_get_type_nil_4c() {
-        use super::super::type_ops::jit_runtime_get_type;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
-
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
-        };
-
-        let result = unsafe { jit_runtime_get_type(&mut ctx, TAG_NIL, 0) };
-
-        // Should return "Nil" type
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(s, "Nil");
-        }
-    }
-
-    #[test]
     fn test_jit_get_type_unit_4c() {
         use super::super::type_ops::jit_runtime_get_type;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3514,7 +3493,7 @@ mod tests {
         use super::super::type_ops::jit_runtime_get_type;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3538,7 +3517,7 @@ mod tests {
         use crate::backend::models::SpaceHandle;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3565,7 +3544,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3587,7 +3566,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3609,7 +3588,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3632,7 +3611,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3660,7 +3639,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3690,7 +3669,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3711,7 +3690,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3736,7 +3715,7 @@ mod tests {
         use super::super::stack_ops::jit_runtime_load_constant;
 
         let constants: Vec<MettaValue> = vec![MettaValue::Long(42), MettaValue::sym("foo")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3752,10 +3731,10 @@ mod tests {
     #[test]
     fn test_jit_load_constant_out_of_bounds_4c() {
         use super::super::stack_ops::jit_runtime_load_constant;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![MettaValue::Long(42)];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3763,7 +3742,7 @@ mod tests {
         let result = unsafe { jit_runtime_load_constant(&mut ctx, 999) };
 
         // Should return nil for out of bounds
-        assert_eq!(result, TAG_NIL);
+        assert_eq!(result, TAG_UNIT);
     }
 
     // ==========================================================================
@@ -3773,18 +3752,18 @@ mod tests {
     #[test]
     fn test_jit_load_global_not_found_4c() {
         use super::super::global_ops::jit_runtime_load_global;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("undefined")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
         let result = unsafe { jit_runtime_load_global(&mut ctx, 0, 0) };
 
-        // Should return nil for undefined global
-        assert_eq!(result, TAG_NIL);
+        // Should return unit for undefined global (Nil merged into Unit)
+        assert_eq!(result, TAG_UNIT);
     }
 
     #[test]
@@ -3792,7 +3771,7 @@ mod tests {
         use super::super::global_ops::jit_runtime_store_global;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("test-var")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3825,7 +3804,7 @@ mod tests {
         use super::super::advanced_nondet::jit_runtime_cut;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3856,7 +3835,7 @@ mod tests {
         use super::super::advanced_nondet::jit_runtime_enter_cut_scope;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3889,7 +3868,7 @@ mod tests {
         use super::super::advanced_nondet::jit_runtime_exit_cut_scope;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3910,7 +3889,7 @@ mod tests {
         };
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3936,7 +3915,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_BOOL;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3954,7 +3933,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_BOOL;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -3972,9 +3951,9 @@ mod tests {
 
         let result = unsafe { jit_runtime_amb(std::ptr::null_mut(), 2, 0) };
 
-        // Should return nil with null ctx
+        // Should return unit with null ctx
         let jv = JitValue::from_raw(result);
-        assert!(jv.is_nil());
+        assert!(jv.is_unit());
     }
 
     #[test]
@@ -3982,16 +3961,16 @@ mod tests {
         use super::super::advanced_nondet::jit_runtime_amb;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
         let result = unsafe { jit_runtime_amb(&mut ctx, 0, 0) };
 
-        // Empty amb returns nil
+        // Empty amb returns unit
         let jv = JitValue::from_raw(result);
-        assert!(jv.is_nil());
+        assert!(jv.is_unit());
     }
 
     #[test]
@@ -4010,7 +3989,7 @@ mod tests {
         use super::super::advanced_nondet::jit_runtime_commit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4030,7 +4009,7 @@ mod tests {
         use super::super::advanced_nondet::jit_runtime_commit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4062,7 +4041,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JIT_SIGNAL_FAIL;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4078,7 +4057,7 @@ mod tests {
         use super::super::advanced_nondet::jit_runtime_begin_nondet;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4096,7 +4075,7 @@ mod tests {
         use super::super::advanced_nondet::jit_runtime_end_nondet;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4114,7 +4093,7 @@ mod tests {
         use super::super::advanced_nondet::jit_runtime_end_nondet;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4137,7 +4116,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4160,10 +4139,10 @@ mod tests {
     fn test_jit_get_head_empty() {
         use super::super::sexpr_ops::jit_runtime_get_head;
         use super::super::helpers::metta_to_jit;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4174,7 +4153,7 @@ mod tests {
         let result = unsafe { jit_runtime_get_head(&mut ctx, val, 0) };
 
         // Should return nil for empty S-expression
-        assert_eq!(result, TAG_NIL);
+        assert_eq!(result, TAG_UNIT);
     }
 
     #[test]
@@ -4183,7 +4162,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4208,7 +4187,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4232,7 +4211,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4255,7 +4234,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4277,7 +4256,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4301,7 +4280,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4312,9 +4291,9 @@ mod tests {
 
         let result = unsafe { jit_runtime_index_atom(&mut ctx, val, index, 0) };
 
-        // Should return nil for out of bounds
+        // Should return unit for out of bounds
         let jv = JitValue::from_raw(result);
-        assert!(jv.is_nil());
+        assert!(jv.is_unit());
     }
 
     #[test]
@@ -4322,7 +4301,7 @@ mod tests {
         use super::super::expression_ops::jit_runtime_index_atom;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4332,9 +4311,9 @@ mod tests {
 
         let result = unsafe { jit_runtime_index_atom(&mut ctx, val, index, 0) };
 
-        // Should return nil for non-S-expression
+        // Should return unit for non-S-expression
         let jv = JitValue::from_raw(result);
-        assert!(jv.is_nil());
+        assert!(jv.is_unit());
     }
 
     // ==========================================================================
@@ -4347,7 +4326,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4369,7 +4348,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4390,7 +4369,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_BOOL;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4410,17 +4389,17 @@ mod tests {
     #[test]
     fn test_pattern_match_nil() {
         use super::super::pattern_matching::jit_runtime_pattern_match;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
         // Pattern: nil, Value: nil - should match
-        let pattern = TAG_NIL;
-        let value = TAG_NIL;
+        let pattern = TAG_UNIT;
+        let value = TAG_UNIT;
         let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
         assert_eq!(result & 1, 1, "nil == nil");
     }
@@ -4431,7 +4410,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4446,17 +4425,17 @@ mod tests {
     #[test]
     fn test_pattern_match_type_mismatch() {
         use super::super::pattern_matching::jit_runtime_pattern_match;
-        use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_NIL};
+        use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_UNIT};
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
         // Pattern: bool, Value: nil - should not match
         let pattern = TAG_BOOL | 1;
-        let value = TAG_NIL;
+        let value = TAG_UNIT;
         let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
         assert_eq!(result & 1, 0, "bool != nil");
 
@@ -4484,7 +4463,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4511,7 +4490,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4540,7 +4519,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -4566,7 +4545,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -4596,7 +4575,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4623,7 +4602,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_match_arity;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4640,7 +4619,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("foo"), MettaValue::sym("bar")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4679,7 +4658,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_BOOL;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("foo")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4699,7 +4678,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_BOOL;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("foo")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4717,7 +4696,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_unify;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4740,7 +4719,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4762,7 +4741,7 @@ mod tests {
         use super::super::helpers::metta_to_jit;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -4785,7 +4764,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -4835,9 +4814,9 @@ mod tests {
 
     #[test]
     fn test_fail_no_choice_points() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -4861,9 +4840,9 @@ mod tests {
     fn test_get_results_count() {
         use super::super::nondeterminism::jit_runtime_get_results_count;
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -4896,9 +4875,9 @@ mod tests {
     fn test_get_choice_point_count() {
         use super::super::nondeterminism::jit_runtime_get_choice_point_count;
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -4929,10 +4908,10 @@ mod tests {
     #[test]
     fn test_fork_zero_alternatives() {
         use super::super::nondeterminism::jit_runtime_fork;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![MettaValue::Long(1)];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -4940,17 +4919,17 @@ mod tests {
 
         // Fork with 0 alternatives
         let result = unsafe { jit_runtime_fork(&mut ctx, 0, std::ptr::null(), 0) };
-        assert_eq!(result, TAG_NIL, "Zero alternatives returns NIL");
+        assert_eq!(result, TAG_UNIT, "Zero alternatives returns NIL");
         assert!(ctx.bailout, "Bailout should be set");
     }
 
     #[test]
     fn test_fork_null_indices() {
         use super::super::nondeterminism::jit_runtime_fork;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![MettaValue::Long(1)];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -4958,17 +4937,17 @@ mod tests {
 
         // Fork with null indices pointer
         let result = unsafe { jit_runtime_fork(&mut ctx, 2, std::ptr::null(), 0) };
-        assert_eq!(result, TAG_NIL, "Null indices returns NIL");
+        assert_eq!(result, TAG_UNIT, "Null indices returns NIL");
         assert!(ctx.bailout, "Bailout should be set");
     }
 
     #[test]
     fn test_fork_invalid_index() {
         use super::super::nondeterminism::jit_runtime_fork;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![MettaValue::Long(1)];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
@@ -4977,36 +4956,36 @@ mod tests {
         // Fork with invalid index
         let indices: [u64; 1] = [100]; // Out of bounds
         let result = unsafe { jit_runtime_fork(&mut ctx, 1, indices.as_ptr(), 0) };
-        assert_eq!(result, TAG_NIL, "Invalid index returns NIL");
+        assert_eq!(result, TAG_UNIT, "Invalid index returns NIL");
         assert!(ctx.bailout, "Bailout should be set");
     }
 
     #[test]
     fn test_fork_null_context() {
         use super::super::nondeterminism::jit_runtime_fork;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let result = unsafe { jit_runtime_fork(std::ptr::null_mut(), 1, std::ptr::null(), 0) };
-        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+        assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
 
     #[test]
     fn test_yield_null_context() {
         use super::super::nondeterminism::jit_runtime_yield;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let value = JitValue::from_long(42).to_bits();
         let result = unsafe { jit_runtime_yield(std::ptr::null_mut(), value, 0) };
-        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+        assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
 
     #[test]
     fn test_yield_results_overflow() {
         use super::super::nondeterminism::jit_runtime_yield;
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 2]; // Small capacity
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 2]; // Small capacity
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -5035,19 +5014,19 @@ mod tests {
     #[test]
     fn test_collect_null_context() {
         use super::super::nondeterminism::jit_runtime_collect;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let result = unsafe { jit_runtime_collect(std::ptr::null_mut(), 0, 0) };
-        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+        assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
 
     #[test]
     fn test_collect_empty_results() {
         use super::super::nondeterminism::jit_runtime_collect;
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -5078,9 +5057,9 @@ mod tests {
 
     #[test]
     fn test_save_stack_no_buffer() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -5108,9 +5087,9 @@ mod tests {
 
     #[test]
     fn test_restore_stack_no_saved() {
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -5133,20 +5112,20 @@ mod tests {
     #[test]
     fn test_fork_native_null_context() {
         use super::super::nondeterminism::jit_runtime_fork_native;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let result = unsafe { jit_runtime_fork_native(std::ptr::null_mut(), 1, std::ptr::null(), 0) };
-        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+        assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
 
     #[test]
     fn test_fork_native_zero_alternatives() {
         use super::super::nondeterminism::jit_runtime_fork_native;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -5162,7 +5141,7 @@ mod tests {
         };
 
         let result = unsafe { jit_runtime_fork_native(&mut ctx, 0, std::ptr::null(), 0) };
-        assert_eq!(result, TAG_NIL, "Zero alternatives returns NIL");
+        assert_eq!(result, TAG_UNIT, "Zero alternatives returns NIL");
     }
 
     #[test]
@@ -5183,9 +5162,9 @@ mod tests {
     fn test_fail_native_no_choice_points() {
         use super::super::nondeterminism::jit_runtime_fail_native;
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -5207,10 +5186,10 @@ mod tests {
     #[test]
     fn test_collect_native_null_context() {
         use super::super::nondeterminism::jit_runtime_collect_native;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let result = unsafe { jit_runtime_collect_native(std::ptr::null_mut()) };
-        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+        assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
 
     #[test]
@@ -5223,9 +5202,9 @@ mod tests {
     fn test_get_resume_ip() {
         use super::super::nondeterminism::jit_runtime_get_resume_ip;
 
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -5259,10 +5238,10 @@ mod tests {
     #[test]
     fn test_load_binding_null_context() {
         use super::super::bindings::jit_runtime_load_binding;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let result = unsafe { jit_runtime_load_binding(std::ptr::null_mut(), 0, 0) };
-        assert_eq!(result, TAG_NIL, "Null context returns NIL");
+        assert_eq!(result, TAG_UNIT, "Null context returns NIL");
     }
 
     #[test]
@@ -5278,7 +5257,7 @@ mod tests {
         use super::super::bindings::jit_runtime_store_binding;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5318,7 +5297,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 2];
 
         let mut ctx = unsafe {
@@ -5351,7 +5330,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -5382,7 +5361,7 @@ mod tests {
         use super::super::bindings::{jit_runtime_fork_bindings, jit_runtime_free_saved_bindings};
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5400,7 +5379,7 @@ mod tests {
         use super::super::bindings::{jit_runtime_restore_bindings, jit_runtime_fork_bindings};
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5415,7 +5394,7 @@ mod tests {
         use super::super::bindings::jit_runtime_restore_bindings;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5444,7 +5423,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x"), MettaValue::sym("$y")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -5470,7 +5449,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -5498,7 +5477,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::JitBindingFrame;
 
         let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         let mut ctx = unsafe {
@@ -5605,17 +5584,17 @@ mod tests {
     #[test]
     fn test_make_list_empty() {
         use super::super::value_creation::jit_runtime_make_list;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
         // Empty list should return nil
         let result = unsafe { jit_runtime_make_list(&mut ctx, std::ptr::null(), 0, 0) };
-        assert_eq!(result & TAG_MASK, TAG_NIL);
+        assert_eq!(result & TAG_MASK, TAG_UNIT);
     }
 
     #[test]
@@ -5623,7 +5602,7 @@ mod tests {
         use super::super::value_creation::jit_runtime_make_list;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5654,7 +5633,7 @@ mod tests {
         let constants: Vec<MettaValue> = vec![
             MettaValue::String("http://example.com".to_string()),
         ];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5670,7 +5649,7 @@ mod tests {
         use super::super::type_ops::jit_runtime_get_type;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5694,7 +5673,7 @@ mod tests {
         use crate::backend::bytecode::jit::types::TAG_LONG;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5726,10 +5705,10 @@ mod tests {
     #[test]
     fn test_space_match_nondet_with_context_no_choice_points() {
         use super::super::space_ops::jit_runtime_space_match_nondet;
-        use crate::backend::bytecode::jit::types::TAG_NIL;
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let mut ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5746,7 +5725,7 @@ mod tests {
         };
 
         // Should return nil (type error - not a space)
-        assert_eq!(result, TAG_NIL);
+        assert_eq!(result, TAG_UNIT);
         // Should have bailed out
         assert!(ctx.bailout);
     }
@@ -5766,15 +5745,15 @@ mod tests {
         // collect_native returns u64
         let result = unsafe { jit_runtime_collect_native(std::ptr::null_mut()) };
         // Should return nil with null context
-        use crate::backend::bytecode::jit::types::TAG_NIL;
-        assert_eq!(result, TAG_NIL);
+        use crate::backend::bytecode::jit::types::TAG_UNIT;
+        assert_eq!(result, TAG_UNIT);
     }
 
     #[test]
     fn test_collect_results_empty_5d() {
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
-        let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
 
         let mut ctx = unsafe {
             JitContext::with_nondet(
@@ -5803,7 +5782,7 @@ mod tests {
 
         // Long comparison uses fast path (doesn't need context)
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5826,7 +5805,7 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
@@ -5843,13 +5822,13 @@ mod tests {
         use super::super::pattern_matching::jit_runtime_pattern_match;
 
         let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 16];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
         let ctx = unsafe {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
-        let pattern = JitValue::nil().to_bits();
-        let value = JitValue::nil().to_bits();
+        let pattern = JitValue::unit().to_bits();
+        let value = JitValue::unit().to_bits();
 
         let result = unsafe { jit_runtime_pattern_match(&ctx, pattern, value, 0) };
         assert_eq!(result & 1, 1);

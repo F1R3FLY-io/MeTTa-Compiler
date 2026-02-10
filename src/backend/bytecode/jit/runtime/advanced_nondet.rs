@@ -147,13 +147,13 @@ pub unsafe extern "C" fn jit_runtime_guard(_ctx: *mut JitContext, condition: u64
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_amb(ctx: *mut JitContext, alt_count: u64, ip: u64) -> u64 {
     if ctx.is_null() {
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
     let ctx_ref = &mut *ctx;
 
     // Empty amb - fail immediately
     if alt_count == 0 {
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     // Pop all alternatives from stack
@@ -161,7 +161,7 @@ pub unsafe extern "C" fn jit_runtime_amb(ctx: *mut JitContext, alt_count: u64, i
     for _ in 0..alt_count {
         if ctx_ref.sp < 1 {
             warn!(target: "mettatron::jit::runtime::nondet", ip, "Stack underflow in amb");
-            return JitValue::nil().to_bits();
+            return JitValue::unit().to_bits();
         }
         ctx_ref.sp -= 1;
         let val = *ctx_ref.value_stack.add(ctx_ref.sp);

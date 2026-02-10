@@ -131,7 +131,7 @@ pub fn new_arena_env() -> ArenaEnvironment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValueFactory, MettaValueTrait};
+    use crate::backend::models::MettaValueFactory;
 
     #[test]
     fn test_arena_mode_available() {

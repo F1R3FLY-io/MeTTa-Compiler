@@ -126,7 +126,7 @@ proptest! {
     /// Clone isolation: mutations to clone don't affect original
     #[test]
     fn prop_clone_isolation(rule in arb_rule()) {
-        let mut env = HeapEnvironment::default();
+        let env = HeapEnvironment::default();
         let original_count = env.rule_count();
 
         let mut clone = env.clone();

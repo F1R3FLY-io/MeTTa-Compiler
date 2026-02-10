@@ -7,7 +7,7 @@ use cranelift::codegen::ir::FuncRef;
 use cranelift::prelude::*;
 
 use super::types::{
-    JitError, JitResult, PAYLOAD_MASK, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_NIL, TAG_UNIT,
+    JitError, JitResult, PAYLOAD_MASK, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_UNIT,
 };
 
 /// Pre-declared function references for error handlers.
@@ -160,9 +160,9 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
                 Ok(())
             }
             None => {
-                // Uninitialized local - push nil
-                let nil = self.const_nil();
-                self.value_stack.push(nil);
+                // Uninitialized local - push unit
+                let unit = self.const_unit();
+                self.value_stack.push(unit);
                 Ok(())
             }
         }
@@ -186,11 +186,6 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
     // =========================================================================
     // Constant Creation
     // =========================================================================
-
-    /// Create a NaN-boxed nil constant
-    pub fn const_nil(&mut self) -> Value {
-        self.builder.ins().iconst(types::I64, TAG_NIL as i64)
-    }
 
     /// Create a NaN-boxed unit constant
     pub fn const_unit(&mut self) -> Value {
@@ -473,7 +468,6 @@ mod tests {
         // Verify constant bit patterns
         assert_eq!(TAG_LONG, 0x7FF8_0000_0000_0000);
         assert_eq!(TAG_BOOL, 0x7FF9_0000_0000_0000);
-        assert_eq!(TAG_NIL, 0x7FFA_0000_0000_0000);
         assert_eq!(TAG_UNIT, 0x7FFB_0000_0000_0000);
         assert_eq!(TAG_HEAP, 0x7FFC_0000_0000_0000);
     }

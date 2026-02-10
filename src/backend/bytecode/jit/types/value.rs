@@ -7,7 +7,7 @@ use std::fmt;
 
 use super::constants::{
     PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG,
-    TAG_MASK, TAG_NIL, TAG_UNIT, TAG_VAR,
+    TAG_MASK, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{MettaValue, MettaValueInner};
 
@@ -59,12 +59,6 @@ impl JitValue {
     #[inline(always)]
     pub const fn from_bool(b: bool) -> Self {
         JitValue(TAG_BOOL | (b as u64))
-    }
-
-    /// Create nil value
-    #[inline(always)]
-    pub const fn nil() -> Self {
-        JitValue(TAG_NIL)
     }
 
     /// Create unit value
@@ -144,7 +138,6 @@ impl JitValue {
         // Valid tags are TAG_LONG through TAG_VAR (0x7FF8_xxxx through 0x7FFF_xxxx)
         tag == TAG_LONG
             || tag == TAG_BOOL
-            || tag == TAG_NIL
             || tag == TAG_UNIT
             || tag == TAG_HEAP
             || tag == TAG_ERROR
@@ -175,12 +168,6 @@ impl JitValue {
     #[inline(always)]
     pub const fn is_bool(self) -> bool {
         self.tag() == TAG_BOOL
-    }
-
-    /// Check if this is nil
-    #[inline(always)]
-    pub const fn is_nil(self) -> bool {
-        self.tag() == TAG_NIL
     }
 
     /// Check if this is unit
@@ -307,7 +294,6 @@ impl JitValue {
                 }
             }
             MettaValueInner::Bool(b) => Some(JitValue::from_bool(*b)),
-            MettaValueInner::Nil => Some(JitValue::nil()),
             MettaValueInner::Unit => Some(JitValue::unit()),
             // Other types need heap allocation
             _ => None,
@@ -330,7 +316,6 @@ impl JitValue {
         match self.tag() {
             TAG_LONG => MettaValue::Long(self.as_long()),
             TAG_BOOL => MettaValue::Bool(self.as_bool()),
-            TAG_NIL => MettaValue::Nil(),
             TAG_UNIT => MettaValue::Unit(),
             TAG_HEAP => {
                 let ptr = self.as_heap_ptr();
@@ -418,7 +403,6 @@ impl fmt::Debug for JitValue {
         match self.tag() {
             TAG_LONG => write!(f, "JitValue::Long({})", self.as_long()),
             TAG_BOOL => write!(f, "JitValue::Bool({})", self.as_bool()),
-            TAG_NIL => write!(f, "JitValue::Nil"),
             TAG_UNIT => write!(f, "JitValue::Unit"),
             TAG_HEAP => write!(f, "JitValue::Heap({:p})", self.as_heap_ptr()),
             TAG_ERROR => write!(f, "JitValue::Error({:p})", self.as_error_ptr()),
@@ -431,7 +415,7 @@ impl fmt::Debug for JitValue {
 
 impl Default for JitValue {
     fn default() -> Self {
-        JitValue::nil()
+        JitValue::unit()
     }
 }
 
@@ -442,9 +426,6 @@ impl JitValue {
 
     /// Constant for boolean false
     pub const FALSE: JitValue = JitValue::from_bool(false);
-
-    /// Constant for nil
-    pub const NIL: JitValue = JitValue::nil();
 
     /// Constant for unit
     pub const UNIT: JitValue = JitValue::unit();

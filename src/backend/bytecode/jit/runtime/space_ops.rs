@@ -18,7 +18,7 @@ use super::pattern_matching::pattern_matches_impl;
 use super::MAX_ALTERNATIVES_INLINE;
 use crate::backend::bytecode::jit::types::{
     JitAlternative, JitAlternativeTag, JitBailoutReason, JitBindingEntry, JitChoicePoint,
-    JitContext, JitValue, TAG_NIL,
+    JitContext, JitValue, TAG_UNIT,
 };
 use crate::backend::models::{MettaValue, MettaValueInner};
 
@@ -200,8 +200,8 @@ pub unsafe extern "C" fn jit_runtime_space_match(
 /// # Returns
 /// - On single match: NaN-boxed result (template instantiated with bindings)
 /// - On multiple matches: First result, with choice points created for rest
-/// - On no match: TAG_NIL
-/// - On error: TAG_NIL with bailout flag set
+/// - On no match: TAG_UNIT
+/// - On error: TAG_UNIT with bailout flag set
 ///
 /// # Semantics
 /// ```text
@@ -224,7 +224,7 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
 ) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     let space_val = JitValue::from_raw(space);
@@ -243,7 +243,7 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
             ctx_ref.bailout = true;
             ctx_ref.bailout_reason = JitBailoutReason::TypeError;
             ctx_ref.bailout_ip = ip as usize;
-            return TAG_NIL;
+            return TAG_UNIT;
         }
     };
 
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
     let atoms = handle.collapse();
     if atoms.is_empty() {
         // No atoms in space - return nil (empty result)
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     // Collect matching atoms with their bindings
@@ -268,7 +268,7 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
 
     if match_count == 0 {
         // No matches - return nil
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     // Take first match
@@ -440,7 +440,6 @@ fn pattern_matches_with_bindings_impl(
         (MettaValueInner::Atom(p), MettaValueInner::Atom(v)) => p == v,
         (MettaValueInner::Long(p), MettaValueInner::Long(v)) => p == v,
         (MettaValueInner::Bool(p), MettaValueInner::Bool(v)) => p == v,
-        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
         (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         (MettaValueInner::String(p), MettaValueInner::String(v)) => p == v,
 
@@ -523,7 +522,7 @@ pub unsafe extern "C" fn jit_runtime_resume_space_match(
 ) -> u64 {
     let alt_ref = match alt.as_ref() {
         Some(a) => a,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     debug_assert_eq!(alt_ref.tag, JitAlternativeTag::SpaceMatch);

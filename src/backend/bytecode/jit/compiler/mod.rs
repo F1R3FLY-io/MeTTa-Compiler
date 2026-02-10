@@ -21,7 +21,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use super::codegen::CodegenContext;
 use super::handlers;
 use super::types::{
-    JitError, JitResult, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_NIL, TAG_VAR,
+    JitError, JitResult, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 use std::collections::HashMap;
@@ -707,7 +707,7 @@ impl JitCompiler {
             // =====================================================================
             // Value Creation - Simple (delegated to handlers module)
             // =====================================================================
-            Opcode::PushNil
+            Opcode::PushUnit
             | Opcode::PushTrue
             | Opcode::PushFalse
             | Opcode::PushUnit
@@ -1087,8 +1087,8 @@ impl JitCompiler {
                 );
             }
 
-            Opcode::JumpIfNil => {
-                return handlers::compile_jump_if_nil(
+            Opcode::JumpIfUnit => {
+                return handlers::compile_jump_if_unit(
                     codegen,
                     chunk,
                     op,
@@ -2296,16 +2296,8 @@ impl JitCompiler {
             Opcode::Halt => {
                 return handlers::compile_halt(codegen);
             }
-
-            // =====================================================================
-            // Not Stage 1-8 + Phase A-I + Phase 1.1-1.10 compilable - should not reach here
-            // =====================================================================
-            _ => {
-                return Err(JitError::InvalidOpcode(op.to_byte()));
-            }
         }
-
-        Ok(())
+        // Note: all Opcode variants are handled above with early returns
     }
 
     /// Get code size statistics

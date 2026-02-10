@@ -38,7 +38,7 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
                 ctx_ref.bailout_ip = ip as usize;
                 ctx_ref.bailout_reason = JitBailoutReason::TypeError;
             }
-            return JitValue::nil().to_bits();
+            return JitValue::unit().to_bits();
         }
     };
 
@@ -46,7 +46,7 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
         MettaValueInner::SExpr(items) => {
             if idx < 0 || idx as usize >= items.len() {
                 // Index out of bounds - return nil
-                MettaValue::Nil()
+                MettaValue::Unit()
             } else {
                 items[idx as usize].clone()
             }
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
                 ctx_ref.bailout_ip = ip as usize;
                 ctx_ref.bailout_reason = JitBailoutReason::TypeError;
             }
-            return JitValue::nil().to_bits();
+            return JitValue::unit().to_bits();
         }
     };
 
@@ -77,7 +77,7 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
     match expr_mv.inner() {
         MettaValueInner::SExpr(items) => {
             if items.is_empty() {
-                return JitValue::nil().to_bits();
+                return JitValue::unit().to_bits();
             }
 
             let mut min_val: Option<f64> = None;
@@ -107,7 +107,7 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
 
             match min_item {
                 Some(item) => metta_to_jit(item).to_bits(),
-                None => JitValue::nil().to_bits(),
+                None => JitValue::unit().to_bits(),
             }
         }
         _ => {
@@ -117,7 +117,7 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
                 ctx_ref.bailout_ip = ip as usize;
                 ctx_ref.bailout_reason = JitBailoutReason::TypeError;
             }
-            JitValue::nil().to_bits()
+            JitValue::unit().to_bits()
         }
     }
 }
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
     match expr_mv.inner() {
         MettaValueInner::SExpr(items) => {
             if items.is_empty() {
-                return JitValue::nil().to_bits();
+                return JitValue::unit().to_bits();
             }
 
             let mut max_val: Option<f64> = None;
@@ -164,7 +164,7 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
 
             match max_item {
                 Some(item) => metta_to_jit(item).to_bits(),
-                None => JitValue::nil().to_bits(),
+                None => JitValue::unit().to_bits(),
             }
         }
         _ => {
@@ -174,7 +174,7 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
                 ctx_ref.bailout_ip = ip as usize;
                 ctx_ref.bailout_reason = JitBailoutReason::TypeError;
             }
-            JitValue::nil().to_bits()
+            JitValue::unit().to_bits()
         }
     }
 }

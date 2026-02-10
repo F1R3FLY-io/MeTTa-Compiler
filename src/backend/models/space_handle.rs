@@ -1490,8 +1490,6 @@ mod tests {
 
     #[test]
     fn test_add_atom_generic() {
-        use crate::backend::models::HeapMettaValueFactory;
-
         let handle = SpaceHandle::new(1, "test".to_string());
         let atom = MettaValue::Long(42);
 
@@ -1504,8 +1502,6 @@ mod tests {
 
     #[test]
     fn test_remove_atom_generic() {
-        use crate::backend::models::HeapMettaValueFactory;
-
         let handle = SpaceHandle::new(1, "test".to_string());
         let atom = MettaValue::Long(42);
 
@@ -1519,8 +1515,6 @@ mod tests {
 
     #[test]
     fn test_contains_generic() {
-        use crate::backend::models::HeapMettaValueFactory;
-
         let handle = SpaceHandle::new(1, "test".to_string());
         let atom = MettaValue::Long(42);
 

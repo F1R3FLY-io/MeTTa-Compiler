@@ -7,7 +7,7 @@
 //! - get_arity - Get the number of elements
 //! - get_element - Get element at a specific index
 
-use crate::backend::bytecode::jit::types::{JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_NIL};
+use crate::backend::bytecode::jit::types::{JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_UNIT};
 use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
@@ -41,7 +41,7 @@ pub unsafe extern "C" fn jit_runtime_push_empty() -> u64 {
 /// * `ip` - Instruction pointer (for error reporting)
 ///
 /// # Returns
-/// NaN-boxed head element, or TAG_NIL if empty/not an SExpr
+/// NaN-boxed head element, or TAG_UNIT if empty/not an SExpr
 ///
 /// # Safety
 /// The heap pointer must be valid if val is TAG_HEAP.
@@ -51,19 +51,19 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
 
     // Check if it's a heap pointer
     if !jit_val.is_heap() {
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     let metta_ptr = jit_val.as_heap_ptr();
     if metta_ptr.is_null() {
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     let metta_val = &*metta_ptr;
     match metta_val.inner() {
         MettaValueInner::SExpr(items) => {
             if items.is_empty() {
-                TAG_NIL
+                TAG_UNIT
             } else {
                 // Return the head element
                 let head = &items[0];
@@ -78,7 +78,7 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
                 }
             }
         }
-        _ => TAG_NIL,
+        _ => TAG_UNIT,
     }
 }
 
@@ -187,7 +187,7 @@ pub unsafe extern "C" fn jit_runtime_get_arity(_ctx: *mut JitContext, val: u64, 
 /// * `ip` - Instruction pointer (for error reporting)
 ///
 /// # Returns
-/// NaN-boxed element at index, or TAG_NIL if out of bounds/not an SExpr
+/// NaN-boxed element at index, or TAG_UNIT if out of bounds/not an SExpr
 ///
 /// # Safety
 /// The heap pointer must be valid if val is TAG_HEAP.
@@ -202,12 +202,12 @@ pub unsafe extern "C" fn jit_runtime_get_element(
 
     // Check if it's a heap pointer
     if !jit_val.is_heap() {
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     let metta_ptr = jit_val.as_heap_ptr();
     if metta_ptr.is_null() {
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     let metta_val = &*metta_ptr;
@@ -216,7 +216,7 @@ pub unsafe extern "C" fn jit_runtime_get_element(
     match metta_val.inner() {
         MettaValueInner::SExpr(items) => {
             if idx >= items.len() {
-                TAG_NIL
+                TAG_UNIT
             } else {
                 let elem = &items[idx];
                 match JitValue::try_from_metta(elem) {
@@ -230,6 +230,6 @@ pub unsafe extern "C" fn jit_runtime_get_element(
                 }
             }
         }
-        _ => TAG_NIL,
+        _ => TAG_UNIT,
     }
 }

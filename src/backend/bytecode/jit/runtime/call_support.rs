@@ -11,7 +11,7 @@
 use super::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
     JitAlternative, JitBailoutReason, JitContext, JitValue, MAX_ALTERNATIVES_INLINE, PAYLOAD_MASK,
-    TAG_HEAP, TAG_NIL,
+    TAG_HEAP, TAG_UNIT,
 };
 use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::bytecode::vm::BytecodeVM;
@@ -171,7 +171,7 @@ pub unsafe extern "C" fn jit_runtime_call(
 ) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     let arity = arity as usize;
@@ -182,7 +182,7 @@ pub unsafe extern "C" fn jit_runtime_call(
         ctx_ref.bailout = true;
         ctx_ref.bailout_ip = ip as usize;
         ctx_ref.bailout_reason = JitBailoutReason::UnsupportedOperation;
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     let head_value = &*ctx_ref.constants.add(head_index);
@@ -193,7 +193,7 @@ pub unsafe extern "C" fn jit_runtime_call(
             ctx_ref.bailout = true;
             ctx_ref.bailout_ip = ip as usize;
             ctx_ref.bailout_reason = JitBailoutReason::TypeError;
-            return TAG_NIL;
+            return TAG_UNIT;
         }
     };
 
@@ -366,7 +366,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
 ) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     let arity = arity as usize;
@@ -377,7 +377,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
         ctx_ref.bailout = true;
         ctx_ref.bailout_ip = ip as usize;
         ctx_ref.bailout_reason = JitBailoutReason::UnsupportedOperation;
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     let head_value = &*ctx_ref.constants.add(head_index);
@@ -387,7 +387,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
             ctx_ref.bailout = true;
             ctx_ref.bailout_ip = ip as usize;
             ctx_ref.bailout_reason = JitBailoutReason::TypeError;
-            return TAG_NIL;
+            return TAG_UNIT;
         }
     };
 
@@ -478,7 +478,7 @@ pub unsafe extern "C" fn jit_runtime_call_n(
 ) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     let arity = arity as usize;
@@ -570,7 +570,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
 ) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
-        None => return TAG_NIL,
+        None => return TAG_UNIT,
     };
 
     let arity = arity as usize;

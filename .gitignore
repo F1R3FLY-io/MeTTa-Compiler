@@ -14,3 +14,8 @@ examples/sandbox.rs
 dev-notes.md
 benchmark_results/**/*.txt
 proptest-regressions/
+valgrind.*
+vgcore.*
+massif.*
+heaptrack.*
+tla/states/*

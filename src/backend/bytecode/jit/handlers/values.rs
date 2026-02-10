@@ -1,6 +1,6 @@
 //! Value creation handlers for JIT compilation
 //!
-//! Handles: PushNil, PushTrue, PushFalse, PushUnit, PushLongSmall, PushLong,
+//! Handles: PushTrue, PushFalse, PushUnit, PushLongSmall, PushLong,
 //!          PushConstant, PushEmpty, PushAtom, PushString, PushVariable
 
 use cranelift::prelude::*;
@@ -30,9 +30,9 @@ pub fn compile_simple_value_op<'a, 'b>(
     offset: usize,
 ) -> JitResult<()> {
     match op {
-        Opcode::PushNil => {
-            let nil = codegen.const_nil();
-            codegen.push(nil)?;
+        Opcode::PushUnit => {
+            let unit = codegen.const_unit();
+            codegen.push(unit)?;
         }
 
         Opcode::PushTrue => {
@@ -43,11 +43,6 @@ pub fn compile_simple_value_op<'a, 'b>(
         Opcode::PushFalse => {
             let f = codegen.const_bool(false);
             codegen.push(f)?;
-        }
-
-        Opcode::PushUnit => {
-            let unit = codegen.const_unit();
-            codegen.push(unit)?;
         }
 
         Opcode::PushLongSmall => {

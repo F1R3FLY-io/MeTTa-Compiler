@@ -39,7 +39,7 @@ pub struct SpecialFormsHandlerContext<'m> {
 /// Compile EvalIf opcode
 ///
 /// Native implementation using Cranelift select instruction.
-/// Semantics: Only TAG_BOOL_FALSE and TAG_NIL are falsy.
+/// Semantics: Only TAG_BOOL_FALSE and TAG_UNIT are falsy.
 /// Everything else (including TAG_BOOL_TRUE, integers, heap values) is truthy.
 /// Stack: [condition, then_val, else_val] -> [result]
 
@@ -48,9 +48,9 @@ pub fn compile_eval_if<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResul
     let then_val = codegen.pop()?;
     let condition = codegen.pop()?;
 
-    // Check for falsy values: TAG_BOOL_FALSE (TAG_BOOL | 0) or TAG_NIL
+    // Check for falsy values: TAG_BOOL_FALSE (TAG_BOOL | 0) or TAG_UNIT
     let tag_bool_false = codegen.const_bool(false);
-    let tag_nil = codegen.const_nil();
+    let tag_unit = codegen.const_unit();
 
     // is_false = (condition == TAG_BOOL_FALSE)
     let is_false = codegen
@@ -58,11 +58,11 @@ pub fn compile_eval_if<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResul
         .ins()
         .icmp(IntCC::Equal, condition, tag_bool_false);
 
-    // is_nil = (condition == TAG_NIL)
-    let is_nil = codegen.builder.ins().icmp(IntCC::Equal, condition, tag_nil);
+    // is_unit = (condition == TAG_UNIT)
+    let is_unit = codegen.builder.ins().icmp(IntCC::Equal, condition, tag_unit);
 
-    // is_falsy = is_false || is_nil
-    let is_falsy = codegen.builder.ins().bor(is_false, is_nil);
+    // is_falsy = is_false || is_unit
+    let is_falsy = codegen.builder.ins().bor(is_false, is_unit);
 
     // result = is_falsy ? else_val : then_val
     let result = codegen.builder.ins().select(is_falsy, else_val, then_val);

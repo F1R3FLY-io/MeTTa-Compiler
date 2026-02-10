@@ -213,7 +213,7 @@ impl Default for JitChoicePoint {
             saved_binding_frames_count: 0,
             is_collect_boundary: false,
             // Initialize all alternatives to empty value alternatives
-            alternatives_inline: [JitAlternative::value(JitValue::nil()); MAX_ALTERNATIVES_INLINE],
+            alternatives_inline: [JitAlternative::value(JitValue::unit()); MAX_ALTERNATIVES_INLINE],
             saved_stack_pool_idx: -1, // No saved stack
         }
     }

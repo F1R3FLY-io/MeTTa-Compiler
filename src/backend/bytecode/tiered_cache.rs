@@ -979,14 +979,10 @@ pub fn hash_arena_value(expr: &ArenaValue<'static>) -> u64 {
     // Type-specific seeds
     const LONG_SEED: u64 = 0x517cc1b727220a95;
     const BOOL_SEED: u64 = 0x2d358dccaa6c78a5;
-    const NIL_HASH: u64 = 0x6e696c5f_68617368;
     const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
     const UNIT_HASH: u64 = 0x756e6974_68617368; // "unit_hash" as bytes
 
     // Fast path for primitives
-    if expr.is_nil() {
-        return NIL_HASH;
-    }
     if expr.is_unit() {
         return UNIT_HASH;
     }
@@ -1018,8 +1014,7 @@ fn hash_arena_value_recursive<H: std::hash::Hasher>(expr: &ArenaValue<'static>, 
     use std::hash::Hash;
 
     // Hash type discriminant first
-    let type_tag: u8 = if expr.is_nil() { 0 }
-        else if expr.is_unit() { 1 }
+    let type_tag: u8 = if expr.is_unit() { 0 }
         else if expr.is_bool() { 2 }
         else if expr.is_long() { 3 }
         else if expr.is_float() { 4 }
@@ -2122,7 +2117,7 @@ mod tests {
         let factory = ArenaValueFactory::new(arena);
 
         // Test that hashing primitives produces consistent results
-        let nil_val: ArenaValue<'static> = factory.nil();
+        let nil_val: ArenaValue<'static> = factory.unit();
         let unit_val: ArenaValue<'static> = factory.unit();
         let true_val: ArenaValue<'static> = factory.bool(true);
         let false_val: ArenaValue<'static> = factory.bool(false);
@@ -2136,11 +2131,12 @@ mod tests {
         let long_hash = hash_arena_value(&long_val);
         let float_hash = hash_arena_value(&float_val);
 
+        // After Nil/Unit merge, nil and unit produce the same hash
+        assert_eq!(nil_hash, unit_hash);
         // Different types should produce different hashes
-        assert_ne!(nil_hash, unit_hash);
         assert_ne!(true_hash, false_hash);
         assert_ne!(long_hash, float_hash);
-        assert_ne!(nil_hash, long_hash);
+        assert_ne!(unit_hash, long_hash);
     }
 
     #[test]

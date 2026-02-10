@@ -52,7 +52,6 @@ pub(crate) fn substitute_variable(
         | MettaValueInner::Float(_)
         | MettaValueInner::Bool(_)
         | MettaValueInner::String(_)
-        | MettaValueInner::Nil
         | MettaValueInner::Unit
         | MettaValueInner::Space(_)
         | MettaValueInner::State(_)
@@ -219,7 +218,6 @@ where
         || expr.is_long()
         || expr.is_float()
         || expr.is_string()
-        || expr.is_nil()
         || expr.is_unit()
         || expr.is_space()
         || expr.is_state()

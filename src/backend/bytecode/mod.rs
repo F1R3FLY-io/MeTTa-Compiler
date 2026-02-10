@@ -304,8 +304,7 @@ impl std::error::Error for BytecodeEvalError {}
 pub fn can_compile(expr: &MettaValue) -> bool {
     match expr.inner() {
         // Always compilable literals
-        MettaValueInner::Nil
-        | MettaValueInner::Unit
+        MettaValueInner::Unit
         | MettaValueInner::Bool(_)
         | MettaValueInner::Long(_)
         | MettaValueInner::Float(_)
@@ -433,8 +432,7 @@ pub fn can_compile_cached(expr: &MettaValue) -> bool {
 pub fn can_compile_with_env(expr: &MettaValue) -> bool {
     match expr.inner() {
         // Always compilable literals
-        MettaValueInner::Nil
-        | MettaValueInner::Unit
+        MettaValueInner::Unit
         | MettaValueInner::Bool(_)
         | MettaValueInner::Long(_)
         | MettaValueInner::Float(_)
@@ -1018,7 +1016,7 @@ where
 /// can also be compiled. This prevents the bytecode VM from returning wrong results
 /// when a subexpression needs rule resolution.
 pub fn can_compile_arena(expr: &ArenaValue<'static>) -> bool {
-    if expr.is_nil() || expr.is_unit() || expr.is_bool() || expr.is_long()
+    if expr.is_unit() || expr.is_bool() || expr.is_long()
         || expr.is_float() || expr.is_string()
     {
         return true;
@@ -1122,7 +1120,7 @@ fn can_compile_arena_chain(items: &[ArenaValue<'static>]) -> bool {
 /// Use this when bytecode execution will have access to an Environment for
 /// rule lookup and definition (e.g., mmverify workloads).
 pub fn can_compile_arena_with_env(expr: &ArenaValue<'static>) -> bool {
-    if expr.is_nil() || expr.is_unit() || expr.is_bool() || expr.is_long()
+    if expr.is_unit() || expr.is_bool() || expr.is_long()
         || expr.is_float() || expr.is_string()
     {
         return true;
@@ -1381,7 +1379,7 @@ mod tests {
     #[allow(clippy::approx_constant)]
     fn test_can_compile_literals() {
         // Compilable literals
-        assert!(can_compile(&MettaValue::Nil()));
+        assert!(can_compile(&MettaValue::Unit()));
         assert!(can_compile(&MettaValue::Unit()));
         assert!(can_compile(&MettaValue::Bool(true)));
         assert!(can_compile(&MettaValue::Long(42)));

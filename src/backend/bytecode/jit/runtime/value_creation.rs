@@ -19,7 +19,7 @@
 use super::helpers::{jit_to_value_generic, value_to_jit_generic};
 use super::stack_ops::jit_runtime_load_constant;
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, JitValueMode, PAYLOAD_MASK, TAG_HEAP, TAG_MASK, TAG_NIL,
+    JitBailoutReason, JitContext, JitValue, JitValueMode, PAYLOAD_MASK, TAG_HEAP, TAG_MASK, TAG_UNIT,
 };
 use crate::backend::models::{
     ArenaValue, ArenaValueFactory, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait,
@@ -204,8 +204,8 @@ pub unsafe extern "C" fn jit_runtime_cons_atom(
 
     let tail_tag = tail & TAG_MASK;
 
-    // Handle Nil tail
-    if tail_tag == TAG_NIL {
+    // Handle Unit tail
+    if tail_tag == TAG_UNIT {
         let sexpr = Box::new(MettaValue::SExpr(vec![head_metta]));
         let ptr = Box::into_raw(sexpr);
         return TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK);
@@ -216,7 +216,7 @@ pub unsafe extern "C" fn jit_runtime_cons_atom(
         if let Some(ctx) = ctx.as_mut() {
             ctx.signal_error(ip as usize, JitBailoutReason::TypeError);
         }
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     // Get the tail as MettaValue
@@ -225,7 +225,7 @@ pub unsafe extern "C" fn jit_runtime_cons_atom(
         if let Some(ctx) = ctx.as_mut() {
             ctx.signal_error(ip as usize, JitBailoutReason::TypeError);
         }
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     // Check if tail is an S-expression
@@ -240,8 +240,8 @@ pub unsafe extern "C" fn jit_runtime_cons_atom(
             let ptr = Box::into_raw(sexpr);
             TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
         }
-        MettaValueInner::Nil => {
-            // Treat Nil as empty S-expression
+        MettaValueInner::Unit => {
+            // Treat Unit as empty S-expression
             let sexpr = Box::new(MettaValue::SExpr(vec![head_metta]));
             let ptr = Box::into_raw(sexpr);
             TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn jit_runtime_cons_atom(
             if let Some(ctx) = ctx.as_mut() {
                 ctx.signal_error(ip as usize, JitBailoutReason::TypeError);
             }
-            TAG_NIL
+            TAG_UNIT
         }
     }
 }
@@ -278,8 +278,8 @@ pub unsafe extern "C" fn jit_runtime_push_uri(ctx: *const JitContext, index: u64
 /// Create a proper MeTTa list from an array of NaN-boxed values.
 ///
 /// Builds a linked list using the (Cons elem rest) structure:
-/// - Elements are popped in order and reversed to build (Cons elem (Cons ... Nil))
-/// - Empty list is just Nil
+/// - Elements are popped in order and reversed to build (Cons elem (Cons ... Unit))
+/// - Empty list is just Unit
 ///
 /// For example, with values [1, 2, 3], creates:
 /// (Cons 1 (Cons 2 (Cons 3 Nil)))
@@ -295,7 +295,7 @@ pub unsafe extern "C" fn jit_runtime_push_uri(ctx: *const JitContext, index: u64
 /// * `ip` - Instruction pointer for error reporting
 ///
 /// # Returns
-/// NaN-boxed TAG_HEAP pointer to the list (or TAG_NIL for empty list)
+/// NaN-boxed TAG_HEAP pointer to the list (or TAG_UNIT for empty list)
 ///
 /// # Safety
 /// * The context pointer must be valid
@@ -342,9 +342,9 @@ pub unsafe extern "C" fn jit_runtime_make_list(
         count
     );
 
-    // Empty list is Nil
+    // Empty list is Unit
     if count == 0 {
-        return TAG_NIL;
+        return TAG_UNIT;
     }
 
     // Validate values_ptr is not null
@@ -355,8 +355,8 @@ pub unsafe extern "C" fn jit_runtime_make_list(
     );
 
     // Build the list from the end (reverse order to get proper Cons structure)
-    // Start with Nil, then Cons each element from the end
-    let mut list = MettaValue::Nil();
+    // Start with Unit, then Cons each element from the end
+    let mut list = MettaValue::Unit();
 
     for i in (0..count).rev() {
         let raw_val = *values_ptr.add(i);
@@ -561,15 +561,15 @@ where
 
     let tail_tag = tail & TAG_MASK;
 
-    // Handle Nil tail
-    if tail_tag == TAG_NIL {
+    // Handle Unit tail
+    if tail_tag == TAG_UNIT {
         let sexpr = factory.sexpr(vec![head_val]);
         return value_to_jit_generic(&sexpr, mode);
     }
 
     // Must be a heap pointer (S-expression)
     if tail_tag != TAG_HEAP {
-        return JitValue::nil();
+        return JitValue::unit();
     }
 
     // Get tail and check if it's an S-expression
@@ -583,13 +583,13 @@ where
 
         let sexpr = factory.sexpr(new_elements);
         value_to_jit_generic(&sexpr, mode)
-    } else if tail_val.is_nil() {
-        // Treat Nil as empty S-expression
+    } else if tail_val.is_unit() {
+        // Treat Unit as empty S-expression
         let sexpr = factory.sexpr(vec![head_val]);
         value_to_jit_generic(&sexpr, mode)
     } else {
         // Type error
-        JitValue::nil()
+        JitValue::unit()
     }
 }
 
@@ -628,9 +628,9 @@ where
         count
     );
 
-    // Empty list is Nil
+    // Empty list is Unit
     if count == 0 {
-        return JitValue::nil();
+        return JitValue::unit();
     }
 
     debug_assert!(
@@ -640,7 +640,7 @@ where
     );
 
     // Build from the end (reverse order for proper Cons structure)
-    let mut list = factory.nil();
+    let mut list = factory.unit();
 
     for i in (0..count).rev() {
         let raw_val = *values_ptr.add(i);

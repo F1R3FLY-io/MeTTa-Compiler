@@ -49,7 +49,7 @@ macro_rules! require_builtin_args {
                     if $expected == 1 { "" } else { "s" },
                     $args.len()
                 ),
-                MettaValue::Nil(),
+                MettaValue::Unit(),
             );
         }
     };

@@ -111,7 +111,7 @@ impl DeadCodeEliminator {
                 // Conditional jumps - both target and fallthrough are block starts
                 Opcode::JumpIfFalse
                 | Opcode::JumpIfTrue
-                | Opcode::JumpIfNil
+                | Opcode::JumpIfUnit
                 | Opcode::JumpIfError => {
                     if let Some(target) = self.get_jump_target_i16(code, offset) {
                         if target < code.len() {
@@ -245,7 +245,7 @@ impl DeadCodeEliminator {
                     }
                     Opcode::JumpIfFalse
                     | Opcode::JumpIfTrue
-                    | Opcode::JumpIfNil
+                    | Opcode::JumpIfUnit
                     | Opcode::JumpIfError => {
                         if let Some(target) = self.get_jump_target_i16(code, offset) {
                             successors.push(target);
@@ -371,7 +371,7 @@ impl DeadCodeEliminator {
                 Opcode::Jump
                 | Opcode::JumpIfFalse
                 | Opcode::JumpIfTrue
-                | Opcode::JumpIfNil
+                | Opcode::JumpIfUnit
                 | Opcode::JumpIfError => {
                     if offset + 2 < code.len() {
                         let old_jump_offset =

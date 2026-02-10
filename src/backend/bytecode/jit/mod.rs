@@ -70,7 +70,6 @@ pub use types::{
     TAG_HEAP,
     TAG_LONG,
     TAG_MASK,
-    TAG_NIL,
     TAG_UNIT,
     TAG_VAR,
 };

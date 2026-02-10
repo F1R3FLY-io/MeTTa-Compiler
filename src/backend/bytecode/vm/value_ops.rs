@@ -85,7 +85,7 @@ impl BytecodeVM {
         }
         let elements: Vec<MettaValue> = self.value_stack.drain((len - arity)..).collect();
         // Build proper list
-        let mut list = MettaValue::Nil();
+        let mut list = MettaValue::Unit();
         for elem in elements.into_iter().rev() {
             list = MettaValue::sexpr(vec![MettaValue::sym("Cons"), elem, list]);
         }

@@ -800,8 +800,9 @@ fn test_type_matches_unit() {
 #[test]
 fn test_type_matches_nil() {
     let env = HeapEnvironment::default();
-    assert!(type_matches(&MettaValue::Nil(), &TypeExpr::Nil, &env));
-    assert!(!type_matches(&MettaValue::Unit(), &TypeExpr::Nil, &env));
+    // After Nil/Unit merge, Nil() returns Unit, and TypeExpr::Unit matches Unit
+    assert!(type_matches(&MettaValue::Unit(), &TypeExpr::Unit, &env));
+    assert!(type_matches(&MettaValue::Unit(), &TypeExpr::Unit, &env));
 }
 
 #[test]

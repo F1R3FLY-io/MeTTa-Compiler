@@ -439,9 +439,6 @@ impl Compiler {
             // ================================================================
             // Literals - direct emit, no recursion
             // ================================================================
-            MettaValueInner::Nil => {
-                self.builder.emit(Opcode::PushNil);
-            }
             MettaValueInner::Unit => {
                 self.builder.emit(Opcode::PushUnit);
             }

@@ -51,12 +51,12 @@ pub unsafe extern "C" fn jit_runtime_decon_atom(_ctx: *mut JitContext, val: u64,
         }
         MettaValueInner::SExpr(_) => {
             // Empty S-expression - return (Nil, ())
-            let result = MettaValue::SExpr(vec![MettaValue::Nil(), MettaValue::SExpr(vec![])]);
+            let result = MettaValue::SExpr(vec![MettaValue::Unit(), MettaValue::SExpr(vec![])]);
             metta_to_jit(&result).to_bits()
         }
         _ => {
-            // Non-S-expression - return Nil
-            JitValue::nil().to_bits()
+            // Non-S-expression - return Unit
+            JitValue::unit().to_bits()
         }
     }
 }

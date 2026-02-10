@@ -8,7 +8,7 @@
 
 use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue, TAG_ATOM, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_NIL, TAG_UNIT, TAG_VAR,
+    JitContext, JitValue, TAG_ATOM, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{MettaValue, MettaValueInner};
 use tracing::{debug, trace};
@@ -99,7 +99,6 @@ pub unsafe extern "C" fn jit_runtime_get_metatype(
         t if t == TAG_VAR => "Variable",
         t if t == TAG_LONG => "Grounded",
         t if t == TAG_BOOL => "Grounded",
-        t if t == TAG_NIL => "Grounded",
         t if t == TAG_UNIT => "Grounded",
         _ => "Unknown",
     };

@@ -9,10 +9,11 @@
 //! arena-allocated values, avoiding individual heap allocations. This is 2-3x
 //! faster than converting to heap-allocated MettaValue for transient values.
 //!
-//! ## Static Variable Names
+//! ## Epoch-Based Variable Names
 //!
-//! Variable names ("$a", "$b", etc.) use static string references instead of
-//! allocating new strings for each variable encountered.
+//! Variable names use epoch-suffixed format ("$a%0", "$b%0", etc.) to prevent
+//! variable capture bugs when rules from different scopes share the same
+//! De Bruijn index but represent different logical variables.
 
 use bumpalo::collections::Vec as BumpVec;
 use bumpalo::Bump;
@@ -24,16 +25,24 @@ use tracing::{trace, warn};
 use super::MettaValue;
 use crate::backend::models::{ArenaValue, MettaValueFactory, MettaValueTrait};
 
-/// Static variable names for MORK variables.
-/// Using static strings eliminates allocation for the common case of <64 variables.
-pub(crate) static VARNAMES: [&str; 64] = [
-    "$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "$k", "$l",
-    "$m", "$n", "$o", "$p", "$q", "$r", "$s", "$t", "$u", "$v", "$w", "$x",
-    "$y", "$z", "$a1", "$b1", "$c1", "$d1", "$e1", "$f1", "$g1", "$h1",
-    "$i1", "$j1", "$k1", "$l1", "$m1", "$n1", "$o1", "$p1", "$q1", "$r1",
-    "$s1", "$t1", "$u1", "$v1", "$w1", "$x1", "$y1", "$z1", "$a2", "$b2",
-    "$c2", "$d2", "$e2", "$f2", "$g2", "$h2", "$i2", "$j2", "$k2", "$l2",
+/// Base variable names for MORK variables (without `$` prefix).
+/// Each invocation of a MORK-to-value conversion generates unique variable names
+/// by combining these bases with an epoch counter (e.g., `$a%0`, `$b%0`, `$a%1`).
+/// This prevents variable capture bugs when rules from different scopes share
+/// the same De Bruijn index but represent different logical variables.
+static VARNAME_BASES: [&str; 64] = [
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l",
+    "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x",
+    "y", "z", "a1", "b1", "c1", "d1", "e1", "f1", "g1", "h1",
+    "i1", "j1", "k1", "l1", "m1", "n1", "o1", "p1", "q1", "r1",
+    "s1", "t1", "u1", "v1", "w1", "x1", "y1", "z1", "a2", "b2",
+    "c2", "d2", "e2", "f2", "g2", "h2", "i2", "j2", "k2", "l2",
 ];
+
+/// Global epoch counter for unique variable name generation.
+/// Each MORK-to-value conversion increments this to get a unique epoch,
+/// ensuring that variables from different rule applications never collide.
+static VARNAME_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl super::HeapEnvironment {
     /// Extract (head_symbol_bytes, arity) from MORK expression bytes in O(1).
@@ -123,6 +132,8 @@ impl super::HeapEnvironment {
         let mut offset = 0usize;
         let ptr = expr.ptr;
         let mut newvar_count = 0u8; // Track how many NewVars we've seen for proper indexing
+        let epoch = VARNAME_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut var_names: Vec<String> = Vec::new();
 
         'parsing: loop {
             // Read the next byte and interpret as tag
@@ -150,21 +161,27 @@ impl super::HeapEnvironment {
             let value = match tag {
                 Tag::NewVar => {
                     // De Bruijn index - NewVar introduces a new variable with the next index
-                    // Use static VARNAMES to avoid allocation
-                    let var_name = if (newvar_count as usize) < VARNAMES.len() {
-                        VARNAMES[newvar_count as usize].to_string()
+                    // Use epoch-suffixed names to prevent variable capture across scopes
+                    let base = if (newvar_count as usize) < VARNAME_BASES.len() {
+                        VARNAME_BASES[newvar_count as usize]
                     } else {
-                        format!("$var{}", newvar_count)
+                        return Err(format!("Too many variables: {}", newvar_count));
                     };
+                    let var_name = format!("${}%{}", base, epoch);
                     newvar_count += 1;
+                    var_names.push(var_name.clone());
                     MettaValue::Atom(var_name)
                 }
                 Tag::VarRef(i) => {
-                    // Variable reference - use static VARNAMES to avoid allocation
-                    if (i as usize) < VARNAMES.len() {
-                        MettaValue::Atom(VARNAMES[i as usize].to_string())
+                    // Variable reference - look up the epoch-unique name
+                    if (i as usize) < var_names.len() {
+                        MettaValue::Atom(var_names[i as usize].clone())
                     } else {
-                        MettaValue::Atom(format!("$var{}", i))
+                        return Err(format!(
+                            "Variable reference {} out of range (only {} vars defined)",
+                            i,
+                            var_names.len()
+                        ));
                     }
                 }
                 Tag::SymbolSize(size) => {
@@ -243,7 +260,7 @@ impl super::HeapEnvironment {
                 Tag::Arity(arity) => {
                     if arity == 0 {
                         // Empty s-expression
-                        MettaValue::Nil()
+                        MettaValue::Unit()
                     } else {
                         // Push new frame for this s-expression
                         stack.push(StackFrame::Arity {
@@ -358,6 +375,8 @@ impl super::HeapEnvironment {
         let mut offset = 0usize;
         let ptr = expr.ptr;
         let mut newvar_count = 0u8;
+        let epoch = VARNAME_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut var_names: Vec<String> = Vec::new();
 
         'parsing: loop {
             let byte = unsafe { *ptr.byte_add(offset) };
@@ -380,23 +399,28 @@ impl super::HeapEnvironment {
 
             let value = match tag {
                 Tag::NewVar => {
-                    // Use static VARNAMES - allocate in arena only if needed
-                    if (newvar_count as usize) < VARNAMES.len() {
-                        let var_name = VARNAMES[newvar_count as usize];
-                        newvar_count += 1;
-                        ArenaValue::atom(arena, var_name)
+                    // Use epoch-suffixed names to prevent variable capture across scopes
+                    let base = if (newvar_count as usize) < VARNAME_BASES.len() {
+                        VARNAME_BASES[newvar_count as usize]
                     } else {
-                        let var_name = arena.alloc_str(&format!("$var{}", newvar_count));
-                        newvar_count += 1;
-                        ArenaValue::atom(arena, var_name)
-                    }
+                        return Err(format!("Too many variables: {}", newvar_count));
+                    };
+                    let var_name = format!("${}%{}", base, epoch);
+                    newvar_count += 1;
+                    let arena_str = arena.alloc_str(&var_name);
+                    var_names.push(var_name);
+                    ArenaValue::atom(arena, arena_str)
                 }
                 Tag::VarRef(i) => {
-                    if (i as usize) < VARNAMES.len() {
-                        ArenaValue::atom(arena, VARNAMES[i as usize])
+                    if (i as usize) < var_names.len() {
+                        let arena_str = arena.alloc_str(&var_names[i as usize]);
+                        ArenaValue::atom(arena, arena_str)
                     } else {
-                        let var_name = arena.alloc_str(&format!("$var{}", i));
-                        ArenaValue::atom(arena, var_name)
+                        return Err(format!(
+                            "Variable reference {} out of range (only {} vars defined)",
+                            i,
+                            var_names.len()
+                        ));
                     }
                 }
                 Tag::SymbolSize(size) => {
@@ -465,7 +489,7 @@ impl super::HeapEnvironment {
                 }
                 Tag::Arity(arity) => {
                     if arity == 0 {
-                        ArenaValue::nil(arena)
+                        ArenaValue::unit(arena)
                     } else {
                         // Push new frame for this s-expression
                         stack.push(StackFrame::Arity {
@@ -525,7 +549,7 @@ impl super::HeapEnvironment {
 /// ## Performance
 ///
 /// Stack-based traversal to avoid recursion limits on deeply nested expressions.
-/// Uses static `VARNAMES` array to avoid allocation for the common case.
+/// Uses epoch-based unique variable names to prevent variable capture across scopes.
 #[allow(unused_variables)]
 pub(crate) fn mork_expr_to_generic_value<V, F, M>(
     expr: &Expr,
@@ -582,7 +606,7 @@ unsafe fn mork_expr_len(ptr: *const u8) -> usize {
 /// ## Performance
 ///
 /// Stack-based traversal to avoid recursion limits on deeply nested expressions.
-/// Uses static `VARNAMES` array to avoid allocation for the common case.
+/// Uses epoch-based unique variable names to prevent variable capture across scopes.
 #[allow(unused_variables)]
 pub(crate) fn mork_bytes_to_generic_value<V, F, M>(
     bytes: &[u8],
@@ -602,6 +626,8 @@ where
     let mut stack: Vec<StackFrame<V>> = Vec::new();
     let mut offset = 0usize;
     let mut newvar_count = 0u8;
+    let epoch = VARNAME_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut var_names: Vec<String> = Vec::new();
 
     'parsing: loop {
         if offset >= bytes.len() {
@@ -628,21 +654,27 @@ where
         let value = match tag {
             Tag::NewVar => {
                 // De Bruijn index - NewVar introduces a new variable with the next index
-                // Use static VARNAMES to avoid allocation
-                let var_name = if (newvar_count as usize) < VARNAMES.len() {
-                    VARNAMES[newvar_count as usize]
+                // Use epoch-suffixed names to prevent variable capture across scopes
+                let base = if (newvar_count as usize) < VARNAME_BASES.len() {
+                    VARNAME_BASES[newvar_count as usize]
                 } else {
-                    // Fallback for large variable counts
                     return Err(format!("Too many variables: {}", newvar_count));
                 };
+                let var_name = format!("${}%{}", base, epoch);
                 newvar_count += 1;
-                factory.atom(var_name)
+                let atom = factory.atom(&var_name);
+                var_names.push(var_name);
+                atom
             }
             Tag::VarRef(i) => {
-                if (i as usize) < VARNAMES.len() {
-                    factory.atom(VARNAMES[i as usize])
+                if (i as usize) < var_names.len() {
+                    factory.atom(&var_names[i as usize])
                 } else {
-                    return Err(format!("Variable reference out of range: {}", i));
+                    return Err(format!(
+                        "Variable reference {} out of range (only {} vars defined)",
+                        i,
+                        var_names.len()
+                    ));
                 }
             }
             Tag::SymbolSize(size) => {
@@ -710,7 +742,7 @@ where
             }
             Tag::Arity(arity) => {
                 if arity == 0 {
-                    factory.nil()
+                    factory.unit()
                 } else {
                     stack.push(StackFrame::Arity {
                         remaining: arity,

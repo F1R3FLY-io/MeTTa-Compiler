@@ -289,7 +289,7 @@ impl BytecodeVM {
                 new_elements.extend(elements.iter().cloned());
                 MettaValue::SExpr(new_elements)
             }
-            MettaValueInner::Nil => {
+            MettaValueInner::Unit => {
                 // Create single-element S-expression
                 MettaValue::SExpr(vec![head])
             }
@@ -323,7 +323,6 @@ impl BytecodeVM {
                 format!("({})", inner.join(" "))
             }
             MettaValueInner::Unit => "()".to_string(),
-            MettaValueInner::Nil => "Nil".to_string(),
             MettaValueInner::Error(msg, _) => format!("(Error {})", msg),
             MettaValueInner::Type(t) => format!("(: {})", self.atom_repr(t)),
             MettaValueInner::Space(_) => "<space>".to_string(),
@@ -347,7 +346,6 @@ impl BytecodeVM {
             MettaValueInner::Long(_) => "Number",
             MettaValueInner::Float(_) => "Number",
             MettaValueInner::String(_) => "String",
-            MettaValueInner::Nil => "Nil",
             MettaValueInner::Unit => "Unit",
             MettaValueInner::Error(_, _) => "Error",
             MettaValueInner::Type(_) => "Type",

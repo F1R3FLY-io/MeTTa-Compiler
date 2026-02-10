@@ -45,7 +45,7 @@ impl HybridExecutor {
 
         // Reset buffers
         for v in &mut self.jit_stack {
-            *v = JitValue::nil();
+            *v = JitValue::unit();
         }
         self.jit_choice_points.clear();
         self.jit_results.clear();
@@ -59,7 +59,7 @@ impl HybridExecutor {
             JitChoicePoint::default(),
         );
         self.jit_results
-            .resize(self.config.jit_results_capacity, JitValue::nil());
+            .resize(self.config.jit_results_capacity, JitValue::unit());
         self.jit_binding_frames.resize(
             self.config.jit_binding_frames_capacity,
             JitBindingFrame::default(),

@@ -76,7 +76,7 @@ fn test_compile_simple_addition() {
 
 #[test]
 fn test_jit_execute_addition() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -93,7 +93,7 @@ fn test_jit_execute_addition() {
 
     // Set up JIT context (needed for bailout signaling, constants, etc.)
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -114,7 +114,7 @@ fn test_jit_execute_addition() {
 
 #[test]
 fn test_jit_execute_arithmetic_chain() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -133,7 +133,7 @@ fn test_jit_execute_arithmetic_chain() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -150,7 +150,7 @@ fn test_jit_execute_arithmetic_chain() {
 
 #[test]
 fn test_jit_execute_boolean_logic() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -168,7 +168,7 @@ fn test_jit_execute_boolean_logic() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -186,7 +186,7 @@ fn test_jit_execute_boolean_logic() {
 
 #[test]
 fn test_jit_execute_comparison() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -201,7 +201,7 @@ fn test_jit_execute_comparison() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -219,7 +219,7 @@ fn test_jit_execute_comparison() {
 
 #[test]
 fn test_jit_execute_division() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -234,7 +234,7 @@ fn test_jit_execute_division() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -252,7 +252,7 @@ fn test_jit_execute_division() {
 
 #[test]
 fn test_jit_execute_modulo() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -267,7 +267,7 @@ fn test_jit_execute_modulo() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -305,7 +305,7 @@ fn test_can_compile_pow() {
 
 #[test]
 fn test_jit_execute_pow() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -325,7 +325,7 @@ fn test_jit_execute_pow() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -343,7 +343,7 @@ fn test_jit_execute_pow() {
 
 #[test]
 fn test_jit_execute_pow_zero_exponent() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -358,7 +358,7 @@ fn test_jit_execute_pow_zero_exponent() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -397,7 +397,7 @@ fn test_can_compile_push_constant() {
 
 #[test]
 fn test_jit_execute_push_constant() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
     use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -414,7 +414,7 @@ fn test_jit_execute_push_constant() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -432,7 +432,7 @@ fn test_jit_execute_push_constant() {
 
 #[test]
 fn test_jit_execute_push_constant_arithmetic() {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
     use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -450,7 +450,7 @@ fn test_jit_execute_push_constant_arithmetic() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -480,9 +480,9 @@ fn exec_jit(
     code_ptr: *const (),
     constants: &[crate::backend::MettaValue],
 ) -> crate::backend::bytecode::jit::JitValue {
-    use crate::backend::bytecode::jit::{JitBailoutReason, JitContext, JitValue};
+    use crate::backend::bytecode::jit::{JitContext, JitValue};
 
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -869,17 +869,17 @@ fn test_jit_execute_stack_operations() {
 
 #[test]
 fn test_jit_execute_special_values() {
-    // Test Nil
+    // Test Nil (now aliased to Unit after Nil/Unit merge)
     {
         let mut compiler = JitCompiler::new().expect("Failed to create compiler");
         let mut builder = ChunkBuilder::new("nil_test");
-        builder.emit(Opcode::PushNil);
+        builder.emit(Opcode::PushUnit);
         builder.emit(Opcode::Return);
         let chunk = builder.build();
 
         let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
         let result = exec_jit(code_ptr, chunk.constants());
-        assert!(result.is_nil(), "Expected Nil");
+        assert!(result.is_unit(), "PushNil should produce Unit after Nil/Unit merge");
     }
 
     // Test Unit
@@ -1305,9 +1305,9 @@ fn test_jit_yield_signals_bailout() {
 
     // Test the runtime function directly instead of JIT code generation
     // (JIT code gen for Yield returns immediately, which breaks block filling)
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-    let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+    let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
     let mut ctx = unsafe {
         JitContext::with_nondet(
             stack.as_mut_ptr(),
@@ -1345,9 +1345,9 @@ fn test_jit_collect_signals_bailout() {
     use crate::backend::bytecode::jit::{JitChoicePoint, JitContext, JitValue};
 
     // Test the runtime function directly
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-    let mut results: Vec<JitValue> = vec![JitValue::nil(); 16];
+    let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
     let mut ctx = unsafe {
         JitContext::with_nondet(
             stack.as_mut_ptr(),
@@ -1652,7 +1652,7 @@ fn test_can_compile_phase_g_cut() {
 fn test_can_compile_phase_h_mork_lookup() {
     // Phase H: MorkLookup opcode is compilable
     let mut builder = ChunkBuilder::new("test_phase_h_mork_lookup");
-    builder.emit(Opcode::PushNil); // path placeholder
+    builder.emit(Opcode::PushUnit); // path placeholder
     builder.emit(Opcode::MorkLookup);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -1667,8 +1667,8 @@ fn test_can_compile_phase_h_mork_lookup() {
 fn test_can_compile_phase_h_mork_match() {
     // Phase H: MorkMatch opcode is compilable
     let mut builder = ChunkBuilder::new("test_phase_h_mork_match");
-    builder.emit(Opcode::PushNil); // path placeholder
-    builder.emit(Opcode::PushNil); // pattern placeholder
+    builder.emit(Opcode::PushUnit); // path placeholder
+    builder.emit(Opcode::PushUnit); // pattern placeholder
     builder.emit(Opcode::MorkMatch);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -1683,8 +1683,8 @@ fn test_can_compile_phase_h_mork_match() {
 fn test_can_compile_phase_h_mork_insert() {
     // Phase H: MorkInsert opcode is compilable
     let mut builder = ChunkBuilder::new("test_phase_h_mork_insert");
-    builder.emit(Opcode::PushNil); // path placeholder
-    builder.emit(Opcode::PushNil); // value placeholder
+    builder.emit(Opcode::PushUnit); // path placeholder
+    builder.emit(Opcode::PushUnit); // value placeholder
     builder.emit(Opcode::MorkInsert);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -1699,7 +1699,7 @@ fn test_can_compile_phase_h_mork_insert() {
 fn test_can_compile_phase_h_mork_delete() {
     // Phase H: MorkDelete opcode is compilable
     let mut builder = ChunkBuilder::new("test_phase_h_mork_delete");
-    builder.emit(Opcode::PushNil); // path placeholder
+    builder.emit(Opcode::PushUnit); // path placeholder
     builder.emit(Opcode::MorkDelete);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -1895,11 +1895,11 @@ fn test_jit_execute_many_locals() {
 // =========================================================================
 
 #[test]
-fn test_jit_can_compile_jump_if_nil() {
+fn test_jit_can_compile_jump_if_unit() {
     // JumpIfNil should be compilable in Stage 5
-    let mut builder = ChunkBuilder::new("can_compile_jump_if_nil");
-    builder.emit(Opcode::PushNil);
-    builder.emit_u16(Opcode::JumpIfNil, 2); // Jump forward 2 bytes
+    let mut builder = ChunkBuilder::new("can_compile_jump_if_unit");
+    builder.emit(Opcode::PushUnit);
+    builder.emit_u16(Opcode::JumpIfUnit, 2); // Jump forward 2 bytes
     builder.emit(Opcode::Return);
     let chunk = builder.build();
 
@@ -1910,7 +1910,7 @@ fn test_jit_can_compile_jump_if_nil() {
 fn test_jit_can_compile_jump_if_error() {
     // JumpIfError should be compilable in Stage 5
     let mut builder = ChunkBuilder::new("can_compile_jump_if_error");
-    builder.emit(Opcode::PushNil); // Use nil as placeholder (no PushError opcode)
+    builder.emit(Opcode::PushUnit); // Use nil as placeholder (no PushError opcode)
     builder.emit_u16(Opcode::JumpIfError, 2); // Jump forward 2 bytes
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -1931,8 +1931,8 @@ fn test_jit_execute_jump_if_nil_takes_jump() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("e2e_jump_if_nil_takes");
-    builder.emit(Opcode::PushNil); // offset 0
-    builder.emit_u16(Opcode::JumpIfNil, 5); // offset 1-3, jump to 9 if nil
+    builder.emit(Opcode::PushUnit); // offset 0
+    builder.emit_u16(Opcode::JumpIfUnit, 5); // offset 1-3, jump to 9 if nil
     builder.emit_byte(Opcode::PushLongSmall, 42); // offset 4-5, not nil path (skipped)
     builder.emit_u16(Opcode::Jump, 2); // offset 6-8, skip else
     builder.emit_byte(Opcode::PushLongSmall, 99); // offset 9-10, nil path
@@ -1956,7 +1956,7 @@ fn test_jit_execute_jump_if_nil_fallthrough() {
 
     let mut builder = ChunkBuilder::new("e2e_jump_if_nil_fallthrough");
     builder.emit_byte(Opcode::PushLongSmall, 1); // offset 0-1, not nil
-    builder.emit_u16(Opcode::JumpIfNil, 5); // offset 2-4, jump to 10 if nil
+    builder.emit_u16(Opcode::JumpIfUnit, 5); // offset 2-4, jump to 10 if nil
     builder.emit_byte(Opcode::PushLongSmall, 42); // offset 5-6, not nil path
     builder.emit_u16(Opcode::Jump, 2); // offset 7-9, skip else
     builder.emit_byte(Opcode::PushLongSmall, 99); // offset 10-11, nil path (skipped)
@@ -1979,7 +1979,7 @@ fn test_jit_execute_jump_if_nil_with_bool_false() {
 
     let mut builder = ChunkBuilder::new("e2e_jump_if_nil_bool_false");
     builder.emit(Opcode::PushFalse); // offset 0, False (not nil)
-    builder.emit_u16(Opcode::JumpIfNil, 5); // offset 1-3, jump to 9 if nil
+    builder.emit_u16(Opcode::JumpIfUnit, 5); // offset 1-3, jump to 9 if nil
     builder.emit_byte(Opcode::PushLongSmall, 42); // offset 4-5, not nil path
     builder.emit_u16(Opcode::Jump, 2); // offset 6-8, skip else
     builder.emit_byte(Opcode::PushLongSmall, 99); // offset 9-10, nil path (skipped)
@@ -2039,8 +2039,8 @@ fn test_jit_execute_jump_if_nil_pops_value() {
     // 8: Return (1 byte) -> returns 42 (nil was popped, 42 stays on stack)
     let mut builder = ChunkBuilder::new("e2e_jump_if_nil_pops");
     builder.emit_byte(Opcode::PushLongSmall, 42); // offset 0-1
-    builder.emit(Opcode::PushNil); // offset 2
-    builder.emit_u16(Opcode::JumpIfNil, 2); // offset 3-5, pops nil, jumps to 8
+    builder.emit(Opcode::PushUnit); // offset 2
+    builder.emit_u16(Opcode::JumpIfUnit, 2); // offset 3-5, pops nil, jumps to 8
     builder.emit_byte(Opcode::PushLongSmall, 99); // offset 6-7, not-nil path (skipped)
     builder.emit(Opcode::Return); // offset 8
     let chunk = builder.build();
@@ -2181,7 +2181,7 @@ fn test_jit_execute_is_sexpr_false_for_nil() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("e2e_is_sexpr_nil");
-    builder.emit(Opcode::PushNil);
+    builder.emit(Opcode::PushUnit);
     builder.emit(Opcode::IsSExpr);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -3037,10 +3037,10 @@ fn test_jit_execute_struct_eq_bools() {
 fn test_jit_execute_struct_eq_nil() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
-    // Nil == Nil
+    // Unit == Unit
     let mut builder = ChunkBuilder::new("struct_eq_nil");
-    builder.emit(Opcode::PushNil);
-    builder.emit(Opcode::PushNil);
+    builder.emit(Opcode::PushUnit);
+    builder.emit(Opcode::PushUnit);
     builder.emit(Opcode::StructEq);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -3215,7 +3215,7 @@ fn test_jit_execute_push_empty() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3251,7 +3251,7 @@ fn test_jit_execute_push_atom() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3287,7 +3287,7 @@ fn test_jit_execute_push_string() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3323,7 +3323,7 @@ fn test_jit_execute_push_variable() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3405,7 +3405,7 @@ fn test_jit_execute_get_arity_empty() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3449,7 +3449,7 @@ fn test_jit_execute_get_arity_nonempty() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3493,7 +3493,7 @@ fn test_jit_execute_get_head() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3538,7 +3538,7 @@ fn test_jit_execute_get_tail() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3583,7 +3583,7 @@ fn test_jit_execute_get_tail_get_head() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3649,7 +3649,7 @@ fn test_jit_execute_get_element_first() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3693,7 +3693,7 @@ fn test_jit_execute_get_element_middle() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3737,7 +3737,7 @@ fn test_jit_execute_get_element_last() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3785,7 +3785,7 @@ fn test_jit_execute_get_element_combined() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3813,7 +3813,6 @@ fn test_jit_execute_get_element_combined() {
 #[test]
 fn test_jit_execute_get_type_long() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3827,7 +3826,7 @@ fn test_jit_execute_get_type_long() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3850,7 +3849,6 @@ fn test_jit_execute_get_type_long() {
 #[test]
 fn test_jit_execute_get_type_bool() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -3864,7 +3862,7 @@ fn test_jit_execute_get_type_bool() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3907,7 +3905,7 @@ fn test_jit_execute_get_type_sexpr() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3949,7 +3947,7 @@ fn test_jit_execute_check_type_match() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -3990,7 +3988,7 @@ fn test_jit_execute_check_type_mismatch() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -4031,7 +4029,7 @@ fn test_jit_execute_is_type_match() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -4073,7 +4071,7 @@ fn test_jit_execute_check_type_variable_matches_any() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -4118,7 +4116,7 @@ fn test_jit_execute_assert_type_match() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -4162,7 +4160,7 @@ fn test_jit_execute_assert_type_mismatch() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -4195,7 +4193,7 @@ fn test_jit_execute_assert_type_variable_matches_any() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -4261,7 +4259,7 @@ fn test_jit_can_compile_cons_atom() {
     // Test that ConsAtom is recognized as Stage 1 compilable
     let mut builder = ChunkBuilder::new("cons_atom_test");
     builder.emit_byte(Opcode::PushLongSmall, 1);
-    builder.emit(Opcode::PushNil);
+    builder.emit(Opcode::PushUnit);
     builder.emit(Opcode::ConsAtom);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -4275,7 +4273,6 @@ fn test_jit_can_compile_cons_atom() {
 #[test]
 fn test_jit_execute_make_sexpr_empty() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4288,7 +4285,7 @@ fn test_jit_execute_make_sexpr_empty() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4316,7 +4313,6 @@ fn test_jit_execute_make_sexpr_empty() {
 #[test]
 fn test_jit_execute_make_sexpr_single() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4330,7 +4326,7 @@ fn test_jit_execute_make_sexpr_single() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4358,7 +4354,6 @@ fn test_jit_execute_make_sexpr_single() {
 #[test]
 fn test_jit_execute_make_sexpr_multiple() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4374,7 +4369,7 @@ fn test_jit_execute_make_sexpr_multiple() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4404,14 +4399,13 @@ fn test_jit_execute_make_sexpr_multiple() {
 #[test]
 fn test_jit_execute_cons_atom_to_nil() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: Push 1, PushNil, ConsAtom -> (1)
     let mut builder = ChunkBuilder::new("cons_atom_to_nil");
     builder.emit_byte(Opcode::PushLongSmall, 1);
-    builder.emit(Opcode::PushNil);
+    builder.emit(Opcode::PushUnit);
     builder.emit(Opcode::ConsAtom);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -4419,7 +4413,7 @@ fn test_jit_execute_cons_atom_to_nil() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4447,7 +4441,6 @@ fn test_jit_execute_cons_atom_to_nil() {
 #[test]
 fn test_jit_execute_cons_atom_to_sexpr() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4467,7 +4460,7 @@ fn test_jit_execute_cons_atom_to_sexpr() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4497,7 +4490,6 @@ fn test_jit_execute_cons_atom_to_sexpr() {
 #[test]
 fn test_jit_execute_make_sexpr_nested() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4519,7 +4511,7 @@ fn test_jit_execute_make_sexpr_nested() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4634,7 +4626,7 @@ fn test_jit_execute_push_uri() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4656,7 +4648,6 @@ fn test_jit_execute_push_uri() {
 #[test]
 fn test_jit_execute_make_list_empty() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4668,7 +4659,7 @@ fn test_jit_execute_make_list_empty() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4681,9 +4672,9 @@ fn test_jit_execute_make_list_empty() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    // Empty list is Nil
+    // Empty list is Unit
     assert!(
-        matches!(metta.inner(), MettaValueInner::Nil),
+        matches!(metta.inner(), MettaValueInner::Unit),
         "Expected Nil, got: {:?}",
         metta
     );
@@ -4692,7 +4683,6 @@ fn test_jit_execute_make_list_empty() {
 #[test]
 fn test_jit_execute_make_list_single() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4705,7 +4695,7 @@ fn test_jit_execute_make_list_single() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4723,7 +4713,7 @@ fn test_jit_execute_make_list_single() {
         MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3, "Expected (Cons elem Nil) structure");
             match (items[0].inner(), items[1].inner(), items[2].inner()) {
-                (MettaValueInner::Atom(cons), MettaValueInner::Long(v), MettaValueInner::Nil) => {
+                (MettaValueInner::Atom(cons), MettaValueInner::Long(v), MettaValueInner::Unit) => {
                     assert_eq!(cons, "Cons");
                     assert_eq!(*v, 42);
                 }
@@ -4737,7 +4727,6 @@ fn test_jit_execute_make_list_single() {
 #[test]
 fn test_jit_execute_make_list_multiple() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4752,7 +4741,7 @@ fn test_jit_execute_make_list_multiple() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4786,7 +4775,6 @@ fn test_jit_execute_make_list_multiple() {
 #[test]
 fn test_jit_execute_make_quote() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4799,7 +4787,7 @@ fn test_jit_execute_make_quote() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4831,7 +4819,6 @@ fn test_jit_execute_make_quote() {
 #[test]
 fn test_jit_execute_make_quote_nested() {
     use crate::backend::bytecode::jit::{JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -4847,7 +4834,7 @@ fn test_jit_execute_make_quote_nested() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4945,7 +4932,7 @@ fn test_jit_execute_call_with_bailout() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -4982,7 +4969,7 @@ fn test_jit_execute_call_no_args() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -5016,7 +5003,7 @@ fn test_jit_execute_tail_call_with_bailout() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -5051,7 +5038,7 @@ fn test_jit_call_builds_correct_expression() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -5123,7 +5110,7 @@ fn test_jit_call_with_mixed_argument_types() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -5219,7 +5206,7 @@ fn test_jit_call_expression_valid_for_rule_pattern() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -5280,7 +5267,7 @@ fn test_jit_tail_call_preserves_tco_flag() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -5338,7 +5325,7 @@ fn test_jit_call_with_zero_args_returns_head_only() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
 
@@ -5387,7 +5374,6 @@ fn test_can_compile_binding_opcodes() {
 #[test]
 fn test_jit_binding_frame_operations() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
-    use crate::backend::models::metta_value::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5406,7 +5392,7 @@ fn test_jit_binding_frame_operations() {
 
     // Set up JIT context with binding support
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     // Allocate binding frames array (capacity 16)
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
@@ -5439,7 +5425,6 @@ fn test_jit_binding_frame_operations() {
 #[test]
 fn test_jit_has_binding() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
-    use crate::backend::models::metta_value::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5458,7 +5443,7 @@ fn test_jit_has_binding() {
 
     // Set up JIT context with binding support
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     // Allocate binding frames array (capacity 16)
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
@@ -5491,7 +5476,6 @@ fn test_jit_has_binding() {
 #[test]
 fn test_jit_clear_bindings() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
-    use crate::backend::models::metta_value::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5511,7 +5495,7 @@ fn test_jit_clear_bindings() {
 
     // Set up JIT context with binding support
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     // Allocate binding frames array (capacity 16)
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
@@ -5551,31 +5535,31 @@ fn test_can_compile_pattern_matching_opcodes() {
     let mut builder = ChunkBuilder::new("pattern_match_test");
 
     // Match opcode (no operands)
-    builder.emit(Opcode::PushNil); // pattern
-    builder.emit(Opcode::PushNil); // value
+    builder.emit(Opcode::PushUnit); // pattern
+    builder.emit(Opcode::PushUnit); // value
     builder.emit(Opcode::Match);
 
     // MatchBind opcode (no operands)
-    builder.emit(Opcode::PushNil); // pattern
-    builder.emit(Opcode::PushNil); // value
+    builder.emit(Opcode::PushUnit); // pattern
+    builder.emit(Opcode::PushUnit); // value
     builder.emit(Opcode::MatchBind);
 
     // MatchHead opcode (1 byte operand)
-    builder.emit(Opcode::PushNil); // expr
+    builder.emit(Opcode::PushUnit); // expr
     builder.emit_byte(Opcode::MatchHead, 0); // expected head idx
 
     // MatchArity opcode (1 byte operand)
-    builder.emit(Opcode::PushNil); // expr
+    builder.emit(Opcode::PushUnit); // expr
     builder.emit_byte(Opcode::MatchArity, 3); // expected arity
 
     // Unify opcode (no operands)
-    builder.emit(Opcode::PushNil); // a
-    builder.emit(Opcode::PushNil); // b
+    builder.emit(Opcode::PushUnit); // a
+    builder.emit(Opcode::PushUnit); // b
     builder.emit(Opcode::Unify);
 
     // UnifyBind opcode (no operands)
-    builder.emit(Opcode::PushNil); // a
-    builder.emit(Opcode::PushNil); // b
+    builder.emit(Opcode::PushUnit); // a
+    builder.emit(Opcode::PushUnit); // b
     builder.emit(Opcode::UnifyBind);
 
     builder.emit(Opcode::Return);
@@ -5590,7 +5574,6 @@ fn test_can_compile_pattern_matching_opcodes() {
 #[test]
 fn test_jit_pattern_match_simple() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5605,7 +5588,7 @@ fn test_jit_pattern_match_simple() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -5630,7 +5613,6 @@ fn test_jit_pattern_match_simple() {
 #[test]
 fn test_jit_pattern_match_mismatch() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5645,7 +5627,7 @@ fn test_jit_pattern_match_mismatch() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -5670,7 +5652,6 @@ fn test_jit_pattern_match_mismatch() {
 #[test]
 fn test_jit_unify_simple() {
     use crate::backend::bytecode::jit::{JitBindingFrame, JitContext, JitValue};
-    use crate::backend::MettaValue;
 
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
@@ -5685,7 +5666,7 @@ fn test_jit_unify_simple() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -5734,7 +5715,7 @@ fn test_jit_match_arity() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -5784,7 +5765,7 @@ fn test_jit_match_head() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -5852,7 +5833,7 @@ fn test_jit_match_bind_variable_extraction() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -5884,26 +5865,26 @@ fn test_can_compile_space_opcodes() {
     let mut builder = ChunkBuilder::new("test_space_ops");
 
     // SpaceAdd opcode (no operands)
-    builder.emit(Opcode::PushNil); // space
-    builder.emit(Opcode::PushNil); // atom
+    builder.emit(Opcode::PushUnit); // space
+    builder.emit(Opcode::PushUnit); // atom
     builder.emit(Opcode::SpaceAdd);
     builder.emit(Opcode::Pop);
 
     // SpaceRemove opcode (no operands)
-    builder.emit(Opcode::PushNil); // space
-    builder.emit(Opcode::PushNil); // atom
+    builder.emit(Opcode::PushUnit); // space
+    builder.emit(Opcode::PushUnit); // atom
     builder.emit(Opcode::SpaceRemove);
     builder.emit(Opcode::Pop);
 
     // SpaceGetAtoms opcode (no operands)
-    builder.emit(Opcode::PushNil); // space
+    builder.emit(Opcode::PushUnit); // space
     builder.emit(Opcode::SpaceGetAtoms);
     builder.emit(Opcode::Pop);
 
     // SpaceMatch opcode (no operands)
-    builder.emit(Opcode::PushNil); // space
-    builder.emit(Opcode::PushNil); // pattern
-    builder.emit(Opcode::PushNil); // template
+    builder.emit(Opcode::PushUnit); // space
+    builder.emit(Opcode::PushUnit); // pattern
+    builder.emit(Opcode::PushUnit); // template
     builder.emit(Opcode::SpaceMatch);
 
     builder.emit(Opcode::Return);
@@ -5924,8 +5905,8 @@ fn test_jit_space_add_returns_result() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("space_add");
-    builder.emit(Opcode::PushNil); // space (nil = invalid)
-    builder.emit(Opcode::PushNil); // atom
+    builder.emit(Opcode::PushUnit); // space (nil = invalid)
+    builder.emit(Opcode::PushUnit); // atom
     builder.emit(Opcode::SpaceAdd);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -5933,7 +5914,7 @@ fn test_jit_space_add_returns_result() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -5950,7 +5931,7 @@ fn test_jit_space_add_returns_result() {
     let result = JitValue::from_raw(result_bits as u64);
     // Just verify we got a valid JIT value back (no crash)
     assert!(
-        result.is_bool() || result.is_unit() || result.is_nil() || result.is_error(),
+        result.is_bool() || result.is_unit() || result.is_unit() || result.is_error(),
         "SpaceAdd should return bool, unit, nil, or error"
     );
 }
@@ -5963,8 +5944,8 @@ fn test_jit_space_remove_returns_result() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("space_remove");
-    builder.emit(Opcode::PushNil); // space (nil = invalid)
-    builder.emit(Opcode::PushNil); // atom
+    builder.emit(Opcode::PushUnit); // space (nil = invalid)
+    builder.emit(Opcode::PushUnit); // atom
     builder.emit(Opcode::SpaceRemove);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -5972,7 +5953,7 @@ fn test_jit_space_remove_returns_result() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -5987,7 +5968,7 @@ fn test_jit_space_remove_returns_result() {
 
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
-        result.is_bool() || result.is_unit() || result.is_nil() || result.is_error(),
+        result.is_bool() || result.is_unit() || result.is_unit() || result.is_error(),
         "SpaceRemove should return bool, unit, nil, or error"
     );
 }
@@ -6000,7 +5981,7 @@ fn test_jit_space_get_atoms_returns_result() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("space_get_atoms");
-    builder.emit(Opcode::PushNil); // space (nil = invalid)
+    builder.emit(Opcode::PushUnit); // space (nil = invalid)
     builder.emit(Opcode::SpaceGetAtoms);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -6008,7 +5989,7 @@ fn test_jit_space_get_atoms_returns_result() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -6022,9 +6003,9 @@ fn test_jit_space_get_atoms_returns_result() {
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     let result = JitValue::from_raw(result_bits as u64);
-    // Nil space returns nil, empty list, or unit
+    // Empty space returns unit or empty results
     assert!(
-        result.is_nil() || result.is_unit() || result.is_heap() || result.is_error(),
+        result.is_unit() || result.is_unit() || result.is_heap() || result.is_error(),
         "SpaceGetAtoms should return list, nil, unit, or error"
     );
 }
@@ -6037,9 +6018,9 @@ fn test_jit_space_match_returns_result() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("space_match");
-    builder.emit(Opcode::PushNil); // space (nil = invalid)
-    builder.emit(Opcode::PushNil); // pattern
-    builder.emit(Opcode::PushNil); // template
+    builder.emit(Opcode::PushUnit); // space (nil = invalid)
+    builder.emit(Opcode::PushUnit); // pattern
+    builder.emit(Opcode::PushUnit); // template
     builder.emit(Opcode::SpaceMatch);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -6047,7 +6028,7 @@ fn test_jit_space_match_returns_result() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -6061,9 +6042,9 @@ fn test_jit_space_match_returns_result() {
     let result_bits = unsafe { native_fn(&mut ctx as *mut JitContext) };
 
     let result = JitValue::from_raw(result_bits as u64);
-    // Nil space returns nil, empty results, or unit
+    // Empty space returns unit or empty results
     assert!(
-        result.is_nil() || result.is_unit() || result.is_heap() || result.is_error(),
+        result.is_unit() || result.is_unit() || result.is_heap() || result.is_error(),
         "SpaceMatch should return results list, nil, unit, or error"
     );
 }
@@ -6078,7 +6059,7 @@ fn test_can_compile_rule_dispatch_opcodes() {
     let mut builder = ChunkBuilder::new("test_rule_dispatch_ops");
 
     // DispatchRules opcode - dispatches rules for an expression
-    builder.emit(Opcode::PushNil); // expression to dispatch
+    builder.emit(Opcode::PushUnit); // expression to dispatch
     builder.emit(Opcode::DispatchRules);
     builder.emit(Opcode::Pop);
 
@@ -6100,13 +6081,13 @@ fn test_can_compile_rule_dispatch_opcodes() {
     builder.emit(Opcode::Pop);
 
     // ApplySubst opcode (no operands)
-    builder.emit(Opcode::PushNil); // expression to substitute
+    builder.emit(Opcode::PushUnit); // expression to substitute
     builder.emit(Opcode::ApplySubst);
     builder.emit(Opcode::Pop);
 
     // DefineRule opcode with operand (pattern index)
-    builder.emit(Opcode::PushNil); // pattern
-    builder.emit(Opcode::PushNil); // body
+    builder.emit(Opcode::PushUnit); // pattern
+    builder.emit(Opcode::PushUnit); // body
     builder.emit_u16(Opcode::DefineRule, 0); // define rule with pattern at index 0
 
     builder.emit(Opcode::Return);
@@ -6126,7 +6107,7 @@ fn test_jit_dispatch_rules_returns_result() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("dispatch_rules");
-    builder.emit(Opcode::PushNil); // expression (nil = no rules)
+    builder.emit(Opcode::PushUnit); // expression (nil = no rules)
     builder.emit(Opcode::DispatchRules);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -6134,7 +6115,7 @@ fn test_jit_dispatch_rules_returns_result() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -6150,7 +6131,7 @@ fn test_jit_dispatch_rules_returns_result() {
     // DispatchRules returns the count of matching rules (as Long)
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
-        result.is_long() || result.is_nil() || result.is_unit() || result.is_error(),
+        result.is_long() || result.is_unit() || result.is_unit() || result.is_error(),
         "DispatchRules should return count (Long), nil, unit, or error"
     );
 }
@@ -6170,7 +6151,7 @@ fn test_jit_try_rule_returns_result() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -6186,7 +6167,7 @@ fn test_jit_try_rule_returns_result() {
     // TryRule returns the result of applying the rule
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
-        result.is_unit() || result.is_nil() || result.is_heap() || result.is_error(),
+        result.is_unit() || result.is_unit() || result.is_heap() || result.is_error(),
         "TryRule should return unit, nil, heap, or error"
     );
 }
@@ -6206,7 +6187,7 @@ fn test_jit_lookup_rules_returns_result() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -6222,7 +6203,7 @@ fn test_jit_lookup_rules_returns_result() {
     // LookupRules returns the count of matching rules (as Long)
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
-        result.is_long() || result.is_nil() || result.is_unit() || result.is_error(),
+        result.is_long() || result.is_unit() || result.is_unit() || result.is_error(),
         "LookupRules should return count (Long), nil, unit, or error"
     );
 }
@@ -6235,7 +6216,7 @@ fn test_jit_apply_subst_returns_result() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("apply_subst");
-    builder.emit(Opcode::PushNil); // expression to substitute
+    builder.emit(Opcode::PushUnit); // expression to substitute
     builder.emit(Opcode::ApplySubst);
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -6243,7 +6224,7 @@ fn test_jit_apply_subst_returns_result() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -6259,7 +6240,7 @@ fn test_jit_apply_subst_returns_result() {
     // ApplySubst returns the substituted expression
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
-        result.is_nil() || result.is_unit() || result.is_heap() || result.is_error(),
+        result.is_unit() || result.is_unit() || result.is_heap() || result.is_error(),
         "ApplySubst should return substituted expr, nil, unit, or error"
     );
 }
@@ -6272,8 +6253,8 @@ fn test_jit_define_rule_returns_result() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("define_rule");
-    builder.emit(Opcode::PushNil); // pattern
-    builder.emit(Opcode::PushNil); // body
+    builder.emit(Opcode::PushUnit); // pattern
+    builder.emit(Opcode::PushUnit); // body
     builder.emit_u16(Opcode::DefineRule, 0); // define rule
     builder.emit(Opcode::Return);
     let chunk = builder.build();
@@ -6281,7 +6262,7 @@ fn test_jit_define_rule_returns_result() {
     let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 16];
 
     let mut ctx =
@@ -6297,7 +6278,7 @@ fn test_jit_define_rule_returns_result() {
     // DefineRule returns unit on success
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
-        result.is_unit() || result.is_nil() || result.is_error(),
+        result.is_unit() || result.is_unit() || result.is_error(),
         "DefineRule should return unit, nil, or error"
     );
 }
@@ -6338,7 +6319,7 @@ fn test_jit_let_binding_scope_cleanup() {
 
     // Execute and verify result
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -6392,7 +6373,7 @@ fn test_jit_nested_let_bindings() {
         .expect("JIT compilation should succeed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -6426,7 +6407,7 @@ fn test_jit_pop_empty_stack_is_noop() {
         .expect("JIT compilation should succeed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -6459,7 +6440,7 @@ fn test_jit_swap_single_value_is_noop() {
         .expect("JIT compilation should succeed");
 
     let constants = chunk.constants();
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };

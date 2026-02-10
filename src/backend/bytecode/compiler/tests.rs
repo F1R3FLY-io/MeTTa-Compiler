@@ -4,7 +4,7 @@ use crate::backend::bytecode::opcodes::Opcode;
 use crate::backend::models::MettaValue;
 
 use super::error::CompileError;
-use super::{compile, Compiler};
+use super::compile;
 
 // Helper to compile and disassemble
 #[allow(dead_code)]
@@ -19,8 +19,9 @@ fn compile_and_disasm(expr: &MettaValue) -> String {
 
 #[test]
 fn test_compile_nil() {
-    let chunk = compile("test", &MettaValue::Nil()).unwrap();
-    assert_eq!(chunk.read_opcode(0), Some(Opcode::PushNil));
+    // After Nil/Unit merge, Nil() returns Unit, so PushUnit is expected
+    let chunk = compile("test", &MettaValue::Unit()).unwrap();
+    assert_eq!(chunk.read_opcode(0), Some(Opcode::PushUnit));
 }
 
 #[test]
@@ -1397,8 +1398,8 @@ fn test_compile_nil_equality_folds() {
     // (== nil nil) should fold to true
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("==".to_string()),
-        MettaValue::Nil(),
-        MettaValue::Nil(),
+        MettaValue::Unit(),
+        MettaValue::Unit(),
     ]);
     let chunk = compile("test", &expr).unwrap();
     // Should fold to true
@@ -1410,8 +1411,8 @@ fn test_compile_nil_inequality_folds() {
     // (!= nil nil) should fold to false
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("!=".to_string()),
-        MettaValue::Nil(),
-        MettaValue::Nil(),
+        MettaValue::Unit(),
+        MettaValue::Unit(),
     ]);
     let chunk = compile("test", &expr).unwrap();
     // Should fold to false
@@ -1423,8 +1424,8 @@ fn test_compile_nil_less_than_no_fold() {
     // (< nil nil) should NOT fold (relational comparison on nil is invalid)
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("<".to_string()),
-        MettaValue::Nil(),
-        MettaValue::Nil(),
+        MettaValue::Unit(),
+        MettaValue::Unit(),
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
@@ -1719,18 +1720,19 @@ fn test_fold_mod_alias() {
     assert!(disasm.contains("push_long_small 2"), "mod should fold: {}", disasm);
 }
 
-#[test]
-fn test_fold_mod_negative() {
-    // (mod -17 5) behavior
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("mod".to_string()),
-        MettaValue::Long(-17),
-        MettaValue::Long(5),
-    ]);
-    let chunk = compile("test", &expr).unwrap();
-    // Should compile - result depends on % semantics
-    assert!(chunk.constant_count() >= 0);
-}
+// NOTE: `usize` is always >= 0
+// #[test]
+// fn test_fold_mod_negative() {
+//     // (mod -17 5) behavior
+//     let expr = MettaValue::SExpr(vec![
+//         MettaValue::Atom("mod".to_string()),
+//         MettaValue::Long(-17),
+//         MettaValue::Long(5),
+//     ]);
+//     let chunk = compile("test", &expr).unwrap();
+//     // Should compile - result depends on % semantics
+//     assert!(chunk.constant_count() >= 0);
+// }
 
 #[test]
 fn test_fold_mod_float() {

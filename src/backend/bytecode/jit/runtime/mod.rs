@@ -99,7 +99,7 @@ pub use expression_ops::{jit_runtime_index_atom, jit_runtime_max_atom, jit_runti
 
 // Type predicates
 pub use type_predicates::{
-    jit_runtime_get_tag, jit_runtime_is_bool, jit_runtime_is_long, jit_runtime_is_nil,
+    jit_runtime_get_tag, jit_runtime_is_bool, jit_runtime_is_long, jit_runtime_is_unit,
 };
 
 // Type operations

@@ -195,14 +195,13 @@ pub fn friendly_type_name(value: &MettaValue) -> &'static str {
         MettaValueInner::Bool(_) => "Bool",
         MettaValueInner::String(_) => "String",
         MettaValueInner::Atom(_) => "Atom",
-        MettaValueInner::Nil => "Nil",
+        MettaValueInner::Unit => "Unit",
         MettaValueInner::SExpr(_) => "S-expression",
         MettaValueInner::Error(_, _) => "Error",
         MettaValueInner::Type(_) => "Type",
         MettaValueInner::Conjunction(_) => "Conjunction",
         MettaValueInner::Space(_) => "Space",
         MettaValueInner::State(_) => "State",
-        MettaValueInner::Unit => "Unit",
         MettaValueInner::Memo(_) => "Memo",
         MettaValueInner::Empty => "Empty",
     }
@@ -247,7 +246,6 @@ pub fn friendly_value_repr(value: &MettaValue) -> String {
                 }
                 MettaValueInner::String(s) => result_stack.push(format!("\"{}\"", s)),
                 MettaValueInner::Atom(a) => result_stack.push(a.clone()),
-                MettaValueInner::Nil => result_stack.push("Nil".to_string()),
                 MettaValueInner::Unit => result_stack.push("()".to_string()),
                 MettaValueInner::Empty => result_stack.push("Empty".to_string()),
                 MettaValueInner::Space(handle) => {
@@ -622,10 +620,9 @@ pub fn pattern_specificity(pattern: &MettaValue) -> usize {
             | MettaValueInner::Long(_)
             | MettaValueInner::Float(_)
             | MettaValueInner::String(_)
-            | MettaValueInner::Nil
+            | MettaValueInner::Unit
             | MettaValueInner::Space(_)
             | MettaValueInner::State(_)
-            | MettaValueInner::Unit
             | MettaValueInner::Memo(_)
             | MettaValueInner::Empty => {}
             // Compound types: push children onto work stack
@@ -687,7 +684,6 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
         | MettaValueInner::Float(_)
         | MettaValueInner::Bool(_)
         | MettaValueInner::String(_)
-        | MettaValueInner::Nil
         | MettaValueInner::Unit
         | MettaValueInner::Space(_)
         | MettaValueInner::State(_)
@@ -846,7 +842,7 @@ pub fn try_eval_builtin(op: &str, args: &[MettaValue]) -> Option<MettaValue> {
 }
 
 /// Check structural equality between two MettaValues
-/// HE-compatible: Nil and empty SExpr are considered equal
+/// HE-compatible: Unit and empty SExpr are considered equal
 ///
 /// # Implementation Note
 ///
@@ -868,21 +864,12 @@ pub fn values_equal(a: &MettaValue, b: &MettaValue) -> bool {
             (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
             (MettaValueInner::Float(a), MettaValueInner::Float(b)) => a == b,
             (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
-            (MettaValueInner::Nil, MettaValueInner::Nil) => true,
             (MettaValueInner::Unit, MettaValueInner::Unit) => true,
             (MettaValueInner::Empty, MettaValueInner::Empty) => true,
 
-            // HE-compatible: Nil equals empty SExpr
-            (MettaValueInner::Nil, MettaValueInner::SExpr(items))
-            | (MettaValueInner::SExpr(items), MettaValueInner::Nil) => items.is_empty(),
-
-            // HE-compatible: Nil equals Unit
-            (MettaValueInner::Nil, MettaValueInner::Unit)
-            | (MettaValueInner::Unit, MettaValueInner::Nil) => true,
-
-            // HE-compatible: Nil (value) equals Nil (atom symbol)
-            (MettaValueInner::Nil, MettaValueInner::Atom(s))
-            | (MettaValueInner::Atom(s), MettaValueInner::Nil) => s == "Nil",
+            // HE-compatible: Unit equals empty SExpr
+            (MettaValueInner::Unit, MettaValueInner::SExpr(items))
+            | (MettaValueInner::SExpr(items), MettaValueInner::Unit) => items.is_empty(),
 
             // S-expression structural equality: push children onto work stack
             (MettaValueInner::SExpr(a_items), MettaValueInner::SExpr(b_items)) => {
@@ -955,8 +942,8 @@ mod tests {
     fn test_deeply_nested_no_stack_overflow() {
         const DEPTH: usize = 10_000;
 
-        // Build deeply nested structure: (a (a (a ... (a nil)...)))
-        let mut value = MettaValue::Nil();
+        // Build deeply nested structure: (a (a (a ... (a ())...)))
+        let mut value = MettaValue::Unit();
         for _ in 0..DEPTH {
             value = MettaValue::SExpr(vec![MettaValue::Atom("a".to_string()), value]);
         }
@@ -972,8 +959,8 @@ mod tests {
         // friendly_value_repr should complete without stack overflow
         let repr = friendly_value_repr(&value);
         assert!(repr.starts_with("(a (a"));
-        // The deepest nesting contains "Nil" with closing parens
-        assert!(repr.contains("Nil"));
+        // The deepest nesting contains "()" with closing parens
+        assert!(repr.contains("()"));
         assert!(repr.ends_with(')'));
     }
 
@@ -1067,7 +1054,6 @@ mod tests {
         );
 
         // Special values
-        assert_eq!(friendly_value_repr(&MettaValue::Nil()), "Nil");
         assert_eq!(friendly_value_repr(&MettaValue::Unit()), "()");
         assert_eq!(friendly_value_repr(&MettaValue::Empty()), "Empty");
 

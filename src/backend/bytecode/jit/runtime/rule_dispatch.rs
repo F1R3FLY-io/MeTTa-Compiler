@@ -91,13 +91,13 @@ pub unsafe extern "C" fn jit_runtime_try_rule(ctx: *mut JitContext, rule_idx: u6
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
         // No context - return nil as a valid "no match" result
-        None => return JitValue::nil().to_bits(),
+        None => return JitValue::unit().to_bits(),
     };
 
     // Check if we have rules available
     if ctx_ref.current_rules.is_null() {
         // No rules dispatched yet - return nil
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     let rules = &*(ctx_ref.current_rules as *const Vec<CompiledRule>);
@@ -106,7 +106,7 @@ pub unsafe extern "C" fn jit_runtime_try_rule(ctx: *mut JitContext, rule_idx: u6
     // Check bounds
     if idx >= rules.len() {
         // Rule index out of bounds - return nil
-        return JitValue::nil().to_bits();
+        return JitValue::unit().to_bits();
     }
 
     let rule = &rules[idx];

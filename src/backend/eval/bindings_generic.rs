@@ -71,7 +71,7 @@ pub fn contains_variables_generic<V: MettaValueTrait>(value: &V) -> bool {
             continue;
         }
 
-        // Ground types: Bool, Long, Float, String, Nil, Unit, Space, State, Memo, Empty
+        // Ground types: Bool, Long, Float, String, Unit, Space, State, Memo, Empty
         // These never contain variables
     }
 
@@ -126,7 +126,6 @@ where
         || expr.is_long()
         || expr.is_float()
         || expr.is_string()
-        || expr.is_nil()
         || expr.is_unit()
         || expr.is_space()
         || expr.is_state()
@@ -286,7 +285,7 @@ pub fn pattern_match_simple_generic<V: MettaValueTrait + Clone>(
 /// - **Ground types**: Bool, Long, Float, String must match exactly
 /// - **S-expressions**: Structural matching with recursive pattern matching
 /// - **Conjunctions**: Structural matching for conjunction goals
-/// - **Nil/Unit**: Match each other and empty S-expressions
+/// - **Unit**: Matches empty S-expressions
 ///
 /// ## Performance
 ///
@@ -358,8 +357,8 @@ fn pattern_match_generic_impl<V: MettaValueTrait + Clone>(
                     continue;
                 }
             }
-            // Atom pattern can also match "Empty" atom with Nil
-            if p_name == "Empty" && val.is_nil() {
+            // Atom pattern "Empty" matches Empty sentinel
+            if p_name == "Empty" && val.is_empty() {
                 continue;
             }
             return false;
@@ -402,27 +401,9 @@ fn pattern_match_generic_impl<V: MettaValueTrait + Clone>(
             return false;
         }
 
-        // Nil matches Nil, Unit, empty S-expr, or "Empty" atom
-        if pat.is_nil() {
-            if val.is_nil() || val.is_unit() {
-                continue;
-            }
-            if let Some(items) = val.as_sexpr() {
-                if items.is_empty() {
-                    continue;
-                }
-            }
-            if let Some(name) = val.as_atom() {
-                if name == "Empty" {
-                    continue;
-                }
-            }
-            return false;
-        }
-
-        // Unit matches Unit and Nil
+        // Unit matches Unit
         if pat.is_unit() {
-            if val.is_unit() || val.is_nil() {
+            if val.is_unit() {
                 continue;
             }
             return false;
@@ -432,7 +413,7 @@ fn pattern_match_generic_impl<V: MettaValueTrait + Clone>(
         if let Some(p_items) = pat.as_sexpr() {
             // Empty S-expr pattern matches empty values
             if p_items.is_empty() {
-                if val.is_nil() || val.is_unit() {
+                if val.is_unit() {
                     continue;
                 }
                 if let Some(v_items) = val.as_sexpr() {

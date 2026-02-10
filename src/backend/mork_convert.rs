@@ -318,7 +318,7 @@ fn write_metta_value(
             write_symbol(quoted.as_bytes(), pdp, ez)?;
         }
 
-        MettaValueInner::Nil => {
+        MettaValueInner::Unit => {
             // Empty list
             ez.write_arity(0);
             ez.loc += 1;
@@ -395,12 +395,6 @@ fn write_metta_value(
             ez.loc += 1;
             write_symbol(b"State", pdp, ez)?;
             write_symbol(id.to_string().as_bytes(), pdp, ez)?;
-        }
-
-        // Unit is written as ()
-        MettaValueInner::Unit => {
-            ez.write_arity(0);
-            ez.loc += 1;
         }
 
         // Memo tables are runtime-only and cannot be stored in MORK
@@ -650,14 +644,7 @@ fn write_value_generic<V: MettaValueTrait>(
                     continue;
                 }
 
-                // Nil - empty list
-                if v.is_nil() {
-                    ez.write_arity(0);
-                    ez.loc += 1;
-                    continue;
-                }
-
-                // Unit - also empty list in MORK
+                // Unit - empty list in MORK
                 if v.is_unit() {
                     ez.write_arity(0);
                     ez.loc += 1;
@@ -984,7 +971,7 @@ mod tests {
             MettaValue::Long(-123),
             MettaValue::Float(3.14159),
             MettaValue::String("hello world".to_string()),
-            MettaValue::Nil(),
+            MettaValue::Unit(),
             MettaValue::Unit(),
         ];
 

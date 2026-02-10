@@ -203,7 +203,7 @@ impl HeapEnvironment {
             MettaValueInner::SExpr(items) => items.iter().any(Self::contains_variables),
             MettaValueInner::Error(_, details) => Self::contains_variables(details),
             MettaValueInner::Type(t) => Self::contains_variables(t),
-            _ => false, // Ground types: Bool, Long, Float, String, Nil
+            _ => false, // Ground types: Bool, Long, Float, String, Unit
         }
     }
 

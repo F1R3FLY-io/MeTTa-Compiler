@@ -98,7 +98,7 @@ fn main() {
 
 #[cfg(feature = "jit")]
 unsafe fn exec_jit_code(code_ptr: *const (), constants: &[MettaValue]) -> i64 {
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx = JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len());
 
     let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = std::mem::transmute(code_ptr);

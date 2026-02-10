@@ -351,7 +351,7 @@ mod tests {
             MettaValue::Long(42),
             MettaValue::Float(3.14),
             MettaValue::String("hello".to_string()),
-            MettaValue::Nil(),
+            MettaValue::Unit(),
             MettaValue::SExpr(vec![
                 MettaValue::Atom("+".to_string()),
                 MettaValue::Long(1),

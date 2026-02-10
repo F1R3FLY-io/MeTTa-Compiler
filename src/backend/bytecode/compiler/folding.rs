@@ -14,7 +14,6 @@ pub fn try_eval_constant(expr: &MettaValue) -> Option<MettaValue> {
         | MettaValueInner::Float(_)
         | MettaValueInner::Bool(_)
         | MettaValueInner::String(_)
-        | MettaValueInner::Nil
         | MettaValueInner::Unit => Some(expr.clone()),
 
         // Variables cannot be evaluated at compile time
@@ -220,12 +219,7 @@ pub fn try_fold_comparison_values(op: &str, a: &MettaValue, b: &MettaValue) -> O
             "!=" => Some(MettaValue::Bool(x != y)),
             _ => None,
         },
-        // Nil and Unit comparisons
-        (MettaValueInner::Nil, MettaValueInner::Nil) => match op {
-            "==" => Some(MettaValue::Bool(true)),
-            "!=" => Some(MettaValue::Bool(false)),
-            _ => None,
-        },
+        // Unit comparisons
         (MettaValueInner::Unit, MettaValueInner::Unit) => match op {
             "==" => Some(MettaValue::Bool(true)),
             "!=" => Some(MettaValue::Bool(false)),

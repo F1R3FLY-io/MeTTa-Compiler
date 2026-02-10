@@ -32,7 +32,7 @@ use crate::backend::models::{ArenaValue, ArenaValueFactory, MettaValueFactory};
 use super::super::{
     JitBindingFrame, JitChoicePoint, JitContext, JitValue,
     MAX_STACK_SAVE_VALUES, STACK_SAVE_POOL_SIZE,
-    PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_NIL, TAG_UNIT,
+    PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_UNIT,
     TAG_VAR,
 };
 use super::executor::HybridExecutor;
@@ -64,7 +64,7 @@ impl HybridExecutor {
 
         // Reset buffers
         for v in &mut self.jit_stack {
-            *v = JitValue::nil();
+            *v = JitValue::unit();
         }
         self.jit_choice_points.clear();
         self.jit_results.clear();
@@ -77,7 +77,7 @@ impl HybridExecutor {
             JitChoicePoint::default(),
         );
         self.jit_results
-            .resize(self.config.jit_results_capacity, JitValue::nil());
+            .resize(self.config.jit_results_capacity, JitValue::unit());
         self.jit_binding_frames.resize(
             self.config.jit_binding_frames_capacity,
             JitBindingFrame::default(),
@@ -149,7 +149,7 @@ impl HybridExecutor {
 
             // In arena mode, bailout means we need to fall back to tree-walker
             // Return empty results and let the caller handle fallback
-            return Ok(vec![factory.nil()]);
+            return Ok(vec![factory.unit()]);
         }
 
         // Collect results and convert to ArenaValue
@@ -194,7 +194,7 @@ impl HybridExecutor {
 
         // Reset buffers
         for v in &mut self.jit_stack {
-            *v = JitValue::nil();
+            *v = JitValue::unit();
         }
         self.jit_choice_points.clear();
         self.jit_results.clear();
@@ -207,7 +207,7 @@ impl HybridExecutor {
             JitChoicePoint::default(),
         );
         self.jit_results
-            .resize(self.config.jit_results_capacity, JitValue::nil());
+            .resize(self.config.jit_results_capacity, JitValue::unit());
         self.jit_binding_frames.resize(
             self.config.jit_binding_frames_capacity,
             JitBindingFrame::default(),
@@ -285,7 +285,7 @@ impl HybridExecutor {
             // In arena mode, bailout means we need to fall back to tree-walker
             // Return empty results and let the caller handle fallback
             // Still return the (potentially modified) environment
-            return Ok((vec![factory.nil()], env));
+            return Ok((vec![factory.unit()], env));
         }
 
         // Collect results and convert to ArenaValue
@@ -368,7 +368,6 @@ fn jit_to_arena_value(
             factory.long(value)
         }
         TAG_BOOL => factory.bool((jit_val & PAYLOAD_MASK) != 0),
-        TAG_NIL => factory.nil(),
         TAG_UNIT => factory.unit(),
         TAG_ATOM => {
             // In arena mode, atom pointer points to a thin pointer (*const String or similar)
@@ -379,7 +378,7 @@ fn jit_to_arena_value(
                 let s = unsafe { &*ptr };
                 factory.atom(s.as_str())
             } else {
-                factory.nil()
+                factory.unit()
             }
         }
         TAG_VAR => {
@@ -391,7 +390,7 @@ fn jit_to_arena_value(
                 // Create variable as an atom with $ prefix (same as MeTTa convention)
                 factory.atom(s.as_str())
             } else {
-                factory.nil()
+                factory.unit()
             }
         }
         TAG_HEAP => {
@@ -402,7 +401,7 @@ fn jit_to_arena_value(
                 // ArenaValue is Copy, so this is just a pointer copy
                 unsafe { *ptr }
             } else {
-                factory.nil()
+                factory.unit()
             }
         }
         TAG_ERROR => {
@@ -411,12 +410,12 @@ fn jit_to_arena_value(
             if !ptr.is_null() {
                 unsafe { *ptr }
             } else {
-                factory.error("unknown error", factory.nil())
+                factory.error("unknown error", factory.unit())
             }
         }
         _ => {
             // Unknown tag - return nil
-            factory.nil()
+            factory.unit()
         }
     }
 }

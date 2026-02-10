@@ -12,7 +12,7 @@
 
 use crate::backend::bytecode::jit::types::{
     JitBailoutReason, JitContext, JitValueMode, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR,
-    TAG_HEAP, TAG_LONG, TAG_MASK, TAG_NIL, TAG_UNIT, TAG_VAR,
+    TAG_HEAP, TAG_LONG, TAG_MASK, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{
     ArenaValue, ArenaValueFactory, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait,
@@ -29,7 +29,6 @@ use super::helpers::value_to_jit_generic;
 // These are leaked to get 'static lifetimes that survive JIT code
 static TYPE_NAME_NUMBER: &str = "Number";
 static TYPE_NAME_BOOL: &str = "Bool";
-static TYPE_NAME_NIL: &str = "Nil";
 static TYPE_NAME_UNIT: &str = "Unit";
 static TYPE_NAME_EXPRESSION: &str = "Expression";
 static TYPE_NAME_ERROR: &str = "Error";
@@ -50,7 +49,6 @@ static TYPE_NAME_UNKNOWN: &str = "Unknown";
 /// Type names match MettaValue::type_name():
 /// - TAG_LONG → "Number"
 /// - TAG_BOOL → "Bool"
-/// - TAG_NIL → "Nil"
 /// - TAG_UNIT → "Unit"
 /// - TAG_HEAP → depends on heap value type
 /// - TAG_ERROR → "Error"
@@ -93,7 +91,6 @@ pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _i
     let type_name: &'static str = match tag {
         TAG_LONG => TYPE_NAME_NUMBER,
         TAG_BOOL => TYPE_NAME_BOOL,
-        TAG_NIL => TYPE_NAME_NIL,
         TAG_UNIT => TYPE_NAME_UNIT,
         TAG_ERROR => TYPE_NAME_ERROR,
         TAG_VAR => TYPE_NAME_VARIABLE,
@@ -130,9 +127,8 @@ pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _i
                     MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
                     MettaValueInner::Bool(_) => TYPE_NAME_BOOL,
                     MettaValueInner::Long(_) | MettaValueInner::Float(_) => TYPE_NAME_NUMBER,
-                    MettaValueInner::Nil => TYPE_NAME_NIL,
-                    MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                     MettaValueInner::Unit => TYPE_NAME_UNIT,
+                    MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                 }
             }
         }
@@ -334,7 +330,6 @@ where
     let type_name: &'static str = match tag {
         TAG_LONG => TYPE_NAME_NUMBER,
         TAG_BOOL => TYPE_NAME_BOOL,
-        TAG_NIL => TYPE_NAME_NIL,
         TAG_UNIT => TYPE_NAME_UNIT,
         TAG_ERROR => TYPE_NAME_ERROR,
         TAG_VAR => TYPE_NAME_VARIABLE,
@@ -373,9 +368,8 @@ where
                     MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
                     MettaValueInner::Bool(_) => TYPE_NAME_BOOL,
                     MettaValueInner::Long(_) | MettaValueInner::Float(_) => TYPE_NAME_NUMBER,
-                    MettaValueInner::Nil => TYPE_NAME_NIL,
-                    MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                     MettaValueInner::Unit => TYPE_NAME_UNIT,
+                    MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                 }
             }
         }
@@ -398,7 +392,6 @@ unsafe fn get_type_name(val: u64) -> &'static str {
     match tag {
         TAG_LONG => TYPE_NAME_NUMBER,
         TAG_BOOL => TYPE_NAME_BOOL,
-        TAG_NIL => TYPE_NAME_NIL,
         TAG_UNIT => TYPE_NAME_UNIT,
         TAG_ERROR => TYPE_NAME_ERROR,
         TAG_VAR => TYPE_NAME_VARIABLE,
@@ -433,9 +426,8 @@ unsafe fn get_type_name(val: u64) -> &'static str {
                 MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
                 MettaValueInner::Bool(_) => TYPE_NAME_BOOL,
                 MettaValueInner::Long(_) | MettaValueInner::Float(_) => TYPE_NAME_NUMBER,
-                MettaValueInner::Nil => TYPE_NAME_NIL,
-                MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                 MettaValueInner::Unit => TYPE_NAME_UNIT,
+                MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
             }
         }
         _ => TYPE_NAME_UNKNOWN,

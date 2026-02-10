@@ -129,7 +129,7 @@ mod tests {
         let code = make_code(&[
             Opcode::PushTrue.to_byte(),
             Opcode::Pop.to_byte(),
-            Opcode::PushNil.to_byte(),
+            Opcode::PushUnit.to_byte(),
             Opcode::Return.to_byte(),
         ]);
 
@@ -138,7 +138,7 @@ mod tests {
         assert_eq!(stats.push_pop_removed, 1);
         assert_eq!(
             optimized,
-            vec![Opcode::PushNil.to_byte(), Opcode::Return.to_byte()]
+            vec![Opcode::PushUnit.to_byte(), Opcode::Return.to_byte()]
         );
     }
 
@@ -148,7 +148,7 @@ mod tests {
             Opcode::PushLongSmall.to_byte(),
             42,
             Opcode::Pop.to_byte(),
-            Opcode::PushNil.to_byte(),
+            Opcode::PushUnit.to_byte(),
             Opcode::Return.to_byte(),
         ]);
 
@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(stats.push_pop_removed, 1);
         assert_eq!(
             optimized,
-            vec![Opcode::PushNil.to_byte(), Opcode::Return.to_byte()]
+            vec![Opcode::PushUnit.to_byte(), Opcode::Return.to_byte()]
         );
     }
 
@@ -253,7 +253,7 @@ mod tests {
             0,
             0, // index 0
             Opcode::Pop.to_byte(),
-            Opcode::PushNil.to_byte(),
+            Opcode::PushUnit.to_byte(),
             Opcode::Return.to_byte(),
         ]);
 
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(stats.push_pop_removed, 1);
         assert_eq!(
             optimized,
-            vec![Opcode::PushNil.to_byte(), Opcode::Return.to_byte()]
+            vec![Opcode::PushUnit.to_byte(), Opcode::Return.to_byte()]
         );
     }
 
@@ -701,7 +701,7 @@ mod tests {
             Opcode::PushTrue.to_byte(),  // 0
             Opcode::Return.to_byte(),    // 1
             Opcode::PushFalse.to_byte(), // 2 - DEAD
-            Opcode::PushNil.to_byte(),   // 3 - DEAD
+            Opcode::PushUnit.to_byte(),   // 3 - DEAD
             Opcode::Pop.to_byte(),       // 4 - DEAD
         ]);
 
@@ -1020,7 +1020,7 @@ mod tests {
             Opcode::JumpIfTrue.to_byte(), // 1
             0,
             3,                           // 2-3: offset +3 to target
-            Opcode::PushNil.to_byte(),   // 4 - skipped
+            Opcode::PushUnit.to_byte(),   // 4 - skipped
             Opcode::Return.to_byte(),    // 5
             Opcode::PushFalse.to_byte(), // 6 - target
             Opcode::Return.to_byte(),    // 7
@@ -1042,7 +1042,7 @@ mod tests {
             Opcode::JumpIfFalse.to_byte(), // 1
             0,
             2,                         // 2-3: offset +2 to target
-            Opcode::PushNil.to_byte(), // 4 - fall through
+            Opcode::PushUnit.to_byte(), // 4 - fall through
             Opcode::Return.to_byte(),  // 5
         ]);
 
@@ -1052,7 +1052,7 @@ mod tests {
         // All 4 bytes (PushTrue, JumpIfFalse, offset) should be removed
         assert_eq!(
             optimized,
-            vec![Opcode::PushNil.to_byte(), Opcode::Return.to_byte(),]
+            vec![Opcode::PushUnit.to_byte(), Opcode::Return.to_byte(),]
         );
     }
 
@@ -1118,7 +1118,7 @@ mod tests {
             Opcode::Return.to_byte(),   // 13
         ]);
 
-        let (optimized, stats) = optimize_bytecode(code);
+        let (_optimized, stats) = optimize_bytecode(code);
 
         // Jump at 0 should now point directly to L2 (offset 12)
         assert!(stats.jump_threaded >= 1);
@@ -1142,7 +1142,7 @@ mod tests {
             Opcode::Return.to_byte(),    // 10
         ]);
 
-        let (optimized, stats) = optimize_bytecode(code);
+        let (_optimized, stats) = optimize_bytecode(code);
 
         // Should thread the short jumps
         assert!(stats.jump_threaded >= 1 || stats.nops_removed > 0);
@@ -1388,7 +1388,7 @@ mod tests {
             Opcode::Return.to_byte(),              // 10: Dead code
         ]);
 
-        let (optimized, stats) = optimize_bytecode(code);
+        let (_optimized, stats) = optimize_bytecode(code);
 
         // Dead branch should be removed
         assert!(stats.dead_branch_removed >= 1 || stats.bytes_removed >= 2);
@@ -1433,7 +1433,7 @@ mod tests {
             Opcode::Nop.to_byte(),
         ]);
 
-        let (optimized, stats) = optimize_bytecode(code);
+        let (_optimized, stats) = optimize_bytecode(code);
 
         // Unreachable NOPs should be removed
         assert!(stats.nops_removed >= 2 || stats.bytes_removed >= 2);
@@ -1505,7 +1505,7 @@ mod tests {
             Opcode::Return.to_byte(),
         ]);
 
-        let (optimized, stats) = optimize_bytecode(code);
+        let (_optimized, stats) = optimize_bytecode(code);
 
         // x - 0 should be identity
         assert!(stats.identity_ops_removed >= 1);
@@ -1521,7 +1521,7 @@ mod tests {
             Opcode::Return.to_byte(),
         ]);
 
-        let (optimized, stats) = optimize_bytecode(code);
+        let (_optimized, stats) = optimize_bytecode(code);
 
         // x * 1 should be identity
         assert!(stats.identity_ops_removed >= 1);
@@ -1537,7 +1537,7 @@ mod tests {
             Opcode::Return.to_byte(),
         ]);
 
-        let (optimized, stats) = optimize_bytecode(code);
+        let (_optimized, stats) = optimize_bytecode(code);
 
         // x / 1 should be identity
         assert!(stats.identity_ops_removed >= 1);

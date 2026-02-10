@@ -113,7 +113,7 @@ impl<'s> EvalContext for SessionContext<'s> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{get_eval_factory, MettaValueFactory, MettaValueTrait};
+    use crate::backend::models::{get_eval_factory, MettaValueFactory};
 
     #[test]
     fn test_session_context_creation() {

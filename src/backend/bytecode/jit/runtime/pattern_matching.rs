@@ -11,7 +11,7 @@
 use super::bindings::jit_runtime_store_binding;
 use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_LONG, TAG_NIL, TAG_UNIT,
+    JitContext, JitValue, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_LONG, TAG_UNIT,
     VAR_INDEX_CACHE_SIZE,
 };
 use crate::backend::models::{MettaValue, MettaValueInner};
@@ -78,11 +78,6 @@ fn try_pattern_match_fast_path(pattern: u64, value: u64) -> Option<bool> {
         return Some((pattern & 1) == (value & 1));
     }
 
-    // Nil comparison
-    if pattern_tag == TAG_NIL && value_tag == TAG_NIL {
-        return Some(true);
-    }
-
     // Unit comparison
     if pattern_tag == TAG_UNIT && value_tag == TAG_UNIT {
         return Some(true);
@@ -103,8 +98,8 @@ fn try_pattern_match_fast_path(pattern: u64, value: u64) -> Option<bool> {
 
     // Fast path 4: Type mismatch for ground values = no match
     // If pattern is a ground type and value is a different ground type, no match
-    let pattern_is_ground = matches!(pattern_tag, TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT);
-    let value_is_ground = matches!(value_tag, TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT);
+    let pattern_is_ground = matches!(pattern_tag, TAG_LONG | TAG_BOOL | TAG_UNIT);
+    let value_is_ground = matches!(value_tag, TAG_LONG | TAG_BOOL | TAG_UNIT);
 
     if pattern_is_ground && value_is_ground && pattern_tag != value_tag {
         return Some(false);
@@ -325,19 +320,14 @@ unsafe fn try_pattern_match_bind_fast_path(
         return Some((pattern & 1) == (value & 1));
     }
 
-    // Nil comparison
-    if pattern_tag == TAG_NIL && value_tag == TAG_NIL {
-        return Some(true);
-    }
-
     // Unit comparison
     if pattern_tag == TAG_UNIT && value_tag == TAG_UNIT {
         return Some(true);
     }
 
     // Fast path 4: Type mismatch for ground values = no match
-    let pattern_is_ground = matches!(pattern_tag, TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT);
-    let value_is_ground = matches!(value_tag, TAG_LONG | TAG_BOOL | TAG_NIL | TAG_UNIT);
+    let pattern_is_ground = matches!(pattern_tag, TAG_LONG | TAG_BOOL | TAG_UNIT);
+    let value_is_ground = matches!(value_tag, TAG_LONG | TAG_BOOL | TAG_UNIT);
 
     if pattern_is_ground && value_is_ground && pattern_tag != value_tag {
         return Some(false);
@@ -606,7 +596,6 @@ pub(crate) fn pattern_matches_impl(pattern: &MettaValue, value: &MettaValue) -> 
         (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
         (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
         (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
-        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
         (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         // S-expression matching
         (MettaValueInner::SExpr(ps), MettaValueInner::SExpr(vs)) => {
@@ -640,7 +629,6 @@ fn pattern_match_bind_impl(
         (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
         (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
         (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
-        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
         (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         // S-expression matching
         (MettaValueInner::SExpr(ps), MettaValueInner::SExpr(vs)) => {
@@ -674,7 +662,6 @@ fn unify_impl(a: &MettaValue, b: &MettaValue, bindings: &mut Vec<(String, MettaV
         (MettaValueInner::Long(x), MettaValueInner::Long(y)) => x == y,
         (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => x == y,
         (MettaValueInner::String(x), MettaValueInner::String(y)) => x == y,
-        (MettaValueInner::Nil, MettaValueInner::Nil) => true,
         (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         (MettaValueInner::SExpr(xs), MettaValueInner::SExpr(ys)) => {
             xs.len() == ys.len()

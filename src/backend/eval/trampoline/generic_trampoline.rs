@@ -642,7 +642,7 @@ where
                         if goals.is_empty() {
                             work_stack.push(GenericWorkItem::Resume {
                                 cont_id,
-                                result: (vec![ctx.factory().nil()], env),
+                                result: (vec![ctx.factory().unit()], env),
                             });
                         } else if goals.len() == 1 {
                             work_stack.push(GenericWorkItem::Eval {
@@ -1666,7 +1666,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             // Add first result from evaluation
             if result_values.is_empty() {
-                collected_results.push(ctx.factory().nil());
+                collected_results.push(ctx.factory().unit());
             } else {
                 let first_result = result_values.swap_remove(0);
 
@@ -1745,7 +1745,7 @@ fn process_continuation_generic<C: EvalContext>(
                 let should_include = if let Some(b) = first_result.as_bool() {
                     b
                 } else {
-                    !first_result.is_nil()
+                    !first_result.is_unit()
                 };
 
                 if should_include {
@@ -1805,7 +1805,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             // Get the new accumulator value from the result
             let accumulator = if result_values.is_empty() {
-                ctx.factory().nil()
+                ctx.factory().unit()
             } else {
                 let first_result = result_values.swap_remove(0);
 
@@ -1880,7 +1880,7 @@ fn process_continuation_generic<C: EvalContext>(
                 // Check if condition is true
                 let is_true = if let Some(b) = first.as_bool() {
                     b
-                } else if first.is_nil() {
+                } else if first.is_unit() {
                     false
                 } else {
                     true
@@ -1958,7 +1958,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if let Some(first_atom) = remaining_atoms.pop_front() {
                 // Check if atom is empty (Nil or empty SExpr) - use trait methods, NO conversion
-                let is_empty_atom = first_atom.is_nil()
+                let is_empty_atom = first_atom.is_empty()
                     || first_atom.as_sexpr().map_or(false, |items| items.is_empty());
                 let switch_atom = if is_empty_atom {
                     ctx.factory().atom("Empty")
@@ -2027,7 +2027,7 @@ fn process_continuation_generic<C: EvalContext>(
 
             if let Some(next_atom) = remaining_atoms.pop_front() {
                 // Check if atom is empty - use trait methods, NO conversion
-                let is_empty_atom = next_atom.is_nil()
+                let is_empty_atom = next_atom.is_empty()
                     || next_atom.as_sexpr().map_or(false, |items| items.is_empty());
                 let switch_atom = if is_empty_atom {
                     ctx.factory().atom("Empty")
@@ -2304,7 +2304,7 @@ fn process_continuation_generic<C: EvalContext>(
             if eval_results.is_empty() {
                 work_stack.push(GenericWorkItem::Resume {
                     cont_id: parent_cont,
-                    result: (vec![ctx.factory().nil()], current_env),
+                    result: (vec![ctx.factory().unit()], current_env),
                 });
             } else {
                 // Helper: check if a value is a (return ...) expression
@@ -2343,7 +2343,7 @@ fn process_continuation_generic<C: EvalContext>(
                     // Nothing to continue
                     work_stack.push(GenericWorkItem::Resume {
                         cont_id: parent_cont,
-                        result: (vec![ctx.factory().nil()], current_env),
+                        result: (vec![ctx.factory().unit()], current_env),
                     });
                 } else if iteration_count >= MAX_ITERATIONS {
                     // Hit iteration limit
@@ -2474,7 +2474,7 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else {
                 // All goals evaluated - return last result
-                let final_result = accumulated_results.pop().unwrap_or_else(|| ctx.factory().nil());
+                let final_result = accumulated_results.pop().unwrap_or_else(|| ctx.factory().unit());
                 work_stack.push(GenericWorkItem::Resume {
                     cont_id: parent_cont,
                     result: (vec![final_result], result_env),

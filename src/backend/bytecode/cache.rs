@@ -147,7 +147,7 @@ pub fn hash_metta_value(expr: &MettaValue) -> u64 {
                 BOOL_SEED
             }
         }
-        MettaValueInner::Nil => NIL_HASH,
+        MettaValueInner::Unit => NIL_HASH,
         MettaValueInner::Float(f) => {
             // Use bit representation with type-specific seed and mixing
             let bits = f.to_bits();
@@ -286,7 +286,7 @@ mod tests {
 
         // Create a simple chunk
         let mut builder = ChunkBuilder::new("test");
-        builder.emit(Opcode::PushNil);
+        builder.emit(Opcode::PushUnit);
         builder.emit(Opcode::Return);
         let chunk = Arc::new(builder.build());
 
@@ -319,9 +319,9 @@ mod tests {
         assert_eq!(h_true1, h_true2, "Bool(true) hash should be stable");
         assert_ne!(h_true1, h_false, "Bool(true) and Bool(false) should differ");
 
-        // Nil hashing
-        let h_nil1 = hash_metta_value(&MettaValue::Nil());
-        let h_nil2 = hash_metta_value(&MettaValue::Nil());
+        // Unit hashing
+        let h_nil1 = hash_metta_value(&MettaValue::Unit());
+        let h_nil2 = hash_metta_value(&MettaValue::Unit());
         assert_eq!(h_nil1, h_nil2, "Nil hash should be stable");
 
         // Float hashing
@@ -337,7 +337,7 @@ mod tests {
         // Different types should produce different hashes
         let h_long = hash_metta_value(&MettaValue::Long(0));
         let h_false = hash_metta_value(&MettaValue::Bool(false));
-        let h_nil = hash_metta_value(&MettaValue::Nil());
+        let h_nil = hash_metta_value(&MettaValue::Unit());
         let h_float = hash_metta_value(&MettaValue::Float(0.0));
 
         // All should be distinct

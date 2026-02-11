@@ -3,6 +3,7 @@ use std::fmt;
 use mettatron::{compile, run_state, MettaState, MettaValue};
 use proptest::prelude::*;
 
+// TODO -> should be part of Oracle
 #[derive(Clone, Debug)]
 struct TestProgram {
     source: String,
@@ -192,24 +193,16 @@ impl Arbitrary for ArithExpr {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        fn arithmetic_term() -> BoxedStrategy<ArithExpr> {
-            let leaf = (-1000i64..=1000).prop_map(ArithExpr::Lit);
+        let leaf = (-1000i64..=1000).prop_map(ArithExpr::Lit);
 
-            leaf.prop_recursive(8, 256, 10, |inner| {
+        leaf.prop_recursive(8, 256, 10, |inner| {
+            prop_oneof![
                 (any::<ArithOp>(), inner.clone(), inner.clone())
-                    .prop_map(|(op, lhs, rhs)| ArithExpr::BinOp(op, Box::new(lhs), Box::new(rhs)))
-            })
-            .boxed()
-        }
-
-        let term = arithmetic_term();
-
-        term.clone()
-            .prop_recursive(8, 256, 10, move |inner| {
-                prop_oneof![(
+                    .prop_map(|(op, lhs, rhs)| ArithExpr::BinOp(op, Box::new(lhs), Box::new(rhs))),
+                (
                     any::<ComparOp>(),
-                    term.clone(),
-                    term.clone(),
+                    inner.clone(),
+                    inner.clone(),
                     inner.clone(),
                     inner.clone()
                 )
@@ -221,13 +214,15 @@ impl Arbitrary for ArithExpr {
                             then_branch: Box::new(then_branch),
                             else_branch: Box::new(else_branch),
                         })
-                    }),]
-            })
-            .boxed()
+                    }),
+            ]
+        })
+        .boxed()
     }
 }
 
-fn simple_arithmetic() -> impl Strategy<Value = TestProgram> {
+// Will generate programs like ((+ (if (not (== (- 0 919) 260)) 777 (- 0 421)) (- 0 413)))
+fn valid_arithmetics_with_conditions() -> impl Strategy<Value = TestProgram> {
     any::<ArithExpr>().prop_filter_map("expression overflows i64 oracle arithmetic", |expr| {
         let evaluated = expr.eval_checked()?;
         let evaluated = MettaValue::SExpr(vec![MettaValue::Long(evaluated)]);
@@ -240,7 +235,7 @@ fn simple_arithmetic() -> impl Strategy<Value = TestProgram> {
 
 proptest! {
     #[test]
-    fn test_simple_arithmetic(test_program in simple_arithmetic()) {
+    fn test_simple_arithmetic(test_program in valid_arithmetics_with_conditions()) {
         let state = MettaState::new_empty();
         let compiled = compile(&test_program.source);
         prop_assert!(compiled.is_ok());

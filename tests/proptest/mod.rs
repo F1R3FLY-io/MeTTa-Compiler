@@ -4,8 +4,5 @@
 //! using the `proptest` framework. It verifies that the compiler correctly handles
 //! both valid and invalid MeTTa syntax across various language constructs.
 
-pub mod compiling;
+pub mod compile;
 pub mod eval;
-pub mod evaluating;
-
-pub mod strategies;

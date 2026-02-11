@@ -1,5 +1,4 @@
 mod proptest;
 
-pub use proptest::compiling;
+pub use proptest::compile;
 pub use proptest::eval;
-pub use proptest::evaluating;

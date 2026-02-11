@@ -379,3 +379,9 @@ assets = [
     { source = "README.md", dest = "/usr/share/doc/mettatron/README.md", mode = "644", doc = true },
     { source = "LICENSE", dest = "/usr/share/doc/mettatron/LICENSE", mode = "644", doc = true },
 ]
+
+# Override mork-expr's broken git gxhash (commit 55bde47 has duplicate
+# RandomState import and missing rustversion crate) with the working
+# registry version.
+[patch."https://github.com/luketpeterson/gxhash/"]
+gxhash = "3.5"

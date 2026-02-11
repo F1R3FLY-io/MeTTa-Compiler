@@ -16,11 +16,12 @@ pub mod space_handle;
 pub use metta_value::{MettaValue, MettaValueInner};
 pub use atom_id::{AtomId, SymbolTable};
 pub use gc_allocator::{
-    collect_all_roots, global_allocator, global_factory, global_gc_thread,
-    init_global_allocator, maybe_trigger_gc, register_root_provider,
-    request_gc, trigger_gc_cycle, try_register_env_roots,
+    collect_all_roots, global_allocator, global_factory, global_gc_cron,
+    global_gc_thread, init_global_allocator, is_gc_requested, maybe_trigger_gc,
+    register_root_provider, request_gc, trigger_gc_cycle, try_register_env_roots,
     GcFactory, RootProvider, SlabAllocator,
 };
+pub use gc_cron::{GcCronSingleton, CronHandle, CronStats, CronStatsSnapshot};
 pub use bindings::SmartBindings as Bindings;
 pub use generic_bindings::{GenericBindings, GenericBindingsIter};
 pub use generic_rule::{GenericRule, RuleBytes};

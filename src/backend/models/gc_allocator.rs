@@ -755,8 +755,8 @@ pub struct SlabAllocator {
     data_classes: Vec<DataClassAllocator>,
     /// Fallback for data > 4096 bytes (rare, uses system allocator)
     large_allocs: Mutex<Vec<(*mut u8, Layout)>>,
-    /// GC trigger threshold (bytes)
-    gc_threshold: AtomicUsize,
+    /// GC trigger threshold (bytes). Arc-wrapped for sharing with cron manager.
+    gc_threshold: Arc<AtomicUsize>,
     /// Atomic committed bytes for cross-thread reads (cron manager).
     committed_bytes_atomic: Arc<AtomicUsize>,
     /// Atomic allocation counter for cross-thread reads (cron manager).
@@ -780,7 +780,7 @@ impl SlabAllocator {
             values: ValueAllocator::new(),
             data_classes,
             large_allocs: Mutex::new(Vec::new()),
-            gc_threshold: AtomicUsize::new(MIN_GC_THRESHOLD),
+            gc_threshold: Arc::new(AtomicUsize::new(MIN_GC_THRESHOLD)),
             committed_bytes_atomic: Arc::new(AtomicUsize::new(0)),
             alloc_count_atomic: Arc::new(AtomicU64::new(0)),
         }
@@ -798,6 +798,12 @@ impl SlabAllocator {
         Arc::clone(&self.alloc_count_atomic)
     }
 
+    /// Get the atomic GC threshold counter (for cron manager).
+    #[inline]
+    pub fn gc_threshold_atomic(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.gc_threshold)
+    }
+
     /// Allocate an `MettaValueInner` and return a reference.
     ///
     /// Lock-free hot path. The slot is zero-initialized before writing.
@@ -813,6 +819,10 @@ impl SlabAllocator {
                 self.committed_bytes(),
                 Ordering::Relaxed,
             );
+            // NOTE: We intentionally do NOT call request_gc() here. GC must only
+            // be triggered at safe points (the trampoline's maybe_gc()) where the
+            // root set is complete. The cron manager's threshold/rate checks handle
+            // setting GC_REQUESTED; the trampoline picks it up at the next safe point.
         }
 
         unsafe {
@@ -1035,6 +1045,9 @@ impl std::fmt::Debug for SlabAllocator {
 static GLOBAL_ALLOCATOR: OnceLock<SlabAllocator> = OnceLock::new();
 
 /// Initialize the global allocator (call once at startup). Idempotent.
+///
+/// The GC cron manager is spawned lazily on the first call to `global_gc_cron()`,
+/// which happens when `maybe_trigger_gc()` is first called from the trampoline.
 pub fn init_global_allocator() {
     GLOBAL_ALLOCATOR.get_or_init(SlabAllocator::new);
 }
@@ -1059,7 +1072,8 @@ static GLOBAL_GC_THREAD: OnceLock<Mutex<super::gc_thread::GcThread>> = OnceLock:
 
 /// Flag set by the cron manager or allocation pressure to request a GC cycle.
 /// Checked by `maybe_gc()` in the trampoline loop (every 256 iterations).
-static GC_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// `pub(crate)` for test observability (clearing between tests).
+pub(crate) static GC_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Get the global GC thread (locked), spawning it if needed.
 pub fn global_gc_thread() -> &'static Mutex<super::gc_thread::GcThread> {
@@ -1072,14 +1086,70 @@ pub fn request_gc() {
     GC_REQUESTED.store(true, Ordering::Release);
 }
 
+/// Check whether a GC cycle has been requested (test observability).
+pub fn is_gc_requested() -> bool {
+    GC_REQUESTED.load(Ordering::Acquire)
+}
+
+// ============================================================================
+// Global GC Cron Manager
+// ============================================================================
+
+/// Global GC cron manager singleton. Lazily spawned on first use.
+/// No `Mutex` needed — `CronHandle` is `Clone + Send` and `CronStats` uses atomics.
+static GLOBAL_GC_CRON: OnceLock<super::gc_cron::GcCronSingleton> = OnceLock::new();
+
+/// Get the global GC cron manager, spawning it if needed.
+///
+/// Wires the global allocator's atomic counters (`committed_bytes_atomic`,
+/// `alloc_count_atomic`, `gc_threshold`) into the cron manager.
+pub fn global_gc_cron() -> &'static super::gc_cron::GcCronSingleton {
+    GLOBAL_GC_CRON.get_or_init(|| {
+        let alloc = global_allocator();
+        super::gc_cron::spawn_gc_cron(
+            alloc.committed_bytes_atomic(),
+            alloc.alloc_count_atomic(),
+            alloc.gc_threshold_atomic(),
+        )
+    })
+}
+
 /// Check if GC is requested and trigger it if so.
 ///
 /// Called from `SessionContext::maybe_gc()` every 256 trampoline iterations.
 /// Non-blocking: if a GC cycle is already in progress, the snapshot is queued
 /// and the function returns immediately.
 ///
+/// Also lazily spawns the GC cron manager on first call, so rate-based and
+/// threshold-based triggering is active for the remainder of the process.
+///
 /// Returns `true` if a GC cycle was triggered.
+/// Whether GC collection is enabled at runtime.
+///
+/// Gated behind `METTA_GC_COLLECT=1` because the current root collection
+/// (`collect_all_roots()`) only covers registered environments, NOT values on
+/// the trampoline's Rust call stack (work_stack, continuations, locals in
+/// `apply_bindings_generic`, etc.). Triggering GC without complete roots causes
+/// use-after-free (confirmed by AddressSanitizer on mmverify workloads).
+///
+/// Once trampoline stack root scanning is implemented, this gate can be removed.
+static GC_COLLECT_ENABLED: OnceLock<bool> = OnceLock::new();
+
+fn gc_collect_enabled() -> bool {
+    *GC_COLLECT_ENABLED.get_or_init(|| std::env::var("METTA_GC_COLLECT").is_ok())
+}
+
 pub fn maybe_trigger_gc() -> bool {
+    // Lazily spawn the GC cron manager (idempotent via OnceLock)
+    let _ = global_gc_cron();
+
+    // GC collection gated until trampoline stack root scanning is implemented
+    if !gc_collect_enabled() {
+        // Still consume the flag to prevent unbounded buildup
+        GC_REQUESTED.store(false, Ordering::Relaxed);
+        return false;
+    }
+
     let gc = global_gc_thread().lock().expect("gc thread mutex poisoned");
 
     // Always drain any pending GC response (regardless of whether new GC requested)
@@ -1087,6 +1157,10 @@ pub fn maybe_trigger_gc() -> bool {
     if let Some(response) = gc.try_recv_response() {
         alloc.process_gc_response(&response);
         alloc.release_empty_pages();
+
+        // Adaptive threshold: next_threshold = max(live_bytes * GROWTH_FACTOR, MIN_GC_THRESHOLD)
+        let new_threshold = (response.live_bytes as f64 * GC_GROWTH_FACTOR) as usize;
+        alloc.set_gc_threshold(new_threshold.max(MIN_GC_THRESHOLD));
     }
 
     // Check if new GC was requested

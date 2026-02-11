@@ -1450,14 +1450,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gxhash"
-version = "3.5.0"
-source = "git+https://github.com/luketpeterson/gxhash/#55bde471dc2e395dd17eb4e7055f323c0c29c19d"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "h2"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2163,7 +2155,7 @@ dependencies = [
  "dirs",
  "divan",
  "either",
- "gxhash 3.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gxhash",
  "hex",
  "im",
  "itertools 0.14.0",
@@ -2283,7 +2275,7 @@ name = "mork-expr"
 version = "0.1.0"
 dependencies = [
  "fast-slice-utils",
- "gxhash 3.5.0 (git+https://github.com/luketpeterson/gxhash/)",
+ "gxhash",
  "smallvec",
  "xxhash-rust",
 ]
@@ -2586,7 +2578,7 @@ dependencies = [
  "arrayvec",
  "dyn-clone",
  "fast-slice-utils",
- "gxhash 3.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gxhash",
  "libz-ng-sys",
  "local-or-heap",
  "maybe-dangling",

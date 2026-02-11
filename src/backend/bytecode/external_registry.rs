@@ -13,7 +13,7 @@
 //! # Generic Support
 //!
 //! The registry supports generic value types through `GenericExternalRegistry<V, F>`,
-//! enabling zero-conversion execution with ArenaValue or MettaValue.
+//! enabling zero-conversion execution with MettaValue or MettaValue.
 //!
 //! # Example
 //!
@@ -35,13 +35,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, global_factory};
 #[cfg(test)]
 use crate::backend::models::MettaValueInner;
-use crate::backend::HeapEnvironment;
-
-/// Result type for external function calls
-pub type ExternalResult = Result<Vec<MettaValue>, ExternalError>;
 
 /// Error type for external function calls
 #[derive(Debug, Clone)]
@@ -226,120 +222,28 @@ where
 }
 
 // =============================================================================
-// Non-Generic Types (backwards compatibility)
+// Concrete Type Aliases (MettaValue specializations of generic types)
 // =============================================================================
 
-/// Context provided to external functions during execution
-#[derive(Clone)]
-pub struct ExternalContext {
-    /// Current environment (for accessing bindings if needed)
-    pub env: HeapEnvironment,
-}
+/// Result type for external function calls.
+pub type ExternalResult = GenericExternalResult<MettaValue>;
 
-impl ExternalContext {
-    /// Create a new external context
-    pub fn new(env: HeapEnvironment) -> Self {
-        Self { env }
-    }
+/// Context provided to external functions during execution.
+pub type ExternalContext = GenericExternalContext<MettaValue, GcFactory>;
 
-    /// Create a default context with empty environment
-    pub fn default() -> Self {
-        Self {
-            env: HeapEnvironment::default(),
-        }
-    }
-}
+/// Type alias for external function signature.
+pub type ExternalFn = GenericExternalFn<MettaValue, GcFactory>;
 
-/// Type alias for external function signature
-pub type ExternalFn = Arc<dyn Fn(&[MettaValue], &ExternalContext) -> ExternalResult + Send + Sync>;
-
-/// Registry entry for an external function
-struct RegistryEntry {
-    func: ExternalFn,
-}
-
-/// Registry for external functions callable from bytecode
+/// Registry for external functions callable from bytecode.
 ///
 /// External functions are registered by name and looked up by name during execution.
 /// This supports dynamic registration from external systems like Rholang.
-pub struct ExternalRegistry {
-    /// Functions stored by name
-    functions: HashMap<String, RegistryEntry>,
-}
+pub type ExternalRegistry = GenericExternalRegistry<MettaValue, GcFactory>;
 
-impl std::fmt::Debug for ExternalRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ExternalRegistry")
-            .field("function_count", &self.functions.len())
-            .field("names", &self.functions.keys().collect::<Vec<_>>())
-            .finish()
-    }
-}
-
-impl Default for ExternalRegistry {
+impl Default for ExternalContext {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ExternalRegistry {
-    /// Create a new empty registry
-    pub fn new() -> Self {
-        Self {
-            functions: HashMap::new(),
-        }
-    }
-
-    /// Register an external function
-    ///
-    /// If a function with this name already exists, it will be replaced.
-    pub fn register<F>(&mut self, name: &str, func: F)
-    where
-        F: Fn(&[MettaValue], &ExternalContext) -> ExternalResult + Send + Sync + 'static,
-    {
-        self.functions.insert(
-            name.to_string(),
-            RegistryEntry {
-                func: Arc::new(func),
-            },
-        );
-    }
-
-    /// Unregister an external function
-    ///
-    /// Returns true if the function was present and removed.
-    pub fn unregister(&mut self, name: &str) -> bool {
-        self.functions.remove(name).is_some()
-    }
-
-    /// Check if a function is registered
-    pub fn contains(&self, name: &str) -> bool {
-        self.functions.contains_key(name)
-    }
-
-    /// Call an external function by name
-    pub fn call(&self, name: &str, args: &[MettaValue], ctx: &ExternalContext) -> ExternalResult {
-        let entry = self
-            .functions
-            .get(name)
-            .ok_or_else(|| ExternalError::NotFound(name.to_string()))?;
-
-        (entry.func)(args, ctx)
-    }
-
-    /// Get the number of registered functions
-    pub fn len(&self) -> usize {
-        self.functions.len()
-    }
-
-    /// Check if the registry is empty
-    pub fn is_empty(&self) -> bool {
-        self.functions.is_empty()
-    }
-
-    /// Get an iterator over registered function names
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.functions.keys().map(|s| s.as_str())
+        let factory = global_factory();
+        Self::new(GenericEnvironment::new(factory), factory)
     }
 }
 

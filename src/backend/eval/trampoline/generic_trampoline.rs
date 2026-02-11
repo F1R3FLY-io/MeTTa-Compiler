@@ -3,7 +3,7 @@
 //! This module provides a truly generic trampoline evaluation engine that works with
 //! any value type implementing `MettaValueTrait`. This enables the same evaluation
 //! logic to work with both heap-allocated (`MettaValue`) and arena-allocated
-//! (`ArenaValue`) values.
+//! (`MettaValue`) values.
 //!
 //! ## Design
 //!
@@ -17,14 +17,13 @@
 //! - `eval_trampoline_generic`: Generic evaluation for any `EvalContext`
 //!
 //! The generic engine is parameterized by the `EvalContext` trait, which determines
-//! the value type and factory. The production implementation uses `StaticArenaContext`
-//! with arena-allocated `ArenaValue<'static>` values.
+//! the value type and factory. The production implementation uses `StaticEvalContext`
+//! with arena-allocated `MettaValue` values.
 
 use std::collections::VecDeque;
 
 use tracing::trace;
 
-use crate::backend::environment::{GenericEnvironment, MultiplicityMatch};
 use crate::backend::grounded::{execute_generic_grounded_op, ExecError, GenericGroundedWork};
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
@@ -52,7 +51,7 @@ use super::super::processing::{
 ///
 /// # Type Parameters
 ///
-/// - `C`: The evaluation context (e.g., `StaticArenaContext` or `SessionContext`)
+/// - `C`: The evaluation context (e.g., `StaticEvalContext` or `SessionContext`)
 ///
 /// # Arguments
 ///
@@ -90,8 +89,16 @@ where
     // Final result storage
     let mut final_result: Option<GenericEvalResult<C::Value, ContextEnv<C>>> = None;
 
+    // GC hint counter: wrapping u8 overflows every 256 iterations → maybe_gc()
+    let mut gc_counter: u8 = 0;
+
     // Main trampoline loop
     while let Some(work) = work_stack.pop() {
+        // Periodic GC hint (every 256 trampoline iterations)
+        gc_counter = gc_counter.wrapping_add(1);
+        if gc_counter == 0 {
+            ctx.maybe_gc();
+        }
         match work {
             GenericWorkItem::Eval {
                 value,
@@ -3107,7 +3114,7 @@ fn process_continuation_generic<C: EvalContext>(
         GenericContinuation::ProcessUnifyBodies {
             mut remaining_bodies,
             mut results,
-            env,
+            env: _,
             depth,
             parent_cont,
         } => {
@@ -3596,7 +3603,7 @@ fn process_continuation_generic<C: EvalContext>(
                 });
             } else {
                 // Remove the atom from the space
-                // NOTE: Heap engine returns Unit() regardless of whether removal succeeded
+                // NOTE: Arena engine returns Unit() regardless of whether removal succeeded
                 // GENERIC: Use remove_atom_generic to avoid heap conversion
                 space_handle.remove_atom_generic(&atom_results[0]);
                 work_stack.push(GenericWorkItem::Resume {

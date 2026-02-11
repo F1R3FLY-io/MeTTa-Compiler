@@ -1,242 +1,123 @@
-#[allow(unused_imports)]
-use crate::ir::MettaExpr;
+//! Arena-allocated MeTTa values.
+//!
+//! MettaValue provides Copy-semantic MeTTa values allocated from a
+//! global slab allocator (`SlabAllocator`) via `GcFactory`.
+//!
+//! ## Key Benefits
+//!
+//! - **Copy semantics**: MettaValue is just a pointer (8 bytes), so Clone/Copy is free.
+//! - **No reference counting**: Values don't need Arc overhead or atomic operations.
+//! - **Lock-free allocation**: Multiple threads can allocate concurrently.
+//! - **Background GC**: Dead values are reclaimed by a snapshot-based mark-sweep collector.
+//! - **Cache-friendly**: Contiguous 64KB page layout.
+//!
+//! ## Memory Safety
+//!
+//! All references within MettaValue are `'static`, tied to the global slab allocator.
+//! Values live for the program duration and are reclaimed by the GC when no longer reachable.
 
-use std::sync::Arc;
+use std::fmt;
 
-use super::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
-use super::MemoHandle;
-use super::SpaceHandle;
+use super::metta_value_trait::{MettaValueTrait, MettaValueFactory};
+use super::{MemoHandle, SpaceHandle};
 
-// Re-import String to avoid shadowing by MettaValue::String associated function
-use std::string::String as StdString;
-
-/// Reference-counted MettaValue with O(1) clone.
-/// Clone increments Arc reference count; drop decrements it.
+/// Arena-allocated MeTTa value with O(1) clone (just copies the pointer).
 ///
-/// This wrapper provides:
-/// - O(1) clone operations (just Arc reference count increment)
-/// - Efficient sharing of immutable values
-/// - Transparent construction via associated functions (MettaValue::Atom(), etc.)
-#[derive(Clone)]
-pub struct MettaValue(Arc<MettaValueInner>);
+/// This is a thin wrapper around a reference to MettaValueInner, providing
+/// the same interface as MettaValue but using arena allocation.
+#[derive(Clone, Copy)]
+pub struct MettaValue {
+    inner: &'static MettaValueInner,
+}
 
-/// Internal enum containing the actual value variants.
-/// All the MeTTa value types are represented here.
-#[derive(Debug, Clone, PartialEq)]
+/// The actual value enum, allocated in the arena.
+///
+/// This mirrors MettaValueInner but uses arena-allocated collections.
+#[derive(Debug)]
 pub enum MettaValueInner {
-    /// An atom (symbol, variable, or literal)
-    Atom(StdString),
+    /// An atom (symbol, variable, or literal) - string allocated in arena
+    Atom(&'static str),
     /// A boolean literal
     Bool(bool),
     /// An integer literal
     Long(i64),
     /// A floating point literal
     Float(f64),
-    /// A string literal
-    String(StdString),
-    /// An s-expression (list of values)
-    SExpr(Vec<MettaValue>),
+    /// A string literal - string content allocated in arena
+    String(&'static str),
+    /// An s-expression (list of values) - slice allocated in arena
+    SExpr(&'static [MettaValue]),
     /// An error with message and details
-    Error(StdString, MettaValue),
+    Error(&'static str, MettaValue),
     /// A type (first-class types as atoms)
     Type(MettaValue),
     /// A conjunction of goals (MORK-style logical AND)
-    /// Represents (,), (, expr), or (, expr1 expr2 ...)
-    /// Goals are evaluated left-to-right with variable binding threading
-    Conjunction(Vec<MettaValue>),
-    /// A first-class space value with queryable data
-    /// Used for space operations: new-space, add-atom, remove-atom, collapse, match
+    Conjunction(&'static [MettaValue]),
+    /// A first-class space value - reuses existing SpaceHandle
     Space(SpaceHandle),
     /// A reference to a mutable state cell (id)
-    /// Used for state operations: new-state, get-state, change-state!
     State(u64),
-    /// Unit value for side-effecting operations that return nothing meaningful
-    /// Displayed as () in output
+    /// Unit value for side-effecting operations
     Unit,
-    /// A memoization table for caching evaluation results
-    /// Used for memo operations: new-memo, memo, memo-first, clear-memo!, memo-stats
+    /// A memoization table - reuses existing MemoHandle
     Memo(MemoHandle),
-    /// Empty sentinel - represents "no result to report" that gets filtered at result collection.
-    /// This is distinct from:
-    /// - Empty result set (vec![]) - no alternatives exist, evaluation branch is dead
-    /// - Unit (()) - a valid result representing "success with no value"
-    /// Empty is returned by (empty) and filtered out at final result collection (HE-compatible).
+    /// Empty sentinel
     Empty,
 }
 
-/// Arc-wrapped MettaValue for O(1) cloning in evaluation hot paths.
-/// Note: With the new MettaValue wrapper, this is now redundant since
-/// MettaValue itself is already O(1) to clone. Kept for API compatibility.
-pub type ArcValue = MettaValue;
+// ============================================================================
+// Thread Safety for Static Arena Values
+// ============================================================================
+//
+// MettaValue is safe to share across threads because:
+// 1. The global SlabAllocator is lock-free and thread-safe
+// 2. MettaValue contains only immutable references to slab-allocated data
+// 3. Once created, arena values are never mutated
+// 4. The 'static lifetime ensures the referenced data lives until GC reclaims it
+//
+// The unsafe impl is required because:
+// - MettaValueInner contains raw references (&'static [MettaValue]) from slab allocation
+// - The Rust compiler requires explicit Send/Sync for types with certain reference patterns
+// - However, we only use the slab for allocation, never for mutation after creation
+//
+// SAFETY INVARIANT: Values must only be read, never mutated, after creation.
+// This is enforced by MettaValue's API which provides no mutation methods.
 
-// ============================================================================
-// MettaValue wrapper implementation - Associated functions for construction
-// ============================================================================
+// SAFETY: MettaValue can be sent between threads because:
+// - It's an immutable reference to 'static slab-allocated data
+// - The global SlabAllocator is thread-safe (lock-free Treiber stack + atomic bump)
+// - Once created, the data is never mutated
+unsafe impl Send for MettaValue {}
+
+// SAFETY: MettaValue can be shared between threads because:
+// - It only provides immutable access to the underlying data
+// - No mutation methods exist on MettaValue
+// - The referenced data is immutable after creation
+unsafe impl Sync for MettaValue {}
+
+// SAFETY: MettaValueInner can be sent between threads for the same reasons
+unsafe impl Send for MettaValueInner {}
+
+// SAFETY: MettaValueInner can be shared between threads for the same reasons
+unsafe impl Sync for MettaValueInner {}
 
 impl MettaValue {
     /// Access the inner enum for pattern matching
     #[inline]
     pub fn inner(&self) -> &MettaValueInner {
-        &self.0
+        self.inner
     }
 
-    /// Get the raw Arc for advanced use cases
+    /// Construct an MettaValue from a reference to an MettaValueInner.
     #[inline]
-    pub fn arc(&self) -> &Arc<MettaValueInner> {
-        &self.0
+    pub fn from_inner(inner: &'static MettaValueInner) -> Self {
+        Self { inner }
     }
 
-    /// Check if two MettaValues point to the same Arc (pointer equality)
+    /// Get a raw pointer to the inner value (used by GC for slot identification).
     #[inline]
-    pub fn ptr_eq(&self, other: &MettaValue) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-
-    // ========================================================================
-    // Associated functions to preserve construction syntax
-    // These allow: MettaValue::Atom("foo".to_string()) to continue working
-    // ========================================================================
-
-    /// Create an Atom variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Atom(s: StdString) -> Self {
-        MettaValue(Arc::new(MettaValueInner::Atom(s)))
-    }
-
-    /// Create a Bool variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Bool(b: bool) -> Self {
-        MettaValue(Arc::new(MettaValueInner::Bool(b)))
-    }
-
-    /// Create a Long variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Long(n: i64) -> Self {
-        MettaValue(Arc::new(MettaValueInner::Long(n)))
-    }
-
-    /// Create a Float variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Float(f: f64) -> Self {
-        MettaValue(Arc::new(MettaValueInner::Float(f)))
-    }
-
-    /// Create a String variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn String(s: StdString) -> Self {
-        MettaValue(Arc::new(MettaValueInner::String(s)))
-    }
-
-    /// Create an SExpr variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn SExpr(items: Vec<MettaValue>) -> Self {
-        MettaValue(Arc::new(MettaValueInner::SExpr(items)))
-    }
-
-    /// Create an Error variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Error(msg: StdString, details: MettaValue) -> Self {
-        MettaValue(Arc::new(MettaValueInner::Error(msg, details)))
-    }
-
-    /// Create a Type variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Type(inner: MettaValue) -> Self {
-        MettaValue(Arc::new(MettaValueInner::Type(inner)))
-    }
-
-    /// Create a Conjunction variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Conjunction(goals: Vec<MettaValue>) -> Self {
-        MettaValue(Arc::new(MettaValueInner::Conjunction(goals)))
-    }
-
-    /// Create a Space variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Space(handle: SpaceHandle) -> Self {
-        MettaValue(Arc::new(MettaValueInner::Space(handle)))
-    }
-
-    /// Create a State variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn State(id: u64) -> Self {
-        MettaValue(Arc::new(MettaValueInner::State(id)))
-    }
-
-    /// Create a Unit variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Unit() -> Self {
-        MettaValue(Arc::new(MettaValueInner::Unit))
-    }
-
-    /// Create a Memo variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Memo(handle: MemoHandle) -> Self {
-        MettaValue(Arc::new(MettaValueInner::Memo(handle)))
-    }
-
-    /// Create an Empty variant
-    #[allow(non_snake_case)]
-    #[inline]
-    pub fn Empty() -> Self {
-        MettaValue(Arc::new(MettaValueInner::Empty))
-    }
-
-    // ========================================================================
-    // Helper constructors
-    // ========================================================================
-
-    /// Create a symbol atom from a string slice
-    ///
-    /// # Example
-    /// ```ignore
-    /// let sym = MettaValue::sym("foo");
-    /// // Produces: Atom("foo")
-    /// ```
-    #[inline]
-    pub fn sym(s: &str) -> Self {
-        MettaValue::Atom(s.to_string())
-    }
-
-    /// Create a variable atom (prefixed with $)
-    ///
-    /// # Example
-    /// ```ignore
-    /// let var = MettaValue::var("x");
-    /// // Produces: Atom("$x")
-    /// ```
-    #[inline]
-    pub fn var(name: &str) -> Self {
-        MettaValue::Atom(format!("${}", name))
-    }
-
-    /// Create an S-expression from a vector of values
-    ///
-    /// HE-compatible: Empty S-expression () is distinct from Nil.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let sexpr = MettaValue::sexpr(vec![MettaValue::sym("+"), MettaValue::Long(1), MettaValue::Long(2)]);
-    /// // Produces: SExpr([Atom("+"), Long(1), Long(2)])
-    /// let empty = MettaValue::sexpr(vec![]);
-    /// // Produces: SExpr([]) - distinct from Nil
-    /// ```
-    #[inline]
-    pub fn sexpr(items: Vec<MettaValue>) -> Self {
-        MettaValue::SExpr(items)
+    pub fn inner_ptr(&self) -> *const MettaValueInner {
+        self.inner as *const MettaValueInner
     }
 
     // ========================================================================
@@ -246,85 +127,91 @@ impl MettaValue {
     /// Check if this is an Atom variant
     #[inline]
     pub fn is_atom(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Atom(_))
+        matches!(self.inner, MettaValueInner::Atom(_))
     }
 
     /// Check if this is a Bool variant
     #[inline]
     pub fn is_bool(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Bool(_))
+        matches!(self.inner, MettaValueInner::Bool(_))
     }
 
     /// Check if this is a Long variant
     #[inline]
     pub fn is_long(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Long(_))
+        matches!(self.inner, MettaValueInner::Long(_))
     }
 
     /// Check if this is a Float variant
     #[inline]
     pub fn is_float(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Float(_))
+        matches!(self.inner, MettaValueInner::Float(_))
     }
 
     /// Check if this is a String variant
     #[inline]
     pub fn is_string(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::String(_))
+        matches!(self.inner, MettaValueInner::String(_))
     }
 
     /// Check if this is an SExpr variant
     #[inline]
     pub fn is_sexpr(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::SExpr(_))
+        matches!(self.inner, MettaValueInner::SExpr(_))
     }
 
     /// Check if this is an Error variant
     #[inline]
     pub fn is_error(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Error(_, _))
+        matches!(self.inner, MettaValueInner::Error(_, _))
     }
 
     /// Check if this is a Type variant
     #[inline]
     pub fn is_type(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Type(_))
+        matches!(self.inner, MettaValueInner::Type(_))
     }
 
     /// Check if this is a Conjunction variant
     #[inline]
     pub fn is_conjunction(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Conjunction(_))
+        matches!(self.inner, MettaValueInner::Conjunction(_))
     }
 
     /// Check if this is a Space variant
     #[inline]
     pub fn is_space(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Space(_))
+        matches!(self.inner, MettaValueInner::Space(_))
     }
 
     /// Check if this is a State variant
     #[inline]
     pub fn is_state(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::State(_))
+        matches!(self.inner, MettaValueInner::State(_))
     }
 
     /// Check if this is a Unit variant
     #[inline]
     pub fn is_unit(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Unit)
+        matches!(self.inner, MettaValueInner::Unit)
     }
 
     /// Check if this is a Memo variant
     #[inline]
     pub fn is_memo(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Memo(_))
+        matches!(self.inner, MettaValueInner::Memo(_))
     }
 
     /// Check if this is an Empty variant
     #[inline]
     pub fn is_empty(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Empty)
+        matches!(self.inner, MettaValueInner::Empty)
+    }
+
+    /// Check if this value is a variable (Atom starting with $)
+    #[inline]
+    pub fn is_variable(&self) -> bool {
+        matches!(self.inner, MettaValueInner::Atom(s) if s.starts_with('$'))
     }
 
     // ========================================================================
@@ -333,8 +220,8 @@ impl MettaValue {
 
     /// Try to extract as atom string
     #[inline]
-    pub fn as_atom(&self) -> Option<&str> {
-        match self.inner() {
+    pub fn as_atom(&self) -> Option<&'static str> {
+        match self.inner {
             MettaValueInner::Atom(s) => Some(s),
             _ => None,
         }
@@ -343,7 +230,7 @@ impl MettaValue {
     /// Try to extract as bool
     #[inline]
     pub fn as_bool(&self) -> Option<bool> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Bool(b) => Some(*b),
             _ => None,
         }
@@ -352,7 +239,7 @@ impl MettaValue {
     /// Try to extract as i64
     #[inline]
     pub fn as_long(&self) -> Option<i64> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Long(n) => Some(*n),
             _ => None,
         }
@@ -361,7 +248,7 @@ impl MettaValue {
     /// Try to extract as f64
     #[inline]
     pub fn as_float(&self) -> Option<f64> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Float(f) => Some(*f),
             _ => None,
         }
@@ -369,8 +256,8 @@ impl MettaValue {
 
     /// Try to extract as string
     #[inline]
-    pub fn as_string(&self) -> Option<&str> {
-        match self.inner() {
+    pub fn as_string(&self) -> Option<&'static str> {
+        match self.inner {
             MettaValueInner::String(s) => Some(s),
             _ => None,
         }
@@ -379,7 +266,7 @@ impl MettaValue {
     /// Try to extract as sexpr items
     #[inline]
     pub fn as_sexpr(&self) -> Option<&[MettaValue]> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::SExpr(items) => Some(items),
             _ => None,
         }
@@ -387,18 +274,18 @@ impl MettaValue {
 
     /// Try to extract as error (message, details)
     #[inline]
-    pub fn as_error(&self) -> Option<(&str, &MettaValue)> {
-        match self.inner() {
-            MettaValueInner::Error(msg, details) => Some((msg, details)),
+    pub fn as_error(&self) -> Option<(&'static str, MettaValue)> {
+        match self.inner {
+            MettaValueInner::Error(msg, details) => Some((msg, *details)),
             _ => None,
         }
     }
 
     /// Try to extract as type inner value
     #[inline]
-    pub fn as_type(&self) -> Option<&MettaValue> {
-        match self.inner() {
-            MettaValueInner::Type(inner) => Some(inner),
+    pub fn as_type(&self) -> Option<MettaValue> {
+        match self.inner {
+            MettaValueInner::Type(inner) => Some(*inner),
             _ => None,
         }
     }
@@ -406,7 +293,7 @@ impl MettaValue {
     /// Try to extract as conjunction goals
     #[inline]
     pub fn as_conjunction(&self) -> Option<&[MettaValue]> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Conjunction(goals) => Some(goals),
             _ => None,
         }
@@ -415,7 +302,7 @@ impl MettaValue {
     /// Try to extract as space handle
     #[inline]
     pub fn as_space(&self) -> Option<&SpaceHandle> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Space(handle) => Some(handle),
             _ => None,
         }
@@ -424,7 +311,7 @@ impl MettaValue {
     /// Try to extract as state id
     #[inline]
     pub fn as_state(&self) -> Option<u64> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::State(id) => Some(*id),
             _ => None,
         }
@@ -433,21 +320,15 @@ impl MettaValue {
     /// Try to extract as memo handle
     #[inline]
     pub fn as_memo(&self) -> Option<&MemoHandle> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Memo(handle) => Some(handle),
             _ => None,
         }
     }
 
-    // ========================================================================
-    // Type name and classification methods
-    // ========================================================================
-
     /// Get the type name of this value as a string slice
-    ///
-    /// Returns the MeTTa type name for this value variant.
     pub fn type_name(&self) -> &'static str {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
             MettaValueInner::Atom(_) => "Symbol",
             MettaValueInner::Bool(_) => "Bool",
@@ -455,7 +336,7 @@ impl MettaValue {
             MettaValueInner::Float(_) => "Number",
             MettaValueInner::String(_) => "String",
             MettaValueInner::SExpr(_) => "Expression",
-            MettaValueInner::Unit => "Expression",
+            MettaValueInner::Unit => "Unit",
             MettaValueInner::Error(_, _) => "Error",
             MettaValueInner::Type(_) => "Type",
             MettaValueInner::Conjunction(_) => "Conjunction",
@@ -465,228 +346,167 @@ impl MettaValue {
             MettaValueInner::Empty => "Empty",
         }
     }
+}
 
-    /// Check if this value is a variable (Atom starting with $)
+// ============================================================================
+// Backward-Compat Constructors for MettaValue = MettaValue
+// ============================================================================
+//
+// These associated functions preserve the old `MettaValue::Atom(s)` construction
+// syntax now that MettaValue is a type alias for MettaValue.
+// They delegate to the global GC slab allocator.
+
+impl MettaValue {
+    /// Create an Atom variant via global allocator.
+    /// Backward-compat: `MettaValue::Atom("symbol")` or `MettaValue::Atom(owned_string)`
+    #[allow(non_snake_case)]
     #[inline]
-    pub fn is_variable(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Atom(s) if s.starts_with('$'))
+    pub fn Atom(s: impl AsRef<str>) -> Self {
+        super::gc_allocator::global_factory().atom(s.as_ref())
     }
 
-    /// Create a quoted expression: (quote inner)
-    ///
-    /// Returns a quote special form that prevents evaluation of the inner expression.
-    /// Equivalent to the MeTTa syntax: 'inner
-    ///
-    /// # Example
-    /// ```ignore
-    /// let expr = MettaValue::Atom("x".to_string());
-    /// let quoted = MettaValue::quote(expr);
-    /// // Produces: (quote x)
-    /// ```
+    /// Create a Bool variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Bool(b: bool) -> Self {
+        super::gc_allocator::global_factory().bool(b)
+    }
+
+    /// Create a Long variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Long(n: i64) -> Self {
+        super::gc_allocator::global_factory().long(n)
+    }
+
+    /// Create a Float variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Float(f: f64) -> Self {
+        super::gc_allocator::global_factory().float(f)
+    }
+
+    /// Create a String variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn String(s: impl AsRef<str>) -> Self {
+        super::gc_allocator::global_factory().string(s.as_ref())
+    }
+
+    /// Create an SExpr variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn SExpr(items: Vec<MettaValue>) -> Self {
+        super::gc_allocator::global_factory().sexpr(items)
+    }
+
+    /// Create an Error variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Error(msg: impl AsRef<str>, details: MettaValue) -> Self {
+        super::gc_allocator::global_factory().error(msg.as_ref(), details)
+    }
+
+    /// Create a Type variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Type(inner: MettaValue) -> Self {
+        super::gc_allocator::global_factory().type_value(inner)
+    }
+
+    /// Create a Conjunction variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Conjunction(goals: Vec<MettaValue>) -> Self {
+        super::gc_allocator::global_factory().conjunction(goals)
+    }
+
+    /// Create a Space variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Space(handle: SpaceHandle) -> Self {
+        super::gc_allocator::global_factory().space(handle)
+    }
+
+    /// Create a State variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn State(id: u64) -> Self {
+        super::gc_allocator::global_factory().state(id)
+    }
+
+    /// Create a Unit variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Unit() -> Self {
+        super::gc_allocator::global_factory().unit()
+    }
+
+    /// Create a Memo variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Memo(handle: MemoHandle) -> Self {
+        super::gc_allocator::global_factory().memo(handle)
+    }
+
+    /// Create an Empty variant via global allocator.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Empty() -> Self {
+        super::gc_allocator::global_factory().empty()
+    }
+
+    // ========================================================================
+    // Helper constructors (backward compat)
+    // ========================================================================
+
+    /// Create a symbol atom from a string slice.
+    #[inline]
+    pub fn sym(s: &str) -> Self {
+        super::gc_allocator::global_factory().atom(s)
+    }
+
+    /// Create a variable atom (prefixed with $).
+    #[inline]
+    pub fn var(name: &str) -> Self {
+        super::gc_allocator::global_factory().atom(&format!("${}", name))
+    }
+
+    /// Create a quoted expression: (quote inner).
     pub fn quote(inner: Self) -> Self {
-        MettaValue::SExpr(vec![MettaValue::Atom("quote".to_string()), inner])
+        let f = super::gc_allocator::global_factory();
+        f.sexpr(vec![f.atom("quote"), inner])
     }
 
-    /// Check if this value is a ground type (non-reducible literal)
-    /// Ground types: Bool, Long, Float, String, Nil
-    /// Returns true if the value doesn't require further evaluation
-    pub fn is_ground_type(&self) -> bool {
-        // Unit/() is NOT a ground type — it's an expression in MeTTa HE
-        matches!(
-            self.inner(),
-            MettaValueInner::Bool(_)
-                | MettaValueInner::Long(_)
-                | MettaValueInner::Float(_)
-                | MettaValueInner::String(_)
-        )
+    /// Check if two values point to the same inner allocation (pointer equality).
+    #[inline]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        self.inner_ptr() == other.inner_ptr()
     }
 
-    /// Convert MettaValue to a friendly type name for error messages
-    /// This provides user-friendly type names instead of debug format like "Long(5)"
-    pub fn friendly_type_name(&self) -> &'static str {
-        match self.inner() {
-            MettaValueInner::Long(_) => "Number (integer)",
-            MettaValueInner::Float(_) => "Number (float)",
-            MettaValueInner::Bool(_) => "Bool",
-            MettaValueInner::String(_) => "String",
-            MettaValueInner::Atom(_) => "Atom",
-            MettaValueInner::Unit => "Expression",
-            MettaValueInner::SExpr(_) => "S-expression",
-            MettaValueInner::Error(_, _) => "Error",
-            MettaValueInner::Type(_) => "Type",
-            MettaValueInner::Conjunction(_) => "Conjunction",
-            MettaValueInner::Space(_) => "Space",
-            MettaValueInner::State(_) => "State",
-            MettaValueInner::Memo(_) => "Memo",
-            MettaValueInner::Empty => "Empty",
-        }
+    /// Backward-compat no-op: returns self reference.
+    /// Previously returned `&Arc<MettaValueInner>`.
+    #[inline]
+    pub fn arc(&self) -> &Self {
+        self
     }
 
-    /// Check if this is an evaluation expression (starts with "!")
-    /// Evaluation expressions like `!(+ 1 2)` should produce output
-    pub fn is_eval_expr(&self) -> bool {
-        match self.inner() {
-            MettaValueInner::SExpr(items) => items
-                .first()
-                .map(|v| matches!(v.inner(), MettaValueInner::Atom(s) if s == "!"))
-                .unwrap_or(false),
-            _ => false,
-        }
-    }
+    // ========================================================================
+    // Methods formerly only on heap MettaValue
+    // ========================================================================
 
-    /// Check if this is a rule definition (starts with "=")
-    /// Rule definitions like `(= (double $x) (* $x 2))` add rules to the environment
-    pub fn is_rule_def(&self) -> bool {
-        match self.inner() {
-            MettaValueInner::SExpr(items) => items
-                .first()
-                .map(|v| matches!(v.inner(), MettaValueInner::Atom(s) if s == "="))
-                .unwrap_or(false),
-            _ => false,
-        }
-    }
-
-    /// Check structural equivalence (ignoring variable names)
-    /// Two expressions are structurally equivalent if they have the same structure,
-    /// with variables in the same positions (regardless of variable names)
-    pub fn structurally_equivalent(&self, other: &MettaValue) -> bool {
-        // Helper to check if an atom is a variable (not a space reference or operator)
-        fn is_variable(s: &str) -> bool {
-            if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
-                return false; // Space references are NOT variables
-            }
-            s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
-        }
-
-        match (self.inner(), other.inner()) {
-            // Variables match any other variable (names don't matter)
-            // EXCEPT: space references like "&self" must match exactly
-            (MettaValueInner::Atom(a), MettaValueInner::Atom(b))
-                if is_variable(a) && is_variable(b) =>
-            {
-                true
-            }
-
-            // Wildcards match wildcards
-            (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) if a == "_" && b == "_" => true,
-
-            // Non-variable atoms must match exactly (including standalone "&")
-            (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
-
-            // Other ground types must match exactly
-            (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
-            (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
-            (MettaValueInner::Float(a), MettaValueInner::Float(b)) => a == b,
-            (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
-            (MettaValueInner::Unit, MettaValueInner::Unit) => true,
-
-            // S-expressions must have same structure
-            (MettaValueInner::SExpr(a_items), MettaValueInner::SExpr(b_items)) => {
-                if a_items.len() != b_items.len() {
-                    return false;
-                }
-                a_items
-                    .iter()
-                    .zip(b_items.iter())
-                    .all(|(a, b)| a.structurally_equivalent(b))
-            }
-
-            // Errors must have same message and equivalent details
-            (
-                MettaValueInner::Error(a_msg, a_details),
-                MettaValueInner::Error(b_msg, b_details),
-            ) => a_msg == b_msg && a_details.structurally_equivalent(b_details),
-
-            // Types must be structurally equivalent
-            (MettaValueInner::Type(a), MettaValueInner::Type(b)) => a.structurally_equivalent(b),
-
-            // Conjunctions must have same structure
-            (MettaValueInner::Conjunction(a_goals), MettaValueInner::Conjunction(b_goals)) => {
-                if a_goals.len() != b_goals.len() {
-                    return false;
-                }
-                a_goals
-                    .iter()
-                    .zip(b_goals.iter())
-                    .all(|(a, b)| a.structurally_equivalent(b))
-            }
-
-            // Spaces are equal if they have the same id
-            (MettaValueInner::Space(a), MettaValueInner::Space(b)) => a.id == b.id,
-
-            // States must have same id
-            (MettaValueInner::State(a_id), MettaValueInner::State(b_id)) => a_id == b_id,
-
-            // Empty matches empty
-            (MettaValueInner::Empty, MettaValueInner::Empty) => true,
-
-            _ => false,
-        }
-    }
-
-    /// Extract the head symbol from a pattern for indexing
-    /// Returns None if the pattern doesn't have a clear head symbol
-    pub fn get_head_symbol(&self) -> Option<&str> {
-        // Helper to check if an atom is a space reference (not a variable)
-        fn is_space_ref(s: &str) -> bool {
-            s == "&" || s == "&self" || s == "&kb" || s == "&stack"
-        }
-
-        match self.inner() {
-            // For s-expressions like (double $x), extract "double"
-            // Space references like "&self" are allowed as head symbols
-            MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner() {
-                MettaValueInner::Atom(head)
-                    if !head.starts_with('$')
-                        && (!head.starts_with('&') || is_space_ref(head))
-                        && !head.starts_with('\'')
-                        && head != "_" =>
-                {
-                    Some(head.as_str())
-                }
-                _ => None,
-            },
-            // For bare atoms like foo, use the atom itself
-            // Space references like "&self" are allowed as head symbols
-            MettaValueInner::Atom(head)
-                if !head.starts_with('$')
-                    && (!head.starts_with('&') || is_space_ref(head))
-                    && !head.starts_with('\'')
-                    && head != "_" =>
-            {
-                Some(head.as_str())
-            }
-            _ => None,
-        }
-    }
-
-    /// Get the arity (number of arguments) for an s-expression
-    /// For (head arg1 arg2 arg3), arity is 3
-    /// For bare atoms, arity is 0
-    pub fn get_arity(&self) -> usize {
-        match self.inner() {
-            MettaValueInner::SExpr(items) if !items.is_empty() => items.len() - 1, // Exclude head
-            _ => 0,
-        }
-    }
-
-    /// Convert MettaValue to MORK s-expression string format
-    /// This format can be parsed by MORK's parser
-    pub fn to_mork_string(&self) -> StdString {
+    /// Convert to MORK s-expression string format.
+    pub fn to_mork_string(&self) -> String {
         match self.inner() {
             MettaValueInner::Atom(s) => {
-                // Variables need to start with $ in MORK format
-                // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-                // EXCEPT: "&self" and other space references should be preserved as-is
-                if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
-                    // Space references and standalone & are NOT variables - preserve as-is
-                    s.clone()
+                if *s == "&" || *s == "&self" || *s == "&kb" || *s == "&stack" {
+                    s.to_string()
                 } else if s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') {
-                    format!("${}", &s[1..]) // Keep $ prefix, remove original prefix
-                } else if s == "_" {
-                    "$".to_string() // Wildcard becomes $
+                    format!("${}", &s[1..])
+                } else if *s == "_" {
+                    "$".to_string()
                 } else {
-                    s.clone()
+                    s.to_string()
                 }
             }
             MettaValueInner::Bool(b) => b.to_string(),
@@ -721,9 +541,8 @@ impl MettaValue {
         }
     }
 
-    /// Convert MettaValue to a JSON-like string representation
-    /// Used for debugging and human-readable output
-    pub fn to_json_string(&self) -> StdString {
+    /// Convert to a JSON-like string representation.
+    pub fn to_json_string(&self) -> String {
         match self.inner() {
             MettaValueInner::Atom(s) => {
                 format!(r#"{{"type":"atom","value":"{}"}}"#, escape_json(s))
@@ -736,7 +555,7 @@ impl MettaValue {
             }
             MettaValueInner::Unit => r#"{"type":"unit"}"#.to_string(),
             MettaValueInner::SExpr(items) => {
-                let items_json: Vec<StdString> =
+                let items_json: Vec<String> =
                     items.iter().map(|value| value.to_json_string()).collect();
                 format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
             }
@@ -751,7 +570,7 @@ impl MettaValue {
                 format!(r#"{{"type":"metatype","value":{}}}"#, t.to_json_string())
             }
             MettaValueInner::Conjunction(goals) => {
-                let goals_json: Vec<StdString> =
+                let goals_json: Vec<String> =
                     goals.iter().map(|value| value.to_json_string()).collect();
                 format!(
                     r#"{{"type":"conjunction","goals":[{}]}}"#,
@@ -780,7 +599,8 @@ impl MettaValue {
     }
 }
 
-pub fn escape_json(s: &str) -> StdString {
+/// Escape special characters in a string for JSON encoding.
+pub fn escape_json(s: &str) -> String {
     s.replace('\\', r"\\")
         .replace('"', r#"\""#)
         .replace('\n', r"\n")
@@ -789,107 +609,18 @@ pub fn escape_json(s: &str) -> StdString {
 }
 
 // ============================================================================
-// Trait implementations for MettaValue wrapper
+// Trait implementations
 // ============================================================================
 
-/// Iteratively drop a collection of MettaValues to avoid stack overflow.
-/// This is used by the Drop implementation to handle deeply nested structures.
-fn drop_iterative(initial: Vec<MettaValue>) {
-    let mut work_stack: Vec<MettaValue> = initial;
-
-    while let Some(mut value) = work_stack.pop() {
-        // Only process if we're the last reference
-        if Arc::strong_count(&value.0) > 1 {
-            continue; // Just drop the Arc reference normally
-        }
-
-        if let Some(inner) = Arc::get_mut(&mut value.0) {
-            match inner {
-                MettaValueInner::SExpr(items) => {
-                    work_stack.extend(std::mem::take(items));
-                }
-                MettaValueInner::Conjunction(goals) => {
-                    work_stack.extend(std::mem::take(goals));
-                }
-                MettaValueInner::Error(_, details) => {
-                    let d = std::mem::replace(details, MettaValue::Unit());
-                    work_stack.push(d);
-                }
-                MettaValueInner::Type(inner_type) => {
-                    let t = std::mem::replace(inner_type, MettaValue::Unit());
-                    work_stack.push(t);
-                }
-                _ => {}
-            }
-        }
-        // value goes out of scope here - now it contains empty/Nil so drop is trivial
+impl fmt::Debug for MettaValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
     }
 }
 
-impl Drop for MettaValue {
-    fn drop(&mut self) {
-        // Fast path: if Arc has other references, just decrement
-        // This avoids the iterative logic for shared values
-        if Arc::strong_count(&self.0) > 1 {
-            return; // Normal Arc drop will just decrement
-        }
-
-        // Only do iterative drop when we're the last reference
-        // and the inner value contains nested MettaValues
-        let inner = match Arc::get_mut(&mut self.0) {
-            Some(inner) => inner,
-            None => return, // Another thread took a reference, let normal drop handle it
-        };
-
-        // Check if we need iterative drop
-        match inner {
-            MettaValueInner::SExpr(items) if !items.is_empty() => {
-                // Take ownership of items to drop iteratively
-                let items = std::mem::take(items);
-                drop_iterative(items);
-            }
-            MettaValueInner::Conjunction(goals) if !goals.is_empty() => {
-                let goals = std::mem::take(goals);
-                drop_iterative(goals);
-            }
-            MettaValueInner::Error(_, details) => {
-                // Take ownership of details
-                let details = std::mem::replace(details, MettaValue::Unit());
-                drop_iterative(vec![details]);
-            }
-            MettaValueInner::Type(inner_type) => {
-                let inner_type = std::mem::replace(inner_type, MettaValue::Unit());
-                drop_iterative(vec![inner_type]);
-            }
-            _ => {} // Non-compound types: normal drop is fine
-        }
-    }
-}
-
-impl PartialEq for MettaValue {
-    fn eq(&self, other: &Self) -> bool {
-        // Fast path: check if same Arc
-        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
-    }
-}
-
-impl Eq for MettaValue {}
-
-impl std::hash::Hash for MettaValue {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
-    }
-}
-
-impl std::fmt::Debug for MettaValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl std::fmt::Display for MettaValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.inner() {
+impl fmt::Display for MettaValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.inner {
             MettaValueInner::Atom(s) => write!(f, "{}", s),
             MettaValueInner::Bool(b) => write!(f, "{}", if *b { "True" } else { "False" }),
             MettaValueInner::Long(n) => write!(f, "{}", n),
@@ -910,7 +641,7 @@ impl std::fmt::Display for MettaValue {
             MettaValueInner::Type(inner) => write!(f, "(: {})", inner),
             MettaValueInner::Conjunction(goals) => {
                 write!(f, "(,")?;
-                for goal in goals {
+                for goal in goals.iter() {
                     write!(f, " {}", goal)?;
                 }
                 write!(f, ")")
@@ -923,210 +654,144 @@ impl std::fmt::Display for MettaValue {
     }
 }
 
-// ============================================================================
-// Hash implementation for MettaValueInner
-// ============================================================================
+impl PartialEq for MettaValue {
+    fn eq(&self, other: &Self) -> bool {
+        // Fast path: pointer equality
+        std::ptr::eq(self.inner, other.inner) || self.inner == other.inner
+    }
+}
 
-impl std::hash::Hash for MettaValueInner {
+impl PartialEq for MettaValueInner {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
+            (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
+            (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
+            (MettaValueInner::Float(a), MettaValueInner::Float(b)) => a == b,
+            (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
+            (MettaValueInner::SExpr(a), MettaValueInner::SExpr(b)) => a == b,
+            (MettaValueInner::Unit, MettaValueInner::Unit) => true,
+            (MettaValueInner::Error(ma, da), MettaValueInner::Error(mb, db)) => ma == mb && da == db,
+            (MettaValueInner::Type(a), MettaValueInner::Type(b)) => a == b,
+            (MettaValueInner::Conjunction(a), MettaValueInner::Conjunction(b)) => a == b,
+            (MettaValueInner::Space(a), MettaValueInner::Space(b)) => a.id == b.id,
+            (MettaValueInner::State(a), MettaValueInner::State(b)) => a == b,
+            (MettaValueInner::Memo(a), MettaValueInner::Memo(b)) => a.id == b.id,
+            (MettaValueInner::Empty, MettaValueInner::Empty) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for MettaValue {}
+impl Eq for MettaValueInner {}
+
+impl std::hash::Hash for MettaValue {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            MettaValueInner::Atom(s) => {
-                0u8.hash(state);
-                s.hash(state);
-            }
-            MettaValueInner::Bool(b) => {
-                1u8.hash(state);
-                b.hash(state);
-            }
-            MettaValueInner::Long(n) => {
-                2u8.hash(state);
-                n.hash(state);
-            }
-            MettaValueInner::Float(f) => {
-                3u8.hash(state);
-                // Hash float as its bit representation for deterministic hashing
-                f.to_bits().hash(state);
-            }
-            MettaValueInner::String(s) => {
-                4u8.hash(state);
-                s.hash(state);
-            }
-            MettaValueInner::SExpr(items) => {
-                5u8.hash(state);
-                items.hash(state);
-            }
-            MettaValueInner::Unit => {
-                6u8.hash(state);
-            }
-            MettaValueInner::Error(msg, details) => {
-                7u8.hash(state);
-                msg.hash(state);
-                details.hash(state);
-            }
-            MettaValueInner::Type(t) => {
-                8u8.hash(state);
-                t.hash(state);
-            }
-            MettaValueInner::Conjunction(goals) => {
-                10u8.hash(state);
-                goals.hash(state);
-            }
-            MettaValueInner::Space(handle) => {
-                11u8.hash(state);
-                handle.hash(state);
-            }
-            MettaValueInner::State(id) => {
-                13u8.hash(state);
-                id.hash(state);
-            }
-            MettaValueInner::Memo(handle) => {
-                14u8.hash(state);
-                handle.hash(state);
-            }
-            MettaValueInner::Empty => {
-                15u8.hash(state);
-            }
-        }
+        // Delegate to the MettaValueTrait::hash_value() method which provides
+        // a high-quality xxh3 hash of the value's structure.
+        self.hash_value().hash(state);
     }
 }
 
 // ============================================================================
-// From trait implementations for convenient MettaValue construction
-// ============================================================================
-
-impl From<bool> for MettaValue {
-    fn from(b: bool) -> Self {
-        MettaValue::Bool(b)
-    }
-}
-
-impl From<i64> for MettaValue {
-    fn from(n: i64) -> Self {
-        MettaValue::Long(n)
-    }
-}
-
-impl From<f64> for MettaValue {
-    fn from(f: f64) -> Self {
-        MettaValue::Float(f)
-    }
-}
-
-impl From<StdString> for MettaValue {
-    fn from(s: StdString) -> Self {
-        MettaValue::String(s)
-    }
-}
-
-impl From<&str> for MettaValue {
-    fn from(s: &str) -> Self {
-        MettaValue::Atom(s.to_string())
-    }
-}
-
-impl From<Vec<MettaValue>> for MettaValue {
-    fn from(items: Vec<MettaValue>) -> Self {
-        if items.is_empty() {
-            MettaValue::Unit()
-        } else {
-            MettaValue::SExpr(items)
-        }
-    }
-}
-
-// ============================================================================
-// Export MettaValueInner for pattern matching
-// ============================================================================
-
-pub use MettaValueInner::*;
-
-// ============================================================================
-// MettaValue trait implementation
+// MettaValue trait implementation for MettaValue
 // ============================================================================
 
 impl MettaValueTrait for MettaValue {
     type SExprSlice = [MettaValue];
 
     #[inline]
+    fn inner_ptr(&self) -> *const MettaValueInner {
+        self.inner as *const MettaValueInner
+    }
+
+    #[inline]
+    unsafe fn from_inner_ptr(ptr: *const MettaValueInner) -> Self {
+        // SAFETY: The pointer is slab-allocated with 'static lifetime (managed by GC).
+        MettaValue::from_inner(&*ptr)
+    }
+
+    #[inline]
     fn is_atom(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Atom(_))
+        matches!(self.inner, MettaValueInner::Atom(_))
     }
 
     #[inline]
     fn is_bool(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Bool(_))
+        matches!(self.inner, MettaValueInner::Bool(_))
     }
 
     #[inline]
     fn is_long(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Long(_))
+        matches!(self.inner, MettaValueInner::Long(_))
     }
 
     #[inline]
     fn is_float(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Float(_))
+        matches!(self.inner, MettaValueInner::Float(_))
     }
 
     #[inline]
     fn is_string(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::String(_))
+        matches!(self.inner, MettaValueInner::String(_))
     }
 
     #[inline]
     fn is_sexpr(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::SExpr(_))
+        matches!(self.inner, MettaValueInner::SExpr(_))
     }
 
     #[inline]
     fn is_error(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Error(_, _))
+        matches!(self.inner, MettaValueInner::Error(_, _))
     }
 
     #[inline]
     fn is_type(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Type(_))
+        matches!(self.inner, MettaValueInner::Type(_))
     }
 
     #[inline]
     fn is_conjunction(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Conjunction(_))
+        matches!(self.inner, MettaValueInner::Conjunction(_))
     }
 
     #[inline]
     fn is_space(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Space(_))
+        matches!(self.inner, MettaValueInner::Space(_))
     }
 
     #[inline]
     fn is_state(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::State(_))
+        matches!(self.inner, MettaValueInner::State(_))
     }
 
     #[inline]
     fn is_unit(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Unit)
+        matches!(self.inner, MettaValueInner::Unit)
     }
 
     #[inline]
     fn is_memo(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Memo(_))
+        matches!(self.inner, MettaValueInner::Memo(_))
     }
 
     #[inline]
     fn is_empty(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Empty)
+        matches!(self.inner, MettaValueInner::Empty)
     }
 
     #[inline]
     fn is_variable(&self) -> bool {
-        matches!(self.inner(), MettaValueInner::Atom(s) if s.starts_with('$'))
+        matches!(self.inner, MettaValueInner::Atom(s) if s.starts_with('$'))
     }
 
     #[inline]
     fn is_ground_type(&self) -> bool {
         // Unit/() is NOT a ground type — it's an expression in MeTTa HE
         matches!(
-            self.inner(),
+            self.inner,
             MettaValueInner::Bool(_)
                 | MettaValueInner::Long(_)
                 | MettaValueInner::Float(_)
@@ -1136,7 +801,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_atom(&self) -> Option<&str> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Atom(s) => Some(s),
             _ => None,
         }
@@ -1144,7 +809,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_bool(&self) -> Option<bool> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Bool(b) => Some(*b),
             _ => None,
         }
@@ -1152,7 +817,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_long(&self) -> Option<i64> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Long(n) => Some(*n),
             _ => None,
         }
@@ -1160,7 +825,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_float(&self) -> Option<f64> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Float(f) => Some(*f),
             _ => None,
         }
@@ -1168,7 +833,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_string(&self) -> Option<&str> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::String(s) => Some(s),
             _ => None,
         }
@@ -1176,7 +841,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_sexpr(&self) -> Option<&[Self]> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::SExpr(items) => Some(items),
             _ => None,
         }
@@ -1184,7 +849,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_error(&self) -> Option<(&str, &Self)> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Error(msg, details) => Some((msg, details)),
             _ => None,
         }
@@ -1192,7 +857,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_type(&self) -> Option<&Self> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Type(inner) => Some(inner),
             _ => None,
         }
@@ -1200,7 +865,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_conjunction(&self) -> Option<&[Self]> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Conjunction(goals) => Some(goals),
             _ => None,
         }
@@ -1208,7 +873,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_space(&self) -> Option<&SpaceHandle> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Space(handle) => Some(handle),
             _ => None,
         }
@@ -1216,7 +881,7 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_state(&self) -> Option<u64> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::State(id) => Some(*id),
             _ => None,
         }
@@ -1224,14 +889,14 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_memo(&self) -> Option<&MemoHandle> {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Memo(handle) => Some(handle),
             _ => None,
         }
     }
 
     fn type_name(&self) -> &'static str {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Atom(s) if s.starts_with('$') => "Variable",
             MettaValueInner::Atom(_) => "Symbol",
             MettaValueInner::Bool(_) => "Bool",
@@ -1239,7 +904,7 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::Float(_) => "Number",
             MettaValueInner::String(_) => "String",
             MettaValueInner::SExpr(_) => "Expression",
-            MettaValueInner::Unit => "Expression",
+            MettaValueInner::Unit => "Unit",
             MettaValueInner::Error(_, _) => "Error",
             MettaValueInner::Type(_) => "Type",
             MettaValueInner::Conjunction(_) => "Conjunction",
@@ -1251,13 +916,13 @@ impl MettaValueTrait for MettaValue {
     }
 
     fn friendly_type_name(&self) -> &'static str {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::Long(_) => "Number (integer)",
             MettaValueInner::Float(_) => "Number (float)",
             MettaValueInner::Bool(_) => "Bool",
             MettaValueInner::String(_) => "String",
             MettaValueInner::Atom(_) => "Atom",
-            MettaValueInner::Unit => "Expression",
+            MettaValueInner::Unit => "Unit",
             MettaValueInner::SExpr(_) => "S-expression",
             MettaValueInner::Error(_, _) => "Error",
             MettaValueInner::Type(_) => "Type",
@@ -1275,36 +940,34 @@ impl MettaValueTrait for MettaValue {
             s == "&" || s == "&self" || s == "&kb" || s == "&stack"
         }
 
-        match self.inner() {
+        match self.inner {
             // For s-expressions like (double $x), extract "double"
-            // Space references like "&self" are allowed as head symbols
-            MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner() {
+            MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner {
                 MettaValueInner::Atom(head)
                     if !head.starts_with('$')
                         && (!head.starts_with('&') || is_space_ref(head))
                         && !head.starts_with('\'')
-                        && head != "_" =>
+                        && *head != "_" =>
                 {
-                    Some(head.as_str())
+                    Some(head)
                 }
                 _ => None,
             },
             // For bare atoms like foo, use the atom itself
-            // Space references like "&self" are allowed as head symbols
             MettaValueInner::Atom(head)
                 if !head.starts_with('$')
                     && (!head.starts_with('&') || is_space_ref(head))
                     && !head.starts_with('\'')
-                    && head != "_" =>
+                    && *head != "_" =>
             {
-                Some(head.as_str())
+                Some(head)
             }
             _ => None,
         }
     }
 
     fn get_arity(&self) -> usize {
-        match self.inner() {
+        match self.inner {
             MettaValueInner::SExpr(items) if !items.is_empty() => items.len() - 1, // Exclude head
             _ => 0,
         }
@@ -1318,10 +981,34 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn hash_value(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
+        use std::hash::Hasher;
+        use xxhash_rust::xxh3::Xxh3;
+
+        // Golden ratio constant for good hash distribution
+        const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
+        const LONG_SEED: u64 = 0x517cc1b727220a95;
+        const BOOL_SEED: u64 = 0x2d358dccaa6c78a5;
+        const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
+        const UNIT_HASH: u64 = 0x756e6974_68617368;
+
+        // Fast path for primitives
+        if self.is_unit() { return UNIT_HASH; }
+        if let Some(b) = self.as_bool() {
+            return if b { BOOL_SEED.wrapping_mul(GOLDEN_RATIO) } else { BOOL_SEED };
+        }
+        if let Some(n) = self.as_long() {
+            let x = (n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+            return x ^ (x >> 32);
+        }
+        if let Some(f) = self.as_float() {
+            let bits = f.to_bits();
+            let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
+            return x ^ (x >> 32);
+        }
+
+        // Slow path - use xxHash3 for complex types
+        let mut hasher = Xxh3::new();
+        hash_value_for_trait(self, &mut hasher);
         hasher.finish()
     }
 
@@ -1344,14 +1031,14 @@ impl MettaValueTrait for MettaValue {
 
         while let Some(work) = work_stack.pop() {
             match work {
-                ReprWork::Process(val) => match val.inner() {
+                ReprWork::Process(val) => match &val.inner {
                     MettaValueInner::Long(n) => result_stack.push(n.to_string()),
                     MettaValueInner::Float(f) => result_stack.push(f.to_string()),
                     MettaValueInner::Bool(b) => {
                         result_stack.push(if *b { "True" } else { "False" }.to_string());
                     }
                     MettaValueInner::String(s) => result_stack.push(format!("\"{}\"", s)),
-                    MettaValueInner::Atom(a) => result_stack.push(a.clone()),
+                    MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
                     MettaValueInner::Unit => result_stack.push("()".to_string()),
                     MettaValueInner::Empty => result_stack.push("Empty".to_string()),
                     MettaValueInner::Space(handle) => {
@@ -1442,15 +1129,15 @@ impl MettaValueTrait for MettaValue {
 
         while let Some(work) = work_stack.pop() {
             match work {
-                ReprWork::Process(val) => match val.inner() {
+                ReprWork::Process(val) => match &val.inner {
                     MettaValueInner::Long(n) => result_stack.push(n.to_string()),
                     MettaValueInner::Float(f) => result_stack.push(f.to_string()),
                     MettaValueInner::Bool(b) => {
                         result_stack.push(if *b { "True" } else { "False" }.to_string());
                     }
                     // Key difference: strings printed without quotes for display
-                    MettaValueInner::String(s) => result_stack.push(s.clone()),
-                    MettaValueInner::Atom(a) => result_stack.push(a.clone()),
+                    MettaValueInner::String(s) => result_stack.push(s.to_string()),
+                    MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
                     MettaValueInner::Unit => result_stack.push("()".to_string()),
                     MettaValueInner::Empty => result_stack.push("Empty".to_string()),
                     MettaValueInner::Space(handle) => {
@@ -1523,11 +1210,11 @@ impl MettaValueTrait for MettaValue {
 }
 
 // ============================================================================
-// Serialization helpers
+// Serialization helpers for MettaValue
 // ============================================================================
 
-/// Tag bytes for serialization format
-mod serialize_tags {
+/// Tag bytes for serialization format (same as MettaValue)
+pub mod serialize_tags {
     pub const ATOM: u8 = 0x01;
     pub const BOOL: u8 = 0x02;
     pub const LONG: u8 = 0x03;
@@ -1545,7 +1232,7 @@ mod serialize_tags {
     pub const MEMO: u8 = 0x0F;
 }
 
-/// Write a varint (variable-length integer) to buffer
+/// Write a varint to buffer
 fn write_varint(buf: &mut Vec<u8>, mut n: usize) {
     loop {
         let byte = (n & 0x7F) as u8;
@@ -1559,8 +1246,8 @@ fn write_varint(buf: &mut Vec<u8>, mut n: usize) {
     }
 }
 
-/// Read a varint from bytes, returning (value, bytes_consumed)
-fn read_varint(bytes: &[u8]) -> Result<(usize, usize), std::string::String> {
+/// Read a varint from bytes
+pub(crate) fn read_varint(bytes: &[u8]) -> Result<(usize, usize), std::string::String> {
     let mut result: usize = 0;
     let mut shift = 0;
     for (i, &byte) in bytes.iter().enumerate() {
@@ -1576,10 +1263,48 @@ fn read_varint(bytes: &[u8]) -> Result<(usize, usize), std::string::String> {
     Err("unexpected end of varint".to_string())
 }
 
-/// Serialize a MettaValue to bytes
+/// Recursively hash an MettaValue using trait-based accessors.
+///
+/// Used by `MettaValue::hash_value()` for complex types (strings, atoms, s-expressions).
+fn hash_value_for_trait<H: std::hash::Hasher>(value: &MettaValue, hasher: &mut H) {
+    use std::hash::Hash;
+
+    // Hash type discriminant
+    let type_tag: u8 = if value.is_unit() { 0 }
+        else if value.is_bool() { 2 }
+        else if value.is_long() { 3 }
+        else if value.is_float() { 4 }
+        else if value.is_string() { 5 }
+        else if value.is_atom() { 6 }
+        else if value.is_sexpr() { 7 }
+        else if value.is_error() { 8 }
+        else if value.is_empty() { 9 }
+        else { 10 };
+    type_tag.hash(hasher);
+
+    // Hash content
+    if let Some(b) = value.as_bool() {
+        b.hash(hasher);
+    } else if let Some(n) = value.as_long() {
+        n.hash(hasher);
+    } else if let Some(f) = value.as_float() {
+        f.to_bits().hash(hasher);
+    } else if let Some(s) = value.as_string() {
+        s.hash(hasher);
+    } else if let Some(s) = value.as_atom() {
+        s.hash(hasher);
+    } else if let Some(items) = value.as_sexpr() {
+        items.len().hash(hasher);
+        for item in items {
+            hash_value_for_trait(item, hasher);
+        }
+    }
+}
+
+/// Serialize an MettaValue to bytes
 fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
     use serialize_tags::*;
-    match value.inner() {
+    match value.inner {
         MettaValueInner::Atom(s) => {
             buf.push(ATOM);
             write_varint(buf, s.len());
@@ -1653,918 +1378,954 @@ fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
     }
 }
 
-// ============================================================================
-// HeapMettaValueFactory - Zero-sized factory for heap-allocated values
-// ============================================================================
-
-/// Factory for creating heap-allocated MettaValue instances.
-///
-/// This is a zero-sized type (no fields), so passing it around has no runtime cost.
-/// All methods simply delegate to MettaValue's associated functions.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct HeapMettaValueFactory;
-
-impl MettaValueFactory<MettaValue> for HeapMettaValueFactory {
-    #[inline]
-    fn atom(&self, s: &str) -> MettaValue {
-        MettaValue::Atom(s.to_string())
-    }
-
-    #[inline]
-    fn bool(&self, b: bool) -> MettaValue {
-        MettaValue::Bool(b)
-    }
-
-    #[inline]
-    fn long(&self, n: i64) -> MettaValue {
-        MettaValue::Long(n)
-    }
-
-    #[inline]
-    fn float(&self, f: f64) -> MettaValue {
-        MettaValue::Float(f)
-    }
-
-    #[inline]
-    fn string(&self, s: &str) -> MettaValue {
-        MettaValue::String(s.to_string())
-    }
-
-    #[inline]
-    fn sexpr(&self, items: Vec<MettaValue>) -> MettaValue {
-        MettaValue::SExpr(items)
-    }
-
-    #[inline]
-    fn sexpr_from_slice(&self, items: &[MettaValue]) -> MettaValue {
-        MettaValue::SExpr(items.to_vec())
-    }
-
-    #[inline]
-    fn error(&self, msg: &str, details: MettaValue) -> MettaValue {
-        MettaValue::Error(msg.to_string(), details)
-    }
-
-    #[inline]
-    fn type_value(&self, inner: MettaValue) -> MettaValue {
-        MettaValue::Type(inner)
-    }
-
-    #[inline]
-    fn conjunction(&self, goals: Vec<MettaValue>) -> MettaValue {
-        MettaValue::Conjunction(goals)
-    }
-
-    #[inline]
-    fn space(&self, handle: SpaceHandle) -> MettaValue {
-        MettaValue::Space(handle)
-    }
-
-    #[inline]
-    fn state(&self, id: u64) -> MettaValue {
-        MettaValue::State(id)
-    }
-
-    #[inline]
-    fn unit(&self) -> MettaValue {
-        MettaValue::Unit()
-    }
-
-    #[inline]
-    fn memo(&self, handle: MemoHandle) -> MettaValue {
-        MettaValue::Memo(handle)
-    }
-
-    #[inline]
-    fn empty(&self) -> MettaValue {
-        MettaValue::Empty()
-    }
-
-    fn deserialize(&self, bytes: &[u8]) -> Result<(MettaValue, usize), std::string::String> {
-        deserialize_metta_value(bytes)
-    }
-}
-
-/// Deserialize a MettaValue from bytes
-fn deserialize_metta_value(bytes: &[u8]) -> Result<(MettaValue, usize), std::string::String> {
-    use serialize_tags::*;
-
-    if bytes.is_empty() {
-        return Err("unexpected end of input".to_string());
-    }
-
-    let tag = bytes[0];
-    let rest = &bytes[1..];
-
-    match tag {
-        ATOM => {
-            let (len, varint_size) = read_varint(rest)?;
-            let start = varint_size;
-            let end = start + len;
-            if rest.len() < end {
-                return Err("unexpected end of atom data".to_string());
-            }
-            let s = std::str::from_utf8(&rest[start..end])
-                .map_err(|e| format!("invalid UTF-8 in atom: {}", e))?;
-            Ok((MettaValue::Atom(s.to_string()), 1 + end))
-        }
-        BOOL => {
-            if rest.is_empty() {
-                return Err("unexpected end of bool data".to_string());
-            }
-            Ok((MettaValue::Bool(rest[0] != 0), 2))
-        }
-        LONG => {
-            if rest.len() < 8 {
-                return Err("unexpected end of long data".to_string());
-            }
-            let n = i64::from_le_bytes(rest[..8].try_into().unwrap());
-            Ok((MettaValue::Long(n), 9))
-        }
-        FLOAT => {
-            if rest.len() < 8 {
-                return Err("unexpected end of float data".to_string());
-            }
-            let f = f64::from_le_bytes(rest[..8].try_into().unwrap());
-            Ok((MettaValue::Float(f), 9))
-        }
-        STRING => {
-            let (len, varint_size) = read_varint(rest)?;
-            let start = varint_size;
-            let end = start + len;
-            if rest.len() < end {
-                return Err("unexpected end of string data".to_string());
-            }
-            let s = std::str::from_utf8(&rest[start..end])
-                .map_err(|e| format!("invalid UTF-8 in string: {}", e))?;
-            Ok((MettaValue::String(s.to_string()), 1 + end))
-        }
-        SEXPR => {
-            let (count, varint_size) = read_varint(rest)?;
-            let mut items = Vec::with_capacity(count);
-            let mut offset = 1 + varint_size;
-            for _ in 0..count {
-                let (item, consumed) = deserialize_metta_value(&bytes[offset..])?;
-                items.push(item);
-                offset += consumed;
-            }
-            Ok((MettaValue::SExpr(items), offset))
-        }
-        UNIT_LEGACY => Ok((MettaValue::Unit(), 1)),
-        ERROR => {
-            let (msg_len, varint_size) = read_varint(rest)?;
-            let msg_start = varint_size;
-            let msg_end = msg_start + msg_len;
-            if rest.len() < msg_end {
-                return Err("unexpected end of error message".to_string());
-            }
-            let msg = std::str::from_utf8(&rest[msg_start..msg_end])
-                .map_err(|e| format!("invalid UTF-8 in error message: {}", e))?
-                .to_string();
-            let (details, details_consumed) = deserialize_metta_value(&bytes[1 + msg_end..])?;
-            Ok((MettaValue::Error(msg, details), 1 + msg_end + details_consumed))
-        }
-        TYPE => {
-            let (inner, consumed) = deserialize_metta_value(rest)?;
-            Ok((MettaValue::Type(inner), 1 + consumed))
-        }
-        CONJUNCTION => {
-            let (count, varint_size) = read_varint(rest)?;
-            let mut goals = Vec::with_capacity(count);
-            let mut offset = 1 + varint_size;
-            for _ in 0..count {
-                let (goal, consumed) = deserialize_metta_value(&bytes[offset..])?;
-                goals.push(goal);
-                offset += consumed;
-            }
-            Ok((MettaValue::Conjunction(goals), offset))
-        }
-        UNIT => Ok((MettaValue::Unit(), 1)),
-        EMPTY => Ok((MettaValue::Empty(), 1)),
-        SPACE => {
-            if rest.len() < 8 {
-                return Err("unexpected end of space id".to_string());
-            }
-            let id = u64::from_le_bytes(rest[..8].try_into().unwrap());
-            let mut offset = 9; // 1 (tag) + 8 (id)
-
-            // Read name length and name bytes
-            let (name_len, consumed) = read_varint(&rest[8..])?;
-            offset += consumed;
-            let name_start = 8 + consumed;
-            if rest.len() < name_start + name_len {
-                return Err("unexpected end of space name".to_string());
-            }
-            let name = std::str::from_utf8(&rest[name_start..name_start + name_len])
-                .map_err(|e| format!("invalid UTF-8 in space name: {}", e))?
-                .to_string();
-            offset += name_len;
-
-            // Read is_module_space flag
-            if rest.len() < name_start + name_len + 1 {
-                return Err("unexpected end of space is_module_space flag".to_string());
-            }
-            let is_module = rest[name_start + name_len] != 0;
-            offset += 1;
-
-            // Reconstruct SpaceHandle with available info
-            let handle = SpaceHandle::new_from_serialized(id, name, is_module);
-            Ok((MettaValue::Space(handle), offset))
-        }
-        STATE => {
-            if rest.len() < 8 {
-                return Err("unexpected end of state id".to_string());
-            }
-            let id = u64::from_le_bytes(rest[..8].try_into().unwrap());
-            Ok((MettaValue::State(id), 9))
-        }
-        MEMO => {
-            if rest.len() < 8 {
-                return Err("unexpected end of memo id".to_string());
-            }
-            let _id = u64::from_le_bytes(rest[..8].try_into().unwrap());
-            // Note: We can only deserialize the ID, not the full MemoHandle
-            // The caller needs to resolve this ID to an actual handle
-            Ok((MettaValue::Unit(), 9)) // Placeholder - real impl needs handle registry
-        }
-        _ => Err(format!("unknown tag byte: 0x{:02X}", tag)),
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::gc_allocator::global_factory;
+    use super::super::metta_value_trait::MettaValueFactory;
 
-    // Tests for is_ground_type
+    // ========================================================================
+    // Basic Constructor and Accessor Tests
+    // ========================================================================
+
     #[test]
-    fn test_is_ground_type_bool() {
-        assert!(MettaValue::Bool(true).is_ground_type());
-        assert!(MettaValue::Bool(false).is_ground_type());
+    fn test_arena_atom() {
+        let factory = global_factory();
+        let v = factory.atom("hello");
+        assert!(v.is_atom());
+        assert_eq!(v.as_atom(), Some("hello"));
     }
 
     #[test]
-    fn test_is_ground_type_long() {
-        assert!(MettaValue::Long(0).is_ground_type());
-        assert!(MettaValue::Long(42).is_ground_type());
-        assert!(MettaValue::Long(-100).is_ground_type());
+    fn test_arena_long() {
+        let factory = global_factory();
+        let v = factory.long(42);
+        assert!(v.is_long());
+        assert_eq!(v.as_long(), Some(42));
     }
 
     #[test]
-    fn test_is_ground_type_string() {
-        assert!(MettaValue::String("hello".to_string()).is_ground_type());
-        assert!(MettaValue::String("".to_string()).is_ground_type());
+    fn test_arena_bool() {
+        let factory = global_factory();
+        let v = factory.bool(true);
+        assert!(v.is_bool());
+        assert_eq!(v.as_bool(), Some(true));
     }
 
     #[test]
-    fn test_is_ground_type_unit() {
-        // Unit is not a ground type — it's an expression type () in MeTTa HE
-        assert!(!MettaValue::Unit().is_ground_type());
+    fn test_arena_sexpr() {
+        let factory = global_factory();
+        let items = vec![
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
+        ];
+        let v = factory.sexpr(items);
+        assert!(v.is_sexpr());
+        let items = v.as_sexpr().expect("should be sexpr");
+        assert_eq!(items.len(), 3);
     }
 
     #[test]
-    fn test_is_ground_type_atom() {
-        assert!(!MettaValue::Atom("test".to_string()).is_ground_type());
+    fn test_copy_semantics() {
+        let factory = global_factory();
+        let v1 = factory.long(42);
+        let v2 = v1; // Copy, not move
+        let v3 = v1; // Can copy again
+        assert_eq!(v1.as_long(), Some(42));
+        assert_eq!(v2.as_long(), Some(42));
+        assert_eq!(v3.as_long(), Some(42));
     }
 
     #[test]
-    fn test_is_ground_type_sexpr() {
-        assert!(!MettaValue::SExpr(vec![MettaValue::Long(1)]).is_ground_type());
-    }
-
-    #[test]
-    fn test_is_ground_type_error() {
-        assert!(!MettaValue::Error("msg".to_string(), MettaValue::Unit()).is_ground_type());
-    }
-
-    #[test]
-    fn test_is_ground_type_type() {
-        assert!(!MettaValue::Type(MettaValue::Atom("Int".to_string())).is_ground_type());
-    }
-
-    // Tests for is_eval_expr
-    #[test]
-    fn test_is_eval_expr_with_bang() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("!".to_string()),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("+".to_string()),
-                MettaValue::Long(1),
-                MettaValue::Long(2),
-            ]),
+    fn test_display() {
+        let factory = global_factory();
+        let v = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
         ]);
-        assert!(value.is_eval_expr());
+        assert_eq!(format!("{}", v), "(+ 1 2)");
+    }
+
+    // ========================================================================
+    // All Type Variant Constructor Tests (Phase 1)
+    // ========================================================================
+
+    #[test]
+    fn test_arena_float() {
+        let factory = global_factory();
+        let v = factory.float(3.14);
+        assert!(v.is_float());
+        assert!(!v.is_long());
+        assert_eq!(v.as_float(), Some(3.14));
+        assert_eq!(v.as_long(), None);
     }
 
     #[test]
-    fn test_is_eval_expr_with_bang_and_atom() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("!".to_string()),
-            MettaValue::Atom("foo".to_string()),
+    fn test_arena_string() {
+        let factory = global_factory();
+        let v = factory.string("hello world");
+        assert!(v.is_string());
+        assert!(!v.is_atom());
+        assert_eq!(v.as_string(), Some("hello world"));
+        assert_eq!(v.as_atom(), None);
+    }
+
+    #[test]
+    fn test_arena_nil() {
+        let factory = global_factory();
+        let v = factory.unit();
+        // After Nil/Unit merge, nil() returns Unit
+        assert!(v.is_unit());
+        assert!(!v.is_empty());
+    }
+
+    #[test]
+    fn test_arena_unit() {
+        let factory = global_factory();
+        let v = factory.unit();
+        assert!(v.is_unit());
+        assert!(!v.is_empty());
+    }
+
+    #[test]
+    fn test_arena_empty() {
+        let factory = global_factory();
+        let v = factory.empty();
+        assert!(v.is_empty());
+        assert!(!v.is_unit());
+    }
+
+    #[test]
+    fn test_arena_error() {
+        let factory = global_factory();
+        let details = factory.atom("details");
+        let v = factory.error("test error", details);
+        assert!(v.is_error());
+        let (msg, det) = v.as_error().expect("should be error");
+        assert_eq!(msg, "test error");
+        assert_eq!(det.as_atom(), Some("details"));
+    }
+
+    #[test]
+    fn test_arena_type() {
+        let factory = global_factory();
+        let inner = factory.atom("Number");
+        let v = factory.type_value(inner);
+        assert!(v.is_type());
+        let t = v.as_type().expect("should be type");
+        assert_eq!(t.as_atom(), Some("Number"));
+    }
+
+    #[test]
+    fn test_arena_conjunction() {
+        let factory = global_factory();
+        let goals = vec![
+            factory.atom("goal1"),
+            factory.atom("goal2"),
+        ];
+        let v = factory.conjunction(goals);
+        assert!(v.is_conjunction());
+        let conj = v.as_conjunction().expect("should be conjunction");
+        assert_eq!(conj.len(), 2);
+    }
+
+    #[test]
+    fn test_state() {
+        let factory = global_factory();
+        let v = factory.state(12345);
+        assert!(v.is_state());
+        assert_eq!(v.as_state(), Some(12345));
+    }
+
+    #[test]
+    fn test_arena_sexpr_empty() {
+        let factory = global_factory();
+        // Empty sexpr via factory.sexpr(vec![]) normalizes to Unit
+        let v = factory.sexpr(vec![]);
+        // After Nil/Unit merge + BumpVec->slice: empty sexpr normalizes to Unit
+        assert!(v.is_unit());
+    }
+
+    // ========================================================================
+    // Type Check Method Coverage
+    // ========================================================================
+
+    #[test]
+    fn test_is_variable_true() {
+        let factory = global_factory();
+        let v = factory.atom("$x");
+        assert!(v.is_variable());
+    }
+
+    #[test]
+    fn test_is_variable_false() {
+        let factory = global_factory();
+        let v = factory.atom("foo");
+        assert!(!v.is_variable());
+    }
+
+    #[test]
+    fn test_is_ground_type() {
+        let factory = global_factory();
+
+        // Ground types
+        assert!(factory.bool(true).is_ground_type());
+        assert!(factory.long(42).is_ground_type());
+        assert!(factory.float(3.14).is_ground_type());
+        assert!(factory.string("hello").is_ground_type());
+
+        // Non-ground types
+        assert!(!factory.atom("foo").is_ground_type());
+        assert!(!factory.sexpr(vec![]).is_ground_type());
+        // After Nil/Unit merge, Unit/() is NOT a ground type (it's an expression in MeTTa HE)
+        assert!(!factory.unit().is_ground_type());
+        assert!(!factory.unit().is_ground_type());
+    }
+
+    // ========================================================================
+    // PartialEq Tests for All Variant Combinations
+    // ========================================================================
+
+    #[test]
+    fn test_eq_long_long() {
+        let factory = global_factory();
+        let v1 = factory.long(42);
+        let v2 = factory.long(42);
+        let v3 = factory.long(99);
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_eq_float_float() {
+        let factory = global_factory();
+        let v1 = factory.float(3.14);
+        let v2 = factory.float(3.14);
+        let v3 = factory.float(2.71);
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_eq_bool_bool() {
+        let factory = global_factory();
+        let t1 = factory.bool(true);
+        let t2 = factory.bool(true);
+        let f = factory.bool(false);
+        assert_eq!(t1, t2);
+        assert_ne!(t1, f);
+    }
+
+    #[test]
+    fn test_eq_atom_atom() {
+        let factory = global_factory();
+        let v1 = factory.atom("foo");
+        let v2 = factory.atom("foo");
+        let v3 = factory.atom("bar");
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_eq_string_string() {
+        let factory = global_factory();
+        let v1 = factory.string("hello");
+        let v2 = factory.string("hello");
+        let v3 = factory.string("world");
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_eq_nil_nil() {
+        let factory = global_factory();
+        let v1 = factory.unit();
+        let v2 = factory.unit();
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_eq_unit_unit() {
+        let factory = global_factory();
+        let v1 = factory.unit();
+        let v2 = factory.unit();
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_eq_empty_empty() {
+        let factory = global_factory();
+        let v1 = factory.empty();
+        let v2 = factory.empty();
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_eq_sexpr_sexpr() {
+        let factory = global_factory();
+        let v1 = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(1),
         ]);
-        assert!(value.is_eval_expr());
-    }
-
-    #[test]
-    fn test_is_eval_expr_without_bang() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
+        let v2 = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(1),
         ]);
-        assert!(!value.is_eval_expr());
-    }
-
-    #[test]
-    fn test_is_eval_expr_empty_sexpr() {
-        let value = MettaValue::SExpr(vec![]);
-        assert!(!value.is_eval_expr());
-    }
-
-    #[test]
-    fn test_is_eval_expr_with_equals() {
-        // Rule definition should not be eval expr
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("=".to_string()),
-            MettaValue::Atom("x".to_string()),
-            MettaValue::Long(1),
+        let v3 = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(2),
         ]);
-        assert!(!value.is_eval_expr());
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
     }
 
     #[test]
-    fn test_is_eval_expr_non_sexpr_types() {
-        // Non-SExpr types should return false
-        assert!(!MettaValue::Atom("!".to_string()).is_eval_expr());
-        assert!(!MettaValue::Bool(true).is_eval_expr());
-        assert!(!MettaValue::Long(42).is_eval_expr());
-        assert!(!MettaValue::String("!".to_string()).is_eval_expr());
-        assert!(!MettaValue::Unit().is_eval_expr());
+    fn test_eq_error_error() {
+        let factory = global_factory();
+        let d1 = factory.atom("d");
+        let d2 = factory.atom("d");
+        let v1 = factory.error("err", d1);
+        let v2 = factory.error("err", d2);
+        assert_eq!(v1, v2);
     }
 
     #[test]
-    fn test_is_eval_expr_with_non_atom_first() {
-        // SExpr with non-atom first element should return false
-        let value = MettaValue::SExpr(vec![MettaValue::Long(1), MettaValue::Long(2)]);
-        assert!(!value.is_eval_expr());
+    fn test_eq_type_type() {
+        let factory = global_factory();
+        let i1 = factory.atom("Number");
+        let i2 = factory.atom("Number");
+        let v1 = factory.type_value(i1);
+        let v2 = factory.type_value(i2);
+        assert_eq!(v1, v2);
     }
 
-    // Tests for is_rule_def
     #[test]
-    fn test_is_rule_def_with_equals() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("=".to_string()),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("double".to_string()),
-                MettaValue::Atom("$x".to_string()),
-            ]),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("*".to_string()),
-                MettaValue::Atom("$x".to_string()),
-                MettaValue::Long(2),
-            ]),
+    fn test_eq_conjunction_conjunction() {
+        let factory = global_factory();
+        let v1 = factory.conjunction(vec![
+            factory.atom("a"),
         ]);
-        assert!(value.is_rule_def());
-    }
-
-    #[test]
-    fn test_is_rule_def_with_equals_simple() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("=".to_string()),
-            MettaValue::Atom("x".to_string()),
-            MettaValue::Long(1),
+        let v2 = factory.conjunction(vec![
+            factory.atom("a"),
         ]);
-        assert!(value.is_rule_def());
+        assert_eq!(v1, v2);
     }
 
     #[test]
-    fn test_is_rule_def_without_equals() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
+    fn test_eq_state_state() {
+        let factory = global_factory();
+        let v1 = factory.state(100);
+        let v2 = factory.state(100);
+        let v3 = factory.state(200);
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_ne_different_types() {
+        let factory = global_factory();
+        let long = factory.long(42);
+        let float = factory.float(42.0);
+        let bool_val = factory.bool(true);
+        let atom = factory.atom("42");
+        let string = factory.string("42");
+
+        // Different types should never be equal
+        assert_ne!(long, float);
+        assert_ne!(long, bool_val);
+        assert_ne!(long, atom);
+        assert_ne!(float, string);
+        assert_ne!(atom, string);
+    }
+
+    // ========================================================================
+    // Accessor Method Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_accessor_wrong_type_returns_none() {
+        let factory = global_factory();
+        let v = factory.long(42);
+        assert_eq!(v.as_atom(), None);
+        assert_eq!(v.as_bool(), None);
+        assert_eq!(v.as_float(), None);
+        assert_eq!(v.as_string(), None);
+        assert_eq!(v.as_sexpr(), None);
+        assert_eq!(v.as_error(), None);
+        assert_eq!(v.as_type(), None);
+        assert_eq!(v.as_conjunction(), None);
+        assert_eq!(v.as_space(), None);
+        assert_eq!(v.as_state(), None);
+        assert_eq!(v.as_memo(), None);
+    }
+
+    // ========================================================================
+    // Type Name Tests
+    // ========================================================================
+
+    #[test]
+    fn test_type_name_variable() {
+        let factory = global_factory();
+        let v = factory.atom("$x");
+        assert_eq!(v.type_name(), "Variable");
+    }
+
+    #[test]
+    fn test_type_name_symbol() {
+        let factory = global_factory();
+        let v = factory.atom("foo");
+        assert_eq!(v.type_name(), "Symbol");
+    }
+
+    #[test]
+    fn test_type_name_bool() {
+        let factory = global_factory();
+        let v = factory.bool(true);
+        assert_eq!(v.type_name(), "Bool");
+    }
+
+    #[test]
+    fn test_type_name_long() {
+        let factory = global_factory();
+        let v = factory.long(42);
+        assert_eq!(v.type_name(), "Number");
+    }
+
+    #[test]
+    fn test_type_name_float() {
+        let factory = global_factory();
+        let v = factory.float(3.14);
+        assert_eq!(v.type_name(), "Number");
+    }
+
+    #[test]
+    fn test_type_name_string() {
+        let factory = global_factory();
+        let v = factory.string("hello");
+        assert_eq!(v.type_name(), "String");
+    }
+
+    #[test]
+    fn test_type_name_sexpr() {
+        let factory = global_factory();
+        // Use a non-empty sexpr for the Expression type name test
+        let v = factory.sexpr(vec![factory.long(1)]);
+        assert_eq!(v.type_name(), "Expression");
+    }
+
+    #[test]
+    fn test_type_name_nil() {
+        // After Nil/Unit merge, nil() returns Unit which has type_name "Unit"
+        let factory = global_factory();
+        let v = factory.unit();
+        assert_eq!(v.type_name(), "Unit");
+    }
+
+    #[test]
+    fn test_type_name_error() {
+        let factory = global_factory();
+        let d = factory.unit();
+        let v = factory.error("err", d);
+        assert_eq!(v.type_name(), "Error");
+    }
+
+    #[test]
+    fn test_type_name_type() {
+        let factory = global_factory();
+        let i = factory.atom("Int");
+        let v = factory.type_value(i);
+        assert_eq!(v.type_name(), "Type");
+    }
+
+    #[test]
+    fn test_type_name_conjunction() {
+        let factory = global_factory();
+        let v = factory.conjunction(vec![]);
+        assert_eq!(v.type_name(), "Conjunction");
+    }
+
+    #[test]
+    fn test_type_name_state() {
+        let factory = global_factory();
+        let v = factory.state(1);
+        assert_eq!(v.type_name(), "State");
+    }
+
+    #[test]
+    fn test_type_name_unit() {
+        let factory = global_factory();
+        let v = factory.unit();
+        assert_eq!(v.type_name(), "Unit");
+    }
+
+    #[test]
+    fn test_type_name_empty() {
+        let factory = global_factory();
+        let v = factory.empty();
+        assert_eq!(v.type_name(), "Empty");
+    }
+
+    // ========================================================================
+    // Display Formatting Tests
+    // ========================================================================
+
+    #[test]
+    fn test_display_bool_true() {
+        let factory = global_factory();
+        let v = factory.bool(true);
+        assert_eq!(format!("{}", v), "True");
+    }
+
+    #[test]
+    fn test_display_bool_false() {
+        let factory = global_factory();
+        let v = factory.bool(false);
+        assert_eq!(format!("{}", v), "False");
+    }
+
+    #[test]
+    fn test_display_long() {
+        let factory = global_factory();
+        let v = factory.long(-42);
+        assert_eq!(format!("{}", v), "-42");
+    }
+
+    #[test]
+    fn test_display_float() {
+        let factory = global_factory();
+        let v = factory.float(3.14);
+        assert_eq!(format!("{}", v), "3.14");
+    }
+
+    #[test]
+    fn test_display_string() {
+        let factory = global_factory();
+        let v = factory.string("hello");
+        assert_eq!(format!("{}", v), "\"hello\"");
+    }
+
+    #[test]
+    fn test_display_nil() {
+        // After Nil/Unit merge, nil() returns Unit which displays as "()"
+        let factory = global_factory();
+        let v = factory.unit();
+        assert_eq!(format!("{}", v), "()");
+    }
+
+    #[test]
+    fn test_display_unit() {
+        let factory = global_factory();
+        let v = factory.unit();
+        assert_eq!(format!("{}", v), "()");
+    }
+
+    #[test]
+    fn test_display_empty() {
+        let factory = global_factory();
+        let v = factory.empty();
+        assert_eq!(format!("{}", v), "Empty");
+    }
+
+    #[test]
+    fn test_display_empty_sexpr() {
+        let factory = global_factory();
+        // Empty sexpr via factory normalizes to Unit
+        let v = factory.sexpr(vec![]);
+        assert_eq!(format!("{}", v), "()");
+    }
+
+    #[test]
+    fn test_display_error() {
+        let factory = global_factory();
+        let d = factory.atom("details");
+        let v = factory.error("msg", d);
+        assert_eq!(format!("{}", v), "(Error msg details)");
+    }
+
+    #[test]
+    fn test_display_type() {
+        let factory = global_factory();
+        let i = factory.atom("Int");
+        let v = factory.type_value(i);
+        assert_eq!(format!("{}", v), "(: Int)");
+    }
+
+    #[test]
+    fn test_display_conjunction() {
+        let factory = global_factory();
+        let v = factory.conjunction(vec![
+            factory.atom("a"),
+            factory.atom("b"),
         ]);
-        assert!(!value.is_rule_def());
+        assert_eq!(format!("{}", v), "(, a b)");
     }
 
     #[test]
-    fn test_is_rule_def_with_bang() {
-        // Eval expression should not be rule def
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("!".to_string()),
-            MettaValue::Atom("foo".to_string()),
+    fn test_display_state() {
+        let factory = global_factory();
+        let v = factory.state(123);
+        assert_eq!(format!("{}", v), "<State:123>");
+    }
+
+    // ========================================================================
+    // Serialization Round-Trip Tests
+    // ========================================================================
+
+    #[test]
+    fn test_serialize_roundtrip_long() {
+        let factory = global_factory();
+        let original = factory.long(12345);
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_float() {
+        let factory = global_factory();
+        let original = factory.float(3.14159);
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_bool() {
+        let factory = global_factory();
+        let original = factory.bool(true);
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_atom() {
+        let factory = global_factory();
+        let original = factory.atom("hello-world");
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_string() {
+        let factory = global_factory();
+        let original = factory.string("test string");
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_nil() {
+        let factory = global_factory();
+        let original = factory.unit();
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_unit() {
+        let factory = global_factory();
+        let original = factory.unit();
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_empty() {
+        let factory = global_factory();
+        let original = factory.empty();
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_sexpr() {
+        let factory = global_factory();
+        let original = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
         ]);
-        assert!(!value.is_rule_def());
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
     }
 
     #[test]
-    fn test_is_rule_def_empty_sexpr() {
-        let value = MettaValue::SExpr(vec![]);
-        assert!(!value.is_rule_def());
-    }
-
-    #[test]
-    fn test_is_rule_def_non_sexpr_types() {
-        // Non-SExpr types should return false
-        assert!(!MettaValue::Atom("=".to_string()).is_rule_def());
-        assert!(!MettaValue::Bool(true).is_rule_def());
-        assert!(!MettaValue::Long(42).is_rule_def());
-        assert!(!MettaValue::String("=".to_string()).is_rule_def());
-        assert!(!MettaValue::Unit().is_rule_def());
-    }
-
-    #[test]
-    fn test_is_rule_def_with_non_atom_first() {
-        // SExpr with non-atom first element should return false
-        let value = MettaValue::SExpr(vec![MettaValue::Long(1), MettaValue::Long(2)]);
-        assert!(!value.is_rule_def());
-    }
-
-    #[test]
-    fn test_is_eval_expr_and_rule_def_mutually_exclusive() {
-        // An expression cannot be both eval expr and rule def
-        let eval_expr = MettaValue::SExpr(vec![
-            MettaValue::Atom("!".to_string()),
-            MettaValue::Atom("foo".to_string()),
+    fn test_serialize_roundtrip_nested_sexpr() {
+        let factory = global_factory();
+        let inner = factory.sexpr(vec![
+            factory.atom("*"),
+            factory.long(2),
+            factory.long(3),
         ]);
-        assert!(eval_expr.is_eval_expr());
-        assert!(!eval_expr.is_rule_def());
-
-        let rule_def = MettaValue::SExpr(vec![
-            MettaValue::Atom("=".to_string()),
-            MettaValue::Atom("x".to_string()),
-            MettaValue::Long(1),
+        let original = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(1),
+            inner,
         ]);
-        assert!(!rule_def.is_eval_expr());
-        assert!(rule_def.is_rule_def());
-    }
-
-    // Tests for structurally_equivalent
-    #[test]
-    fn test_structurally_equivalent_variables() {
-        // Variables match regardless of name
-        let v1 = MettaValue::Atom("$x".to_string());
-        let v2 = MettaValue::Atom("$y".to_string());
-        assert!(v1.structurally_equivalent(&v2));
-
-        let v3 = MettaValue::Atom("&a".to_string());
-        let v4 = MettaValue::Atom("&b".to_string());
-        assert!(v3.structurally_equivalent(&v4));
-
-        let v5 = MettaValue::Atom("'x".to_string());
-        let v6 = MettaValue::Atom("'y".to_string());
-        assert!(v5.structurally_equivalent(&v6));
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
     }
 
     #[test]
-    fn test_structurally_equivalent_variables_mixed_prefixes() {
-        // Variables with different prefixes still match
-        let v1 = MettaValue::Atom("$x".to_string());
-        let v2 = MettaValue::Atom("&y".to_string());
-        assert!(v1.structurally_equivalent(&v2));
-
-        let v3 = MettaValue::Atom("'a".to_string());
-        let v4 = MettaValue::Atom("$b".to_string());
-        assert!(v3.structurally_equivalent(&v4));
+    fn test_serialize_roundtrip_error() {
+        let factory = global_factory();
+        let details = factory.atom("details");
+        let original = factory.error("test error", details);
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
     }
 
     #[test]
-    fn test_structurally_equivalent_standalone_ampersand() {
-        // Standalone "&" is NOT a variable, it's a literal operator
-        let op = MettaValue::Atom("&".to_string());
-        let var = MettaValue::Atom("$x".to_string());
-        assert!(!op.structurally_equivalent(&var));
-
-        // Standalone "&" matches itself
-        assert!(op.structurally_equivalent(&op));
+    fn test_serialize_roundtrip_type() {
+        let factory = global_factory();
+        let inner = factory.atom("Number");
+        let original = factory.type_value(inner);
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
     }
 
     #[test]
-    fn test_structurally_equivalent_wildcards() {
-        let w1 = MettaValue::Atom("_".to_string());
-        let w2 = MettaValue::Atom("_".to_string());
-        assert!(w1.structurally_equivalent(&w2));
-
-        // Wildcard doesn't match variable
-        let var = MettaValue::Atom("$x".to_string());
-        assert!(!w1.structurally_equivalent(&var));
-    }
-
-    #[test]
-    fn test_structurally_equivalent_atoms() {
-        // Non-variable atoms must match exactly
-        assert!(MettaValue::Atom("foo".to_string())
-            .structurally_equivalent(&MettaValue::Atom("foo".to_string())));
-        assert!(!MettaValue::Atom("foo".to_string())
-            .structurally_equivalent(&MettaValue::Atom("bar".to_string())));
-    }
-
-    #[test]
-    fn test_structurally_equivalent_ground_types() {
-        assert!(MettaValue::Bool(true).structurally_equivalent(&MettaValue::Bool(true)));
-        assert!(!MettaValue::Bool(true).structurally_equivalent(&MettaValue::Bool(false)));
-
-        assert!(MettaValue::Long(42).structurally_equivalent(&MettaValue::Long(42)));
-        assert!(!MettaValue::Long(42).structurally_equivalent(&MettaValue::Long(43)));
-
-        assert!(MettaValue::String("hello".to_string())
-            .structurally_equivalent(&MettaValue::String("hello".to_string())));
-        assert!(!MettaValue::String("hello".to_string())
-            .structurally_equivalent(&MettaValue::String("world".to_string())));
-
-        assert!(MettaValue::Unit().structurally_equivalent(&MettaValue::Unit()));
-    }
-
-    #[test]
-    fn test_structurally_equivalent_sexpr() {
-        // Same structure
-        let s1 = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
+    fn test_serialize_roundtrip_conjunction() {
+        let factory = global_factory();
+        let original = factory.conjunction(vec![
+            factory.atom("a"),
+            factory.atom("b"),
         ]);
-        let s2 = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        assert!(s1.structurally_equivalent(&s2));
-
-        // Different structure
-        let s3 = MettaValue::SExpr(vec![MettaValue::Atom("+".to_string()), MettaValue::Long(1)]);
-        assert!(!s1.structurally_equivalent(&s3));
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
     }
 
     #[test]
-    fn test_structurally_equivalent_sexpr_with_variables() {
-        // Variables in same positions match
-        let s1 = MettaValue::SExpr(vec![
-            MettaValue::Atom("double".to_string()),
-            MettaValue::Atom("$x".to_string()),
-        ]);
-        let s2 = MettaValue::SExpr(vec![
-            MettaValue::Atom("double".to_string()),
-            MettaValue::Atom("$y".to_string()),
-        ]);
-        assert!(s1.structurally_equivalent(&s2));
+    fn test_serialize_roundtrip_state() {
+        let factory = global_factory();
+        let original = factory.state(999);
+        let bytes = original.serialize();
+        let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
+        assert_eq!(original, decoded);
+    }
+
+    // ========================================================================
+    // Hash Value Tests
+    // ========================================================================
+
+    #[test]
+    fn test_hash_equal_values() {
+        let factory = global_factory();
+        let v1 = factory.long(42);
+        let v2 = factory.long(42);
+        assert_eq!(v1.hash_value(), v2.hash_value());
     }
 
     #[test]
-    fn test_structurally_equivalent_errors() {
-        let e1 = MettaValue::Error("msg".to_string(), MettaValue::Long(1));
-        let e2 = MettaValue::Error("msg".to_string(), MettaValue::Long(1));
-        assert!(e1.structurally_equivalent(&e2));
-
-        let e3 = MettaValue::Error("msg".to_string(), MettaValue::Long(2));
-        assert!(!e1.structurally_equivalent(&e3));
-
-        let e4 = MettaValue::Error("other".to_string(), MettaValue::Long(1));
-        assert!(!e1.structurally_equivalent(&e4));
+    fn test_hash_different_values() {
+        let factory = global_factory();
+        let v1 = factory.long(42);
+        let v2 = factory.long(43);
+        assert_ne!(v1.hash_value(), v2.hash_value());
     }
 
     #[test]
-    fn test_structurally_equivalent_types() {
-        let t1 = MettaValue::Type(MettaValue::Atom("Int".to_string()));
-        let t2 = MettaValue::Type(MettaValue::Atom("Int".to_string()));
-        assert!(t1.structurally_equivalent(&t2));
-
-        let t3 = MettaValue::Type(MettaValue::Atom("String".to_string()));
-        assert!(!t1.structurally_equivalent(&t3));
+    fn test_hash_different_types() {
+        let factory = global_factory();
+        let long = factory.long(42);
+        let float = factory.float(42.0);
+        // Different types should (almost certainly) have different hashes
+        assert_ne!(long.hash_value(), float.hash_value());
     }
 
     #[test]
-    fn test_structurally_equivalent_different_types() {
-        // Different enum variants are not equivalent
-        assert!(!MettaValue::Bool(true).structurally_equivalent(&MettaValue::Long(1)));
-        assert!(!MettaValue::Atom("x".to_string()).structurally_equivalent(&MettaValue::Long(1)));
-        assert!(!MettaValue::Unit().structurally_equivalent(&MettaValue::Long(0)));
+    fn test_hash_nil_unit_empty() {
+        let factory = global_factory();
+        let nil = factory.unit();
+        let unit = factory.unit();
+        let empty = factory.empty();
+        // After Nil/Unit merge, nil and unit are the same value
+        assert_eq!(nil.hash_value(), unit.hash_value());
+        // Empty is still distinct from unit
+        assert_ne!(unit.hash_value(), empty.hash_value());
     }
 
-    // Tests for get_head_symbol
+    // ========================================================================
+    // MettaValueTrait Method Tests
+    // ========================================================================
+
     #[test]
     fn test_get_head_symbol_sexpr() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("double".to_string()),
-            MettaValue::Atom("$x".to_string()),
+        let factory = global_factory();
+        let v = factory.sexpr(vec![
+            factory.atom("foo"),
+            factory.long(1),
         ]);
-        assert_eq!(value.get_head_symbol(), Some("double"));
+        assert_eq!(v.get_head_symbol(), Some("foo"));
+    }
+
+    #[test]
+    fn test_get_head_symbol_variable_head() {
+        let factory = global_factory();
+        let v = factory.sexpr(vec![
+            factory.atom("$x"),
+            factory.long(1),
+        ]);
+        // Variable as head returns None
+        assert_eq!(v.get_head_symbol(), None);
     }
 
     #[test]
     fn test_get_head_symbol_bare_atom() {
-        let value = MettaValue::Atom("foo".to_string());
-        assert_eq!(value.get_head_symbol(), Some("foo"));
+        let factory = global_factory();
+        let v = factory.atom("foo");
+        assert_eq!(v.get_head_symbol(), Some("foo"));
     }
 
     #[test]
-    fn test_get_head_symbol_standalone_ampersand() {
-        // Standalone "&" is allowed as head symbol
-        let value = MettaValue::Atom("&".to_string());
-        assert_eq!(value.get_head_symbol(), Some("&"));
-
-        let sexpr = MettaValue::SExpr(vec![
-            MettaValue::Atom("&".to_string()),
-            MettaValue::Atom("$x".to_string()),
+    fn test_get_arity_sexpr() {
+        let factory = global_factory();
+        let v = factory.sexpr(vec![
+            factory.atom("foo"),
+            factory.long(1),
+            factory.long(2),
         ]);
-        assert_eq!(sexpr.get_head_symbol(), Some("&"));
+        // Arity is len - 1 (excluding head)
+        assert_eq!(v.get_arity(), 2);
     }
 
     #[test]
-    fn test_get_head_symbol_variable_atom() {
-        // Variables cannot be head symbols
-        assert_eq!(MettaValue::Atom("$x".to_string()).get_head_symbol(), None);
-        assert_eq!(MettaValue::Atom("&y".to_string()).get_head_symbol(), None);
-        assert_eq!(MettaValue::Atom("'z".to_string()).get_head_symbol(), None);
+    fn test_get_arity_atom() {
+        let factory = global_factory();
+        let v = factory.atom("foo");
+        assert_eq!(v.get_arity(), 0);
     }
 
     #[test]
-    fn test_get_head_symbol_wildcard() {
-        // Wildcard cannot be head symbol
-        assert_eq!(MettaValue::Atom("_".to_string()).get_head_symbol(), None);
-    }
-
-    #[test]
-    fn test_get_head_symbol_sexpr_with_variable_head() {
-        // S-expression with variable as first element has no head symbol
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("$x".to_string()),
-            MettaValue::Long(1),
+    fn test_friendly_repr() {
+        let factory = global_factory();
+        let v = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
         ]);
-        assert_eq!(value.get_head_symbol(), None);
+        assert_eq!(v.friendly_repr(), "(+ 1 2)");
     }
 
     #[test]
-    fn test_get_head_symbol_sexpr_with_non_atom_head() {
-        // S-expression with non-atom first element has no head symbol
-        let value = MettaValue::SExpr(vec![MettaValue::Long(1), MettaValue::Long(2)]);
-        assert_eq!(value.get_head_symbol(), None);
+    fn test_friendly_type_name() {
+        let factory = global_factory();
+        assert_eq!(factory.long(1).friendly_type_name(), "Number (integer)");
+        assert_eq!(factory.float(1.0).friendly_type_name(), "Number (float)");
+        assert_eq!(factory.bool(true).friendly_type_name(), "Bool");
+    }
+
+    // ========================================================================
+    // Factory Tests
+    // ========================================================================
+
+    #[test]
+    fn test_factory_creates_values() {
+        let factory = global_factory();
+
+        let atom = factory.atom("test");
+        assert!(atom.is_atom());
+
+        let long = factory.long(42);
+        assert!(long.is_long());
+
+        let bool_val = factory.bool(true);
+        assert!(bool_val.is_bool());
+
+        let nil = factory.unit();
+        assert!(nil.is_unit()); // nil() returns Unit after Nil/Unit merge
+
+        let unit = factory.unit();
+        assert!(unit.is_unit());
     }
 
     #[test]
-    fn test_get_head_symbol_empty_sexpr() {
-        let value = MettaValue::SExpr(vec![]);
-        assert_eq!(value.get_head_symbol(), None);
+    fn test_factory_sexpr_from_vec() {
+        let factory = global_factory();
+
+        let items = vec![
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
+        ];
+        let sexpr = factory.sexpr(items);
+        assert!(sexpr.is_sexpr());
+        assert_eq!(sexpr.as_sexpr().map(|s| s.len()), Some(3));
     }
 
     #[test]
-    fn test_get_head_symbol_nested_sexpr() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("add".to_string()),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("mul".to_string()),
-                MettaValue::Long(2),
-                MettaValue::Long(3),
-            ]),
-        ]);
-        assert_eq!(value.get_head_symbol(), Some("add"));
+    fn test_factory_sexpr_from_slice() {
+        let factory = global_factory();
+
+        let items = [
+            factory.atom("+"),
+            factory.long(1),
+            factory.long(2),
+        ];
+        let sexpr = factory.sexpr_from_slice(&items);
+        assert!(sexpr.is_sexpr());
+        assert_eq!(sexpr.as_sexpr().map(|s| s.len()), Some(3));
+    }
+
+    // ========================================================================
+    // Deserialization Error Handling
+    // ========================================================================
+
+    #[test]
+    fn test_deserialize_empty_input() {
+        let factory = global_factory();
+        let result = factory.deserialize(&[]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_get_head_symbol_other_types() {
-        // Non-atom, non-sexpr types have no head symbol
-        assert_eq!(MettaValue::Bool(true).get_head_symbol(), None);
-        assert_eq!(MettaValue::Long(42).get_head_symbol(), None);
-        assert_eq!(
-            MettaValue::String("test".to_string()).get_head_symbol(),
-            None
-        );
-        assert_eq!(MettaValue::Unit().get_head_symbol(), None);
-    }
-
-    // Tests for to_mork_string
-    #[test]
-    fn test_to_mork_string_atom() {
-        assert_eq!(MettaValue::Atom("foo".to_string()).to_mork_string(), "foo");
+    fn test_deserialize_unknown_tag() {
+        let factory = global_factory();
+        let result = factory.deserialize(&[0xFF]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown tag"));
     }
 
     #[test]
-    fn test_to_mork_string_variable_dollar() {
-        assert_eq!(MettaValue::Atom("$x".to_string()).to_mork_string(), "$x");
+    fn test_deserialize_truncated_long() {
+        let factory = global_factory();
+        // LONG tag but only 4 bytes (needs 8)
+        let result = factory.deserialize(&[0x03, 0x00, 0x00, 0x00, 0x00]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_to_mork_string_variable_ampersand() {
-        // & prefix becomes $ in MORK format
-        assert_eq!(MettaValue::Atom("&y".to_string()).to_mork_string(), "$y");
+    fn test_deserialize_truncated_float() {
+        let factory = global_factory();
+        // FLOAT tag but only 4 bytes (needs 8)
+        let result = factory.deserialize(&[0x04, 0x00, 0x00, 0x00, 0x00]);
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn test_to_mork_string_variable_quote() {
-        // ' prefix becomes $ in MORK format
-        assert_eq!(MettaValue::Atom("'z".to_string()).to_mork_string(), "$z");
-    }
+    // ========================================================================
+    // Pointer Equality Fast Path
+    // ========================================================================
 
     #[test]
-    fn test_to_mork_string_standalone_ampersand() {
-        // Standalone "&" is NOT converted (it's a literal operator)
-        assert_eq!(MettaValue::Atom("&".to_string()).to_mork_string(), "&");
-    }
-
-    #[test]
-    fn test_to_mork_string_space_references() {
-        // Space references like &self are NOT variables - they should be preserved
-        assert_eq!(
-            MettaValue::Atom("&self".to_string()).to_mork_string(),
-            "&self"
-        );
-        assert_eq!(MettaValue::Atom("&kb".to_string()).to_mork_string(), "&kb");
-        assert_eq!(
-            MettaValue::Atom("&stack".to_string()).to_mork_string(),
-            "&stack"
-        );
-
-        // But regular &-prefixed atoms ARE variables and get converted
-        assert_eq!(MettaValue::Atom("&x".to_string()).to_mork_string(), "$x");
-        assert_eq!(
-            MettaValue::Atom("&foo".to_string()).to_mork_string(),
-            "$foo"
-        );
-    }
-
-    #[test]
-    fn test_to_mork_string_wildcard() {
-        // Wildcard "_" becomes "$" in MORK format
-        assert_eq!(MettaValue::Atom("_".to_string()).to_mork_string(), "$");
-    }
-
-    #[test]
-    fn test_to_mork_string_bool() {
-        assert_eq!(MettaValue::Bool(true).to_mork_string(), "true");
-        assert_eq!(MettaValue::Bool(false).to_mork_string(), "false");
-    }
-
-    #[test]
-    fn test_to_mork_string_long() {
-        assert_eq!(MettaValue::Long(42).to_mork_string(), "42");
-        assert_eq!(MettaValue::Long(-10).to_mork_string(), "-10");
-        assert_eq!(MettaValue::Long(0).to_mork_string(), "0");
-    }
-
-    #[test]
-    fn test_to_mork_string_string() {
-        assert_eq!(
-            MettaValue::String("hello".to_string()).to_mork_string(),
-            "\"hello\""
-        );
-        assert_eq!(MettaValue::String("".to_string()).to_mork_string(), "\"\"");
-    }
-
-    #[test]
-    fn test_to_mork_string_nil() {
-        assert_eq!(MettaValue::Unit().to_mork_string(), "()");
-    }
-
-    #[test]
-    fn test_to_mork_string_sexpr() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        assert_eq!(value.to_mork_string(), "(+ 1 2)");
-    }
-
-    #[test]
-    fn test_to_mork_string_sexpr_nested() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("*".to_string()),
-                MettaValue::Long(2),
-                MettaValue::Long(3),
-            ]),
-        ]);
-        assert_eq!(value.to_mork_string(), "(+ 1 (* 2 3))");
-    }
-
-    #[test]
-    fn test_to_mork_string_sexpr_with_variables() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("double".to_string()),
-            MettaValue::Atom("$x".to_string()),
-        ]);
-        assert_eq!(value.to_mork_string(), "(double $x)");
-    }
-
-    #[test]
-    fn test_to_mork_string_sexpr_with_ampersand_variable() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("f".to_string()),
-            MettaValue::Atom("&y".to_string()),
-        ]);
-        assert_eq!(value.to_mork_string(), "(f $y)");
-    }
-
-    #[test]
-    fn test_to_mork_string_error() {
-        let value = MettaValue::Error("test error".to_string(), MettaValue::Long(42));
-        assert_eq!(value.to_mork_string(), "(error \"test error\" 42)");
-    }
-
-    #[test]
-    fn test_to_mork_string_type() {
-        let value = MettaValue::Type(MettaValue::Atom("Int".to_string()));
-        assert_eq!(value.to_mork_string(), "Int");
-    }
-
-    #[test]
-    fn test_to_mork_string_empty_sexpr() {
-        let value = MettaValue::SExpr(vec![]);
-        assert_eq!(value.to_mork_string(), "()");
-    }
-
-    #[test]
-    fn test_to_json_string_atom() {
-        let value = MettaValue::Atom("test".to_string());
-        let json = value.to_json_string();
-        assert_eq!(json, r#"{"type":"atom","value":"test"}"#);
-    }
-
-    #[test]
-    fn test_to_json_string_number() {
-        let value = MettaValue::Long(42);
-        let json = value.to_json_string();
-        assert_eq!(json, r#"{"type":"number","value":42}"#);
-    }
-
-    #[test]
-    fn test_to_json_string_bool() {
-        let value = MettaValue::Bool(true);
-        let json = value.to_json_string();
-        assert_eq!(json, r#"{"type":"bool","value":true}"#);
-    }
-
-    #[test]
-    fn test_to_json_string_string() {
-        let value = MettaValue::String("hello".to_string());
-        let json = value.to_json_string();
-        assert_eq!(json, r#"{"type":"string","value":"hello"}"#);
-    }
-
-    #[test]
-    fn test_to_json_string_unit() {
-        let value = MettaValue::Unit();
-        let json = value.to_json_string();
-        assert_eq!(json, r#"{"type":"unit"}"#);
-    }
-
-    #[test]
-    fn test_to_json_string_sexpr() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("+".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        let json = value.to_json_string();
-        assert!(json.contains(r#""type":"sexpr""#));
-        assert!(json.contains(r#""items""#));
-    }
-
-    #[test]
-    fn test_to_json_string_escape_json() {
-        // Test escape_json indirectly through to_json_string
-        let value = MettaValue::String("hello\n\"world\"\\test".to_string());
-        let json = value.to_json_string();
-        // The escaped string should be properly escaped in the JSON
-        assert!(json.contains(r#"\n"#));
-        assert!(json.contains(r#"\""#));
-        assert!(json.contains(r#"\\"#));
-    }
-
-    // Tests for O(1) clone
-    #[test]
-    fn test_clone_is_o1() {
-        // Create a large nested structure
-        let large = MettaValue::SExpr(vec![
-            MettaValue::Atom("root".to_string()),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("nested".to_string()),
-                MettaValue::Long(1),
-                MettaValue::Long(2),
-                MettaValue::Long(3),
-            ]),
-        ]);
-
-        // Clone should just increment reference count
-        let cloned = large.clone();
-
-        // Both should point to the same Arc
-        assert!(large.ptr_eq(&cloned));
-    }
-
-    #[test]
-    fn test_accessor_methods() {
-        assert_eq!(MettaValue::Atom("foo".to_string()).as_atom(), Some("foo"));
-        assert_eq!(MettaValue::Bool(true).as_bool(), Some(true));
-        assert_eq!(MettaValue::Long(42).as_long(), Some(42));
-        assert_eq!(MettaValue::Float(3.14).as_float(), Some(3.14));
-        assert_eq!(
-            MettaValue::String("bar".to_string()).as_string(),
-            Some("bar")
-        );
-
-        // Cross-type access returns None
-        assert_eq!(MettaValue::Long(42).as_atom(), None);
-        assert_eq!(MettaValue::Atom("foo".to_string()).as_long(), None);
+    fn test_pointer_equality_fast_path() {
+        let factory = global_factory();
+        let v = factory.long(42);
+        let v_copy = v; // Copy, same pointer
+        // Both should be equal via pointer comparison fast path
+        assert_eq!(v, v_copy);
     }
 }

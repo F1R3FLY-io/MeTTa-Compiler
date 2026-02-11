@@ -63,11 +63,11 @@ pub fn compare_priorities(p1: &MettaValue, p2: &MettaValue) -> Ordering {
 
         // Both Peano numbers or atoms
         (MettaValueInner::Atom(a1), MettaValueInner::Atom(a2)) => {
-            if a1 == "Z" && a2 == "Z" {
+            if *a1 == "Z" && *a2 == "Z" {
                 Ordering::Equal
-            } else if a1 == "Z" {
+            } else if *a1 == "Z" {
                 Ordering::Less // Z is smallest
-            } else if a2 == "Z" {
+            } else if *a2 == "Z" {
                 Ordering::Greater
             } else {
                 // Non-Peano atoms: lexicographic
@@ -76,7 +76,7 @@ pub fn compare_priorities(p1: &MettaValue, p2: &MettaValue) -> Ordering {
         }
 
         // Peano: Z vs (S ...)
-        (MettaValueInner::Atom(a), MettaValueInner::SExpr(_)) if a == "Z" => {
+        (MettaValueInner::Atom(a), MettaValueInner::SExpr(_)) if *a == "Z" => {
             if is_peano(p2) {
                 Ordering::Less // Z < (S ...)
             } else {
@@ -86,7 +86,7 @@ pub fn compare_priorities(p1: &MettaValue, p2: &MettaValue) -> Ordering {
         }
 
         // Peano: (S ...) vs Z
-        (MettaValueInner::SExpr(_), MettaValueInner::Atom(a)) if a == "Z" => {
+        (MettaValueInner::SExpr(_), MettaValueInner::Atom(a)) if *a == "Z" => {
             if is_peano(p1) {
                 Ordering::Greater // (S ...) > Z
             } else {
@@ -132,12 +132,12 @@ pub fn compare_priorities(p1: &MettaValue, p2: &MettaValue) -> Ordering {
 /// Check if a MettaValue is a Peano number (Z or (S ...))
 fn is_peano(value: &MettaValue) -> bool {
     match value.inner() {
-        MettaValueInner::Atom(a) => a == "Z",
+        MettaValueInner::Atom(a) => *a == "Z",
         MettaValueInner::SExpr(items) => {
             // Must be (S ...) where ... is also Peano
             if items.len() == 2 {
                 if let MettaValueInner::Atom(op) = items[0].inner() {
-                    if op == "S" {
+                    if *op == "S" {
                         return is_peano(&items[1]);
                     }
                 }
@@ -155,10 +155,10 @@ fn is_peano(value: &MettaValue) -> bool {
 /// - etc.
 fn count_peano_depth(value: &MettaValue) -> usize {
     match value.inner() {
-        MettaValueInner::Atom(a) if a == "Z" => 0,
+        MettaValueInner::Atom(a) if *a == "Z" => 0,
         MettaValueInner::SExpr(items) if items.len() == 2 => {
             if let MettaValueInner::Atom(op) = items[0].inner() {
-                if op == "S" {
+                if *op == "S" {
                     return 1 + count_peano_depth(&items[1]);
                 }
             }

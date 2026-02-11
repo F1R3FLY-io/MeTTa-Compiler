@@ -167,14 +167,11 @@ pub use bindings::{
 // Core helpers (NaN-boxing and conversion)
 pub use helpers::{
     box_long, extract_long_signed, make_jit_error, make_jit_error_with_details, metta_to_jit,
-    metta_to_jit_tracked,
     // Generic conversion (zero-conversion support)
-    get_value_mode, is_arena_mode, jit_to_value_generic, value_to_jit_generic,
-    value_to_jit_tracked_generic,
+    jit_to_value_generic, value_to_jit_generic,
 };
 
 // Pattern matching
-pub(crate) use pattern_matching::pattern_matches_impl;
 pub use pattern_matching::{
     jit_runtime_match_arity, jit_runtime_match_head, jit_runtime_pattern_match,
     jit_runtime_pattern_match_bind, jit_runtime_unify, jit_runtime_unify_bind,
@@ -188,7 +185,6 @@ pub use space_ops::{
 };
 
 // Rule dispatch
-pub(crate) use rule_dispatch::{collect_bindings_from_ctx, hash_string};
 pub use rule_dispatch::{
     jit_runtime_apply_subst, jit_runtime_commit_rule, jit_runtime_define_rule,
     jit_runtime_dispatch_rules, jit_runtime_fail_rule, jit_runtime_lookup_rules,
@@ -244,10 +240,9 @@ pub use higher_order::{
     jit_runtime_repr,
 };
 
-// State and heap operations
+// State operations
 pub use state_ops::{
-    jit_runtime_change_state, jit_runtime_cleanup_heap, jit_runtime_get_state,
-    jit_runtime_heap_count, jit_runtime_new_state, jit_runtime_track_heap,
+    jit_runtime_change_state, jit_runtime_get_state, jit_runtime_new_state,
 };
 
 // =============================================================================

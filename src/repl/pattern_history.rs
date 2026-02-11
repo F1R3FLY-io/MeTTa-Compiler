@@ -140,7 +140,7 @@ impl PatternHistory {
     /// Check if a MettaValue contains a specific atom
     fn value_contains_atom(value: &MettaValue, atom: &str) -> bool {
         match value.inner() {
-            MettaValueInner::Atom(s) => s == atom,
+            MettaValueInner::Atom(s) => *s == atom,
             MettaValueInner::SExpr(items) => {
                 items.iter().any(|v| Self::value_contains_atom(v, atom))
             }

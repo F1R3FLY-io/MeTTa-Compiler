@@ -7,9 +7,9 @@
 //! - Dispatcher loop for nondeterministic execution
 
 use crate::backend::bytecode::jit::types::{
-    JitAlternative, JitAlternativeTag, JitBailoutReason, JitChoicePoint, JitContext, JitValue,
+    JitAlternative, JitAlternativeTag, JitBailoutReason, JitContext, JitValue,
     JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, MAX_ALTERNATIVES_INLINE,
-    MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, TAG_HEAP, TAG_UNIT,
+    MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, TAG_PTR, TAG_UNIT,
 };
 use crate::backend::models::{MettaValue, MettaValueInner};
 
@@ -238,13 +238,12 @@ pub unsafe extern "C" fn jit_runtime_fork(
     }
 
     let first_value = &*ctx_ref.constants.add(first_index);
-    // Convert to JitValue, heap-allocating if necessary
+    // Convert to JitValue, using inner pointer for non-NaN-boxable values
     let first_jit = match JitValue::try_from_metta(first_value) {
         Some(jv) => jv,
         None => {
-            // Can't NaN-box - allocate on heap
-            let boxed = Box::new(first_value.clone());
-            JitValue::from_heap_ptr(Box::into_raw(boxed))
+            // Can't NaN-box - use inner pointer (GC-managed)
+            JitValue::from_inner_ptr(first_value.inner_ptr())
         }
     };
 
@@ -348,18 +347,16 @@ pub unsafe extern "C" fn jit_runtime_collect(
         // Clear results
         ctx_ref.results_count = 0;
 
-        // Return as heap-allocated SExpr
-        let expr = MettaValue::sexpr(items);
-        let boxed = Box::new(expr);
-        let ptr = Box::into_raw(boxed);
-        return TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK);
+        // Return as SExpr via inner pointer (GC-managed)
+        let expr = MettaValue::SExpr(items);
+        let ptr = expr.inner_ptr();
+        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
     }
 
     // No results - return empty SExpr
-    let empty = MettaValue::sexpr(Vec::new());
-    let boxed = Box::new(empty);
-    let ptr = Box::into_raw(boxed);
-    TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+    let empty = MettaValue::SExpr(Vec::new());
+    let ptr = empty.inner_ptr();
+    TAG_PTR | ((ptr as u64) & PAYLOAD_MASK)
 }
 
 // =============================================================================
@@ -488,8 +485,8 @@ pub unsafe extern "C" fn jit_runtime_fork_native(
     let first_jit = match JitValue::try_from_metta(first_value) {
         Some(jv) => jv,
         None => {
-            let boxed = Box::new(first_value.clone());
-            JitValue::from_heap_ptr(Box::into_raw(boxed))
+            // Can't NaN-box - use inner pointer (GC-managed)
+            JitValue::from_inner_ptr(first_value.inner_ptr())
         }
     };
 
@@ -539,8 +536,8 @@ pub unsafe extern "C" fn jit_runtime_fork_native(
                 let jv = match JitValue::try_from_metta(val) {
                     Some(j) => j,
                     None => {
-                        let boxed = Box::new(val.clone());
-                        JitValue::from_heap_ptr(Box::into_raw(boxed))
+                        // Can't NaN-box - use inner pointer (GC-managed)
+                        JitValue::from_inner_ptr(val.inner_ptr())
                     }
                 };
                 cp.alternatives_inline[i] = JitAlternative::value(jv);
@@ -745,18 +742,16 @@ pub unsafe extern "C" fn jit_runtime_collect_native(ctx: *mut JitContext) -> u64
         ctx_ref.in_nondet_mode = false;
         ctx_ref.fork_depth = 0;
 
-        // Return as heap-allocated SExpr
-        let expr = MettaValue::sexpr(items);
-        let boxed = Box::new(expr);
-        let ptr = Box::into_raw(boxed);
-        return TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK);
+        // Return as SExpr via inner pointer (GC-managed)
+        let expr = MettaValue::SExpr(items);
+        let ptr = expr.inner_ptr();
+        return TAG_PTR | ((ptr as u64) & PAYLOAD_MASK);
     }
 
     // No results - return empty SExpr
-    let empty = MettaValue::sexpr(Vec::new());
-    let boxed = Box::new(empty);
-    let ptr = Box::into_raw(boxed);
-    TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+    let empty = MettaValue::SExpr(Vec::new());
+    let ptr = empty.inner_ptr();
+    TAG_PTR | ((ptr as u64) & PAYLOAD_MASK)
 }
 
 /// Stage 2: Check if there are more alternatives to try

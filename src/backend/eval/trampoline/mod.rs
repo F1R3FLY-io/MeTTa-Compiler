@@ -7,8 +7,8 @@
 //! ## Generic Evaluation
 //!
 //! The evaluation engine is generic over the allocation strategy via the `EvalContext`
-//! trait. The production implementation uses `StaticArenaContext` with arena-allocated
-//! `ArenaValue<'static>` values.
+//! trait. The production implementation uses `StaticEvalContext` with arena-allocated
+//! `MettaValue` values.
 //!
 //! ## Unified Generic Engine
 //!
@@ -18,15 +18,15 @@
 //!
 //! ## Entry Points
 //!
-//! - `eval_trampoline_arena`: Arena-based evaluation (ArenaValue<'static> → ArenaValue<'static>)
+//! - `eval_trampoline`: Arena-based evaluation (MettaValue → MettaValue)
 //! - `eval_trampoline_generic`: Generic evaluation for any `EvalContext`
 //!
 //! ## Zero-Conversion Architecture
 //!
-//! The entire evaluation pipeline uses ArenaValue<'static>:
+//! The entire evaluation pipeline uses MettaValue:
 //!
 //! ```text
-//! compile_arena() → ArenaValue<'static> → eval_trampoline_arena() → ArenaValue<'static>
+//! compile() → MettaValue → eval_trampoline() → MettaValue
 //! ```
 //!
 //! No conversions between value types are performed.
@@ -40,14 +40,14 @@ pub mod session_context;
 
 // Primary entry points
 pub use arena_engine::{
-    eval_trampoline_arena, get_static_arena, get_static_factory,
-    is_arena_mode_available, new_arena_env, ArenaEvalResult,
+    eval_trampoline, get_static_factory,
+    is_arena_mode_available, new_env, EvalResult,
 };
 
 // Re-export evaluation context types
 #[allow(unused_imports)]
 pub use context::{
-    ArenaEnvironment, ContextEnv, EvalContext, StaticArenaContext,
+    MettaEnvironment, ContextEnv, EvalContext, StaticEvalContext,
 };
 
 // Re-export generic types for the unified engine

@@ -726,7 +726,7 @@ fn test_edge_cases() {
                 MettaValueInner::Error(_, _) => true,
                 MettaValueInner::SExpr(items) => {
                     items.first().is_some_and(|first| {
-                        matches!(first.inner(), MettaValueInner::Atom(s) | MettaValueInner::String(s) if s == "error")
+                        matches!(first.inner(), MettaValueInner::Atom(s) | MettaValueInner::String(s) if *s == "error")
                     })
                 }
                 _ => false
@@ -1070,11 +1070,11 @@ fn test_example_robot_planning() {
                 )
             })
             && pm.output.iter().any(|v| match v.inner() {
-                MettaValueInner::String(s) | MettaValueInner::Atom(s) => s == "room_b",
+                MettaValueInner::String(s) | MettaValueInner::Atom(s) => *s == "room_b",
                 _ => false,
             })
             && pm.output.iter().any(|v| match v.inner() {
-                MettaValueInner::String(s) | MettaValueInner::Atom(s) => s == "room_e",
+                MettaValueInner::String(s) | MettaValueInner::Atom(s) => *s == "room_e",
                 _ => false,
             })
     });
@@ -1108,10 +1108,10 @@ fn test_example_robot_planning() {
         pm.output.iter().any(|v| {
             if let MettaValueInner::SExpr(exprs) = v.inner() {
                 exprs.len() == 4
-                    && matches!(exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "path")
-                    && matches!(exprs[1].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "room_c")
-                    && matches!(exprs[2].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "room_b")
-                    && matches!(exprs[3].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "room_a")
+                    && matches!(exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "path")
+                    && matches!(exprs[1].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "room_c")
+                    && matches!(exprs[2].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "room_b")
+                    && matches!(exprs[3].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "room_a")
             } else {
                 false
             }
@@ -1153,27 +1153,27 @@ fn test_example_robot_planning() {
         pm.output.iter().any(|v| {
             if let MettaValueInner::SExpr(plan_exprs) = v.inner() {
                 plan_exprs.len() == 4
-                    && matches!(plan_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "plan")
+                    && matches!(plan_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "plan")
                     && matches!(plan_exprs[1].inner(), MettaValueInner::SExpr(obj_exprs) if
                         obj_exprs.len() >= 2 &&
-                        matches!(obj_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "objective") &&
+                        matches!(obj_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "objective") &&
                         matches!(obj_exprs[1].inner(), MettaValueInner::SExpr(trans_exprs) if
                             trans_exprs.len() >= 6 &&
-                            matches!(trans_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "transport") &&
-                            matches!(trans_exprs[1].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "ball1")
+                            matches!(trans_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "transport") &&
+                            matches!(trans_exprs[1].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "ball1")
                         )
                     )
                     && matches!(plan_exprs[2].inner(), MettaValueInner::SExpr(route_exprs) if
                         route_exprs.len() >= 2 &&
-                        matches!(route_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "route") &&
+                        matches!(route_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "route") &&
                         matches!(route_exprs[1].inner(), MettaValueInner::SExpr(waypoint_exprs) if
                             !waypoint_exprs.is_empty() &&
-                            matches!(waypoint_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "waypoints")
+                            matches!(waypoint_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "waypoints")
                         )
                     )
                     && matches!(plan_exprs[3].inner(), MettaValueInner::SExpr(step_exprs) if
                         step_exprs.len() >= 2 &&
-                        matches!(step_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "steps")
+                        matches!(step_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "steps")
                     )
             } else {
                 false
@@ -1195,12 +1195,12 @@ fn test_example_robot_planning() {
         pm.output.iter().any(|v| {
             if let MettaValueInner::SExpr(val_exprs) = v.inner() {
                 val_exprs.len() == 3
-                    && matches!(val_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "validated")
+                    && matches!(val_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "validated")
                     && matches!(val_exprs[1].inner(), MettaValueInner::SExpr(plan_exprs) if
                         !plan_exprs.is_empty() &&
-                        matches!(plan_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "plan")
+                        matches!(plan_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "plan")
                     )
-                    && matches!(val_exprs[2].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "multihop_required")
+                    && matches!(val_exprs[2].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "multihop_required")
             } else {
                 false
             }
@@ -1277,25 +1277,25 @@ fn test_example_robot_planning() {
         pm.output.iter().any(|v| {
             if let MettaValueInner::SExpr(plan_exprs) = v.inner() {
                 plan_exprs.len() == 4
-                    && matches!(plan_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "plan")
+                    && matches!(plan_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "plan")
                     && matches!(plan_exprs[1].inner(), MettaValueInner::SExpr(obj_exprs) if
                         obj_exprs.len() >= 2 &&
-                        matches!(obj_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "objective") &&
+                        matches!(obj_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "objective") &&
                         matches!(obj_exprs[1].inner(), MettaValueInner::SExpr(trans_exprs) if
                             trans_exprs.len() >= 6 &&
-                            matches!(trans_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "transport") &&
-                            matches!(trans_exprs[1].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "box2") &&
-                            matches!(trans_exprs[3].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "room_b") &&
-                            matches!(trans_exprs[5].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "room_d")
+                            matches!(trans_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "transport") &&
+                            matches!(trans_exprs[1].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "box2") &&
+                            matches!(trans_exprs[3].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "room_b") &&
+                            matches!(trans_exprs[5].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "room_d")
                         )
                     )
                     && matches!(plan_exprs[2].inner(), MettaValueInner::SExpr(route_exprs) if
                         route_exprs.len() >= 2 &&
-                        matches!(route_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "route")
+                        matches!(route_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "route")
                     )
                     && matches!(plan_exprs[3].inner(), MettaValueInner::SExpr(step_exprs) if
                         step_exprs.len() >= 2 &&
-                        matches!(step_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if s == "steps")
+                        matches!(step_exprs[0].inner(), MettaValueInner::String(s) | MettaValueInner::Atom(s) if *s == "steps")
                     )
             } else {
                 false

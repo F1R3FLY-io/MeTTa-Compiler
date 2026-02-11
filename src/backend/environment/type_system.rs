@@ -13,7 +13,7 @@ use tracing::trace;
 
 use super::generic::GenericEnvironment;
 use super::multiplicity::Multiplicity;
-use super::{HeapEnvironment, MettaValue};
+use super::{MettaEnvironment, MettaValue};
 use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 // ============================================================================
@@ -53,7 +53,7 @@ where
 // MettaValue-specific Type Operations (with MORK persistence)
 // ============================================================================
 
-impl HeapEnvironment {
+impl MettaEnvironment {
     /// Add a type assertion
     /// Type assertions are stored as (: name type) in MORK Space
     /// Invalidates the type index cache
@@ -216,7 +216,7 @@ impl HeapEnvironment {
                         if let (MettaValueInner::Atom(op), MettaValueInner::Atom(atom_name)) =
                             (items[0].inner(), items[1].inner())
                         {
-                            if op == ":" && atom_name == name {
+                            if *op == ":" && *atom_name == name {
                                 return Some(items[2].clone());
                             }
                         }

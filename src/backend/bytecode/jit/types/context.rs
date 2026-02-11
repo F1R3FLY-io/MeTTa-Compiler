@@ -7,7 +7,7 @@ use std::fmt;
 
 use super::binding::JitBindingFrame;
 use super::constants::{
-    JitValueMode, MAX_STACK_SAVE_VALUES, STACK_SAVE_POOL_SIZE, STATE_CACHE_MASK, STATE_CACHE_SIZE,
+    MAX_STACK_SAVE_VALUES, STACK_SAVE_POOL_SIZE, STATE_CACHE_MASK, STATE_CACHE_SIZE,
     VAR_INDEX_CACHE_SIZE,
 };
 use super::nondet::{JitBailoutReason, JitChoicePoint};
@@ -171,14 +171,6 @@ pub struct JitContext {
     pub cut_marker_cap: usize,
 
     // -------------------------------------------------------------------------
-    // Heap allocation tracking (for cleanup)
-    // -------------------------------------------------------------------------
-    /// Pointer to Vec of heap allocations to be freed on cleanup.
-    /// These are raw pointers to Box<MettaValue> that were allocated during JIT execution.
-    /// Set to null if heap tracking is disabled.
-    pub heap_tracker: *mut Vec<*mut MettaValue>,
-
-    // -------------------------------------------------------------------------
     // State operations support (Phase D.1)
     // -------------------------------------------------------------------------
     /// Pointer to Environment for state operations (new-state, get-state, change-state!)
@@ -227,13 +219,8 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     // Zero-Conversion Arena Mode Support (Phase 6)
     // -------------------------------------------------------------------------
-    /// Value mode indicator - determines how heap pointers are interpreted.
-    /// - Heap: TAG_HEAP points to `*const MettaValue`
-    /// - Arena: TAG_HEAP points to `*const ArenaValueInner`
-    pub value_mode: JitValueMode,
-
     /// Pointer to arena constant pool (for arena mode).
-    /// When `value_mode == Arena`, this points to `&[ArenaValue<'static>]`.
+    /// When `value_mode == Arena`, this points to `&[MettaValue]`.
     /// In heap mode, this is null (use `constants` instead).
     pub arena_constants: *const (),
 
@@ -308,8 +295,6 @@ impl JitContext {
             cut_markers: std::ptr::null_mut(),
             cut_marker_count: 0,
             cut_marker_cap: 0,
-            // Heap tracking disabled by default
-            heap_tracker: std::ptr::null_mut(),
             // State operations support (Phase D.1)
             env_ptr: std::ptr::null_mut(),
             // State cache (Optimization 5.1)
@@ -322,8 +307,7 @@ impl JitContext {
             // Variable index cache (Optimization 5.3)
             // u32::MAX indicates empty slot
             var_index_cache: [(0, u32::MAX); VAR_INDEX_CACHE_SIZE],
-            // Arena mode fields (default: heap mode)
-            value_mode: JitValueMode::Heap,
+            // Arena mode fields
             arena_constants: std::ptr::null(),
             arena_constants_len: 0,
             arena: std::ptr::null(),
@@ -393,8 +377,6 @@ impl JitContext {
             cut_markers: std::ptr::null_mut(),
             cut_marker_count: 0,
             cut_marker_cap: 0,
-            // Heap tracking disabled by default
-            heap_tracker: std::ptr::null_mut(),
             // State operations support (Phase D.1)
             env_ptr: std::ptr::null_mut(),
             // State cache (Optimization 5.1)
@@ -407,8 +389,7 @@ impl JitContext {
             // Variable index cache (Optimization 5.3)
             // u32::MAX indicates empty slot
             var_index_cache: [(0, u32::MAX); VAR_INDEX_CACHE_SIZE],
-            // Arena mode fields (default: heap mode)
-            value_mode: JitValueMode::Heap,
+            // Arena mode fields
             arena_constants: std::ptr::null(),
             arena_constants_len: 0,
             arena: std::ptr::null(),
@@ -741,71 +722,6 @@ impl JitContext {
     }
 
     // -------------------------------------------------------------------------
-    // Heap Tracking Methods
-    // -------------------------------------------------------------------------
-
-    /// Enable heap tracking for this context.
-    ///
-    /// When enabled, heap allocations made during JIT execution will be tracked
-    /// and can be freed by calling `cleanup_heap_allocations`.
-    ///
-    /// # Safety
-    /// The tracker pointer must point to a valid, owned Vec that will outlive
-    /// the JIT execution.
-    #[inline]
-    pub unsafe fn enable_heap_tracking(&mut self, tracker: *mut Vec<*mut MettaValue>) {
-        self.heap_tracker = tracker;
-    }
-
-    /// Check if heap tracking is enabled
-    #[inline]
-    pub fn has_heap_tracking(&self) -> bool {
-        !self.heap_tracker.is_null()
-    }
-
-    /// Track a heap allocation for later cleanup.
-    ///
-    /// # Safety
-    /// - The pointer must be from a valid Box<MettaValue> allocation
-    /// - Heap tracking must be enabled via `enable_heap_tracking`
-    #[inline]
-    pub unsafe fn track_heap_allocation(&mut self, ptr: *mut MettaValue) {
-        if !self.heap_tracker.is_null() {
-            (*self.heap_tracker).push(ptr);
-        }
-    }
-
-    /// Free all tracked heap allocations.
-    ///
-    /// This should be called when JIT execution is complete to prevent memory leaks.
-    ///
-    /// # Safety
-    /// - All tracked pointers must still be valid
-    /// - This method should only be called once per execution
-    #[inline]
-    pub unsafe fn cleanup_heap_allocations(&mut self) {
-        if !self.heap_tracker.is_null() {
-            let tracker = &mut *self.heap_tracker;
-            for ptr in tracker.drain(..) {
-                if !ptr.is_null() {
-                    // Reconstruct the Box and drop it
-                    let _ = Box::from_raw(ptr);
-                }
-            }
-        }
-    }
-
-    /// Get the number of tracked heap allocations
-    #[inline]
-    pub unsafe fn heap_allocation_count(&self) -> usize {
-        if self.heap_tracker.is_null() {
-            0
-        } else {
-            (*self.heap_tracker).len()
-        }
-    }
-
-    // -------------------------------------------------------------------------
     // State Operations Support (Phase D.1)
     // -------------------------------------------------------------------------
 
@@ -833,11 +749,11 @@ impl JitContext {
 
     /// Create a JitContext configured for arena mode.
     ///
-    /// In arena mode, TAG_HEAP pointers point to `ArenaValueInner` instead of
+    /// In arena mode, TAG_PTR pointers point to `MettaValueInner` instead of
     /// `MettaValue`. The arena allocator is used for creating new values.
     ///
     /// # Safety
-    /// - `arena_constants` must point to a valid `&[ArenaValue<'static>]`
+    /// - `arena_constants` must point to a valid `&[MettaValue]`
     /// - `arena` must point to a valid `&'static Bump` allocator
     /// - All pointers must remain valid for the lifetime of JIT execution
     pub unsafe fn for_arena(
@@ -853,7 +769,6 @@ impl JitContext {
             std::ptr::null(), // No heap constants
             0,
         );
-        ctx.value_mode = JitValueMode::Arena;
         ctx.arena_constants = arena_constants;
         ctx.arena_constants_len = arena_constants_len;
         ctx.arena = arena;
@@ -887,47 +802,22 @@ impl JitContext {
             results,
             results_cap,
         );
-        ctx.value_mode = JitValueMode::Arena;
         ctx.arena_constants = arena_constants;
         ctx.arena_constants_len = arena_constants_len;
         ctx.arena = arena;
         ctx
     }
 
-    /// Check if running in arena mode
-    #[inline]
-    pub fn is_arena_mode(&self) -> bool {
-        self.value_mode == JitValueMode::Arena
-    }
-
-    /// Check if running in heap mode
-    #[inline]
-    pub fn is_heap_mode(&self) -> bool {
-        self.value_mode == JitValueMode::Heap
-    }
-
-    /// Get the value mode
-    #[inline]
-    pub fn value_mode(&self) -> JitValueMode {
-        self.value_mode
-    }
-
     /// Get arena allocator pointer (for arena mode value creation).
-    ///
-    /// Returns null if not in arena mode.
     #[inline]
     pub fn arena_ptr(&self) -> *const () {
-        if self.is_arena_mode() {
-            self.arena
-        } else {
-            std::ptr::null()
-        }
+        self.arena
     }
 
     /// Check if arena allocator is available
     #[inline]
     pub fn has_arena(&self) -> bool {
-        self.is_arena_mode() && !self.arena.is_null()
+        !self.arena.is_null()
     }
 }
 
@@ -950,7 +840,6 @@ impl fmt::Debug for JitContext {
             .field("binding_frames_cap", &self.binding_frames_cap)
             .field("grounded_spaces_count", &self.grounded_spaces_count)
             .field("template_results_cap", &self.template_results_cap)
-            .field("value_mode", &self.value_mode)
             .field("arena_constants_len", &self.arena_constants_len)
             .finish()
     }

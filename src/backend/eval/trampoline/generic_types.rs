@@ -14,13 +14,13 @@
 //!
 //! ## Type Parameters
 //!
-//! - `V: MettaValueTrait` - The value type (MettaValue or ArenaValue)
+//! - `V: MettaValueTrait` - The value type (MettaValue or MettaValue)
 //! - `E: Clone` - The environment type (Environment or GenericEnvironment<V>)
 
 use std::collections::VecDeque;
 use std::fmt::Debug;
 
-use crate::backend::environment::HeapEnvironment;
+use crate::backend::environment::MettaEnvironment;
 use crate::backend::grounded::GenericGroundedState;
 use crate::backend::models::{GenericBindings, MemoHandle, MettaValue, MettaValueTrait, SpaceHandle};
 
@@ -35,7 +35,7 @@ pub const MAX_EVAL_DEPTH: usize = 1000;
 ///
 /// Parameterized over value type V and environment type E.
 /// Default E = Environment for backward compatibility.
-pub type GenericEvalResult<V, E = HeapEnvironment> = (Vec<V>, E);
+pub type GenericEvalResult<V, E = MettaEnvironment> = (Vec<V>, E);
 
 /// Generic work item representing pending evaluation work.
 ///
@@ -44,10 +44,10 @@ pub type GenericEvalResult<V, E = HeapEnvironment> = (Vec<V>, E);
 ///
 /// # Type Parameters
 ///
-/// - `V: MettaValueTrait` - The value type (MettaValue or ArenaValue)
+/// - `V: MettaValueTrait` - The value type (MettaValue or MettaValue)
 /// - `E: Clone` - The environment type (defaults to Environment for backward compatibility)
 #[derive(Debug)]
-pub enum GenericWorkItem<V: MettaValueTrait, E: Clone = HeapEnvironment> {
+pub enum GenericWorkItem<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Evaluate a value and send result to continuation
     Eval {
         value: V,
@@ -71,7 +71,7 @@ pub enum GenericWorkItem<V: MettaValueTrait, E: Clone = HeapEnvironment> {
 ///
 /// # Type Parameters
 ///
-/// - `V: MettaValueTrait` - The value type (MettaValue or ArenaValue)
+/// - `V: MettaValueTrait` - The value type (MettaValue or MettaValue)
 /// - `E: Clone` - The environment type (defaults to Environment for backward compatibility)
 ///
 /// # Note on env/depth fields
@@ -82,7 +82,7 @@ pub enum GenericWorkItem<V: MettaValueTrait, E: Clone = HeapEnvironment> {
 /// the original environment for debugging/reference.
 #[derive(Debug)]
 #[allow(dead_code)]
-pub enum GenericContinuation<V: MettaValueTrait, E: Clone = HeapEnvironment> {
+pub enum GenericContinuation<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Final result - return from eval()
     Done,
 
@@ -579,15 +579,15 @@ pub enum GenericContinuation<V: MettaValueTrait, E: Clone = HeapEnvironment> {
 
 /// WorkItem specialized for heap-allocated MettaValue with standard Environment
 #[allow(dead_code)]
-pub type HeapWorkItem = GenericWorkItem<MettaValue, HeapEnvironment>;
+pub type WorkItem = GenericWorkItem<MettaValue, MettaEnvironment>;
 
 /// Continuation specialized for heap-allocated MettaValue with standard Environment
 #[allow(dead_code)]
-pub type HeapContinuation = GenericContinuation<MettaValue, HeapEnvironment>;
+pub type Continuation = GenericContinuation<MettaValue, MettaEnvironment>;
 
 /// EvalResult specialized for heap-allocated MettaValue with standard Environment
 #[allow(dead_code)]
-pub type HeapEvalResult = GenericEvalResult<MettaValue, HeapEnvironment>;
+pub type EvalResult = GenericEvalResult<MettaValue, MettaEnvironment>;
 
 #[cfg(test)]
 mod tests {
@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn test_heap_work_item_size() {
         // WorkItem should be reasonably sized
-        let size = std::mem::size_of::<HeapWorkItem>();
+        let size = std::mem::size_of::<WorkItem>();
         // The size depends on the largest variant
         assert!(size < 256, "WorkItem is unexpectedly large: {} bytes", size);
     }
@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn test_heap_continuation_size() {
         // Continuation is larger due to many variants
-        let size = std::mem::size_of::<HeapContinuation>();
+        let size = std::mem::size_of::<Continuation>();
         // Just verify it compiles and has a reasonable size
         assert!(size < 512, "Continuation is unexpectedly large: {} bytes", size);
     }

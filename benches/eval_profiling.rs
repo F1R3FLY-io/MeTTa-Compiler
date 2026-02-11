@@ -14,9 +14,9 @@
 //!   perf report
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use mettatron::backend::compile::compile_arena;
-use mettatron::backend::eval::eval_arena;
-use mettatron::backend::eval::trampoline::new_arena_env;
+use mettatron::backend::compile::compile;
+use mettatron::backend::eval::eval;
+use mettatron::backend::eval::trampoline::new_env;
 use std::time::Duration;
 
 // Include stress test program sources
@@ -28,12 +28,12 @@ const GROUNDED_TCO_STRESS: &str = include_str!("metta_samples/grounded_tco_stres
 
 /// Run a complete MeTTa program and return the number of evaluations
 fn run_program(src: &str) -> usize {
-    let state = compile_arena(src).expect("Failed to compile");
-    let mut env = new_arena_env();
+    let state = compile(src).expect("Failed to compile");
+    let mut env = new_env();
     let mut eval_count = 0;
 
     for &expr in state.source() {
-        let (_, new_env) = eval_arena(black_box(expr), env, &state);
+        let (_, new_env) = eval(black_box(expr), env, &state);
         env = new_env;
         eval_count += 1;
     }
@@ -176,13 +176,13 @@ fn bench_trampoline_workstack(c: &mut Criterion) {
     // Wide arithmetic expressions (many siblings)
     for width in [5, 10, 20, 50, 100].iter() {
         let text = generate_wide_arithmetic_text(*width);
-        let state = compile_arena(&text).expect("Failed to compile");
+        let state = compile(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*width as u64));
         group.bench_with_input(BenchmarkId::new("wide_arithmetic", width), width, |b, _| {
-            let env = new_arena_env();
+            let env = new_env();
             b.iter(|| {
-                eval_arena(black_box(state.source()[0]), env.clone(), &state)
+                eval(black_box(state.source()[0]), env.clone(), &state)
             });
         });
     }
@@ -190,13 +190,13 @@ fn bench_trampoline_workstack(c: &mut Criterion) {
     // Deep nested arithmetic (binary tree shape)
     for depth in [5, 10, 15, 20, 25].iter() {
         let text = generate_deep_arithmetic_text(*depth);
-        let state = compile_arena(&text).expect("Failed to compile");
+        let state = compile(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*depth as u64));
         group.bench_with_input(BenchmarkId::new("deep_arithmetic", depth), depth, |b, _| {
-            let env = new_arena_env();
+            let env = new_env();
             b.iter(|| {
-                eval_arena(black_box(state.source()[0]), env.clone(), &state)
+                eval(black_box(state.source()[0]), env.clone(), &state)
             });
         });
     }
@@ -270,15 +270,15 @@ fn bench_grounded_tco(c: &mut Criterion) {
         for i in 2..=*chain_len {
             text = format!("(+ {} {})", text, i);
         }
-        let state = compile_arena(&text).expect("Failed to compile");
+        let state = compile(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*chain_len as u64));
         group.bench_with_input(
             BenchmarkId::new("add_chain", chain_len),
             chain_len,
             |b, _| {
-                let env = new_arena_env();
-                b.iter(|| eval_arena(black_box(state.source()[0]), env.clone(), &state));
+                let env = new_env();
+                b.iter(|| eval(black_box(state.source()[0]), env.clone(), &state));
             },
         );
     }
@@ -291,15 +291,15 @@ fn bench_grounded_tco(c: &mut Criterion) {
         for i in (1..n).rev() {
             text = format!("(and (< {} {}) {})", i, i + 1, text);
         }
-        let state = compile_arena(&text).expect("Failed to compile");
+        let state = compile(&text).expect("Failed to compile");
 
         group.throughput(Throughput::Elements(*chain_len as u64));
         group.bench_with_input(
             BenchmarkId::new("comparison_chain", chain_len),
             chain_len,
             |b, _| {
-                let env = new_arena_env();
-                b.iter(|| eval_arena(black_box(state.source()[0]), env.clone(), &state));
+                let env = new_env();
+                b.iter(|| eval(black_box(state.source()[0]), env.clone(), &state));
             },
         );
     }

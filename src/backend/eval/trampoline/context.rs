@@ -1,8 +1,8 @@
 //! Evaluation Context for Generic Trampoline Engine
 //!
 //! This module provides the `EvalContext` trait that bundles a value type with its
-//! factory, enabling generic evaluation code to work with both heap and arena
-//! allocation strategies.
+//! factory, enabling generic evaluation code to work with different allocation
+//! strategies.
 //!
 //! ## Design
 //!
@@ -14,53 +14,30 @@
 //! The environment type is derived from Value + Factory:
 //! `GenericEnvironment<Self::Value, Self::Factory>`
 //!
-//! ## Usage
-//!
-//! ```ignore
-//! fn eval_generic<C: EvalContext>(
-//!     value: C::Value,
-//!     env: GenericEnvironment<C::Value, C::Factory>,
-//!     ctx: &C,
-//! ) -> (C::Value, GenericEnvironment<C::Value, C::Factory>) {
-//!     // Use trait methods for type checking
-//!     if value.is_error() {
-//!         return (value, env);
-//!     }
-//!
-//!     // Use factory for construction
-//!     (ctx.factory().atom("result"), env)
-//! }
-//! ```
-//!
 //! ## Context Implementation
 //!
-//! `StaticArenaContext` is the production arena context using thread-local `'static`
-//! arenas for zero-conversion evaluation.
+//! `StaticEvalContext` is the production context using the global slab allocator
+//! via `GcFactory` for zero-conversion evaluation.
 
-use bumpalo::Bump;
+use std::cell::RefCell;
 
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{
-    ArenaValue, ArenaValueFactory, MettaValueFactory,
-    MettaValueTrait,
+    MettaValue, GcFactory, MettaValueFactory,
+    MettaValueTrait, global_factory,
 };
 
 /// Evaluation context that bundles a value type with its factory.
 ///
 /// This trait enables writing generic evaluation code that works with
-/// both heap and arena allocation strategies. The context provides:
+/// different allocation strategies. The context provides:
 ///
-/// - `Value`: The concrete value type (e.g., ArenaValue)
+/// - `Value`: The concrete value type (e.g., MettaValue)
 /// - `Factory`: The factory type for constructing values
 /// - `factory()`: Access to the factory instance
 ///
 /// The environment type is always `GenericEnvironment<Self::Value, Self::Factory>`,
 /// which provides type-safe rule and binding storage.
-///
-/// # Type Parameters
-///
-/// Implementations specify the value type and factory type, ensuring
-/// consistency between how values are created and stored.
 pub trait EvalContext {
     /// The value type used during evaluation
     type Value: MettaValueTrait + Clone + Send + Sync + Unpin + 'static;
@@ -70,6 +47,16 @@ pub trait EvalContext {
 
     /// Get a reference to the factory for constructing values
     fn factory(&self) -> &Self::Factory;
+
+    /// Hint to the context that it may trigger GC if memory pressure is high.
+    ///
+    /// Called periodically from the trampoline loop (every 256 iterations).
+    /// Default implementation is a no-op. Override in contexts that own or
+    /// coordinate GC (e.g., `SessionContext` with `MettaState`).
+    #[inline]
+    fn maybe_gc(&self) {
+        // no-op by default
+    }
 }
 
 /// Type alias for the environment associated with an EvalContext.
@@ -77,85 +64,55 @@ pub trait EvalContext {
 pub type ContextEnv<C> = GenericEnvironment<<C as EvalContext>::Value, <C as EvalContext>::Factory>;
 
 // ============================================================================
-// Static Arena Context - Zero-Conversion Arena Evaluation
+// Static Arena Context - Global Slab Allocator Evaluation
 // ============================================================================
 
-/// Static arena-based evaluation context.
+/// Static arena-based evaluation context using the global `GcFactory`.
 ///
-/// This context uses `Box::leak` to create a `'static` arena, enabling
-/// `ArenaValue<'static>` which satisfies the `'static` bound required by
-/// `GenericEnvironment` and `EvalContext`.
+/// This context uses the process-wide `SlabAllocator` via `GcFactory` for
+/// all value allocation. `MettaValue` satisfies the `'static` bound
+/// required by `GenericEnvironment` and `EvalContext`.
 ///
 /// # Thread Safety
 ///
-/// The static arena is thread-local, so each thread has its own arena.
-/// This ensures memory safety and avoids contention between threads.
+/// `GcFactory` is backed by the lock-free global `SlabAllocator`, so it is
+/// safe to use from any thread without additional synchronization.
 ///
 /// # Memory Management
 ///
-/// The leaked arena persists for the lifetime of the program. This is
-/// intentional: arena evaluation is designed for batch processing where
-/// all allocations happen during evaluation and the arena is never dropped.
-/// For long-running processes, consider periodic arena resets.
-///
-/// # Example
-///
-/// ```ignore
-/// let ctx = StaticArenaContext::get();
-/// let env = StaticArenaContext::new_env();
-/// let value = ctx.factory().atom("hello");
-/// assert!(value.is_atom());
-/// // `value` is 'static and can be stored anywhere
-/// ```
+/// Values are reclaimed by the background GC thread when no longer reachable.
+/// No manual arena resets are needed.
 #[derive(Debug, Clone, Copy)]
-pub struct StaticArenaContext {
-    factory: ArenaValueFactory<'static>,
+pub struct StaticEvalContext {
+    factory: GcFactory,
 }
 
-/// Type alias for arena environment
-pub type ArenaEnvironment = GenericEnvironment<ArenaValue<'static>, ArenaValueFactory<'static>>;
-
-use std::cell::RefCell;
-
-// Thread-local static arena storage
-thread_local! {
-    static STATIC_ARENA: &'static Bump = Box::leak(Box::new(Bump::new()));
-}
+/// Type alias for arena environment using the global GcFactory.
+pub type MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>;
 
 // Thread-local persistent environment storage for arena mode.
 // This persists state (rules, facts, bindings) across sequential evaluations,
 // matching heap mode behavior where environments are threaded through.
 thread_local! {
-    static STATIC_ENV: RefCell<Option<ArenaEnvironment>> = const { RefCell::new(None) };
+    static STATIC_ENV: RefCell<Option<MettaEnvironment>> = const { RefCell::new(None) };
 }
 
-impl StaticArenaContext {
-    /// Get the thread-local static arena context.
-    ///
-    /// This creates a new `StaticArenaContext` pointing to the thread-local
-    /// static arena. The arena is created once per thread via `Box::leak`.
+impl StaticEvalContext {
+    /// Get the static arena context backed by the global slab allocator.
     #[inline]
     pub fn get() -> Self {
-        STATIC_ARENA.with(|arena| Self {
-            factory: ArenaValueFactory::new(arena),
-        })
+        Self {
+            factory: global_factory(),
+        }
     }
 
-    /// Get the underlying static arena.
-    #[inline]
-    pub fn arena(&self) -> &'static Bump {
-        self.factory.arena()
-    }
-
-    /// Create a new ArenaEnvironment for this context.
+    /// Create a new MettaEnvironment for this context.
     ///
     /// Note: This creates a fresh environment every time. For persistent state
     /// across sequential evaluations, use `get_or_create_env()` instead.
     #[inline]
-    pub fn new_env() -> ArenaEnvironment {
-        STATIC_ARENA.with(|arena| {
-            ArenaEnvironment::new(ArenaValueFactory::new(arena))
-        })
+    pub fn new_env() -> MettaEnvironment {
+        MettaEnvironment::new(global_factory())
     }
 
     /// Get or create the persistent thread-local environment.
@@ -170,7 +127,7 @@ impl StaticArenaContext {
     /// A clone of the persistent environment. The clone shares state via Arc
     /// until first mutation (CoW semantics).
     #[inline]
-    pub fn get_or_create_env() -> ArenaEnvironment {
+    pub fn get_or_create_env() -> MettaEnvironment {
         STATIC_ENV.with(|env_cell| {
             let mut env_opt = env_cell.borrow_mut();
             if env_opt.is_none() {
@@ -186,12 +143,8 @@ impl StaticArenaContext {
     /// Call this after evaluation to preserve state changes (rules, facts, bindings)
     /// for subsequent evaluations. This is essential for correct arena mode semantics
     /// where state must persist across the evaluation of multiple expressions.
-    ///
-    /// # Arguments
-    ///
-    /// * `new_env` - The environment containing accumulated state from evaluation.
     #[inline]
-    pub fn update_env(new_env: ArenaEnvironment) {
+    pub fn update_env(new_env: MettaEnvironment) {
         STATIC_ENV.with(|env_cell| {
             *env_cell.borrow_mut() = Some(new_env);
         });
@@ -202,7 +155,6 @@ impl StaticArenaContext {
     /// Clears all accumulated state (rules, facts, bindings). Use this:
     /// - Between test cases to ensure isolation
     /// - When starting a new session
-    /// - To reclaim memory from the arena
     #[inline]
     pub fn reset_env() {
         STATIC_ENV.with(|env_cell| {
@@ -210,31 +162,21 @@ impl StaticArenaContext {
         });
     }
 
-    /// Get the thread-local static arena directly.
+    /// Get a factory for creating `MettaValue`.
     ///
-    /// This is useful for external code that needs to allocate values
-    /// in the same arena used by evaluation.
+    /// Returns the global `GcFactory` backed by the slab allocator.
     #[inline]
-    pub fn get_arena() -> &'static Bump {
-        STATIC_ARENA.with(|arena| *arena)
-    }
-
-    /// Get the thread-local static factory directly.
-    ///
-    /// This is useful for external code that needs to create values
-    /// in the same arena used by evaluation.
-    #[inline]
-    pub fn get_factory() -> ArenaValueFactory<'static> {
-        STATIC_ARENA.with(|arena| ArenaValueFactory::new(arena))
+    pub fn get_factory() -> GcFactory {
+        global_factory()
     }
 }
 
-impl EvalContext for StaticArenaContext {
-    type Value = ArenaValue<'static>;
-    type Factory = ArenaValueFactory<'static>;
+impl EvalContext for StaticEvalContext {
+    type Value = MettaValue;
+    type Factory = GcFactory;
 
     #[inline]
-    fn factory(&self) -> &ArenaValueFactory<'static> {
+    fn factory(&self) -> &GcFactory {
         &self.factory
     }
 }
@@ -250,14 +192,14 @@ mod tests {
 
     #[test]
     fn test_generic_function_static_arena() {
-        let ctx = StaticArenaContext::get();
+        let ctx = StaticEvalContext::get();
         let error = generic_create_error(&ctx, "test error");
         assert!(error.is_error());
     }
 
     #[test]
     fn test_static_arena_context_factory() {
-        let ctx = StaticArenaContext::get();
+        let ctx = StaticEvalContext::get();
         let value = ctx.factory().atom("test");
         assert!(value.is_atom());
         assert_eq!(MettaValueTrait::as_atom(&value), Some("test"));
@@ -265,44 +207,44 @@ mod tests {
 
     #[test]
     fn test_static_arena_context_size() {
-        // StaticArenaContext should be pointer-sized (holds one factory which has one reference)
+        // StaticEvalContext should be pointer-sized (holds one GcFactory which has one &'static ref)
         assert_eq!(
-            std::mem::size_of::<StaticArenaContext>(),
-            std::mem::size_of::<&Bump>()
+            std::mem::size_of::<StaticEvalContext>(),
+            std::mem::size_of::<&()>()
         );
     }
 
     #[test]
     fn test_static_arena_context_env() {
-        let _env = StaticArenaContext::new_env();
+        let _env = StaticEvalContext::new_env();
     }
 
     #[test]
     fn test_static_arena_persistent_env() {
         // Reset to ensure clean state
-        StaticArenaContext::reset_env();
+        StaticEvalContext::reset_env();
 
         // First call should create new env
-        let env1 = StaticArenaContext::get_or_create_env();
+        let env1 = StaticEvalContext::get_or_create_env();
         assert!(env1.owns_data == false); // Clone doesn't own data
 
         // Second call should return clone of same env
-        let env2 = StaticArenaContext::get_or_create_env();
+        let env2 = StaticEvalContext::get_or_create_env();
         assert!(std::sync::Arc::ptr_eq(&env1.shared, &env2.shared));
 
         // Update with a modified env
         let mut modified_env = env1.clone();
-        let ctx = StaticArenaContext::get();
+        let ctx = StaticEvalContext::get();
         modified_env.bind("test_var", ctx.factory().atom("test_value"));
-        StaticArenaContext::update_env(modified_env);
+        StaticEvalContext::update_env(modified_env);
 
         // Get should now return env with the binding
-        let env3 = StaticArenaContext::get_or_create_env();
+        let env3 = StaticEvalContext::get_or_create_env();
         assert!(env3.has_binding("test_var"));
 
         // Reset should clear everything
-        StaticArenaContext::reset_env();
-        let env4 = StaticArenaContext::get_or_create_env();
+        StaticEvalContext::reset_env();
+        let env4 = StaticEvalContext::get_or_create_env();
         assert!(!env4.has_binding("test_var"));
     }
 
@@ -311,13 +253,13 @@ mod tests {
         use crate::backend::models::GenericRule;
 
         // Reset to ensure clean state
-        StaticArenaContext::reset_env();
+        StaticEvalContext::reset_env();
 
-        let ctx = StaticArenaContext::get();
+        let ctx = StaticEvalContext::get();
         let factory = ctx.factory();
 
         // Create env and add a rule
-        let mut env = StaticArenaContext::get_or_create_env();
+        let mut env = StaticEvalContext::get_or_create_env();
 
         let lhs = factory.sexpr(vec![
             factory.atom("test-fn"),
@@ -327,28 +269,28 @@ mod tests {
         let rule = GenericRule::new(lhs, rhs);
 
         env.add_generic_rule(rule);
-        StaticArenaContext::update_env(env);
+        StaticEvalContext::update_env(env);
 
         // Get env again and verify rule persists
-        let env2 = StaticArenaContext::get_or_create_env();
+        let env2 = StaticEvalContext::get_or_create_env();
         let rules: Vec<_> = env2.get_matching_rules("test-fn", 1).collect();
         assert_eq!(rules.len(), 1);
 
         // Clean up
-        StaticArenaContext::reset_env();
+        StaticEvalContext::reset_env();
     }
 
     #[test]
     fn test_static_arena_env_persists_space_facts() {
 
         // Reset to ensure clean state
-        StaticArenaContext::reset_env();
+        StaticEvalContext::reset_env();
 
-        let ctx = StaticArenaContext::get();
+        let ctx = StaticEvalContext::get();
         let factory = ctx.factory();
 
         // Create env and add a fact to space
-        let mut env = StaticArenaContext::get_or_create_env();
+        let mut env = StaticEvalContext::get_or_create_env();
 
         let fact = factory.sexpr(vec![
             factory.atom("fact"),
@@ -357,10 +299,10 @@ mod tests {
         ]);
 
         env.add_to_space(&fact);
-        StaticArenaContext::update_env(env);
+        StaticEvalContext::update_env(env);
 
         // Get env again and verify fact persists
-        let env2 = StaticArenaContext::get_or_create_env();
+        let env2 = StaticEvalContext::get_or_create_env();
         let pattern = factory.sexpr(vec![
             factory.atom("fact"),
             factory.atom("$var"),
@@ -371,6 +313,6 @@ mod tests {
         assert!(!matches.is_empty());
 
         // Clean up
-        StaticArenaContext::reset_env();
+        StaticEvalContext::reset_env();
     }
 }

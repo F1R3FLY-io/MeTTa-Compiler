@@ -21,14 +21,15 @@ use pathmap::zipper::ZipperValues;
 use tracing::trace;
 
 use super::multiplicity::get_multiplicity;
-use super::{HeapEnvironment, MettaValue};
+use super::{MettaEnvironment, MettaValue};
 use crate::backend::eval::{apply_bindings, pattern_match};
+use crate::backend::models::metta_value_trait::MettaValueTrait;
 use crate::backend::mork_convert::{metta_to_mork_bytes, mork_bindings_to_metta, ConversionContext};
 
 // Re-export the generic MultiplicityMatch specialized for MettaValue
 pub use super::generic::MultiplicityMatch;
 
-impl HeapEnvironment {
+impl MettaEnvironment {
     // Note: match_space() is now a generic method on GenericEnvironment<V, F> in generic.rs.
     // The implementation uses MORK PathMap for storage and supports any MettaValueTrait type.
 

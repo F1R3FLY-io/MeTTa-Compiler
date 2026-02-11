@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use regex::Regex;
 
-use crate::backend::models::{MettaValue, MettaValueTrait};
+use crate::backend::models::MettaValue;
 
 /// A function that constructs a value from a matched token string.
 pub type GenericTokenConstructor<V> = Arc<dyn Fn(&str) -> V + Send + Sync>;

@@ -8,7 +8,7 @@
 
 use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue, TAG_ATOM, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_UNIT, TAG_VAR,
+    JitContext, JitValue, TAG_ATOM, TAG_BOOL, TAG_PTR, TAG_LONG, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{MettaValue, MettaValueInner};
 use tracing::{debug, trace};
@@ -86,7 +86,7 @@ pub unsafe extern "C" fn jit_runtime_get_metatype(
     // Determine meta-type from tag
     let tag = jit_val.tag();
     let metatype = match tag {
-        t if t == TAG_HEAP => {
+        t if t == TAG_PTR => {
             // Could be SExpr or other heap type
             let metta = jit_val.to_metta();
             match metta.inner() {

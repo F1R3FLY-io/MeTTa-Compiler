@@ -77,7 +77,7 @@ impl Compiler {
 
         // args[1] contains ALL case branches wrapped in an SExpr
         let cases = match args[1].inner() {
-            MettaValueInner::SExpr(items) => items,
+            MettaValueInner::SExpr(items) => *items,
             _ => {
                 return Err(CompileError::InvalidExpression(
                     "case branches must be an S-expression".to_string(),

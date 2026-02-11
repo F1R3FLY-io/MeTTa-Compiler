@@ -32,7 +32,7 @@ pub mod tree_sitter_parser;
 /// # Example
 ///
 /// ```rust
-/// use mettatron::{compile_arena, eval_arena, new_arena_env};
+/// use mettatron::{compile, eval, new_env};
 ///
 /// // Define a rule and evaluate it
 /// let input = r#"
@@ -40,10 +40,10 @@ pub mod tree_sitter_parser;
 ///     !(double 21)
 /// "#;
 ///
-/// let state = compile_arena(input).unwrap();
-/// let mut env = new_arena_env();
+/// let state = compile(input).unwrap();
+/// let mut env = new_env();
 /// for &expr in state.source() {
-///     let (results, new_env) = eval_arena(expr, env, &state);
+///     let (results, new_env) = eval(expr, env, &state);
 ///     env = new_env;
 ///
 ///     for result in results {
@@ -72,23 +72,21 @@ pub use ir::{MettaExpr, Position, SExpr, Span};
 pub use tree_sitter_parser::TreeSitterMettaParser;
 
 // ============================================================================
-// Arena-Based API (Primary — O(1) Bulk Deallocation)
+// Slab-Allocated API (Primary — GC-backed allocation)
 // ============================================================================
 
 pub use backend::{
-    // Compilation (parse-only: MeTTa source → MettaValue expressions)
+    // Compilation (MeTTa source → MettaState with MettaValue expressions)
     compile, compile_with_path,
-    // Arena compilation (MeTTa source → ArenaState with ArenaValue expressions)
-    compile_arena, compile_arena_with_path,
     // Evaluation
-    eval_arena, new_arena_env,
-    // Arena types
-    ArenaState, SessionContext, ArenaEnvironment, ArenaEvalResult,
-    ArenaValue, ArenaValueInner,
-    // Arena utilities
-    clone_value, get_eval_arena, get_eval_factory, StorageFactory,
+    eval, new_env,
+    // Core types
+    SessionContext, MettaEnvironment, EvalResult,
+    MettaValue, MettaValueInner,
+    // Allocator utilities
+    global_factory, global_allocator, GcFactory,
     // Data model types (used by bytecode VM, JIT, and tiered cache internals)
-    models::{MettaState, MettaValue, MettaValueInner, Rule},
+    models::{MettaState, Rule},
 };
 
 // State evaluation API
@@ -97,7 +95,7 @@ pub use rholang_integration::run_state;
 pub use rholang_integration::run_state_async;
 
 // Session-based evaluation API
-pub use rholang_integration::{arena_state_to_json, eval_metta_session, eval_metta_session_raw};
+pub use rholang_integration::{state_to_json, eval_metta_session, eval_metta_session_raw};
 
 pub use pathmap_par_integration::{
     metta_error_to_par, metta_state_to_pathmap_par, metta_value_to_par, par_to_metta_value,
@@ -111,29 +109,29 @@ pub use repl::{MettaHelper, PatternHistory, QueryHighlighter, ReplStateMachine, 
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::compile::compile_arena;
-    use crate::backend::eval::eval_arena;
-    use crate::backend::eval::trampoline::new_arena_env;
-    use crate::backend::models::{ArenaValue, ArenaValueInner};
+    use crate::backend::compile::compile;
+    use crate::backend::eval::eval;
+    use crate::backend::eval::trampoline::new_env;
+    use crate::backend::models::{MettaValue, MettaValueInner};
 
     /// Helper to check if results contain a Long value
-    fn results_contain_long(results: &[ArenaValue<'static>], n: i64) -> bool {
+    fn results_contain_long(results: &[MettaValue], n: i64) -> bool {
         results
             .iter()
-            .any(|r| matches!(r.inner(), ArenaValueInner::Long(v) if *v == n))
+            .any(|r| matches!(r.inner(), MettaValueInner::Long(v) if *v == n))
     }
 
     /// Helper to check if results contain an Atom value
-    fn results_contain_atom(results: &[ArenaValue<'static>], s: &str) -> bool {
+    fn results_contain_atom(results: &[MettaValue], s: &str) -> bool {
         results
             .iter()
-            .any(|r| matches!(r.inner(), ArenaValueInner::Atom(v) if *v == s))
+            .any(|r| matches!(r.inner(), MettaValueInner::Atom(v) if *v == s))
     }
 
     /// Helper to assert a result is a Long
-    fn assert_long(val: ArenaValue<'static>, expected: i64) {
+    fn assert_long(val: MettaValue, expected: i64) {
         assert!(
-            matches!(val.inner(), ArenaValueInner::Long(n) if *n == expected),
+            matches!(val.inner(), MettaValueInner::Long(n) if *n == expected),
             "Expected Long({}), got {:?}",
             expected,
             val.inner()
@@ -141,9 +139,9 @@ mod tests {
     }
 
     /// Helper to assert a result is an Atom
-    fn assert_atom(val: ArenaValue<'static>, expected: &str) {
+    fn assert_atom(val: MettaValue, expected: &str) {
         assert!(
-            matches!(val.inner(), ArenaValueInner::Atom(s) if *s == expected),
+            matches!(val.inner(), MettaValueInner::Atom(s) if *s == expected),
             "Expected Atom({:?}), got {:?}",
             expected,
             val.inner()
@@ -151,9 +149,9 @@ mod tests {
     }
 
     /// Helper to assert a result is a String
-    fn assert_string(val: ArenaValue<'static>, expected: &str) {
+    fn assert_string(val: MettaValue, expected: &str) {
         assert!(
-            matches!(val.inner(), ArenaValueInner::String(s) if *s == expected),
+            matches!(val.inner(), MettaValueInner::String(s) if *s == expected),
             "Expected String({:?}), got {:?}",
             expected,
             val.inner()
@@ -161,9 +159,9 @@ mod tests {
     }
 
     /// Helper to assert a result is a Bool
-    fn assert_bool(val: ArenaValue<'static>, expected: bool) {
+    fn assert_bool(val: MettaValue, expected: bool) {
         assert!(
-            matches!(val.inner(), ArenaValueInner::Bool(b) if *b == expected),
+            matches!(val.inner(), MettaValueInner::Bool(b) if *b == expected),
             "Expected Bool({}), got {:?}",
             expected,
             val.inner()
@@ -172,19 +170,19 @@ mod tests {
 
     #[test]
     fn test_compile_simple() {
-        let result = compile_arena("(+ 1 2)");
+        let result = compile("(+ 1 2)");
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_compile_and_eval_arithmetic() {
         let input = "(+ 10 20)";
-        let state = compile_arena(input).expect("compile failed");
+        let state = compile(input).expect("compile failed");
         assert_eq!(state.source().len(), 1);
 
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0].inner(), ArenaValueInner::Long(30)));
+        assert!(matches!(results[0].inner(), MettaValueInner::Long(30)));
     }
 
     #[test]
@@ -194,20 +192,20 @@ mod tests {
             !(double 21)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
+        let state = compile(input).expect("compile failed");
         assert_eq!(state.source().len(), 2);
-        let mut env = new_arena_env();
+        let mut env = new_env();
 
         // First expression: rule definition
-        let (results, new_env) = eval_arena(state.source()[0], env, &state);
+        let (results, new_env) = eval(state.source()[0], env, &state);
         env = new_env;
         // Rule definition returns empty list
         assert!(results.is_empty());
 
         // Second expression: evaluation
-        let (results, _env) = eval_arena(state.source()[1], env, &state);
+        let (results, _env) = eval(state.source()[1], env, &state);
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0].inner(), ArenaValueInner::Long(42)));
+        assert!(matches!(results[0].inner(), MettaValueInner::Long(42)));
     }
 
     #[test]
@@ -218,12 +216,12 @@ mod tests {
             !(double 10)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut all_results = Vec::new();
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
 
             if !expr_results.is_empty() {
@@ -246,12 +244,12 @@ mod tests {
             !(add1 (add2 10))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut evaluations = Vec::new();
 
         for (i, &expr) in state.source().iter().enumerate() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
 
             if !expr_results.is_empty() {
@@ -268,18 +266,18 @@ mod tests {
     #[test]
     fn test_if_control_flow() {
         let input = r#"(if (< 5 10) "yes" "no")"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0].inner(), ArenaValueInner::String(s) if *s == "yes"));
+        assert!(matches!(results[0].inner(), MettaValueInner::String(s) if *s == "yes"));
     }
 
     #[test]
     fn test_if_with_equality_check() {
         let input = r#"(if (== 5 5) "equal" "not-equal")"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "equal");
@@ -292,12 +290,12 @@ mod tests {
             (if true success (boom))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -315,12 +313,12 @@ mod tests {
             (if true success (loop))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -341,12 +339,12 @@ mod tests {
             !(factorial 5)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -367,12 +365,12 @@ mod tests {
             !(factorial 0)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -391,8 +389,8 @@ mod tests {
                 "outer-false")
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "both-true");
@@ -401,8 +399,8 @@ mod tests {
     #[test]
     fn test_if_with_computation_in_branches() {
         let input = r#"(if (< 5 10) (+ 2 3) (* 4 5))"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_long(results[0], 5);
@@ -416,12 +414,12 @@ mod tests {
             !(if (> 10 5) (double 7) (triple 7))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -435,31 +433,31 @@ mod tests {
     #[test]
     fn test_quote() {
         let input = "(quote (+ 1 2))";
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0].inner(), ArenaValueInner::SExpr(_)));
+        assert!(matches!(results[0].inner(), MettaValueInner::SExpr(_)));
     }
 
     #[test]
     fn test_error_propagation() {
         let input = r#"(error "test error" 42)"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        assert!(matches!(results[0].inner(), ArenaValueInner::Error(_, _)));
+        assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
     }
 
     #[test]
     fn test_error_in_nested_expression() {
         let input = r#"(+ 1 (+ 2 (+ 3 (error "deep error" nested))))"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        if let ArenaValueInner::Error(msg, _) = results[0].inner() {
+        if let MettaValueInner::Error(msg, _) = results[0].inner() {
             assert_eq!(*msg, "deep error");
         } else {
             panic!("Expected error propagation from nested expression");
@@ -473,12 +471,12 @@ mod tests {
             !(safe-op -5)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -486,9 +484,9 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let ArenaValueInner::Error(msg, details) = r.inner() {
+            if let MettaValueInner::Error(msg, details) = r.inner() {
                 assert_eq!(*msg, "negative value");
-                assert!(matches!(details.inner(), ArenaValueInner::Long(-5)));
+                assert!(matches!(details.inner(), MettaValueInner::Long(-5)));
             } else {
                 panic!("Expected error from function call");
             }
@@ -507,12 +505,12 @@ mod tests {
             !(div-by-zero 3)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -520,7 +518,7 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let ArenaValueInner::Error(msg, _) = r.inner() {
+            if let MettaValueInner::Error(msg, _) = r.inner() {
                 assert_eq!(*msg, "division by zero");
             } else {
                 panic!("Expected error from recursive function");
@@ -533,8 +531,8 @@ mod tests {
     #[test]
     fn test_error_with_catch() {
         let input = r#"(catch (error "caught" 42) "default-value")"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "default-value");
@@ -543,8 +541,8 @@ mod tests {
     #[test]
     fn test_catch_without_error() {
         let input = r#"(catch (+ 5 7) "default-value")"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_long(results[0], 12);
@@ -558,8 +556,8 @@ mod tests {
                 "outer-default")
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "outer-default");
@@ -568,11 +566,11 @@ mod tests {
     #[test]
     fn test_error_in_condition() {
         let input = r#"(if (error "condition failed" cond) yes no)"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        if let ArenaValueInner::Error(msg, _) = results[0].inner() {
+        if let MettaValueInner::Error(msg, _) = results[0].inner() {
             assert_eq!(*msg, "condition failed");
         } else {
             panic!("Expected error from condition evaluation");
@@ -582,8 +580,8 @@ mod tests {
     #[test]
     fn test_is_error_check() {
         let input = r#"(is-error (error "test" 0))"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_bool(results[0], true);
@@ -592,8 +590,8 @@ mod tests {
     #[test]
     fn test_is_error_with_normal_value() {
         let input = r#"(is-error (+ 1 2))"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         // Arena evaluator may return multiple results; check that at least one is Bool(false)
         assert!(
@@ -601,7 +599,7 @@ mod tests {
             "Expected at least one result"
         );
         assert!(
-            results.iter().any(|r| matches!(r.inner(), ArenaValueInner::Bool(false))),
+            results.iter().any(|r| matches!(r.inner(), MettaValueInner::Bool(false))),
             "Expected Bool(false) in results, got {:?}",
             results.iter().map(|r| format!("{:?}", r.inner())).collect::<Vec<_>>()
         );
@@ -620,12 +618,12 @@ mod tests {
             !(try-div 10 2)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut results = Vec::new();
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 results.extend(expr_results);
@@ -644,15 +642,15 @@ mod tests {
             (error "third" 3)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut errors = Vec::new();
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(r) = expr_results.first() {
-                if let ArenaValueInner::Error(msg, _) = r.inner() {
+                if let MettaValueInner::Error(msg, _) = r.inner() {
                     errors.push(msg.to_string());
                 }
             }
@@ -671,12 +669,12 @@ mod tests {
             (+ (error "first-error" 1) (side-effect))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -684,7 +682,7 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let ArenaValueInner::Error(msg, _) = r.inner() {
+            if let MettaValueInner::Error(msg, _) = r.inner() {
                 assert_eq!(*msg, "first-error");
             } else {
                 panic!("Expected first error to propagate");
@@ -697,13 +695,13 @@ mod tests {
     #[test]
     fn test_error_with_complex_details() {
         let input = r#"(error "complex" (+ 1 (+ 2 3)))"#;
-        let state = compile_arena(input).expect("compile failed");
-        let (results, _env) = eval_arena(state.source()[0], new_arena_env(), &state);
+        let state = compile(input).expect("compile failed");
+        let (results, _env) = eval(state.source()[0], new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        if let ArenaValueInner::Error(msg, details) = results[0].inner() {
+        if let MettaValueInner::Error(msg, details) = results[0].inner() {
             assert_eq!(*msg, "complex");
-            assert!(matches!(details.inner(), ArenaValueInner::SExpr(_)));
+            assert!(matches!(details.inner(), MettaValueInner::SExpr(_)));
         } else {
             panic!("Expected error with complex details");
         }
@@ -722,12 +720,12 @@ mod tests {
             !(safe-fact -3)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut results = Vec::new();
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 results.extend(expr_results);
@@ -740,7 +738,7 @@ mod tests {
 
     #[test]
     fn test_invalid_syntax() {
-        let result = compile_arena("(+ 1");
+        let result = compile("(+ 1");
         assert!(result.is_err());
     }
 
@@ -752,12 +750,12 @@ mod tests {
             !(countdown 3)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut last_result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 last_result = Some(r);
@@ -776,12 +774,12 @@ mod tests {
             !(len (cons a (cons b (cons c nil))))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -800,12 +798,12 @@ mod tests {
             !(sum (cons 10 (cons 20 (cons 30 nil))))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -825,12 +823,12 @@ mod tests {
             !(fib 6)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -849,12 +847,12 @@ mod tests {
             !(apply-twice square 2)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut last_result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 last_result = Some(r);
@@ -872,12 +870,12 @@ mod tests {
             !(apply-twice 1 2)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -885,11 +883,11 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let ArenaValueInner::SExpr(outer) = r.inner() {
-                assert!(matches!(outer[0].inner(), ArenaValueInner::Long(1)));
-                if let ArenaValueInner::SExpr(inner) = outer[1].inner() {
-                    assert!(matches!(inner[0].inner(), ArenaValueInner::Long(1)));
-                    assert!(matches!(inner[1].inner(), ArenaValueInner::Long(2)));
+            if let MettaValueInner::SExpr(outer) = r.inner() {
+                assert!(matches!(outer[0].inner(), MettaValueInner::Long(1)));
+                if let MettaValueInner::SExpr(inner) = outer[1].inner() {
+                    assert!(matches!(inner[0].inner(), MettaValueInner::Long(1)));
+                    assert!(matches!(inner[1].inner(), MettaValueInner::Long(2)));
                 }
             } else {
                 panic!("Expected SExpr result");
@@ -907,12 +905,12 @@ mod tests {
             !(apply-three inc 10)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -932,12 +930,12 @@ mod tests {
             !(compose double inc 5)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -957,12 +955,12 @@ mod tests {
             !(mymap square (cons 1 (cons 2 (cons 3 nil))))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -970,17 +968,17 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let ArenaValueInner::SExpr(items) = r.inner() {
-                assert!(matches!(items[0].inner(), ArenaValueInner::Atom("cons")));
-                assert!(matches!(items[1].inner(), ArenaValueInner::Long(1)));
+            if let MettaValueInner::SExpr(items) = r.inner() {
+                assert!(matches!(items[0].inner(), MettaValueInner::Atom("cons")));
+                assert!(matches!(items[1].inner(), MettaValueInner::Long(1)));
 
-                if let ArenaValueInner::SExpr(rest1) = items[2].inner() {
-                    assert!(matches!(rest1[0].inner(), ArenaValueInner::Atom("cons")));
-                    assert!(matches!(rest1[1].inner(), ArenaValueInner::Long(4)));
+                if let MettaValueInner::SExpr(rest1) = items[2].inner() {
+                    assert!(matches!(rest1[0].inner(), MettaValueInner::Atom("cons")));
+                    assert!(matches!(rest1[1].inner(), MettaValueInner::Long(4)));
 
-                    if let ArenaValueInner::SExpr(rest2) = rest1[2].inner() {
-                        assert!(matches!(rest2[0].inner(), ArenaValueInner::Atom("cons")));
-                        assert!(matches!(rest2[1].inner(), ArenaValueInner::Long(9)));
+                    if let MettaValueInner::SExpr(rest2) = rest1[2].inner() {
+                        assert!(matches!(rest2[0].inner(), MettaValueInner::Atom("cons")));
+                        assert!(matches!(rest2[1].inner(), MettaValueInner::Long(9)));
                     }
                 }
             } else {
@@ -1003,12 +1001,12 @@ mod tests {
             !(filter positive (cons 5 (cons -3 (cons 7 nil))))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1017,13 +1015,13 @@ mod tests {
 
         // Should keep only 5 and 7: (cons 5 (cons 7 nil))
         if let Some(r) = result {
-            if let ArenaValueInner::SExpr(items) = r.inner() {
-                assert!(matches!(items[0].inner(), ArenaValueInner::Atom("cons")));
-                assert!(matches!(items[1].inner(), ArenaValueInner::Long(5)));
+            if let MettaValueInner::SExpr(items) = r.inner() {
+                assert!(matches!(items[0].inner(), MettaValueInner::Atom("cons")));
+                assert!(matches!(items[1].inner(), MettaValueInner::Long(5)));
 
-                if let ArenaValueInner::SExpr(rest) = items[2].inner() {
-                    assert!(matches!(rest[0].inner(), ArenaValueInner::Atom("cons")));
-                    assert!(matches!(rest[1].inner(), ArenaValueInner::Long(7)));
+                if let MettaValueInner::SExpr(rest) = items[2].inner() {
+                    assert!(matches!(rest[0].inner(), MettaValueInner::Atom("cons")));
+                    assert!(matches!(rest[1].inner(), MettaValueInner::Long(7)));
                 }
             } else {
                 panic!("Expected SExpr result");
@@ -1042,12 +1040,12 @@ mod tests {
             !(foldl + 0 (cons 1 (cons 2 (cons 3 nil))))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1067,12 +1065,12 @@ mod tests {
             !(append (cons 1 (cons 2 nil)) (cons 3 (cons 4 nil)))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1080,9 +1078,9 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let ArenaValueInner::SExpr(items) = r.inner() {
-                assert!(matches!(items[0].inner(), ArenaValueInner::Atom("cons")));
-                assert!(matches!(items[1].inner(), ArenaValueInner::Long(1)));
+            if let MettaValueInner::SExpr(items) = r.inner() {
+                assert!(matches!(items[0].inner(), MettaValueInner::Atom("cons")));
+                assert!(matches!(items[1].inner(), MettaValueInner::Long(1)));
             } else {
                 panic!("Expected SExpr result");
             }
@@ -1099,12 +1097,12 @@ mod tests {
             !(len (cons a (cons b (cons c nil))))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut last_result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 last_result = Some(r);
@@ -1118,17 +1116,17 @@ mod tests {
     #[test]
     fn test_compile_nested_lists() {
         let src = "(a (b (c d)))";
-        let state = compile_arena(src).expect("compile failed");
+        let state = compile(src).expect("compile failed");
 
-        if let ArenaValueInner::SExpr(outer) = state.source()[0].inner() {
-            assert!(matches!(outer[0].inner(), ArenaValueInner::Atom("a")));
+        if let MettaValueInner::SExpr(outer) = state.source()[0].inner() {
+            assert!(matches!(outer[0].inner(), MettaValueInner::Atom("a")));
 
-            if let ArenaValueInner::SExpr(middle) = outer[1].inner() {
-                assert!(matches!(middle[0].inner(), ArenaValueInner::Atom("b")));
+            if let MettaValueInner::SExpr(middle) = outer[1].inner() {
+                assert!(matches!(middle[0].inner(), MettaValueInner::Atom("b")));
 
-                if let ArenaValueInner::SExpr(inner) = middle[1].inner() {
-                    assert!(matches!(inner[0].inner(), ArenaValueInner::Atom("c")));
-                    assert!(matches!(inner[1].inner(), ArenaValueInner::Atom("d")));
+                if let MettaValueInner::SExpr(inner) = middle[1].inner() {
+                    assert!(matches!(inner[0].inner(), MettaValueInner::Atom("c")));
+                    assert!(matches!(inner[1].inner(), MettaValueInner::Atom("d")));
                 } else {
                     panic!("Expected SExpr for innermost");
                 }
@@ -1148,12 +1146,12 @@ mod tests {
             !(coin)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1177,12 +1175,12 @@ mod tests {
             !(bin)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1208,12 +1206,12 @@ mod tests {
             !(pair)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1243,12 +1241,12 @@ mod tests {
             !(g (f))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1285,12 +1283,12 @@ mod tests {
             !(+ (a) (b))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1325,12 +1323,12 @@ mod tests {
             !(cons (x) (cons (y) (z)))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1359,12 +1357,12 @@ mod tests {
             !(h (g (f)))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1395,12 +1393,12 @@ mod tests {
             !(intensity (color))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1425,12 +1423,12 @@ mod tests {
             !(match &self ($x leaf2) $x)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1455,12 +1453,12 @@ mod tests {
             !(match &self ($who is a $what) ($who the $what))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1498,12 +1496,12 @@ mod tests {
             !(match &self (($x $y) result) (found $x and $y))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1530,12 +1528,12 @@ mod tests {
             !(match &self (nonexistent $x) $x)
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut last_result = Vec::new();
 
         for (i, &expr) in state.source().iter().enumerate() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             // Capture results from the last expression (the match)
             if i == state.source().len() - 1 {
@@ -1559,12 +1557,12 @@ mod tests {
             !(match &self (number $n) (value $n))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut result = None;
 
         for &expr in state.source() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1597,12 +1595,12 @@ mod tests {
             !(match &self ($first $middle $last) (middle $middle))
         "#;
 
-        let state = compile_arena(input).expect("compile failed");
-        let mut env = new_arena_env();
+        let state = compile(input).expect("compile failed");
+        let mut env = new_env();
         let mut last_result = Vec::new();
 
         for (i, &expr) in state.source().iter().enumerate() {
-            let (expr_results, new_env) = eval_arena(expr, env, &state);
+            let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             // Capture results from the last expression (the match)
             if i == state.source().len() - 1 {
@@ -1619,15 +1617,15 @@ mod tests {
         );
         assert!(last_result
             .iter()
-            .any(|r| matches!(r.inner(), ArenaValueInner::SExpr(items)
+            .any(|r| matches!(r.inner(), MettaValueInner::SExpr(items)
             if items.len() == 2
-            && matches!(items[0].inner(), ArenaValueInner::Atom("middle"))
-            && matches!(items[1].inner(), ArenaValueInner::Atom("b")))));
+            && matches!(items[0].inner(), MettaValueInner::Atom("middle"))
+            && matches!(items[1].inner(), MettaValueInner::Atom("b")))));
         assert!(last_result
             .iter()
-            .any(|r| matches!(r.inner(), ArenaValueInner::SExpr(items)
+            .any(|r| matches!(r.inner(), MettaValueInner::SExpr(items)
             if items.len() == 2
-            && matches!(items[0].inner(), ArenaValueInner::Atom("middle"))
-            && matches!(items[1].inner(), ArenaValueInner::Atom("y")))));
+            && matches!(items[0].inner(), MettaValueInner::Atom("middle"))
+            && matches!(items[1].inner(), MettaValueInner::Atom("y")))));
     }
 }

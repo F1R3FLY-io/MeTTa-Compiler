@@ -26,14 +26,14 @@ pub fn pattern_matches(pattern: &MettaValue, value: &MettaValue) -> bool {
         // Variable matches anything (Atom starting with $)
         (MettaValueInner::Atom(s), _) if s.starts_with('$') => true,
         // Wildcard matches anything
-        (MettaValueInner::Atom(s), _) if s == "_" => true,
+        (MettaValueInner::Atom(s), _) if *s == "_" => true,
         // Exact match for atoms
-        (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
+        (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => *a == *b,
         // Exact match for literals
         (MettaValueInner::Long(a), MettaValueInner::Long(b)) => a == b,
         (MettaValueInner::Float(a), MettaValueInner::Float(b)) => a == b,
         (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
-        (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
+        (MettaValueInner::String(a), MettaValueInner::String(b)) => *a == *b,
         (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         // S-expression matching
         (MettaValueInner::SExpr(ps), MettaValueInner::SExpr(vs)) => {
@@ -64,14 +64,14 @@ fn pattern_match_bind_impl(
     match (pattern.inner(), value) {
         // Variable binds to value (Atom starting with $)
         (MettaValueInner::Atom(name), val) if name.starts_with('$') => {
-            bindings.push((name.clone(), val.clone()));
+            bindings.push(((*name).to_string(), val.clone()));
             true
         }
         // Wildcard matches without binding
-        (MettaValueInner::Atom(s), _) if s == "_" => true,
+        (MettaValueInner::Atom(s), _) if *s == "_" => true,
         // Exact match for atoms
         (MettaValueInner::Atom(a), val) => {
-            matches!(val.inner(), MettaValueInner::Atom(b) if a == b)
+            matches!(val.inner(), MettaValueInner::Atom(b) if *a == *b)
         }
         // Exact match for literals
         (MettaValueInner::Long(a), val) => {
@@ -84,7 +84,7 @@ fn pattern_match_bind_impl(
             matches!(val.inner(), MettaValueInner::Bool(b) if a == b)
         }
         (MettaValueInner::String(a), val) => {
-            matches!(val.inner(), MettaValueInner::String(b) if a == b)
+            matches!(val.inner(), MettaValueInner::String(b) if *a == *b)
         }
         (MettaValueInner::Unit, val) => matches!(val.inner(), MettaValueInner::Unit),
         // S-expression matching
@@ -117,18 +117,18 @@ fn unify_impl(a: &MettaValue, b: &MettaValue, bindings: &mut Vec<(String, MettaV
     match (a.inner(), b.inner()) {
         // Variables unify with anything (Atom starting with $)
         (MettaValueInner::Atom(name), _) if name.starts_with('$') => {
-            bindings.push((name.clone(), b.clone()));
+            bindings.push(((*name).to_string(), b.clone()));
             true
         }
         (_, MettaValueInner::Atom(name)) if name.starts_with('$') => {
-            bindings.push((name.clone(), a.clone()));
+            bindings.push(((*name).to_string(), a.clone()));
             true
         }
         // Same structure
-        (MettaValueInner::Atom(x), MettaValueInner::Atom(y)) => x == y,
+        (MettaValueInner::Atom(x), MettaValueInner::Atom(y)) => *x == *y,
         (MettaValueInner::Long(x), MettaValueInner::Long(y)) => x == y,
         (MettaValueInner::Bool(x), MettaValueInner::Bool(y)) => x == y,
-        (MettaValueInner::String(x), MettaValueInner::String(y)) => x == y,
+        (MettaValueInner::String(x), MettaValueInner::String(y)) => *x == *y,
         (MettaValueInner::Unit, MettaValueInner::Unit) => true,
         (MettaValueInner::SExpr(xs), MettaValueInner::SExpr(ys)) => {
             xs.len() == ys.len()

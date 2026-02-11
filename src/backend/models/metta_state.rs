@@ -1,8 +1,12 @@
 use super::MettaValue;
-use crate::backend::environment::HeapEnvironment;
+use super::gc_allocator::GcFactory;
+use crate::backend::environment::MettaEnvironment;
 
-/// MeTTa compilation/evaluation state for PathMap-based REPL integration
-/// This structure represents the state of a MeTTa computation session.
+/// MeTTa computation session state.
+///
+/// Holds compiled source expressions, the evaluation environment (atom space),
+/// and evaluation output. All value allocation goes through the global
+/// `SlabAllocator` via `GcFactory`.
 ///
 /// # State Composition
 /// - **Compiled state** (fresh from `compile`):
@@ -28,17 +32,22 @@ pub struct MettaState {
     /// Source s-expressions to be evaluated
     pub source: Vec<MettaValue>,
     /// The atom space (MORK fact database) containing rules and facts
-    pub environment: HeapEnvironment,
+    pub environment: MettaEnvironment,
     /// Evaluation output results
     pub output: Vec<MettaValue>,
 }
 
 impl MettaState {
+    /// Create a new empty MettaState.
+    pub fn new() -> Self {
+        Self::new_empty()
+    }
+
     /// Create a fresh compiled state from parse results
     pub fn new_compiled(source: Vec<MettaValue>) -> Self {
         MettaState {
             source,
-            environment: HeapEnvironment::default(),
+            environment: MettaEnvironment::default(),
             output: Vec::new(),
         }
     }
@@ -47,18 +56,56 @@ impl MettaState {
     pub fn new_empty() -> Self {
         MettaState {
             source: Vec::new(),
-            environment: HeapEnvironment::default(),
+            environment: MettaEnvironment::default(),
             output: Vec::new(),
         }
     }
 
     /// Create an accumulated state with existing environment and output
-    pub fn new_accumulated(environment: HeapEnvironment, output: Vec<MettaValue>) -> Self {
+    pub fn new_accumulated(environment: MettaEnvironment, output: Vec<MettaValue>) -> Self {
         MettaState {
             source: Vec::new(),
             environment,
             output,
         }
+    }
+
+    /// Get the factory for allocating values.
+    ///
+    /// Returns a `GcFactory` backed by the global `SlabAllocator`.
+    #[inline]
+    pub fn factory(&self) -> GcFactory {
+        super::gc_allocator::global_factory()
+    }
+
+    /// Get reference to source expressions.
+    #[inline]
+    pub fn source(&self) -> &[MettaValue] {
+        &self.source
+    }
+
+    /// Get mutable reference to source expressions.
+    #[inline]
+    pub fn source_mut(&mut self) -> &mut Vec<MettaValue> {
+        &mut self.source
+    }
+
+    /// Get reference to output values.
+    #[inline]
+    pub fn output(&self) -> &[MettaValue] {
+        &self.output
+    }
+
+    /// Get mutable reference to push results.
+    #[inline]
+    pub fn output_mut(&mut self) -> &mut Vec<MettaValue> {
+        &mut self.output
+    }
+
+    /// Clear output (useful for reusing MettaState across evaluations).
+    #[inline]
+    pub fn clear_output(&mut self) {
+        self.output.clear();
     }
 
     /// Convert MettaState to JSON representation for debugging
@@ -100,13 +147,19 @@ impl MettaState {
     }
 }
 
+impl Default for MettaState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl From<MettaValue> for MettaState {
     /// Create a compiled state containing an error s-expression
     /// Used when parsing fails to allow error handling at the evaluation level
     fn from(error_sexpr: MettaValue) -> Self {
         MettaState {
             source: vec![error_sexpr],
-            environment: HeapEnvironment::default(),
+            environment: MettaEnvironment::default(),
             output: Vec::new(),
         }
     }
@@ -149,7 +202,7 @@ mod tests {
     #[test]
     fn test_to_json_with_output() {
         let state = MettaState::new_accumulated(
-            HeapEnvironment::default(),
+            MettaEnvironment::default(),
             vec![
                 MettaValue::Bool(true),
                 MettaValue::String("result".to_string()),
@@ -167,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_to_json_with_environment() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         env.add_rule(Rule::new(
             MettaValue::Atom("x".to_string()),
             MettaValue::Long(1),
@@ -186,7 +239,7 @@ mod tests {
 
     #[test]
     fn test_to_json_complete() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         env.add_rule(Rule::new(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
@@ -223,7 +276,7 @@ mod tests {
                 MettaValue::Long(1),
                 MettaValue::Long(2),
             ])],
-            environment: HeapEnvironment::default(),
+            environment: MettaEnvironment::default(),
             output: vec![MettaValue::SExpr(vec![
                 MettaValue::Atom("result".to_string()),
                 MettaValue::Long(3),

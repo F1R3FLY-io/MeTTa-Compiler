@@ -7,8 +7,10 @@ use cranelift::codegen::ir::FuncRef;
 use cranelift::prelude::*;
 
 use super::types::{
-    JitError, JitResult, PAYLOAD_MASK, TAG_BOOL, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_UNIT,
+    JitError, JitResult, PAYLOAD_MASK, TAG_BOOL, TAG_LONG, TAG_MASK, TAG_UNIT,
 };
+#[cfg(test)]
+use super::types::TAG_PTR;
 
 /// Pre-declared function references for error handlers.
 ///
@@ -469,7 +471,7 @@ mod tests {
         assert_eq!(TAG_LONG, 0x7FF8_0000_0000_0000);
         assert_eq!(TAG_BOOL, 0x7FF9_0000_0000_0000);
         assert_eq!(TAG_UNIT, 0x7FFB_0000_0000_0000);
-        assert_eq!(TAG_HEAP, 0x7FFC_0000_0000_0000);
+        assert_eq!(TAG_PTR, 0x7FFC_0000_0000_0000);
     }
 
     #[test]

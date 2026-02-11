@@ -32,7 +32,7 @@ use super::multiplicity::{
     add_atom, decrement_multiplicity, get_multiplicity, increment_multiplicity, set_multiplicity,
     Multiplicity,
 };
-use super::{HeapEnvironment, MettaValue, Rule};
+use super::{MettaEnvironment, MettaValue, Rule};
 use crate::backend::models::{GenericRule, MettaValueFactory, MettaValueInner, MettaValueTrait};
 use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 use crate::backend::symbol::Symbol;
@@ -117,11 +117,11 @@ impl<V: Clone + Default + Send + Sync + Unpin> RulesIter<V> {
         };
 
         // Convert MORK expression to MettaValue
-        if let Ok(value) = HeapEnvironment::mork_expr_to_metta_value(&expr, &self.space) {
+        if let Ok(value) = MettaEnvironment::mork_expr_to_metta_value(&expr, &self.space) {
             if let MettaValueInner::SExpr(items) = value.inner() {
                 if items.len() == 3 {
                     if let MettaValueInner::Atom(op) = items[0].inner() {
-                        if op == "=" {
+                        if *op == "=" {
                             return Some(Rule::new(items[1].clone(), items[2].clone()));
                         }
                     }
@@ -313,7 +313,7 @@ where
     }
 }
 
-impl HeapEnvironment {
+impl MettaEnvironment {
     /// Get the number of rules in the environment
     /// Counts rules from the rule_index and wildcard_rules (thread-safe, avoids PathMap iteration)
     pub fn rule_count(&self) -> usize {
@@ -792,12 +792,12 @@ impl HeapEnvironment {
     ///
     /// # Type Parameters
     ///
-    /// - `V`: The value type (MettaValue or ArenaValue)
+    /// - `V`: The value type (MettaValue or MettaValue)
     /// - `F`: The factory for creating values of type V
     ///
     /// # Performance
     ///
-    /// - Heap mode: O(1) clone of Arc-wrapped rules
+    /// - Arena mode: O(1) clone of Arc-wrapped rules
     /// - Arena mode: Clone of rules (arena values are cheap to clone)
     ///
     /// # Example
@@ -867,7 +867,7 @@ impl HeapEnvironment {
         let (head, arity, lhs) = if let MettaValueInner::SExpr(items) = rule_sexpr.inner() {
             if items.len() == 3 {
                 if let MettaValueInner::Atom(op) = items[0].inner() {
-                    if op == "=" {
+                    if *op == "=" {
                         let lhs = &items[1];
                         let head = lhs.get_head_symbol();
                         let arity = lhs.get_arity();
@@ -887,7 +887,7 @@ impl HeapEnvironment {
 
         // Try to find the rule in the index and increment its IndexedMultiset count
         if let (Some(head), Some(lhs_val)) = (head, lhs) {
-            let key = (Symbol::new(&head), arity);
+            let key = (Symbol::new(head), arity);
 
             // Find the rule with matching LHS to get its multiplicity_idx
             let mut found_idx: Option<u32> = None;
@@ -966,7 +966,7 @@ impl HeapEnvironment {
         let (head, arity, lhs) = if let MettaValueInner::SExpr(items) = rule_sexpr.inner() {
             if items.len() == 3 {
                 if let MettaValueInner::Atom(op) = items[0].inner() {
-                    if op == "=" {
+                    if *op == "=" {
                         let lhs = &items[1];
                         let head = lhs.get_head_symbol();
                         let arity = lhs.get_arity();
@@ -986,7 +986,7 @@ impl HeapEnvironment {
 
         // Try to find the rule in the index and decrement its IndexedMultiset count
         if let (Some(head), Some(lhs_val)) = (head, lhs) {
-            let key = (Symbol::new(&head), arity);
+            let key = (Symbol::new(head), arity);
 
             // Find the rule with matching LHS to get its multiplicity_idx
             let mut found_idx: Option<u32> = None;
@@ -1062,7 +1062,7 @@ impl HeapEnvironment {
         if let MettaValueInner::SExpr(items) = value.inner() {
             if items.len() == 3 {
                 if let MettaValueInner::Atom(op) = items[0].inner() {
-                    return op == "=";
+                    return *op == "=";
                 }
             }
         }

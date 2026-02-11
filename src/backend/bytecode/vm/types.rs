@@ -12,7 +12,7 @@
 //!
 //! The bytecode VM supports generic value types via the `MettaValueTrait` and
 //! `MettaValueFactory` traits. This enables zero-conversion evaluation with
-//! both heap-allocated (`MettaValue`) and arena-allocated (`ArenaValue`) values.
+//! both heap-allocated (`MettaValue`) and arena-allocated (`MettaValue`) values.
 //!
 //! Generic types are prefixed with `Generic`:
 //! - `GenericBindingFrame<V>`: Binding frame for any value type
@@ -107,103 +107,6 @@ impl std::fmt::Display for VmError {
 
 impl std::error::Error for VmError {}
 
-/// Call frame on the call stack
-#[derive(Debug, Clone)]
-pub struct CallFrame {
-    /// Return instruction pointer
-    pub return_ip: usize,
-    /// Return chunk
-    pub return_chunk: Arc<BytecodeChunk>,
-    /// Base pointer into value stack
-    pub base_ptr: usize,
-    /// Base pointer into bindings stack
-    pub bindings_base: usize,
-}
-
-/// Binding frame for pattern variables
-#[derive(Debug, Clone)]
-pub struct BindingFrame {
-    /// Variable bindings: name -> value
-    pub bindings: SmallVec<[(String, MettaValue); 8]>,
-    /// Scope depth for nested bindings
-    pub scope_depth: u32,
-}
-
-impl BindingFrame {
-    /// Create a new empty binding frame
-    pub fn new(scope_depth: u32) -> Self {
-        Self {
-            bindings: SmallVec::new(),
-            scope_depth,
-        }
-    }
-
-    /// Get a binding by name
-    pub fn get(&self, name: &str) -> Option<&MettaValue> {
-        self.bindings
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v)
-    }
-
-    /// Set a binding
-    pub fn set(&mut self, name: String, value: MettaValue) {
-        // Check if binding already exists
-        for (n, v) in self.bindings.iter_mut() {
-            if n == &name {
-                *v = value;
-                return;
-            }
-        }
-        self.bindings.push((name, value));
-    }
-
-    /// Check if a binding exists
-    pub fn has(&self, name: &str) -> bool {
-        self.bindings.iter().any(|(n, _)| n == name)
-    }
-
-    /// Clear all bindings
-    pub fn clear(&mut self) {
-        self.bindings.clear();
-    }
-}
-
-/// Choice point for nondeterminism
-#[derive(Debug, Clone)]
-pub struct ChoicePoint {
-    /// Saved value stack height
-    pub value_stack_height: usize,
-    /// Saved call stack height
-    pub call_stack_height: usize,
-    /// Saved bindings stack height
-    pub bindings_stack_height: usize,
-    /// Continuation instruction pointer
-    pub ip: usize,
-    /// Continuation chunk
-    pub chunk: Arc<BytecodeChunk>,
-    /// Remaining alternatives to try
-    pub alternatives: Vec<Alternative>,
-}
-
-/// An alternative in a choice point
-#[derive(Debug, Clone)]
-pub enum Alternative {
-    /// A value to push and continue
-    Value(MettaValue),
-    /// A bytecode chunk to execute
-    Chunk(Arc<BytecodeChunk>),
-    /// An index into something (rules, etc)
-    Index(usize),
-    /// A rule match with compiled body and bindings (for multi-match Call)
-    RuleMatch {
-        /// The compiled rule body to execute
-        chunk: Arc<BytecodeChunk>,
-        /// Pattern variable bindings from matching
-        bindings: Bindings,
-    },
-}
-
 /// Configuration for the VM
 #[derive(Debug, Clone)]
 pub struct VmConfig {
@@ -240,7 +143,7 @@ impl Default for VmConfig {
 ///
 /// # Type Parameters
 ///
-/// - `V`: The value type (e.g., `MettaValue` or `ArenaValue<'static>`)
+/// - `V`: The value type (e.g., `MettaValue` or `MettaValue`)
 #[derive(Debug, Clone)]
 pub struct GenericBindingFrame<V>
 where
@@ -333,7 +236,7 @@ where
 ///
 /// # Type Parameters
 ///
-/// - `V`: The value type (e.g., `MettaValue` or `ArenaValue<'static>`)
+/// - `V`: The value type (e.g., `MettaValue` or `MettaValue`)
 /// - `C`: The bytecode chunk type (e.g., `BytecodeChunk` or `GenericBytecodeChunk<V>`)
 #[derive(Debug, Clone)]
 pub enum GenericAlternative<V, C>
@@ -400,26 +303,17 @@ where
 }
 
 // ============================================================================
-// Type Aliases for Backwards Compatibility
+// Concrete Type Aliases
 // ============================================================================
 
-// Note: The concrete types `BindingFrame`, `Alternative`, `ChoicePoint`, and
-// `CallFrame` are defined above as non-generic types for backwards compatibility.
-// When fully migrated, they can become:
-//
-// pub type BindingFrame = GenericBindingFrame<MettaValue>;
-// pub type Alternative = GenericAlternative<MettaValue, BytecodeChunk>;
-// pub type ChoicePoint = GenericChoicePoint<MettaValue, BytecodeChunk>;
-// pub type CallFrame = GenericCallFrame<BytecodeChunk>;
+/// Binding frame for pattern variables (concrete type alias).
+pub type BindingFrame = GenericBindingFrame<MettaValue>;
 
-/// Type alias for heap-based binding frame (explicit generic usage)
-pub type HeapBindingFrame = GenericBindingFrame<MettaValue>;
+/// An alternative in a choice point (concrete type alias).
+pub type Alternative = GenericAlternative<MettaValue, BytecodeChunk>;
 
-/// Type alias for heap-based alternative (explicit generic usage)
-pub type HeapAlternative = GenericAlternative<MettaValue, BytecodeChunk>;
+/// Choice point for nondeterminism (concrete type alias).
+pub type ChoicePoint = GenericChoicePoint<MettaValue, BytecodeChunk>;
 
-/// Type alias for heap-based choice point (explicit generic usage)
-pub type HeapChoicePoint = GenericChoicePoint<MettaValue, BytecodeChunk>;
-
-/// Type alias for heap-based call frame (explicit generic usage)
-pub type HeapCallFrame = GenericCallFrame<BytecodeChunk>;
+/// Call frame on the call stack (concrete type alias).
+pub type CallFrame = GenericCallFrame<BytecodeChunk>;

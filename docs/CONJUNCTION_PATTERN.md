@@ -53,15 +53,15 @@ pub enum MettaValue {
 ```
 
 #### 2. Parser (`src/backend/compile.rs`)
-Compiler now recognizes comma-headed S-expressions and converts them to `Conjunction` values:
+Compiler now recognizes comma-headed S-expressions and converts them to `Conjunction` values via the generic factory path:
 ```rust
 if is_conjunction {
     // Convert to Conjunction variant (skip the comma operator)
-    let goals: Result<Vec<_>, _> = items[1..]
+    let goals: Result<Vec<V>, String> = items[1..]
         .iter()
-        .map(MettaValue::try_from)
+        .map(|e| expr_to_value_generic(e, factory))
         .collect();
-    Ok(MettaValue::Conjunction(goals?))
+    Ok(factory.conjunction(goals?))
 }
 ```
 

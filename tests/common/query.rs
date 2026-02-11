@@ -72,7 +72,7 @@ impl QueryResult {
     /// XQuery-like: Extract atom/symbol value
     pub fn as_atom(&self) -> Option<String> {
         match self.as_single()?.inner() {
-            MettaValueInner::Atom(s) | MettaValueInner::String(s) => Some(s.clone()),
+            MettaValueInner::Atom(s) | MettaValueInner::String(s) => Some(s.to_string()),
             _ => None,
         }
     }
@@ -101,7 +101,7 @@ impl QueryResult {
     /// XQuery-like: Extract s-expression elements
     pub fn as_sexpr(&self) -> Option<Vec<MettaValue>> {
         match self.as_single()?.inner() {
-            MettaValueInner::SExpr(elements) => Some(elements.clone()),
+            MettaValueInner::SExpr(elements) => Some(elements.to_vec()),
             _ => None,
         }
     }
@@ -265,8 +265,8 @@ impl PathMapQuery for PathMapOutput {
     fn output_as_string(&self, index: usize) -> Option<String> {
         match self.query_output(index) {
             QueryResult::Single(v) => match v.inner() {
-                MettaValueInner::String(s) => Some(s.clone()),
-                MettaValueInner::Atom(s) => Some(s.clone()),
+                MettaValueInner::String(s) => Some(s.to_string()),
+                MettaValueInner::Atom(s) => Some(s.to_string()),
                 _ => None,
             },
             _ => None,
@@ -382,7 +382,7 @@ impl PathMapOutput {
         if let MettaValueInner::SExpr(elements) = value.inner() {
             if let Some(first) = elements.first() {
                 match first.inner() {
-                    MettaValueInner::String(s) | MettaValueInner::Atom(s) => s == head,
+                    MettaValueInner::String(s) | MettaValueInner::Atom(s) => *s == head,
                     _ => false,
                 }
             } else {
@@ -402,7 +402,7 @@ impl PathMapOutput {
 
         // Recursive search in nested s-expressions
         if let MettaValueInner::SExpr(elements) = value.inner() {
-            for element in elements {
+            for element in *elements {
                 if let Some(found) = Self::find_descendant(element, head) {
                     return Some(found);
                 }
@@ -421,7 +421,7 @@ impl PathMapOutput {
 
         // Recursive search in nested s-expressions
         if let MettaValueInner::SExpr(elements) = value.inner() {
-            for element in elements {
+            for element in *elements {
                 Self::collect_descendants(element, head, results);
             }
         }
@@ -577,7 +577,7 @@ impl<'a> OutputMatcher<'a> {
         if let MettaValueInner::SExpr(elements) = value.inner() {
             if let Some(first) = elements.first() {
                 match first.inner() {
-                    MettaValueInner::String(s) | MettaValueInner::Atom(s) => s == head,
+                    MettaValueInner::String(s) | MettaValueInner::Atom(s) => *s == head,
                     _ => false,
                 }
             } else {
@@ -612,7 +612,7 @@ impl<'a> OutputMatcher<'a> {
         if let MettaValueInner::SExpr(elements) = value.inner() {
             if let Some(first) = elements.first() {
                 if let MettaValueInner::String(s) | MettaValueInner::Atom(s) = first.inner() {
-                    if s == "steps" {
+                    if *s == "steps" {
                         // Get the second element which should be the sequence of steps
                         if let Some(second) = elements.get(1) {
                             if let MettaValueInner::SExpr(steps_list) = second.inner() {
@@ -624,7 +624,7 @@ impl<'a> OutputMatcher<'a> {
             }
 
             // Recursively search in nested s-expressions
-            for element in elements {
+            for element in *elements {
                 if Self::contains_steps_match(element, expected_steps) {
                     return true;
                 }

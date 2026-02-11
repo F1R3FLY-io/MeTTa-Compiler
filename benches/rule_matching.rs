@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::compile::compile_arena;
-use mettatron::backend::eval::eval_arena;
-use mettatron::backend::eval::trampoline::new_arena_env;
+use mettatron::backend::compile::compile;
+use mettatron::backend::eval::eval;
+use mettatron::backend::eval::trampoline::new_env;
 
 /// Generate N fibonacci rules for benchmarking
 fn generate_fibonacci_rules(n: usize) -> String {
@@ -50,11 +50,11 @@ fn bench_rule_matching(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let state =
-                        compile_arena(&full_program).expect("Failed to compile program");
-                    let mut env = new_arena_env();
+                        compile(&full_program).expect("Failed to compile program");
+                    let mut env = new_env();
 
                     for &expr in state.source() {
-                        let (_, new_env) = eval_arena(black_box(expr), env, black_box(&state));
+                        let (_, new_env) = eval(black_box(expr), env, black_box(&state));
                         env = new_env;
                     }
                     black_box(env)
@@ -76,20 +76,20 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     let simple_query = "!(simple 42)";
 
     // Pre-compile rule and load it into env
-    let simple_rule_state = compile_arena(simple_setup).expect("Failed to compile");
-    let mut simple_env = new_arena_env();
+    let simple_rule_state = compile(simple_setup).expect("Failed to compile");
+    let mut simple_env = new_env();
     for &expr in simple_rule_state.source() {
-        let (_, new_env) = eval_arena(expr, simple_env, &simple_rule_state);
+        let (_, new_env) = eval(expr, simple_env, &simple_rule_state);
         simple_env = new_env;
     }
 
     // Pre-compile query
-    let simple_query_state = compile_arena(simple_query).expect("Failed to compile");
+    let simple_query_state = compile(simple_query).expect("Failed to compile");
 
     group.bench_function("simple_variable", |b| {
         b.iter(|| {
             // Only measure query performance, not compilation or rule insertion
-            let (result, _) = eval_arena(
+            let (result, _) = eval(
                 black_box(simple_query_state.source()[0]),
                 simple_env.clone(),
                 black_box(&simple_query_state),
@@ -102,18 +102,18 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     let nested_setup = "(= (nested ($a ($b $c))) (result $a $b $c))";
     let nested_query = "!(nested (1 (2 3)))";
 
-    let nested_rule_state = compile_arena(nested_setup).expect("Failed to compile");
-    let mut nested_env = new_arena_env();
+    let nested_rule_state = compile(nested_setup).expect("Failed to compile");
+    let mut nested_env = new_env();
     for &expr in nested_rule_state.source() {
-        let (_, new_env) = eval_arena(expr, nested_env, &nested_rule_state);
+        let (_, new_env) = eval(expr, nested_env, &nested_rule_state);
         nested_env = new_env;
     }
 
-    let nested_query_state = compile_arena(nested_query).expect("Failed to compile");
+    let nested_query_state = compile(nested_query).expect("Failed to compile");
 
     group.bench_function("nested_destructuring", |b| {
         b.iter(|| {
-            let (result, _) = eval_arena(
+            let (result, _) = eval(
                 black_box(nested_query_state.source()[0]),
                 nested_env.clone(),
                 black_box(&nested_query_state),
@@ -126,18 +126,18 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     let multi_arg_setup = "(= (multi $a $b $c $d) (+ (+ $a $b) (+ $c $d)))";
     let multi_arg_query = "!(multi 1 2 3 4)";
 
-    let multi_rule_state = compile_arena(multi_arg_setup).expect("Failed to compile");
-    let mut multi_env = new_arena_env();
+    let multi_rule_state = compile(multi_arg_setup).expect("Failed to compile");
+    let mut multi_env = new_env();
     for &expr in multi_rule_state.source() {
-        let (_, new_env) = eval_arena(expr, multi_env, &multi_rule_state);
+        let (_, new_env) = eval(expr, multi_env, &multi_rule_state);
         multi_env = new_env;
     }
 
-    let multi_query_state = compile_arena(multi_arg_query).expect("Failed to compile");
+    let multi_query_state = compile(multi_arg_query).expect("Failed to compile");
 
     group.bench_function("multi_argument", |b| {
         b.iter(|| {
-            let (result, _) = eval_arena(
+            let (result, _) = eval(
                 black_box(multi_query_state.source()[0]),
                 multi_env.clone(),
                 black_box(&multi_query_state),
@@ -163,11 +163,11 @@ fn bench_full_evaluation(c: &mut Criterion) {
 
     group.bench_function("fibonacci_10", |b| {
         b.iter(|| {
-            let state = compile_arena(fib_program).expect("Failed to compile");
-            let mut env = new_arena_env();
+            let state = compile(fib_program).expect("Failed to compile");
+            let mut env = new_env();
 
             for &expr in state.source() {
-                let (_, new_env) = eval_arena(black_box(expr), env, &state);
+                let (_, new_env) = eval(black_box(expr), env, &state);
                 env = new_env;
             }
             black_box(env)
@@ -184,9 +184,9 @@ fn bench_full_evaluation(c: &mut Criterion) {
 
     group.bench_function("nested_let", |b| {
         b.iter(|| {
-            let state = compile_arena(let_program).expect("Failed to compile");
-            let env = new_arena_env();
-            let (result, _) = eval_arena(black_box(state.source()[0]), env, &state);
+            let state = compile(let_program).expect("Failed to compile");
+            let env = new_env();
+            let (result, _) = eval(black_box(state.source()[0]), env, &state);
             black_box(result)
         });
     });
@@ -201,11 +201,11 @@ fn bench_full_evaluation(c: &mut Criterion) {
 
     group.bench_function("type_inference", |b| {
         b.iter(|| {
-            let state = compile_arena(type_program).expect("Failed to compile");
-            let mut env = new_arena_env();
+            let state = compile(type_program).expect("Failed to compile");
+            let mut env = new_env();
 
             for &expr in state.source() {
-                let (_, new_env) = eval_arena(black_box(expr), env, &state);
+                let (_, new_env) = eval(black_box(expr), env, &state);
                 env = new_env;
             }
             black_box(env)
@@ -233,11 +233,11 @@ fn bench_large_rule_sets(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let state =
-                        compile_arena(&full_program).expect("Failed to compile program");
-                    let mut env = new_arena_env();
+                        compile(&full_program).expect("Failed to compile program");
+                    let mut env = new_env();
 
                     for &expr in state.source() {
-                        let (_, new_env) = eval_arena(black_box(expr), env, black_box(&state));
+                        let (_, new_env) = eval(black_box(expr), env, black_box(&state));
                         env = new_env;
                     }
                     black_box(env)
@@ -250,18 +250,18 @@ fn bench_large_rule_sets(c: &mut Criterion) {
 }
 
 /// Benchmark has_sexpr_fact() with varying fact counts
-/// NOTE: has_sexpr_fact is a HeapEnvironment method, so we still use the heap
+/// NOTE: has_sexpr_fact is a MettaEnvironment method, so we still use the heap
 /// compile/eval to populate the environment, then benchmark the lookup.
 fn bench_has_sexpr_fact(c: &mut Criterion) {
-    use mettatron::backend::environment::HeapEnvironment;
+    use mettatron::backend::environment::MettaEnvironment;
     use mettatron::backend::models::MettaValue;
 
     let mut group = c.benchmark_group("has_sexpr_fact");
     group.sample_size(50); // Increase sample size for more stable results
 
     for fact_count in [100, 500, 1000, 5000].iter() {
-        // Pre-populate environment with facts using HeapEnvironment directly
-        let mut env = HeapEnvironment::default();
+        // Pre-populate environment with facts using MettaEnvironment directly
+        let mut env = MettaEnvironment::default();
 
         // Add facts to the Space via add_to_space
         for i in 0..*fact_count {

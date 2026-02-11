@@ -455,7 +455,7 @@ impl Compiler {
                 self.compile_float(*f)?;
             }
             MettaValueInner::String(s) => {
-                let idx = self.builder.add_constant(MettaValue::String(s.clone()));
+                let idx = self.builder.add_constant(MettaValue::String(*s));
                 self.builder.emit_u16(Opcode::PushString, idx);
             }
 
@@ -463,14 +463,14 @@ impl Compiler {
             // Atoms (symbols and variables)
             // ================================================================
             MettaValueInner::Atom(name) => {
-                self.compile_atom(name)?;
+                self.compile_atom(*name)?;
             }
 
             // ================================================================
             // S-expressions - dispatch to builtin or generic
             // ================================================================
             MettaValueInner::SExpr(items) => {
-                self.compile_sexpr_iterative(items.clone(), cont_id, work_stack)?;
+                self.compile_sexpr_iterative(items.to_vec(), cont_id, work_stack)?;
             }
 
             // ================================================================
@@ -486,7 +486,7 @@ impl Compiler {
             // ================================================================
             MettaValueInner::Conjunction(values) => {
                 work_stack.push(CompileWork::CompileConjunction {
-                    values: values.iter().cloned().collect(),
+                    values: (*values).iter().cloned().collect(),
                     state: super::work_item::ConjunctionState::Analyzing,
                     cont_id,
                 });
@@ -498,7 +498,7 @@ impl Compiler {
             MettaValueInner::Error(msg, details) => {
                 let idx = self
                     .builder
-                    .add_constant(MettaValue::Error(msg.clone(), details.clone()));
+                    .add_constant(MettaValue::Error(*msg, details.clone()));
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
 
@@ -1177,6 +1177,8 @@ impl Compiler {
                             )),
                         })
                         .collect::<CompileResult<VecDeque<_>>>()?,
+                    // Unit is the normalized form of SExpr([]) - empty bindings
+                    MettaValueInner::Unit => VecDeque::new(),
                     _ => {
                         return Err(CompileError::InvalidExpression(
                             "let* bindings must be a list".to_string(),
@@ -1270,7 +1272,9 @@ impl Compiler {
             "superpose" => {
                 self.check_arity("superpose", args.len(), 1)?;
                 let alternatives = match args[0].inner() {
-                    MettaValueInner::SExpr(items) => items.clone(),
+                    MettaValueInner::SExpr(items) => items.to_vec(),
+                    // Unit is the normalized form of SExpr([]) - empty alternatives
+                    MettaValueInner::Unit => vec![],
                     _ => vec![args[0].clone()],
                 };
                 work_stack.push(CompileWork::CompileSuperpose {
@@ -1555,8 +1559,8 @@ impl Compiler {
                 // Construct MettaValue::Error at compile time, matching tree-walker semantics
                 // (error msg details) - arguments are NOT evaluated, taken as-is
                 let msg = match args[0].inner() {
-                    MettaValueInner::String(s) => s.clone(),
-                    MettaValueInner::Atom(s) => s.clone(),
+                    MettaValueInner::String(s) => (*s).to_string(),
+                    MettaValueInner::Atom(s) => (*s).to_string(),
                     _ => format!("{:?}", args[0]),
                 };
                 let details = args[1].clone();
@@ -2153,7 +2157,7 @@ impl Compiler {
         &mut self,
         scrutinee: MettaValue,
         mut cases: VecDeque<(MettaValue, MettaValue)>,
-        mut end_jumps: Vec<JumpLabel>,
+        end_jumps: Vec<JumpLabel>,
         parent_tail_position: bool,
         state: CaseState,
         cont_id: usize,
@@ -2356,7 +2360,7 @@ impl Compiler {
     ) -> CompileResult<()> {
         match expr.inner() {
             MettaValueInner::Atom(name) => {
-                let idx = self.builder.add_constant(MettaValue::Atom(name.clone()));
+                let idx = self.builder.add_constant(MettaValue::Atom(name));
                 if name.starts_with('$') {
                     self.builder.emit_u16(Opcode::PushVariable, idx);
                 } else {
@@ -2462,7 +2466,7 @@ impl Compiler {
             PatternBindingState::Binding => {
                 match pattern.inner() {
                     MettaValueInner::Atom(name) if name.starts_with('$') => {
-                        let var_name = name[1..].to_string();
+                        let var_name = (*name)[1..].to_string();
                         let slot = self.context.declare_local(var_name)?;
                         if slot <= 255 {
                             self.builder.emit_byte(Opcode::StoreLocal, slot as u8);
@@ -2470,7 +2474,7 @@ impl Compiler {
                             self.builder.emit_u16(Opcode::StoreLocalWide, slot);
                         }
                     }
-                    MettaValueInner::Atom(name) if name == "_" => {
+                    MettaValueInner::Atom(name) if *name == "_" => {
                         self.builder.emit(Opcode::Pop);
                     }
                     MettaValueInner::SExpr(items) => {
@@ -2478,7 +2482,7 @@ impl Compiler {
                         let total = items.len();
                         if total > 0 {
                             // Push work for each element in reverse order
-                            for (i, item) in items.iter().cloned().enumerate().rev() {
+                            for (i, item) in (*items).iter().cloned().enumerate().rev() {
                                 work_stack.push(CompileWork::CompilePatternBinding {
                                     pattern: item,
                                     element_index: i,
@@ -2707,7 +2711,7 @@ impl Compiler {
         expr: MettaValue,
         default: MettaValue,
         state: CatchState,
-        no_error_jump: Option<JumpLabel>,
+        _no_error_jump: Option<JumpLabel>,
         done_jump: Option<JumpLabel>,
         cont_id: usize,
         work_stack: &mut Vec<CompileWork>,

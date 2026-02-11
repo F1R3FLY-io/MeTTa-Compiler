@@ -1373,7 +1373,7 @@ fn test_jit_collect_signals_bailout() {
     let result = unsafe { jit_runtime_collect_native(&mut ctx) };
 
     // Stage 2: Collect returns NaN-boxed SExpr with collected results
-    // The result should be a heap pointer (TAG_HEAP)
+    // The result should be a heap pointer (TAG_PTR)
     let jv = JitValue::from_raw(result);
     assert!(jv.is_heap(), "Collect should return a heap pointer (SExpr)");
 
@@ -3226,11 +3226,11 @@ fn test_jit_execute_push_empty() {
 
     assert!(!ctx.bailout, "JIT execution should not bailout");
 
-    // PushEmpty returns a heap pointer (TAG_HEAP) to an empty S-expression
+    // PushEmpty returns a heap pointer (TAG_PTR) to an empty S-expression
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
         result.is_heap(),
-        "Expected Heap result for empty S-expr, got: {:?}",
+        "Expected Arena result for empty S-expr, got: {:?}",
         result
     );
 }
@@ -3266,7 +3266,7 @@ fn test_jit_execute_push_atom() {
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
         result.is_heap(),
-        "Expected Heap result for atom, got: {:?}",
+        "Expected Arena result for atom, got: {:?}",
         result
     );
 }
@@ -3302,7 +3302,7 @@ fn test_jit_execute_push_string() {
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
         result.is_heap(),
-        "Expected Heap result for string, got: {:?}",
+        "Expected Arena result for string, got: {:?}",
         result
     );
 }
@@ -3338,7 +3338,7 @@ fn test_jit_execute_push_variable() {
     let result = JitValue::from_raw(result_bits as u64);
     assert!(
         result.is_heap(),
-        "Expected Heap result for variable, got: {:?}",
+        "Expected Arena result for variable, got: {:?}",
         result
     );
 }
@@ -3841,7 +3841,7 @@ fn test_jit_execute_get_type_long() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta_val = unsafe { result.to_metta() };
     match metta_val.inner() {
-        MettaValueInner::Atom(s) => assert_eq!(s, "Number", "GetType(Long) should return 'Number'"),
+        MettaValueInner::Atom(s) => assert_eq!(*s, "Number", "GetType(Long) should return 'Number'"),
         other => panic!("Expected Atom('Number'), got: {:?}", other),
     }
 }
@@ -3877,7 +3877,7 @@ fn test_jit_execute_get_type_bool() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta_val = unsafe { result.to_metta() };
     match metta_val.inner() {
-        MettaValueInner::Atom(s) => assert_eq!(s, "Bool", "GetType(Bool) should return 'Bool'"),
+        MettaValueInner::Atom(s) => assert_eq!(*s, "Bool", "GetType(Bool) should return 'Bool'"),
         other => panic!("Expected Atom('Bool'), got: {:?}", other),
     }
 }
@@ -3921,7 +3921,7 @@ fn test_jit_execute_get_type_sexpr() {
     let metta_val = unsafe { result.to_metta() };
     match metta_val.inner() {
         MettaValueInner::Atom(s) => {
-            assert_eq!(s, "Expression", "GetType(SExpr) should return 'Expression'")
+            assert_eq!(*s, "Expression", "GetType(SExpr) should return 'Expression'")
         }
         other => panic!("Expected Atom('Expression'), got: {:?}", other),
     }
@@ -4298,16 +4298,8 @@ fn test_jit_execute_make_sexpr_empty() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta = unsafe { result.to_metta() };
 
-    match metta.inner() {
-        MettaValueInner::SExpr(items) => {
-            assert!(
-                items.is_empty(),
-                "Expected empty S-expression, got {:?}",
-                metta
-            );
-        }
-        _ => panic!("Expected SExpr, got: {:?}", metta),
-    }
+    // SExpr(vec![]) normalizes to Unit after Nil/Unit merge
+    assert!(metta.is_unit(), "Expected Unit (empty S-expression), got: {:?}", metta);
 }
 
 #[test]
@@ -4640,7 +4632,7 @@ fn test_jit_execute_push_uri() {
     let metta = unsafe { result.to_metta() };
 
     match metta.inner() {
-        MettaValueInner::Atom(s) => assert_eq!(s, "http://example.com"),
+        MettaValueInner::Atom(s) => assert_eq!(*s, "http://example.com"),
         _ => panic!("Expected Atom, got: {:?}", metta),
     }
 }
@@ -4714,7 +4706,7 @@ fn test_jit_execute_make_list_single() {
             assert_eq!(items.len(), 3, "Expected (Cons elem Nil) structure");
             match (items[0].inner(), items[1].inner(), items[2].inner()) {
                 (MettaValueInner::Atom(cons), MettaValueInner::Long(v), MettaValueInner::Unit) => {
-                    assert_eq!(cons, "Cons");
+                    assert_eq!(*cons, "Cons");
                     assert_eq!(*v, 42);
                 }
                 _ => panic!("Expected (Cons 42 Nil), got: {:?}", items),
@@ -4760,7 +4752,7 @@ fn test_jit_execute_make_list_multiple() {
         MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3, "Expected (Cons elem rest) structure");
             match items[0].inner() {
-                MettaValueInner::Atom(s) => assert_eq!(s, "Cons"),
+                MettaValueInner::Atom(s) => assert_eq!(*s, "Cons"),
                 _ => panic!("Expected Cons atom, got: {:?}", items[0]),
             }
             match items[1].inner() {
@@ -4806,7 +4798,7 @@ fn test_jit_execute_make_quote() {
             assert_eq!(items.len(), 2, "Expected (quote value)");
             match (items[0].inner(), items[1].inner()) {
                 (MettaValueInner::Atom(q), MettaValueInner::Long(v)) => {
-                    assert_eq!(q, "quote");
+                    assert_eq!(*q, "quote");
                     assert_eq!(*v, 42);
                 }
                 _ => panic!("Expected (quote 42), got: {:?}", items),
@@ -4852,7 +4844,7 @@ fn test_jit_execute_make_quote_nested() {
         MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 2, "Expected (quote expr)");
             match items[0].inner() {
-                MettaValueInner::Atom(q) => assert_eq!(q, "quote"),
+                MettaValueInner::Atom(q) => assert_eq!(*q, "quote"),
                 _ => panic!("Expected quote atom, got: {:?}", items[0]),
             }
             match items[1].inner() {
@@ -5056,7 +5048,7 @@ fn test_jit_call_builds_correct_expression() {
         MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3, "Expected (add 5 3)");
             match items[0].inner() {
-                MettaValueInner::Atom(s) => assert_eq!(s, "add"),
+                MettaValueInner::Atom(s) => assert_eq!(*s, "add"),
                 _ => panic!("Expected 'add' atom, got: {:?}", items[0]),
             }
             match items[1].inner() {
@@ -5140,13 +5132,13 @@ fn test_jit_call_with_mixed_argument_types() {
 
             // Head: process
             match items[0].inner() {
-                MettaValueInner::Atom(s) => assert_eq!(s, "process"),
+                MettaValueInner::Atom(s) => assert_eq!(*s, "process"),
                 _ => panic!("Expected 'process' atom"),
             }
 
             // Arg 1: atom-arg
             match items[1].inner() {
-                MettaValueInner::Atom(s) => assert_eq!(s, "atom-arg"),
+                MettaValueInner::Atom(s) => assert_eq!(*s, "atom-arg"),
                 _ => panic!("Expected 'atom-arg' atom"),
             }
 
@@ -5167,7 +5159,7 @@ fn test_jit_call_with_mixed_argument_types() {
                 MettaValueInner::SExpr(nested) => {
                     assert_eq!(nested.len(), 3);
                     match nested[0].inner() {
-                        MettaValueInner::Atom(s) => assert_eq!(s, "nested"),
+                        MettaValueInner::Atom(s) => assert_eq!(*s, "nested"),
                         _ => panic!("Expected 'nested' atom"),
                     }
                     match nested[1].inner() {
@@ -5291,7 +5283,7 @@ fn test_jit_tail_call_preserves_tco_flag() {
         MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 3, "Expected (recurse 5 100)");
             match items[0].inner() {
-                MettaValueInner::Atom(s) => assert_eq!(s, "recurse"),
+                MettaValueInner::Atom(s) => assert_eq!(*s, "recurse"),
                 _ => panic!("Expected 'recurse' atom"),
             }
             match items[1].inner() {
@@ -5340,7 +5332,7 @@ fn test_jit_call_with_zero_args_returns_head_only() {
         MettaValueInner::SExpr(items) => {
             assert_eq!(items.len(), 1, "Expected (get-value) with just head");
             match items[0].inner() {
-                MettaValueInner::Atom(s) => assert_eq!(s, "get-value"),
+                MettaValueInner::Atom(s) => assert_eq!(*s, "get-value"),
                 _ => panic!("Expected 'get-value' atom"),
             }
         }

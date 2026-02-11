@@ -24,10 +24,10 @@
 //!
 //! // Deserialize to any value type
 //! let heap_rule: GenericRule<MettaValue> = rule_bytes.to_rule(&heap_factory);
-//! let arena_rule: GenericRule<ArenaValue> = rule_bytes.to_rule(&arena_factory);
+//! let arena_rule: GenericRule<MettaValue> = rule_bytes.to_rule(&arena_factory);
 //! ```
 
-use crate::backend::models::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
+use crate::backend::models::metta_value_trait::{MettaValueTrait, MettaValueFactory};
 
 /// Generic rule type that works with any value type.
 ///
@@ -246,7 +246,7 @@ impl RuleBytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::models::{GcFactory, MettaValue};
 
     #[test]
     fn test_generic_rule_new() {
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_rule_bytes_roundtrip() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let lhs = MettaValue::SExpr(vec![
             MettaValue::Atom("add".to_string()),
             MettaValue::Atom("$x".to_string()),

@@ -4,11 +4,11 @@
 //! - `GroundedOperation` - Standard lazy evaluation trait
 //! - `GroundedOperationTCO` - Tail-call optimized variant
 
-use super::{HeapEnvironment, GroundedResult, GroundedState, GroundedWork, MettaValue};
+use super::{MettaEnvironment, GroundedResult, GroundedState, GroundedWork, MettaValue};
 
 /// Function type for evaluating MeTTa expressions
 /// Used by grounded operations to evaluate their arguments when needed
-pub type EvalFn = dyn Fn(MettaValue, HeapEnvironment) -> (Vec<MettaValue>, HeapEnvironment) + Send + Sync;
+pub type EvalFn = dyn Fn(MettaValue, MettaEnvironment) -> (Vec<MettaValue>, MettaEnvironment) + Send + Sync;
 
 /// HE-compatible trait for grounded (built-in) operations.
 ///
@@ -72,7 +72,7 @@ pub trait GroundedOperation: Send + Sync {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult;
 }

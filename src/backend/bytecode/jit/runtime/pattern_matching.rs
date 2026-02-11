@@ -207,7 +207,7 @@ pub(crate) unsafe fn lookup_var_index_cached(
             let idx = cached_idx as usize;
             if idx < constants.len() {
                 if let MettaValueInner::Atom(s) = constants[idx].inner() {
-                    if s == name {
+                    if *s == name {
                         return Some(idx);
                     }
                 }
@@ -219,7 +219,7 @@ pub(crate) unsafe fn lookup_var_index_cached(
     // Cache miss - linear search
     let name_idx = constants
         .iter()
-        .position(|c| matches!(c.inner(), MettaValueInner::Atom(s) if s == name));
+        .position(|c| matches!(c.inner(), MettaValueInner::Atom(s) if *s == name));
 
     // Update cache on successful lookup
     if let Some(idx) = name_idx {
@@ -589,7 +589,7 @@ pub(crate) fn pattern_matches_impl(pattern: &MettaValue, value: &MettaValue) -> 
         // Variable matches anything (Atom starting with $)
         (MettaValueInner::Atom(s), _) if s.starts_with('$') => true,
         // Wildcard matches anything
-        (MettaValueInner::Atom(s), _) if s == "_" => true,
+        (MettaValueInner::Atom(s), _) if *s == "_" => true,
         // Exact match for atoms
         (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
         // Exact match for literals
@@ -618,11 +618,11 @@ fn pattern_match_bind_impl(
     match (pattern.inner(), value.inner()) {
         // Variable binds to value (Atom starting with $)
         (MettaValueInner::Atom(name), _) if name.starts_with('$') => {
-            bindings.push((name.clone(), value.clone()));
+            bindings.push((name.to_string(), value.clone()));
             true
         }
         // Wildcard matches without binding
-        (MettaValueInner::Atom(s), _) if s == "_" => true,
+        (MettaValueInner::Atom(s), _) if *s == "_" => true,
         // Exact match for atoms
         (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
         // Exact match for literals
@@ -647,16 +647,16 @@ fn unify_impl(a: &MettaValue, b: &MettaValue, bindings: &mut Vec<(String, MettaV
     match (a.inner(), b.inner()) {
         // Variables unify with anything (Atom starting with $)
         (MettaValueInner::Atom(name), _) if name.starts_with('$') => {
-            bindings.push((name.clone(), b.clone()));
+            bindings.push((name.to_string(), b.clone()));
             true
         }
         (_, MettaValueInner::Atom(name)) if name.starts_with('$') => {
-            bindings.push((name.clone(), a.clone()));
+            bindings.push((name.to_string(), a.clone()));
             true
         }
         // Wildcard matches without binding (both directions)
-        (MettaValueInner::Atom(s), _) if s == "_" => true,
-        (_, MettaValueInner::Atom(s)) if s == "_" => true,
+        (MettaValueInner::Atom(s), _) if *s == "_" => true,
+        (_, MettaValueInner::Atom(s)) if *s == "_" => true,
         // Same structure
         (MettaValueInner::Atom(x), MettaValueInner::Atom(y)) => x == y,
         (MettaValueInner::Long(x), MettaValueInner::Long(y)) => x == y,

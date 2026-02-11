@@ -3,53 +3,36 @@
 //! The VM executes compiled bytecode using a stack-based architecture with
 //! support for nondeterminism via choice points and backtracking.
 //!
-//! This module is organized into submodules by functionality:
+//! ## Architecture
+//!
+//! `GenericBytecodeVM<V, F>` is the generic VM parameterized by value type `V`
+//! and factory type `F`. The primary concrete type is:
+//!
+//! ```text
+//! pub type BytecodeVM = GenericBytecodeVM<MettaValue, GcFactory>;
+//! ```
+//!
+//! When `F: Default`, convenience constructors (`new`, `with_config`, `with_env`)
+//! are available that use `F::default()` for the factory.
+//!
+//! ## Submodules
+//!
 //! - `types`: Core type definitions (VmError, VmConfig, CallFrame, etc.)
 //! - `pattern`: Pattern matching helpers
-//! - `stack`: Stack manipulation operations
-//! - `arithmetic`: Arithmetic and math operations
-//! - `comparison`: Comparison and boolean operations
-//! - `value_ops`: Value creation and variable operations
-//! - `control_flow`: Jumps, calls, and returns
-//! - `nondeterminism`: Fork, fail, choice points
-//! - `expression_ops`: Expression manipulation and higher-order operations
-//! - `advanced_calls`: Native, external, and cached calls
-//! - `environment_ops`: Rule definition and dispatch
-//! - `space_ops`: Space operations
-//! - `state_ops`: State cell operations
-//! - `debug_ops`: Debugging operations
 
 use std::fmt;
 use std::marker::Unpin;
 use std::ops::ControlFlow;
 use std::sync::Arc;
-use tracing::{debug, trace, warn};
+use tracing::trace;
 
-use super::chunk::BytecodeChunk;
-use super::external_registry::ExternalRegistry;
-use super::memo_cache::{CacheStats, MemoCache};
-use super::mork_bridge::MorkBridge;
-use super::native_registry::NativeRegistry;
 use super::opcodes::Opcode;
-use crate::backend::models::{MettaValue, MettaValueInner};
-use crate::backend::HeapEnvironment;
+use crate::backend::models::MettaValue;
 
 // === Submodules ===
 
-mod advanced_calls;
-mod arithmetic;
-mod comparison;
-mod control_flow;
-mod debug_ops;
-mod environment_ops;
-mod expression_ops;
-mod nondeterminism;
 mod pattern;
-mod space_ops;
-mod stack;
-mod state_ops;
 mod types;
-mod value_ops;
 
 #[cfg(test)]
 mod tests;
@@ -60,687 +43,12 @@ mod proptests;
 // === Re-exports ===
 
 pub use pattern::{pattern_match_bind, pattern_matches, unify};
-pub use types::{Alternative, BindingFrame, CallFrame, ChoicePoint, VmConfig, VmError, VmResult};
-// Generic types for zero-conversion support
+pub use types::{VmConfig, VmError, VmResult};
+// Generic types
 pub use types::{
     GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
-    HeapAlternative, HeapBindingFrame, HeapCallFrame, HeapChoicePoint,
+    Alternative, BindingFrame, CallFrame, ChoicePoint,
 };
-
-// Export generic VM
-// Note: GenericBytecodeVM and HeapGenericBytecodeVM are defined at bottom of this file
-
-// === BytecodeVM Struct ===
-
-/// The Bytecode Virtual Machine
-#[derive(Debug)]
-pub struct BytecodeVM {
-    /// Value stack for operands and results
-    pub(super) value_stack: Vec<MettaValue>,
-
-    /// Call stack for function frames
-    pub(super) call_stack: Vec<CallFrame>,
-
-    /// Bindings stack for pattern variables
-    pub(super) bindings_stack: Vec<BindingFrame>,
-
-    /// Choice points for nondeterminism
-    pub(super) choice_points: Vec<ChoicePoint>,
-
-    /// Collected results (for nondeterministic evaluation)
-    pub(super) results: Vec<MettaValue>,
-
-    /// Current instruction pointer
-    pub(super) ip: usize,
-
-    /// Current bytecode chunk
-    pub(super) chunk: Arc<BytecodeChunk>,
-
-    /// VM configuration
-    pub(super) config: VmConfig,
-
-    /// Optional bridge to MORK for rule dispatch
-    pub(super) bridge: Option<Arc<MorkBridge>>,
-
-    /// Native function registry for CallNative opcode
-    pub(super) native_registry: Arc<NativeRegistry>,
-
-    /// Memoization cache for CallCached opcode
-    pub(super) memo_cache: Arc<MemoCache>,
-
-    /// External function registry for CallExternal opcode
-    pub(super) external_registry: Arc<ExternalRegistry>,
-
-    /// Optional environment for rule definitions and lookups
-    /// When present, enables DefineRule and RuntimeCall opcodes
-    pub(super) env: Option<HeapEnvironment>,
-}
-
-impl BytecodeVM {
-    // === Constructors ===
-
-    /// Create a new VM with the given chunk
-    pub fn new(chunk: Arc<BytecodeChunk>) -> Self {
-        Self::with_config(chunk, VmConfig::default())
-    }
-
-    /// Create a new VM with custom configuration
-    pub fn with_config(chunk: Arc<BytecodeChunk>, config: VmConfig) -> Self {
-        Self {
-            value_stack: Vec::with_capacity(256),
-            call_stack: Vec::with_capacity(64),
-            bindings_stack: vec![BindingFrame::new(0)],
-            choice_points: Vec::new(),
-            results: Vec::new(),
-            ip: 0,
-            chunk,
-            config,
-            bridge: None,
-            native_registry: Arc::new(NativeRegistry::with_stdlib()),
-            memo_cache: Arc::new(MemoCache::default()),
-            external_registry: Arc::new(ExternalRegistry::default()),
-            env: None,
-        }
-    }
-
-    /// Create a new VM with a bridge for rule dispatch
-    pub fn with_bridge(chunk: Arc<BytecodeChunk>, bridge: Arc<MorkBridge>) -> Self {
-        let mut vm = Self::new(chunk);
-        vm.bridge = Some(bridge);
-        vm
-    }
-
-    /// Create a new VM with custom configuration and bridge
-    pub fn with_config_and_bridge(
-        chunk: Arc<BytecodeChunk>,
-        config: VmConfig,
-        bridge: Arc<MorkBridge>,
-    ) -> Self {
-        Self {
-            value_stack: Vec::with_capacity(256),
-            call_stack: Vec::with_capacity(64),
-            bindings_stack: vec![BindingFrame::new(0)],
-            choice_points: Vec::new(),
-            results: Vec::new(),
-            ip: 0,
-            chunk,
-            config,
-            bridge: Some(bridge),
-            native_registry: Arc::new(NativeRegistry::with_stdlib()),
-            memo_cache: Arc::new(MemoCache::default()),
-            external_registry: Arc::new(ExternalRegistry::default()),
-            env: None,
-        }
-    }
-
-    /// Create a new VM with an environment for rule definitions and lookups.
-    ///
-    /// This enables the DefineRule and RuntimeCall opcodes to interact with
-    /// the MeTTa environment for rule-based evaluation.
-    pub fn with_env(chunk: Arc<BytecodeChunk>, env: HeapEnvironment) -> Self {
-        Self {
-            value_stack: Vec::with_capacity(256),
-            call_stack: Vec::with_capacity(64),
-            bindings_stack: vec![BindingFrame::new(0)],
-            choice_points: Vec::new(),
-            results: Vec::new(),
-            ip: 0,
-            chunk,
-            config: VmConfig::default(),
-            bridge: None,
-            native_registry: Arc::new(NativeRegistry::with_stdlib()),
-            memo_cache: Arc::new(MemoCache::default()),
-            external_registry: Arc::new(ExternalRegistry::default()),
-            env: Some(env),
-        }
-    }
-
-    /// Create a new VM with custom configuration and environment.
-    pub fn with_config_and_env(
-        chunk: Arc<BytecodeChunk>,
-        config: VmConfig,
-        env: HeapEnvironment,
-    ) -> Self {
-        Self {
-            value_stack: Vec::with_capacity(256),
-            call_stack: Vec::with_capacity(64),
-            bindings_stack: vec![BindingFrame::new(0)],
-            choice_points: Vec::new(),
-            results: Vec::new(),
-            ip: 0,
-            chunk,
-            config,
-            bridge: None,
-            native_registry: Arc::new(NativeRegistry::with_stdlib()),
-            memo_cache: Arc::new(MemoCache::default()),
-            external_registry: Arc::new(ExternalRegistry::default()),
-            env: Some(env),
-        }
-    }
-
-    /// Set the external function registry
-    ///
-    /// This allows registering external functions before VM execution.
-    pub fn with_external_registry(mut self, registry: Arc<ExternalRegistry>) -> Self {
-        self.external_registry = registry;
-        self
-    }
-
-    /// Set the environment for rule operations.
-    ///
-    /// This is a builder-style method for setting environment after construction.
-    pub fn with_environment(mut self, env: HeapEnvironment) -> Self {
-        self.env = Some(env);
-        self
-    }
-
-    // === Environment Accessors ===
-
-    /// Get a reference to the environment, if present.
-    pub fn environment(&self) -> Option<&HeapEnvironment> {
-        self.env.as_ref()
-    }
-
-    /// Take ownership of the environment, returning it.
-    ///
-    /// This is used to return the modified environment after execution.
-    pub fn take_environment(&mut self) -> Option<HeapEnvironment> {
-        self.env.take()
-    }
-
-    // === Initial Value Setup ===
-
-    /// Push an initial value onto the stack before execution.
-    ///
-    /// This is used for template execution where a binding value
-    /// needs to be available as local slot 0.
-    #[inline]
-    pub fn push_initial_value(&mut self, value: MettaValue) {
-        self.value_stack.push(value);
-    }
-
-    // === Execution Methods ===
-
-    /// Resume VM execution after JIT bailout for non-determinism.
-    ///
-    /// This allows JIT to compile deterministic parts of bytecode and then
-    /// bail out to VM for Fork/Choice opcodes that require backtracking.
-    ///
-    /// # Arguments
-    /// * `bailout_ip` - The instruction pointer where JIT bailed out
-    /// * `value_stack` - The value stack state at bailout time
-    ///
-    /// # Returns
-    /// The results of completing execution from the bailout point
-    pub fn resume_from_bailout(
-        &mut self,
-        bailout_ip: usize,
-        value_stack: Vec<MettaValue>,
-    ) -> VmResult<Vec<MettaValue>> {
-        self.ip = bailout_ip;
-        self.value_stack = value_stack;
-        self.run_without_jit()
-    }
-
-    /// Run the VM to completion without attempting JIT execution.
-    /// Used for resuming after JIT bailout.
-    fn run_without_jit(&mut self) -> VmResult<Vec<MettaValue>> {
-        loop {
-            match self.step()? {
-                ControlFlow::Continue(()) => continue,
-                ControlFlow::Break(results) => return Ok(results),
-            }
-        }
-    }
-
-    /// Run the VM to completion, returning all results
-    pub fn run(&mut self) -> VmResult<Vec<MettaValue>> {
-        // Pre-allocate local variable slots on the stack.
-        // The VM stores locals ON the stack at positions [base, base+local_count).
-        // StoreLocal pops a value and stores it at stack[base+index], so
-        // slots must exist before the first StoreLocal executes.
-        let local_count = self.chunk.local_count() as usize;
-        if local_count > 0 && self.value_stack.len() < local_count {
-            self.value_stack.resize(local_count, MettaValue::Unit());
-        }
-
-        // JIT execution path
-
-        if let Some(result) = self.try_jit_execute()? {
-            return Ok(result);
-        }
-
-        loop {
-            match self.step()? {
-                ControlFlow::Continue(()) => continue,
-                ControlFlow::Break(results) => return Ok(results),
-            }
-        }
-    }
-
-    /// Run the VM to completion, returning results and the modified environment.
-    ///
-    /// This is the primary entry point for environment-aware bytecode execution.
-    /// It returns both the evaluation results and the (possibly modified) environment,
-    /// enabling rule definitions to persist across evaluations.
-    ///
-    /// # Returns
-    /// A tuple of (results, environment) where environment is the modified state
-    /// after execution (e.g., with newly defined rules).
-    pub fn run_with_env(&mut self) -> VmResult<(Vec<MettaValue>, Option<HeapEnvironment>)> {
-        let results = self.run()?;
-        let env = self.env.take();
-        Ok((results, env))
-    }
-
-    /// Try to execute the chunk using JIT-compiled code
-    ///
-    /// Returns:
-    /// - `Ok(Some(results))` if JIT execution completed successfully
-    /// - `Ok(None)` if JIT is not available or bailed out (fall back to interpreter)
-    /// - `Err(_)` if an error occurred
-
-    fn try_jit_execute(&mut self) -> VmResult<Option<Vec<MettaValue>>> {
-        use super::jit::{JitBailoutReason, JitCompiler, JitContext, JitValue};
-
-        // Record execution for profiling
-        let should_compile = self.chunk.record_jit_execution();
-
-        // Try to compile if hot
-        if should_compile && self.chunk.can_jit_compile() {
-            if self.chunk.jit_profile().try_start_compiling() {
-                // We won the race to compile
-                match JitCompiler::new() {
-                    Ok(mut compiler) => {
-                        match compiler.compile(&self.chunk) {
-                            Ok(code_ptr) => {
-                                unsafe {
-                                    // Code size is not tracked separately for now
-                                    self.chunk.jit_profile().set_compiled(code_ptr, 0);
-                                }
-                            }
-                            Err(_e) => {
-                                // Compilation failed - mark as failed so we don't try again
-                                self.chunk.jit_profile().set_failed();
-                            }
-                        }
-                    }
-                    Err(_e) => {
-                        // Could not create compiler - mark as failed
-                        self.chunk.jit_profile().set_failed();
-                    }
-                }
-            }
-        }
-
-        // Execute JIT code if available
-        if !self.chunk.has_jit_code() {
-            return Ok(None);
-        }
-
-        // Set up JIT context with appropriately sized stack
-        // Use the bytecode length as a conservative upper bound for stack depth
-        // (each push adds at most 1, and typical ops consume before producing)
-        let required_stack = self.chunk.code().len().max(64).min(4096);
-        let constants = self.chunk.constants();
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); required_stack];
-
-        // SAFETY: stack is valid for the lifetime of this function call
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                required_stack,
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        // Get and execute native code
-        if let Some(native_fn) = unsafe { self.chunk.jit_profile().get_native_fn() } {
-            let jit_result = unsafe { native_fn(&mut ctx as *mut JitContext) };
-
-            // Check for bailout
-            if ctx.bailout {
-                // JIT execution bailed out - set interpreter IP to bailout point
-                self.ip = ctx.bailout_ip;
-                // Transfer any values from JIT stack to interpreter stack
-                for i in 0..ctx.sp {
-                    let jit_val = unsafe { *ctx.value_stack.add(i) };
-                    let metta_val = unsafe { jit_val.to_metta() };
-                    self.push(metta_val);
-                }
-                return Ok(None); // Fall back to interpreter
-            }
-
-            // JIT execution completed - collect results
-            // Priority: collected results > return value > stack
-            let mut results = Vec::new();
-
-            // Check for collected results (from nondeterminism)
-            if ctx.results_count > 0 {
-                results.reserve(ctx.results_count);
-                for i in 0..ctx.results_count {
-                    let jit_val = unsafe { *ctx.results.add(i) };
-                    let metta_val = unsafe { jit_val.to_metta() };
-                    results.push(metta_val);
-                }
-            } else if jit_result != 0 {
-                // Use the function return value (NaN-boxed JitValue)
-                let jit_val = JitValue::from_raw(jit_result as u64);
-                let metta_val = unsafe { jit_val.to_metta() };
-                results.push(metta_val);
-            } else {
-                // Fallback to stack
-                results.reserve(ctx.sp);
-                for i in 0..ctx.sp {
-                    let jit_val = unsafe { *ctx.value_stack.add(i) };
-                    let metta_val = unsafe { jit_val.to_metta() };
-                    results.push(metta_val);
-                }
-            }
-
-            if results.is_empty() {
-                results.push(MettaValue::Unit());
-            }
-
-            return Ok(Some(results));
-        }
-
-        Ok(None)
-    }
-
-    /// Execute a single instruction
-    pub fn step(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
-        // Bounds check
-        if self.ip >= self.chunk.len() {
-            // End of chunk - return results or value on stack
-            return self.handle_chunk_end();
-        }
-
-        // Read opcode
-        let opcode_byte = self
-            .chunk
-            .read_byte(self.ip)
-            .ok_or(VmError::IpOutOfBounds)?;
-        let opcode = Opcode::from_byte(opcode_byte).ok_or(VmError::InvalidOpcode(opcode_byte))?;
-
-        // Trace if enabled
-        if self.config.trace {
-            let (disasm, _) = self.chunk.disassemble_instruction(self.ip);
-            trace!(target: "mettatron::vm::step", ip = self.ip, mnemonic = %disasm, stack_depth = self.value_stack.len());
-        }
-
-        // Advance IP past opcode
-        self.ip += 1;
-
-        // Execute opcode
-        match opcode {
-            // Stack operations
-            Opcode::Nop => {}
-            Opcode::Pop => {
-                self.pop()?;
-            }
-            Opcode::Dup => self.op_dup()?,
-            Opcode::Swap => self.op_swap()?,
-            Opcode::Rot3 => self.op_rot3()?,
-            Opcode::Over => self.op_over()?,
-            Opcode::DupN => self.op_dup_n()?,
-            Opcode::PopN => self.op_pop_n()?,
-
-            // Value creation
-            Opcode::PushTrue => self.push(MettaValue::Bool(true)),
-            Opcode::PushFalse => self.push(MettaValue::Bool(false)),
-            Opcode::PushUnit => self.push(MettaValue::Unit()),
-            Opcode::PushEmpty => self.push(MettaValue::sexpr(vec![])),
-            Opcode::PushLongSmall => self.op_push_long_small()?,
-            Opcode::PushLong => self.op_push_constant()?,
-            Opcode::PushAtom => self.op_push_constant()?,
-            Opcode::PushString => self.op_push_constant()?,
-            Opcode::PushUri => self.op_push_constant()?,
-            Opcode::PushConstant => self.op_push_constant()?,
-            Opcode::PushVariable => self.op_push_variable()?,
-            Opcode::MakeSExpr => self.op_make_sexpr()?,
-            Opcode::MakeSExprLarge => self.op_make_sexpr_large()?,
-            Opcode::MakeList => self.op_make_list()?,
-            Opcode::MakeQuote => self.op_make_quote()?,
-
-            // Variable operations
-            Opcode::LoadLocal => self.op_load_local()?,
-            Opcode::StoreLocal => self.op_store_local()?,
-            Opcode::LoadLocalWide => self.op_load_local_wide()?,
-            Opcode::StoreLocalWide => self.op_store_local_wide()?,
-            Opcode::LoadBinding => self.op_load_binding()?,
-            Opcode::StoreBinding => self.op_store_binding()?,
-            Opcode::HasBinding => self.op_has_binding()?,
-            Opcode::ClearBindings => self.op_clear_bindings(),
-            Opcode::PushBindingFrame => self.op_push_binding_frame(),
-            Opcode::PopBindingFrame => self.op_pop_binding_frame()?,
-            Opcode::LoadUpvalue => self.op_load_upvalue()?,
-
-            // Control flow
-            Opcode::Jump => self.op_jump()?,
-            Opcode::JumpIfFalse => self.op_jump_if_false()?,
-            Opcode::JumpIfTrue => self.op_jump_if_true()?,
-            Opcode::JumpIfUnit => self.op_jump_if_unit()?,
-            Opcode::JumpIfError => self.op_jump_if_error()?,
-            Opcode::JumpShort => self.op_jump_short()?,
-            Opcode::JumpIfFalseShort => self.op_jump_if_false_short()?,
-            Opcode::JumpIfTrueShort => self.op_jump_if_true_short()?,
-            Opcode::JumpTable => self.op_jump_table()?,
-            Opcode::Call => self.op_call()?,
-            Opcode::TailCall => self.op_tail_call()?,
-            Opcode::CallN => self.op_call_n()?,
-            Opcode::TailCallN => self.op_tail_call_n()?,
-            Opcode::Return => return self.op_return(),
-            Opcode::ReturnMulti => return self.op_return_multi(),
-
-            // Arithmetic
-            Opcode::Add => self.op_add()?,
-            Opcode::Sub => self.op_sub()?,
-            Opcode::Mul => self.op_mul()?,
-            Opcode::Div => self.op_div()?,
-            Opcode::Mod => self.op_mod()?,
-            Opcode::Neg => self.op_neg()?,
-            Opcode::Abs => self.op_abs()?,
-            Opcode::FloorDiv => self.op_floor_div()?,
-            Opcode::Pow => self.op_pow()?,
-            Opcode::Sqrt => self.op_sqrt()?,
-            Opcode::Log => self.op_log()?,
-            Opcode::Trunc => self.op_trunc()?,
-            Opcode::Ceil => self.op_ceil()?,
-            Opcode::FloorMath => self.op_floor_math()?,
-            Opcode::Round => self.op_round()?,
-            Opcode::Sin => self.op_sin()?,
-            Opcode::Cos => self.op_cos()?,
-            Opcode::Tan => self.op_tan()?,
-            Opcode::Asin => self.op_asin()?,
-            Opcode::Acos => self.op_acos()?,
-            Opcode::Atan => self.op_atan()?,
-            Opcode::IsNan => self.op_isnan()?,
-            Opcode::IsInf => self.op_isinf()?,
-
-            // Comparison
-            Opcode::Lt => self.op_lt()?,
-            Opcode::Le => self.op_le()?,
-            Opcode::Gt => self.op_gt()?,
-            Opcode::Ge => self.op_ge()?,
-            Opcode::Eq => self.op_eq()?,
-            Opcode::Ne => self.op_ne()?,
-            Opcode::StructEq => self.op_struct_eq()?,
-
-            // Boolean
-            Opcode::And => self.op_and()?,
-            Opcode::Or => self.op_or()?,
-            Opcode::Not => self.op_not()?,
-            Opcode::Xor => self.op_xor()?,
-
-            // Type operations
-            Opcode::GetType => self.op_get_type()?,
-            Opcode::CheckType => self.op_check_type()?,
-            Opcode::IsType => self.op_is_type()?,
-            Opcode::AssertType => self.op_assert_type()?,
-
-            // Pattern matching
-            Opcode::Match => self.op_match()?,
-            Opcode::MatchBind => self.op_match_bind()?,
-            Opcode::MatchHead => self.op_match_head()?,
-            Opcode::MatchArity => self.op_match_arity()?,
-            Opcode::MatchGuard => self.op_match_guard()?,
-            Opcode::Unify => self.op_unify()?,
-            Opcode::UnifyBind => self.op_unify_bind()?,
-            Opcode::IsVariable => self.op_is_variable()?,
-            Opcode::IsSExpr => self.op_is_sexpr()?,
-            Opcode::IsSymbol => self.op_is_symbol()?,
-            Opcode::GetHead => self.op_get_head()?,
-            Opcode::GetTail => self.op_get_tail()?,
-            Opcode::GetArity => self.op_get_arity()?,
-            Opcode::GetElement => self.op_get_element()?,
-            Opcode::DeconAtom => self.op_decon_atom()?,
-            Opcode::Repr => self.op_repr()?,
-            Opcode::GetMetaType => self.op_get_metatype()?,
-            Opcode::ConsAtom => self.op_cons_atom()?,
-            Opcode::MapAtom => self.op_map_atom()?,
-            Opcode::FilterAtom => self.op_filter_atom()?,
-            Opcode::FoldlAtom => self.op_foldl_atom()?,
-            Opcode::IndexAtom => self.op_index_atom()?,
-            Opcode::MinAtom => self.op_min_atom()?,
-            Opcode::MaxAtom => self.op_max_atom()?,
-
-            // Nondeterminism
-            Opcode::Fork => return self.op_fork(),
-            Opcode::Fail => return self.op_fail(),
-            Opcode::Cut => self.op_cut(),
-            Opcode::Collect => self.op_collect()?,
-            Opcode::CollectN => self.op_collect_n()?,
-            Opcode::Yield => return self.op_yield(),
-            Opcode::BeginNondet => self.op_begin_nondet(),
-            Opcode::EndNondet => self.op_end_nondet()?,
-            Opcode::Amb => self.op_amb()?,
-            Opcode::Guard => return self.op_guard(),
-            Opcode::Commit => self.op_commit(),
-            Opcode::Backtrack => return self.op_fail(), // Backtrack is alias for Fail
-
-            // Advanced calls
-            Opcode::CallNative => self.op_call_native()?,
-            Opcode::CallExternal => self.op_call_external()?,
-            Opcode::CallCached => self.op_call_cached()?,
-
-            // Environment operations (require Environment to be set)
-            Opcode::DefineRule => self.op_define_rule()?,
-            Opcode::LoadGlobal => self.op_load_global()?,
-            Opcode::StoreGlobal => self.op_store_global()?,
-            Opcode::DispatchRules => self.op_dispatch_rules()?,
-
-            // Space operations
-            Opcode::SpaceAdd => self.op_space_add()?,
-            Opcode::SpaceRemove => self.op_space_remove()?,
-            Opcode::SpaceGetAtoms => self.op_space_get_atoms()?,
-            Opcode::SpaceMatch => self.op_space_match()?,
-            Opcode::LoadSpace => self.op_load_space()?,
-
-            // State operations
-            Opcode::NewState => self.op_new_state()?,
-            Opcode::GetState => self.op_get_state()?,
-            Opcode::ChangeState => self.op_change_state()?,
-
-            // Debug
-            Opcode::Breakpoint => self.op_breakpoint()?,
-            Opcode::Trace => self.op_trace()?,
-            Opcode::Halt => return Err(VmError::Halted),
-
-            // Not yet implemented
-            _ => {
-                return Err(VmError::Runtime(format!(
-                    "Opcode {} not yet implemented",
-                    opcode.mnemonic()
-                )));
-            }
-        }
-
-        Ok(ControlFlow::Continue(()))
-    }
-
-    /// Handle reaching the end of a bytecode chunk
-    fn handle_chunk_end(&mut self) -> VmResult<ControlFlow<Vec<MettaValue>>> {
-        if let Some(frame) = self.call_stack.pop() {
-            // Return to caller
-            let value = self.pop().unwrap_or(MettaValue::Unit());
-            self.ip = frame.return_ip;
-            self.chunk = frame.return_chunk;
-            self.value_stack.truncate(frame.base_ptr);
-
-            // Pop binding frame pushed by execute_rule_body
-            if self.bindings_stack.len() > frame.bindings_base {
-                self.bindings_stack.truncate(frame.bindings_base + 1);
-                self.bindings_stack.pop();
-            }
-
-            self.push(value);
-            Ok(ControlFlow::Continue(()))
-        } else {
-            // End of top-level
-            if !self.value_stack.is_empty() {
-                self.results.extend(self.value_stack.drain(..));
-            }
-            Ok(ControlFlow::Break(std::mem::take(&mut self.results)))
-        }
-    }
-
-    // === Bytecode Reading Helpers ===
-
-    #[inline]
-    pub(super) fn read_u8(&mut self) -> VmResult<u8> {
-        let byte = self
-            .chunk
-            .read_byte(self.ip)
-            .ok_or(VmError::IpOutOfBounds)?;
-        self.ip += 1;
-        Ok(byte)
-    }
-
-    #[inline]
-    pub(super) fn read_i8(&mut self) -> VmResult<i8> {
-        Ok(self.read_u8()? as i8)
-    }
-
-    #[inline]
-    pub(super) fn read_u16(&mut self) -> VmResult<u16> {
-        let value = self.chunk.read_u16(self.ip).ok_or(VmError::IpOutOfBounds)?;
-        self.ip += 2;
-        Ok(value)
-    }
-
-    #[inline]
-    pub(super) fn read_i16(&mut self) -> VmResult<i16> {
-        Ok(self.read_u16()? as i16)
-    }
-
-    // === Test Helper Methods ===
-
-    /// Push a value onto the results vector (for testing)
-    #[cfg(test)]
-    pub fn push_result(&mut self, value: MettaValue) {
-        self.results.push(value);
-    }
-
-    /// Get the number of choice points (for testing)
-    #[cfg(test)]
-    pub fn choice_points_len(&self) -> usize {
-        self.choice_points.len()
-    }
-
-    /// Get the number of entries in the memo cache (for testing)
-    #[cfg(test)]
-    pub fn memo_cache_len(&self) -> usize {
-        self.memo_cache.len()
-    }
-
-    /// Get memo cache statistics (for testing)
-    #[cfg(test)]
-    pub fn memo_cache_stats(&self) -> CacheStats {
-        self.memo_cache.stats()
-    }
-}
 
 // ============================================================================
 // Generic Bytecode VM - Zero-Conversion Support
@@ -754,7 +62,7 @@ use super::chunk::GenericBytecodeChunk;
 ///
 /// This is the generic version of `BytecodeVM` that enables zero-conversion
 /// evaluation with both heap-allocated (`MettaValue`) and arena-allocated
-/// (`ArenaValue<'static>`) values.
+/// (`MettaValue`) values.
 ///
 /// # Type Parameters
 ///
@@ -840,13 +148,13 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
     F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
 {
-    /// Create a new generic VM with the given chunk and factory.
-    pub fn new(chunk: Arc<GenericBytecodeChunk<V>>, factory: F) -> Self {
-        Self::with_config(chunk, VmConfig::default(), factory)
+    /// Create a new generic VM with the given chunk and explicit factory.
+    pub fn with_factory(chunk: Arc<GenericBytecodeChunk<V>>, factory: F) -> Self {
+        Self::with_config_and_factory(chunk, VmConfig::default(), factory)
     }
 
-    /// Create a new generic VM with custom configuration.
-    pub fn with_config(chunk: Arc<GenericBytecodeChunk<V>>, config: VmConfig, factory: F) -> Self {
+    /// Create a new generic VM with custom configuration and explicit factory.
+    pub fn with_config_and_factory(chunk: Arc<GenericBytecodeChunk<V>>, config: VmConfig, factory: F) -> Self {
         Self {
             value_stack: Vec::with_capacity(256),
             call_stack: Vec::with_capacity(64),
@@ -856,16 +164,16 @@ where
             ip: 0,
             chunk,
             config,
-            factory,
-            env: None,
-            native_registry: Arc::new(super::native_registry::GenericNativeRegistry::new()),
+            native_registry: Arc::new(super::native_registry::GenericNativeRegistry::with_stdlib(factory.clone())),
             external_registry: Arc::new(super::external_registry::GenericExternalRegistry::new()),
             memo_cache: Arc::new(super::generic_memo_cache::GenericMemoCache::default()),
+            factory,
+            env: None,
         }
     }
 
-    /// Create a new generic VM with an environment.
-    pub fn with_env(
+    /// Create a new generic VM with an environment and explicit factory.
+    pub fn with_env_and_factory(
         chunk: Arc<GenericBytecodeChunk<V>>,
         env: GenericEnvironment<V, F>,
         factory: F,
@@ -879,11 +187,11 @@ where
             ip: 0,
             chunk,
             config: VmConfig::default(),
-            factory,
-            env: Some(env),
-            native_registry: Arc::new(super::native_registry::GenericNativeRegistry::new()),
+            native_registry: Arc::new(super::native_registry::GenericNativeRegistry::with_stdlib(factory.clone())),
             external_registry: Arc::new(super::external_registry::GenericExternalRegistry::new()),
             memo_cache: Arc::new(super::generic_memo_cache::GenericMemoCache::default()),
+            factory,
+            env: Some(env),
         }
     }
 
@@ -910,6 +218,52 @@ where
             native_registry,
             external_registry,
             memo_cache,
+        }
+    }
+
+    /// Set the external function registry (builder pattern).
+    pub fn with_external_registry(mut self, registry: Arc<super::external_registry::GenericExternalRegistry<V, F>>) -> Self {
+        self.external_registry = registry;
+        self
+    }
+
+    /// Set the environment (builder pattern).
+    pub fn with_environment(mut self, env: GenericEnvironment<V, F>) -> Self {
+        self.env = Some(env);
+        self
+    }
+
+    /// Push an initial value onto the stack before execution.
+    ///
+    /// Used for template execution where a binding value needs to be
+    /// available as local slot 0.
+    #[inline]
+    pub fn push_initial_value(&mut self, value: V) {
+        self.value_stack.push(value);
+    }
+
+    /// Resume VM execution after JIT bailout for non-determinism.
+    ///
+    /// Allows JIT to compile deterministic parts and then bail out to VM
+    /// for Fork/Choice opcodes that require backtracking.
+    pub fn resume_from_bailout(
+        &mut self,
+        bailout_ip: usize,
+        value_stack: Vec<V>,
+    ) -> VmResult<Vec<V>> {
+        self.ip = bailout_ip;
+        self.value_stack = value_stack;
+        self.run_without_jit()
+    }
+
+    /// Run the VM to completion without attempting JIT execution.
+    /// Used for resuming after JIT bailout.
+    fn run_without_jit(&mut self) -> VmResult<Vec<V>> {
+        loop {
+            match self.step()? {
+                ControlFlow::Continue(()) => continue,
+                ControlFlow::Break(results) => return Ok(results),
+            }
         }
     }
 
@@ -1227,10 +581,12 @@ where
                 let name = self.chunk.get_constant(index)
                     .and_then(|v| v.as_atom().map(|s| s.to_string()))
                     .ok_or(VmError::InvalidConstant(index))?;
-                let value = self.get_binding(&name)
-                    .cloned()
-                    .unwrap_or_else(|| self.make_unit());
-                self.push(value);
+                // Search bindings from innermost to outermost
+                if let Some(value) = self.get_binding(&name).cloned() {
+                    self.push(value);
+                } else {
+                    return Err(VmError::InvalidBinding(name));
+                }
             }
             Opcode::StoreBinding => {
                 let index = self.read_u16()?;
@@ -1255,6 +611,9 @@ where
             }
             Opcode::PushBindingFrame => self.push_binding_frame(),
             Opcode::PopBindingFrame => {
+                if self.bindings_stack.len() <= 1 {
+                    return Err(VmError::Runtime("Cannot pop root binding frame".into()));
+                }
                 self.pop_binding_frame();
             }
             Opcode::LoadUpvalue => {
@@ -1274,7 +633,7 @@ where
             Opcode::JumpIfFalse => {
                 let offset = self.read_i16()?;
                 let cond = self.pop()?;
-                if cond.as_bool() == Some(false) || cond.is_unit() {
+                if cond.as_bool() == Some(false) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1294,9 +653,8 @@ where
             }
             Opcode::JumpIfError => {
                 let offset = self.read_i16()?;
-                let value = self.peek()?.clone();
+                let value = self.peek()?;
                 if value.is_error() {
-                    self.pop()?;
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1307,7 +665,7 @@ where
             Opcode::JumpIfFalseShort => {
                 let offset = self.read_i8()?;
                 let cond = self.pop()?;
-                if cond.as_bool() == Some(false) || cond.is_unit() {
+                if cond.as_bool() == Some(false) {
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1327,18 +685,41 @@ where
             Opcode::ReturnMulti => return self.op_return_multi(),
 
             // === Arithmetic ===
-            Opcode::Add => self.op_binary_num(|a, b| a + b, |a, b| a + b)?,
-            Opcode::Sub => self.op_binary_num(|a, b| a - b, |a, b| a - b)?,
-            Opcode::Mul => self.op_binary_num(|a, b| a * b, |a, b| a * b)?,
+            Opcode::Add => self.op_binary_num(|a, b| a.wrapping_add(b), |a, b| a + b)?,
+            Opcode::Sub => self.op_binary_num(|a, b| a.wrapping_sub(b), |a, b| a - b)?,
+            Opcode::Mul => self.op_binary_num(|a, b| a.wrapping_mul(b), |a, b| a * b)?,
             Opcode::Div => {
                 let b = self.pop()?;
                 let a = self.pop()?;
                 match (a.as_long(), b.as_long()) {
-                    (Some(x), Some(0)) => return Err(VmError::DivisionByZero),
-                    (Some(x), Some(y)) => self.push(self.make_long(x / y)),
+                    (Some(_), Some(0)) => return Err(VmError::DivisionByZero),
+                    (Some(x), Some(y)) => match x.checked_div(y) {
+                        Some(r) => self.push(self.make_long(r)),
+                        None => return Err(VmError::ArithmeticOverflow),
+                    },
                     _ => match (a.as_float(), b.as_float()) {
-                        (Some(x), Some(y)) => self.push(self.make_float(x / y)),
-                        _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                        (Some(x), Some(y)) => {
+                            if y == 0.0 {
+                                return Err(VmError::DivisionByZero);
+                            }
+                            self.push(self.make_float(x / y));
+                        }
+                        _ => {
+                            // Mixed Long/Float type promotion
+                            match (a.as_long(), b.as_float()) {
+                                (Some(x), Some(y)) => {
+                                    if y == 0.0 { return Err(VmError::DivisionByZero); }
+                                    self.push(self.make_float(x as f64 / y));
+                                }
+                                _ => match (a.as_float(), b.as_long()) {
+                                    (Some(x), Some(y)) => {
+                                        if y == 0 { return Err(VmError::DivisionByZero); }
+                                        self.push(self.make_float(x / y as f64));
+                                    }
+                                    _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1346,14 +727,11 @@ where
                 let b = self.pop()?;
                 let a = self.pop()?;
                 match (a.as_long(), b.as_long()) {
-                    (Some(x), Some(0)) => return Err(VmError::DivisionByZero),
-                    (Some(x), Some(y)) => {
-                        // Check for overflow case (MIN % -1)
-                        if x == i64::MIN && y == -1 {
-                            return Err(VmError::ArithmeticOverflow);
-                        }
-                        self.push(self.make_long(x % y));
-                    }
+                    (Some(_), Some(0)) => return Err(VmError::DivisionByZero),
+                    (Some(x), Some(y)) => match x.checked_rem(y) {
+                        Some(r) => self.push(self.make_long(r)),
+                        None => return Err(VmError::ArithmeticOverflow),
+                    },
                     _ => match (a.as_float(), b.as_float()) {
                         (Some(x), Some(y)) => self.push(self.make_float(x % y)),
                         _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
@@ -1373,6 +751,10 @@ where
             Opcode::Abs => {
                 let a = self.pop()?;
                 if let Some(x) = a.as_long() {
+                    // i64::MIN.abs() overflows because |i64::MIN| > i64::MAX
+                    if x == i64::MIN {
+                        return Err(VmError::ArithmeticOverflow);
+                    }
                     self.push(self.make_long(x.abs()));
                 } else if let Some(x) = a.as_float() {
                     self.push(self.make_float(x.abs()));
@@ -1383,24 +765,54 @@ where
             Opcode::FloorDiv => {
                 let b = self.pop()?;
                 let a = self.pop()?;
-                match (a.as_float(), b.as_float()) {
-                    (Some(x), Some(y)) if y != 0.0 => {
-                        self.push(self.make_float((x / y).floor()));
+                match (a.as_long(), b.as_long()) {
+                    (Some(_), Some(0)) => return Err(VmError::DivisionByZero),
+                    (Some(x), Some(y)) => {
+                        self.push(self.make_long(x.div_euclid(y)));
                     }
-                    (Some(_), Some(_)) => return Err(VmError::DivisionByZero),
-                    _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                    _ => match (a.as_float(), b.as_float()) {
+                        (Some(x), Some(y)) if y != 0.0 => {
+                            self.push(self.make_long((x / y).floor() as i64));
+                        }
+                        (Some(_), Some(_)) => return Err(VmError::DivisionByZero),
+                        _ => {
+                            // Mixed Long/Float type promotion
+                            match (a.as_long(), b.as_float()) {
+                                (Some(x), Some(y)) => {
+                                    if y == 0.0 { return Err(VmError::DivisionByZero); }
+                                    self.push(self.make_long((x as f64 / y).floor() as i64));
+                                }
+                                _ => match (a.as_float(), b.as_long()) {
+                                    (Some(x), Some(y)) => {
+                                        if y == 0 { return Err(VmError::DivisionByZero); }
+                                        self.push(self.make_long((x / y as f64).floor() as i64));
+                                    }
+                                    _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Opcode::Pow => {
                 let b = self.pop()?;
                 let a = self.pop()?;
-                match (a.as_float(), b.as_float()) {
-                    (Some(x), Some(y)) => self.push(self.make_float(x.powf(y))),
-                    _ => match (a.as_long(), b.as_long()) {
-                        (Some(x), Some(y)) if y >= 0 => {
-                            self.push(self.make_long(x.pow(y as u32)));
+                match (a.as_long(), b.as_long()) {
+                    (Some(x), Some(y)) if y >= 0 => {
+                        self.push(self.make_long(x.pow(y as u32)));
+                    }
+                    _ => match (a.as_float(), b.as_float()) {
+                        (Some(x), Some(y)) => self.push(self.make_float(x.powf(y))),
+                        _ => match (a.as_long(), b.as_float()) {
+                            (Some(x), Some(y)) => self.push(self.make_float((x as f64).powf(y))),
+                            _ => match (a.as_float(), b.as_long()) {
+                                (Some(x), Some(y)) => self.push(self.make_float(x.powi(y as i32))),
+                                _ => return Err(VmError::TypeError {
+                                    expected: "number (Long or Float)",
+                                    got: "other",
+                                }),
+                            }
                         }
-                        _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
                     }
                 }
             }
@@ -1415,13 +827,21 @@ where
                 }
             }
             Opcode::Log => {
-                let a = self.pop()?;
-                if let Some(x) = a.as_float() {
-                    self.push(self.make_float(x.ln()));
-                } else if let Some(x) = a.as_long() {
-                    self.push(self.make_float((x as f64).ln()));
-                } else {
-                    return Err(VmError::TypeError { expected: "number", got: "other" });
+                // Binary log(base, value) - stack: [base, value] -> pops value first, then base
+                let value = self.pop()?;
+                let base = self.pop()?;
+                match (base.as_float(), value.as_float()) {
+                    (Some(b), Some(v)) => self.push(self.make_float(v.log(b))),
+                    _ => match (base.as_long(), value.as_float()) {
+                        (Some(b), Some(v)) => self.push(self.make_float(v.log(b as f64))),
+                        _ => match (base.as_float(), value.as_long()) {
+                            (Some(b), Some(v)) => self.push(self.make_float((v as f64).log(b))),
+                            _ => match (base.as_long(), value.as_long()) {
+                                (Some(b), Some(v)) => self.push(self.make_float((v as f64).log(b as f64))),
+                                _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+                            }
+                        }
+                    }
                 }
             }
             Opcode::Trunc => {
@@ -1437,31 +857,31 @@ where
             Opcode::Ceil => {
                 let a = self.pop()?;
                 if let Some(x) = a.as_float() {
-                    self.push(self.make_float(x.ceil()));
+                    self.push(self.make_long(x.ceil() as i64));
                 } else if a.as_long().is_some() {
                     self.push(a);
                 } else {
-                    return Err(VmError::TypeError { expected: "number", got: "other" });
+                    return Err(VmError::TypeError { expected: "Float or Long", got: "other" });
                 }
             }
             Opcode::FloorMath => {
                 let a = self.pop()?;
                 if let Some(x) = a.as_float() {
-                    self.push(self.make_float(x.floor()));
+                    self.push(self.make_long(x.floor() as i64));
                 } else if a.as_long().is_some() {
                     self.push(a);
                 } else {
-                    return Err(VmError::TypeError { expected: "number", got: "other" });
+                    return Err(VmError::TypeError { expected: "Float or Long", got: "other" });
                 }
             }
             Opcode::Round => {
                 let a = self.pop()?;
                 if let Some(x) = a.as_float() {
-                    self.push(self.make_float(x.round()));
+                    self.push(self.make_long(x.round() as i64));
                 } else if a.as_long().is_some() {
                     self.push(a);
                 } else {
-                    return Err(VmError::TypeError { expected: "number", got: "other" });
+                    return Err(VmError::TypeError { expected: "Float or Long", got: "other" });
                 }
             }
             Opcode::Sin => self.op_unary_float(f64::sin)?,
@@ -1472,13 +892,23 @@ where
             Opcode::Atan => self.op_unary_float(f64::atan)?,
             Opcode::IsNan => {
                 let a = self.pop()?;
-                let is_nan = a.as_float().map(|f| f.is_nan()).unwrap_or(false);
-                self.push(self.make_bool(is_nan));
+                if let Some(x) = a.as_float() {
+                    self.push(self.make_bool(x.is_nan()));
+                } else if a.as_long().is_some() {
+                    self.push(self.make_bool(false)); // integers are never NaN
+                } else {
+                    return Err(VmError::TypeError { expected: "Float or Long", got: "other" });
+                }
             }
             Opcode::IsInf => {
                 let a = self.pop()?;
-                let is_inf = a.as_float().map(|f| f.is_infinite()).unwrap_or(false);
-                self.push(self.make_bool(is_inf));
+                if let Some(x) = a.as_float() {
+                    self.push(self.make_bool(x.is_infinite()));
+                } else if a.as_long().is_some() {
+                    self.push(self.make_bool(false)); // integers are never infinite
+                } else {
+                    return Err(VmError::TypeError { expected: "Float or Long", got: "other" });
+                }
             }
 
             // === Comparison ===
@@ -1573,23 +1003,35 @@ where
                     if let Some(first) = items.first() {
                         self.push(first.clone());
                     } else {
-                        self.push(self.make_unit());
+                        return Err(VmError::TypeError {
+                            expected: "non-empty S-expression",
+                            got: "other",
+                        });
                     }
                 } else {
-                    self.push(self.make_unit());
+                    return Err(VmError::TypeError {
+                        expected: "non-empty S-expression",
+                        got: "other",
+                    });
                 }
             }
             Opcode::GetTail => {
                 let a = self.pop()?;
                 if let Some(items) = a.as_sexpr() {
-                    if items.len() > 1 {
+                    if !items.is_empty() {
                         let tail: Vec<V> = items[1..].to_vec();
                         self.push(self.make_sexpr(tail));
                     } else {
-                        self.push(self.make_sexpr(vec![]));
+                        return Err(VmError::TypeError {
+                            expected: "non-empty S-expression",
+                            got: "other",
+                        });
                     }
                 } else {
-                    self.push(self.make_unit());
+                    return Err(VmError::TypeError {
+                        expected: "non-empty S-expression",
+                        got: "other",
+                    });
                 }
             }
             Opcode::GetArity => {
@@ -1597,20 +1039,29 @@ where
                 if let Some(items) = a.as_sexpr() {
                     self.push(self.make_long(items.len() as i64));
                 } else {
-                    self.push(self.make_long(0));
+                    return Err(VmError::TypeError {
+                        expected: "S-expression",
+                        got: "other",
+                    });
                 }
             }
             Opcode::GetElement => {
-                let index = self.pop()?;
-                let expr = self.pop()?;
-                if let (Some(items), Some(i)) = (expr.as_sexpr(), index.as_long()) {
-                    if i >= 0 && (i as usize) < items.len() {
-                        self.push(items[i as usize].clone());
+                let index = self.read_u8()? as usize;
+                let value = self.pop()?;
+                if let Some(items) = value.as_sexpr() {
+                    if index < items.len() {
+                        self.push(items[index].clone());
                     } else {
-                        self.push(self.make_unit());
+                        return Err(VmError::TypeError {
+                            expected: "S-expression with valid index",
+                            got: "other",
+                        });
                     }
                 } else {
-                    self.push(self.make_unit());
+                    return Err(VmError::TypeError {
+                        expected: "S-expression with valid index",
+                        got: "other",
+                    });
                 }
             }
             Opcode::DeconAtom => self.op_decon_atom()?,
@@ -1719,7 +1170,16 @@ where
             (Some(x), Some(y)) => self.push(self.make_long(int_op(x, y))),
             _ => match (a.as_float(), b.as_float()) {
                 (Some(x), Some(y)) => self.push(self.make_float(float_op(x, y))),
-                _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                _ => {
+                    // Mixed Long/Float type promotion
+                    match (a.as_long(), b.as_float()) {
+                        (Some(x), Some(y)) => self.push(self.make_float(float_op(x as f64, y))),
+                        _ => match (a.as_float(), b.as_long()) {
+                            (Some(x), Some(y)) => self.push(self.make_float(float_op(x, y as f64))),
+                            _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -1752,19 +1212,34 @@ where
             (Some(x), Some(y)) => self.push(self.make_bool(int_cmp(x, y))),
             _ => match (a.as_float(), b.as_float()) {
                 (Some(x), Some(y)) => self.push(self.make_bool(float_cmp(x, y))),
-                _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                _ => {
+                    // Mixed Long/Float type promotion
+                    match (a.as_long(), b.as_float()) {
+                        (Some(x), Some(y)) => self.push(self.make_bool(float_cmp(x as f64, y))),
+                        _ => match (a.as_float(), b.as_long()) {
+                            (Some(x), Some(y)) => self.push(self.make_bool(float_cmp(x, y as f64))),
+                            _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                        }
+                    }
+                }
             }
         }
         Ok(())
     }
 
-    /// Rot3: rotate top 3 stack elements (a b c -> b c a).
+    /// Rot3: rotate top 3 stack elements [a, b, c] -> [c, a, b].
     fn op_rot3(&mut self) -> VmResult<()> {
         let len = self.value_stack.len();
         if len < 3 {
             return Err(VmError::StackUnderflow);
         }
-        self.value_stack[len - 3..].rotate_left(1);
+        // [a, b, c] -> [c, a, b]
+        let c = self.value_stack.pop().expect("length checked");
+        let b = self.value_stack.pop().expect("length checked");
+        let a = self.value_stack.pop().expect("length checked");
+        self.value_stack.push(c);
+        self.value_stack.push(a);
+        self.value_stack.push(b);
         Ok(())
     }
 
@@ -1775,11 +1250,17 @@ where
         Ok(())
     }
 
-    /// DupN: duplicate n-th element to top.
+    /// DupN: duplicate top N values.
     fn op_dup_n(&mut self) -> VmResult<()> {
         let n = self.read_u8()? as usize;
-        let value = self.peek_n(n)?.clone();
-        self.push(value);
+        let len = self.value_stack.len();
+        if n > len {
+            return Err(VmError::StackUnderflow);
+        }
+        for i in (len - n)..len {
+            let value = self.value_stack[i].clone();
+            self.push(value);
+        }
         Ok(())
     }
 
@@ -1827,8 +1308,14 @@ where
         if arity > len {
             return Err(VmError::StackUnderflow);
         }
-        let items: Vec<V> = self.value_stack.drain((len - arity)..).collect();
-        self.push(self.make_sexpr(items));
+        let elements: Vec<V> = self.value_stack.drain((len - arity)..).collect();
+        // Build proper Cons-list by folding right
+        let mut list = self.make_unit();
+        for elem in elements.into_iter().rev() {
+            let cons_atom = self.make_atom("Cons");
+            list = self.make_sexpr(vec![cons_atom, elem, list]);
+        }
+        self.push(list);
         Ok(())
     }
 
@@ -1840,24 +1327,39 @@ where
         Ok(())
     }
 
+    /// Multi-way branch via jump table.
+    ///
+    /// Reads a table index from bytecode, pops a selector value from stack,
+    /// looks up the corresponding offset in the jump table, and jumps to it.
+    /// If the selector doesn't match any entry, jumps to the default offset.
+    ///
+    /// Stack: [selector] -> []
+    /// Bytecode: JumpTable table_index:u16
     fn op_jump_table(&mut self) -> VmResult<()> {
-        // Read number of cases and default offset
-        let num_cases = self.read_u8()? as usize;
-        let value = self.pop()?;
+        let table_index = self.read_u16()? as usize;
+        let selector = self.pop()?;
 
-        // Find matching case
-        for _ in 0..num_cases {
-            let case_const_idx = self.read_u16()?;
-            let case_offset = self.read_i16()?;
-            if let Some(case_val) = self.chunk.get_constant(case_const_idx) {
-                if value.structurally_equivalent(case_val) {
-                    self.ip = (self.ip as isize + case_offset as isize) as usize;
-                    return Ok(());
-                }
-            }
-        }
+        // Get jump table from chunk
+        let jump_table = self
+            .chunk
+            .get_jump_table(table_index)
+            .ok_or_else(|| VmError::Runtime(format!("Invalid jump table index: {}", table_index)))?;
 
-        // No match - fall through
+        // Compute hash of selector value for table lookup
+        use xxhash_rust::xxh3::xxh3_64;
+        // Hash the selector value using debug repr for consistent hashing
+        let selector_hash = xxh3_64(format!("{:?}", selector).as_bytes());
+
+        // Look up in jump table entries
+        let target_offset = jump_table
+            .entries
+            .iter()
+            .find(|(hash, _)| *hash == selector_hash)
+            .map(|(_, offset)| *offset)
+            .unwrap_or(jump_table.default_offset);
+
+        // Jump to target
+        self.ip = target_offset;
         Ok(())
     }
 
@@ -1883,6 +1385,7 @@ where
         // Dispatch via environment rules
         self.push(expr);
         self.op_dispatch_rules()?;
+
         Ok(())
     }
 
@@ -1911,50 +1414,133 @@ where
         Ok(())
     }
 
+    /// Call with N arguments where the head is on the stack (not constant pool).
+    ///
+    /// Pops the head and N arguments from the stack, builds a call expression,
+    /// and dispatches to environment for rule matching.
+    ///
+    /// Stack: [head, arg1, arg2, ..., argN] -> [result]
+    /// Bytecode: CallN arity:u8
     fn op_call_n(&mut self) -> VmResult<()> {
-        // Call with N arguments
-        self.op_call()
+        trace!(target: "mettatron::vm::call", ip = self.ip, "call_n");
+        let arity = self.read_u8()? as usize;
+
+        // Pop arguments and head from stack
+        // Stack order: head is pushed first, then args left-to-right
+        // So we need to pop args first, then head
+        if self.value_stack.len() < arity + 1 {
+            return Err(VmError::StackUnderflow);
+        }
+
+        // Pop arguments
+        let args: Vec<V> = self
+            .value_stack
+            .drain(self.value_stack.len() - arity..)
+            .collect();
+
+        // Pop head
+        let head = self.pop()?;
+
+        // Extract head symbol if it's an atom
+        let is_atom = head.as_atom().is_some();
+
+        // Build the call expression
+        let mut items = Vec::with_capacity(arity + 1);
+        items.push(head);
+        items.extend(args);
+        let expr = self.make_sexpr(items);
+
+        if !is_atom {
+            // Head is not an atom - return expression as data
+            self.push(expr);
+            return Ok(());
+        }
+
+        // Dispatch via environment rules
+        self.push(expr);
+        self.op_dispatch_rules()?;
+        Ok(())
     }
 
+    /// Tail call with N arguments where the head is on the stack.
+    /// Same as CallN but reuses current call frame for TCO.
+    ///
+    /// Stack: [head, arg1, arg2, ..., argN] -> [result]
+    /// Bytecode: TailCallN arity:u8
     fn op_tail_call_n(&mut self) -> VmResult<()> {
-        self.op_tail_call()
+        trace!(target: "mettatron::vm::call", ip = self.ip, "tail_call_n");
+        let arity = self.read_u8()? as usize;
+
+        // Pop arguments and head from stack
+        if self.value_stack.len() < arity + 1 {
+            return Err(VmError::StackUnderflow);
+        }
+
+        // Pop arguments
+        let args: Vec<V> = self
+            .value_stack
+            .drain(self.value_stack.len() - arity..)
+            .collect();
+
+        // Pop head
+        let head = self.pop()?;
+
+        // Build the call expression
+        let mut items = Vec::with_capacity(arity + 1);
+        items.push(head);
+        items.extend(args);
+        let expr = self.make_sexpr(items);
+
+        // Dispatch via environment rules (tail call - no new frame)
+        self.push(expr);
+        self.op_dispatch_rules()?;
+        Ok(())
     }
 
     fn op_return(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
+        trace!(target: "mettatron::vm::call", ip = self.ip, "return");
+        let value = self.pop()?;
         if let Some(frame) = self.call_stack.pop() {
-            let value = self.pop().unwrap_or_else(|_| self.make_unit());
+            // Return to caller - restore chunk/ip
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
+
+            // Pop binding frames down to caller's level
+            while self.bindings_stack.len() > frame.bindings_base + 1 {
+                self.bindings_stack.pop();
+            }
+
             self.push(value);
             Ok(ControlFlow::Continue(()))
         } else {
-            // Top level return
-            if !self.value_stack.is_empty() {
-                self.results.extend(self.value_stack.drain(..));
-            }
+            // Return from top-level
+            self.results.push(value);
             Ok(ControlFlow::Break(std::mem::take(&mut self.results)))
         }
     }
 
     fn op_return_multi(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
-        let count = self.read_u8()? as usize;
-        let len = self.value_stack.len();
-        if count > len {
-            return Err(VmError::StackUnderflow);
-        }
+        // Return all values on stack above base_ptr
+        let base = self.call_stack.last().map(|f| f.base_ptr).unwrap_or(0);
+        let values: Vec<V> = self.value_stack.drain(base..).collect();
 
         if let Some(frame) = self.call_stack.pop() {
-            let values: Vec<V> = self.value_stack.drain((len - count)..).collect();
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
+
+            // Pop binding frames down to caller's level
+            while self.bindings_stack.len() > frame.bindings_base + 1 {
+                self.bindings_stack.pop();
+            }
+
             for v in values {
                 self.push(v);
             }
             Ok(ControlFlow::Continue(()))
         } else {
-            self.results.extend(self.value_stack.drain(..));
+            self.results.extend(values);
             Ok(ControlFlow::Break(std::mem::take(&mut self.results)))
         }
     }
@@ -1968,65 +1554,59 @@ where
 
     fn op_check_type(&mut self) -> VmResult<()> {
         let type_val = self.pop()?;
-        let value = self.peek()?.clone();
+        let value = self.pop()?;
 
-        let type_name = if let Some(name) = type_val.as_atom() {
+        let expected = if let Some(name) = type_val.as_atom() {
             name
         } else {
-            return Err(VmError::TypeError { expected: "atom", got: "other" });
+            return Err(VmError::TypeError { expected: "type symbol", got: "other" });
         };
 
-        let matches = value.type_name() == type_name;
+        // Type variables match anything (consistent with tree-visitor)
+        let matches = if expected.starts_with('$') {
+            true
+        } else {
+            value.type_name() == expected
+        };
         self.push(self.make_bool(matches));
         Ok(())
     }
 
     fn op_is_type(&mut self) -> VmResult<()> {
-        let type_val = self.pop()?;
-        let value = self.pop()?;
-
-        let type_name = if let Some(name) = type_val.as_atom() {
-            name
-        } else {
-            return Err(VmError::TypeError { expected: "atom", got: "other" });
-        };
-
-        let matches = value.type_name() == type_name;
-        self.push(self.make_bool(matches));
-        Ok(())
+        // Same as check_type for now
+        self.op_check_type()
     }
 
     fn op_assert_type(&mut self) -> VmResult<()> {
         let type_val = self.pop()?;
-        let value = self.peek()?.clone();
+        let value = self.peek()?;
 
-        let type_name = if let Some(name) = type_val.as_atom() {
+        let expected = if let Some(name) = type_val.as_atom() {
             name
         } else {
-            return Err(VmError::TypeError { expected: "atom", got: "other" });
+            return Err(VmError::TypeError { expected: "type symbol", got: "other" });
         };
 
-        if value.type_name() != type_name {
-            let error = self.make_error(
-                &format!("Type assertion failed: expected {}", type_name),
-                value,
-            );
-            self.push(error);
+        if value.type_name() != expected {
+            return Err(VmError::TypeError {
+                expected: "matching type",
+                got: value.type_name(),
+            });
         }
         Ok(())
     }
 
     fn op_match(&mut self) -> VmResult<()> {
-        let pattern = self.pop()?;
         let value = self.pop()?;
+        let pattern = self.pop()?;
         let matches = self.pattern_matches_generic(&pattern, &value);
         self.push(self.make_bool(matches));
         Ok(())
     }
 
     fn op_match_bind(&mut self) -> VmResult<()> {
-        let pattern = self.pop()?;
         let value = self.pop()?;
+        let pattern = self.pop()?;
 
         if let Some(bindings) = self.pattern_match_bind_generic(&pattern, &value) {
             for (name, val) in bindings {
@@ -2039,18 +1619,43 @@ where
         Ok(())
     }
 
+    /// Match head symbol of an S-expression for fast dispatch optimization.
+    ///
+    /// Reads an expected symbol index from the bytecode, pops a value from the stack,
+    /// and checks if the value is an S-expression whose first element matches the
+    /// expected symbol. Pushes Bool(true) if it matches, Bool(false) otherwise.
+    ///
+    /// Stack: [value] -> [bool]
+    /// Bytecode: MatchHead expected_index:u8
     fn op_match_head(&mut self) -> VmResult<()> {
-        let head_pattern = self.pop()?;
+        let expected_index = self.read_u8()? as u16;
+
+        // Get expected symbol from constant pool and clone it to avoid borrow issues
+        let expected = self
+            .chunk
+            .get_constant(expected_index)
+            .ok_or(VmError::InvalidConstant(expected_index))?
+            .clone();
+
         let value = self.pop()?;
 
-        if let Some(items) = value.as_sexpr() {
+        // Check if value is an S-expression with matching head
+        let matches = if let Some(items) = value.as_sexpr() {
             if let Some(head) = items.first() {
-                let matches = self.pattern_matches_generic(&head_pattern, head);
-                self.push(self.make_bool(matches));
-                return Ok(());
+                // Compare expected atom against head atom
+                if let (Some(exp_sym), Some(head_sym)) = (expected.as_atom(), head.as_atom()) {
+                    exp_sym == head_sym
+                } else {
+                    false
+                }
+            } else {
+                false
             }
-        }
-        self.push(self.make_bool(false));
+        } else {
+            false
+        };
+
+        self.push(self.make_bool(matches));
         Ok(())
     }
 
@@ -2105,16 +1710,21 @@ where
         let value = self.pop()?;
         if let Some(items) = value.as_sexpr() {
             if items.is_empty() {
-                return Err(VmError::Runtime("decons-atom: empty expression".to_string()));
+                return Err(VmError::TypeError {
+                    expected: "non-empty S-expression",
+                    got: "empty or non-expression",
+                });
             }
             let head = items[0].clone();
             let tail = self.make_sexpr(items[1..].to_vec());
-            // Return (head tail) pair - matching BytecodeVM semantics
+            // Return (head tail) pair as S-expression
             self.push(self.factory.sexpr(vec![head, tail]));
         } else {
-            // Non-expression: return (atom ()) pair
-            let empty_tail = self.make_sexpr(vec![]);
-            self.push(self.factory.sexpr(vec![value, empty_tail]));
+            // Empty or non-expression: nondeterministic failure
+            return Err(VmError::TypeError {
+                expected: "non-empty S-expression",
+                got: "empty or non-expression",
+            });
         }
         Ok(())
     }
@@ -2134,6 +1744,18 @@ where
             "Variable"
         } else if value.as_atom().is_some() {
             "Symbol"
+        } else if value.as_bool().is_some() {
+            "Bool"
+        } else if value.as_long().is_some() || value.as_float().is_some() {
+            "Number"
+        } else if value.as_string().is_some() {
+            "String"
+        } else if value.is_unit() {
+            "Unit"
+        } else if value.is_error() {
+            "Error"
+        } else if value.as_state().is_some() {
+            "State"
         } else {
             "Grounded"
         };
@@ -2141,17 +1763,27 @@ where
         Ok(())
     }
 
+    /// cons-atom: prepend head to tail S-expression
+    /// Matches tree-visitor semantics in list_ops.rs:118-126
     fn op_cons_atom(&mut self) -> VmResult<()> {
         let tail = self.pop()?;
         let head = self.pop()?;
 
-        let mut items = vec![head];
         if let Some(tail_items) = tail.as_sexpr() {
+            // Prepend head to existing S-expression
+            let mut items = Vec::with_capacity(tail_items.len() + 1);
+            items.push(head);
             items.extend(tail_items.iter().cloned());
+            self.push(self.make_sexpr(items));
+        } else if tail.is_unit() {
+            // Create single-element S-expression
+            self.push(self.make_sexpr(vec![head]));
         } else {
-            items.push(tail);
+            return Err(VmError::TypeError {
+                expected: "S-expression or Nil",
+                got: "other",
+            });
         }
-        self.push(self.make_sexpr(items));
         Ok(())
     }
 
@@ -2375,59 +2007,134 @@ where
         let index = self.pop()?;
         let expr = self.pop()?;
 
-        if let (Some(items), Some(i)) = (expr.as_sexpr(), index.as_long()) {
-            if i >= 0 && (i as usize) < items.len() {
-                self.push(items[i as usize].clone());
-            } else {
-                let error = self.make_error("Index out of bounds", index);
-                self.push(error);
+        let idx = match index.as_long() {
+            Some(i) => i,
+            None => {
+                return Err(VmError::TypeError {
+                    expected: "Long (index)",
+                    got: "other",
+                });
             }
-        } else {
-            self.push(self.make_unit());
+        };
+
+        match expr.as_sexpr() {
+            Some(items) => {
+                if idx < 0 || idx as usize >= items.len() {
+                    return Err(VmError::IndexOutOfBounds {
+                        index: idx as usize,
+                        len: items.len(),
+                    });
+                }
+                self.push(items[idx as usize].clone());
+            }
+            None => {
+                return Err(VmError::TypeError {
+                    expected: "S-expression",
+                    got: "other",
+                });
+            }
         }
         Ok(())
     }
 
     fn op_min_atom(&mut self) -> VmResult<()> {
         let expr = self.pop()?;
-        if let Some(items) = expr.as_sexpr() {
-            let mut min: Option<V> = None;
-            for item in items {
-                if let Some(current_min) = &min {
-                    if let (Some(a), Some(b)) = (item.as_long(), current_min.as_long()) {
-                        if a < b {
-                            min = Some(item.clone());
-                        }
-                    }
-                } else {
-                    min = Some(item.clone());
-                }
+        let items = match expr.as_sexpr() {
+            Some(items) => items,
+            None => {
+                return Err(VmError::TypeError {
+                    expected: "S-expression",
+                    got: "other",
+                });
             }
-            self.push(min.unwrap_or_else(|| self.make_unit()));
-        } else {
-            self.push(self.make_unit());
+        };
+
+        if items.is_empty() {
+            return Err(VmError::TypeError {
+                expected: "non-empty S-expression",
+                got: "empty expression",
+            });
+        }
+
+        // Find minimum among numeric values
+        let mut min_val: Option<f64> = None;
+        let mut min_is_long = true;
+
+        for item in items {
+            if let Some(x) = item.as_long() {
+                let val = x as f64;
+                min_val = Some(min_val.map_or(val, |m: f64| m.min(val)));
+            } else if let Some(x) = item.as_float() {
+                min_is_long = false;
+                min_val = Some(min_val.map_or(x, |m: f64| m.min(x)));
+            }
+            // Skip non-numeric values
+        }
+
+        match min_val {
+            Some(v) if min_is_long && v == (v as i64) as f64 => {
+                self.push(self.make_long(v as i64));
+            }
+            Some(v) => {
+                self.push(self.make_float(v));
+            }
+            None => {
+                return Err(VmError::TypeError {
+                    expected: "numeric values in expression",
+                    got: "no numeric values",
+                });
+            }
         }
         Ok(())
     }
 
     fn op_max_atom(&mut self) -> VmResult<()> {
         let expr = self.pop()?;
-        if let Some(items) = expr.as_sexpr() {
-            let mut max: Option<V> = None;
-            for item in items {
-                if let Some(current_max) = &max {
-                    if let (Some(a), Some(b)) = (item.as_long(), current_max.as_long()) {
-                        if a > b {
-                            max = Some(item.clone());
-                        }
-                    }
-                } else {
-                    max = Some(item.clone());
-                }
+        let items = match expr.as_sexpr() {
+            Some(items) => items,
+            None => {
+                return Err(VmError::TypeError {
+                    expected: "S-expression",
+                    got: "other",
+                });
             }
-            self.push(max.unwrap_or_else(|| self.make_unit()));
-        } else {
-            self.push(self.make_unit());
+        };
+
+        if items.is_empty() {
+            return Err(VmError::TypeError {
+                expected: "non-empty S-expression",
+                got: "empty expression",
+            });
+        }
+
+        // Find maximum among numeric values
+        let mut max_val: Option<f64> = None;
+        let mut max_is_long = true;
+
+        for item in items {
+            if let Some(x) = item.as_long() {
+                let val = x as f64;
+                max_val = Some(max_val.map_or(val, |m: f64| m.max(val)));
+            } else if let Some(x) = item.as_float() {
+                max_is_long = false;
+                max_val = Some(max_val.map_or(x, |m: f64| m.max(x)));
+            }
+            // Skip non-numeric values
+        }
+
+        match max_val {
+            Some(v) if max_is_long && v == (v as i64) as f64 => {
+                self.push(self.make_long(v as i64));
+            }
+            Some(v) => {
+                self.push(self.make_float(v));
+            }
+            None => {
+                return Err(VmError::TypeError {
+                    expected: "numeric values in expression",
+                    got: "no numeric values",
+                });
+            }
         }
         Ok(())
     }
@@ -2435,81 +2142,100 @@ where
     // === Nondeterminism Stubs ===
 
     fn op_fork(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
-        // Create choice point with alternatives from sub-chunks
-        let num_alts = self.read_u8()? as usize;
-
-        // Zero alternatives means immediate failure
-        if num_alts == 0 {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "fork");
+        let count = self.read_u16()? as usize;
+        if count == 0 {
+            // Zero alternatives means immediate failure
             return self.op_fail();
         }
 
-        let mut alternatives = Vec::with_capacity(num_alts);
-
-        for _ in 0..num_alts {
-            let chunk_idx = self.read_u16()?;
-            if let Some(chunk) = self.chunk.get_chunk_constant(chunk_idx) {
-                alternatives.push(GenericAlternative::Chunk(chunk));
-            }
+        // Read constant indices from bytecode (compiler emits u16 indices after Fork)
+        let mut alternatives = Vec::with_capacity(count);
+        for _ in 0..count {
+            let const_idx = self.read_u16()?;
+            let value = self
+                .chunk
+                .get_constant(const_idx)
+                .ok_or(VmError::InvalidConstant(const_idx))?
+                .clone();
+            alternatives.push(GenericAlternative::Value(value));
         }
 
-        if !alternatives.is_empty() {
-            let choice_point = GenericChoicePoint {
+        // Save IP pointing past all constant indices (where execution should resume)
+        let resume_ip = self.ip;
+
+        // Create choice point with remaining alternatives
+        if alternatives.len() > 1 {
+            let cp = GenericChoicePoint {
                 value_stack_height: self.value_stack.len(),
                 call_stack_height: self.call_stack.len(),
                 bindings_stack_height: self.bindings_stack.len(),
-                ip: self.ip,
+                ip: resume_ip,
                 chunk: Arc::clone(&self.chunk),
-                alternatives,
+                alternatives: alternatives[1..].to_vec(),
             };
-            self.choice_points.push(choice_point);
+            self.choice_points.push(cp);
         }
+
+        // Push first alternative and continue execution
+        if let GenericAlternative::Value(v) = &alternatives[0] {
+            self.push(v.clone());
+        }
+
         Ok(ControlFlow::Continue(()))
     }
 
     fn op_fail(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, choice_points = self.choice_points.len(), "fail");
         // Backtrack to most recent choice point
-        if let Some(mut cp) = self.choice_points.pop() {
-            if let Some(alt) = cp.alternatives.pop() {
-                // Restore state
-                self.value_stack.truncate(cp.value_stack_height);
-                self.call_stack.truncate(cp.call_stack_height);
-                self.bindings_stack.truncate(cp.bindings_stack_height);
+        while let Some(mut cp) = self.choice_points.pop() {
+            // Restore state
+            self.value_stack.truncate(cp.value_stack_height);
+            self.call_stack.truncate(cp.call_stack_height);
+            self.bindings_stack.truncate(cp.bindings_stack_height);
 
-                // Put choice point back if more alternatives
-                if !cp.alternatives.is_empty() {
-                    self.choice_points.push(cp.clone());
-                }
-
-                // Execute alternative
-                match alt {
-                    GenericAlternative::Value(v) => {
-                        self.push(v);
-                        self.ip = cp.ip;
-                        self.chunk = cp.chunk;
-                    }
-                    GenericAlternative::Chunk(chunk) => {
-                        self.chunk = chunk;
-                        self.ip = 0;
-                    }
-                    GenericAlternative::Index(i) => {
-                        self.push(self.make_long(i as i64));
-                        self.ip = cp.ip;
-                        self.chunk = cp.chunk;
-                    }
-                    GenericAlternative::RuleMatch { chunk, bindings } => {
-                        // Apply bindings
-                        for (name, val) in bindings.iter() {
-                            self.set_binding(name.to_string(), val.clone());
-                        }
-                        self.chunk = chunk;
-                        self.ip = 0;
-                    }
-                }
-                return Ok(ControlFlow::Continue(()));
+            if cp.alternatives.is_empty() {
+                // No more alternatives at this choice point
+                continue;
             }
+
+            // Try next alternative (remove first, preserving order)
+            let alt = cp.alternatives.remove(0);
+
+            // Restore instruction pointer and chunk from choice point
+            self.ip = cp.ip;
+            self.chunk = Arc::clone(&cp.chunk);
+
+            // Put choice point back if more alternatives remain
+            if !cp.alternatives.is_empty() {
+                self.choice_points.push(cp);
+            }
+
+            // Process alternative
+            match alt {
+                GenericAlternative::Value(v) => self.push(v),
+                GenericAlternative::Chunk(chunk) => {
+                    self.chunk = chunk;
+                    self.ip = 0;
+                }
+                GenericAlternative::Index(offset) => {
+                    // Set IP to indexed offset for computed gotos / rule dispatch
+                    self.ip = offset;
+                }
+                GenericAlternative::RuleMatch { chunk, bindings } => {
+                    // Apply bindings
+                    for (name, val) in bindings.iter() {
+                        self.set_binding(name.to_string(), val.clone());
+                    }
+                    self.chunk = chunk;
+                    self.ip = 0;
+                }
+            }
+
+            return Ok(ControlFlow::Continue(()));
         }
 
-        // No more alternatives - return results
+        // No more choice points - return collected results
         Ok(ControlFlow::Break(std::mem::take(&mut self.results)))
     }
 
@@ -2518,18 +2244,41 @@ where
         self.choice_points.clear();
     }
 
+    /// Collect all nondeterministic results from current evaluation.
+    /// The chunk_index parameter is reserved for future use (sub-chunk execution).
+    /// Currently, this collects all results accumulated via Yield and returns them as SExpr.
+    ///
+    /// Stack: [] -> [SExpr of collected results]
     fn op_collect(&mut self) -> VmResult<()> {
-        // Collect all results from nondeterministic evaluation
-        let collected = std::mem::take(&mut self.results);
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, results = self.results.len(), "collect");
+        let _chunk_index = self.read_u16()?;
+
+        // Collect all results accumulated so far via Yield
+        // Filter out Unit values (matches collapse semantics)
+        let collected: Vec<V> = std::mem::take(&mut self.results)
+            .into_iter()
+            .filter(|v| !v.is_unit())
+            .collect();
+
+        // Push the collected results as a single S-expression
         self.push(self.make_sexpr(collected));
         Ok(())
     }
 
+    /// Collect up to N nondeterministic results.
+    /// Stack: [] -> [SExpr of collected results (up to N)]
     fn op_collect_n(&mut self) -> VmResult<()> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "collect_n");
         let n = self.read_u8()? as usize;
-        let len = self.results.len();
-        let take = len.min(n);
-        let collected: Vec<V> = self.results.drain((len - take)..).collect();
+
+        // Take up to N results, filtering out Unit values
+        let collected: Vec<V> = std::mem::take(&mut self.results)
+            .into_iter()
+            .filter(|v| !v.is_unit())
+            .take(n)
+            .collect();
+
+        // Push the collected results as a single S-expression
         self.push(self.make_sexpr(collected));
         Ok(())
     }
@@ -2551,39 +2300,78 @@ where
         Ok(())
     }
 
+    /// Amb - ambiguous choice from N alternatives on stack.
+    /// Creates a choice point with alternatives 2..N and returns alternative 1.
+    /// Stack: [alt1, alt2, ..., altN] -> [selected]
     fn op_amb(&mut self) -> VmResult<()> {
-        // Ambiguous choice - create choice point for each value
-        let choices = self.pop()?;
-        if let Some(items) = choices.as_sexpr() {
-            let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
-                items.iter().map(|v| GenericAlternative::Value(v.clone())).collect();
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "amb");
+        let count = self.read_u8()? as usize;
 
-            if !alternatives.is_empty() {
-                let choice_point = GenericChoicePoint {
-                    value_stack_height: self.value_stack.len(),
-                    call_stack_height: self.call_stack.len(),
-                    bindings_stack_height: self.bindings_stack.len(),
-                    ip: self.ip,
-                    chunk: Arc::clone(&self.chunk),
-                    alternatives,
-                };
-                self.choice_points.push(choice_point);
-            }
+        if count == 0 {
+            // Empty amb - push Unit (will fail on subsequent op_fail)
+            self.push(self.make_unit());
+            return Ok(());
         }
+
+        // Pop all alternatives
+        let mut alts = Vec::with_capacity(count);
+        for _ in 0..count {
+            alts.push(self.pop()?);
+        }
+        alts.reverse(); // Now in original order: [alt1, alt2, ..., altN]
+
+        if count == 1 {
+            // Single alternative - no choice point needed
+            self.push(alts.into_iter().next().expect("count checked"));
+            return Ok(());
+        }
+
+        // Create choice point with alternatives 1..N (skipping first)
+        let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
+            alts[1..].iter().cloned().map(GenericAlternative::Value).collect();
+
+        self.choice_points.push(GenericChoicePoint {
+            ip: self.ip, // Resume at current IP for alternatives
+            chunk: Arc::clone(&self.chunk),
+            value_stack_height: self.value_stack.len(), // After popping alts
+            call_stack_height: self.call_stack.len(),
+            bindings_stack_height: self.bindings_stack.len(),
+            alternatives,
+        });
+
+        // Push first alternative
+        self.push(alts.into_iter().next().expect("count checked"));
+
         Ok(())
     }
 
     fn op_guard(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         let guard = self.pop()?;
-        if guard.as_bool() != Some(true) {
-            return self.op_fail();
+        match guard.as_bool() {
+            Some(true) => Ok(ControlFlow::Continue(())),
+            Some(false) => self.op_fail(),
+            None => Err(VmError::TypeError {
+                expected: "Bool",
+                got: guard.type_name(),
+            }),
         }
-        Ok(ControlFlow::Continue(()))
     }
 
+    /// Commit - remove N choice points (soft cut).
+    /// If count is 0, remove all choice points (like full cut).
+    /// Stack: [] -> []
     fn op_commit(&mut self) {
-        // Commit to current choice - remove most recent choice point
-        self.choice_points.pop();
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "commit");
+        let count = self.read_u8().unwrap_or(0);
+        if count == 0 {
+            // Remove all choice points (full cut)
+            self.choice_points.clear();
+        } else {
+            // Remove N most recent choice points
+            let to_remove = (count as usize).min(self.choice_points.len());
+            let new_len = self.choice_points.len().saturating_sub(to_remove);
+            self.choice_points.truncate(new_len);
+        }
     }
 
     // === Advanced Calls ===
@@ -2762,17 +2550,21 @@ where
     fn op_load_global(&mut self) -> VmResult<()> {
         let index = self.read_u16()?;
         let name = self.chunk.get_constant(index)
-            .and_then(|v| v.as_atom().map(|s| s.to_string()))
-            .ok_or(VmError::InvalidConstant(index))?;
+            .ok_or(VmError::InvalidConstant(index))?
+            .clone();
 
-        // Try to load from environment using get_binding
-        if let Some(env) = &self.env {
-            if let Some(value) = env.get_binding(&name) {
-                self.push(value);
-                return Ok(());
+        // Try to load from environment bindings
+        if let Some(ref env) = self.env {
+            if let Some(sym) = name.as_atom() {
+                if let Some(value) = env.get_binding(sym) {
+                    self.push(value);
+                    return Ok(());
+                }
             }
         }
-        self.push(self.make_unit());
+
+        // No binding found - push the atom itself
+        self.push(name);
         Ok(())
     }
 
@@ -2912,27 +2704,42 @@ where
 
     // === Space Operations ===
 
+    /// Add an atom to a space.
+    /// Stack: [space, atom] -> [Unit]
     fn op_space_add(&mut self) -> VmResult<()> {
         let atom = self.pop()?;
-        if let Some(env) = &mut self.env {
-            env.add_to_space(&atom);
+        let space = self.pop()?;
+        if let Some(handle) = space.as_space() {
+            handle.add_atom_generic(&atom);
+            self.push(self.make_unit());
+            Ok(())
+        } else {
+            Err(VmError::TypeError {
+                expected: "Space",
+                got: space.type_name(),
+            })
         }
-        self.push(self.make_unit());
-        Ok(())
     }
 
+    /// Remove an atom from a space.
+    /// Stack: [space, atom] -> [Bool]
     fn op_space_remove(&mut self) -> VmResult<()> {
         let atom = self.pop()?;
-        if let Some(env) = &mut self.env {
-            // remove_from_space is void, we just push true to indicate success
-            env.remove_from_space(&atom);
-            self.push(self.make_bool(true));
+        let space = self.pop()?;
+        if let Some(handle) = space.as_space() {
+            let removed = handle.remove_atom_generic(&atom);
+            self.push(self.make_bool(removed));
+            Ok(())
         } else {
-            self.push(self.make_bool(false));
+            Err(VmError::TypeError {
+                expected: "Space",
+                got: space.type_name(),
+            })
         }
-        Ok(())
     }
 
+    /// Get all atoms from a space (collapse).
+    /// Stack: [space] -> [SExpr with atoms]
     fn op_space_get_atoms(&mut self) -> VmResult<()> {
         if let Some(env) = &self.env {
             let atoms = env.get_all_atoms();
@@ -2943,27 +2750,87 @@ where
         Ok(())
     }
 
+    /// Match pattern against atoms in a space and instantiate template with bindings.
+    ///
+    /// Stack: [space, pattern, template] -> [results...]
     fn op_space_match(&mut self) -> VmResult<()> {
         let template = self.pop()?;
         let pattern = self.pop()?;
-        if let Some(env) = &self.env {
-            // match_space returns Vec<MultiplicityMatch<V>>, extract the values
-            let matches = env.match_space(&pattern, &template);
-            let results: Vec<V> = matches.into_iter()
-                .flat_map(|m| std::iter::repeat(m.value).take(m.count))
-                .collect();
+        let space = self.pop()?;
+
+        if let Some(handle) = space.as_space() {
+            let atoms: Vec<V> = handle.collapse_generic(&self.factory);
+            let mut results = Vec::new();
+
+            // Match pattern against each atom and instantiate template
+            for atom in &atoms {
+                if let Some(bindings) = self.pattern_match_bind_generic(&pattern, atom) {
+                    // Substitute bindings into template
+                    let instantiated = self.substitute_bindings_generic(&template, &bindings);
+                    results.push(instantiated);
+                }
+            }
+
+            // Return results as S-expression
             self.push(self.make_sexpr(results));
+            Ok(())
         } else {
-            self.push(self.make_sexpr(vec![]));
+            Err(VmError::TypeError {
+                expected: "Space",
+                got: space.type_name(),
+            })
         }
-        Ok(())
     }
 
+    /// Load a space by name from the constant pool.
     fn op_load_space(&mut self) -> VmResult<()> {
-        // Load default space atoms - not directly available in GenericEnvironment
-        // Return empty list for now
-        self.push(self.make_sexpr(vec![]));
-        Ok(())
+        let const_idx = self.read_u16()?;
+        let name = self.chunk.get_constant(const_idx)
+            .ok_or(VmError::InvalidConstant(const_idx))?
+            .clone();
+
+        if let Some(space_name) = name.as_atom() {
+            use xxhash_rust::xxh3::xxh3_64;
+            use crate::backend::models::SpaceHandle;
+            let handle = SpaceHandle::new(xxh3_64(space_name.as_bytes()), space_name.to_string());
+            self.push(self.factory.space(handle));
+            Ok(())
+        } else {
+            Err(VmError::TypeError {
+                expected: "Atom (space name)",
+                got: name.type_name(),
+            })
+        }
+    }
+
+    /// Substitute variable bindings into a template expression.
+    fn substitute_bindings_generic(
+        &self,
+        template: &V,
+        bindings: &[(String, V)],
+    ) -> V {
+        // Variables are substituted with bound values
+        if let Some(name) = template.as_atom() {
+            if name.starts_with('$') {
+                // Look up the variable in bindings
+                if let Some((_, v)) = bindings.iter().find(|(n, _)| n == name) {
+                    return v.clone();
+                }
+            }
+            return template.clone();
+        }
+
+        // S-expressions are recursively substituted
+        if let Some(items) = template.as_sexpr() {
+            let substituted: Vec<V> = items
+                .iter()
+                .map(|item| self.substitute_bindings_generic(item, bindings))
+                .collect();
+            return self.make_sexpr(substituted);
+        }
+
+        // All other values pass through unchanged
+        template.clone()
     }
 
     // === State Operations ===
@@ -3167,11 +3034,67 @@ where
 }
 
 // ============================================================================
-// Type Aliases for Backwards Compatibility
+// Convenience Constructors (F: Default)
 // ============================================================================
 
-/// Type alias for heap-based generic VM.
+impl<V, F> GenericBytecodeVM<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V> + Clone + Send + Sync + Default + 'static,
+{
+    /// Create a new VM with the given chunk, using the default factory.
+    pub fn new(chunk: Arc<GenericBytecodeChunk<V>>) -> Self {
+        Self::with_factory(chunk, F::default())
+    }
+
+    /// Create a new VM with custom configuration, using the default factory.
+    pub fn with_config(chunk: Arc<GenericBytecodeChunk<V>>, config: VmConfig) -> Self {
+        Self::with_config_and_factory(chunk, config, F::default())
+    }
+
+    /// Create a new VM with an environment, using the default factory.
+    pub fn with_env(
+        chunk: Arc<GenericBytecodeChunk<V>>,
+        env: GenericEnvironment<V, F>,
+    ) -> Self {
+        Self::with_env_and_factory(chunk, env, F::default())
+    }
+
+    /// Push a value onto the results vector (for testing).
+    #[cfg(test)]
+    pub fn push_result(&mut self, value: V) {
+        self.results.push(value);
+    }
+
+    /// Get the number of choice points (for testing).
+    #[cfg(test)]
+    pub fn choice_points_len(&self) -> usize {
+        self.choice_points.len()
+    }
+
+    /// Get the number of entries in the memo cache (for testing).
+    #[cfg(test)]
+    pub fn memo_cache_len(&self) -> usize {
+        self.memo_cache.len()
+    }
+
+    /// Get memo cache statistics (for testing).
+    #[cfg(test)]
+    pub fn memo_cache_stats(&self) -> super::generic_memo_cache::GenericCacheStats {
+        self.memo_cache.stats()
+    }
+}
+
+// ============================================================================
+// Type Aliases
+// ============================================================================
+
+use crate::backend::models::GcFactory;
+
+/// The primary bytecode VM type, backed by the global GC slab allocator.
 ///
-/// This is equivalent to the non-generic `BytecodeVM` but uses the generic
-/// infrastructure. Useful for testing generic code paths with heap values.
-pub type HeapGenericBytecodeVM = GenericBytecodeVM<MettaValue, crate::backend::models::HeapMettaValueFactory>;
+/// This is a type alias for `GenericBytecodeVM<MettaValue, GcFactory>`.
+/// All existing `BytecodeVM::new(chunk)` call sites continue to work
+/// because `GcFactory` implements `Default` (returning `global_factory()`).
+pub type BytecodeVM = GenericBytecodeVM<MettaValue, GcFactory>;
+

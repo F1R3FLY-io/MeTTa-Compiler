@@ -17,8 +17,8 @@ use std::sync::{Arc, RwLock};
 
 use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 
-use super::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
-use super::{HeapMettaValueFactory, MettaValue};
+use super::metta_value_trait::{MettaValueTrait, MettaValueFactory};
+use super::{GcFactory, MettaValue};
 
 /// Global counter for unique memo IDs
 static NEXT_MEMO_ID: AtomicU64 = AtomicU64::new(1);
@@ -162,7 +162,7 @@ impl MemoHandle {
 
     /// Look up cached results for an expression (legacy MettaValue version).
     pub fn lookup(&self, expr: &MettaValue) -> Option<Vec<MettaValue>> {
-        self.lookup_generic(expr, &HeapMettaValueFactory)
+        self.lookup_generic(expr, &GcFactory::default())
     }
 
     /// Store evaluation results for an expression (generic version using serialization).

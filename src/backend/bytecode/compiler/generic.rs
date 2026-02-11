@@ -4,7 +4,7 @@
 //! value type implementing `MettaValueTrait` to `GenericBytecodeChunk<V>`.
 //!
 //! This enables zero-conversion bytecode compilation for both heap-allocated
-//! (`MettaValue`) and arena-allocated (`ArenaValue<'static>`) values.
+//! (`MettaValue`) and arena-allocated (`MettaValue`) values.
 
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 ///
 /// # Type Parameters
 ///
-/// - `V`: The value type (e.g., `MettaValue` or `ArenaValue<'static>`)
+/// - `V`: The value type (e.g., `MettaValue` or `MettaValue`)
 /// - `F`: The factory type for constructing values
 pub struct GenericCompiler<V, F>
 where
@@ -44,7 +44,7 @@ where
 {
     /// Create a new generic compiler
     pub fn new(name: impl Into<String>, factory: F) -> Self {
-        let mut builder = GenericChunkBuilder::new(name, factory.clone());
+        let mut builder = GenericChunkBuilder::with_factory(name, factory.clone());
         builder.set_optimize(true);
         Self {
             builder,
@@ -57,7 +57,7 @@ where
 
     /// Create a compiler with existing context (for nested functions)
     pub fn with_context(name: impl Into<String>, context: CompileContext, factory: F) -> Self {
-        let mut builder = GenericChunkBuilder::new(name, factory.clone());
+        let mut builder = GenericChunkBuilder::with_factory(name, factory.clone());
         builder.set_optimize(true);
         Self {
             builder,
@@ -912,6 +912,11 @@ where
         self.check_arity("superpose", args.len(), 1)?;
 
         let list = &args[0];
+        // Unit is the normalized form of SExpr([]) - treat as empty superpose
+        if list.is_unit() {
+            self.builder.emit(Opcode::Fail);
+            return Ok(());
+        }
         if let Some(items) = list.as_sexpr() {
             if items.is_empty() {
                 // Empty superpose = fail
@@ -1065,28 +1070,28 @@ where
 // Arena-Specific Entry Points
 // =============================================================================
 
-use crate::backend::models::{ArenaValue, ArenaValueFactory};
+use crate::backend::models::{MettaValue, GcFactory};
 use crate::backend::eval::trampoline::get_static_factory;
 
-/// Compile an ArenaValue expression to bytecode (zero-conversion).
+/// Compile an MettaValue expression to bytecode (zero-conversion).
 ///
 /// Uses the static arena factory from the thread-local context.
-pub fn compile_arena_bytecode(
+pub fn compile_bytecode(
     name: &str,
-    expr: &ArenaValue<'static>,
-) -> CompileResult<GenericBytecodeChunk<ArenaValue<'static>>> {
+    expr: &MettaValue,
+) -> CompileResult<GenericBytecodeChunk<MettaValue>> {
     let factory = get_static_factory();
     compile_generic(name, expr, factory)
 }
 
-/// Compile an ArenaValue expression to bytecode wrapped in Arc (zero-conversion).
-pub fn compile_arena_bytecode_arc(
+/// Compile an MettaValue expression to bytecode wrapped in Arc (zero-conversion).
+pub fn compile_bytecode_arc(
     name: &str,
-    expr: &ArenaValue<'static>,
-) -> CompileResult<Arc<GenericBytecodeChunk<ArenaValue<'static>>>> {
+    expr: &MettaValue,
+) -> CompileResult<Arc<GenericBytecodeChunk<MettaValue>>> {
     let factory = get_static_factory();
     compile_generic_arc(name, expr, factory)
 }
 
 /// Type alias for arena bytecode compiler
-pub type ArenaCompiler = GenericCompiler<ArenaValue<'static>, ArenaValueFactory<'static>>;
+pub type MettaCompiler = GenericCompiler<MettaValue, GcFactory>;

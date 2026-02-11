@@ -1,7 +1,7 @@
 //! Generic Module Operations - Zero-Conversion Implementation
 //!
 //! This module provides generic versions of module operations that work with any
-//! value type implementing `MettaValueTrait`. This eliminates ArenaValue <-> MettaValue
+//! value type implementing `MettaValueTrait`. This eliminates MettaValue <-> MettaValue
 //! conversions when using arena allocation.
 //!
 //! ## Zero-Conversion Path
@@ -243,13 +243,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::environment::HeapEnvironment;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::environment::MettaEnvironment;
+    use crate::backend::models::{GcFactory, MettaValue};
 
     #[test]
     fn test_eval_include_generic_missing_args() {
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![MettaValue::Atom("include".to_string())];
         let (results, _) = eval_include_generic(items, env, &factory);
@@ -260,8 +260,8 @@ mod tests {
 
     #[test]
     fn test_eval_import_generic_missing_args() {
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![MettaValue::Atom("import!".to_string())];
         let (results, _) = eval_import_generic(items, env, &factory);

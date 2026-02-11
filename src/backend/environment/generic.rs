@@ -8,8 +8,7 @@
 //! The key insight is to parameterize the environment over `V: MettaValueTrait` instead
 //! of storing serialized bytes. This eliminates all conversions:
 //!
-//! - `HeapEnvironment = GenericEnvironment<MettaValue>` (O(1) Arc clone)
-//! - `ArenaEnvironment = GenericEnvironment<ArenaValue>` (O(1) pointer clone)
+//! - `MettaEnvironment = GenericEnvironment<MettaValue>` (O(1) pointer clone)
 //!
 //! ## Architecture
 //!
@@ -41,7 +40,6 @@ use std::sync::Arc;
 use lru::LruCache;
 use mork_interning::SharedMappingHandle;
 use parking_lot::RwLock;
-use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use pathmap::PathMap;
 use tracing::trace;
 
@@ -49,12 +47,13 @@ use super::bloom::HeadArityBloomFilter;
 use super::multiplicity::Multiplicity;
 use super::scope::ScopeTracker;
 use crate::backend::fuzzy_match::FuzzyMatcher;
-use crate::backend::grounded::{GenericGroundedRegistry, GroundedOperation, GroundedOperationTCO, GroundedRegistry, GroundedRegistryTCO};
+use crate::backend::grounded::{GenericGroundedRegistry, GroundedRegistry};
 use crate::backend::models::{
     GenericRule, IndexedMultiset, MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle, SymbolTable,
 };
-use crate::backend::modules::{ModuleRegistry, Tokenizer};
+use crate::backend::modules::ModuleRegistry;
 use crate::backend::symbol::Symbol;
+use crate::backend::models::GcFactory;
 
 // ============================================================================
 // Static Sentinel for Unmodified Environments
@@ -150,7 +149,7 @@ impl<V: Clone> MultiplicityMatch<V> {
 /// Shared state across all GenericEnvironment clones.
 ///
 /// Parameterized over `V: MettaValueTrait` to enable zero-conversion evaluation.
-/// Values are stored natively in their concrete type (MettaValue or ArenaValue).
+/// Values are stored natively in their concrete type (MettaValue or MettaValue).
 ///
 /// ## Thread Safety
 ///
@@ -232,13 +231,9 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// Uses RwLock (Tokenizer has internal state)
     pub(crate) tokenizer: RwLock<crate::backend::modules::GenericTokenizer<V>>,
 
-    /// Grounded operations registry (legacy, type-specific to MettaValue)
+    /// Grounded operations registry (legacy, used by proptests only)
     /// Uses RwLock (rarely modified after init)
     pub(crate) grounded_registry: RwLock<GroundedRegistry>,
-
-    /// TCO-compatible grounded operations registry (type-specific to MettaValue)
-    /// Uses RwLock (rarely modified after init)
-    pub(crate) grounded_registry_tco: RwLock<GroundedRegistryTCO>,
 
     /// Generic grounded operations registry (type-parameterized, zero-conversion)
     /// Stateless and Clone, no lock needed
@@ -281,8 +276,7 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
 /// This is the main entry point for zero-conversion evaluation. Use type aliases
 /// for convenience:
 ///
-/// - `HeapEnvironment` = `GenericEnvironment<MettaValue, HeapMettaValueFactory>`
-/// - `ArenaEnvironment<'a>` = `GenericEnvironment<ArenaValue<'a>, ArenaValueFactory<'a>>`
+/// - `MettaEnvironment` = `GenericEnvironment<MettaValue, GcFactory>`
 ///
 /// ## Copy-on-Write (CoW) Semantics
 ///
@@ -372,8 +366,7 @@ where
             // Type-agnostic registries
             module_registry: RwLock::new(ModuleRegistry::new()),
             tokenizer: RwLock::new(crate::backend::modules::GenericTokenizer::<V>::new()),
-            grounded_registry: RwLock::new(GroundedRegistry::with_standard_ops()),
-            grounded_registry_tco: RwLock::new(GroundedRegistryTCO::with_standard_ops()),
+            grounded_registry: RwLock::new(GroundedRegistry::new()),
             generic_grounded_registry: GenericGroundedRegistry::with_standard_ops(),
             pattern_cache: RwLock::new(LruCache::new(
                 NonZeroUsize::new(1000).expect("1000 is non-zero"),
@@ -386,6 +379,9 @@ where
             head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)),
             total_atoms: AtomicUsize::new(0),
         });
+
+        // Register as GC root provider (no-op if V != MettaValue)
+        crate::backend::models::gc_allocator::try_register_env_roots(&shared);
 
         GenericEnvironment {
             shared,
@@ -450,7 +446,7 @@ where
             module_registry: RwLock::new(self.shared.module_registry.read().clone()),
             tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
             grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
-            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().clone()),
+
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
             pattern_cache: RwLock::new(self.shared.pattern_cache.read().clone()),
             type_index: RwLock::new(self.shared.type_index.read().clone()),
@@ -463,6 +459,9 @@ where
             head_arity_bloom: RwLock::new(self.shared.head_arity_bloom.read().clone()),
             total_atoms: AtomicUsize::new(self.shared.total_atoms.load(Ordering::Acquire)),
         });
+
+        // Register new shared state as GC root provider
+        crate::backend::models::gc_allocator::try_register_env_roots(&new_shared);
 
         self.shared = new_shared;
         self.owns_data = true;
@@ -504,7 +503,7 @@ where
             module_registry: RwLock::new(self.shared.module_registry.read().clone()),
             tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
             grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
-            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().clone()),
+
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
             // Clear pattern cache instead of copying
             pattern_cache: RwLock::new(LruCache::new(
@@ -521,12 +520,16 @@ where
             total_atoms: AtomicUsize::new(self.shared.total_atoms.load(Ordering::Acquire)),
         });
 
+        // Register forked shared state as GC root provider
+        crate::backend::models::gc_allocator::try_register_env_roots(&new_shared);
+
         GenericEnvironment {
             shared: new_shared,
             factory: self.factory.clone(),
             shared_mapping: self.shared_mapping.clone(),
             owns_data: true,
-            modified: AtomicBool::new(false),            current_module_path: self.current_module_path.clone(),
+            modified: AtomicBool::new(false),
+            current_module_path: self.current_module_path.clone(),
         }
     }
 
@@ -556,7 +559,8 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
-                modified: AtomicBool::new(false),                current_module_path: self.current_module_path.clone(),
+                modified: AtomicBool::new(false),
+                current_module_path: self.current_module_path.clone(),
             };
         }
 
@@ -570,7 +574,8 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
-                modified: AtomicBool::new(false),                current_module_path: self.current_module_path.clone(),
+                modified: AtomicBool::new(false),
+                current_module_path: self.current_module_path.clone(),
             };
         }
 
@@ -581,7 +586,8 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: self.shared_mapping.clone(),
                 owns_data: false,
-                modified: AtomicBool::new(false),                current_module_path: self.current_module_path.clone(),
+                modified: AtomicBool::new(false),
+                current_module_path: self.current_module_path.clone(),
             };
         }
 
@@ -592,7 +598,8 @@ where
                 factory: self.factory.clone(),
                 shared_mapping: other.shared_mapping.clone(),
                 owns_data: false,
-                modified: AtomicBool::new(false),                current_module_path: other.current_module_path.clone(),
+                modified: AtomicBool::new(false),
+                current_module_path: other.current_module_path.clone(),
             };
         }
 
@@ -741,7 +748,7 @@ where
             module_registry: RwLock::new(self.shared.module_registry.read().clone()),
             tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
             grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
-            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().clone()),
+
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
 
             // Clear/reset caches after merge
@@ -757,6 +764,9 @@ where
             head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // Reset (will be rebuilt)
             total_atoms: AtomicUsize::new(merged_total_atoms),
         });
+
+        // Register merged shared state as GC root provider
+        crate::backend::models::gc_allocator::try_register_env_roots(&new_shared);
 
         GenericEnvironment {
             shared: new_shared,
@@ -1089,7 +1099,7 @@ where
             module_registry: RwLock::new(self.shared.module_registry.read().clone()),
             tokenizer: RwLock::new(self.shared.tokenizer.read().clone()),
             grounded_registry: RwLock::new(self.shared.grounded_registry.read().clone()),
-            grounded_registry_tco: RwLock::new(self.shared.grounded_registry_tco.read().clone()),
+
             generic_grounded_registry: self.shared.generic_grounded_registry.clone(),
 
             // Clear/reset caches after merge
@@ -1105,6 +1115,9 @@ where
             head_arity_bloom: RwLock::new(HeadArityBloomFilter::new(10000)), // Reset (will be rebuilt)
             total_atoms: AtomicUsize::new(merged_total_atoms),
         });
+
+        // Register batch-merged shared state as GC root provider
+        crate::backend::models::gc_allocator::try_register_env_roots(&new_shared);
 
         GenericEnvironment {
             shared: new_shared,
@@ -1141,6 +1154,67 @@ where
     }
 
     // Note: set_current_module_path is defined in module_ops.rs
+
+    /// Collect all GC root values from this environment.
+    ///
+    /// Traverses all structures that hold `V` values:
+    /// - `rule_index`: All rule LHS/RHS patterns
+    /// - `wildcard_rules`: All wildcard rule LHS/RHS patterns
+    /// - `named_spaces`: All atoms in named spaces
+    /// - `bindings`: All symbol binding values
+    /// - `types`: All type assertion values
+    /// - `states`: All mutable state cell values
+    ///
+    /// Note: `btm` (PathMap) stores MORK-encoded bytes, not `V` values directly.
+    /// `large_expr_pathmap` stores `V` but is behind an `Option<PathMap<V>>` which
+    /// we skip for now (rare; expressions with arity >= 64).
+    pub fn gc_roots(&self, roots: &mut Vec<V>) {
+        // Rules: collect LHS and RHS from all indexed rules
+        {
+            let rule_index = self.shared.rule_index.read();
+            for rules in rule_index.values() {
+                for rule in rules {
+                    roots.push(rule.lhs.clone());
+                    roots.push(rule.rhs.clone());
+                }
+            }
+        }
+
+        // Wildcard rules
+        {
+            let wildcard_rules = self.shared.wildcard_rules.read();
+            for rule in wildcard_rules.iter() {
+                roots.push(rule.lhs.clone());
+                roots.push(rule.rhs.clone());
+            }
+        }
+
+        // Named spaces: collect all atoms
+        {
+            let named_spaces = self.shared.named_spaces.read();
+            for (_id, (_name, atoms)) in named_spaces.iter() {
+                roots.extend(atoms.iter().cloned());
+            }
+        }
+
+        // Symbol bindings
+        {
+            let bindings = self.shared.bindings.read();
+            roots.extend(bindings.values().cloned());
+        }
+
+        // Type assertions
+        {
+            let types = self.shared.types.read();
+            roots.extend(types.values().cloned());
+        }
+
+        // Mutable state cells
+        {
+            let states = self.shared.states.read();
+            roots.extend(states.values().cloned());
+        }
+    }
 }
 
 impl<V, F> Clone for GenericEnvironment<V, F>
@@ -1169,6 +1243,62 @@ where
             .field("owns_data", &self.owns_data)
             .field("modified", &self.modified.load(Ordering::Relaxed))
             .finish()
+    }
+}
+
+// ============================================================================
+// RootProvider — GC Root Collection for Arena Environments
+// ============================================================================
+
+use crate::backend::models::gc_allocator::RootProvider;
+
+impl RootProvider for GenericEnvironmentShared<MettaValue> {
+    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        // Rules: collect LHS and RHS from all indexed rules
+        {
+            let rule_index = self.rule_index.read();
+            for rules in rule_index.values() {
+                for rule in rules {
+                    roots.push(rule.lhs);
+                    roots.push(rule.rhs);
+                }
+            }
+        }
+
+        // Wildcard rules
+        {
+            let wildcard_rules = self.wildcard_rules.read();
+            for rule in wildcard_rules.iter() {
+                roots.push(rule.lhs);
+                roots.push(rule.rhs);
+            }
+        }
+
+        // Named spaces: collect all atoms
+        {
+            let named_spaces = self.named_spaces.read();
+            for (_id, (_name, atoms)) in named_spaces.iter() {
+                roots.extend(atoms.iter().copied());
+            }
+        }
+
+        // Symbol bindings
+        {
+            let bindings = self.bindings.read();
+            roots.extend(bindings.values().copied());
+        }
+
+        // Type assertions
+        {
+            let types = self.types.read();
+            roots.extend(types.values().copied());
+        }
+
+        // Mutable state cells
+        {
+            let states = self.states.read();
+            roots.extend(states.values().copied());
+        }
     }
 }
 
@@ -1709,56 +1839,32 @@ where
 // Type Aliases for Convenience
 // ============================================================================
 
-/// Heap-allocated environment using MettaValue.
+/// Arena-allocated environment using MettaValue with GcFactory.
 ///
-/// This is the default environment type for standard evaluation.
-/// MettaValue uses Arc internally, so clone is O(1).
-///
-/// ## Thread-Safe Copy-on-Write (CoW) Semantics
-///
-/// - Clones share data until first modification (owns_data = false)
-/// - First mutation triggers deep copy via make_owned() (owns_data = true)
-/// - parking_lot::RwLock enables concurrent reads
-/// - RwLock<HashMap> enables efficient rule/binding lookups
-///
-/// ## Performance
-///
-/// - Clone: O(1) - single Arc increment
-/// - First mutation after clone: O(n) deep copy
-/// - Subsequent mutations: O(1) in-place
-pub type HeapEnvironment = GenericEnvironment<MettaValue, crate::backend::models::HeapMettaValueFactory>;
+/// This environment type uses the global slab allocator for zero-conversion evaluation.
+/// MettaValue is Copy (8 bytes, thin pointer).
+pub type MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>;
 
-impl Default for HeapEnvironment {
+impl Default for MettaEnvironment {
     fn default() -> Self {
-        GenericEnvironment::new(crate::backend::models::HeapMettaValueFactory)
+        GenericEnvironment::new(GcFactory::default())
     }
 }
-
-
-/// Arena-allocated environment using ArenaValue.
-///
-/// This environment type uses arena allocation for zero-conversion evaluation.
-/// ArenaValue uses bump allocation internally, so clone is O(1) pointer copy.
-pub type ArenaEnvironment<'a> = GenericEnvironment<
-    crate::backend::models::ArenaValue<'a>,
-    crate::backend::models::ArenaValueFactory<'a>,
->;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::HeapMettaValueFactory;
 
     #[test]
     fn test_generic_environment_new() {
-        let env: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        let env: MettaEnvironment = MettaEnvironment::default();
         assert!(env.owns_data);
         assert!(!env.is_modified());
     }
 
     #[test]
     fn test_generic_environment_clone_cow() {
-        let env1: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        let env1: MettaEnvironment = MettaEnvironment::default();
         let env2 = env1.clone();
 
         // Clone should not own data
@@ -1771,7 +1877,7 @@ mod tests {
 
     #[test]
     fn test_generic_environment_add_rule() {
-        let mut env: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        let mut env: MettaEnvironment = MettaEnvironment::default();
 
         let lhs = MettaValue::SExpr(vec![
             MettaValue::Atom("add".to_string()),
@@ -1790,7 +1896,7 @@ mod tests {
 
     #[test]
     fn test_generic_environment_bind() {
-        let mut env: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        let mut env: MettaEnvironment = MettaEnvironment::default();
 
         env.bind("x", MettaValue::Long(42));
 
@@ -1801,7 +1907,7 @@ mod tests {
 
     #[test]
     fn test_generic_environment_named_space() {
-        let mut env: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        let mut env: MettaEnvironment = MettaEnvironment::default();
 
         let space_id = env.create_named_space("test");
         assert!(env.has_named_space(space_id));
@@ -1815,7 +1921,7 @@ mod tests {
 
     #[test]
     fn test_generic_environment_fork() {
-        let mut env1: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        let mut env1: MettaEnvironment = MettaEnvironment::default();
         env1.bind("x", MettaValue::Long(1));
 
         let mut env2 = env1.fork_for_nondeterminism();
@@ -1833,7 +1939,7 @@ mod tests {
 
     #[test]
     fn test_generic_environment_state() {
-        let mut env: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        let mut env: MettaEnvironment = MettaEnvironment::default();
 
         // Create state
         let state_id = env.create_state(&MettaValue::Long(42));
@@ -1855,7 +1961,7 @@ mod tests {
 
     #[test]
     fn test_generic_environment_state_shared_across_clones() {
-        let mut env1: HeapEnvironment = GenericEnvironment::new(HeapMettaValueFactory);
+        let mut env1: MettaEnvironment = MettaEnvironment::default();
 
         // Create state in original
         let state_id = env1.create_state(&MettaValue::Long(1));

@@ -3,7 +3,7 @@
 //! These types represent the results of a single evaluation step, parameterized
 //! over the value type V and environment type E. This enables the same evaluation
 //! logic to work with both heap-allocated (`MettaValue`) and arena-allocated
-//! (`ArenaValue`) values, using their respective environment types.
+//! (`MettaValue`) values, using their respective environment types.
 //!
 //! ## Design Notes
 //!
@@ -14,10 +14,10 @@
 //!
 //! ## Type Parameters
 //!
-//! - `V: MettaValueTrait` - The value type (MettaValue or ArenaValue)
+//! - `V: MettaValueTrait` - The value type (MettaValue or MettaValue)
 //! - `E: Clone` - The environment type (Environment or GenericEnvironment<V>)
 
-use crate::backend::environment::HeapEnvironment;
+use crate::backend::environment::MettaEnvironment;
 use crate::backend::grounded::GenericGroundedState;
 use crate::backend::models::{GenericBindings, MettaValueTrait};
 
@@ -39,10 +39,10 @@ pub enum MemoOpType {
 ///
 /// # Type Parameters
 ///
-/// - `V: MettaValueTrait` - The value type (MettaValue or ArenaValue)
+/// - `V: MettaValueTrait` - The value type (MettaValue or MettaValue)
 /// - `E: Clone` - The environment type (defaults to Environment for backward compatibility)
 #[derive(Debug)]
-pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = HeapEnvironment> {
+pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Evaluation complete, return this result
     Done(GenericEvalResult<V, E>),
 
@@ -543,11 +543,11 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = HeapEnvironment> {
 ///
 /// # Type Parameters
 ///
-/// - `V: MettaValueTrait` - The value type (MettaValue or ArenaValue)
+/// - `V: MettaValueTrait` - The value type (MettaValue or MettaValue)
 /// - `E: Clone` - The environment type (defaults to Environment for backward compatibility)
 #[derive(Debug)]
 #[allow(dead_code)]
-pub enum GenericProcessedSExpr<V: MettaValueTrait, E: Clone = HeapEnvironment> {
+pub enum GenericProcessedSExpr<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Processing complete, return this result
     Done(GenericEvalResult<V, E>),
 

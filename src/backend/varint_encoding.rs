@@ -47,7 +47,7 @@ fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
         MettaValueInner::SExpr(items) => {
             buf.push(tags::SEXPR);
             encode_varint(buf, items.len() as u64); // No 63 limit!
-            for item in items {
+            for item in *items {
                 encode_metta(buf, item);
             }
         }
@@ -88,7 +88,7 @@ fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
         MettaValueInner::Conjunction(goals) => {
             buf.push(tags::CONJUNCTION);
             encode_varint(buf, goals.len() as u64);
-            for goal in goals {
+            for goal in *goals {
                 encode_metta(buf, goal);
             }
         }
@@ -275,7 +275,7 @@ use crate::backend::models::MettaValueTrait;
 /// Encode any MettaValueTrait value to binary key with varint arity (no 63 limit)
 ///
 /// This is the generic version that uses trait methods instead of MettaValueInner
-/// pattern matching, enabling zero-conversion for ArenaValue.
+/// pattern matching, enabling zero-conversion for MettaValue.
 pub fn value_to_varint_key_generic<V: MettaValueTrait>(value: &V) -> Vec<u8> {
     let mut buf = Vec::with_capacity(64);
     encode_value_generic(&mut buf, value);

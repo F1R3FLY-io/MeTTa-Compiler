@@ -141,7 +141,7 @@ trait GenericGroundedOpErased: Send + Sync {
     fn execute_step_erased(
         &self,
         state: &mut GenericGroundedState<crate::backend::models::MettaValue>,
-        factory: &crate::backend::models::HeapMettaValueFactory,
+        factory: &crate::backend::models::GcFactory,
     ) -> GenericGroundedWork<crate::backend::models::MettaValue>;
 }
 
@@ -159,7 +159,7 @@ where
     fn execute_step_erased(
         &self,
         state: &mut GenericGroundedState<crate::backend::models::MettaValue>,
-        factory: &crate::backend::models::HeapMettaValueFactory,
+        factory: &crate::backend::models::GcFactory,
     ) -> GenericGroundedWork<crate::backend::models::MettaValue> {
         self.0.execute_step_generic(state, factory)
     }
@@ -259,7 +259,7 @@ impl GenericGroundedRegistry {
         state: &mut GenericGroundedState<crate::backend::models::MettaValue>,
     ) -> Option<GenericGroundedWork<crate::backend::models::MettaValue>> {
         let op = self.get(name)?;
-        let factory = crate::backend::models::HeapMettaValueFactory;
+        let factory = crate::backend::models::GcFactory::default();
         Some(op.execute_step_erased(state, &factory))
     }
 }
@@ -290,7 +290,7 @@ pub fn get_generic_registry() -> &'static GenericGroundedRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::models::{GcFactory, MettaValue};
 
     #[test]
     fn test_registry_with_standard_ops() {
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn test_execute_step_heap() {
         let registry = GenericGroundedRegistry::with_standard_ops();
-        let _factory = HeapMettaValueFactory; // Keep for reference, execution uses internal factory
+        let _factory = GcFactory::default(); // Keep for reference, execution uses internal factory
 
         // Test addition
         let mut state = GenericGroundedState::new(
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_execute_generic_grounded_op_addition() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         // Test addition with static dispatch
         let mut state = GenericGroundedState::new(
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_execute_generic_grounded_op_comparison() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         // Test less-than with static dispatch
         let mut state = GenericGroundedState::new(
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_execute_generic_grounded_op_logical() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         // Test 'not' with static dispatch
         let mut state = GenericGroundedState::new(
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_execute_generic_grounded_op_not_found() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state = GenericGroundedState::new(
             "nonexistent".to_string(),
             vec![MettaValue::Long(1)],

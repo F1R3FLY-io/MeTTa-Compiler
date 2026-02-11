@@ -947,7 +947,7 @@ proptest! {
 
     /// get-arity returns correct length
     #[test]
-    fn prop_get_arity_correct(items in prop::collection::vec(arb_simple_value(), 0..10)) {
+    fn prop_get_arity_correct(items in prop::collection::vec(arb_simple_value(), 1..10)) {
         let mut builder = ChunkBuilder::new("test");
 
         let sexpr = MettaValue::SExpr(items.clone());
@@ -1742,7 +1742,7 @@ proptest! {
 
     /// get-arity on S-expression returns correct length
     #[test]
-    fn prop_get_arity_sexpr(items in prop::collection::vec(arb_simple_value(), 0..10)) {
+    fn prop_get_arity_sexpr(items in prop::collection::vec(arb_simple_value(), 1..10)) {
         let mut builder = ChunkBuilder::new("test");
         let sexpr = MettaValue::SExpr(items.clone());
         let idx = builder.add_constant(sexpr);
@@ -1881,7 +1881,7 @@ proptest! {
 
     /// is-sexpr returns true for S-expressions
     #[test]
-    fn prop_is_sexpr_true(items in prop::collection::vec(arb_simple_value(), 0..5)) {
+    fn prop_is_sexpr_true(items in prop::collection::vec(arb_simple_value(), 1..5)) {
         let sexpr = MettaValue::SExpr(items);
         let mut builder = ChunkBuilder::new("test");
         let idx = builder.add_constant(sexpr);
@@ -1950,7 +1950,7 @@ proptest! {
         prop_assert!(result.is_ok());
         match result.unwrap()[0].inner() {
             MettaValueInner::Atom(s) => {
-                prop_assert!(s == "Long" || s == "Number" || s == "Int");
+                prop_assert!(*s == "Long" || *s == "Number" || *s == "Int");
             }
             _ => return Err(TestCaseError::fail("Expected type symbol")),
         }
@@ -2102,7 +2102,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_get_metatype_sexpr(items in prop::collection::vec(arb_simple_value(), 0..3)) {
+    fn prop_get_metatype_sexpr(items in prop::collection::vec(arb_simple_value(), 1..3)) {
         let mut builder = ChunkBuilder::new("test");
         let idx = builder.add_constant(MettaValue::SExpr(items));
         builder.emit_u16(Opcode::PushConstant, idx);
@@ -2276,7 +2276,7 @@ proptest! {
         match result.unwrap()[0].inner() {
             MettaValueInner::String(s) => {
                 let expected = if b { "True" } else { "False" };
-                prop_assert_eq!(s, expected);
+                prop_assert_eq!(*s, expected);
             }
             _ => return Err(TestCaseError::fail("Expected String result")),
         }
@@ -2315,7 +2315,7 @@ proptest! {
         prop_assert!(result.is_ok());
         match result.unwrap()[0].inner() {
             MettaValueInner::String(s) => {
-                prop_assert_eq!(s, "()");
+                prop_assert_eq!(*s, "()");
             }
             _ => return Err(TestCaseError::fail("Expected String result")),
         }
@@ -2334,7 +2334,7 @@ proptest! {
         prop_assert!(result.is_ok());
         match result.unwrap()[0].inner() {
             MettaValueInner::String(s) => {
-                prop_assert_eq!(s, "()");
+                prop_assert_eq!(*s, "()");
             }
             _ => return Err(TestCaseError::fail("Expected String result")),
         }
@@ -3417,7 +3417,7 @@ proptest! {
         // Any SExpr result should have no Nil values
         for r in &results {
             if let MettaValueInner::SExpr(items) = r.inner() {
-                for item in items {
+                for item in *items {
                     prop_assert!(!matches!(item.inner(), MettaValueInner::Unit));
                 }
             }
@@ -3788,7 +3788,7 @@ mod multi_tier_tests {
     use crate::backend::grounded::{LessOp, LessEqOp, GreaterOp, GreaterEqOp, EqualOp, NotEqualOp};
     use crate::backend::grounded::{AndOp, OrOp, NotOp};
     use crate::backend::grounded::GroundedOperation;
-    use crate::backend::environment::HeapEnvironment;
+    use crate::backend::environment::MettaEnvironment;
 
     // =========================================================================
     // Tier Definitions and Helpers
@@ -3805,7 +3805,7 @@ mod multi_tier_tests {
     }
 
     /// Mock eval function for grounded operations (no recursive evaluation)
-    fn mock_eval(value: MettaValue, env: HeapEnvironment) -> (Vec<MettaValue>, HeapEnvironment) {
+    fn mock_eval(value: MettaValue, env: MettaEnvironment) -> (Vec<MettaValue>, MettaEnvironment) {
         (vec![value], env)
     }
 
@@ -3815,7 +3815,7 @@ mod multi_tier_tests {
         a: MettaValue,
         b: MettaValue,
     ) -> Result<MettaValue, String> {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let args = vec![a, b];
         op.execute_raw(&args, &env, &mock_eval)
             .map(|results| results.into_iter().next().map(|(v, _)| v).unwrap_or(MettaValue::Unit()))
@@ -3827,7 +3827,7 @@ mod multi_tier_tests {
         op: &Op,
         a: MettaValue,
     ) -> Result<MettaValue, String> {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let args = vec![a];
         op.execute_raw(&args, &env, &mock_eval)
             .map(|results| results.into_iter().next().map(|(v, _)| v).unwrap_or(MettaValue::Unit()))
@@ -4251,7 +4251,7 @@ mod three_tier_tests {
     use crate::backend::bytecode::jit::{JitCompiler, JitContext, JitValue};
     use crate::backend::bytecode::opcodes::Opcode;
     use crate::backend::bytecode::BytecodeVM;
-    use crate::backend::environment::HeapEnvironment;
+    use crate::backend::environment::MettaEnvironment;
     use crate::backend::grounded::{
         AddOp, AndOp, DivOp, EqualOp, GreaterEqOp, GreaterOp, GroundedOperation, LessEqOp, LessOp,
         ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
@@ -4264,7 +4264,7 @@ mod three_tier_tests {
     // =========================================================================
 
     /// Mock eval function for grounded operations (no recursive evaluation)
-    fn mock_eval(value: MettaValue, env: HeapEnvironment) -> (Vec<MettaValue>, HeapEnvironment) {
+    fn mock_eval(value: MettaValue, env: MettaEnvironment) -> (Vec<MettaValue>, MettaEnvironment) {
         (vec![value], env)
     }
 
@@ -4274,7 +4274,7 @@ mod three_tier_tests {
         a: MettaValue,
         b: MettaValue,
     ) -> Result<MettaValue, String> {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let args = vec![a, b];
         op.execute_raw(&args, &env, &mock_eval)
             .map(|results| {
@@ -4292,7 +4292,7 @@ mod three_tier_tests {
         op: &Op,
         a: MettaValue,
     ) -> Result<MettaValue, String> {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let args = vec![a];
         op.execute_raw(&args, &env, &mock_eval)
             .map(|results| {

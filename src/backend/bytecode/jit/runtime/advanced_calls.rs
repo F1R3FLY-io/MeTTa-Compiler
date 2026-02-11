@@ -10,9 +10,13 @@ use crate::backend::bytecode::external_registry::{ExternalContext, ExternalRegis
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
 use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::bytecode::vm::BytecodeVM;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::{MettaValue, global_factory};
 use std::sync::Arc;
 use tracing::warn;
+
+// MettaValueInner is MettaValueInner; .inner() returns &MettaValueInner.
+// Atom(s) gives s: &&str, SExpr(items) gives items: &&[MettaValue], etc.
+use crate::backend::models::MettaValueInner;
 
 // =============================================================================
 // Phase F: Advanced Calls
@@ -38,7 +42,6 @@ pub unsafe extern "C" fn jit_runtime_call_native(
     ip: u64,
 ) -> u64 {
     use crate::backend::bytecode::native_registry::{NativeContext, NativeRegistry};
-    use crate::backend::HeapEnvironment;
 
     if ctx.is_null() {
         return JitValue::unit().to_bits();
@@ -59,11 +62,11 @@ pub unsafe extern "C" fn jit_runtime_call_native(
     args.reverse(); // Restore argument order
 
     // Create native context
-    let native_ctx = NativeContext::new(HeapEnvironment::default());
+    let native_ctx = NativeContext::default();
 
     // In a full implementation, we would get the registry from the context
     // For now, use a default registry with stdlib functions
-    let registry = NativeRegistry::with_stdlib();
+    let registry = NativeRegistry::with_stdlib(global_factory());
 
     // Call the native function
     match registry.call(func_id as u16, &args, &native_ctx) {
@@ -132,8 +135,8 @@ pub unsafe extern "C" fn jit_runtime_call_external(
 
     let name_constant = &*ctx_ref.constants.add(name_index);
     let func_name = match name_constant.inner() {
-        MettaValueInner::Atom(s) => s.as_str(),
-        MettaValueInner::String(s) => s.as_str(),
+        MettaValueInner::Atom(s) => *s,
+        MettaValueInner::String(s) => *s,
         _ => {
             // Name must be an atom or string
             for _ in 0..arg_count {
@@ -179,9 +182,8 @@ pub unsafe extern "C" fn jit_runtime_call_external(
                 match JitValue::try_from_metta(&results[0]) {
                     Some(jv) => jv.to_bits(),
                     None => {
-                        // Can't NaN-box the result - allocate on heap
-                        let boxed = Box::new(results[0].clone());
-                        JitValue::from_heap_ptr(Box::into_raw(boxed)).to_bits()
+                        // Can't NaN-box the result - use inner pointer
+                        JitValue::from_inner_ptr(results[0].inner_ptr()).to_bits()
                     }
                 }
             }
@@ -193,8 +195,7 @@ pub unsafe extern "C" fn jit_runtime_call_external(
                 format!("external-call-failed: {}", e),
                 MettaValue::Atom(func_name.to_string()),
             );
-            let boxed = Box::new(error);
-            JitValue::from_heap_ptr(Box::into_raw(boxed)).to_bits()
+            JitValue::from_inner_ptr(error.inner_ptr()).to_bits()
         }
     }
 }
@@ -239,7 +240,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
 
     let head_constant = &*ctx_ref.constants.add(head_index);
     let func_head = match head_constant.inner() {
-        MettaValueInner::Atom(s) => s.clone(),
+        MettaValueInner::Atom(s) => s.to_string(),
         _ => {
             // Head must be an atom
             for _ in 0..arg_count {
@@ -276,8 +277,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
             match JitValue::try_from_metta(&cached_result) {
                 Some(jv) => return jv.to_bits(),
                 None => {
-                    let boxed = Box::new(cached_result);
-                    return JitValue::from_heap_ptr(Box::into_raw(boxed)).to_bits();
+                    return JitValue::from_inner_ptr(cached_result.inner_ptr()).to_bits();
                 }
             }
         }
@@ -299,8 +299,7 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
         if matches.is_empty() {
             // No matching rules - return the call expression as irreducible
             let expr = MettaValue::SExpr(call_expr_parts);
-            let boxed = Box::new(expr);
-            return JitValue::from_heap_ptr(Box::into_raw(boxed)).to_bits();
+            return JitValue::from_inner_ptr(expr.inner_ptr()).to_bits();
         }
 
         // Execute the first matching rule
@@ -328,16 +327,14 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
                 match JitValue::try_from_metta(&result) {
                     Some(jv) => return jv.to_bits(),
                     None => {
-                        let boxed = Box::new(result);
-                        return JitValue::from_heap_ptr(Box::into_raw(boxed)).to_bits();
+                        return JitValue::from_inner_ptr(result.inner_ptr()).to_bits();
                     }
                 }
             }
             Err(_) => {
                 // VM execution failed - return expression as irreducible
                 let expr = MettaValue::SExpr(call_expr_parts);
-                let boxed = Box::new(expr);
-                return JitValue::from_heap_ptr(Box::into_raw(boxed)).to_bits();
+                return JitValue::from_inner_ptr(expr.inner_ptr()).to_bits();
             }
         }
     }
@@ -346,6 +343,5 @@ pub unsafe extern "C" fn jit_runtime_call_cached(
     let mut expr_parts = vec![MettaValue::Atom(func_head)];
     expr_parts.extend(args);
     let expr = MettaValue::SExpr(expr_parts);
-    let boxed = Box::new(expr);
-    JitValue::from_heap_ptr(Box::into_raw(boxed)).to_bits()
+    JitValue::from_inner_ptr(expr.inner_ptr()).to_bits()
 }

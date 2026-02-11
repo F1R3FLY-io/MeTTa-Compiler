@@ -2,9 +2,10 @@
 use std::sync::Arc;
 
 fn main() {
-    use mettatron::backend::bytecode::vm::{BytecodeVM, VmConfig};
-    use mettatron::backend::bytecode::{BytecodeChunk, ChunkBuilder, Opcode};
-    use mettatron::backend::HeapEnvironment;
+    use mettatron::backend::bytecode::vm::BytecodeVM;
+    use mettatron::backend::bytecode::{ChunkBuilder, Opcode};
+    use mettatron::backend::models::GcFactory;
+    use mettatron::backend::environment::GenericEnvironment;
 
     let ops = 10;
     let mut builder = ChunkBuilder::new("state_mixed");
@@ -37,11 +38,8 @@ fn main() {
 
     println!("Chunk built, running...");
     let chunk = Arc::new(chunk);
-    let mut vm = BytecodeVM::with_config_and_env(
-        Arc::clone(&chunk),
-        VmConfig::default(),
-        HeapEnvironment::default(),
-    );
+    let env = GenericEnvironment::new(GcFactory::default());
+    let mut vm = BytecodeVM::with_env(Arc::clone(&chunk), env);
 
     match vm.run() {
         Ok(result) => println!("Result: {:?}", result),

@@ -14,18 +14,18 @@ pub mod init;
 
 use cranelift::codegen::ir::BlockArg;
 use cranelift::prelude::*;
-use cranelift_frontend::Switch;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use super::codegen::CodegenContext;
 use super::handlers;
 use super::types::{
-    JitError, JitResult, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_UNIT, TAG_VAR,
+    JitError, JitResult,
 };
+#[cfg(test)]
+use tracing::trace;
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 use std::collections::HashMap;
-use tracing::trace;
 
 // Import initialization traits for zero-cost static dispatch
 use init::{
@@ -149,7 +149,7 @@ impl JitCompiler {
     /// This method uses trait-based initialization for grouped FuncIds,
     /// providing zero-cost abstraction through static dispatch.
     pub fn new() -> JitResult<Self> {
-        use super::runtime;
+        
 
         // Check for environment variable to disable JIT (useful for benchmarking)
         if std::env::var("METTATRON_DISABLE_JIT").is_ok() {
@@ -472,7 +472,7 @@ impl JitCompiler {
     /// Check if raw bytecode can be JIT compiled (bytecode-only check).
     ///
     /// This is useful for generic bytecode chunks where the bytecode structure
-    /// is identical regardless of the value type (e.g., `GenericBytecodeChunk<ArenaValue>`).
+    /// is identical regardless of the value type (e.g., `GenericBytecodeChunk<MettaValue>`).
     ///
     /// Note: This does NOT check for nondeterminism flags. For chunks with
     /// nondeterministic operations (Fork/Yield/Collect), use `can_compile_stage1`

@@ -8,7 +8,7 @@
 //! - Format precedence (`_pkg-info.metta` > `metta.toml`)
 //! - Strict mode behavior
 
-use mettatron::{compile_arena, eval_arena, new_arena_env, ArenaValueInner};
+use mettatron::{compile, eval, new_env, MettaValueInner};
 use std::fs;
 use std::path::PathBuf;
 
@@ -23,21 +23,21 @@ fn fixtures_dir() -> PathBuf {
 
 #[test]
 fn test_include_basic_file() {
-    let mut env = new_arena_env();
+    let mut env = new_env();
     let fixture_path = fixtures_dir().join("test_module.metta");
 
     // Set up the environment to know about our test directory
     env.set_current_module_path(Some(fixtures_dir()));
 
     let code = format!(r#"(include "{}")"#, fixture_path.display());
-    let state = compile_arena(&code).expect("compilation should succeed");
+    let state = compile(&code).expect("compilation should succeed");
 
-    let (results, _) = eval_arena(state.source()[0], env, &state);
+    let (results, _) = eval(state.source()[0], env, &state);
 
     // Include should return Unit on success
     assert_eq!(results.len(), 1);
     assert!(
-        matches!(results[0].inner(), ArenaValueInner::Unit),
+        matches!(results[0].inner(), MettaValueInner::Unit),
         "Expected Unit, got {:?}",
         results[0].inner()
     );
@@ -45,24 +45,24 @@ fn test_include_basic_file() {
 
 #[test]
 fn test_include_defines_rules() {
-    let mut env = new_arena_env();
+    let mut env = new_env();
     let fixture_path = fixtures_dir().join("test_module.metta");
     env.set_current_module_path(Some(fixtures_dir()));
 
     // Include the module
     let include_code = format!(r#"(include "{}")"#, fixture_path.display());
-    let state = compile_arena(&include_code).expect("compilation should succeed");
-    let (_, env) = eval_arena(state.source()[0], env, &state);
+    let state = compile(&include_code).expect("compilation should succeed");
+    let (_, env) = eval(state.source()[0], env, &state);
 
     // Now test that the defined functions work
     let test_code = "!(test-add 2 3)";
-    let state = compile_arena(test_code).expect("compilation should succeed");
-    let (results, _) = eval_arena(state.source()[0], env, &state);
+    let state = compile(test_code).expect("compilation should succeed");
+    let (results, _) = eval(state.source()[0], env, &state);
 
     // Should evaluate to 5
     assert_eq!(results.len(), 1);
     assert!(
-        matches!(results[0].inner(), ArenaValueInner::Long(5)),
+        matches!(results[0].inner(), MettaValueInner::Long(5)),
         "Expected Long(5), got {:?}",
         results[0].inner()
     );
@@ -70,37 +70,37 @@ fn test_include_defines_rules() {
 
 #[test]
 fn test_include_idempotent() {
-    let mut env = new_arena_env();
+    let mut env = new_env();
     let fixture_path = fixtures_dir().join("test_module.metta");
     env.set_current_module_path(Some(fixtures_dir()));
 
     // Include the same module twice
     let include_code = format!(r#"(include "{}")"#, fixture_path.display());
-    let state = compile_arena(&include_code).expect("compilation should succeed");
-    let (_, env) = eval_arena(state.source()[0], env, &state);
+    let state = compile(&include_code).expect("compilation should succeed");
+    let (_, env) = eval(state.source()[0], env, &state);
 
     // Verify rules are available after first include
     let test_code = "!(test-add 2 3)";
-    let state2 = compile_arena(test_code).expect("compilation should succeed");
-    let (results, env) = eval_arena(state2.source()[0], env, &state2);
+    let state2 = compile(test_code).expect("compilation should succeed");
+    let (results, env) = eval(state2.source()[0], env, &state2);
     assert_eq!(results.len(), 1);
     assert!(
-        matches!(results[0].inner(), ArenaValueInner::Long(5)),
+        matches!(results[0].inner(), MettaValueInner::Long(5)),
         "Expected Long(5) after first include, got {:?}",
         results[0].inner()
     );
 
     // Include again -- rules should still work (may produce duplicate results due to
     // the generic include path adding rules unconditionally without deduplication)
-    let (_, env) = eval_arena(state.source()[0], env, &state);
+    let (_, env) = eval(state.source()[0], env, &state);
 
-    let (results, _) = eval_arena(state2.source()[0], env, &state2);
+    let (results, _) = eval(state2.source()[0], env, &state2);
     assert!(
         !results.is_empty(),
         "Expected at least one result after second include"
     );
     assert!(
-        results.iter().all(|r| matches!(r.inner(), ArenaValueInner::Long(5))),
+        results.iter().all(|r| matches!(r.inner(), MettaValueInner::Long(5))),
         "All results should be Long(5), got {:?}",
         results.iter().map(|r| format!("{:?}", r.inner())).collect::<Vec<_>>()
     );
@@ -117,30 +117,30 @@ fn test_include_idempotent() {
 
 #[test]
 fn test_import_via_include() {
-    let mut env = new_arena_env();
+    let mut env = new_env();
     let fixture_path = fixtures_dir().join("test_module.metta");
     env.set_current_module_path(Some(fixtures_dir()));
 
     // Use include (which import! internally calls with &self)
     let code = format!(r#"(include "{}")"#, fixture_path.display());
-    let state = compile_arena(&code).expect("compilation should succeed");
-    let (results, env) = eval_arena(state.source()[0], env, &state);
+    let state = compile(&code).expect("compilation should succeed");
+    let (results, env) = eval(state.source()[0], env, &state);
 
     // Include should return Unit on success (all expressions are rule/type defs)
     assert_eq!(results.len(), 1);
     assert!(
-        matches!(results[0].inner(), ArenaValueInner::Unit),
+        matches!(results[0].inner(), MettaValueInner::Unit),
         "Expected Unit, got {:?}",
         results[0].inner()
     );
 
     // Verify rules from the module are actually loaded
     let test_code = "!(test-add 10 20)";
-    let state2 = compile_arena(test_code).expect("compilation should succeed");
-    let (results, _) = eval_arena(state2.source()[0], env, &state2);
+    let state2 = compile(test_code).expect("compilation should succeed");
+    let (results, _) = eval(state2.source()[0], env, &state2);
     assert_eq!(results.len(), 1);
     assert!(
-        matches!(results[0].inner(), ArenaValueInner::Long(30)),
+        matches!(results[0].inner(), MettaValueInner::Long(30)),
         "Expected Long(30), got {:?}",
         results[0].inner()
     );
@@ -157,18 +157,18 @@ fn test_import_via_include() {
 
 #[test]
 fn test_bind_creates_token() {
-    let env = new_arena_env();
+    let env = new_env();
 
     // bind! is a special form that evaluates directly
     // Using token without & prefix due to parser limitation with &-prefixed tokens
     let code = r#"(bind! my-value 42)"#;
-    let state = compile_arena(code).expect("compilation should succeed");
-    let (results, env) = eval_arena(state.source()[0], env, &state);
+    let state = compile(code).expect("compilation should succeed");
+    let (results, env) = eval(state.source()[0], env, &state);
 
     // bind! returns Unit
     assert_eq!(results.len(), 1);
     assert!(
-        matches!(results[0].inner(), ArenaValueInner::Unit),
+        matches!(results[0].inner(), MettaValueInner::Unit),
         "Expected Unit, got {:?}",
         results[0].inner()
     );
@@ -178,7 +178,7 @@ fn test_bind_creates_token() {
     let lookup = env.lookup_token("my-value");
     assert!(lookup.is_some(), "Expected my-value to be bound");
     assert!(
-        matches!(lookup.unwrap().inner(), ArenaValueInner::Long(42)),
+        matches!(lookup.unwrap().inner(), MettaValueInner::Long(42)),
         "Expected Long(42), got {:?}",
         lookup.unwrap().inner()
     );
@@ -186,16 +186,16 @@ fn test_bind_creates_token() {
 
 #[test]
 fn test_bind_with_expression() {
-    let env = new_arena_env();
+    let env = new_env();
 
     // Bind to a computed value
     let code = r#"(bind! sum-value (+ 10 20))"#;
-    let state = compile_arena(code).expect("compilation should succeed");
-    let (results, env) = eval_arena(state.source()[0], env, &state);
+    let state = compile(code).expect("compilation should succeed");
+    let (results, env) = eval(state.source()[0], env, &state);
 
     assert_eq!(results.len(), 1);
     assert!(
-        matches!(results[0].inner(), ArenaValueInner::Unit),
+        matches!(results[0].inner(), MettaValueInner::Unit),
         "Expected Unit, got {:?}",
         results[0].inner()
     );
@@ -204,7 +204,7 @@ fn test_bind_with_expression() {
     let lookup = env.lookup_token("sum-value");
     assert!(lookup.is_some(), "Expected sum-value to be bound");
     assert!(
-        matches!(lookup.unwrap().inner(), ArenaValueInner::Long(30)),
+        matches!(lookup.unwrap().inner(), MettaValueInner::Long(30)),
         "Expected Long(30), got {:?}",
         lookup.unwrap().inner()
     );
@@ -212,23 +212,23 @@ fn test_bind_with_expression() {
 
 #[test]
 fn test_bind_token_resolution() {
-    let env = new_arena_env();
+    let env = new_env();
 
     // First bind a value
     let bind_code = r#"(bind! x-val 100)"#;
-    let state = compile_arena(bind_code).expect("compilation should succeed");
-    let (_, env) = eval_arena(state.source()[0], env, &state);
+    let state = compile(bind_code).expect("compilation should succeed");
+    let (_, env) = eval(state.source()[0], env, &state);
 
     // Then use the bound token in an expression
     // Use ! to force evaluation and get the result
     let use_code = r#"!(+ x-val 5)"#;
-    let state = compile_arena(use_code).expect("compilation should succeed");
-    let (results, _) = eval_arena(state.source()[0], env, &state);
+    let state = compile(use_code).expect("compilation should succeed");
+    let (results, _) = eval(state.source()[0], env, &state);
 
     // Should resolve x-val to 100, then add 5
     assert_eq!(results.len(), 1);
     assert!(
-        matches!(results[0].inner(), ArenaValueInner::Long(105)),
+        matches!(results[0].inner(), MettaValueInner::Long(105)),
         "Expected Long(105), got {:?}",
         results[0].inner()
     );
@@ -240,13 +240,13 @@ fn test_bind_token_resolution() {
 
 #[test]
 fn test_strict_mode_default_disabled() {
-    let env = new_arena_env();
+    let env = new_env();
     assert!(!env.is_strict_mode());
 }
 
 #[test]
 fn test_strict_mode_can_be_enabled() {
-    let mut env = new_arena_env();
+    let mut env = new_env();
     env.set_strict_mode(true);
     assert!(env.is_strict_mode());
 }
@@ -610,24 +610,24 @@ version = "1.0.0"
 
 #[test]
 fn test_full_module_workflow() {
-    let mut env = new_arena_env();
+    let mut env = new_env();
     let fixture_path = fixtures_dir().join("test_module.metta");
     env.set_current_module_path(Some(fixtures_dir()));
 
     // 1. Include the module
     let include_code = format!(r#"(include "{}")"#, fixture_path.display());
-    let state = compile_arena(&include_code).expect("compilation should succeed");
-    let (_, env) = eval_arena(state.source()[0], env, &state);
+    let state = compile(&include_code).expect("compilation should succeed");
+    let (_, env) = eval(state.source()[0], env, &state);
 
     // 2. Test that functions work
     let test_code = "!(test-nested 8)";
-    let state = compile_arena(test_code).expect("compilation should succeed");
-    let (results, _) = eval_arena(state.source()[0], env, &state);
+    let state = compile(test_code).expect("compilation should succeed");
+    let (results, _) = eval(state.source()[0], env, &state);
 
     // test-nested(8) = test-add(8, test-value()) = test-add(8, 42) = 50
     assert_eq!(results.len(), 1);
     assert!(
-        matches!(results[0].inner(), ArenaValueInner::Long(50)),
+        matches!(results[0].inner(), MettaValueInner::Long(50)),
         "Expected Long(50), got {:?}",
         results[0].inner()
     );
@@ -635,7 +635,7 @@ fn test_full_module_workflow() {
 
 #[test]
 fn test_transitive_imports() {
-    let mut env = new_arena_env();
+    let mut env = new_env();
     env.set_current_module_path(Some(fixtures_dir()));
 
     // The generic include path does not recursively evaluate !(include ...) within
@@ -643,23 +643,23 @@ fn test_transitive_imports() {
     // we explicitly include both modules A and B in the correct dependency order.
     let fixture_a = fixtures_dir().join("test_import_a.metta");
     let include_a = format!(r#"(include "{}")"#, fixture_a.display());
-    let state_a = compile_arena(&include_a).expect("compilation should succeed");
-    let (_, env) = eval_arena(state_a.source()[0], env, &state_a);
+    let state_a = compile(&include_a).expect("compilation should succeed");
+    let (_, env) = eval(state_a.source()[0], env, &state_a);
 
     let fixture_b = fixtures_dir().join("test_import_b.metta");
     let include_b = format!(r#"(include "{}")"#, fixture_b.display());
-    let state_b = compile_arena(&include_b).expect("compilation should succeed");
-    let (_, env) = eval_arena(state_b.source()[0], env, &state_b);
+    let state_b = compile(&include_b).expect("compilation should succeed");
+    let (_, env) = eval(state_b.source()[0], env, &state_b);
 
     // Test function from module B that depends on module A
     let test_code = "!(add-from-b 5)";
-    let state = compile_arena(test_code).expect("compilation should succeed");
-    let (results, _) = eval_arena(state.source()[0], env, &state);
+    let state = compile(test_code).expect("compilation should succeed");
+    let (results, _) = eval(state.source()[0], env, &state);
 
     // add-from-b(5) = add-from-a(5) + 5 = (5 + 10) + 5 = 20
     assert_eq!(results.len(), 1);
     assert!(
-        matches!(results[0].inner(), ArenaValueInner::Long(20)),
+        matches!(results[0].inner(), MettaValueInner::Long(20)),
         "Expected Long(20), got {:?}",
         results[0].inner()
     );

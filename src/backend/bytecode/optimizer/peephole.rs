@@ -227,9 +227,9 @@ impl PeepholeOptimizer {
                     let size = instruction_size(code, offset);
                     offset += size;
                 }
-                PeepholeAction::Remove { start, end }
-                | PeepholeAction::ReplaceWithOpcode { start, end, .. }
-                | PeepholeAction::ReplaceWithBytes { start, end, .. } => {
+                PeepholeAction::Remove { start: _, end }
+                | PeepholeAction::ReplaceWithOpcode { start: _, end, .. }
+                | PeepholeAction::ReplaceWithBytes { start: _, end, .. } => {
                     patches.push(action);
                     // Skip past the matched pattern
                     offset = end;

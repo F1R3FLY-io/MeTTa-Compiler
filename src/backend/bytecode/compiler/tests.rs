@@ -841,9 +841,10 @@ fn test_compile_nested_call() {
 
 #[test]
 fn test_compile_empty_sexpr() {
+    // SExpr(vec![]) normalizes to Unit after Nil/Unit merge
     let expr = MettaValue::SExpr(vec![]);
     let chunk = compile("test", &expr).unwrap();
-    assert!(chunk.disassemble().contains("push_empty"));
+    assert!(chunk.disassemble().contains("push_unit"));
 }
 
 // ========================================================================
@@ -1002,12 +1003,13 @@ fn test_constant_deduplication() {
 #[test]
 fn test_branch_empty_superpose() {
     // (superpose ()) - empty alternatives
+    // SExpr(vec![]) normalizes to Unit after Nil/Unit merge
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("superpose".to_string()),
         MettaValue::SExpr(vec![]),
     ]);
     let chunk = compile("test", &expr).unwrap();
-    // Empty superpose should emit PushEmpty
+    // Empty superpose should emit PushEmpty (Unit arg triggers empty superpose path)
     assert_eq!(chunk.read_opcode(0), Some(Opcode::PushEmpty));
 }
 
@@ -1255,6 +1257,8 @@ fn test_compile_if_non_boolean_condition_no_fold() {
 #[test]
 fn test_compile_let_star_empty_bindings() {
     // (let* () 42) - no bindings, should just compile body
+    // SExpr(vec![]) normalizes to Unit after Nil/Unit merge;
+    // the compiler treats Unit as empty bindings list
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("let*".to_string()),
         MettaValue::SExpr(vec![]),

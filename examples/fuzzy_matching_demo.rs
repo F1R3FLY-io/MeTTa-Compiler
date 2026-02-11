@@ -3,7 +3,7 @@
 //! This example shows how MeTTaTron tracks defined symbols and provides
 //! helpful suggestions when encountering typos or misspellings.
 
-use mettatron::{compile_arena, eval_arena, new_arena_env};
+use mettatron::{compile, eval, new_env};
 
 fn main() {
     let source = r#"
@@ -18,8 +18,8 @@ fn main() {
         (= (hello-world) "Hello, World!")
     "#;
 
-    // Compile source to ArenaState
-    let state = match compile_arena(source) {
+    // Compile source to MettaState
+    let state = match compile(source) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error compiling: {}", e);
@@ -28,9 +28,9 @@ fn main() {
     };
 
     // Evaluate to populate environment with rules
-    let mut env = new_arena_env();
+    let mut env = new_env();
     for &expr in state.source() {
-        let (_, updated_env) = eval_arena(expr, env, &state);
+        let (_, updated_env) = eval(expr, env, &state);
         env = updated_env;
     }
 

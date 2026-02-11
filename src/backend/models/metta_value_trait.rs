@@ -1,8 +1,8 @@
-//! MettaValue Trait - Common Interface for MeTTa Values
+//! MettaValueTrait - Common Interface for MeTTa Values
 //!
-//! This module defines the `MettaValue` trait which provides a unified interface
+//! This module defines the `MettaValueTrait` trait which provides a unified interface
 //! for MeTTa values regardless of their allocation strategy. Both heap-allocated
-//! (`HeapMettaValue`) and arena-allocated (`ArenaMettaValue`) types implement
+//! (`MettaValue`) and arena-allocated (`MettaValue`) types implement
 //! this trait, enabling generic evaluation code.
 //!
 //! ## Design Principles
@@ -21,7 +21,7 @@
 
 use std::fmt::Debug;
 
-use super::{MemoHandle, SpaceHandle};
+use super::{MemoHandle, MettaValueInner, SpaceHandle};
 
 /// Core trait for MeTTa values.
 ///
@@ -42,7 +42,7 @@ use super::{MemoHandle, SpaceHandle};
 /// # Example
 ///
 /// ```ignore
-/// fn process_value<V: MettaValue>(value: &V) {
+/// fn process_value<V: MettaValueTrait>(value: &V) {
 ///     if let Some(name) = value.as_atom() {
 ///         if name.starts_with('$') {
 ///             // Handle variable
@@ -52,9 +52,9 @@ use super::{MemoHandle, SpaceHandle};
 ///     }
 /// }
 /// ```
-pub trait MettaValue: Clone + Debug + PartialEq + Sized {
+pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// The slice type for S-expressions.
-    /// For HeapMettaValue this is `[Self]`, for ArenaMettaValue it's `[Self]` as well.
+    /// For MettaValue this is `[Self]`, for MettaValue it's `[Self]` as well.
     type SExprSlice: AsRef<[Self]> + ?Sized;
 
     // =========================================================================
@@ -172,6 +172,19 @@ pub trait MettaValue: Clone + Debug + PartialEq + Sized {
     /// For bare atoms, arity is 0.
     fn get_arity(&self) -> usize;
 
+    /// Get a raw pointer to the slab-allocated inner representation.
+    ///
+    /// This pointer is valid for 'static (managed by the GC) and can be
+    /// stored in NaN-boxed JitValues without risk of dangling.
+    fn inner_ptr(&self) -> *const MettaValueInner;
+
+    /// Reconstruct a value from a raw pointer to its inner representation.
+    ///
+    /// # Safety
+    /// The pointer must point to valid, slab-allocated `MettaValueInner` data
+    /// with 'static lifetime (managed by the GC).
+    unsafe fn from_inner_ptr(ptr: *const MettaValueInner) -> Self;
+
     /// Get a user-friendly string representation of this value.
     ///
     /// This is used for error messages, debug output, and `repr` operations.
@@ -208,7 +221,7 @@ pub trait MettaValue: Clone + Debug + PartialEq + Sized {
 
     /// Serialize this value to bytes for storage in PathMap/MORK.
     ///
-    /// The byte format is context-independent - both MettaValue and ArenaValue
+    /// The byte format is context-independent - both MettaValue and MettaValue
     /// serialize to the same format.
     ///
     /// # Format
@@ -379,14 +392,14 @@ pub trait MettaValue: Clone + Debug + PartialEq + Sized {
 
 /// Trait for constructing MettaValue instances.
 ///
-/// This is separated from `MettaValue` because construction signatures differ:
-/// - `HeapMettaValueFactory`: no context needed (stateless unit struct)
-/// - `ArenaMettaValueFactory`: requires arena reference
+/// This is separated from `MettaValueTrait` because construction signatures differ:
+/// - `GcFactory`: backed by the global slab allocator (implements Default)
+/// - `MettaValueFactory`: requires arena reference (deprecated)
 ///
 /// # Example
 ///
 /// ```ignore
-/// fn create_error<V: MettaValue, F: MettaValueFactory<V>>(
+/// fn create_error<V: MettaValueTrait, F: MettaValueFactory<V>>(
 ///     factory: &F,
 ///     msg: &str,
 ///     detail: V,
@@ -394,7 +407,7 @@ pub trait MettaValue: Clone + Debug + PartialEq + Sized {
 ///     factory.error(msg, detail)
 /// }
 /// ```
-pub trait MettaValueFactory<V: MettaValue> {
+pub trait MettaValueFactory<V: MettaValueTrait> {
     /// Create an Atom variant from a string slice
     fn atom(&self, s: &str) -> V;
 
@@ -470,8 +483,8 @@ pub trait MettaValueFactory<V: MettaValue> {
     ///
     /// This is the inverse of `MettaValue::serialize()`. The factory allocates
     /// the value in its native context:
-    /// - HeapMettaValueFactory: allocates on heap (Arc-wrapped)
-    /// - ArenaValueFactory: allocates directly in arena
+    /// - GcFactory: allocates directly in global slab allocator
+    /// - GcFactory::default(): convenient construction via Default
     ///
     /// # Returns
     ///
@@ -484,7 +497,7 @@ pub trait MettaValueFactory<V: MettaValue> {
 /// This enables calling factory methods through references like `ctx.factory().atom("x")`
 /// where `ctx.factory()` returns `&Self::Factory`. The implementation simply delegates
 /// to the underlying factory.
-impl<V: MettaValue, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
+impl<V: MettaValueTrait, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
     #[inline]
     fn atom(&self, s: &str) -> V {
         (*self).atom(s)
@@ -568,11 +581,12 @@ impl<V: MettaValue, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::models::{HeapMettaValueFactory, MettaValueFactory};
+    use crate::backend::models::{GcFactory, MettaValueFactory};
+    use super::MettaValueTrait;
 
     #[test]
     fn test_structurally_equivalent_atoms() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         // Non-variable atoms must match exactly
         let a = factory.atom("foo");
@@ -584,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_structurally_equivalent_variables() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         // Variables are equivalent regardless of name
         let x = factory.atom("$x");
@@ -599,7 +613,7 @@ mod tests {
 
     #[test]
     fn test_structurally_equivalent_space_refs() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         // Space references are NOT variables and must match exactly
         let self1 = factory.atom("&self");
@@ -614,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_structurally_equivalent_sexpr() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         // S-expressions must have same structure
         let e1 = factory.sexpr(vec![

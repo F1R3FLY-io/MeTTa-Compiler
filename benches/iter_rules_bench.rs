@@ -8,7 +8,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use mettatron::backend::models::{MettaValue, Rule};
-use mettatron::backend::HeapEnvironment;
+use mettatron::backend::{MettaEnvironment, MettaValueTrait};
 
 
 // ============================================================================
@@ -26,12 +26,12 @@ fn make_test_rule(pattern: &str, body: &str) -> Rule {
 /// Create a rule with S-expression structure (more realistic)
 fn make_sexpr_rule(head: &str, idx: usize) -> Rule {
     Rule::new(
-        MettaValue::sexpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::sym(head),
             MettaValue::sym(&format!("arg{}", idx)),
             MettaValue::var(&format!("x{}", idx)),
         ]),
-        MettaValue::sexpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::sym("result"),
             MettaValue::var(&format!("x{}", idx)),
         ]),
@@ -39,8 +39,8 @@ fn make_sexpr_rule(head: &str, idx: usize) -> Rule {
 }
 
 /// Populate environment with n simple rules
-fn populate_environment(n: usize) -> HeapEnvironment {
-    let mut env = HeapEnvironment::default();
+fn populate_environment(n: usize) -> MettaEnvironment {
+    let mut env = MettaEnvironment::default();
     for i in 0..n {
         let rule = make_test_rule(&format!("(rule{} $x)", i), &format!("(result{} $x)", i));
         env.add_rule(rule);
@@ -49,8 +49,8 @@ fn populate_environment(n: usize) -> HeapEnvironment {
 }
 
 /// Populate environment with n S-expression rules (more realistic)
-fn populate_environment_sexpr(n: usize, num_heads: usize) -> HeapEnvironment {
-    let mut env = HeapEnvironment::default();
+fn populate_environment_sexpr(n: usize, num_heads: usize) -> MettaEnvironment {
+    let mut env = MettaEnvironment::default();
     let heads: Vec<String> = (0..num_heads).map(|i| format!("head{}", i)).collect();
     for i in 0..n {
         let head = &heads[i % num_heads];
@@ -218,7 +218,7 @@ fn bench_iter_rule_heads(c: &mut Criterion) {
             b.iter(|| {
                 let heads: Vec<_> = black_box(&env)
                     .iter_rules()
-                    .map(|r| r.lhs.get_head_symbol().map(|s| s.to_string()))
+                    .map(|r| r.lhs.get_head_symbol().map(|s: &str| s.to_string()))
                     .collect();
                 black_box(heads)
             })

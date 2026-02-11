@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::backend::models::MettaValue;
-use crate::backend::HeapEnvironment;
+use crate::backend::MettaEnvironment;
 
 /// A space wrapper that supports layered queries across dependencies.
 ///
@@ -20,7 +20,7 @@ use crate::backend::HeapEnvironment;
 pub struct ModuleSpace {
     /// The module's own definitions.
     /// This is a cloned Environment that contains only this module's rules.
-    main_space: Option<HeapEnvironment>,
+    main_space: Option<MettaEnvironment>,
 
     /// Dependency spaces (from imported modules).
     /// Queried after main_space, in order of import.
@@ -41,7 +41,7 @@ impl ModuleSpace {
     }
 
     /// Create a new module space with an initial environment.
-    pub fn with_environment(env: HeapEnvironment) -> Self {
+    pub fn with_environment(env: MettaEnvironment) -> Self {
         Self {
             main_space: Some(env),
             dep_spaces: Vec::new(),
@@ -50,17 +50,17 @@ impl ModuleSpace {
     }
 
     /// Set the main space environment.
-    pub fn set_main_space(&mut self, env: HeapEnvironment) {
+    pub fn set_main_space(&mut self, env: MettaEnvironment) {
         self.main_space = Some(env);
     }
 
     /// Get a reference to the main space environment.
-    pub fn main_space(&self) -> Option<&HeapEnvironment> {
+    pub fn main_space(&self) -> Option<&MettaEnvironment> {
         self.main_space.as_ref()
     }
 
     /// Get a mutable reference to the main space environment.
-    pub fn main_space_mut(&mut self) -> Option<&mut HeapEnvironment> {
+    pub fn main_space_mut(&mut self) -> Option<&mut MettaEnvironment> {
         self.main_space.as_mut()
     }
 

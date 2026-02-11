@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! - `Environment` - Type alias for `HeapEnvironment` with Copy-on-Write (CoW) semantics
+//! - `Environment` - Type alias for `MettaEnvironment` with Copy-on-Write (CoW) semantics
 //! - `EnvironmentShared` - Type alias for `GenericEnvironmentShared<MettaValue>`
 //! - `HeadArityBloomFilter` - O(1) rejection for match_space()
 //! - `ScopeTracker` - Hierarchical scope tracking for "Did you mean?" suggestions
@@ -21,8 +21,8 @@
 //! The `GenericEnvironment<V, F>` type is parameterized over value type `V` and factory `F`.
 //! This enables zero-conversion evaluation with different allocation strategies:
 //!
-//! - `HeapEnvironment` = `GenericEnvironment<MettaValue, HeapMettaValueFactory>` (O(1) Arc clone)
-//! - `ArenaEnvironment<'a>` = `GenericEnvironment<ArenaValue<'a>, ArenaValueFactory<'a>>` (zero-copy)
+//! - `MettaEnvironment` = `GenericEnvironment<MettaValue, GcFactory>` (O(1) Arc clone)
+//! - `MettaEnvironment` = `GenericEnvironment<MettaValue, GcFactory>` (slab-allocated)
 
 mod bloom;
 mod fact_storage;
@@ -45,7 +45,7 @@ mod tests;
 mod proptests;
 mod type_system;
 
-pub use generic::{GenericEnvironment, GenericEnvironmentShared, HeapEnvironment, MultiplicityMatch as GenericMultiplicityMatch};
+pub use generic::{GenericEnvironment, GenericEnvironmentShared, MettaEnvironment, MultiplicityMatch as GenericMultiplicityMatch};
 pub use named_spaces::NamedSpaceIter;
 pub use pattern_matching::MultiplicityMatch;
 pub use rule_management::{MatchingRulesIter, RuleHeadsIter, RulesIter};

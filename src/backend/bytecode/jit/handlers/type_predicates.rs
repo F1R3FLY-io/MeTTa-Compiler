@@ -5,7 +5,7 @@
 use cranelift::prelude::*;
 
 use crate::backend::bytecode::jit::codegen::CodegenContext;
-use crate::backend::bytecode::jit::types::{JitResult, TAG_ATOM, TAG_HEAP, TAG_VAR};
+use crate::backend::bytecode::jit::types::{JitResult, TAG_ATOM, TAG_PTR, TAG_VAR};
 use crate::backend::bytecode::Opcode;
 
 /// Compile type predicate opcodes
@@ -28,10 +28,10 @@ pub fn compile_type_predicate_op<'a, 'b>(
         }
 
         Opcode::IsSExpr => {
-            // Check if value is an S-expression (TAG_HEAP)
+            // Check if value is an S-expression (TAG_PTR)
             let val = codegen.pop()?;
             let tag = codegen.extract_tag(val);
-            let heap_tag = codegen.builder.ins().iconst(types::I64, TAG_HEAP as i64);
+            let heap_tag = codegen.builder.ins().iconst(types::I64, TAG_PTR as i64);
             let is_sexpr = codegen.builder.ins().icmp(IntCC::Equal, tag, heap_tag);
             // icmp returns i8, extend to i64 for boxing
             let is_sexpr_i64 = codegen.builder.ins().uextend(types::I64, is_sexpr);

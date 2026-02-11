@@ -6,10 +6,10 @@
 //! - Tier 2: Cranelift JIT (Stage 1 primitives + Stage 2 runtime calls)
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use mettatron::backend::bytecode::{compile, BytecodeVM};
-use mettatron::backend::compile::compile_arena;
-use mettatron::backend::eval::eval_arena;
-use mettatron::backend::eval::trampoline::new_arena_env;
+use mettatron::backend::bytecode::{compile as compile_bytecode, BytecodeVM};
+use mettatron::backend::compile::compile;
+use mettatron::backend::eval::eval;
+use mettatron::backend::eval::trampoline::new_env;
 use mettatron::backend::MettaValue;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,15 +30,15 @@ fn sexpr(items: Vec<MettaValue>) -> MettaValue {
 /// Evaluate expression via tree-walking interpreter (arena-based)
 fn eval_tree_walker(expr: &MettaValue) -> Vec<String> {
     let src = format!("{}", expr);
-    let state = compile_arena(&src).expect("Failed to compile");
-    let env = new_arena_env();
-    let (results, _env) = eval_arena(state.source()[0], env, &state);
+    let state = compile(&src).expect("Failed to compile");
+    let env = new_env();
+    let (results, _env) = eval(state.source()[0], env, &state);
     results.iter().map(|v| format!("{}", v)).collect()
 }
 
 /// Evaluate expression via bytecode VM
 fn eval_bytecode(expr: &MettaValue) -> Vec<MettaValue> {
-    let chunk = compile("bench", expr).expect("compilation failed");
+    let chunk = compile_bytecode("bench", expr).expect("compilation failed");
     let mut vm = BytecodeVM::new(Arc::new(chunk));
     vm.run().expect("VM execution failed")
 }
@@ -83,7 +83,7 @@ fn bench_jit_arithmetic(c: &mut Criterion) {
 
     for depth in [10, 50, 100, 200].iter() {
         let expr = build_jit_arithmetic(*depth);
-        let chunk = Arc::new(compile("bench", &expr).expect("compilation failed"));
+        let chunk = Arc::new(compile_bytecode("bench", &expr).expect("compilation failed"));
 
         group.throughput(Throughput::Elements(*depth as u64));
 
@@ -148,7 +148,7 @@ fn bench_jit_boolean(c: &mut Criterion) {
 
     for depth in [10, 50, 100, 200].iter() {
         let expr = build_jit_boolean(*depth);
-        let chunk = Arc::new(compile("bench", &expr).expect("compilation failed"));
+        let chunk = Arc::new(compile_bytecode("bench", &expr).expect("compilation failed"));
 
         group.throughput(Throughput::Elements(*depth as u64));
 
@@ -213,7 +213,7 @@ fn bench_jit_mixed(c: &mut Criterion) {
 
     for depth in [10, 50, 100].iter() {
         let expr = build_jit_mixed(*depth);
-        let chunk = Arc::new(compile("bench", &expr).expect("compilation failed"));
+        let chunk = Arc::new(compile_bytecode("bench", &expr).expect("compilation failed"));
 
         group.throughput(Throughput::Elements(*depth as u64));
 
@@ -275,7 +275,7 @@ fn bench_jit_pow(c: &mut Criterion) {
     // Use smaller depths because Pow creates large values quickly
     for depth in [1, 2, 3, 5].iter() {
         let expr = build_jit_pow(*depth);
-        let chunk = Arc::new(compile("bench", &expr).expect("compilation failed"));
+        let chunk = Arc::new(compile_bytecode("bench", &expr).expect("compilation failed"));
 
         group.throughput(Throughput::Elements(*depth as u64));
 
@@ -324,7 +324,7 @@ fn bench_jit_compilation_overhead(c: &mut Criterion) {
 
     for depth in [10, 50, 100, 200].iter() {
         let expr = build_jit_arithmetic(*depth);
-        let chunk = Arc::new(compile("bench", &expr).expect("compilation failed"));
+        let chunk = Arc::new(compile_bytecode("bench", &expr).expect("compilation failed"));
 
         if !JitCompiler::can_compile_stage1(&chunk) {
             continue;
@@ -334,7 +334,7 @@ fn bench_jit_compilation_overhead(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("bytecode-compile", depth),
             &expr,
-            |b, expr| b.iter(|| compile("bench", black_box(expr))),
+            |b, expr| b.iter(|| compile_bytecode("bench", black_box(expr))),
         );
 
         // JIT compilation only (from bytecode)
@@ -355,7 +355,7 @@ fn bench_jit_compilation_overhead(c: &mut Criterion) {
             &expr,
             |b, expr| {
                 b.iter(|| {
-                    let chunk = compile("bench", black_box(expr)).expect("compilation failed");
+                    let chunk = compile_bytecode("bench", black_box(expr)).expect("compilation failed");
                     let mut compiler = JitCompiler::new().expect("JIT compiler creation failed");
                     let code_ptr = compiler.compile(&chunk).expect("JIT compilation failed");
                     let constants = chunk.constants().to_vec();
@@ -384,7 +384,7 @@ fn bench_repeated_execution(c: &mut Criterion) {
     let depth = 100;
     let iterations = 1000;
     let expr = build_jit_arithmetic(depth);
-    let chunk = Arc::new(compile("bench", &expr).expect("compilation failed"));
+    let chunk = Arc::new(compile_bytecode("bench", &expr).expect("compilation failed"));
 
     group.throughput(Throughput::Elements(iterations as u64));
 
@@ -461,7 +461,7 @@ fn bench_jit_if_chain(c: &mut Criterion) {
 
     for depth in [5, 10, 20, 50].iter() {
         let expr = build_jit_if_chain(*depth);
-        let chunk = Arc::new(compile("bench", &expr).expect("compilation failed"));
+        let chunk = Arc::new(compile_bytecode("bench", &expr).expect("compilation failed"));
 
         group.throughput(Throughput::Elements(*depth as u64));
 
@@ -530,7 +530,7 @@ fn bench_jit_let_chain(c: &mut Criterion) {
 
     for depth in [5, 10, 20, 50].iter() {
         let expr = build_jit_let_chain(*depth);
-        let chunk = Arc::new(compile("bench", &expr).expect("compilation failed"));
+        let chunk = Arc::new(compile_bytecode("bench", &expr).expect("compilation failed"));
 
         group.throughput(Throughput::Elements(*depth as u64));
 
@@ -615,7 +615,7 @@ fn bench_jit_hybrid_workload(c: &mut Criterion) {
 
     for depth in [10, 30, 60, 100].iter() {
         let expr = build_jit_hybrid_workload(*depth);
-        let chunk = Arc::new(compile("bench", &expr).expect("compilation failed"));
+        let chunk = Arc::new(compile_bytecode("bench", &expr).expect("compilation failed"));
 
         group.throughput(Throughput::Elements(*depth as u64));
 

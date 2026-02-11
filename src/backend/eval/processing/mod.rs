@@ -12,4 +12,3 @@ pub use generic::{
     process_single_combination_generic, GenericCartesianProductIter,
     GenericCartesianProductResult, GenericProcessedSExpr,
 };
-pub use no_match::handle_no_rule_match;

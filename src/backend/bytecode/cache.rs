@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_hash_stability() {
-        let expr = MettaValue::sexpr(vec![
+        let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(2),
@@ -243,12 +243,12 @@ mod tests {
 
     #[test]
     fn test_hash_different_exprs() {
-        let expr1 = MettaValue::sexpr(vec![
+        let expr1 = MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(2),
         ]);
-        let expr2 = MettaValue::sexpr(vec![
+        let expr2 = MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Long(1),
             MettaValue::Long(3),

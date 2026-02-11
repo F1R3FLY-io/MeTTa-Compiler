@@ -1,83 +1,13 @@
-//! State and heap tracking runtime functions for JIT compilation
+//! State operations runtime functions for JIT compilation
 //!
-//! This module provides FFI-callable state and heap operations:
-//! - track_heap - Track a heap allocation for later cleanup
-//! - cleanup_heap - Cleanup all tracked heap allocations
-//! - heap_count - Get the number of tracked heap allocations
+//! This module provides FFI-callable state operations:
 //! - new_state - Create a new mutable state cell
 //! - get_state - Get the current value from a state cell
 //! - change_state - Change the value of a state cell
 
-use super::helpers::{make_jit_error, make_jit_error_with_details, metta_to_jit_tracked};
+use super::helpers::{make_jit_error, make_jit_error_with_details, metta_to_jit};
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
 use crate::backend::models::{MettaValue, MettaValueInner};
-
-// =============================================================================
-// Heap Tracking Runtime Functions
-// =============================================================================
-
-/// Track a heap allocation in the context for later cleanup.
-///
-/// This function should be called whenever a new heap value (Box<MettaValue>)
-/// is created during JIT execution. The allocation will be freed when
-/// `jit_runtime_cleanup_heap` is called.
-///
-/// # Arguments
-/// * `ctx` - JIT context pointer (must have heap tracking enabled)
-/// * `ptr` - Raw pointer to the Box<MettaValue> allocation
-///
-/// # Safety
-/// - `ctx` must be a valid pointer to a JitContext
-/// - `ptr` must be from a valid `Box::into_raw(Box::new(MettaValue))` call
-/// - Heap tracking should be enabled via `enable_heap_tracking`
-#[no_mangle]
-pub unsafe extern "C" fn jit_runtime_track_heap(ctx: *mut JitContext, ptr: *mut MettaValue) {
-    if let Some(ctx_ref) = ctx.as_mut() {
-        ctx_ref.track_heap_allocation(ptr);
-    }
-}
-
-/// Cleanup all tracked heap allocations.
-///
-/// This function frees all heap allocations that were tracked during JIT
-/// execution. It should be called when JIT execution is complete.
-///
-/// # Arguments
-/// * `ctx` - JIT context pointer
-///
-/// # Safety
-/// - `ctx` must be a valid pointer to a JitContext
-/// - This should only be called once per JIT execution
-#[no_mangle]
-pub unsafe extern "C" fn jit_runtime_cleanup_heap(ctx: *mut JitContext) {
-    if let Some(ctx_ref) = ctx.as_mut() {
-        ctx_ref.cleanup_heap_allocations();
-    }
-}
-
-/// Get the number of tracked heap allocations.
-///
-/// # Arguments
-/// * `ctx` - JIT context pointer
-///
-/// # Returns
-/// Number of tracked allocations, or 0 if tracking is disabled
-///
-/// # Safety
-/// - `ctx` must be a valid pointer to a JitContext
-#[no_mangle]
-pub unsafe extern "C" fn jit_runtime_heap_count(ctx: *const JitContext) -> u64 {
-    if let Some(ctx_ref) = ctx.as_ref() {
-        // Safety: We're reading heap_tracker which is read-only here
-        if ctx_ref.heap_tracker.is_null() {
-            0
-        } else {
-            (*ctx_ref.heap_tracker).len() as u64
-        }
-    } else {
-        0
-    }
-}
 
 // =============================================================================
 // State Operations Runtime (Phase D.1)
@@ -113,9 +43,9 @@ pub unsafe extern "C" fn jit_runtime_new_state(
         return make_jit_error("new-state: environment not available");
     }
 
-    // Cast env_ptr to Environment
-    use crate::backend::HeapEnvironment;
-    let env = &mut *(ctx_ref.env_ptr as *mut HeapEnvironment);
+    // Cast env_ptr to Environment (MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>)
+    use crate::backend::bytecode::MettaEnvironment;
+    let env = &mut *(ctx_ref.env_ptr as *mut MettaEnvironment);
 
     // Convert JIT value to MettaValue
     let jit_val = JitValue::from_raw(initial_value);
@@ -124,9 +54,9 @@ pub unsafe extern "C" fn jit_runtime_new_state(
     // Create state in environment
     let state_id = env.create_state(&metta_val);
 
-    // Return State(id) as heap-allocated MettaValue
+    // Return State(id) as slab-allocated MettaValue
     let state_val = MettaValue::State(state_id);
-    metta_to_jit_tracked(&state_val, ctx).to_bits()
+    metta_to_jit(&state_val).to_bits()
 }
 
 /// Get the current value from a state cell.
@@ -178,15 +108,15 @@ pub unsafe extern "C" fn jit_runtime_get_state(
         return cached_value.to_bits();
     }
 
-    // Cache miss: fetch from Environment
-    use crate::backend::HeapEnvironment;
-    let env = &*(ctx_ref.env_ptr as *const HeapEnvironment);
+    // Cache miss: fetch from Environment (MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>)
+    use crate::backend::bytecode::MettaEnvironment;
+    let env = &*(ctx_ref.env_ptr as *const MettaEnvironment);
 
     // Get state value
     match env.get_state(state_id) {
         Some(value) => {
-            // Convert to JIT value with tracking
-            let jit_value = metta_to_jit_tracked(&value, ctx);
+            // Convert to JIT value
+            let jit_value = metta_to_jit(&value);
 
             // Update cache with the fetched value
             ctx_ref.state_cache_put(state_id, jit_value);
@@ -251,9 +181,9 @@ pub unsafe extern "C" fn jit_runtime_change_state(
     let jit_new_val = JitValue::from_raw(new_value);
     let metta_new_val = jit_new_val.to_metta();
 
-    // Cast env_ptr to Environment
-    use crate::backend::HeapEnvironment;
-    let env = &mut *(ctx_ref.env_ptr as *mut HeapEnvironment);
+    // Cast env_ptr to Environment (MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>)
+    use crate::backend::bytecode::MettaEnvironment;
+    let env = &mut *(ctx_ref.env_ptr as *mut MettaEnvironment);
 
     // Change state value
     if env.change_state(state_id, &metta_new_val) {

@@ -9,7 +9,7 @@
 //! Instead of allocating a new 256KB buffer for every `metta_to_mork_bytes` call,
 //! we maintain a thread-local pool of reusable buffers. This eliminates:
 //! - ~4% overhead from malloc/free for 256KB buffers
-//! - Heap fragmentation from frequent large allocations
+//! - Arena fragmentation from frequent large allocations
 //!
 //! ## Optimization: Context Pooling
 //!
@@ -269,7 +269,7 @@ fn write_metta_value(
             // Check if it's a variable
             // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
             // EXCEPT: "&self", "&kb", "&stack" are space references, not variables
-            if name == "&" || name == "&self" || name == "&kb" || name == "&stack" {
+            if *name == "&" || *name == "&self" || *name == "&kb" || *name == "&stack" {
                 // Space references and standalone & are NOT variables - write as symbols
                 write_symbol(name.as_bytes(), pdp, ez)?;
             } else if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
@@ -287,7 +287,7 @@ fn write_metta_value(
                         ez.loc += 1;
                     }
                 }
-            } else if name == "_" {
+            } else if *name == "_" {
                 // Wildcard - treat as anonymous variable
                 ez.write_new_var();
                 ez.loc += 1;
@@ -338,7 +338,7 @@ fn write_metta_value(
             ez.loc += 1;
 
             // Write each element
-            for item in items {
+            for item in *items {
                 write_metta_value(item, pdp, ctx, ez)?;
             }
         }
@@ -375,7 +375,7 @@ fn write_metta_value(
             write_symbol(b",", pdp, ez)?;
 
             // Write each goal
-            for goal in goals {
+            for goal in *goals {
                 write_metta_value(goal, pdp, ctx, ez)?;
             }
         }
@@ -429,20 +429,20 @@ fn write_symbol(bytes: &[u8], pdp: &mut ParDataParser, ez: &mut ExprZipper) -> R
 }
 
 // ============================================================================
-// Generic MORK Conversion - Zero-Conversion for ArenaValue
+// Generic MORK Conversion - Zero-Conversion for MettaValue
 // ============================================================================
 
 /// Convert any MettaValueTrait value to MORK Expr bytes (GENERIC VERSION).
 ///
 /// This function uses `MettaValueTrait` methods instead of `MettaValueInner` pattern
-/// matching, enabling zero-conversion for ArenaValue ↔ MORK operations.
+/// matching, enabling zero-conversion for MettaValue ↔ MORK operations.
 ///
 /// ## Zero-Conversion Path
 ///
-/// For ArenaValue:
+/// For MettaValue:
 /// ```text
-/// ArenaValue → value_to_mork_bytes_generic() → MORK bytes → PathMap
-/// PathMap → MORK bytes → mork_expr_to_arena_value() → ArenaValue
+/// MettaValue → value_to_mork_bytes_generic() → MORK bytes → PathMap
+/// PathMap → MORK bytes → mork_expr_to_metta_value() → MettaValue
 /// ```
 ///
 /// No MettaValue involved, no heap allocations for transient values.
@@ -523,7 +523,7 @@ where
 /// Generic recursive writer using MettaValueTrait methods (stack-based to avoid recursion).
 ///
 /// Uses trait accessors (`as_atom()`, `as_sexpr()`, etc.) instead of `MettaValueInner`
-/// pattern matching. This enables the same code to work with both MettaValue and ArenaValue.
+/// pattern matching. This enables the same code to work with both MettaValue and MettaValue.
 fn write_value_generic<V: MettaValueTrait>(
     value: &V,
     pdp: &mut ParDataParser,
@@ -728,7 +728,7 @@ pub fn mork_bindings_to_metta<V: Clone + Default + Send + Sync + Unpin>(
 ) -> Result<Bindings, String> {
     trace!(target: "mettatron::conversion::mork_bindings_to_metta", ?mork_bindings);
 
-    use super::environment::HeapEnvironment;
+    use super::environment::MettaEnvironment;
 
     let mut bindings = Bindings::new();
     let mut conversion_errors: Vec<String> = Vec::new();
@@ -756,7 +756,7 @@ pub fn mork_bindings_to_metta<V: Clone + Default + Send + Sync + Unpin>(
         // FIXED: Use mork_expr_to_metta_value() instead of serialize2()
         // This avoids the "reserved byte" panic when bindings contain symbols with reserved bytes
         let expr: Expr = expr_env.subsexpr();
-        match HeapEnvironment::mork_expr_to_metta_value(&expr, space) {
+        match MettaEnvironment::mork_expr_to_metta_value(&expr, space) {
             Ok(value) => {
                 bindings.insert(format!("${}", var_name), value);
             }
@@ -789,11 +789,11 @@ pub fn mork_bindings_to_metta<V: Clone + Default + Send + Sync + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::environment::HeapEnvironment;
+    use crate::backend::environment::MettaEnvironment;
 
     #[test]
     fn test_simple_atom_conversion() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
@@ -804,7 +804,7 @@ mod tests {
 
     #[test]
     fn test_variable_conversion() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
@@ -818,7 +818,7 @@ mod tests {
 
     #[test]
     fn test_sexpr_conversion() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
@@ -834,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_repeated_variable() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
@@ -857,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_generic_simple_atom_conversion() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
@@ -876,7 +876,7 @@ mod tests {
 
     #[test]
     fn test_generic_variable_conversion() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let space = env.create_space();
 
         let var = MettaValue::Atom("$x".to_string());
@@ -895,7 +895,7 @@ mod tests {
 
     #[test]
     fn test_generic_sexpr_conversion() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let space = env.create_space();
 
         // (double $x)
@@ -917,7 +917,7 @@ mod tests {
 
     #[test]
     fn test_generic_complex_nested_sexpr() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let space = env.create_space();
 
         // (exec P0 (, (a $x) (b $x)) (, (c $x)))
@@ -960,7 +960,7 @@ mod tests {
 
     #[test]
     fn test_generic_ground_types() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let space = env.create_space();
 
         // Test various ground types
@@ -995,7 +995,7 @@ mod tests {
 
     #[test]
     fn test_generic_error_conversion() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let space = env.create_space();
 
         // (error "test error" (details here))

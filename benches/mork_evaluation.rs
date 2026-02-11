@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::compile::compile_arena;
-use mettatron::backend::eval::eval_arena;
-use mettatron::backend::eval::trampoline::new_arena_env;
+use mettatron::backend::compile::compile;
+use mettatron::backend::eval::eval;
+use mettatron::backend::eval::trampoline::new_env;
 
 /// Run a MeTTa program consisting of facts and exec rules through fixed-point evaluation.
 ///
@@ -24,12 +24,12 @@ fn eval_mork_to_fixed_point(facts: &[&str], rules: &[&str], max_iterations: usiz
         src.push_str(&format!("!{}\n", rule));
     }
 
-    let state = compile_arena(&src).expect("Failed to compile MORK program");
-    let mut env = new_arena_env();
+    let state = compile(&src).expect("Failed to compile MORK program");
+    let mut env = new_env();
 
     // First pass: evaluate all expressions (facts + exec rules)
     for &expr in state.source() {
-        let (_, new_env) = eval_arena(expr, env, &state);
+        let (_, new_env) = eval(expr, env, &state);
         env = new_env;
     }
 
@@ -37,13 +37,13 @@ fn eval_mork_to_fixed_point(facts: &[&str], rules: &[&str], max_iterations: usiz
     if !rules.is_empty() {
         // Compile just the exec rule evaluations for repeated application
         let rules_src: String = rules.iter().map(|r| format!("!{}\n", r)).collect();
-        let rules_state = compile_arena(&rules_src).expect("Failed to compile rules");
+        let rules_state = compile(&rules_src).expect("Failed to compile rules");
 
         for _ in 1..max_iterations {
             let prev_env = env.clone();
 
             for &expr in rules_state.source() {
-                let (_, new_env) = eval_arena(expr, env, &rules_state);
+                let (_, new_env) = eval(expr, env, &rules_state);
                 env = new_env;
             }
 

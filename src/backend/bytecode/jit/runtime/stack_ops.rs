@@ -7,7 +7,7 @@
 //! - debug_print, debug_stack - Debugging utilities
 
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_UNIT,
+    JitBailoutReason, JitContext, JitValue, PAYLOAD_MASK, TAG_PTR, TAG_UNIT,
 };
 use crate::backend::models::MettaValue;
 use tracing::trace;
@@ -113,9 +113,9 @@ pub unsafe extern "C" fn jit_runtime_load_constant(ctx: *const JitContext, index
         match JitValue::try_from_metta(constant) {
             Some(jv) => jv.to_bits(),
             None => {
-                // Can't NaN-box - return as heap pointer
-                let ptr = constant as *const MettaValue;
-                TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+                // Can't NaN-box - return pointer to slab-allocated inner data
+                let ptr = constant.inner_ptr();
+                TAG_PTR | ((ptr as u64) & PAYLOAD_MASK)
             }
         }
     } else {

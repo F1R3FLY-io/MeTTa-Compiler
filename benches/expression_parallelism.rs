@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::compile::compile_arena;
-use mettatron::backend::eval::eval_arena;
-use mettatron::backend::eval::trampoline::new_arena_env;
+use mettatron::backend::compile::compile;
+use mettatron::backend::eval::eval;
+use mettatron::backend::eval::trampoline::new_env;
 
 /// Generate nested arithmetic expressions as MeTTa text for benchmarking.
 /// Example: (+ (* 1 2) (- 3 4) (* 5 6) (/ 7 8))
@@ -62,12 +62,12 @@ fn bench_simple_arithmetic(c: &mut Criterion) {
     // Test around the threshold boundary (currently 4)
     for num_ops in [2, 3, 4, 5, 6, 8, 10].iter() {
         let text = generate_arithmetic_text(*num_ops);
-        let state = compile_arena(&text).expect("Failed to compile");
+        let state = compile(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
-                let env = new_arena_env();
-                let (result, _) = eval_arena(
+                let env = new_env();
+                let (result, _) = eval(
                     black_box(state.source()[0]),
                     black_box(env),
                     black_box(&state),
@@ -87,12 +87,12 @@ fn bench_nested_expressions(c: &mut Criterion) {
     // Test various nesting depths
     for depth in [2, 3, 4, 5, 6].iter() {
         let text = generate_nested_text(*depth);
-        let state = compile_arena(&text).expect("Failed to compile");
+        let state = compile(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("eval_depth", depth), depth, |b, _| {
             b.iter(|| {
-                let env = new_arena_env();
-                let (result, _) = eval_arena(
+                let env = new_env();
+                let (result, _) = eval(
                     black_box(state.source()[0]),
                     black_box(env),
                     black_box(&state),
@@ -111,12 +111,12 @@ fn bench_mixed_complexity(c: &mut Criterion) {
 
     for num_ops in [2, 4, 8, 12, 16, 20].iter() {
         let text = generate_mixed_text(*num_ops);
-        let state = compile_arena(&text).expect("Failed to compile");
+        let state = compile(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
-                let env = new_arena_env();
-                let (result, _) = eval_arena(
+                let env = new_env();
+                let (result, _) = eval(
                     black_box(state.source()[0]),
                     black_box(env),
                     black_box(&state),
@@ -143,12 +143,12 @@ fn bench_threshold_tuning(c: &mut Criterion) {
     .iter()
     {
         let text = generate_arithmetic_text(*num_ops);
-        let state = compile_arena(&text).expect("Failed to compile");
+        let state = compile(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("operations", num_ops), num_ops, |b, _| {
             b.iter(|| {
-                let env = new_arena_env();
-                let (result, _) = eval_arena(
+                let env = new_env();
+                let (result, _) = eval(
                     black_box(state.source()[0]),
                     black_box(env),
                     black_box(&state),
@@ -168,12 +168,12 @@ fn bench_realistic_expressions(c: &mut Criterion) {
 
     // Case 1: Financial calculation (4 operations)
     let financial_text = "(+ 10000 (* 10000 (/ 5 100)) (- 100 25))";
-    let financial_state = compile_arena(financial_text).expect("Failed to compile");
+    let financial_state = compile(financial_text).expect("Failed to compile");
 
     group.bench_function("financial_calc", |b| {
         b.iter(|| {
-            let env = new_arena_env();
-            let (result, _) = eval_arena(
+            let env = new_env();
+            let (result, _) = eval(
                 black_box(financial_state.source()[0]),
                 black_box(env),
                 black_box(&financial_state),
@@ -185,12 +185,12 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     // Case 2: Vector operations (8 operations)
     let vector_parts: Vec<String> = (0..8).map(|i| format!("(* {} {})", i, i + 1)).collect();
     let vector_text = format!("(+ {})", vector_parts.join(" "));
-    let vector_state = compile_arena(&vector_text).expect("Failed to compile");
+    let vector_state = compile(&vector_text).expect("Failed to compile");
 
     group.bench_function("vector_dot_product", |b| {
         b.iter(|| {
-            let env = new_arena_env();
-            let (result, _) = eval_arena(
+            let env = new_env();
+            let (result, _) = eval(
                 black_box(vector_state.source()[0]),
                 black_box(env),
                 black_box(&vector_state),
@@ -204,12 +204,12 @@ fn bench_realistic_expressions(c: &mut Criterion) {
         .map(|i| format!("(* (+ {} {}) {})", i * 2, i * 3, i + 1))
         .collect();
     let complex_text = format!("(+ {})", complex_parts.join(" "));
-    let complex_state = compile_arena(&complex_text).expect("Failed to compile");
+    let complex_state = compile(&complex_text).expect("Failed to compile");
 
     group.bench_function("complex_formula", |b| {
         b.iter(|| {
-            let env = new_arena_env();
-            let (result, _) = eval_arena(
+            let env = new_env();
+            let (result, _) = eval(
                 black_box(complex_state.source()[0]),
                 black_box(env),
                 black_box(&complex_state),
@@ -231,12 +231,12 @@ fn bench_parallel_overhead(c: &mut Criterion) {
     for num_ops in [1, 2, 3, 4, 5, 6].iter() {
         let items: Vec<String> = (0..*num_ops).map(|i| format!("{}", i)).collect();
         let text = format!("(+ {})", items.join(" "));
-        let state = compile_arena(&text).expect("Failed to compile");
+        let state = compile(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("trivial_ops", num_ops), num_ops, |b, _| {
             b.iter(|| {
-                let env = new_arena_env();
-                let (result, _) = eval_arena(
+                let env = new_env();
+                let (result, _) = eval(
                     black_box(state.source()[0]),
                     black_box(env),
                     black_box(&state),
@@ -256,12 +256,12 @@ fn bench_scalability(c: &mut Criterion) {
 
     for num_ops in [4, 8, 16, 32, 64].iter() {
         let text = generate_arithmetic_text(*num_ops);
-        let state = compile_arena(&text).expect("Failed to compile");
+        let state = compile(&text).expect("Failed to compile");
 
         group.bench_with_input(BenchmarkId::new("scale", num_ops), num_ops, |b, _| {
             b.iter(|| {
-                let env = new_arena_env();
-                let (result, _) = eval_arena(
+                let env = new_env();
+                let (result, _) = eval(
                     black_box(state.source()[0]),
                     black_box(env),
                     black_box(&state),

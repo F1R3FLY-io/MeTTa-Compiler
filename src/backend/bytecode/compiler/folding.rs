@@ -26,8 +26,8 @@ pub fn try_eval_constant(expr: &MettaValue) -> Option<MettaValue> {
         // S-expressions need recursive evaluation
         MettaValueInner::SExpr(items) if !items.is_empty() => {
             if let MettaValueInner::Atom(op) = items[0].inner() {
-                let args = &items[1..];
-                match op.as_str() {
+                let args = &(*items)[1..];
+                match *op {
                     // Binary arithmetic
                     "+" | "-" | "*" | "/" | "%" | "mod" | "pow" | "pow-math" | "floor-div"
                         if args.len() == 2 =>
@@ -296,8 +296,8 @@ pub fn try_fold_boolean_values(op: &str, args: &[MettaValue]) -> Option<MettaVal
 pub fn is_const_bool(v: &MettaValue) -> Option<bool> {
     match v.inner() {
         MettaValueInner::Bool(b) => Some(*b),
-        MettaValueInner::Atom(name) if name == "True" => Some(true),
-        MettaValueInner::Atom(name) if name == "False" => Some(false),
+        MettaValueInner::Atom(name) if *name == "True" => Some(true),
+        MettaValueInner::Atom(name) if *name == "False" => Some(false),
         _ => None,
     }
 }

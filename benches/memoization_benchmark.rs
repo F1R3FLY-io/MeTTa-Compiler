@@ -16,7 +16,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use mettatron::config::{configure_eval, EvalConfig};
-use mettatron::{compile_arena, new_arena_env, run_state};
+use mettatron::{compile, new_env, run_state};
 use std::sync::Once;
 use std::time::Duration;
 
@@ -111,8 +111,8 @@ fn init_config() {
 
 /// Run a complete MeTTa program
 fn run_program(src: &str) {
-    let state = compile_arena(src).expect("Failed to compile program");
-    let env = new_arena_env();
+    let state = compile(src).expect("Failed to compile program");
+    let env = new_env();
     let result = run_state(env, &state).expect("Failed to run program");
     black_box(result);
 }

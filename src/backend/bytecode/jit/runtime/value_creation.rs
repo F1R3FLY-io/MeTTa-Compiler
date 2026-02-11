@@ -18,13 +18,11 @@
 
 use super::helpers::{jit_to_value_generic, value_to_jit_generic};
 use super::stack_ops::jit_runtime_load_constant;
-use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, JitValueMode, PAYLOAD_MASK, TAG_HEAP, TAG_MASK, TAG_UNIT,
-};
+use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_PTR, TAG_MASK, TAG_UNIT};
 use crate::backend::models::{
-    ArenaValue, ArenaValueFactory, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait,
+    MettaValue, GcFactory, MettaValueFactory, MettaValueTrait,
+    SlabAllocator,
 };
-use bumpalo::Bump;
 
 // =============================================================================
 // Phase 2a: Value Creation Runtime (MakeSExpr, ConsAtom)
@@ -32,25 +30,20 @@ use bumpalo::Bump;
 
 /// Create an S-expression from an array of NaN-boxed values.
 ///
-/// This function takes a pointer to an array of NaN-boxed values (u64) and
-/// creates an S-expression. It dispatches at runtime based on `ctx.value_mode`:
-/// - Heap mode: Creates a `MettaValue::SExpr`
-/// - Arena mode: Uses `ArenaValueFactory` for arena allocation
+/// Uses the slab allocator (via GcFactory) for all value creation.
 ///
 /// # Arguments
-/// * `ctx` - JIT context (for error handling and mode dispatch)
+/// * `ctx` - JIT context (provides arena/allocator pointer)
 /// * `values_ptr` - Pointer to array of NaN-boxed u64 values
 /// * `count` - Number of elements in the array
-/// * `ip` - Instruction pointer for error reporting
+/// * `_ip` - Instruction pointer for error reporting
 ///
 /// # Returns
-/// NaN-boxed TAG_HEAP pointer to the new S-expression
+/// NaN-boxed TAG_PTR pointer to the new S-expression
 ///
 /// # Safety
-/// * The context pointer must be valid
 /// * values_ptr must point to a valid array of count u64 values
 /// * Each value must be a valid NaN-boxed value
-/// * For arena mode, ctx.arena must be a valid arena pointer
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_make_sexpr(
     ctx: *mut JitContext,
@@ -58,202 +51,46 @@ pub unsafe extern "C" fn jit_runtime_make_sexpr(
     count: u64,
     _ip: u64,
 ) -> u64 {
-    // Check context for mode dispatch
-    if !ctx.is_null() {
-        let ctx_ref = &*ctx;
-        if ctx_ref.is_arena_mode() {
-            // Arena mode: delegate to generic implementation
-            let arena_ptr = ctx_ref.arena_ptr();
-            debug_assert!(
-                !arena_ptr.is_null(),
-                "jit_runtime_make_sexpr: Arena mode requires arena pointer"
-            );
-            let arena: &'static Bump = &*(arena_ptr as *const Bump);
-            let factory = ArenaValueFactory::new(arena);
-            return make_sexpr_generic::<ArenaValue<'static>, ArenaValueFactory<'static>>(
-                values_ptr,
-                count as usize,
-                &factory,
-                JitValueMode::Arena,
-            )
-            .to_bits();
-        }
-    }
-
-    // Heap mode: original implementation
-    let count = count as usize;
-
-    // Sanity check: count should be reasonable (prevent garbage allocation size)
-    debug_assert!(
-        count <= 1_000_000,
-        "jit_runtime_make_sexpr: Suspiciously large count: {} (raw: {:#x})",
-        count,
-        count
-    );
-
-    // Handle empty S-expression
-    if count == 0 {
-        let sexpr = Box::new(MettaValue::SExpr(Vec::new()));
-        let ptr = Box::into_raw(sexpr);
-        return TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK);
-    }
-
-    // Validate values_ptr is not null
-    debug_assert!(
-        !values_ptr.is_null(),
-        "jit_runtime_make_sexpr: Null values_ptr with count={}",
-        count
-    );
-
-    // Convert each value to MettaValue
-    let mut elements = Vec::with_capacity(count);
-    for i in 0..count {
-        let raw_val = *values_ptr.add(i);
-        let jit_val = JitValue::from_raw(raw_val);
-
-        // Validate each value before conversion
-        debug_assert!(
-            jit_val.is_valid_tag(),
-            "jit_runtime_make_sexpr: Invalid JitValue at index {}: raw={:#018x}, tag={:#06x}",
-            i,
-            raw_val,
-            (raw_val >> 48) as u16
-        );
-
-        elements.push(jit_val.to_metta());
-    }
-
-    // Create the S-expression and return as heap pointer
-    let sexpr = Box::new(MettaValue::SExpr(elements));
-    let ptr = Box::into_raw(sexpr);
-    TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+    let arena_ptr = if !ctx.is_null() { (*ctx).arena_ptr() } else { std::ptr::null() };
+    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
+        &*(arena_ptr as *const SlabAllocator)
+    } else {
+        crate::backend::models::global_allocator()
+    };
+    let factory = GcFactory::new(alloc);
+    make_sexpr_generic::<MettaValue, GcFactory>(values_ptr, count as usize, &factory).to_bits()
 }
 
 /// Prepend a value to an S-expression (cons operation).
 ///
-/// This function implements the cons-atom operation:
-/// - If tail is an S-expression, prepend head to it
-/// - If tail is Nil, create a single-element S-expression
-/// - Otherwise, signal a type error
-///
-/// Dispatches at runtime based on `ctx.value_mode`:
-/// - Heap mode: Creates a `MettaValue::SExpr`
-/// - Arena mode: Uses `ArenaValueFactory` for arena allocation
+/// Uses the slab allocator (via GcFactory) for all value creation.
 ///
 /// # Arguments
-/// * `ctx` - JIT context (for error handling and mode dispatch)
+/// * `ctx` - JIT context (provides arena/allocator pointer)
 /// * `head` - NaN-boxed value to prepend
-/// * `tail` - NaN-boxed S-expression or Nil
-/// * `ip` - Instruction pointer for error reporting
+/// * `tail` - NaN-boxed S-expression or Unit
+/// * `_ip` - Instruction pointer for error reporting
 ///
 /// # Returns
-/// NaN-boxed TAG_HEAP pointer to the new S-expression
+/// NaN-boxed TAG_PTR pointer to the new S-expression
 ///
 /// # Safety
-/// * The context pointer must be valid
 /// * head and tail must be valid NaN-boxed values
-/// * For arena mode, ctx.arena must be a valid arena pointer
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_cons_atom(
     ctx: *mut JitContext,
     head: u64,
     tail: u64,
-    ip: u64,
+    _ip: u64,
 ) -> u64 {
-    // Check context for mode dispatch
-    if !ctx.is_null() {
-        let ctx_ref = &*ctx;
-        if ctx_ref.is_arena_mode() {
-            // Arena mode: delegate to generic implementation
-            let arena_ptr = ctx_ref.arena_ptr();
-            debug_assert!(
-                !arena_ptr.is_null(),
-                "jit_runtime_cons_atom: Arena mode requires arena pointer"
-            );
-            let arena: &'static Bump = &*(arena_ptr as *const Bump);
-            let factory = ArenaValueFactory::new(arena);
-            return cons_atom_generic::<ArenaValue<'static>, ArenaValueFactory<'static>>(
-                head,
-                tail,
-                &factory,
-                JitValueMode::Arena,
-            )
-            .to_bits();
-        }
-    }
-
-    // Heap mode: original implementation
-    let head_val = JitValue::from_raw(head);
-    let tail_val = JitValue::from_raw(tail);
-
-    // Validate both values have valid tags
-    debug_assert!(
-        head_val.is_valid_tag(),
-        "jit_runtime_cons_atom: Invalid head JitValue: raw={:#018x}, tag={:#06x}",
-        head,
-        (head >> 48) as u16
-    );
-    debug_assert!(
-        tail_val.is_valid_tag(),
-        "jit_runtime_cons_atom: Invalid tail JitValue: raw={:#018x}, tag={:#06x}",
-        tail,
-        (tail >> 48) as u16
-    );
-
-    let head_metta = head_val.to_metta();
-
-    let tail_tag = tail & TAG_MASK;
-
-    // Handle Unit tail
-    if tail_tag == TAG_UNIT {
-        let sexpr = Box::new(MettaValue::SExpr(vec![head_metta]));
-        let ptr = Box::into_raw(sexpr);
-        return TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK);
-    }
-
-    // Must be a heap pointer (S-expression)
-    if tail_tag != TAG_HEAP {
-        if let Some(ctx) = ctx.as_mut() {
-            ctx.signal_error(ip as usize, JitBailoutReason::TypeError);
-        }
-        return TAG_UNIT;
-    }
-
-    // Get the tail as MettaValue
-    let tail_ptr = (tail & PAYLOAD_MASK) as *const MettaValue;
-    if tail_ptr.is_null() {
-        if let Some(ctx) = ctx.as_mut() {
-            ctx.signal_error(ip as usize, JitBailoutReason::TypeError);
-        }
-        return TAG_UNIT;
-    }
-
-    // Check if tail is an S-expression
-    match (*tail_ptr).inner() {
-        MettaValueInner::SExpr(elements) => {
-            // Prepend head to the elements
-            let mut new_elements = Vec::with_capacity(elements.len() + 1);
-            new_elements.push(head_metta);
-            new_elements.extend(elements.iter().cloned());
-
-            let sexpr = Box::new(MettaValue::SExpr(new_elements));
-            let ptr = Box::into_raw(sexpr);
-            TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
-        }
-        MettaValueInner::Unit => {
-            // Treat Unit as empty S-expression
-            let sexpr = Box::new(MettaValue::SExpr(vec![head_metta]));
-            let ptr = Box::into_raw(sexpr);
-            TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
-        }
-        _ => {
-            // Type error: tail is not an S-expression or Nil
-            if let Some(ctx) = ctx.as_mut() {
-                ctx.signal_error(ip as usize, JitBailoutReason::TypeError);
-            }
-            TAG_UNIT
-        }
-    }
+    let arena_ptr = if !ctx.is_null() { (*ctx).arena_ptr() } else { std::ptr::null() };
+    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
+        &*(arena_ptr as *const SlabAllocator)
+    } else {
+        crate::backend::models::global_allocator()
+    };
+    let factory = GcFactory::new(alloc);
+    cons_atom_generic::<MettaValue, GcFactory>(head, tail, &factory).to_bits()
 }
 
 // =============================================================================
@@ -277,31 +114,21 @@ pub unsafe extern "C" fn jit_runtime_push_uri(ctx: *const JitContext, index: u64
 
 /// Create a proper MeTTa list from an array of NaN-boxed values.
 ///
-/// Builds a linked list using the (Cons elem rest) structure:
-/// - Elements are popped in order and reversed to build (Cons elem (Cons ... Unit))
-/// - Empty list is just Unit
-///
-/// For example, with values [1, 2, 3], creates:
-/// (Cons 1 (Cons 2 (Cons 3 Nil)))
-///
-/// Dispatches at runtime based on `ctx.value_mode`:
-/// - Heap mode: Creates a `MettaValue`-based list
-/// - Arena mode: Uses `ArenaValueFactory` for arena allocation
+/// Builds a linked list using the (Cons elem rest) structure.
+/// Uses the slab allocator (via GcFactory) for all value creation.
 ///
 /// # Arguments
-/// * `ctx` - JIT context (for error handling and mode dispatch)
+/// * `ctx` - JIT context (provides arena/allocator pointer)
 /// * `values_ptr` - Pointer to array of NaN-boxed u64 values
 /// * `count` - Number of elements in the array
-/// * `ip` - Instruction pointer for error reporting
+/// * `_ip` - Instruction pointer for error reporting
 ///
 /// # Returns
-/// NaN-boxed TAG_HEAP pointer to the list (or TAG_UNIT for empty list)
+/// NaN-boxed TAG_PTR pointer to the list (or TAG_UNIT for empty list)
 ///
 /// # Safety
-/// * The context pointer must be valid
 /// * values_ptr must point to a valid array of count u64 values
 /// * Each value must be a valid NaN-boxed value
-/// * For arena mode, ctx.arena must be a valid arena pointer
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_make_list(
     ctx: *mut JitContext,
@@ -309,141 +136,41 @@ pub unsafe extern "C" fn jit_runtime_make_list(
     count: u64,
     _ip: u64,
 ) -> u64 {
-    // Check context for mode dispatch
-    if !ctx.is_null() {
-        let ctx_ref = &*ctx;
-        if ctx_ref.is_arena_mode() {
-            // Arena mode: delegate to generic implementation
-            let arena_ptr = ctx_ref.arena_ptr();
-            debug_assert!(
-                !arena_ptr.is_null(),
-                "jit_runtime_make_list: Arena mode requires arena pointer"
-            );
-            let arena: &'static Bump = &*(arena_ptr as *const Bump);
-            let factory = ArenaValueFactory::new(arena);
-            return make_list_generic::<ArenaValue<'static>, ArenaValueFactory<'static>>(
-                values_ptr,
-                count as usize,
-                &factory,
-                JitValueMode::Arena,
-            )
-            .to_bits();
-        }
-    }
-
-    // Heap mode: original implementation
-    let count = count as usize;
-
-    // Sanity check: count should be reasonable
-    debug_assert!(
-        count <= 1_000_000,
-        "jit_runtime_make_list: Suspiciously large count: {} (raw: {:#x})",
-        count,
-        count
-    );
-
-    // Empty list is Unit
-    if count == 0 {
-        return TAG_UNIT;
-    }
-
-    // Validate values_ptr is not null
-    debug_assert!(
-        !values_ptr.is_null(),
-        "jit_runtime_make_list: Null values_ptr with count={}",
-        count
-    );
-
-    // Build the list from the end (reverse order to get proper Cons structure)
-    // Start with Unit, then Cons each element from the end
-    let mut list = MettaValue::Unit();
-
-    for i in (0..count).rev() {
-        let raw_val = *values_ptr.add(i);
-        let jit_val = JitValue::from_raw(raw_val);
-
-        // Validate each value before conversion
-        debug_assert!(
-            jit_val.is_valid_tag(),
-            "jit_runtime_make_list: Invalid JitValue at index {}: raw={:#018x}, tag={:#06x}",
-            i,
-            raw_val,
-            (raw_val >> 48) as u16
-        );
-
-        let elem = jit_val.to_metta();
-
-        // Build (Cons elem list)
-        list = MettaValue::SExpr(vec![MettaValue::Atom("Cons".to_string()), elem, list]);
-    }
-
-    // Return as heap pointer
-    let boxed = Box::new(list);
-    let ptr = Box::into_raw(boxed);
-    TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+    let arena_ptr = if !ctx.is_null() { (*ctx).arena_ptr() } else { std::ptr::null() };
+    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
+        &*(arena_ptr as *const SlabAllocator)
+    } else {
+        crate::backend::models::global_allocator()
+    };
+    let factory = GcFactory::new(alloc);
+    make_list_generic::<MettaValue, GcFactory>(values_ptr, count as usize, &factory).to_bits()
 }
 
 /// Wrap a value in a quote expression.
 ///
 /// Creates (quote value) S-expression to prevent evaluation.
-///
-/// Dispatches at runtime based on `ctx.value_mode`:
-/// - Heap mode: Creates a `MettaValue::SExpr`
-/// - Arena mode: Uses `ArenaValueFactory` for arena allocation
+/// Uses the slab allocator (via GcFactory) for all value creation.
 ///
 /// # Arguments
-/// * `ctx` - JIT context (for mode dispatch)
+/// * `ctx` - JIT context (provides arena/allocator pointer)
 /// * `val` - NaN-boxed value to quote
-/// * `ip` - Instruction pointer (unused, for consistency)
+/// * `_ip` - Instruction pointer (unused, for consistency)
 ///
 /// # Returns
-/// NaN-boxed TAG_HEAP pointer to the (quote value) S-expression
+/// NaN-boxed TAG_PTR pointer to the (quote value) S-expression
 ///
 /// # Safety
 /// * val must be a valid NaN-boxed value
-/// * For arena mode, ctx.arena must be a valid arena pointer
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_make_quote(ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
-    // Check context for mode dispatch
-    if !ctx.is_null() {
-        let ctx_ref = &*ctx;
-        if ctx_ref.is_arena_mode() {
-            // Arena mode: delegate to generic implementation
-            let arena_ptr = ctx_ref.arena_ptr();
-            debug_assert!(
-                !arena_ptr.is_null(),
-                "jit_runtime_make_quote: Arena mode requires arena pointer"
-            );
-            let arena: &'static Bump = &*(arena_ptr as *const Bump);
-            let factory = ArenaValueFactory::new(arena);
-            return make_quote_generic::<ArenaValue<'static>, ArenaValueFactory<'static>>(
-                val,
-                &factory,
-                JitValueMode::Arena,
-            )
-            .to_bits();
-        }
-    }
-
-    // Heap mode: original implementation
-    let jit_val = JitValue::from_raw(val);
-
-    // Validate value has valid tag
-    debug_assert!(
-        jit_val.is_valid_tag(),
-        "jit_runtime_make_quote: Invalid JitValue: raw={:#018x}, tag={:#06x}",
-        val,
-        (val >> 48) as u16
-    );
-
-    let inner = jit_val.to_metta();
-
-    // Create (quote value)
-    let quoted = MettaValue::SExpr(vec![MettaValue::Atom("quote".to_string()), inner]);
-
-    let boxed = Box::new(quoted);
-    let ptr = Box::into_raw(boxed);
-    TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+    let arena_ptr = if !ctx.is_null() { (*ctx).arena_ptr() } else { std::ptr::null() };
+    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
+        &*(arena_ptr as *const SlabAllocator)
+    } else {
+        crate::backend::models::global_allocator()
+    };
+    let factory = GcFactory::new(alloc);
+    make_quote_generic::<MettaValue, GcFactory>(val, &factory).to_bits()
 }
 
 // =============================================================================
@@ -456,26 +183,24 @@ pub unsafe extern "C" fn jit_runtime_make_quote(ctx: *mut JitContext, val: u64, 
 /// `MettaValueTrait`. It uses the provided factory to construct the S-expression.
 ///
 /// # Type Parameters
-/// - `V`: The value type (e.g., `MettaValue` or `ArenaValue<'static>`)
+/// - `V`: The value type (e.g., `MettaValue` or `MettaValue`)
 /// - `F`: The factory type for constructing values
 ///
 /// # Arguments
 /// - `values_ptr`: Pointer to array of NaN-boxed u64 values
 /// - `count`: Number of elements in the array
 /// - `factory`: Factory for creating values
-/// - `mode`: JIT value mode (Heap or Arena)
 ///
 /// # Returns
 /// A `JitValue` containing the new S-expression
 ///
 /// # Safety
 /// - `values_ptr` must point to a valid array of `count` NaN-boxed values
-/// - Each value must be a valid NaN-boxed value created in the same mode
+/// - Each value must be a valid NaN-boxed value
 pub unsafe fn make_sexpr_generic<V, F>(
     values_ptr: *const u64,
     count: usize,
     factory: &F,
-    mode: JitValueMode,
 ) -> JitValue
 where
     V: MettaValueTrait + Clone,
@@ -491,7 +216,7 @@ where
     // Handle empty S-expression
     if count == 0 {
         let sexpr = factory.sexpr(Vec::new());
-        return value_to_jit_generic(&sexpr, mode);
+        return value_to_jit_generic(&sexpr);
     }
 
     // Validate values_ptr is not null
@@ -519,7 +244,7 @@ where
 
     // Create the S-expression
     let sexpr = factory.sexpr(elements);
-    value_to_jit_generic(&sexpr, mode)
+    value_to_jit_generic(&sexpr)
 }
 
 /// Prepend a value to an S-expression using a factory (generic cons operation).
@@ -534,10 +259,9 @@ where
 /// - `head`: NaN-boxed value to prepend
 /// - `tail`: NaN-boxed S-expression or Nil
 /// - `factory`: Factory for creating values
-/// - `mode`: JIT value mode
 ///
 /// # Returns
-/// A `JitValue` containing the new S-expression, or nil on error
+/// A `JitValue` containing the new S-expression, or unit on error
 ///
 /// # Safety
 /// - `head` and `tail` must be valid NaN-boxed values
@@ -545,7 +269,6 @@ pub unsafe fn cons_atom_generic<V, F>(
     head: u64,
     tail: u64,
     factory: &F,
-    mode: JitValueMode,
 ) -> JitValue
 where
     V: MettaValueTrait + Clone,
@@ -564,11 +287,11 @@ where
     // Handle Unit tail
     if tail_tag == TAG_UNIT {
         let sexpr = factory.sexpr(vec![head_val]);
-        return value_to_jit_generic(&sexpr, mode);
+        return value_to_jit_generic(&sexpr);
     }
 
     // Must be a heap pointer (S-expression)
-    if tail_tag != TAG_HEAP {
+    if tail_tag != TAG_PTR {
         return JitValue::unit();
     }
 
@@ -582,11 +305,11 @@ where
         new_elements.extend(elements.iter().cloned());
 
         let sexpr = factory.sexpr(new_elements);
-        value_to_jit_generic(&sexpr, mode)
+        value_to_jit_generic(&sexpr)
     } else if tail_val.is_unit() {
         // Treat Unit as empty S-expression
         let sexpr = factory.sexpr(vec![head_val]);
-        value_to_jit_generic(&sexpr, mode)
+        value_to_jit_generic(&sexpr)
     } else {
         // Type error
         JitValue::unit()
@@ -605,7 +328,6 @@ where
 /// - `values_ptr`: Pointer to array of NaN-boxed u64 values
 /// - `count`: Number of elements
 /// - `factory`: Factory for creating values
-/// - `mode`: JIT value mode
 ///
 /// # Returns
 /// A `JitValue` containing the list
@@ -616,7 +338,6 @@ pub unsafe fn make_list_generic<V, F>(
     values_ptr: *const u64,
     count: usize,
     factory: &F,
-    mode: JitValueMode,
 ) -> JitValue
 where
     V: MettaValueTrait + Clone,
@@ -659,7 +380,7 @@ where
         list = factory.sexpr(vec![cons_atom, elem, list]);
     }
 
-    value_to_jit_generic(&list, mode)
+    value_to_jit_generic(&list)
 }
 
 /// Wrap a value in a quote expression using a factory.
@@ -673,14 +394,13 @@ where
 /// # Arguments
 /// - `val`: NaN-boxed value to quote
 /// - `factory`: Factory for creating values
-/// - `mode`: JIT value mode
 ///
 /// # Returns
 /// A `JitValue` containing the (quote value) S-expression
 ///
 /// # Safety
 /// - `val` must be a valid NaN-boxed value
-pub unsafe fn make_quote_generic<V, F>(val: u64, factory: &F, mode: JitValueMode) -> JitValue
+pub unsafe fn make_quote_generic<V, F>(val: u64, factory: &F) -> JitValue
 where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
@@ -699,6 +419,6 @@ where
     let quote_atom = factory.atom("quote");
     let quoted = factory.sexpr(vec![quote_atom, inner]);
 
-    value_to_jit_generic(&quoted, mode)
+    value_to_jit_generic(&quoted)
 }
 

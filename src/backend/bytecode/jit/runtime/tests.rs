@@ -16,7 +16,7 @@ mod tests {
     use super::super::type_predicates::jit_runtime_is_long;
     use crate::backend::bytecode::jit::types::{
         JitAlternative, JitAlternativeTag, JitBailoutReason, JitChoicePoint, JitContext, JitValue,
-        JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, PAYLOAD_MASK, TAG_HEAP,
+        JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, PAYLOAD_MASK, TAG_PTR,
         TAG_MASK,
     };
     use crate::backend::models::{MettaValue, MettaValueInner};
@@ -413,14 +413,14 @@ mod tests {
 
         // Should return a heap pointer
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
 
         // Results should be cleared
         assert_eq!(ctx.results_count, 0);
 
         // Verify the SExpr contents
-        let ptr = (result & PAYLOAD_MASK) as *const MettaValue;
-        let metta_val = unsafe { &*ptr };
+        let ptr = (result & PAYLOAD_MASK) as *const MettaValueInner;
+        let metta_val = unsafe { MettaValue::from_inner(&*ptr) };
         if let MettaValueInner::SExpr(items) = metta_val.inner() {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Long(1));
@@ -770,9 +770,9 @@ mod tests {
         // =====================================================================
         let collected_raw = unsafe { jit_runtime_collect_native(&mut ctx) };
 
-        // Verify it's a heap pointer (TAG_HEAP)
+        // Verify it's a heap pointer (TAG_PTR)
         let tag = collected_raw & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
 
         // Results should be cleared after collection
         assert_eq!(ctx.results_count, 0);
@@ -780,8 +780,8 @@ mod tests {
         // =====================================================================
         // Phase 4: Verify the collected S-expression
         // =====================================================================
-        let ptr = (collected_raw & PAYLOAD_MASK) as *const MettaValue;
-        let metta_val = unsafe { &*ptr };
+        let ptr = (collected_raw & PAYLOAD_MASK) as *const MettaValueInner;
+        let metta_val = unsafe { MettaValue::from_inner(&*ptr) };
 
         if let MettaValueInner::SExpr(items) = metta_val.inner() {
             assert_eq!(items.len(), 3, "Expected 3 collected results");
@@ -820,14 +820,14 @@ mod tests {
         ctx.saved_stack = saved_stack.as_mut_ptr();
         ctx.saved_stack_cap = saved_stack.len();
 
-        // Create heap-allocated MettaValues for atoms
-        let atom_a = Box::leak(Box::new(MettaValue::Atom("A".to_string())));
-        let atom_b = Box::leak(Box::new(MettaValue::Atom("B".to_string())));
+        // Create slab-allocated MettaValues for atoms
+        let atom_a = MettaValue::Atom("A".to_string());
+        let atom_b = MettaValue::Atom("B".to_string());
 
         // Outer fork: A, B
         let outer_alts = vec![
-            JitAlternative::value(JitValue::from_heap_ptr(atom_a)),
-            JitAlternative::value(JitValue::from_heap_ptr(atom_b)),
+            JitAlternative::value(JitValue::from_inner_ptr(atom_a.inner_ptr())),
+            JitAlternative::value(JitValue::from_inner_ptr(atom_b.inner_ptr())),
         ];
         let outer_ptr = Box::leak(outer_alts.into_boxed_slice()).as_ptr();
 
@@ -850,7 +850,7 @@ mod tests {
             // Extract atom name (to_metta() returns MettaValue directly)
             let metta = unsafe { outer_val.to_metta() };
             let outer_name = if let MettaValueInner::Atom(name) = metta.inner() {
-                name.clone()
+                name.to_string()
             } else {
                 panic!("Expected Atom for outer, got {:?}", metta);
             };
@@ -899,10 +899,10 @@ mod tests {
         // Collect all results
         let collected_raw = unsafe { jit_runtime_collect_native(&mut ctx) };
         let tag = collected_raw & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
 
-        let ptr = (collected_raw & PAYLOAD_MASK) as *const MettaValue;
-        let metta_val = unsafe { &*ptr };
+        let ptr = (collected_raw & PAYLOAD_MASK) as *const MettaValueInner;
+        let metta_val = unsafe { MettaValue::from_inner(&*ptr) };
 
         if let MettaValueInner::SExpr(items) = metta_val.inner() {
             assert_eq!(items.len(), 4, "Expected 4 collected results");
@@ -1250,7 +1250,7 @@ mod tests {
     fn test_tag_extraction() {
         let long_val = box_long(42);
         let tag = long_val & TAG_MASK;
-        // Long values don't have a tag in the lower bits (they use TAG_HEAP or inline)
+        // Long values don't have a tag in the lower bits (they use TAG_PTR or inline)
         // Just verify the mask works
         assert_eq!(tag & TAG_MASK, tag);
     }
@@ -1425,7 +1425,7 @@ mod tests {
 
         // Quote should wrap the value
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP); // Quote creates a heap-allocated Quote value
+        assert_eq!(tag, TAG_PTR); // Quote creates a heap-allocated Quote value
     }
 
     #[test]
@@ -1494,7 +1494,7 @@ mod tests {
         // Result should be false
     }
 
-    // Note: Tests using JitValue::from_heap_ptr are disabled because they
+    // Note: Tests using JitValue::from_inner_ptr are disabled because they
     // require careful coordination with the JIT runtime's heap tracking.
     // Pattern matching and S-expression operations are tested via the
     // higher-level VM tests in src/backend/bytecode/vm/tests.rs.
@@ -1518,7 +1518,7 @@ mod tests {
 
         // Result should be an atom "Long"
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -1537,7 +1537,7 @@ mod tests {
 
         // Result should be an atom "Bool"
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -1556,7 +1556,7 @@ mod tests {
 
         // Result should be an atom "Nil"
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     // ==========================================================================
@@ -1572,10 +1572,10 @@ mod tests {
 
         // Should be a heap-allocated empty S-expression
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
-    // Note: Tests using JitValue::from_heap_ptr for S-expression operations
+    // Note: Tests using JitValue::from_inner_ptr for S-expression operations
     // (get_head, get_tail, get_arity, get_element) are disabled because they
     // require careful coordination with the JIT runtime's heap tracking.
     // These operations are tested via the higher-level VM tests in
@@ -1594,7 +1594,7 @@ mod tests {
         let result = unsafe { jit_runtime_sqrt(val) };
         // Result should be a float
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP); // Float is heap-allocated
+        assert_eq!(tag, TAG_PTR); // Float is heap-allocated
     }
 
     #[test]
@@ -1607,7 +1607,7 @@ mod tests {
         let result = unsafe { jit_runtime_log(base, val) };
         // Result should be a float
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP); // Float is heap-allocated
+        assert_eq!(tag, TAG_PTR); // Float is heap-allocated
     }
 
     #[test]
@@ -1667,7 +1667,7 @@ mod tests {
         let result = unsafe { jit_runtime_sin(val) };
         // Result should be a float
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -1679,7 +1679,7 @@ mod tests {
         let result = unsafe { jit_runtime_cos(val) };
         // Result should be a float
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -1691,7 +1691,7 @@ mod tests {
         let result = unsafe { jit_runtime_tan(val) };
         // Result should be a float
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -1703,7 +1703,7 @@ mod tests {
         let result = unsafe { jit_runtime_asin(val) };
         // Result should be a float
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -1715,7 +1715,7 @@ mod tests {
         let result = unsafe { jit_runtime_acos(val) };
         // Result should be a float
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -1727,7 +1727,7 @@ mod tests {
         let result = unsafe { jit_runtime_atan(val) };
         // Result should be a float
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -2258,11 +2258,8 @@ mod tests {
         let jv = JitValue::from_raw(result);
         let metta = unsafe { jv.to_metta() };
 
-        if let MettaValueInner::SExpr(atoms) = metta.inner() {
-            assert!(atoms.is_empty());
-        } else {
-            panic!("Expected SExpr");
-        }
+        // SExpr(vec![]) normalizes to Unit after Nil/Unit merge
+        assert!(metta.is_unit(), "Expected Unit (empty S-expression), got: {:?}", metta);
     }
 
     #[test]
@@ -2272,9 +2269,9 @@ mod tests {
         use crate::backend::models::SpaceHandle;
 
         let space = SpaceHandle::new(6, "match_space".to_string());
-        space.add_atom(MettaValue::sexpr(vec![MettaValue::sym("fact"), MettaValue::Long(1)]));
-        space.add_atom(MettaValue::sexpr(vec![MettaValue::sym("fact"), MettaValue::Long(2)]));
-        space.add_atom(MettaValue::sexpr(vec![MettaValue::sym("other"), MettaValue::Long(3)]));
+        space.add_atom(MettaValue::SExpr(vec![MettaValue::sym("fact"), MettaValue::Long(1)]));
+        space.add_atom(MettaValue::SExpr(vec![MettaValue::sym("fact"), MettaValue::Long(2)]));
+        space.add_atom(MettaValue::SExpr(vec![MettaValue::sym("other"), MettaValue::Long(3)]));
 
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -2285,7 +2282,7 @@ mod tests {
 
         let space_jit = metta_to_jit(&MettaValue::Space(space));
         // Pattern: (fact $x)
-        let pattern = MettaValue::sexpr(vec![MettaValue::sym("fact"), MettaValue::var("x")]);
+        let pattern = MettaValue::SExpr(vec![MettaValue::sym("fact"), MettaValue::var("x")]);
         let pattern_jit = metta_to_jit(&pattern);
         let template_jit = metta_to_jit(&MettaValue::var("x"));
 
@@ -2307,7 +2304,7 @@ mod tests {
         use crate::backend::models::SpaceHandle;
 
         let space = SpaceHandle::new(7, "nomatch_space".to_string());
-        space.add_atom(MettaValue::sexpr(vec![MettaValue::sym("bar"), MettaValue::Long(1)]));
+        space.add_atom(MettaValue::SExpr(vec![MettaValue::sym("bar"), MettaValue::Long(1)]));
 
         let constants: Vec<MettaValue> = vec![];
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -2318,7 +2315,7 @@ mod tests {
 
         let space_jit = metta_to_jit(&MettaValue::Space(space));
         // Pattern: (foo $x) - won't match (bar 1)
-        let pattern = MettaValue::sexpr(vec![MettaValue::sym("foo"), MettaValue::var("x")]);
+        let pattern = MettaValue::SExpr(vec![MettaValue::sym("foo"), MettaValue::var("x")]);
         let pattern_jit = metta_to_jit(&pattern);
         let template_jit = metta_to_jit(&MettaValue::var("x"));
 
@@ -2326,11 +2323,8 @@ mod tests {
         let jv = JitValue::from_raw(result);
         let metta = unsafe { jv.to_metta() };
 
-        if let MettaValueInner::SExpr(matches) = metta.inner() {
-            assert!(matches.is_empty());
-        } else {
-            panic!("Expected SExpr");
-        }
+        // SExpr(vec![]) normalizes to Unit after Nil/Unit merge
+        assert!(metta.is_unit(), "Expected Unit (empty S-expression), got: {:?}", metta);
     }
 
     // ==========================================================================
@@ -2347,14 +2341,13 @@ mod tests {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
-        // Create a heap-allocated string
-        let str_val = Box::new(MettaValue::String("hello".to_string()));
-        let str_ptr = Box::into_raw(str_val);
-        let str_bits = TAG_HEAP | ((str_ptr as u64) & PAYLOAD_MASK);
+        // Create a slab-allocated string
+        let str_val = MettaValue::String("hello".to_string());
+        let str_bits = TAG_PTR | ((str_val.inner_ptr() as u64) & PAYLOAD_MASK);
 
         let result = unsafe { jit_runtime_get_type(&mut ctx, str_bits, 0) };
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -2370,7 +2363,7 @@ mod tests {
 
         let result = unsafe { jit_runtime_get_type(&mut ctx, TAG_UNIT, 0) };
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -2384,12 +2377,12 @@ mod tests {
             JitContext::new(stack.as_mut_ptr(), stack.len(), constants.as_ptr(), constants.len())
         };
 
-        let sexpr = MettaValue::sexpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
+        let sexpr = MettaValue::SExpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
         let sexpr_jit = metta_to_jit(&sexpr);
 
         let result = unsafe { jit_runtime_get_type(&mut ctx, sexpr_jit.to_bits(), 0) };
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -2408,7 +2401,7 @@ mod tests {
 
         let result = unsafe { jit_runtime_get_type(&mut ctx, var_jit.to_bits(), 0) };
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP);
+        assert_eq!(tag, TAG_PTR);
     }
 
     #[test]
@@ -2665,7 +2658,7 @@ mod tests {
         if let MettaValueInner::SExpr(elems) = metta.inner() {
             assert_eq!(elems.len(), 2);
             if let MettaValueInner::Atom(s) = elems[0].inner() {
-                assert_eq!(s, "quote");
+                assert_eq!(*s, "quote");
             }
         }
     }
@@ -2691,7 +2684,7 @@ mod tests {
         let jv = JitValue::from_raw(result);
         let metta = unsafe { jv.to_metta() };
         if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(s, "foo");
+            assert_eq!(*s, "foo");
         }
     }
 
@@ -3415,7 +3408,7 @@ mod tests {
         if let MettaValueInner::SExpr(elems) = metta.inner() {
             assert_eq!(elems.len(), 2);
             if let MettaValueInner::Atom(s) = elems[0].inner() {
-                assert_eq!(s, "quote");
+                assert_eq!(*s, "quote");
             }
         }
     }
@@ -3441,7 +3434,7 @@ mod tests {
         let jv = JitValue::from_raw(result);
         let metta = unsafe { jv.to_metta() };
         if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(s, "Bool");
+            assert_eq!(*s, "Bool");
         }
     }
 
@@ -3462,7 +3455,7 @@ mod tests {
         let jv = JitValue::from_raw(result);
         let metta = unsafe { jv.to_metta() };
         if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(s, "Bool");
+            assert_eq!(*s, "Bool");
         }
     }
 
@@ -3483,7 +3476,7 @@ mod tests {
         let jv = JitValue::from_raw(result);
         let metta = unsafe { jv.to_metta() };
         if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(s, "Unit");
+            assert_eq!(*s, "Unit");
         }
     }
 
@@ -3506,7 +3499,7 @@ mod tests {
         let jv = JitValue::from_raw(result);
         let metta = unsafe { jv.to_metta() };
         if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(s, "Expression");
+            assert_eq!(*s, "Expression");
         }
     }
 
@@ -3530,7 +3523,7 @@ mod tests {
         let jv = JitValue::from_raw(result);
         let metta = unsafe { jv.to_metta() };
         if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(s, "Space");
+            assert_eq!(*s, "Space");
         }
     }
 
@@ -4131,7 +4124,7 @@ mod tests {
         let jv = JitValue::from_raw(result);
         let metta = unsafe { jv.to_metta() };
         if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(s, "foo");
+            assert_eq!(*s, "foo");
         }
     }
 
@@ -5046,7 +5039,7 @@ mod tests {
 
         // Should return empty S-expression (heap pointer)
         let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_HEAP, "Should return heap-allocated SExpr");
+        assert_eq!(tag, TAG_PTR, "Should return heap-allocated SExpr");
     }
 
     #[test]
@@ -5611,7 +5604,7 @@ mod tests {
         let result = unsafe { jit_runtime_make_list(&mut ctx, values.as_ptr(), 1, 0) };
 
         // Should be a heap value (Cons structure)
-        assert_eq!(result & TAG_MASK, TAG_HEAP);
+        assert_eq!(result & TAG_MASK, TAG_PTR);
 
         // Verify structure
         let jit_val = JitValue::from_raw(result);
@@ -5619,8 +5612,16 @@ mod tests {
         match metta.inner() {
             MettaValueInner::SExpr(elems) => {
                 assert_eq!(elems.len(), 3); // (Cons 1 Nil)
-                assert_eq!(elems[0].inner(), &MettaValueInner::Atom("Cons".to_string()));
-                assert_eq!(elems[1].inner(), &MettaValueInner::Long(1));
+                if let MettaValueInner::Atom(s) = elems[0].inner() {
+                    assert_eq!(*s, "Cons");
+                } else {
+                    panic!("Expected Atom for first element");
+                }
+                if let MettaValueInner::Long(n) = elems[1].inner() {
+                    assert_eq!(*n, 1);
+                } else {
+                    panic!("Expected Long for second element");
+                }
             }
             _ => panic!("Expected SExpr for list"),
         }
@@ -5639,7 +5640,7 @@ mod tests {
         };
 
         let result = unsafe { jit_runtime_push_uri(&ctx, 0) };
-        assert_eq!(result & TAG_MASK, TAG_HEAP);
+        assert_eq!(result & TAG_MASK, TAG_PTR);
     }
 
     // === type_ops.rs edge cases ===
@@ -5662,7 +5663,7 @@ mod tests {
         let jit_val = JitValue::from_raw(result);
         let metta = unsafe { jit_val.to_metta() };
         match metta.inner() {
-            MettaValueInner::Atom(s) => assert_eq!(s, "Unknown"),
+            MettaValueInner::Atom(s) => assert_eq!(*s, "Unknown"),
             _ => panic!("Expected Atom for type name"),
         }
     }

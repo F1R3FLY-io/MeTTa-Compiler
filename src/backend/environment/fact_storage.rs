@@ -11,10 +11,10 @@ use mork_expr::Expr;
 use pathmap::PathMap;
 use tracing::trace;
 
-use super::multiplicity::{add_atom, get_multiplicity, remove_atom, Multiplicity};
-use super::{HeapEnvironment, MettaValue, MettaValueInner};
+use super::{MettaEnvironment, MettaValue, MettaValueInner};
+use crate::backend::models::metta_value_trait::MettaValueTrait;
 
-impl HeapEnvironment {
+impl MettaEnvironment {
     /// Check if an atom fact exists (queries MORK Space)
     /// OPTIMIZED: Uses O(p) exact match via descend_to_check() where p = pattern depth
     ///
@@ -195,12 +195,12 @@ impl HeapEnvironment {
         match value.inner() {
             MettaValueInner::Atom(s) => {
                 // Space references are NOT variables
-                if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
+                if *s == "&" || *s == "&self" || *s == "&kb" || *s == "&stack" {
                     return false;
                 }
-                s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
+                *s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
             }
-            MettaValueInner::SExpr(items) => items.iter().any(Self::contains_variables),
+            MettaValueInner::SExpr(items) => (*items).iter().any(Self::contains_variables),
             MettaValueInner::Error(_, details) => Self::contains_variables(details),
             MettaValueInner::Type(t) => Self::contains_variables(t),
             _ => false, // Ground types: Bool, Long, Float, String, Unit
@@ -226,7 +226,7 @@ impl HeapEnvironment {
                 let mut prefix = Vec::new();
                 let mut has_variables = false;
 
-                for item in items {
+                for item in *items {
                     if Self::contains_variables(item) {
                         has_variables = true;
                         break; // Stop at first variable
@@ -362,8 +362,8 @@ impl HeapEnvironment {
             // Convert MORK bytes to MettaValue
             if let Ok(metta_value) = Self::mork_expr_to_metta_value(&expr, &space) {
                 // Extract head and arity, insert into bloom filter
-                if let Some(head) = metta_value.get_head_symbol() {
-                    let arity = metta_value.get_arity() as u8;
+                if let Some(head) = MettaValueTrait::get_head_symbol(&metta_value) {
+                    let arity = MettaValueTrait::get_arity(&metta_value) as u8;
                     self.shared
                         .head_arity_bloom
                         .write()

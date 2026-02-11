@@ -1,7 +1,7 @@
 //! Arena-specific execution methods for HybridExecutor.
 //!
 //! This module provides arena-mode JIT execution support, enabling zero-conversion
-//! evaluation where ArenaValue expressions are executed via JIT-compiled native code
+//! evaluation where MettaValue expressions are executed via JIT-compiled native code
 //! without converting to/from MettaValue.
 //!
 //! # Architecture
@@ -11,8 +11,8 @@
 //! appropriate runtime functions for value creation.
 //!
 //! ```text
-//! ArenaValue → GenericBytecodeChunk<ArenaValue> → BytecodeChunk wrapper
-//!     → JIT compile (same bytecode) → JitContext(Arena mode) → ArenaValue results
+//! MettaValue → GenericBytecodeChunk<MettaValue> → BytecodeChunk wrapper
+//!     → JIT compile (same bytecode) → JitContext(Arena mode) → MettaValue results
 //! ```
 //!
 //! # Environment Threading
@@ -26,13 +26,13 @@ use std::sync::Arc;
 
 use tracing::{debug, trace};
 
-use crate::backend::bytecode::{ArenaEnv, GenericBytecodeChunk, VmResult};
-use crate::backend::models::{ArenaValue, ArenaValueFactory, MettaValueFactory};
+use crate::backend::bytecode::{MettaEnvironment, GenericBytecodeChunk, VmResult};
+use crate::backend::models::{MettaValue, MettaValueInner, GcFactory, MettaValueFactory, SlabAllocator};
 
 use super::super::{
     JitBindingFrame, JitChoicePoint, JitContext, JitValue,
     MAX_STACK_SAVE_VALUES, STACK_SAVE_POOL_SIZE,
-    PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG, TAG_MASK, TAG_UNIT,
+    PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_PTR, TAG_LONG, TAG_MASK, TAG_UNIT,
     TAG_VAR,
 };
 use super::executor::HybridExecutor;
@@ -40,8 +40,8 @@ use super::executor::HybridExecutor;
 impl HybridExecutor {
     /// Execute JIT-compiled code directly in arena mode.
     ///
-    /// This method is called from `eval_arena()` when JIT code is already compiled
-    /// and ready in the ArenaTieredCache. It sets up a JitContext in arena mode
+    /// This method is called from `eval()` when JIT code is already compiled
+    /// and ready in the TieredCache. It sets up a JitContext in arena mode
     /// and executes the native code.
     ///
     /// # Arguments
@@ -51,14 +51,14 @@ impl HybridExecutor {
     /// * `factory` - Factory for creating arena values
     ///
     /// # Returns
-    /// Vector of ArenaValue results
+    /// Vector of MettaValue results
     pub fn execute_jit_arena_direct(
         &mut self,
-        chunk: &Arc<GenericBytecodeChunk<ArenaValue<'static>>>,
+        chunk: &Arc<GenericBytecodeChunk<MettaValue>>,
         native_ptr: *const (),
-        arena: &'static bumpalo::Bump,
-        factory: &ArenaValueFactory<'static>,
-    ) -> VmResult<Vec<ArenaValue<'static>>> {
+        allocator: &'static SlabAllocator,
+        factory: &GcFactory,
+    ) -> VmResult<Vec<MettaValue>> {
         self.stats.jit_runs += 1;
         self.stats.tiered_stats.jit_stage1_runs += 1;
 
@@ -95,7 +95,7 @@ impl HybridExecutor {
                 self.config.jit_stack_capacity,
                 constants.as_ptr() as *const (),
                 constants.len(),
-                arena as *const bumpalo::Bump as *const (),
+                allocator as *const SlabAllocator as *const (),
                 self.jit_choice_points.as_mut_ptr(),
                 self.config.jit_choice_point_capacity,
                 self.jit_results.as_mut_ptr(),
@@ -152,7 +152,7 @@ impl HybridExecutor {
             return Ok(vec![factory.unit()]);
         }
 
-        // Collect results and convert to ArenaValue
+        // Collect results and convert to MettaValue
         let results = self.collect_jit_results_arena(&ctx, jit_result, factory);
 
         if self.config.trace {
@@ -183,12 +183,12 @@ impl HybridExecutor {
     /// The returned environment may have new rules, modified state, etc.
     pub fn execute_jit_arena_with_env(
         &mut self,
-        chunk: &Arc<GenericBytecodeChunk<ArenaValue<'static>>>,
+        chunk: &Arc<GenericBytecodeChunk<MettaValue>>,
         native_ptr: *const (),
-        arena: &'static bumpalo::Bump,
-        factory: &ArenaValueFactory<'static>,
-        mut env: ArenaEnv,
-    ) -> VmResult<(Vec<ArenaValue<'static>>, ArenaEnv)> {
+        allocator: &'static SlabAllocator,
+        factory: &GcFactory,
+        mut env: MettaEnvironment,
+    ) -> VmResult<(Vec<MettaValue>, MettaEnvironment)> {
         self.stats.jit_runs += 1;
         self.stats.tiered_stats.jit_stage1_runs += 1;
 
@@ -225,7 +225,7 @@ impl HybridExecutor {
                 self.config.jit_stack_capacity,
                 constants.as_ptr() as *const (),
                 constants.len(),
-                arena as *const bumpalo::Bump as *const (),
+                allocator as *const SlabAllocator as *const (),
                 self.jit_choice_points.as_mut_ptr(),
                 self.config.jit_choice_point_capacity,
                 self.jit_results.as_mut_ptr(),
@@ -262,7 +262,7 @@ impl HybridExecutor {
         // IMPORTANT: Set up environment pointer for environment threading
         // This allows JIT runtime functions to access and modify the environment.
         // SAFETY: The environment reference is valid for the duration of JIT execution.
-        ctx.env_ptr = &mut env as *mut ArenaEnv as *mut ();
+        ctx.env_ptr = &mut env as *mut MettaEnvironment as *mut ();
 
         if self.config.trace {
             trace!(target: "mettatron::jit::hybrid::arena", native_ptr = ?native_ptr, "Executing JIT code in arena mode with environment");
@@ -288,7 +288,7 @@ impl HybridExecutor {
             return Ok((vec![factory.unit()], env));
         }
 
-        // Collect results and convert to ArenaValue
+        // Collect results and convert to MettaValue
         let results = self.collect_jit_results_arena(&ctx, jit_result, factory);
 
         if self.config.trace {
@@ -299,30 +299,30 @@ impl HybridExecutor {
         Ok((results, env))
     }
 
-    /// Collect results from JIT context and convert to ArenaValue.
+    /// Collect results from JIT context and convert to MettaValue.
     ///
-    /// This method handles the conversion from NaN-boxed JitValue to ArenaValue.
-    /// In arena mode, TAG_HEAP pointers already point to ArenaValueInner, so
+    /// This method handles the conversion from NaN-boxed JitValue to MettaValue.
+    /// In arena mode, TAG_PTR pointers already point to MettaValueInner, so
     /// the conversion is mostly zero-copy.
     fn collect_jit_results_arena(
         &self,
         ctx: &JitContext,
         jit_result: i64,
-        factory: &ArenaValueFactory<'static>,
-    ) -> Vec<ArenaValue<'static>> {
+        factory: &GcFactory,
+    ) -> Vec<MettaValue> {
         // If there are collected results (from nondeterminism), use those
         if ctx.results_count > 0 {
             let mut results = Vec::with_capacity(ctx.results_count);
             for i in 0..ctx.results_count {
                 let jit_val = unsafe { *ctx.results.add(i) };
-                results.push(jit_to_arena_value(jit_val.0, factory));
+                results.push(jit_to_value(jit_val.0, factory));
             }
             return results;
         }
 
         // Use the function return value if non-zero
         if jit_result != 0 {
-            return vec![jit_to_arena_value(jit_result as u64, factory)];
+            return vec![jit_to_value(jit_result as u64, factory)];
         }
 
         // Fallback to stack
@@ -330,7 +330,7 @@ impl HybridExecutor {
             let mut results = Vec::with_capacity(ctx.sp);
             for i in 0..ctx.sp {
                 let jit_val = unsafe { *ctx.value_stack.add(i) };
-                results.push(jit_to_arena_value(jit_val.0, factory));
+                results.push(jit_to_value(jit_val.0, factory));
             }
             results
         } else {
@@ -339,19 +339,19 @@ impl HybridExecutor {
     }
 }
 
-/// Convert a NaN-boxed JIT value to ArenaValue.
+/// Convert a NaN-boxed JIT value to MettaValue.
 ///
-/// In arena mode, TAG_HEAP pointers point to ArenaValueInner, so the conversion
+/// In arena mode, TAG_PTR pointers point to MettaValueInner, so the conversion
 /// is zero-copy for complex values. Primitives (Long, Bool, Nil, Unit) are
 /// created fresh in the arena.
 ///
 /// # Arguments
 /// * `jit_val` - Raw NaN-boxed 64-bit value
 /// * `factory` - Factory for creating arena values
-fn jit_to_arena_value(
+fn jit_to_value(
     jit_val: u64,
-    factory: &ArenaValueFactory<'static>,
-) -> ArenaValue<'static> {
+    factory: &GcFactory,
+) -> MettaValue {
     let tag = jit_val & TAG_MASK;
 
     match tag {
@@ -393,22 +393,20 @@ fn jit_to_arena_value(
                 factory.unit()
             }
         }
-        TAG_HEAP => {
-            // Zero-conversion: pointer is already ArenaValue in arena mode
-            // The TAG_HEAP points to ArenaValueInner when value_mode == Arena
-            let ptr = (jit_val & PAYLOAD_MASK) as *const ArenaValue<'static>;
+        TAG_PTR => {
+            // Pointer to slab-allocated MettaValueInner
+            let ptr = (jit_val & PAYLOAD_MASK) as *const MettaValueInner;
             if !ptr.is_null() {
-                // ArenaValue is Copy, so this is just a pointer copy
-                unsafe { *ptr }
+                unsafe { MettaValue::from_inner(&*ptr) }
             } else {
                 factory.unit()
             }
         }
         TAG_ERROR => {
-            // Error values in arena mode
-            let ptr = (jit_val & PAYLOAD_MASK) as *const ArenaValue<'static>;
+            // Error values — also point to slab-allocated MettaValueInner
+            let ptr = (jit_val & PAYLOAD_MASK) as *const MettaValueInner;
             if !ptr.is_null() {
-                unsafe { *ptr }
+                unsafe { MettaValue::from_inner(&*ptr) }
             } else {
                 factory.error("unknown error", factory.unit())
             }

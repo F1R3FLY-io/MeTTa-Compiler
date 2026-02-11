@@ -2151,7 +2151,6 @@ dependencies = [
 name = "mettatron"
 version = "0.2.0"
 dependencies = [
- "bumpalo",
  "clap",
  "cranelift",
  "cranelift-frontend",
@@ -2169,6 +2168,7 @@ dependencies = [
  "im",
  "itertools 0.14.0",
  "lasso",
+ "libc",
  "liblevenshtein",
  "lru",
  "models",
@@ -2184,6 +2184,7 @@ dependencies = [
  "paste",
  "pathmap 0.3.0",
  "phf",
+ "portable-atomic",
  "proptest",
  "rayon",
  "regex",

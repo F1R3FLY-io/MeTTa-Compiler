@@ -388,11 +388,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::models::{GcFactory, MettaValue};
 
     #[test]
     fn test_car_atom_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let items = vec![
             MettaValue::Atom("car-atom".to_string()),
             MettaValue::SExpr(vec![
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_cdr_atom_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let items = vec![
             MettaValue::Atom("cdr-atom".to_string()),
             MettaValue::SExpr(vec![
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_cons_atom_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let items = vec![
             MettaValue::Atom("cons-atom".to_string()),
             MettaValue::Atom("a".to_string()),
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_size_atom_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let items = vec![
             MettaValue::Atom("size-atom".to_string()),
             MettaValue::SExpr(vec![

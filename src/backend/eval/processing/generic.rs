@@ -7,7 +7,7 @@
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 
-use crate::backend::environment::{HeapEnvironment, GenericEnvironment};
+use crate::backend::environment::GenericEnvironment;
 use crate::backend::grounded::{execute_generic_grounded_op, has_generic_grounded_op, GenericGroundedState, GenericGroundedWork};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
@@ -25,7 +25,7 @@ use super::super::helpers::needs_special_form_redispatch;
 ///
 /// Parameterized over value type V and factory type F.
 /// Uses GenericEnvironment<V, F> as the environment type.
-pub enum GenericProcessedSExpr<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static, F: MettaValueFactory<V> + Clone = crate::backend::models::HeapMettaValueFactory> {
+pub enum GenericProcessedSExpr<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static, F: MettaValueFactory<V> + Clone = crate::backend::models::GcFactory> {
     /// Evaluation complete - return results
     Done((Vec<V>, GenericEnvironment<V, F>)),
 
@@ -306,7 +306,7 @@ where
 mod tests {
     use super::*;
     #[allow(unused_imports)]
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::models::{GcFactory, MettaValue};
 
     #[test]
     fn test_cartesian_product_empty() {

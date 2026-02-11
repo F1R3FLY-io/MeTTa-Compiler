@@ -18,7 +18,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use dashmap::DashMap;
 
-use crate::backend::models::metta_value_trait::MettaValue as MettaValueTrait;
+use crate::backend::models::metta_value_trait::MettaValueTrait;
 
 /// Key for generic memo cache entries
 #[derive(Clone, Eq, PartialEq, Hash)]
@@ -197,12 +197,12 @@ pub struct GenericCacheStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue, MettaValueFactory};
+    use crate::backend::models::{GcFactory, MettaValue, MettaValueFactory};
 
     #[test]
     fn test_generic_memo_cache_basic() {
         let cache = GenericMemoCache::new(100);
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         // Miss on first lookup
         assert!(cache.get("foo", &[factory.long(42)]).is_none());
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn test_generic_memo_cache_different_args() {
         let cache: GenericMemoCache<MettaValue> = GenericMemoCache::new(100);
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         cache.insert("double", &[factory.long(5)], factory.long(10));
         cache.insert("double", &[factory.long(7)], factory.long(14));
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn test_generic_memo_cache_eviction() {
         let cache: GenericMemoCache<MettaValue> = GenericMemoCache::new(4);
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         for i in 0..4 {
             cache.insert("f", &[factory.long(i)], factory.long(i * 2));
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn test_generic_memo_cache_stats() {
         let cache: GenericMemoCache<MettaValue> = GenericMemoCache::new(100);
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
 
         cache.insert("f", &[factory.long(1)], factory.long(1));
         cache.get("f", &[factory.long(2)]); // miss

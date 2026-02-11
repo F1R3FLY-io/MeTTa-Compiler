@@ -29,7 +29,7 @@ impl MettaValueTestExt for MettaValue {
             MettaValueInner::Float(f) => f.to_string(),
             MettaValueInner::Bool(b) => b.to_string(),
             MettaValueInner::String(s) => format!("\"{}\"", s),
-            MettaValueInner::Atom(s) => s.clone(),
+            MettaValueInner::Atom(s) => s.to_string(),
             MettaValueInner::SExpr(exprs) => {
                 let inner: Vec<String> = exprs.iter().map(|e| e.to_display_string()).collect();
                 format!("({})", inner.join(" "))
@@ -57,9 +57,9 @@ impl MettaValueTestExt for MettaValue {
             MettaValueInner::Bool(b) => b.to_string() == s,
             MettaValueInner::String(inner) => {
                 // Match with or without quotes
-                inner == s || format!("\"{}\"", inner) == s
+                *inner == s || format!("\"{}\"", inner) == s
             }
-            MettaValueInner::Atom(sym) => sym == s,
+            MettaValueInner::Atom(sym) => *sym == s,
             MettaValueInner::SExpr(_) => self.to_display_string() == s,
             MettaValueInner::Error(_, _) => self.to_display_string() == s,
             MettaValueInner::Unit => s == "()",
@@ -534,7 +534,7 @@ mod tests {
         assert!(result.is_ok());
         if let Ok((_, value)) = result {
             if let MettaValueInner::String(s) = value.inner() {
-                assert_eq!(s, "hello");
+                assert_eq!(*s, "hello");
             } else {
                 panic!("Expected MettaValueInner::String");
             }

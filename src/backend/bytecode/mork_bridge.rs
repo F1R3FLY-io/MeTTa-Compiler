@@ -26,9 +26,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::warn;
 
-use crate::backend::environment::HeapEnvironment;
+use crate::backend::environment::MettaEnvironment;
 use crate::backend::eval::pattern_match;
 use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
+use crate::backend::models::metta_value_trait::MettaValueTrait;
 
 use super::chunk::BytecodeChunk;
 use super::compiler::{compile, CompileError};
@@ -71,7 +72,7 @@ impl RuleCacheKey {
 /// shared across VM invocations.
 pub struct MorkBridge {
     /// Reference to the environment for rule lookup
-    env: Arc<RwLock<HeapEnvironment>>,
+    env: Arc<RwLock<MettaEnvironment>>,
 
     /// Cache of compiled rule bodies
     /// Key: hash of rule RHS
@@ -154,7 +155,7 @@ impl BridgeStats {
 
 impl MorkBridge {
     /// Create a new bridge with the given environment
-    pub fn new(env: Arc<RwLock<HeapEnvironment>>) -> Self {
+    pub fn new(env: Arc<RwLock<MettaEnvironment>>) -> Self {
         Self {
             env,
             rule_cache: RwLock::new(HashMap::new()),
@@ -163,12 +164,12 @@ impl MorkBridge {
     }
 
     /// Create a bridge from an owned environment
-    pub fn from_env(env: HeapEnvironment) -> Self {
+    pub fn from_env(env: MettaEnvironment) -> Self {
         Self::new(Arc::new(RwLock::new(env)))
     }
 
     /// Get the underlying environment
-    pub fn environment(&self) -> Arc<RwLock<HeapEnvironment>> {
+    pub fn environment(&self) -> Arc<RwLock<MettaEnvironment>> {
         Arc::clone(&self.env)
     }
 
@@ -220,7 +221,7 @@ impl MorkBridge {
     fn find_matching_rules(
         &self,
         expr: &MettaValue,
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
     ) -> Vec<(MettaValue, MettaValue, Bindings)> {
         // Extract head symbol and arity for indexed lookup (lazy iteration)
         let matching_rules = if let Some(head) = get_head_symbol(expr) {
@@ -299,10 +300,10 @@ impl MorkBridge {
 fn get_head_symbol(expr: &MettaValue) -> Option<&str> {
     match expr.inner() {
         MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner() {
-            MettaValueInner::Atom(name) => Some(name.as_str()),
+            MettaValueInner::Atom(name) => Some(*name),
             _ => None,
         },
-        MettaValueInner::Atom(name) => Some(name.as_str()),
+        MettaValueInner::Atom(name) => Some(*name),
         _ => None,
     }
 }
@@ -314,7 +315,7 @@ fn get_head_symbol(expr: &MettaValue) -> Option<&str> {
 /// - Wildcard presence (wildcards are least specific)
 fn pattern_specificity(pattern: &MettaValue) -> usize {
     match pattern.inner() {
-        MettaValueInner::Atom(name) if name == "_" => 1000, // Wildcard - least specific
+        MettaValueInner::Atom(name) if *name == "_" => 1000, // Wildcard - least specific
         MettaValueInner::Atom(name) if name.starts_with('$') => 100, // Variable
         MettaValueInner::Atom(_) => 0,                      // Concrete symbol
         MettaValueInner::SExpr(items) => items.iter().map(pattern_specificity).sum(),
@@ -333,14 +334,14 @@ mod tests {
 
     #[test]
     fn test_bridge_creation() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let bridge = MorkBridge::from_env(env);
         assert_eq!(bridge.cache_size(), 0);
     }
 
     #[test]
     fn test_dispatch_no_rules() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let bridge = MorkBridge::from_env(env);
 
         let expr = MettaValue::SExpr(vec![
@@ -354,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_with_rule() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add rule: (= (double $x) (+ $x $x))
         let rule = Rule::new(
@@ -391,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_rule_caching() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add rule
         let rule = Rule::new(

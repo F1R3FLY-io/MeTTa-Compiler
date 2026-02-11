@@ -22,9 +22,7 @@
 //! ```
 
 mod arithmetic;
-mod arithmetic_tco;
 mod comparison;
-mod comparison_tco;
 pub mod generic_arithmetic;
 pub mod generic_comparison;
 pub mod generic_logical;
@@ -32,7 +30,6 @@ pub mod generic_registry;
 pub mod generic_state;
 pub mod generic_traits;
 mod logical;
-mod logical_tco;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -42,18 +39,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use super::environment::HeapEnvironment;
+use super::environment::MettaEnvironment;
 use super::models::{MettaValue, MettaValueInner};
 
-// Re-export all public types
-pub use arithmetic::{AddOp, DivOp, ModOp, MulOp, SubOp};
-pub use arithmetic_tco::{AddOpTCO, DivOpTCO, ModOpTCO, MulOpTCO, SubOpTCO};
-pub use comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
-pub use comparison_tco::{
-    EqualOpTCO, GreaterEqOpTCO, GreaterOpTCO, LessEqOpTCO, LessOpTCO, NotEqualOpTCO,
-};
-pub use logical::{AndOp, NotOp, OrOp};
-pub use logical_tco::{AndOpTCO, NotOpTCO, OrOpTCO};
+// Re-export generic types (active code path)
 pub use generic_arithmetic::{
     AddOpGeneric, DivOpGeneric, ModOpGeneric, MulOpGeneric, SubOpGeneric,
 };
@@ -70,6 +59,11 @@ pub use generic_state::{
     find_error_generic, friendly_type_name_generic, GenericGroundedState, GenericGroundedWork,
 };
 pub use generic_traits::GenericGroundedOperationTCO;
+
+// Re-export legacy types (used by proptests for multi-tier correctness verification)
+pub use arithmetic::{AddOp, DivOp, ModOp, MulOp, SubOp};
+pub use comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
+pub use logical::{AndOp, NotOp, OrOp};
 pub use state::{GroundedState, GroundedWork};
 pub use traits::{EvalFn, GroundedOperation, GroundedOperationTCO};
 
@@ -138,7 +132,10 @@ pub(crate) fn friendly_type_name(value: &MettaValue) -> &'static str {
     }
 }
 
-/// Registry of grounded operations, keyed by name
+/// Registry of grounded operations, keyed by name.
+///
+/// Legacy: Only used by proptests for multi-tier correctness verification.
+/// Active evaluation uses `GenericGroundedRegistry` with static dispatch.
 pub struct GroundedRegistry {
     operations: HashMap<String, Arc<dyn GroundedOperation>>,
 }
@@ -149,33 +146,6 @@ impl GroundedRegistry {
         GroundedRegistry {
             operations: HashMap::new(),
         }
-    }
-
-    /// Create a registry with standard operations (+, -, *, /, comparisons, logical)
-    pub fn with_standard_ops() -> Self {
-        let mut registry = Self::new();
-
-        // Arithmetic operations
-        registry.register(Arc::new(AddOp));
-        registry.register(Arc::new(SubOp));
-        registry.register(Arc::new(MulOp));
-        registry.register(Arc::new(DivOp));
-        registry.register(Arc::new(ModOp));
-
-        // Comparison operations
-        registry.register(Arc::new(LessOp));
-        registry.register(Arc::new(LessEqOp));
-        registry.register(Arc::new(GreaterOp));
-        registry.register(Arc::new(GreaterEqOp));
-        registry.register(Arc::new(EqualOp));
-        registry.register(Arc::new(NotEqualOp));
-
-        // Logical operations
-        registry.register(Arc::new(AndOp));
-        registry.register(Arc::new(OrOp));
-        registry.register(Arc::new(NotOp));
-
-        registry
     }
 
     /// Register a grounded operation
@@ -191,78 +161,13 @@ impl GroundedRegistry {
 
 impl Default for GroundedRegistry {
     fn default() -> Self {
-        Self::with_standard_ops()
+        Self::new()
     }
 }
 
 impl Clone for GroundedRegistry {
     fn clone(&self) -> Self {
         GroundedRegistry {
-            operations: self.operations.clone(),
-        }
-    }
-}
-
-/// Registry of TCO-compatible grounded operations
-pub struct GroundedRegistryTCO {
-    operations: HashMap<String, Arc<dyn GroundedOperationTCO>>,
-}
-
-impl GroundedRegistryTCO {
-    /// Create a new empty registry
-    pub fn new() -> Self {
-        GroundedRegistryTCO {
-            operations: HashMap::new(),
-        }
-    }
-
-    /// Create a registry with standard TCO operations
-    pub fn with_standard_ops() -> Self {
-        let mut registry = Self::new();
-
-        // Arithmetic operations
-        registry.register(Arc::new(AddOpTCO));
-        registry.register(Arc::new(SubOpTCO));
-        registry.register(Arc::new(MulOpTCO));
-        registry.register(Arc::new(DivOpTCO));
-        registry.register(Arc::new(ModOpTCO));
-
-        // Comparison operations
-        registry.register(Arc::new(LessOpTCO));
-        registry.register(Arc::new(LessEqOpTCO));
-        registry.register(Arc::new(GreaterOpTCO));
-        registry.register(Arc::new(GreaterEqOpTCO));
-        registry.register(Arc::new(EqualOpTCO));
-        registry.register(Arc::new(NotEqualOpTCO));
-
-        // Logical operations
-        registry.register(Arc::new(AndOpTCO));
-        registry.register(Arc::new(OrOpTCO));
-        registry.register(Arc::new(NotOpTCO));
-
-        registry
-    }
-
-    /// Register a TCO grounded operation
-    pub fn register(&mut self, op: Arc<dyn GroundedOperationTCO>) {
-        self.operations.insert(op.name().to_string(), op);
-    }
-
-    /// Look up a TCO grounded operation by name
-    pub fn get(&self, name: &str) -> Option<Arc<dyn GroundedOperationTCO>> {
-        self.operations.get(name).cloned()
-    }
-}
-
-impl Default for GroundedRegistryTCO {
-    fn default() -> Self {
-        Self::with_standard_ops()
-    }
-}
-
-impl Clone for GroundedRegistryTCO {
-    fn clone(&self) -> Self {
-        GroundedRegistryTCO {
             operations: self.operations.clone(),
         }
     }

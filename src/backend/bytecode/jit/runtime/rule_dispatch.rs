@@ -16,7 +16,7 @@ use crate::backend::bytecode::jit::types::{
 };
 use crate::backend::bytecode::mork_bridge::{CompiledRule, MorkBridge};
 use crate::backend::eval::apply_bindings;
-use crate::backend::models::{Bindings, MettaValue};
+use crate::backend::models::Bindings;
 
 // =============================================================================
 // Phase C: Rule Dispatch Operations

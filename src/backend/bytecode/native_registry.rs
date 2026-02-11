@@ -12,7 +12,7 @@
 //! # Generic Support
 //!
 //! The registry supports generic value types through `GenericNativeRegistry<V, F>`,
-//! enabling zero-conversion execution with ArenaValue or MettaValue.
+//! enabling zero-conversion execution with MettaValue or MettaValue.
 //!
 //! # Example
 //!
@@ -36,11 +36,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
-use crate::backend::HeapEnvironment;
-
-/// Result type for native function calls
-pub type NativeResult = Result<Vec<MettaValue>, NativeError>;
+use crate::backend::models::{GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, global_factory};
+#[cfg(test)]
+use crate::backend::models::MettaValueInner;
 
 /// Error type for native function calls
 #[derive(Debug, Clone)]
@@ -441,290 +439,28 @@ where
 }
 
 // =============================================================================
-// Non-Generic Types (backwards compatibility)
+// Concrete Type Aliases (MettaValue specializations of generic types)
 // =============================================================================
 
-/// Context provided to native functions during execution
-#[derive(Clone)]
-pub struct NativeContext {
-    /// Current environment (for accessing bindings if needed)
-    pub env: HeapEnvironment,
-}
+/// Result type for native function calls.
+pub type NativeResult = GenericNativeResult<MettaValue>;
 
-impl NativeContext {
-    /// Create a new native context
-    pub fn new(env: HeapEnvironment) -> Self {
-        Self { env }
-    }
+/// Context provided to native functions during execution.
+pub type NativeContext = GenericNativeContext<MettaValue, GcFactory>;
 
-    /// Create a default context with empty environment
-    pub fn default() -> Self {
-        Self {
-            env: HeapEnvironment::default(),
-        }
-    }
-}
+/// Type alias for native function signature.
+pub type NativeFn = GenericNativeFn<MettaValue, GcFactory>;
 
-/// Type alias for native function signature
-pub type NativeFn = Arc<dyn Fn(&[MettaValue], &NativeContext) -> NativeResult + Send + Sync>;
-
-/// Registry entry for a native function
-struct RegistryEntry {
-    name: String,
-    func: NativeFn,
-}
-
-/// Registry for native Rust functions callable from bytecode
+/// Registry for native Rust functions callable from bytecode.
 ///
 /// Functions are registered by name and assigned sequential IDs starting from 0.
 /// The registry is append-only; functions cannot be removed or reassigned.
-pub struct NativeRegistry {
-    /// Functions stored by ID (index)
-    functions: Vec<RegistryEntry>,
-    /// Name to ID mapping for registration lookup
-    name_to_id: HashMap<String, u16>,
-}
+pub type NativeRegistry = GenericNativeRegistry<MettaValue, GcFactory>;
 
-impl std::fmt::Debug for NativeRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeRegistry")
-            .field("function_count", &self.functions.len())
-            .field("names", &self.name_to_id.keys().collect::<Vec<_>>())
-            .finish()
-    }
-}
-
-impl Default for NativeRegistry {
+impl Default for NativeContext {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl NativeRegistry {
-    /// Create a new empty registry
-    pub fn new() -> Self {
-        Self {
-            functions: Vec::new(),
-            name_to_id: HashMap::new(),
-        }
-    }
-
-    /// Create a registry with standard library functions pre-registered
-    pub fn with_stdlib() -> Self {
-        let mut registry = Self::new();
-        registry.register_stdlib();
-        registry
-    }
-
-    /// Register a native function, returning its ID
-    ///
-    /// If a function with this name already exists, returns its existing ID.
-    pub fn register<F>(&mut self, name: &str, func: F) -> u16
-    where
-        F: Fn(&[MettaValue], &NativeContext) -> NativeResult + Send + Sync + 'static,
-    {
-        // Check if already registered
-        if let Some(&id) = self.name_to_id.get(name) {
-            return id;
-        }
-
-        let id = self.functions.len() as u16;
-        self.functions.push(RegistryEntry {
-            name: name.to_string(),
-            func: Arc::new(func),
-        });
-        self.name_to_id.insert(name.to_string(), id);
-        id
-    }
-
-    /// Get the ID of a registered function by name
-    pub fn get_id(&self, name: &str) -> Option<u16> {
-        self.name_to_id.get(name).copied()
-    }
-
-    /// Get the name of a registered function by ID
-    pub fn get_name(&self, id: u16) -> Option<&str> {
-        self.functions.get(id as usize).map(|e| e.name.as_str())
-    }
-
-    /// Call a native function by ID
-    pub fn call(&self, id: u16, args: &[MettaValue], ctx: &NativeContext) -> NativeResult {
-        let entry = self
-            .functions
-            .get(id as usize)
-            .ok_or(NativeError::NotFound(id))?;
-
-        (entry.func)(args, ctx)
-    }
-
-    /// Get the number of registered functions
-    pub fn len(&self) -> usize {
-        self.functions.len()
-    }
-
-    /// Check if the registry is empty
-    pub fn is_empty(&self) -> bool {
-        self.functions.is_empty()
-    }
-
-    /// Register standard library functions
-    fn register_stdlib(&mut self) {
-        // Print function
-        self.register("print", |args, _ctx| {
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    print!(" ");
-                }
-                print!("{:?}", arg);
-            }
-            println!();
-            Ok(vec![MettaValue::Unit()])
-        });
-
-        // String concatenation
-        self.register("concat", |args, _ctx| {
-            let mut result = String::new();
-            for arg in args {
-                match arg.inner() {
-                    MettaValueInner::String(s) => result.push_str(s),
-                    _ => result.push_str(&format!("{:?}", arg)),
-                }
-            }
-            Ok(vec![MettaValue::String(result)])
-        });
-
-        // String length
-        self.register("strlen", |args, _ctx| {
-            if args.len() != 1 {
-                return Err(NativeError::ArityMismatch {
-                    expected: 1,
-                    got: args.len(),
-                });
-            }
-            match args[0].inner() {
-                MettaValueInner::String(s) => Ok(vec![MettaValue::Long(s.len() as i64)]),
-                _ => Err(NativeError::TypeError {
-                    expected: "String",
-                    got: args[0].type_name().to_string(),
-                }),
-            }
-        });
-
-        // Random number
-        self.register("random", |args, _ctx| {
-            let max = match args.first() {
-                Some(v) => match v.inner() {
-                    MettaValueInner::Long(n) => *n,
-                    _ => {
-                        return Err(NativeError::TypeError {
-                            expected: "Long",
-                            got: v.type_name().to_string(),
-                        })
-                    }
-                },
-                None => 100, // Default max
-            };
-
-            // Simple LCG random (for reproducibility in tests)
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let seed = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(42) as u64;
-
-            let random_val =
-                ((seed * 6364136223846793005 + 1442695040888963407) % (max as u64)) as i64;
-            Ok(vec![MettaValue::Long(random_val)])
-        });
-
-        // Assert function
-        self.register("assert", |args, _ctx| {
-            if args.len() != 1 && args.len() != 2 {
-                return Err(NativeError::ArityMismatch {
-                    expected: 1,
-                    got: args.len(),
-                });
-            }
-
-            match args[0].inner() {
-                MettaValueInner::Bool(true) => Ok(vec![MettaValue::Unit()]),
-                MettaValueInner::Bool(false) => {
-                    let msg = args
-                        .get(1)
-                        .map(|v| format!("{:?}", v))
-                        .unwrap_or_else(|| "assertion failed".to_string());
-                    Err(NativeError::RuntimeError(msg))
-                }
-                _ => Err(NativeError::TypeError {
-                    expected: "Bool",
-                    got: args[0].type_name().to_string(),
-                }),
-            }
-        });
-
-        // Type-of function (returns type as atom)
-        self.register("type-of", |args, _ctx| {
-            if args.len() != 1 {
-                return Err(NativeError::ArityMismatch {
-                    expected: 1,
-                    got: args.len(),
-                });
-            }
-
-            let type_name = args[0].type_name();
-            Ok(vec![MettaValue::Atom(type_name.to_string())])
-        });
-
-        // List operations
-        self.register("list-length", |args, _ctx| {
-            if args.len() != 1 {
-                return Err(NativeError::ArityMismatch {
-                    expected: 1,
-                    got: args.len(),
-                });
-            }
-
-            match args[0].inner() {
-                MettaValueInner::SExpr(items) => Ok(vec![MettaValue::Long(items.len() as i64)]),
-                _ => Err(NativeError::TypeError {
-                    expected: "Expression",
-                    got: args[0].type_name().to_string(),
-                }),
-            }
-        });
-
-        // Range function: (range start end) -> (start start+1 ... end-1)
-        self.register("range", |args, _ctx| {
-            if args.len() != 2 {
-                return Err(NativeError::ArityMismatch {
-                    expected: 2,
-                    got: args.len(),
-                });
-            }
-
-            let start = match args[0].inner() {
-                MettaValueInner::Long(n) => *n,
-                _ => {
-                    return Err(NativeError::TypeError {
-                        expected: "Long",
-                        got: args[0].type_name().to_string(),
-                    })
-                }
-            };
-
-            let end = match args[1].inner() {
-                MettaValueInner::Long(n) => *n,
-                _ => {
-                    return Err(NativeError::TypeError {
-                        expected: "Long",
-                        got: args[1].type_name().to_string(),
-                    })
-                }
-            };
-
-            let items: Vec<MettaValue> = (start..end).map(MettaValue::Long).collect();
-            Ok(vec![MettaValue::SExpr(items)])
-        });
+        let factory = global_factory();
+        Self::new(GenericEnvironment::new(factory), factory)
     }
 }
 
@@ -786,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_stdlib() {
-        let registry = NativeRegistry::with_stdlib();
+        let registry = NativeRegistry::with_stdlib(global_factory());
         let ctx = NativeContext::default();
 
         // Test concat
@@ -809,7 +545,7 @@ mod tests {
 
     #[test]
     fn test_range() {
-        let registry = NativeRegistry::with_stdlib();
+        let registry = NativeRegistry::with_stdlib(global_factory());
         let ctx = NativeContext::default();
 
         let range_id = registry

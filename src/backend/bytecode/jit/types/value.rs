@@ -6,7 +6,7 @@
 use std::fmt;
 
 use super::constants::{
-    PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_HEAP, TAG_LONG,
+    PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_PTR, TAG_LONG,
     TAG_MASK, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{MettaValue, MettaValueInner};
@@ -67,24 +67,24 @@ impl JitValue {
         JitValue(TAG_UNIT)
     }
 
-    /// Create a heap pointer to a MettaValue
+    /// Create a TAG_PTR value from a pointer to slab-allocated MettaValueInner.
     ///
-    /// # Safety
-    /// The pointer must be valid for the lifetime of the JIT execution
+    /// The pointer must point to valid, slab-allocated MettaValueInner data
+    /// with 'static lifetime (managed by the GC).
     #[inline(always)]
-    pub fn from_heap_ptr(ptr: *const MettaValue) -> Self {
+    pub fn from_inner_ptr(ptr: *const MettaValueInner) -> Self {
         let addr = ptr as u64;
         debug_assert!(
             addr & TAG_MASK == 0,
             "Pointer uses more than 48 bits: {:#x}",
             addr
         );
-        JitValue(TAG_HEAP | (addr & PAYLOAD_MASK))
+        JitValue(TAG_PTR | (addr & PAYLOAD_MASK))
     }
 
-    /// Create an error value
+    /// Create an error value from a pointer to slab-allocated MettaValueInner.
     #[inline(always)]
-    pub fn from_error_ptr(ptr: *const MettaValue) -> Self {
+    pub fn from_error_ptr(ptr: *const MettaValueInner) -> Self {
         let addr = ptr as u64;
         debug_assert!(
             addr & TAG_MASK == 0,
@@ -139,7 +139,7 @@ impl JitValue {
         tag == TAG_LONG
             || tag == TAG_BOOL
             || tag == TAG_UNIT
-            || tag == TAG_HEAP
+            || tag == TAG_PTR
             || tag == TAG_ERROR
             || tag == TAG_ATOM
             || tag == TAG_VAR
@@ -179,7 +179,7 @@ impl JitValue {
     /// Check if this is a heap pointer
     #[inline(always)]
     pub const fn is_heap(self) -> bool {
-        self.tag() == TAG_HEAP
+        self.tag() == TAG_PTR
     }
 
     /// Check if this is an error
@@ -236,21 +236,21 @@ impl JitValue {
         (self.0 & 1) != 0
     }
 
-    /// Extract as heap pointer
+    /// Extract the pointer to slab-allocated MettaValueInner.
     ///
     /// # Safety
-    /// The caller must ensure the pointer is still valid
+    /// The caller must ensure the pointer is still valid (slab-managed).
     #[inline(always)]
-    pub fn as_heap_ptr(self) -> *const MettaValue {
-        debug_assert!(self.is_heap(), "JitValue is not a heap pointer");
-        (self.0 & PAYLOAD_MASK) as *const MettaValue
+    pub fn as_inner_ptr(self) -> *const MettaValueInner {
+        debug_assert!(self.is_heap(), "JitValue is not a TAG_PTR value");
+        (self.0 & PAYLOAD_MASK) as *const MettaValueInner
     }
 
-    /// Extract as error pointer
+    /// Extract error pointer to slab-allocated MettaValueInner.
     #[inline(always)]
-    pub fn as_error_ptr(self) -> *const MettaValue {
+    pub fn as_error_ptr(self) -> *const MettaValueInner {
         debug_assert!(self.is_error(), "JitValue is not an error");
-        (self.0 & PAYLOAD_MASK) as *const MettaValue
+        (self.0 & PAYLOAD_MASK) as *const MettaValueInner
     }
 
     /// Extract as atom pointer
@@ -317,35 +317,35 @@ impl JitValue {
             TAG_LONG => MettaValue::Long(self.as_long()),
             TAG_BOOL => MettaValue::Bool(self.as_bool()),
             TAG_UNIT => MettaValue::Unit(),
-            TAG_HEAP => {
-                let ptr = self.as_heap_ptr();
+            TAG_PTR => {
+                let ptr = self.as_inner_ptr();
                 debug_assert!(
                     !ptr.is_null(),
-                    "to_metta: Null heap pointer in JitValue: raw={:#018x}",
+                    "to_metta: Null inner pointer in JitValue: raw={:#018x}",
                     self.0
                 );
                 debug_assert!(
-                    (ptr as usize) % std::mem::align_of::<MettaValue>() == 0,
-                    "to_metta: Misaligned heap pointer: {:p} (raw={:#018x})",
+                    (ptr as usize) % std::mem::align_of::<MettaValueInner>() == 0,
+                    "to_metta: Misaligned inner pointer: {:p} (raw={:#018x})",
                     ptr,
                     self.0
                 );
-                (*ptr).clone()
+                MettaValue::from_inner(&*ptr)
             }
             TAG_ERROR => {
-                let ptr = self.as_error_ptr();
+                let ptr = (self.0 & PAYLOAD_MASK) as *const MettaValueInner;
                 debug_assert!(
                     !ptr.is_null(),
                     "to_metta: Null error pointer in JitValue: raw={:#018x}",
                     self.0
                 );
                 debug_assert!(
-                    (ptr as usize) % std::mem::align_of::<MettaValue>() == 0,
+                    (ptr as usize) % std::mem::align_of::<MettaValueInner>() == 0,
                     "to_metta: Misaligned error pointer: {:p} (raw={:#018x})",
                     ptr,
                     self.0
                 );
-                (*ptr).clone()
+                MettaValue::from_inner(&*ptr)
             }
             TAG_ATOM => {
                 let ptr = self.as_atom_ptr();
@@ -404,7 +404,7 @@ impl fmt::Debug for JitValue {
             TAG_LONG => write!(f, "JitValue::Long({})", self.as_long()),
             TAG_BOOL => write!(f, "JitValue::Bool({})", self.as_bool()),
             TAG_UNIT => write!(f, "JitValue::Unit"),
-            TAG_HEAP => write!(f, "JitValue::Heap({:p})", self.as_heap_ptr()),
+            TAG_PTR => write!(f, "JitValue::Ptr({:p})", self.as_inner_ptr()),
             TAG_ERROR => write!(f, "JitValue::Error({:p})", self.as_error_ptr()),
             TAG_ATOM => write!(f, "JitValue::Atom({:p})", self.as_atom_ptr()),
             TAG_VAR => write!(f, "JitValue::Var({:p})", self.as_var_ptr()),

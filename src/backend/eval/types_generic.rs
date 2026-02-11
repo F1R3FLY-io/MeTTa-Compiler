@@ -305,13 +305,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::environment::HeapEnvironment;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::environment::MettaEnvironment;
+    use crate::backend::models::{GcFactory, MettaValue};
 
     #[test]
     fn test_infer_type_generic_ground_types() {
-        let factory = HeapMettaValueFactory;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
 
         // Bool
         let value = MettaValue::Bool(true);
@@ -331,8 +331,8 @@ mod tests {
 
     #[test]
     fn test_get_type_generic() {
-        let factory = HeapMettaValueFactory;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
 
         let items = vec![
             MettaValue::Atom("get-type".to_string()),
@@ -345,8 +345,8 @@ mod tests {
 
     #[test]
     fn test_check_type_generic() {
-        let factory = HeapMettaValueFactory;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
 
         // (check-type 42 Number) -> true
         let items = vec![
@@ -371,8 +371,8 @@ mod tests {
 
     #[test]
     fn test_check_type_with_type_variable() {
-        let factory = HeapMettaValueFactory;
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
+        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(GcFactory::default());
 
         // (check-type 42 $t) -> true (type variable matches anything)
         let items = vec![

@@ -5,8 +5,7 @@
 use std::sync::atomic::Ordering;
 
 use super::generic::GenericEnvironment;
-use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValue as MettaValueTrait};
-use crate::backend::MettaValue;
+use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 
 impl<V, F> GenericEnvironment<V, F>
 where

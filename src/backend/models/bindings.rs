@@ -25,7 +25,7 @@ use smallvec::SmallVec;
 // - fib: 1.9% faster (5.74ms → 5.629ms median)
 //
 // The unboxed version eliminates:
-// 1. Heap allocation when transitioning Single → Small
+// 1. Arena allocation when transitioning Single → Small
 // 2. Pointer indirection on every Small variant access
 // 3. Cache misses from heap-scattered data
 //

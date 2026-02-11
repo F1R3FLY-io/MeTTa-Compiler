@@ -11,13 +11,13 @@
 //! without type conversion overhead by using factories for value creation.
 
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValueMode, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR,
-    TAG_HEAP, TAG_LONG, TAG_MASK, TAG_UNIT, TAG_VAR,
+    JitBailoutReason, JitContext, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR,
+    TAG_PTR, TAG_LONG, TAG_MASK, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{
-    ArenaValue, ArenaValueFactory, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait,
+    MettaValue, GcFactory, MettaValueFactory, MettaValueInner, MettaValueTrait,
+    SlabAllocator,
 };
-use bumpalo::Bump;
 
 use super::helpers::value_to_jit_generic;
 
@@ -50,96 +50,25 @@ static TYPE_NAME_UNKNOWN: &str = "Unknown";
 /// - TAG_LONG → "Number"
 /// - TAG_BOOL → "Bool"
 /// - TAG_UNIT → "Unit"
-/// - TAG_HEAP → depends on heap value type
+/// - TAG_PTR → depends on heap value type
 /// - TAG_ERROR → "Error"
 /// - TAG_ATOM → "Symbol" (or "Variable" if starts with $)
 /// - TAG_VAR → "Variable"
 ///
-/// Dispatches at runtime based on `ctx.value_mode`:
-/// - Heap mode: Creates a heap-allocated `MettaValue::Atom`
-/// - Arena mode: Uses `ArenaValueFactory` for arena allocation
+/// Uses the slab allocator (via GcFactory) for all value creation.
 ///
 /// # Safety
-/// For heap pointers, the referenced MettaValue must be valid.
-/// For arena mode, ctx.arena must be a valid arena pointer.
+/// For pointer payloads, the referenced value must be valid.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
-    // Check context for mode dispatch
-    if !ctx.is_null() {
-        let ctx_ref = &*ctx;
-        if ctx_ref.is_arena_mode() {
-            // Arena mode: delegate to generic implementation
-            let arena_ptr = ctx_ref.arena_ptr();
-            debug_assert!(
-                !arena_ptr.is_null(),
-                "jit_runtime_get_type: Arena mode requires arena pointer"
-            );
-            let arena: &'static Bump = &*(arena_ptr as *const Bump);
-            let factory = ArenaValueFactory::new(arena);
-            return get_type_generic::<ArenaValue<'static>, ArenaValueFactory<'static>>(
-                ctx,
-                val,
-                &factory,
-                JitValueMode::Arena,
-            );
-        }
-    }
-
-    // Heap mode: original implementation
-    let tag = val & TAG_MASK;
-
-    let type_name: &'static str = match tag {
-        TAG_LONG => TYPE_NAME_NUMBER,
-        TAG_BOOL => TYPE_NAME_BOOL,
-        TAG_UNIT => TYPE_NAME_UNIT,
-        TAG_ERROR => TYPE_NAME_ERROR,
-        TAG_VAR => TYPE_NAME_VARIABLE,
-        TAG_ATOM => {
-            // Check if it's a variable (starts with $)
-            let ptr = (val & PAYLOAD_MASK) as *const String;
-            if !ptr.is_null() {
-                let s = &*ptr;
-                if s.starts_with('$') {
-                    TYPE_NAME_VARIABLE
-                } else {
-                    TYPE_NAME_SYMBOL
-                }
-            } else {
-                TYPE_NAME_SYMBOL
-            }
-        }
-        TAG_HEAP => {
-            // Need to inspect the heap value
-            let ptr = (val & PAYLOAD_MASK) as *const MettaValue;
-            if ptr.is_null() {
-                TYPE_NAME_UNKNOWN
-            } else {
-                match (*ptr).inner() {
-                    MettaValueInner::SExpr(_) => TYPE_NAME_EXPRESSION,
-                    MettaValueInner::String(_) => TYPE_NAME_STRING,
-                    MettaValueInner::Type(_) => TYPE_NAME_TYPE,
-                    MettaValueInner::Conjunction(_) => TYPE_NAME_CONJUNCTION,
-                    MettaValueInner::Space(_) => TYPE_NAME_SPACE,
-                    MettaValueInner::State(_) => TYPE_NAME_STATE,
-                    MettaValueInner::Memo(_) => TYPE_NAME_MEMO,
-                    MettaValueInner::Empty => TYPE_NAME_EMPTY,
-                    MettaValueInner::Atom(s) if s.starts_with('$') => TYPE_NAME_VARIABLE,
-                    MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
-                    MettaValueInner::Bool(_) => TYPE_NAME_BOOL,
-                    MettaValueInner::Long(_) | MettaValueInner::Float(_) => TYPE_NAME_NUMBER,
-                    MettaValueInner::Unit => TYPE_NAME_UNIT,
-                    MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
-                }
-            }
-        }
-        _ => TYPE_NAME_UNKNOWN,
+    let arena_ptr = if !ctx.is_null() { (*ctx).arena_ptr() } else { std::ptr::null() };
+    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
+        &*(arena_ptr as *const SlabAllocator)
+    } else {
+        crate::backend::models::global_allocator()
     };
-
-    // Return as a Symbol (heap-allocated MettaValue::Atom)
-    // We create a new MettaValue::Atom and return it as a heap pointer
-    let atom = Box::new(MettaValue::Atom(type_name.to_string()));
-    let ptr = Box::into_raw(atom);
-    TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+    let factory = GcFactory::new(alloc);
+    get_type_generic::<MettaValue, GcFactory>(val, &factory)
 }
 
 /// Check if a value's type matches an expected type.
@@ -179,11 +108,11 @@ pub unsafe extern "C" fn jit_runtime_check_type(
                     None
                 }
             }
-            TAG_HEAP => {
-                let ptr = (type_atom & PAYLOAD_MASK) as *const MettaValue;
+            TAG_PTR => {
+                let ptr = (type_atom & PAYLOAD_MASK) as *const MettaValueInner;
                 if !ptr.is_null() {
-                    if let MettaValueInner::Atom(s) = (*ptr).inner() {
-                        Some(s.as_str())
+                    if let MettaValueInner::Atom(s) = &*ptr {
+                        Some(*s)
                     } else {
                         None
                     }
@@ -255,11 +184,11 @@ pub unsafe extern "C" fn jit_runtime_assert_type(
                     None
                 }
             }
-            TAG_HEAP => {
-                let ptr = (type_atom & PAYLOAD_MASK) as *const MettaValue;
+            TAG_PTR => {
+                let ptr = (type_atom & PAYLOAD_MASK) as *const MettaValueInner;
                 if !ptr.is_null() {
-                    if let MettaValueInner::Atom(s) = (*ptr).inner() {
-                        Some(s.as_str())
+                    if let MettaValueInner::Atom(s) = &*ptr {
+                        Some(*s)
                     } else {
                         None
                     }
@@ -316,10 +245,8 @@ pub unsafe extern "C" fn jit_runtime_assert_type(
 /// # Safety
 /// For heap pointers, the referenced value must be valid.
 pub unsafe fn get_type_generic<V, F>(
-    _ctx: *mut JitContext,
     val: u64,
     factory: &F,
-    mode: JitValueMode,
 ) -> u64
 where
     V: MettaValueTrait + Clone,
@@ -347,15 +274,15 @@ where
                 TYPE_NAME_SYMBOL
             }
         }
-        TAG_HEAP => {
+        TAG_PTR => {
             // For generic, we need to use MettaValueTrait
             // Since we can't know the concrete type at compile time for the pointer,
             // we fall back to checking if it's a MettaValue pointer
-            let ptr = (val & PAYLOAD_MASK) as *const MettaValue;
+            let ptr = (val & PAYLOAD_MASK) as *const MettaValueInner;
             if ptr.is_null() {
                 TYPE_NAME_UNKNOWN
             } else {
-                match (*ptr).inner() {
+                match &*ptr {
                     MettaValueInner::SExpr(_) => TYPE_NAME_EXPRESSION,
                     MettaValueInner::String(_) => TYPE_NAME_STRING,
                     MettaValueInner::Type(_) => TYPE_NAME_TYPE,
@@ -378,7 +305,7 @@ where
 
     // Create the type name atom using the factory
     let atom = factory.atom(type_name);
-    value_to_jit_generic(&atom, mode).to_bits()
+    value_to_jit_generic(&atom).to_bits()
 }
 
 // =============================================================================
@@ -408,7 +335,7 @@ unsafe fn get_type_name(val: u64) -> &'static str {
                 TYPE_NAME_SYMBOL
             }
         }
-        TAG_HEAP => {
+        TAG_PTR => {
             let ptr = (val & PAYLOAD_MASK) as *const MettaValue;
             if ptr.is_null() {
                 return TYPE_NAME_UNKNOWN;

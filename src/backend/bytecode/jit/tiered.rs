@@ -96,7 +96,7 @@ impl ChunkId {
 
     /// Create a chunk ID from a generic bytecode chunk.
     ///
-    /// This works with any value type (MettaValue or ArenaValue) since the bytecode
+    /// This works with any value type (MettaValue or MettaValue) since the bytecode
     /// structure is identical - only the constants differ in type.
     pub fn from_generic_chunk<V>(chunk: &crate::backend::bytecode::GenericBytecodeChunk<V>) -> Self
     where

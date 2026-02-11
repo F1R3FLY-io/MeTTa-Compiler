@@ -363,7 +363,7 @@ Based on profiling, the following areas are the real performance bottlenecks:
 Using bumpalo arena allocation for the entire evaluation (all intermediate MettaValue allocations) will:
 1. Eliminate per-node allocation/deallocation overhead (~18% of runtime)
 2. Provide O(1) bulk deallocation when the arena is dropped
-3. Enable zero-cost cloning for ArenaValue (Copy type, just a pointer)
+3. Enable zero-cost cloning for MettaValue (Copy type, just a pointer)
 
 **Expected Improvement:** 8-12% (per plan: `wise-sleeping-thacker.md`)
 
@@ -372,16 +372,16 @@ Using bumpalo arena allocation for the entire evaluation (all intermediate Metta
 ### Implementation Details
 
 **Files Created/Modified:**
-- `src/backend/models/arena_value.rs` - NEW: ArenaValue<'a> type with 15 variants
-- `src/backend/models/mod.rs` - Export arena_value module
+- `src/backend/models/metta_value.rs` - NEW: MettaValue type with 15 variants
+- `src/backend/models/mod.rs` - Export metta_value module
 - `src/backend/eval/trampoline/arena_types.rs` - Arena work items and continuations
 - `src/backend/eval/trampoline/arena_engine.rs` - Arena-based trampoline engine
 - `Cargo.toml` - Added bumpalo dependency
 
 **Key Components:**
-1. `ArenaValue<'a>` - Copy type containing pointer to arena-allocated `ArenaValueInner<'a>`
-2. `ArenaValueInner<'a>` - All 15 variants (Atom, SExpr, Long, Bool, etc.)
-3. `eval_trampoline_arena()` - Arena-based evaluation entry point
+1. `MettaValue` - Copy type containing pointer to arena-allocated `MettaValueInner`
+2. `MettaValueInner` - All 15 variants (Atom, SExpr, Long, Bool, etc.)
+3. `eval_trampoline()` - Arena-based evaluation entry point
 4. Fallback handlers for all EvalStep variants that delegate to standard `eval_trampoline`
 
 ### Measurements
@@ -404,11 +404,11 @@ The arena evaluation is **slower** than standard evaluation because:
 
 1. **Fallback Architecture:** The arena engine falls back to `eval_trampoline()` for most `EvalStep` variants:
    - `StartCollapse`, `StartMatch`, `StartUnify`, etc.
-   - This creates conversion overhead: ArenaValue → MettaValue (for fallback) → ArenaValue (for results)
+   - This creates conversion overhead: MettaValue → MettaValue (for fallback) → MettaValue (for results)
 
-2. **Nested Arena Creation:** Each call to `eval_trampoline_arena()` creates a new arena, but fallback operations use the standard heap-based trampoline, negating arena benefits.
+2. **Nested Arena Creation:** Each call to `eval_trampoline()` creates a new arena, but fallback operations use the standard heap-based trampoline, negating arena benefits.
 
-3. **Conversion Overhead:** The constant conversion between `ArenaValue` and `MettaValue` adds overhead without providing arena benefits for the actual evaluation.
+3. **Conversion Overhead:** The constant conversion between `MettaValue` and `MettaValue` adds overhead without providing arena benefits for the actual evaluation.
 
 4. **Functional Correctness Verified:** Both modes produce semantically identical output (verified with diff, only ordering differences in sets/maps). Both verify "Correct proof!" for mmverify.
 
@@ -418,12 +418,12 @@ To achieve the planned 8-12% improvement, the following changes are needed:
 
 1. **Native Arena Implementations:** Replace all fallback handlers with arena-native implementations:
    - Collapse/CollapseBind - use arena for intermediate results
-   - Match operations - convert MORK results directly to ArenaValue
+   - Match operations - convert MORK results directly to MettaValue
    - Map/Filter/Fold - process elements without heap allocation
 
 2. **Arena Propagation:** Pass arena reference through the evaluation stack so nested evaluations share the same arena instead of creating new ones or falling back to heap.
 
-3. **MORK Integration:** Add `mork_expr_to_arena_value()` to convert MORK query results directly to arena values without heap allocation.
+3. **MORK Integration:** Add `mork_expr_to_metta_value()` to convert MORK query results directly to arena values without heap allocation.
 
 ### Decision
 
@@ -437,7 +437,7 @@ To achieve the planned 8-12% improvement, the following changes are needed:
 ### Lessons Learned
 
 1. **Hybrid approaches add overhead:** Falling back to heap-based evaluation negates arena benefits
-2. **Conversion costs matter:** ArenaValue ↔ MettaValue conversion adds ~3-4% overhead
+2. **Conversion costs matter:** MettaValue ↔ MettaValue conversion adds ~3-4% overhead
 3. **Complete implementation required:** Arena allocation only provides benefits when used throughout the evaluation path
 
 ---

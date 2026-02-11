@@ -23,7 +23,7 @@ use xxhash_rust::xxh3::Xxh3Builder;
 // Import concrete type
 use super::metta_value::MettaValue;
 // Import traits for method resolution
-use super::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
+use super::metta_value_trait::{MettaValueTrait, MettaValueFactory};
 
 /// A unique identifier for an interned atom.
 ///
@@ -210,7 +210,7 @@ impl SymbolTable {
     /// Intern any value implementing MettaValueTrait.
     ///
     /// The value is serialized to bytes for storage. This enables type-agnostic
-    /// interning - both MettaValue and ArenaValue can be interned.
+    /// interning - both MettaValue and MettaValue can be interned.
     pub fn intern_value<V: super::MettaValueTrait>(&self, value: &V) -> AtomId {
         let bytes = value.serialize();
         self.intern_bytes(&bytes)
@@ -252,7 +252,7 @@ impl SymbolTable {
     /// Panics if the AtomId is invalid or deserialization fails.
     pub fn resolve(&self, id: AtomId) -> MettaValue {
         let bytes = self.resolve_bytes(id);
-        let factory = super::HeapMettaValueFactory;
+        let factory = super::GcFactory::default();
         factory.deserialize(&bytes)
             .map(|(v, _)| v)
             .expect("failed to deserialize stored value")
@@ -261,7 +261,7 @@ impl SymbolTable {
     /// Try to resolve an AtomId, returning None if invalid.
     pub fn try_resolve(&self, id: AtomId) -> Option<MettaValue> {
         let bytes = self.try_resolve_bytes(id)?;
-        let factory = super::HeapMettaValueFactory;
+        let factory = super::GcFactory::default();
         factory.deserialize(&bytes).ok().map(|(v, _)| v)
     }
 
@@ -296,7 +296,7 @@ impl SymbolTable {
     ///
     /// Note: This deserializes each value, which may be expensive.
     pub fn iter(&self) -> impl Iterator<Item = (AtomId, MettaValue)> + '_ {
-        let factory = super::HeapMettaValueFactory;
+        let factory = super::GcFactory::default();
         self.iter_bytes().filter_map(move |(id, bytes)| {
             factory.deserialize(&bytes).ok().map(|(v, _)| (id, v))
         })

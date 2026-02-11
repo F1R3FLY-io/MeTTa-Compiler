@@ -8,7 +8,7 @@
 //! ## Design
 //!
 //! By parameterizing over the value type `V`, operations can work with both
-//! heap-allocated (`MettaValue`) and arena-allocated (`ArenaValue`) types without
+//! heap-allocated (`MettaValue`) and arena-allocated (`MettaValue`) types without
 //! conversion at boundaries.
 //!
 //! ## Implementation Pattern

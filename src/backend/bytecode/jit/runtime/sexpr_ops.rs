@@ -7,7 +7,7 @@
 //! - get_arity - Get the number of elements
 //! - get_element - Get element at a specific index
 
-use crate::backend::bytecode::jit::types::{JitContext, JitValue, PAYLOAD_MASK, TAG_HEAP, TAG_UNIT};
+use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_UNIT};
 use crate::backend::models::{MettaValue, MettaValueInner};
 
 // =============================================================================
@@ -19,16 +19,15 @@ use crate::backend::models::{MettaValue, MettaValueInner};
 /// Creates and returns an empty S-expression ().
 ///
 /// # Returns
-/// NaN-boxed heap pointer to empty SExpr
+/// NaN-boxed inner pointer to empty SExpr
 ///
 /// # Safety
 /// No special safety requirements.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_push_empty() -> u64 {
     let empty = MettaValue::SExpr(Vec::new());
-    let boxed = Box::new(empty);
-    let ptr = Box::into_raw(boxed);
-    TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+    let ptr = empty.inner_ptr();
+    JitValue::from_inner_ptr(ptr).to_bits()
 }
 
 /// Runtime function for GetHead opcode
@@ -44,7 +43,7 @@ pub unsafe extern "C" fn jit_runtime_push_empty() -> u64 {
 /// NaN-boxed head element, or TAG_UNIT if empty/not an SExpr
 ///
 /// # Safety
-/// The heap pointer must be valid if val is TAG_HEAP.
+/// The inner pointer must be valid if val is TAG_PTR.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
@@ -54,12 +53,12 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
         return TAG_UNIT;
     }
 
-    let metta_ptr = jit_val.as_heap_ptr();
-    if metta_ptr.is_null() {
+    let inner_ptr = jit_val.as_inner_ptr();
+    if inner_ptr.is_null() {
         return TAG_UNIT;
     }
 
-    let metta_val = &*metta_ptr;
+    let metta_val = MettaValue::from_inner(&*inner_ptr);
     match metta_val.inner() {
         MettaValueInner::SExpr(items) => {
             if items.is_empty() {
@@ -70,10 +69,9 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
                 match JitValue::try_from_metta(head) {
                     Some(jv) => jv.to_bits(),
                     None => {
-                        // Need to heap-allocate for non-primitive types
-                        let boxed = Box::new(head.clone());
-                        let ptr = Box::into_raw(boxed);
-                        TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+                        // Store inner pointer directly (slab-managed lifetime)
+                        let ptr = head.inner_ptr();
+                        JitValue::from_inner_ptr(ptr).to_bits()
                     }
                 }
             }
@@ -95,7 +93,7 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
 /// NaN-boxed heap pointer to tail SExpr, or empty SExpr if empty/not an SExpr
 ///
 /// # Safety
-/// The heap pointer must be valid if val is TAG_HEAP.
+/// The inner pointer must be valid if val is TAG_PTR.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
@@ -104,20 +102,18 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
     if !jit_val.is_heap() {
         // Return empty SExpr for non-heap values
         let empty = MettaValue::SExpr(Vec::new());
-        let boxed = Box::new(empty);
-        let ptr = Box::into_raw(boxed);
-        return TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK);
+        let ptr = empty.inner_ptr();
+        return JitValue::from_inner_ptr(ptr).to_bits();
     }
 
-    let metta_ptr = jit_val.as_heap_ptr();
-    if metta_ptr.is_null() {
+    let inner_ptr = jit_val.as_inner_ptr();
+    if inner_ptr.is_null() {
         let empty = MettaValue::SExpr(Vec::new());
-        let boxed = Box::new(empty);
-        let ptr = Box::into_raw(boxed);
-        return TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK);
+        let ptr = empty.inner_ptr();
+        return JitValue::from_inner_ptr(ptr).to_bits();
     }
 
-    let metta_val = &*metta_ptr;
+    let metta_val = MettaValue::from_inner(&*inner_ptr);
     match metta_val.inner() {
         MettaValueInner::SExpr(items) => {
             // Return tail (skip first element)
@@ -127,16 +123,14 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
                 Vec::new()
             };
             let expr = MettaValue::SExpr(tail);
-            let boxed = Box::new(expr);
-            let ptr = Box::into_raw(boxed);
-            TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+            let ptr = expr.inner_ptr();
+            JitValue::from_inner_ptr(ptr).to_bits()
         }
         _ => {
             // Return empty SExpr for non-SExpr values
             let empty = MettaValue::SExpr(Vec::new());
-            let boxed = Box::new(empty);
-            let ptr = Box::into_raw(boxed);
-            TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+            let ptr = empty.inner_ptr();
+            JitValue::from_inner_ptr(ptr).to_bits()
         }
     }
 }
@@ -154,7 +148,7 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
 /// NaN-boxed Long containing the arity, or 0 if not an SExpr
 ///
 /// # Safety
-/// The heap pointer must be valid if val is TAG_HEAP.
+/// The inner pointer must be valid if val is TAG_PTR.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_arity(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let jit_val = JitValue::from_raw(val);
@@ -164,12 +158,12 @@ pub unsafe extern "C" fn jit_runtime_get_arity(_ctx: *mut JitContext, val: u64, 
         return JitValue::from_long(0).to_bits();
     }
 
-    let metta_ptr = jit_val.as_heap_ptr();
-    if metta_ptr.is_null() {
+    let inner_ptr = jit_val.as_inner_ptr();
+    if inner_ptr.is_null() {
         return JitValue::from_long(0).to_bits();
     }
 
-    let metta_val = &*metta_ptr;
+    let metta_val = MettaValue::from_inner(&*inner_ptr);
     match metta_val.inner() {
         MettaValueInner::SExpr(items) => JitValue::from_long(items.len() as i64).to_bits(),
         _ => JitValue::from_long(0).to_bits(),
@@ -190,7 +184,7 @@ pub unsafe extern "C" fn jit_runtime_get_arity(_ctx: *mut JitContext, val: u64, 
 /// NaN-boxed element at index, or TAG_UNIT if out of bounds/not an SExpr
 ///
 /// # Safety
-/// The heap pointer must be valid if val is TAG_HEAP.
+/// The inner pointer must be valid if val is TAG_PTR.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_element(
     _ctx: *mut JitContext,
@@ -205,12 +199,12 @@ pub unsafe extern "C" fn jit_runtime_get_element(
         return TAG_UNIT;
     }
 
-    let metta_ptr = jit_val.as_heap_ptr();
-    if metta_ptr.is_null() {
+    let inner_ptr = jit_val.as_inner_ptr();
+    if inner_ptr.is_null() {
         return TAG_UNIT;
     }
 
-    let metta_val = &*metta_ptr;
+    let metta_val = MettaValue::from_inner(&*inner_ptr);
     let idx = index as usize;
 
     match metta_val.inner() {
@@ -222,10 +216,9 @@ pub unsafe extern "C" fn jit_runtime_get_element(
                 match JitValue::try_from_metta(elem) {
                     Some(jv) => jv.to_bits(),
                     None => {
-                        // Need to heap-allocate for non-primitive types
-                        let boxed = Box::new(elem.clone());
-                        let ptr = Box::into_raw(boxed);
-                        TAG_HEAP | ((ptr as u64) & PAYLOAD_MASK)
+                        // Store inner pointer directly (slab-managed lifetime)
+                        let ptr = elem.inner_ptr();
+                        JitValue::from_inner_ptr(ptr).to_bits()
                     }
                 }
             }

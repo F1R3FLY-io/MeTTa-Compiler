@@ -2,7 +2,7 @@
 //!
 //! This module provides generic helper functions for evaluation that work with any
 //! value type implementing `MettaValueTrait`. These utilities enable zero-conversion
-//! evaluation for both heap-allocated (`MettaValue`) and arena-allocated (`ArenaValue`)
+//! evaluation for both heap-allocated (`MettaValue`) and arena-allocated (`MettaValue`)
 //! values.
 //!
 //! ## Design
@@ -23,13 +23,13 @@
 //!
 //! ## Zero-Conversion Architecture
 //!
-//! These functions achieve zero ArenaValue <-> MettaValue conversion by:
+//! These functions achieve zero MettaValue <-> MettaValue conversion by:
 //! 1. Using `GenericBindings<V>` - bindings store values in their native type
 //! 2. Pattern matching returns bindings in the value's native type
 //! 3. Binding application operates natively on the value type
 //! 4. Rule matching deserializes rules directly to the target type V
 
-use crate::backend::environment::{HeapEnvironment, GenericEnvironment};
+use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
 // MettaValue only used in tests
@@ -53,7 +53,7 @@ use crate::backend::models::MettaValue;
 /// When using `GenericBindings<V>`, bound values are stored in the same type
 /// as the input value, so no conversion is needed:
 /// - `MettaValue.clone()` = O(1) Arc increment
-/// - `ArenaValue.clone()` = O(1) pointer copy
+/// - `MettaValue.clone()` = O(1) pointer copy
 pub fn apply_bindings_generic<V, F>(value: &V, bindings: &GenericBindings<V>, factory: &F) -> V
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
@@ -127,7 +127,7 @@ where
 /// By using `GenericBindings<V>`, matched values are stored directly in their
 /// native type with no conversion:
 /// - `MettaValue.clone()` = O(1) Arc increment
-/// - `ArenaValue.clone()` = O(1) pointer copy
+/// - `MettaValue.clone()` = O(1) pointer copy
 pub fn pattern_match_generic<V>(pattern: &V, value: &V) -> Option<GenericBindings<V>>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
@@ -154,7 +154,7 @@ where
         if is_variable(pattern_name) {
             let mut bindings = GenericBindings::new();
             // NO CONVERSION - store value directly in its native type
-            // This is O(1) clone (Arc increment for MettaValue, pointer copy for ArenaValue)
+            // This is O(1) clone (Arc increment for MettaValue, pointer copy for MettaValue)
             bindings.insert(pattern_name.to_string(), value.clone());
             return Some(bindings);
         }
@@ -403,9 +403,9 @@ pub fn pattern_specificity_generic<V: MettaValueTrait>(pattern: &V) -> usize {
 /// # Zero-Conversion Design
 ///
 /// For arena mode, this function:
-/// 1. Deserializes rules directly from `RuleBytes` into `GenericRule<ArenaValue>`
+/// 1. Deserializes rules directly from `RuleBytes` into `GenericRule<MettaValue>`
 /// 2. Pattern matches using `pattern_match_generic` (no conversion)
-/// 3. Returns `GenericBindings<ArenaValue>` (no conversion)
+/// 3. Returns `GenericBindings<MettaValue>` (no conversion)
 ///
 /// For heap mode, this function:
 /// 1. Deserializes rules into `GenericRule<MettaValue>`
@@ -414,7 +414,7 @@ pub fn pattern_specificity_generic<V: MettaValueTrait>(pattern: &V) -> usize {
 ///
 /// # Type Parameters
 ///
-/// - `V`: The value type (MettaValue or ArenaValue)
+/// - `V`: The value type (MettaValue or MettaValue)
 /// - `F`: The factory type (must implement MettaValueFactory<V> + Copy)
 ///
 /// # Returns
@@ -424,7 +424,7 @@ pub fn pattern_specificity_generic<V: MettaValueTrait>(pattern: &V) -> usize {
 pub fn try_match_all_rules_generic<V, F>(
     expr: &V,
     env: &GenericEnvironment<V, F>,
-    factory: F,
+    _factory: F,
 ) -> Vec<(V, GenericBindings<V>)>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
@@ -612,7 +612,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::HeapMettaValueFactory;
+    use crate::backend::models::GcFactory;
 
     #[test]
     fn test_pattern_match_variable() {
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn test_apply_bindings_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
         bindings.insert("$x".to_string(), MettaValue::Long(42));
 
@@ -753,7 +753,7 @@ mod tests {
     #[test]
     fn test_apply_bindings_ampersand_not_variable() {
         // Standalone "&" should NOT be substituted as a variable
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
         bindings.insert("&".to_string(), MettaValue::Long(42));
 
@@ -766,7 +766,7 @@ mod tests {
     #[test]
     fn test_apply_bindings_type_no_recursion() {
         // Type variants should NOT have bindings applied to their contents
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
         bindings.insert("$x".to_string(), MettaValue::Long(42));
 

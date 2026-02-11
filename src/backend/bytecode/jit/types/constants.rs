@@ -35,8 +35,8 @@ pub const TAG_BOOL: u64 = QNAN | (1 << 48); // 0x7FF9_0000_0000_0000
 /// Tag for unit value ()
 pub const TAG_UNIT: u64 = QNAN | (3 << 48); // 0x7FFB_0000_0000_0000
 
-/// Tag for heap pointers to MettaValue (48-bit pointer)
-pub const TAG_HEAP: u64 = QNAN | (4 << 48); // 0x7FFC_0000_0000_0000
+/// Tag for value pointers (48-bit pointer to slab-allocated MettaValueInner)
+pub const TAG_PTR: u64 = QNAN | (4 << 48); // 0x7FFC_0000_0000_0000
 
 /// Tag for error values (pointer to error MettaValue)
 pub const TAG_ERROR: u64 = QNAN | (5 << 48); // 0x7FFD_0000_0000_0000
@@ -125,26 +125,3 @@ pub const MAX_STACK_SAVE_VALUES: usize = 256;
 /// 32 slots × 12 bytes = 384 bytes overhead per JitContext.
 pub const VAR_INDEX_CACHE_SIZE: usize = 32;
 
-// =============================================================================
-// JIT Value Mode (Zero-Conversion Support)
-// =============================================================================
-
-/// Execution mode for JIT value handling.
-///
-/// JIT uses NaN-boxing to store 48-bit pointers. Both `*const MettaValue`
-/// and `*const ArenaValueInner` fit in 48 bits. The mode tells JitContext
-/// which type the pointers represent.
-///
-/// **Key insight**: We don't need to change JitValue itself - we need
-/// the context to know which type the heap pointers represent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum JitValueMode {
-    /// Heap mode: TAG_HEAP points to `*const MettaValue`
-    /// Values are Arc-counted and need Box::into_raw/from_raw
-    #[default]
-    Heap = 0,
-    /// Arena mode: TAG_HEAP points to `*const ArenaValueInner`
-    /// Values are arena-allocated and Copy (no cleanup needed)
-    Arena = 1,
-}

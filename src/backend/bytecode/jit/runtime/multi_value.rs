@@ -5,7 +5,7 @@
 //! - collect_n - Collect up to N nondeterministic results
 
 use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue, JIT_SIGNAL_FAIL, JIT_SIGNAL_YIELD, PAYLOAD_MASK, TAG_HEAP,
+    JitContext, JIT_SIGNAL_FAIL, JIT_SIGNAL_YIELD, PAYLOAD_MASK, TAG_PTR,
 };
 use crate::backend::models::MettaValue;
 
@@ -75,11 +75,9 @@ pub unsafe extern "C" fn jit_runtime_collect_n(
     let count = (max_count as usize).min(ctx.results_count);
 
     if count == 0 {
-        // Return empty S-expression
+        // Return empty S-expression (inner_ptr is GC-managed, no Box needed)
         let empty_sexpr = MettaValue::SExpr(vec![]);
-        let boxed = Box::new(empty_sexpr);
-        let ptr = Box::into_raw(boxed);
-        return TAG_HEAP | (ptr as u64 & PAYLOAD_MASK);
+        return TAG_PTR | (empty_sexpr.inner_ptr() as u64 & PAYLOAD_MASK);
     }
 
     // Collect results into MettaValue vec
@@ -93,9 +91,7 @@ pub unsafe extern "C" fn jit_runtime_collect_n(
     // Clear collected results
     ctx.results_count = ctx.results_count.saturating_sub(count);
 
-    // Return as S-expression
+    // Return as S-expression (inner_ptr is GC-managed, no Box needed)
     let sexpr = MettaValue::SExpr(results);
-    let boxed = Box::new(sexpr);
-    let ptr = Box::into_raw(boxed);
-    TAG_HEAP | (ptr as u64 & PAYLOAD_MASK)
+    TAG_PTR | (sexpr.inner_ptr() as u64 & PAYLOAD_MASK)
 }

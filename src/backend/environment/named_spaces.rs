@@ -8,7 +8,7 @@
 use std::sync::atomic::Ordering;
 
 use super::generic::GenericEnvironment;
-use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValue as MettaValueTrait};
+use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use crate::backend::MettaValue;
 
 /// Lazy iterator over named space atoms.
@@ -117,7 +117,7 @@ where
 }
 
 // MettaValue-specific iterator for collapse_named_space_iter
-impl super::HeapEnvironment {
+impl super::MettaEnvironment {
     /// Iterator over named space atoms.
     ///
     /// Atoms are collected into a Vec for iteration.

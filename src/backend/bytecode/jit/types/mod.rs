@@ -40,14 +40,12 @@ pub use constants::{
     TAG_ATOM,
     TAG_BOOL,
     TAG_ERROR,
-    TAG_HEAP,
+    TAG_PTR,
     TAG_LONG,
     TAG_MASK,
     TAG_UNIT,
     TAG_VAR,
     VAR_INDEX_CACHE_SIZE,
-    // Zero-conversion mode
-    JitValueMode,
 };
 
 // Re-export binding types

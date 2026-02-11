@@ -6,10 +6,10 @@
 use mettatron::backend::builtin_signatures::{builtin_names, get_signature, is_builtin, TypeExpr};
 use mettatron::backend::fuzzy_match::{SuggestionConfidence, SuggestionContext};
 use mettatron::backend::models::MettaValue;
-use mettatron::backend::{compile, HeapEnvironment, FuzzyMatcher};
+use mettatron::backend::{compile, MettaEnvironment, FuzzyMatcher};
 
 // Arena API imports for evaluation tests
-use mettatron::{compile_arena, eval_arena, new_arena_env, ArenaValueInner};
+use mettatron::{eval, new_env, MettaValueInner};
 
 // ============================================================================
 // Test Helpers
@@ -47,7 +47,7 @@ fn would_suggest_for_arity(typo: &str, target: &str, arity: usize) -> bool {
 /// including type compatibility checking.
 fn would_suggest_with_context(typo: &str, target: &str, args: &[MettaValue]) -> bool {
     let matcher = matcher_with_builtins();
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let ctx = SuggestionContext::for_head(args, &env);
     let result = matcher.smart_suggest_with_context(typo, 3, &ctx);
@@ -292,7 +292,7 @@ fn test_fuzzy_matcher_did_you_mean() {
 
 #[test]
 fn test_suggestion_context_for_head() {
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
     let args = vec![
         MettaValue::Atom("unknown".to_string()),
         MettaValue::Long(1),
@@ -310,7 +310,7 @@ fn test_suggestion_context_for_head() {
 
 #[test]
 fn test_suggestion_context_for_arg() {
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
     let args = vec![
         MettaValue::Atom("match".to_string()),
         MettaValue::Atom("unknown".to_string()),
@@ -324,7 +324,7 @@ fn test_suggestion_context_for_arg() {
 
 #[test]
 fn test_suggestion_context_arity() {
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     // Zero arity (just the head)
     let args = vec![MettaValue::Atom("nop".to_string())];
@@ -349,7 +349,7 @@ fn test_suggestion_context_arity() {
 #[test]
 fn test_smart_suggest_respects_arity() {
     let matcher = matcher_with_builtins();
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     // (lett x 1 x) - arity 3, should suggest let
     let args = vec![
@@ -383,7 +383,7 @@ fn test_smart_suggest_respects_arity() {
 #[test]
 fn test_smart_suggest_confidence_levels() {
     let matcher = matcher_with_builtins();
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     // Long word with small edit distance should have higher confidence
     let args = vec![
@@ -513,12 +513,12 @@ fn test_compile_multiple_expressions() {
 
 #[test]
 fn test_eval_arithmetic() {
-    let state = compile_arena("(+ 1 2)").expect("compile failed");
-    let env = new_arena_env();
-    let (results, _) = eval_arena(state.source()[0], env, &state);
+    let state = compile("(+ 1 2)").expect("compile failed");
+    let env = new_env();
+    let (results, _) = eval(state.source()[0], env, &state);
 
     assert!(!results.is_empty(), "Should have results");
-    if let ArenaValueInner::Long(n) = results.first().expect("results").inner() {
+    if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
         assert_eq!(*n, 3, "1 + 2 should be 3");
     } else {
         panic!(
@@ -530,12 +530,12 @@ fn test_eval_arithmetic() {
 
 #[test]
 fn test_eval_if_true() {
-    let state = compile_arena("(if True 1 2)").expect("compile failed");
-    let env = new_arena_env();
-    let (results, _) = eval_arena(state.source()[0], env, &state);
+    let state = compile("(if True 1 2)").expect("compile failed");
+    let env = new_env();
+    let (results, _) = eval(state.source()[0], env, &state);
 
     assert!(!results.is_empty(), "Should have results");
-    if let ArenaValueInner::Long(n) = results.first().expect("results").inner() {
+    if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
         assert_eq!(*n, 1, "if True should return then branch");
     } else {
         panic!(
@@ -547,12 +547,12 @@ fn test_eval_if_true() {
 
 #[test]
 fn test_eval_if_false() {
-    let state = compile_arena("(if False 1 2)").expect("compile failed");
-    let env = new_arena_env();
-    let (results, _) = eval_arena(state.source()[0], env, &state);
+    let state = compile("(if False 1 2)").expect("compile failed");
+    let env = new_env();
+    let (results, _) = eval(state.source()[0], env, &state);
 
     assert!(!results.is_empty(), "Should have results");
-    if let ArenaValueInner::Long(n) = results.first().expect("results").inner() {
+    if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
         assert_eq!(*n, 2, "if False should return else branch");
     } else {
         panic!(
@@ -568,14 +568,14 @@ fn test_eval_if_false() {
 
 #[test]
 fn test_environment_new() {
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
     // New environment should be valid
     assert_eq!(env.rule_count(), 0, "New environment should have no rules");
 }
 
 #[test]
 fn test_environment_clone() {
-    let env1 = HeapEnvironment::default();
+    let env1 = MettaEnvironment::default();
     let env2 = env1.clone();
 
     // Both should be valid and independent

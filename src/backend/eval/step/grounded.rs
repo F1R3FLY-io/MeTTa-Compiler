@@ -3,7 +3,7 @@
 //! This module handles the identification of grounded arguments that need
 //! evaluation in a hybrid lazy/eager evaluation strategy.
 
-use crate::backend::environment::{HeapEnvironment, GenericEnvironment};
+use crate::backend::environment::{MettaEnvironment, GenericEnvironment};
 use crate::backend::models::{MettaValue, MettaValueInner, MettaValueTrait};
 
 use super::super::{is_eager_special_form, is_grounded_op};
@@ -35,7 +35,7 @@ use super::super::{is_eager_special_form, is_grounded_op};
 /// - The argument `(add-atom &stack x)` is NOT grounded (user-defined side effect)
 /// - Keep it unevaluated for lazy pattern matching
 /// - Returns empty vec
-pub fn find_grounded_arg_indices(items: &[MettaValue], env: &HeapEnvironment) -> Vec<usize> {
+pub fn find_grounded_arg_indices(items: &[MettaValue], _env: &MettaEnvironment) -> Vec<usize> {
     let mut indices = Vec::new();
 
     // Skip the first item (operator) - we only check arguments
@@ -43,11 +43,10 @@ pub fn find_grounded_arg_indices(items: &[MettaValue], env: &HeapEnvironment) ->
         if let MettaValueInner::SExpr(sub_items) = item.inner() {
             if let Some(first) = sub_items.first() {
                 if let MettaValueInner::Atom(op) = first.inner() {
-                    // Check if this is a grounded operation (built-in or TCO)
-                    // OR a special form that produces values and needs eager evaluation
+                    // Check if this is a grounded operation or a special form
+                    // that produces values and needs eager evaluation
                     if is_grounded_op(op)
                         || is_eager_special_form(op)
-                        || env.get_grounded_operation_tco(op).is_some()
                     {
                         indices.push(i); // Store actual index in items
                     }
@@ -74,6 +73,7 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: crate::backend::models::MettaValueFactory<V> + Clone,
 {
+    let _ = env; // env was previously used for TCO registry lookup, now unused
     let mut indices = Vec::new();
 
     // Skip the first item (operator) - we only check arguments
@@ -81,11 +81,10 @@ where
         if let Some(sub_items) = item.as_sexpr() {
             if let Some(first) = sub_items.first() {
                 if let Some(op) = first.as_atom() {
-                    // Check if this is a grounded operation (built-in or TCO)
-                    // OR a special form that produces values and needs eager evaluation
+                    // Check if this is a grounded operation or a special form
+                    // that produces values and needs eager evaluation
                     if is_grounded_op(op)
                         || is_eager_special_form(op)
-                        || env.get_grounded_operation_tco(op).is_some()
                     {
                         indices.push(i); // Store actual index in items
                     }

@@ -20,7 +20,7 @@
 // - Skipped downstream evaluation work
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::environment::HeapEnvironment;
+use mettatron::backend::environment::MettaEnvironment;
 use mettatron::backend::{MettaValue, MettaValueInner, Rule};
 
 // ================================================================================================
@@ -69,12 +69,12 @@ fn create_test_type_facts(n: usize) -> Vec<MettaValue> {
 }
 
 /// Prepopulate environment with facts
-fn prepopulate_with_facts(env: &mut HeapEnvironment, facts: &[MettaValue]) {
+fn prepopulate_with_facts(env: &mut MettaEnvironment, facts: &[MettaValue]) {
     env.add_facts_bulk(facts).unwrap();
 }
 
 /// Prepopulate environment with rules
-fn prepopulate_with_rules(env: &mut HeapEnvironment, rules: Vec<Rule>) {
+fn prepopulate_with_rules(env: &mut MettaEnvironment, rules: Vec<Rule>) {
     env.add_rules_bulk(rules).unwrap();
 }
 
@@ -118,7 +118,7 @@ fn bench_add_facts_all_new(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut env = HeapEnvironment::default();
+                let mut env = MettaEnvironment::default();
                 env.add_facts_bulk(black_box(&facts)).unwrap();
                 black_box(env);
             });
@@ -136,7 +136,7 @@ fn bench_add_rules_all_new(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut env = HeapEnvironment::default();
+                let mut env = MettaEnvironment::default();
                 env.add_rules_bulk(black_box(rules.clone())).unwrap();
                 black_box(env);
             });
@@ -160,7 +160,7 @@ fn bench_add_facts_all_duplicates(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut env = HeapEnvironment::default();
+                let mut env = MettaEnvironment::default();
                 // First insertion: adds data (Element)
                 env.add_facts_bulk(&facts).unwrap();
                 // Second insertion: duplicates (Identity) - this is what we measure
@@ -181,7 +181,7 @@ fn bench_add_rules_all_duplicates(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut env = HeapEnvironment::default();
+                let mut env = MettaEnvironment::default();
                 // First insertion: adds data (Element)
                 env.add_rules_bulk(rules.clone()).unwrap();
                 // Second insertion: duplicates (Identity) - this is what we measure
@@ -213,7 +213,7 @@ fn bench_add_facts_mixed_ratios(c: &mut Criterion) {
             ratio_percent,
             |b, _| {
                 b.iter(|| {
-                    let mut env = HeapEnvironment::default();
+                    let mut env = MettaEnvironment::default();
                     // Pre-populate with items that will be duplicated
                     let num_duplicates = (size as f64 * ratio) as usize;
                     if num_duplicates > 0 {
@@ -243,7 +243,7 @@ fn bench_add_rules_mixed_ratios(c: &mut Criterion) {
             ratio_percent,
             |b, _| {
                 b.iter(|| {
-                    let mut env = HeapEnvironment::default();
+                    let mut env = MettaEnvironment::default();
                     // Pre-populate with items that will be duplicated
                     let num_duplicates = (size as f64 * ratio) as usize;
                     if num_duplicates > 0 {
@@ -274,7 +274,7 @@ fn bench_cow_clone_after_duplicates(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut env = HeapEnvironment::default();
+                let mut env = MettaEnvironment::default();
                 env.add_facts_bulk(&facts).unwrap();
                 // Add duplicates (Identity status → no modified flag)
                 env.add_facts_bulk(&facts).unwrap();
@@ -298,7 +298,7 @@ fn bench_cow_clone_after_new_data(c: &mut Criterion) {
             .map(|fact| {
                 if let MettaValueInner::SExpr(items) = fact.inner() {
                     if items.len() >= 2 {
-                        let mut new_items: Vec<MettaValue> = items.clone();
+                        let mut new_items: Vec<MettaValue> = items.to_vec();
                         new_items[1] = MettaValue::Long(999999);
                         MettaValue::SExpr(new_items)
                     } else {
@@ -312,7 +312,7 @@ fn bench_cow_clone_after_new_data(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut env = HeapEnvironment::default();
+                let mut env = MettaEnvironment::default();
                 env.add_facts_bulk(&facts1).unwrap();
                 // Add new data (Element status → modified flag set)
                 env.add_facts_bulk(&facts2).unwrap();
@@ -340,7 +340,7 @@ fn bench_type_lookup_after_duplicate_facts(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut env = HeapEnvironment::default();
+                let mut env = MettaEnvironment::default();
                 env.add_facts_bulk(&type_facts).unwrap();
                 // Add duplicates (Identity → type index NOT invalidated)
                 env.add_facts_bulk(&type_facts).unwrap();
@@ -365,8 +365,8 @@ fn bench_type_lookup_after_new_facts(c: &mut Criterion) {
                 if let MettaValueInner::SExpr(items) = fact.inner() {
                     if items.len() >= 2 {
                         if let MettaValueInner::Atom(name) = items[1].inner() {
-                            let mut new_items: Vec<MettaValue> = items.clone();
-                            new_items[1] = MettaValue::Atom(format!("{}_new", name));
+                            let mut new_items: Vec<MettaValue> = items.to_vec();
+                            new_items[1] = MettaValue::Atom(&format!("{}_new", name));
                             return MettaValue::SExpr(new_items);
                         }
                     }
@@ -377,7 +377,7 @@ fn bench_type_lookup_after_new_facts(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut env = HeapEnvironment::default();
+                let mut env = MettaEnvironment::default();
                 env.add_facts_bulk(&type_facts1).unwrap();
                 // Add new data (Element → type index invalidated)
                 env.add_facts_bulk(&type_facts2).unwrap();

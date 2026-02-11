@@ -16,7 +16,6 @@
 
 use tracing::trace;
 
-use crate::backend::environment::GenericEnvironment;
 use crate::backend::eval::list_ops::helpers::suggest_variable_format;
 // Generic module operations - used directly (no boundary conversion)
 use crate::backend::eval::modules_generic::{
@@ -40,7 +39,7 @@ use super::grounded::find_grounded_arg_indices_generic;
 ///
 /// # Type Parameters
 ///
-/// - `C`: The evaluation context (e.g., `StaticArenaContext`)
+/// - `C`: The evaluation context (e.g., `StaticEvalContext`)
 ///
 /// # Arguments
 ///
@@ -1351,17 +1350,8 @@ where
             return GenericEvalStep::StartGroundedOp { state, env, depth };
         }
 
-        // TCO operations are also in the generic registry now - use generic path
-        // All standard operations (+, -, *, /, <, >, ==, and, or, not) are in generic registry
-        if env.get_grounded_operation_tco(op).is_some() {
-            let args: Vec<C::Value> = items[1..].to_vec();
-            let state = GenericGroundedState::new(op.to_string(), args);
-            return GenericEvalStep::StartGroundedOp { state, env, depth };
-        }
-
-        // Note: Legacy grounded operations (non-TCO) are no longer supported in the generic
-        // evaluator. All standard operations should be in the generic registry. If a custom
-        // operation needs to be supported, it should be added to the generic registry.
+        // Note: All standard operations are in the generic registry above.
+        // Custom operations should be added to GenericGroundedRegistry.
     }
 
     // Step 2: Check for grounded args that need evaluation BEFORE rule matching
@@ -1431,28 +1421,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::eval::trampoline::StaticArenaContext;
+    use crate::backend::eval::trampoline::StaticEvalContext;
     use crate::backend::models::MettaValueFactory;
 
     #[test]
     fn test_eval_sexpr_step_generic_empty() {
-        let ctx = StaticArenaContext::get();
-        let env = StaticArenaContext::new_env();
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
 
         match eval_sexpr_step_generic(vec![], env, 0, &ctx) {
             GenericEvalStep::Done((results, _)) => {
                 assert_eq!(results.len(), 1);
-                assert!(results[0].is_sexpr());
-                assert_eq!(results[0].as_sexpr().map(|s| s.len()), Some(0));
+                // After BumpVec→slice migration, empty sexpr normalizes to Unit
+                assert!(results[0].is_unit());
             }
-            _ => panic!("Expected Done with empty sexpr"),
+            _ => panic!("Expected Done with unit"),
         }
     }
 
     #[test]
     fn test_eval_sexpr_step_generic_quote() {
-        let ctx = StaticArenaContext::get();
-        let env = StaticArenaContext::new_env();
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
         let factory = ctx.factory();
 
         let items = vec![
@@ -1471,8 +1461,8 @@ mod tests {
 
     #[test]
     fn test_eval_sexpr_step_generic_if_returns_condition_step() {
-        let ctx = StaticArenaContext::get();
-        let env = StaticArenaContext::new_env();
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
         let factory = ctx.factory();
 
         let items = vec![
@@ -1494,7 +1484,7 @@ mod tests {
 
     #[test]
     fn test_preprocess_space_refs_generic() {
-        let ctx = StaticArenaContext::get();
+        let ctx = StaticEvalContext::get();
         let factory = ctx.factory();
 
         let items = vec![

@@ -4,7 +4,7 @@ use divan::black_box;
 use paste::paste;
 
 use mettatron::config::{configure_eval, EvalConfig};
-use mettatron::{compile_arena, new_arena_env, run_state, run_state_async};
+use mettatron::{compile, new_env, run_state, run_state_async};
 
 static RT: LazyLock<tokio::runtime::Runtime> =
     LazyLock::new(|| tokio::runtime::Runtime::new().unwrap());
@@ -27,15 +27,15 @@ const METTA_PROGRAMMING_STRESS_SRC: &str =
     include_str!("metta_samples/metta_programming_stress.metta");
 
 fn run_sync(src: &'static str) {
-    let state = compile_arena(src).unwrap();
-    let env = new_arena_env();
+    let state = compile(src).unwrap();
+    let env = new_env();
     let result = run_state(env, &state).unwrap();
     black_box(result);
 }
 
 async fn run_async(src: &'static str) {
-    let state = compile_arena(src).unwrap();
-    let env = new_arena_env();
+    let state = compile(src).unwrap();
+    let env = new_env();
     let result = run_state_async(env, &state).await.unwrap();
     black_box(result);
 }

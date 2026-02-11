@@ -46,7 +46,7 @@ pub(crate) fn substitute_variable(
 ) -> MettaValue {
     // Fast path for leaf nodes
     match expr.inner() {
-        MettaValueInner::Atom(name) if name == var_name => return value.clone(),
+        MettaValueInner::Atom(name) if *name == var_name => return value.clone(),
         MettaValueInner::Atom(_)
         | MettaValueInner::Long(_)
         | MettaValueInner::Float(_)
@@ -98,7 +98,7 @@ fn substitute_variable_iterative(
             SubstituteWork::Process(val) => {
                 match val.inner() {
                     // Variable substitution
-                    MettaValueInner::Atom(name) if name == var_name => {
+                    MettaValueInner::Atom(name) if *name == var_name => {
                         result_stack.push(value.clone());
                     }
                     // S-expression: push build marker, then push children in reverse order
@@ -125,7 +125,7 @@ fn substitute_variable_iterative(
                     }
                     // Error: push build marker, then push details
                     MettaValueInner::Error(msg, details) => {
-                        work_stack.push(SubstituteWork::BuildError(msg.clone()));
+                        work_stack.push(SubstituteWork::BuildError(msg.to_string()));
                         work_stack.push(SubstituteWork::Process(details));
                     }
                     // All other types: no substitution, clone as-is
@@ -194,7 +194,7 @@ fn substitute_variable_iterative(
 ///
 /// This generic version eliminates boundary conversions by operating directly
 /// on the generic value type. When used with `MettaValue`, clone is O(1) due
-/// to Arc wrapping. When used with `ArenaValue`, clone is O(1) pointer copy.
+/// to Arc wrapping. When used with `MettaValue`, clone is O(1) pointer copy.
 pub(crate) fn substitute_variable_generic<V, F>(
     expr: &V,
     var_name: &str,
@@ -347,11 +347,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::HeapMettaValueFactory;
+    use crate::backend::models::GcFactory;
 
     #[test]
     fn test_substitute_variable_generic_atom() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let expr = MettaValue::Atom("$x".to_string());
         let value = MettaValue::Long(42);
 
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_no_match() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let expr = MettaValue::Atom("$y".to_string());
         let value = MettaValue::Long(42);
 
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_sexpr() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Atom("$x".to_string()),
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_nested() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("outer".to_string()),
             MettaValue::SExpr(vec![
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_ground_types() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let value = MettaValue::Long(42);
 
         // Long should be unchanged
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_error() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let expr = MettaValue::Error(
             "test error".to_string(),
             MettaValue::Atom("$x".to_string()),
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_conjunction() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let expr = MettaValue::Conjunction(vec![
             MettaValue::Atom("$x".to_string()),
             MettaValue::Atom("$y".to_string()),

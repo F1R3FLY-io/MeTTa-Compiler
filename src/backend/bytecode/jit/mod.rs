@@ -47,8 +47,6 @@ pub use types::{
     JitError,
     JitResult,
     JitValue,
-    // Zero-conversion support (Phase 6)
-    JitValueMode,
     JIT_SIGNAL_BAILOUT,
     JIT_SIGNAL_ERROR,
     JIT_SIGNAL_FAIL,
@@ -67,7 +65,7 @@ pub use types::{
     TAG_ATOM,
     TAG_BOOL,
     TAG_ERROR,
-    TAG_HEAP,
+    TAG_PTR,
     TAG_LONG,
     TAG_MASK,
     TAG_UNIT,

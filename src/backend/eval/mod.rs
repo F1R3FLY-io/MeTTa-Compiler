@@ -1,8 +1,8 @@
 // Eval module: Arena-based lazy evaluation with pattern matching and built-in dispatch
 //
-// The evaluation pipeline uses arena-allocated ArenaValue exclusively.
-// The eval_arena() entry point handles bytecode/JIT tiering with
-// tree-walker fallback via eval_trampoline_arena().
+// The evaluation pipeline uses arena-allocated MettaValue exclusively.
+// The eval() entry point handles bytecode/JIT tiering with
+// tree-walker fallback via eval_trampoline().
 
 #[macro_use]
 mod macros;
@@ -32,27 +32,26 @@ pub use pattern::pattern_match;
 
 // Re-export from helpers module
 pub use helpers::apply_bindings;
-pub(crate) use helpers::friendly_value_repr;
 // Re-export helpers for step/grounded module access
 pub(crate) use helpers::{is_eager_special_form, is_grounded_op};
 
 // Re-export from trampoline module
-pub use trampoline::eval_trampoline_arena;
+pub use trampoline::eval_trampoline;
 // Re-export arena context types for external use
-pub use trampoline::{ArenaEnvironment, StaticArenaContext};
+pub use trampoline::{MettaEnvironment, StaticEvalContext};
 
 // =============================================================================
 // Arena-based Evaluation with Bytecode/JIT Tiering
 // =============================================================================
 
-use crate::backend::models::ArenaValue;
+use crate::backend::models::MettaValue;
 
 /// Type alias for arena evaluation result.
-pub type ArenaEvalResult = (Vec<ArenaValue<'static>>, ArenaEnvironment);
+pub type EvalResult = (Vec<MettaValue>, MettaEnvironment);
 
-/// Evaluate an ArenaValue with bytecode/JIT tiering.
+/// Evaluate an MettaValue with bytecode/JIT tiering.
 ///
-/// This function provides zero-conversion evaluation for ArenaValue expressions
+/// This function provides zero-conversion evaluation for MettaValue expressions
 /// using session-scoped dual-arena allocation. It uses the arena tiered cache
 /// to track executions and trigger background bytecode compilation, then
 /// executes via the highest available tier:
@@ -63,51 +62,51 @@ pub type ArenaEvalResult = (Vec<ArenaValue<'static>>, ArenaEnvironment);
 /// 4. Tree-walker interpreter (fallback)
 ///
 /// # Arguments
-/// * `value` - The ArenaValue expression to evaluate
+/// * `value` - The MettaValue expression to evaluate
 /// * `env` - The arena-based environment
-/// * `arena_state` - The ArenaState owning the storage arena
+/// * `state` - The MettaState owning the storage arena
 ///
 /// # Returns
-/// A tuple of (results, updated_environment) where results are `Vec<ArenaValue<'static>>`.
+/// A tuple of (results, updated_environment) where results are `Vec<MettaValue>`.
 ///
 /// # Example
 /// ```ignore
-/// use mettatron::backend::compile::compile_arena;
-/// use mettatron::backend::eval::eval_arena;
-/// use mettatron::backend::eval::trampoline::new_arena_env;
+/// use mettatron::backend::compile::compile;
+/// use mettatron::backend::eval::eval;
+/// use mettatron::backend::eval::trampoline::new_env;
 ///
-/// let state = compile_arena("!(+ 1 2)").unwrap();
-/// let env = new_arena_env();
+/// let state = compile("!(+ 1 2)").unwrap();
+/// let env = new_env();
 ///
 /// for &expr in state.source() {
-///     let (results, env) = eval_arena(expr, env, &state);
+///     let (results, env) = eval(expr, env, &state);
 ///     println!("{:?}", results);
 /// }
 /// ```
-pub fn eval_arena(
-    value: ArenaValue<'static>,
-    env: ArenaEnvironment,
-    arena_state: &crate::backend::models::ArenaState,
-) -> ArenaEvalResult {
+pub fn eval(
+    value: MettaValue,
+    env: MettaEnvironment,
+    state: &crate::backend::models::MettaState,
+) -> EvalResult {
     use crate::backend::bytecode::{
-        can_compile_arena, can_compile_arena_with_env, eval_bytecode_arena_with_env,
-        execute_arena, global_arena_tiered_cache,
+        can_compile, can_compile_with_env, eval_bytecode_arena_with_env,
+        execute_arena, global_tiered_cache,
         ExecutionTier, TierStatusKind,
     };
 
     // Record execution in arena tiered cache
     // This triggers background bytecode and JIT compilation at thresholds
-    let compilation_state = global_arena_tiered_cache().record_execution(&value);
+    let compilation_state = global_tiered_cache().record_execution(&value);
 
     // Check if this expression can be compiled to bytecode (pure expressions)
-    if can_compile_arena(&value) {
+    if can_compile(&value) {
         // Check for JIT execution first (highest tier)
         // JIT Stage 2 (very hot code, 500+ executions)
         if compilation_state.jit2_status() == TierStatusKind::Ready {
             if let Some(code) = compilation_state.jit2_code() {
                 match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
-                        global_arena_tiered_cache()
+                        global_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage2);
                         return (results, new_env);
                     }
@@ -123,7 +122,7 @@ pub fn eval_arena(
             if let Some(code) = compilation_state.jit1_code() {
                 match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
-                        global_arena_tiered_cache()
+                        global_tiered_cache()
                             .record_tier_execution(ExecutionTier::JitStage1);
                         return (results, new_env);
                     }
@@ -140,7 +139,7 @@ pub fn eval_arena(
                 // Execute via generic bytecode VM (zero-conversion)
                 match execute_arena(chunk, env.clone()) {
                     Ok((results, new_env)) => {
-                        global_arena_tiered_cache()
+                        global_tiered_cache()
                             .record_tier_execution(ExecutionTier::Bytecode);
                         return (results, new_env);
                     }
@@ -153,10 +152,10 @@ pub fn eval_arena(
     }
 
     // Try environment-aware bytecode for expressions that need rule dispatch.
-    if can_compile_arena_with_env(&value) {
+    if can_compile_with_env(&value) {
         match eval_bytecode_arena_with_env(&value, env.clone()) {
             Ok((results, new_env)) => {
-                global_arena_tiered_cache()
+                global_tiered_cache()
                     .record_tier_execution(ExecutionTier::Bytecode);
                 return (results, new_env);
             }
@@ -167,22 +166,22 @@ pub fn eval_arena(
     }
 
     // Tier 0: Tree-walker interpreter (cold code or fallback)
-    global_arena_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
-    eval_trampoline_arena(value, env, arena_state)
+    global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
+    eval_trampoline(value, env, state)
 }
 
 /// Execute JIT-compiled code for arena expression with environment threading.
 fn execute_jit_arena_with_env(
-    state: &std::sync::Arc<crate::backend::bytecode::ArenaExprCompilationState>,
+    state: &std::sync::Arc<crate::backend::bytecode::ExprCompilationState>,
     native_ptr: *const (),
-    env: ArenaEnvironment,
-) -> Result<(Vec<ArenaValue<'static>>, ArenaEnvironment), ()> {
+    env: MettaEnvironment,
+) -> Result<(Vec<MettaValue>, MettaEnvironment), ()> {
     use crate::backend::bytecode::jit::HybridExecutor;
-    use crate::backend::eval::trampoline::{get_static_arena, get_static_factory};
+    use crate::backend::models::{global_allocator, global_factory};
 
-    // Get arena and factory from thread-local storage
-    let arena = get_static_arena();
-    let factory = get_static_factory();
+    // Get allocator and factory from global singleton
+    let allocator = global_allocator();
+    let factory = global_factory();
 
     // Get the bytecode chunk (needed for constants)
     let chunk = state.bytecode_chunk().ok_or(())?;
@@ -190,6 +189,6 @@ fn execute_jit_arena_with_env(
     // Create hybrid executor and run in arena mode with environment
     let mut executor = HybridExecutor::new();
     executor
-        .execute_jit_arena_with_env(&chunk, native_ptr, arena, &factory, env)
+        .execute_jit_arena_with_env(&chunk, native_ptr, allocator, &factory, env)
         .map_err(|_| ())
 }

@@ -5,7 +5,7 @@
 //! linear regression on post-warmup samples.
 //!
 //! Architecture: two threads
-//!   - Main thread: compiles once, then loops `new_arena_env()` + `run_state()`
+//!   - Main thread: compiles once, then loops `new_env()` + `run_state()`
 //!   - Monitor thread: polls RSS every 100ms, runs leak analysis every 5s
 //!
 //! Leak detection requires ALL three conditions:
@@ -26,7 +26,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mettatron::config::{configure_eval, EvalConfig};
-use mettatron::{compile_arena, new_arena_env, run_state};
+use mettatron::{compile, new_env, run_state};
 use sysinfo::{Pid, System};
 
 // Include mmverify sources
@@ -197,7 +197,7 @@ fn main() {
     // Compile the mmverify program once
     let program = format!("{}\n\n{}", MMVERIFY_UTILS, VERIFY_DEMO0_BODY);
     println!("Compiling mmverify program...");
-    let compiled_state = match compile_arena(&program) {
+    let compiled_state = match compile(&program) {
         Ok(state) => state,
         Err(e) => {
             eprintln!("FATAL: Failed to compile mmverify program: {}", e);
@@ -309,7 +309,7 @@ fn main() {
             break;
         }
 
-        let env = new_arena_env();
+        let env = new_env();
         match run_state(env, &compiled_state) {
             Ok(result) => {
                 black_box(result);

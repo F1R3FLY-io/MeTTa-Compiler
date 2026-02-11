@@ -121,13 +121,13 @@ pub use cache::{cache_sizes, clear_caches, get_stats as cache_stats, BytecodeCac
 pub use chunk::{
     BytecodeChunk, ChunkBuilder, CompiledPattern, JumpLabel, JumpLabelShort, JumpTable,
     // Generic chunk types for zero-conversion support
-    GenericBytecodeChunk, GenericChunkBuilder, HeapBytecodeChunk,
+    GenericBytecodeChunk, GenericChunkBuilder,
 };
 pub use compiler::{compile, compile_arc, CompileContext, CompileError, CompileResult, Compiler};
 // Generic compiler for zero-conversion support
 pub use compiler::generic::{
-    compile_arena_bytecode, compile_arena_bytecode_arc, compile_generic, compile_generic_arc,
-    ArenaCompiler, GenericCompiler,
+    compile_bytecode, compile_bytecode_arc, compile_generic, compile_generic_arc,
+    MettaCompiler, GenericCompiler,
 };
 pub use external_registry::{
     ExternalContext, ExternalError, ExternalFn, ExternalRegistry, ExternalResult,
@@ -152,9 +152,7 @@ pub use vm::{
     Alternative, BindingFrame, BytecodeVM, CallFrame, ChoicePoint, VmConfig, VmError, VmResult,
     // Generic VM types for zero-conversion support
     GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
-    HeapAlternative, HeapBindingFrame, HeapCallFrame, HeapChoicePoint,
-    // Generic bytecode VM
-    GenericBytecodeVM, HeapGenericBytecodeVM,
+    GenericBytecodeVM,
 };
 
 // JIT re-exports - always available with tiered compilation
@@ -181,8 +179,6 @@ pub use jit::{
     JitState,
     // JIT types
     JitValue,
-    // Zero-conversion support (Phase 6)
-    JitValueMode,
     Tier,
     TieredCompiler,
     TieredStats,
@@ -199,25 +195,17 @@ pub use jit::{
 
 // Unified tiered compilation cache re-exports
 pub use tiered_cache::{
-    global_tiered_cache,
     ExecutionTier,
-    // State and tier types
     ExprCompilationState,
     NativeCode,
     TierStatusKind,
-    // Statistics
     TieredCacheStats,
-    // Main cache
-    TieredCompilationCache,
-    // Thresholds
+    TieredCache,
+    global_tiered_cache,
     BYTECODE_THRESHOLD,
     JIT1_THRESHOLD,
     JIT2_THRESHOLD,
-    // Arena tiered cache (zero-conversion support)
-    global_arena_tiered_cache,
-    ArenaExprCompilationState,
-    ArenaTieredCache,
-    hash_arena_value,
+    hash_value,
 };
 
 // Sequential mode detection (only with hybrid-p2-priority-scheduler feature)
@@ -319,7 +307,7 @@ pub fn can_compile(expr: &MettaValue) -> bool {
                 return true;
             }
             // Known constants are OK
-            match name.as_str() {
+            match *name {
                 "True" | "False" | "Nil" | "Unit" | "_" => true,
                 // Other atoms could be function calls - reject
                 _ => false,
@@ -331,7 +319,7 @@ pub fn can_compile(expr: &MettaValue) -> bool {
         MettaValueInner::SExpr(items) => {
             // Check head for supported operations
             if let MettaValueInner::Atom(head) = items[0].inner() {
-                let head_ok = match head.as_str() {
+                let head_ok = match *head {
                     // Arithmetic
                     "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => true,
                     // Comparison
@@ -449,7 +437,7 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                 return false;
             }
             // Known constants are OK
-            match name.as_str() {
+            match *name {
                 "True" | "False" | "Nil" | "Unit" | "_" => true,
                 // With environment: unknown atoms are compilable as DispatchRules calls
                 _ => true,
@@ -461,7 +449,7 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
         MettaValueInner::SExpr(items) => {
             // Check head for supported operations
             if let MettaValueInner::Atom(head) = items[0].inner() {
-                let head_ok = match head.as_str() {
+                let head_ok = match *head {
                     // Rule definitions need tree-walker (bytecode compiler doesn't emit DefineRule)
                     "=" => false,
                     // Evaluation
@@ -690,13 +678,13 @@ pub fn eval_bytecode_with_config(
 /// ```
 pub fn eval_bytecode_with_env(
     expr: &MettaValue,
-    env: crate::backend::HeapEnvironment,
-) -> Result<(Vec<MettaValue>, crate::backend::HeapEnvironment), BytecodeEvalError> {
+    env: GenericEnvironment<MettaValue, GcFactory>,
+) -> Result<(Vec<MettaValue>, GenericEnvironment<MettaValue, GcFactory>), BytecodeEvalError> {
     let chunk = compile_arc("eval", expr)?;
     let mut vm = BytecodeVM::with_env(chunk, env);
     let (results, modified_env) = vm.run_with_env()?;
     // Return the environment if present, otherwise create a new one
-    let final_env = modified_env.unwrap_or_else(|| crate::backend::HeapEnvironment::new(crate::backend::models::HeapMettaValueFactory));
+    let final_env = modified_env.unwrap_or_else(|| GenericEnvironment::new(GcFactory::default()));
     Ok((results, final_env))
 }
 
@@ -708,11 +696,11 @@ pub fn eval_bytecode_with_env(
 /// On failure, calls the fallback.
 pub fn try_bytecode_eval_with_env<F>(
     expr: &MettaValue,
-    env: crate::backend::HeapEnvironment,
+    env: GenericEnvironment<MettaValue, GcFactory>,
     fallback: F,
-) -> (Vec<MettaValue>, crate::backend::HeapEnvironment)
+) -> (Vec<MettaValue>, GenericEnvironment<MettaValue, GcFactory>)
 where
-    F: FnOnce(crate::backend::HeapEnvironment) -> (Vec<MettaValue>, crate::backend::HeapEnvironment),
+    F: FnOnce(GenericEnvironment<MettaValue, GcFactory>) -> (Vec<MettaValue>, GenericEnvironment<MettaValue, GcFactory>),
 {
     if can_compile_with_env(expr) {
         match eval_bytecode_with_env(expr, env.clone()) {
@@ -852,19 +840,19 @@ where
 // =============================================================================
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{ArenaValue, ArenaValueFactory, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{GcFactory, MettaValueFactory, MettaValueTrait};
 
 /// Type alias for arena-based environment
-pub type ArenaEnv = GenericEnvironment<ArenaValue<'static>, ArenaValueFactory<'static>>;
+pub type MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>;
 
 /// Execute bytecode with arena allocation (zero-conversion).
 ///
 /// This function provides true zero-conversion execution by using
-/// `GenericBytecodeVM<ArenaValue<'static>, ArenaValueFactory<'static>>`.
-/// The entire execution path stays within ArenaValue without any conversions.
+/// `GenericBytecodeVM<MettaValue, GcFactory>`.
+/// The entire execution path stays within MettaValue without any conversions.
 ///
 /// # Arguments
-/// * `chunk` - The generic bytecode chunk with ArenaValue constants
+/// * `chunk` - The generic bytecode chunk with MettaValue constants
 /// * `env` - The arena-based generic environment
 ///
 /// # Returns
@@ -873,27 +861,27 @@ pub type ArenaEnv = GenericEnvironment<ArenaValue<'static>, ArenaValueFactory<'s
 ///
 /// # Example
 /// ```ignore
-/// use mettatron::backend::bytecode::{execute_arena, GenericBytecodeChunk, ArenaEnv};
+/// use mettatron::backend::bytecode::{execute_arena, GenericBytecodeChunk, MettaEnvironment};
 /// use mettatron::backend::eval::trampoline::arena_engine::get_static_factory;
 ///
 /// let factory = get_static_factory();
-/// let env = ArenaEnv::new(factory.clone());
+/// let env = MettaEnvironment::new(factory.clone());
 /// let chunk = Arc::new(GenericBytecodeChunk::new("example"));
 ///
 /// let (results, new_env) = execute_arena(chunk, env)?;
 /// ```
 pub fn execute_arena(
-    chunk: std::sync::Arc<GenericBytecodeChunk<ArenaValue<'static>>>,
-    env: ArenaEnv,
-) -> VmResult<(Vec<ArenaValue<'static>>, ArenaEnv)> {
+    chunk: std::sync::Arc<GenericBytecodeChunk<MettaValue>>,
+    env: MettaEnvironment,
+) -> VmResult<(Vec<MettaValue>, MettaEnvironment)> {
     let factory = env.factory().clone();
-    let mut vm = GenericBytecodeVM::with_env(chunk, env, factory.clone());
+    let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
     let (results, env_opt) = vm.run_with_env()?;
-    let final_env = env_opt.unwrap_or_else(|| ArenaEnv::new(factory));
+    let final_env = env_opt.unwrap_or_else(|| MettaEnvironment::new(factory));
     Ok((results, final_env))
 }
 
-/// Evaluate ArenaValue expression with environment threading.
+/// Evaluate MettaValue expression with environment threading.
 ///
 /// This is the arena equivalent of `eval_bytecode_with_env()`.
 /// It compiles the expression to bytecode, runs it via GenericBytecodeVM,
@@ -902,7 +890,7 @@ pub fn execute_arena(
 /// Use this for expressions that need rule dispatch or environment access.
 ///
 /// # Arguments
-/// * `expr` - The ArenaValue expression to evaluate
+/// * `expr` - The MettaValue expression to evaluate
 /// * `env` - The arena-based environment
 ///
 /// # Returns
@@ -910,29 +898,29 @@ pub fn execute_arena(
 ///
 /// # Example
 /// ```ignore
-/// use mettatron::backend::bytecode::{eval_bytecode_arena_with_env, ArenaEnv};
+/// use mettatron::backend::bytecode::{eval_bytecode_arena_with_env, MettaEnvironment};
 /// use mettatron::backend::eval::trampoline::get_static_factory;
 ///
 /// let factory = get_static_factory();
-/// let env = ArenaEnv::new(factory.clone());
-/// let expr = /* ... ArenaValue expression ... */;
+/// let env = MettaEnvironment::new(factory.clone());
+/// let expr = /* ... MettaValue expression ... */;
 ///
 /// let (results, new_env) = eval_bytecode_arena_with_env(&expr, env)?;
 /// ```
 pub fn eval_bytecode_arena_with_env(
-    expr: &ArenaValue<'static>,
-    env: ArenaEnv,
-) -> VmResult<(Vec<ArenaValue<'static>>, ArenaEnv)> {
+    expr: &MettaValue,
+    env: MettaEnvironment,
+) -> VmResult<(Vec<MettaValue>, MettaEnvironment)> {
     // Compile the expression to bytecode
-    let chunk = compile_arena_bytecode_arc("arena_with_env", expr)
+    let chunk = compile_bytecode_arc("arena_with_env", expr)
         .map_err(|_| VmError::CompileError)?;
 
     // Execute via GenericBytecodeVM with environment (same as execute_arena)
     let factory = env.factory().clone();
-    let mut vm = GenericBytecodeVM::with_env(chunk, env, factory.clone());
+    let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
     let (results, env_opt) = vm.run_with_env()?;
 
-    let final_env = env_opt.unwrap_or_else(|| ArenaEnv::new(factory));
+    let final_env = env_opt.unwrap_or_else(|| MettaEnvironment::new(factory));
     Ok((results, final_env))
 }
 
@@ -940,11 +928,11 @@ pub fn eval_bytecode_arena_with_env(
 ///
 /// This is the fully generic entry point that works with any value type
 /// implementing `MettaValueTrait`. It enables zero-conversion evaluation
-/// for both heap (`MettaValue`) and arena (`ArenaValue<'static>`) modes.
+/// for both heap (`MettaValue`) and arena (`MettaValue`) modes.
 ///
 /// # Type Parameters
-/// * `V` - The value type (e.g., `MettaValue` or `ArenaValue<'static>`)
-/// * `F` - The factory type (e.g., `HeapMettaValueFactory` or `ArenaValueFactory<'static>`)
+/// * `V` - The value type (e.g., `MettaValue` or `MettaValue`)
+/// * `F` - The factory type (e.g., `GcFactory`)
 ///
 /// # Arguments
 /// * `chunk` - The generic bytecode chunk with V-typed constants
@@ -962,7 +950,7 @@ where
     F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
 {
     let factory = env.factory().clone();
-    let mut vm = GenericBytecodeVM::with_env(chunk, env, factory.clone());
+    let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
     let (results, env_opt) = vm.run_with_env()?;
     let final_env = env_opt.unwrap_or_else(|| GenericEnvironment::new(factory));
     Ok((results, final_env))
@@ -990,227 +978,10 @@ where
     V: MettaValueTrait + Clone + Send + Sync + std::marker::Unpin + PartialEq + 'static,
     F: MettaValueFactory<V> + Clone + Send + Sync + 'static,
 {
-    let mut vm = GenericBytecodeVM::new(chunk, factory);
+    let mut vm = GenericBytecodeVM::with_factory(chunk, factory);
     vm.run()
 }
 
-// =============================================================================
-// Arena Compilability Checks
-// =============================================================================
-
-/// Check if an ArenaValue expression can be compiled to bytecode.
-///
-/// This is the ArenaValue equivalent of `can_compile()`. It checks if the expression
-/// structure is compatible with bytecode compilation.
-///
-/// Returns true for expressions that the bytecode compiler supports:
-/// - Literals (numbers, bools, strings)
-/// - Variables (atoms starting with $)
-/// - Arithmetic operations (+, -, *, /, %) with compilable operands
-/// - Comparison operations (<, <=, >, >=, ==) with compilable operands
-/// - Boolean operations (and, or, not) with compilable operands
-/// - Quote (returns argument unevaluated)
-/// - Superpose/collapse (nondeterminism) with compilable alternatives
-///
-/// **Important**: This function is recursive - it checks that ALL subexpressions
-/// can also be compiled. This prevents the bytecode VM from returning wrong results
-/// when a subexpression needs rule resolution.
-pub fn can_compile_arena(expr: &ArenaValue<'static>) -> bool {
-    if expr.is_unit() || expr.is_bool() || expr.is_long()
-        || expr.is_float() || expr.is_string()
-    {
-        return true;
-    }
-
-    if let Some(name) = expr.as_atom() {
-        // Variables are OK
-        if name.starts_with('$') {
-            return true;
-        }
-        // Known constants are OK
-        match name {
-            "True" | "False" | "Nil" | "Unit" | "_" => true,
-            // Other atoms could be function calls - reject
-            _ => false,
-        }
-    } else if let Some(items) = expr.as_sexpr() {
-        if items.is_empty() {
-            return true;
-        }
-
-        // Check head for supported operations
-        if let Some(head) = items.first().and_then(|h| h.as_atom()) {
-            let head_ok = match head {
-                // Arithmetic
-                "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => true,
-                // Comparison
-                "<" | "<=" | ">" | ">=" | "==" | "!=" => true,
-                // Boolean
-                "and" | "or" | "not" | "xor" => true,
-                // Control flow - if needs compilable condition and branches
-                "if" => true,
-                // Quote - argument is NOT evaluated, so always OK
-                "quote" => return true, // Early return - don't check args
-                // Nondeterminism
-                "superpose" => true,
-                // NOTE: collapse intentionally NOT included - needs EvalCollapse VM impl
-                // List operations
-                "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" => true,
-                // Extended list operations
-                "decons-atom" | "empty" => true,
-                // String operations
-                "repr" => true,
-                // Type operations (only get-metatype doesn't need env type assertions)
-                "get-metatype" => true,
-                // Note: get-type and check-type need environment type assertions
-                // Binding forms
-                "let" | "let*" => true,
-                // Chain operation (sequence/binding)
-                "chain" => return can_compile_arena_chain(items),
-                // Control flow pattern matching (case doesn't need space)
-                "case" => true,
-                // Note: match and unify need space access, use tree-walker
-                // Error handling
-                "error" | "is-error" | "catch" => true,
-                // Reject everything else
-                _ => false,
-            };
-
-            if !head_ok {
-                return false;
-            }
-
-            // IMPORTANT: Recursively check all operands
-            items.iter().skip(1).all(can_compile_arena)
-        } else {
-            // Non-atom head - this is a data list like (1 2 3), not a function call
-            items.iter().all(can_compile_arena)
-        }
-    } else if expr.is_error() {
-        true
-    } else if expr.is_empty() {
-        true
-    } else {
-        // Types that need environment or special runtime support
-        // (Space, State, Type, Conjunction, Memo)
-        false
-    }
-}
-
-/// Check if an ArenaValue chain expression can be compiled.
-/// (chain expr $var body) - expr and body must be compilable, $var must be a variable.
-fn can_compile_arena_chain(items: &[ArenaValue<'static>]) -> bool {
-    if items.len() != 4 {
-        return false;
-    }
-    // items[0] is "chain"
-    // items[1] is expr - must be compilable
-    // items[2] is $var - must be a variable
-    // items[3] is body - must be compilable
-    let var_ok = items[2].as_atom().map_or(false, |s| s.starts_with('$'));
-    var_ok && can_compile_arena(&items[1]) && can_compile_arena(&items[3])
-}
-
-/// Check if an ArenaValue expression can be compiled when an environment is available.
-///
-/// This is more permissive than `can_compile_arena()` - it allows:
-/// - User-defined function calls: unknown atoms become DispatchRules calls
-/// - Everything that `can_compile_arena()` allows
-///
-/// Use this when bytecode execution will have access to an Environment for
-/// rule lookup and definition (e.g., mmverify workloads).
-pub fn can_compile_arena_with_env(expr: &ArenaValue<'static>) -> bool {
-    if expr.is_unit() || expr.is_bool() || expr.is_long()
-        || expr.is_float() || expr.is_string()
-    {
-        return true;
-    }
-
-    if let Some(name) = expr.as_atom() {
-        // Variables are OK
-        if name.starts_with('$') {
-            return true;
-        }
-        // Grounded references (&self, &kb, etc.) need special tree-walker handling
-        if name.starts_with('&') {
-            return false;
-        }
-        // Known constants are OK
-        match name {
-            "True" | "False" | "Nil" | "Unit" | "_" => true,
-            // With environment: unknown atoms are compilable as DispatchRules calls
-            _ => true,
-        }
-    } else if let Some(items) = expr.as_sexpr() {
-        if items.is_empty() {
-            return true;
-        }
-
-        // Check head for supported operations
-        if let Some(head) = items.first().and_then(|h| h.as_atom()) {
-            let head_ok = match head {
-                // Rule definitions need tree-walker (bytecode compiler doesn't emit DefineRule)
-                "=" => false,
-                // Evaluation
-                "!" => true,
-                // Arithmetic
-                "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => true,
-                // Comparison
-                "<" | "<=" | ">" | ">=" | "==" | "!=" => true,
-                // Boolean
-                "and" | "or" | "not" | "xor" => true,
-                // Control flow
-                "if" => true,
-                // Quote - argument is NOT evaluated
-                "quote" => return true,
-                // Nondeterminism
-                "superpose" => true,
-                // List operations
-                "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" | "decons-atom" | "empty" => true,
-                // String operations
-                "repr" => true,
-                // Type operations (only get-metatype doesn't need env type assertions)
-                "get-metatype" => true,
-                // Binding forms
-                "let" | "let*" => true,
-                // Chain operation
-                "chain" => return can_compile_arena_chain_with_env(items),
-                // Control flow pattern matching (case doesn't need space)
-                "case" => true,
-                // Error handling
-                "error" | "is-error" | "catch" => true,
-                // Unknown operations fall back to tree-walker
-                _ => false,
-            };
-
-            if !head_ok {
-                return false;
-            }
-
-            // Recursively check all operands with env support
-            items.iter().skip(1).all(can_compile_arena_with_env)
-        } else {
-            // Non-atom head - data list, all elements must be compilable
-            items.iter().all(can_compile_arena_with_env)
-        }
-    } else if expr.is_error() {
-        true
-    } else if expr.is_empty() {
-        true
-    } else {
-        // Types that need special runtime support (even with environment)
-        false
-    }
-}
-
-/// Check if an ArenaValue chain expression can be compiled with environment support.
-fn can_compile_arena_chain_with_env(items: &[ArenaValue<'static>]) -> bool {
-    if items.len() != 4 {
-        return false;
-    }
-    let var_ok = items[2].as_atom().map_or(false, |s| s.starts_with('$'));
-    var_ok && can_compile_arena_with_env(&items[1]) && can_compile_arena_with_env(&items[3])
-}
 
 #[cfg(test)]
 mod tests {

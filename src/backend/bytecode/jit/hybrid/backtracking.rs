@@ -51,8 +51,6 @@ impl HybridExecutor {
         self.jit_results.clear();
         self.jit_binding_frames.clear();
         self.jit_cut_markers.clear();
-        self.heap_tracker.clear();
-
         // Ensure capacity
         self.jit_choice_points.resize(
             self.config.jit_choice_point_capacity,
@@ -144,11 +142,6 @@ impl HybridExecutor {
         // Set current chunk pointer
         ctx.current_chunk = Arc::as_ptr(chunk) as *const ();
 
-        // Enable heap tracking for cleanup
-        unsafe {
-            ctx.enable_heap_tracking(&mut self.heap_tracker as *mut Vec<*mut MettaValue>);
-        }
-
         // Cast native function pointer
         // The JIT-compiled function returns the result as i64 (NaN-boxed JitValue)
         let native_fn: extern "C" fn(*mut JitContext) -> i64 =
@@ -165,10 +158,6 @@ impl HybridExecutor {
         loop {
             iteration += 1;
             if iteration > MAX_ITERATIONS {
-                // Cleanup heap allocations before error return
-                unsafe {
-                    ctx.cleanup_heap_allocations();
-                }
                 return Err(VmError::Runtime(
                     "Maximum backtracking iterations exceeded".to_string(),
                 ));
@@ -197,16 +186,7 @@ impl HybridExecutor {
                     vm_stack.push(metta_val);
                 }
 
-                // Resume from bailout point in VM
-                let mut vm = if let Some(ref bridge) = self.bridge {
-                    BytecodeVM::with_config_and_bridge(
-                        Arc::clone(chunk),
-                        self.config.vm_config.clone(),
-                        Arc::clone(bridge),
-                    )
-                } else {
-                    BytecodeVM::with_config(Arc::clone(chunk), self.config.vm_config.clone())
-                };
+                let mut vm = BytecodeVM::with_config(Arc::clone(chunk), self.config.vm_config.clone());
 
                 // Get VM results and combine with any already collected JIT results
                 let vm_results = vm.resume_from_bailout(ctx.bailout_ip, vm_stack)?;
@@ -279,11 +259,6 @@ impl HybridExecutor {
 
         if self.config.trace {
             trace!(target: "mettatron::jit::hybrid::backtrack", iterations = iteration, results_count = all_results.len(), "Dispatcher complete");
-        }
-
-        // Cleanup heap allocations
-        unsafe {
-            ctx.cleanup_heap_allocations();
         }
 
         // Return collected results or Unit if empty

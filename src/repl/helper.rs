@@ -91,19 +91,19 @@ impl MettaHelper {
     /// Note: Variable names are NOT extracted because they are normalized to MORK's
     /// internal variable names ($a, $b, etc.) and don't preserve their original names.
     /// Only function names (symbols) remain unchanged after compilation.
-    pub fn update_from_environment(&mut self, env: &crate::backend::ArenaEnvironment) {
-        use crate::backend::models::ArenaValueInner;
+    pub fn update_from_environment(&mut self, env: &crate::backend::MettaEnvironment) {
+        use crate::backend::models::MettaValueInner;
 
         // Clear previous definitions
         self.defined_functions.clear();
         self.defined_variables.clear();
 
         // Helper closure to extract function/constant names from a rule LHS
-        let mut extract_name = |lhs: &crate::backend::models::ArenaValue| {
+        let mut extract_name = |lhs: &crate::backend::models::MettaValue| {
             match lhs.inner() {
-                ArenaValueInner::SExpr(items) if !items.is_empty() => {
+                MettaValueInner::SExpr(items) if !items.is_empty() => {
                     // Pattern like (fibonacci $n) -> extract "fibonacci"
-                    if let ArenaValueInner::Atom(name) = items[0].inner() {
+                    if let MettaValueInner::Atom(name) = items[0].inner() {
                         if !name.starts_with('$')
                             && !name.starts_with('&')
                             && !name.starts_with('\'')
@@ -115,7 +115,7 @@ impl MettaHelper {
                         }
                     }
                 }
-                ArenaValueInner::Atom(name) => {
+                MettaValueInner::Atom(name) => {
                     // Simple constant like (= my-const 42) -> extract "my-const"
                     if !name.starts_with('$') && !name.starts_with('&') && !name.starts_with('\'') {
                         let name_str = name.to_string();
@@ -437,10 +437,10 @@ mod tests {
 
     #[test]
     fn test_update_from_environment() {
-        use crate::backend::{compile_arena, eval_arena, new_arena_env};
+        use crate::backend::{compile, eval, new_env};
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = new_arena_env();
+        let mut env = new_env();
 
         // Initially no user-defined functions
         assert_eq!(helper.defined_functions.len(), 0);
@@ -448,11 +448,11 @@ mod tests {
         // Define a function
         let code =
             "(= (fibonacci $n) (if (< $n 2) $n (+ (fibonacci (- $n 1)) (fibonacci (- $n 2)))))";
-        let state = compile_arena(code).unwrap();
+        let state = compile(code).unwrap();
 
         // IMPORTANT: Rules are added to environment during evaluation
         for &expr in state.source() {
-            let (_, updated_env) = eval_arena(expr, env, &state);
+            let (_, updated_env) = eval(expr, env, &state);
             env = updated_env;
         }
 
@@ -468,21 +468,21 @@ mod tests {
 
     #[test]
     fn test_completion_with_user_defined() {
-        use crate::backend::{compile_arena, eval_arena, new_arena_env};
+        use crate::backend::{compile, eval, new_env};
         use rustyline::history::DefaultHistory;
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = new_arena_env();
+        let mut env = new_env();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
 
         // Define a function
         let code = "(= (my-func $x) (* 2 $x))";
-        let state = compile_arena(code).unwrap();
+        let state = compile(code).unwrap();
 
         // Evaluate to add rules to environment
         for &expr in state.source() {
-            let (_, updated_env) = eval_arena(expr, env, &state);
+            let (_, updated_env) = eval(expr, env, &state);
             env = updated_env;
         }
 
@@ -496,21 +496,21 @@ mod tests {
 
     #[test]
     fn test_constant_completion() {
-        use crate::backend::{compile_arena, eval_arena, new_arena_env};
+        use crate::backend::{compile, eval, new_env};
         use rustyline::history::DefaultHistory;
 
         let mut helper = MettaHelper::new().unwrap();
-        let mut env = new_arena_env();
+        let mut env = new_env();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
 
         // Define a constant (not a variable, since variable names get normalized)
         let code = "(= my-const 42)";
-        let state = compile_arena(code).unwrap();
+        let state = compile(code).unwrap();
 
         // Evaluate to add rules to environment
         for &expr in state.source() {
-            let (_, updated_env) = eval_arena(expr, env, &state);
+            let (_, updated_env) = eval(expr, env, &state);
             env = updated_env;
         }
 

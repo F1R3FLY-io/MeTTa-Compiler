@@ -26,19 +26,19 @@ pub use builtin_signatures::{
     get_arg_types, get_return_type, get_signature, is_builtin, BuiltinSignature, TypeExpr,
 };
 pub use compile::{
-    compile, compile_arena, compile_arena_with_path, compile_generic, compile_with_path,
+    compile, compile_generic, compile_with_path,
 };
-pub use environment::{GenericEnvironment, HeapEnvironment, ScopeTracker};
-pub use eval::{eval_arena, pattern_match};
+pub use environment::{GenericEnvironment, MettaEnvironment, ScopeTracker};
+pub use eval::{eval, pattern_match};
 pub use eval::trampoline::{
-    eval_trampoline_arena, new_arena_env, ArenaEnvironment, StaticArenaContext,
-    get_static_arena, get_static_factory,
-    // Session-based evaluation context (dual-arena model)
+    eval_trampoline, new_env, StaticEvalContext,
+    get_static_factory,
+    // Session-based evaluation context
     SessionContext,
 };
-pub use eval::ArenaEvalResult;
+pub use eval::EvalResult;
 pub use fuzzy_match::FuzzyMatcher;
-pub use grounded::{ExecError, GroundedOperation, GroundedRegistry, GroundedResult};
+pub use grounded::ExecError;
 pub use models::*;
 #[cfg(feature = "hybrid-p2-priority-scheduler")]
 pub use priority_scheduler::{

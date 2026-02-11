@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use super::metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
+use super::metta_value_trait::{MettaValueTrait, MettaValueFactory};
 use super::{AtomMultisetSnapshot, MettaValue, Rule, SymbolTable};
 use crate::backend::environment::MultiplicityMatch;
 use crate::backend::modules::{ModId, ModuleSpace};
@@ -692,7 +692,7 @@ impl SpaceHandle {
     pub fn distinct_atom_count(&self) -> usize {
         match &self.backing {
             SpaceBacking::Owned { base, overlay } => {
-                if let Some(overlay) = overlay {
+                if let Some(_overlay) = overlay {
                     // Need to count unique atoms across base + overlay - removed
                     self.collapse_to_multiset().distinct_count()
                 } else {
@@ -828,7 +828,7 @@ impl SpaceHandle {
     ///
     /// # Example
     /// ```ignore
-    /// // Works with both MettaValue and ArenaValue
+    /// // Works with both MettaValue and MettaValue
     /// handle.add_atom_generic(&my_value);
     /// ```
     pub fn add_atom_generic<V: MettaValueTrait>(&self, atom: &V) {
@@ -960,8 +960,8 @@ impl SpaceHandle {
 
     /// Deserialize bytes to MettaValue using the built-in deserializer.
     fn deserialize_to_metta(&self, bytes: &[u8]) -> MettaValue {
-        use super::HeapMettaValueFactory;
-        let factory = HeapMettaValueFactory;
+        use super::GcFactory;
+        let factory = GcFactory::default();
         match factory.deserialize(bytes) {
             Ok((value, _)) => value,
             Err(_) => MettaValue::Atom("?deserialization_error?".to_string()),
@@ -1526,14 +1526,14 @@ mod tests {
 
     #[test]
     fn test_collapse_generic() {
-        use crate::backend::models::HeapMettaValueFactory;
+        use crate::backend::models::GcFactory;
 
         let handle = SpaceHandle::new(1, "test".to_string());
         handle.add_atom(MettaValue::Long(1));
         handle.add_atom(MettaValue::Long(2));
         handle.add_atom(MettaValue::Long(3));
 
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let collapsed: Vec<MettaValue> = handle.collapse_generic(&factory);
 
         assert_eq!(collapsed.len(), 3);
@@ -1547,7 +1547,7 @@ mod tests {
 
     #[test]
     fn test_collapse_with_multiplicity_generic() {
-        use crate::backend::models::HeapMettaValueFactory;
+        use crate::backend::models::GcFactory;
 
         let handle = SpaceHandle::new(1, "test".to_string());
         let atom = MettaValue::Long(42);
@@ -1557,7 +1557,7 @@ mod tests {
             handle.add_atom(atom.clone());
         }
 
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let matches: Vec<GenericMultiplicityMatch<MettaValue>> =
             handle.collapse_with_multiplicity_generic(&factory);
 
@@ -1570,7 +1570,7 @@ mod tests {
     #[test]
     fn test_atom_multiplicity_generic() {
         #[allow(unused_imports)]
-        use crate::backend::models::HeapMettaValueFactory;
+        use crate::backend::models::GcFactory;
 
         let handle = SpaceHandle::new(1, "test".to_string());
         let atom = MettaValue::Atom("foo".to_string());
@@ -1586,7 +1586,7 @@ mod tests {
     fn test_generic_operations_roundtrip() {
         // Test that add_atom_generic and collapse_generic are semantically equivalent
         // to add_atom and collapse
-        use crate::backend::models::HeapMettaValueFactory;
+        use crate::backend::models::GcFactory;
 
         let handle1 = SpaceHandle::new(1, "test1".to_string());
         let handle2 = SpaceHandle::new(2, "test2".to_string());
@@ -1616,7 +1616,7 @@ mod tests {
         assert_eq!(handle1.atom_count(), handle2.atom_count());
 
         // Collapse via normal vs generic should produce same results
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let collapsed1 = handle1.collapse();
         let collapsed2: Vec<MettaValue> = handle2.collapse_generic(&factory);
 
@@ -1631,7 +1631,7 @@ mod tests {
 
     #[test]
     fn test_generic_operations_with_forked_space() {
-        use crate::backend::models::HeapMettaValueFactory;
+        use crate::backend::models::GcFactory;
 
         let original = SpaceHandle::new(1, "test".to_string());
         original.add_atom(MettaValue::Long(1));
@@ -1652,7 +1652,7 @@ mod tests {
         assert!(!original.contains_generic(&MettaValue::Long(2)));
 
         // Collapse forked via generic
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let forked_atoms: Vec<MettaValue> = forked.collapse_generic(&factory);
         assert_eq!(forked_atoms.len(), 2);
     }

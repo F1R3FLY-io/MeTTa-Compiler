@@ -1,12 +1,12 @@
 //! Generic MORK Special Forms - Zero-Conversion Implementation
 //!
 //! This module provides generic versions of MORK special forms that work with any
-//! value type implementing `MettaValueTrait`. This eliminates ArenaValue <-> MettaValue
+//! value type implementing `MettaValueTrait`. This eliminates MettaValue <-> MettaValue
 //! conversions when using arena allocation.
 //!
 //! ## Zero-Conversion Path
 //!
-//! For ArenaValue:
+//! For MettaValue:
 //! - No conversion to MettaValue for MORK operations
 //! - Pattern matching uses generic `pattern_match_generic`
 //! - Binding application uses generic `apply_bindings_generic`
@@ -120,7 +120,7 @@ fn extract_conjunction_goals<V: MettaValueTrait + Clone>(value: &V) -> Option<Ve
 /// Generic eval_exec: (exec <priority> <antecedent> <consequent>)
 ///
 /// Executes rules with conjunction-based pattern matching using generic types.
-/// No ArenaValue <-> MettaValue conversion required.
+/// No MettaValue <-> MettaValue conversion required.
 pub fn eval_exec_generic<V, F>(
     items: Vec<V>,
     mut env: GenericEnvironment<V, F>,
@@ -708,8 +708,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::environment::HeapEnvironment;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::environment::MettaEnvironment;
+    use crate::backend::models::{GcFactory, MettaValue};
 
     #[test]
     fn test_has_variables_generic() {
@@ -743,8 +743,8 @@ mod tests {
 
     #[test]
     fn test_eval_exec_generic_empty_antecedent() {
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![
             MettaValue::Atom("exec".to_string()),
@@ -759,8 +759,8 @@ mod tests {
 
     #[test]
     fn test_eval_coalg_generic() {
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![
             MettaValue::Atom("coalg".to_string()),
@@ -781,8 +781,8 @@ mod tests {
 
     #[test]
     fn test_eval_lookup_generic_success() {
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![
             MettaValue::Atom("lookup".to_string()),
@@ -797,8 +797,8 @@ mod tests {
 
     #[test]
     fn test_eval_rulify_generic() {
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![
             MettaValue::Atom("rulify".to_string()),
@@ -820,8 +820,8 @@ mod tests {
     #[test]
     fn test_exec_wrong_arity() {
         // exec requires 3 arguments: priority, antecedent, consequent
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         // Only 2 arguments (missing consequent)
         let items = vec![
@@ -846,8 +846,8 @@ mod tests {
     #[test]
     fn test_exec_antecedent_not_conjunction() {
         // exec antecedent must be a conjunction
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![
             MettaValue::Atom("exec".to_string()),
@@ -864,8 +864,8 @@ mod tests {
     #[test]
     fn test_coalg_wrong_arity() {
         // coalg requires 2 arguments: pattern and templates
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         // Only 1 argument (missing templates)
         let items = vec![
@@ -886,8 +886,8 @@ mod tests {
     #[test]
     fn test_coalg_templates_not_conjunction() {
         // coalg templates must be a conjunction
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![
             MettaValue::Atom("coalg".to_string()),
@@ -903,8 +903,8 @@ mod tests {
     #[test]
     fn test_lookup_wrong_arity() {
         // lookup requires 3 arguments: pattern, success-goals, failure-goals
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         // Only 2 arguments
         let items = vec![
@@ -929,8 +929,8 @@ mod tests {
     #[test]
     fn test_lookup_success_not_conjunction() {
         // lookup success branch must be a conjunction
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![
             MettaValue::Atom("lookup".to_string()),
@@ -947,8 +947,8 @@ mod tests {
     #[test]
     fn test_lookup_failure_not_conjunction() {
         // lookup failure branch must be a conjunction
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![
             MettaValue::Atom("lookup".to_string()),
@@ -965,8 +965,8 @@ mod tests {
     #[test]
     fn test_lookup_variable_pattern() {
         // lookup with variable pattern takes failure branch
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![
             MettaValue::Atom("lookup".to_string()),
@@ -983,8 +983,8 @@ mod tests {
     #[test]
     fn test_rulify_wrong_arity() {
         // rulify requires 5 arguments
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         // Only 4 arguments
         let items = vec![
@@ -1013,8 +1013,8 @@ mod tests {
     #[test]
     fn test_rulify_pattern_not_unary_conjunction() {
         // rulify pattern must be a unary conjunction
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         // Empty conjunction
         let items = vec![
@@ -1061,8 +1061,8 @@ mod tests {
     #[test]
     fn test_rulify_templates_not_conjunction() {
         // rulify templates must be a conjunction
-        let env = HeapEnvironment::new(HeapMettaValueFactory);
-        let factory = HeapMettaValueFactory;
+        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = GcFactory::default();
 
         let items = vec![
             MettaValue::Atom("rulify".to_string()),

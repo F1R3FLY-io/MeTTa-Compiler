@@ -50,8 +50,6 @@ pub struct HybridExecutor {
     pub(super) jit_binding_frames: Vec<JitBindingFrame>,
     /// Reusable JIT cut markers buffer (for proper cut scope tracking)
     pub(super) jit_cut_markers: Vec<usize>,
-    /// Heap allocation tracker for cleanup (prevents memory leaks)
-    pub(super) heap_tracker: Vec<*mut MettaValue>,
     /// Optional MORK bridge for rule dispatch
     pub(super) bridge: Option<Arc<MorkBridge>>,
     /// Optional external function registry for CallExternal
@@ -95,7 +93,6 @@ impl HybridExecutor {
             jit_results: Vec::with_capacity(config.jit_results_capacity),
             jit_binding_frames: Vec::with_capacity(config.jit_binding_frames_capacity),
             jit_cut_markers: Vec::with_capacity(config.jit_cut_markers_capacity),
-            heap_tracker: Vec::with_capacity(64), // Reasonable default for heap allocations
             stats: HybridStats::default(),
             bridge: None,
             external_registry: None,
@@ -125,7 +122,6 @@ impl HybridExecutor {
             jit_results: Vec::with_capacity(config.jit_results_capacity),
             jit_binding_frames: Vec::with_capacity(config.jit_binding_frames_capacity),
             jit_cut_markers: Vec::with_capacity(config.jit_cut_markers_capacity),
-            heap_tracker: Vec::with_capacity(64), // Reasonable default for heap allocations
             stats: HybridStats::default(),
             bridge: None,
             external_registry: None,
@@ -344,16 +340,7 @@ impl HybridExecutor {
         self.stats.vm_runs += 1;
         self.stats.tiered_stats.bytecode_runs += 1;
 
-        let vm = if let Some(ref bridge) = self.bridge {
-            BytecodeVM::with_config_and_bridge(
-                Arc::clone(chunk),
-                self.config.vm_config.clone(),
-                Arc::clone(bridge),
-            )
-        } else {
-            BytecodeVM::with_config(Arc::clone(chunk), self.config.vm_config.clone())
-        };
-        let mut vm = vm;
+        let mut vm = BytecodeVM::with_config(Arc::clone(chunk), self.config.vm_config.clone());
         vm.run()
     }
 
@@ -453,8 +440,6 @@ impl HybridExecutor {
         self.jit_results.clear();
         self.jit_binding_frames.clear();
         self.jit_cut_markers.clear();
-        self.heap_tracker.clear();
-
         // Ensure capacity
         self.jit_choice_points.resize(
             self.config.jit_choice_point_capacity,
@@ -547,11 +532,6 @@ impl HybridExecutor {
         // Set current chunk pointer
         ctx.current_chunk = Arc::as_ptr(chunk) as *const ();
 
-        // Enable heap tracking for cleanup
-        unsafe {
-            ctx.enable_heap_tracking(&mut self.heap_tracker as *mut Vec<*mut MettaValue>);
-        }
-
         // Cast and call native function
         // The JIT-compiled function returns the result as i64 (NaN-boxed JitValue)
         let native_fn: extern "C" fn(*mut JitContext) -> i64 =
@@ -579,31 +559,12 @@ impl HybridExecutor {
                 vm_stack.push(metta_val);
             }
 
-            // Cleanup heap allocations before bailout
-            unsafe {
-                ctx.cleanup_heap_allocations();
-            }
-
-            // Resume from bailout point
-            let mut vm = if let Some(ref bridge) = self.bridge {
-                BytecodeVM::with_config_and_bridge(
-                    Arc::clone(chunk),
-                    self.config.vm_config.clone(),
-                    Arc::clone(bridge),
-                )
-            } else {
-                BytecodeVM::with_config(Arc::clone(chunk), self.config.vm_config.clone())
-            };
+            let mut vm = BytecodeVM::with_config(Arc::clone(chunk), self.config.vm_config.clone());
             return vm.resume_from_bailout(ctx.bailout_ip, vm_stack);
         }
 
         // Collect results - prioritize yielded results, then return value, then stack
         let results = self.collect_jit_results_with_return(&ctx, jit_result);
-
-        // Cleanup heap allocations
-        unsafe {
-            ctx.cleanup_heap_allocations();
-        }
 
         if self.config.trace {
             trace!(target: "mettatron::jit::hybrid::execute", results_count = results.len(), "JIT execution complete");

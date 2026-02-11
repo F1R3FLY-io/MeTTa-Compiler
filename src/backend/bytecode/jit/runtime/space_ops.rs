@@ -32,7 +32,7 @@ use crate::backend::models::{MettaValue, MettaValueInner};
 ///
 /// # Arguments
 /// * `ctx` - JIT context
-/// * `space` - NaN-boxed space handle (TAG_HEAP pointing to MettaValue::Space)
+/// * `space` - NaN-boxed space handle (TAG_PTR pointing to MettaValue::Space)
 /// * `atom` - NaN-boxed atom to add
 /// * `_ip` - Instruction pointer (for debugging)
 ///
@@ -429,12 +429,12 @@ fn pattern_matches_with_bindings_impl(
     match (pattern.inner(), value.inner()) {
         // Variable pattern (atom starting with $) - always matches and binds
         (MettaValueInner::Atom(var), _) if var.starts_with('$') => {
-            bindings.push((var.clone(), value.clone()));
+            bindings.push((var.to_string(), value.clone()));
             true
         }
 
         // Wildcard - always matches
-        (MettaValueInner::Atom(s), _) if s == "_" => true,
+        (MettaValueInner::Atom(s), _) if *s == "_" => true,
 
         // Same type matching
         (MettaValueInner::Atom(p), MettaValueInner::Atom(v)) => p == v,

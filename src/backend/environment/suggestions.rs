@@ -4,7 +4,7 @@
 
 use super::generic::GenericEnvironment;
 use crate::backend::fuzzy_match::SmartSuggestion;
-use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValue as MettaValueTrait};
+use crate::backend::models::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 
 impl<V, F> GenericEnvironment<V, F>
 where

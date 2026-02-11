@@ -4,10 +4,10 @@
 //! strategies for various MeTTa expression types.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use mettatron::backend::bytecode::{compile, BytecodeVM};
-use mettatron::backend::compile::compile_arena;
-use mettatron::backend::eval::eval_arena;
-use mettatron::backend::eval::trampoline::new_arena_env;
+use mettatron::backend::bytecode::{compile as compile_bytecode, BytecodeVM};
+use mettatron::backend::compile::compile;
+use mettatron::backend::eval::eval;
+use mettatron::backend::eval::trampoline::new_env;
 use mettatron::backend::MettaValue;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +24,7 @@ fn sexpr(items: Vec<MettaValue>) -> MettaValue {
 
 /// Evaluate expression via bytecode VM
 fn eval_bytecode(expr: &MettaValue) -> Vec<MettaValue> {
-    let chunk = compile("bench", expr).expect("compilation failed");
+    let chunk = compile_bytecode("bench", expr).expect("compilation failed");
     let mut vm = BytecodeVM::new(Arc::new(chunk));
     vm.run().expect("VM execution failed")
 }
@@ -32,9 +32,9 @@ fn eval_bytecode(expr: &MettaValue) -> Vec<MettaValue> {
 /// Evaluate expression via tree-walking interpreter (arena-based)
 fn eval_tree_walker(expr: &MettaValue) -> Vec<String> {
     let src = format!("{}", expr);
-    let state = compile_arena(&src).expect("Failed to compile");
-    let env = new_arena_env();
-    let (results, _env) = eval_arena(state.source()[0], env, &state);
+    let state = compile(&src).expect("Failed to compile");
+    let env = new_env();
+    let (results, _env) = eval(state.source()[0], env, &state);
     results.iter().map(|v| format!("{}", v)).collect()
 }
 
@@ -242,15 +242,15 @@ fn bench_compilation(c: &mut Criterion) {
     let large = build_arithmetic_chain(100);
 
     group.bench_function("small/compile", |b| {
-        b.iter(|| compile("bench", black_box(&small)))
+        b.iter(|| compile_bytecode("bench", black_box(&small)))
     });
 
     group.bench_function("medium/compile", |b| {
-        b.iter(|| compile("bench", black_box(&medium)))
+        b.iter(|| compile_bytecode("bench", black_box(&medium)))
     });
 
     group.bench_function("large/compile", |b| {
-        b.iter(|| compile("bench", black_box(&large)))
+        b.iter(|| compile_bytecode("bench", black_box(&large)))
     });
 
     // Measure compile + execute combined
@@ -267,9 +267,9 @@ fn bench_compilation(c: &mut Criterion) {
     });
 
     // Measure execute-only (pre-compiled chunk reused)
-    let small_chunk = Arc::new(compile("bench", &small).unwrap());
-    let medium_chunk = Arc::new(compile("bench", &medium).unwrap());
-    let large_chunk = Arc::new(compile("bench", &large).unwrap());
+    let small_chunk = Arc::new(compile_bytecode("bench", &small).unwrap());
+    let medium_chunk = Arc::new(compile_bytecode("bench", &medium).unwrap());
+    let large_chunk = Arc::new(compile_bytecode("bench", &large).unwrap());
 
     group.bench_function("small/execute-only", |b| {
         b.iter(|| {

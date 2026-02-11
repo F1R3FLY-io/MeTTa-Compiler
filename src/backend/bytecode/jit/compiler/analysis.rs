@@ -12,7 +12,7 @@ use super::BlockInfo;
 /// Check if raw bytecode can be JIT compiled (bytecode-only check).
 ///
 /// This is a low-level function that operates directly on bytecode bytes.
-/// It's useful for generic bytecode chunks (like `GenericBytecodeChunk<ArenaValue>`)
+/// It's useful for generic bytecode chunks (like `GenericBytecodeChunk<MettaValue>`)
 /// where the bytecode structure is identical regardless of the value type.
 ///
 /// Note: This does NOT check for nondeterminism flags - caller must ensure

@@ -1,7 +1,8 @@
-pub mod arena_state;
-pub mod arena_value;
 pub mod atom_id;
 pub mod bindings;
+pub mod gc_allocator;
+pub mod gc_cron;
+pub mod gc_thread;
 pub mod generic_bindings;
 pub mod generic_rule;
 pub mod indexed_multiset;
@@ -12,27 +13,29 @@ pub mod metta_value_trait;
 pub mod multiset;
 pub mod space_handle;
 
-pub use arena_state::{
-    active_eval_sessions, clone_value, get_eval_arena, get_eval_factory, reset_eval_arena,
-    ArenaState, StorageFactory,
-};
-pub use arena_value::{ArenaValue, ArenaValueFactory, ArenaValueInner};
+pub use metta_value::{MettaValue, MettaValueInner};
 pub use atom_id::{AtomId, SymbolTable};
+pub use gc_allocator::{
+    collect_all_roots, global_allocator, global_factory, global_gc_thread,
+    init_global_allocator, maybe_trigger_gc, register_root_provider,
+    request_gc, trigger_gc_cycle, try_register_env_roots,
+    GcFactory, RootProvider, SlabAllocator,
+};
 pub use bindings::SmartBindings as Bindings;
 pub use generic_bindings::{GenericBindings, GenericBindingsIter};
 pub use generic_rule::{GenericRule, RuleBytes};
 pub use indexed_multiset::IndexedMultiset;
 pub use memo_handle::MemoHandle;
 pub use metta_state::MettaState;
-pub use metta_value::{ArcValue, HeapMettaValueFactory, MettaValue, MettaValueInner};
-pub use metta_value_trait::{MettaValue as MettaValueTrait, MettaValueFactory};
+pub use metta_value::{escape_json, serialize_tags};
+pub use metta_value_trait::{MettaValueTrait, MettaValueFactory};
 pub use multiset::{AtomMultiset, AtomMultisetSnapshot};
 pub use space_handle::{GenericMultiplicityMatch, SpaceHandle};
 
-use crate::backend::environment::HeapEnvironment;
+use crate::backend::environment::MettaEnvironment;
 
 /// Result of evaluation: (result, new_environment)
-pub type EvalResult = (Vec<MettaValue>, HeapEnvironment);
+pub type EvalResult = (Vec<MettaValue>, MettaEnvironment);
 
 /// Represents a pattern matching rule: (= lhs rhs)
 /// MettaValue is O(1) to clone (internally Arc-wrapped), so rules

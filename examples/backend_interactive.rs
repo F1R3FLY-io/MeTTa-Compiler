@@ -1,13 +1,13 @@
 // Interactive MeTTa REPL using the arena-based backend
 
-use mettatron::{compile_arena, eval_arena, new_arena_env, ArenaValueInner};
+use mettatron::{compile, eval, new_env, MettaValueInner};
 use std::io::{self, Write};
 
 fn main() {
     println!("=== MeTTa Backend REPL ===");
     println!("Enter MeTTa expressions. Type 'exit' to quit.\n");
 
-    let mut env = new_arena_env();
+    let mut env = new_env();
     let mut line_num = 1;
 
     loop {
@@ -33,17 +33,17 @@ fn main() {
         }
 
         // Compile and evaluate
-        match compile_arena(input) {
+        match compile(input) {
             Ok(state) => {
                 // Evaluate each expression
                 for &expr in state.source() {
-                    let (results, updated_env) = eval_arena(expr, env.clone(), &state);
+                    let (results, updated_env) = eval(expr, env.clone(), &state);
                     env = updated_env;
 
                     // Print results
                     for result in &results {
                         match result.inner() {
-                            ArenaValueInner::Unit => {}
+                            MettaValueInner::Unit => {}
                             _ => println!("{}", result),
                         }
                     }

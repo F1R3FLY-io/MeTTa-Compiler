@@ -9,10 +9,10 @@
 //! - CoW Environment: Clone cost reduction (~100x expected)
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::compile::compile_arena;
-use mettatron::backend::environment::HeapEnvironment;
-use mettatron::backend::eval::eval_arena;
-use mettatron::backend::eval::trampoline::new_arena_env;
+use mettatron::backend::compile::compile;
+use mettatron::backend::environment::MettaEnvironment;
+use mettatron::backend::eval::eval;
+use mettatron::backend::eval::trampoline::new_env;
 use mettatron::backend::{MettaValue, Rule};
 
 // ============================================================================
@@ -93,7 +93,7 @@ fn bench_prefix_fast_path(c: &mut Criterion) {
     let sizes = [100, 500, 1000, 5000, 10000];
 
     for &size in &sizes {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let facts = generate_facts(size);
         for fact in &facts {
             env.add_to_space(fact);
@@ -137,7 +137,7 @@ fn bench_bulk_insertion(c: &mut Criterion) {
             fact_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = HeapEnvironment::default();
+                    let mut env = MettaEnvironment::default();
                     env.add_facts_bulk(black_box(&facts)).unwrap();
                     black_box(env);
                 });
@@ -152,7 +152,7 @@ fn bench_bulk_insertion(c: &mut Criterion) {
             fact_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = HeapEnvironment::default();
+                    let mut env = MettaEnvironment::default();
                     env.add_rules_bulk(black_box(rules.clone())).unwrap();
                     black_box(env);
                 });
@@ -173,7 +173,7 @@ fn bench_cow_clone(c: &mut Criterion) {
     let mut group = c.benchmark_group("cow_clone");
 
     for rule_count in [0, 10, 100, 500, 1000].iter() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let rules = generate_rules(*rule_count);
         for rule in &rules {
             env.add_rule(rule.clone());
@@ -243,7 +243,7 @@ fn bench_rule_matching(c: &mut Criterion) {
     let mut group = c.benchmark_group("rule_matching");
 
     for rule_count in [10, 50, 100, 500, 1000].iter() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add fibonacci-like rules
         for i in 0..*rule_count {
@@ -286,7 +286,7 @@ fn bench_type_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("type_lookup");
 
     for type_count in [10, 100, 1000, 10000].iter() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add type facts to space for lookup testing
         for i in 0..*type_count {
@@ -324,12 +324,12 @@ fn bench_evaluation(c: &mut Criterion) {
 
     // Simple arithmetic
     let simple_text = "(+ 40 2)";
-    let simple_state = compile_arena(simple_text).expect("Failed to compile");
+    let simple_state = compile(simple_text).expect("Failed to compile");
 
     group.bench_function("simple_arithmetic", |b| {
         b.iter(|| {
-            let env = new_arena_env();
-            let (result, _) = eval_arena(
+            let env = new_env();
+            let (result, _) = eval(
                 black_box(simple_state.source()[0]),
                 black_box(env),
                 black_box(&simple_state),
@@ -341,15 +341,15 @@ fn bench_evaluation(c: &mut Criterion) {
     // Nested arithmetic (sequential evaluation)
     for depth in [3, 5, 7].iter() {
         let nested_text = generate_nested_text(*depth);
-        let nested_state = compile_arena(&nested_text).expect("Failed to compile");
+        let nested_state = compile(&nested_text).expect("Failed to compile");
 
         group.bench_with_input(
             BenchmarkId::new("nested_arithmetic", depth),
             depth,
             |b, _| {
                 b.iter(|| {
-                    let env = new_arena_env();
-                    let (result, _) = eval_arena(
+                    let env = new_env();
+                    let (result, _) = eval(
                         black_box(nested_state.source()[0]),
                         black_box(env),
                         black_box(&nested_state),
@@ -379,7 +379,7 @@ fn bench_scalability(c: &mut Criterion) {
         // Benchmark environment construction time
         group.bench_with_input(BenchmarkId::new("env_construction", size), size, |b, _| {
             b.iter(|| {
-                let mut env = HeapEnvironment::default();
+                let mut env = MettaEnvironment::default();
                 for fact in &facts {
                     env.add_to_space(black_box(fact));
                 }
@@ -388,7 +388,7 @@ fn bench_scalability(c: &mut Criterion) {
         });
 
         // Benchmark lookup performance at scale
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         env.add_facts_bulk(&facts).unwrap();
 
         let search = MettaValue::SExpr(vec![

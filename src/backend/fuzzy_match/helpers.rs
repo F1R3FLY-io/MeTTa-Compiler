@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::backend::builtin_signatures::TypeExpr;
 use crate::backend::models::{MettaValue, MettaValueInner};
-use crate::backend::HeapEnvironment;
+use crate::backend::MettaEnvironment;
 
 use super::types::SuggestionConfidence;
 
@@ -91,7 +91,7 @@ pub fn are_prefixes_compatible(query: &str, suggestion: &str) -> bool {
 ///
 /// This performs structural type matching for fuzzy suggestion filtering.
 /// It uses simple heuristics to determine compatibility without full type inference.
-pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &HeapEnvironment) -> bool {
+pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &MettaEnvironment) -> bool {
     match expected {
         // Universal types - accept anything
         TypeExpr::Any | TypeExpr::Pattern | TypeExpr::Bindings | TypeExpr::Expr => true,
@@ -107,7 +107,7 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &HeapEnviron
 
         TypeExpr::Bool => {
             matches!(actual.inner(), MettaValueInner::Bool(_))
-                || matches!(actual.inner(), MettaValueInner::Atom(s) if s == "True" || s == "False")
+                || matches!(actual.inner(), MettaValueInner::Atom(s) if *s == "True" || *s == "False")
         }
 
         TypeExpr::String => matches!(actual.inner(), MettaValueInner::String(_)),
@@ -130,8 +130,8 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &HeapEnviron
                 || matches!(actual.inner(), MettaValueInner::Atom(s) if is_type_name(s))
         }
 
-        // List type - check if it's an s-expression
-        TypeExpr::List(_) => matches!(actual.inner(), MettaValueInner::SExpr(_)),
+        // List type - check if it's an s-expression (Unit is normalized SExpr([]))
+        TypeExpr::List(_) => matches!(actual.inner(), MettaValueInner::SExpr(_) | MettaValueInner::Unit),
 
         // Arrow type - callable things (atoms/s-expressions)
         TypeExpr::Arrow(_, _) => matches!(
@@ -168,7 +168,7 @@ pub fn is_type_name(s: &str) -> bool {
 pub fn validate_type_vars(
     args: &[MettaValue],
     expected_types: &[TypeExpr],
-    _env: &HeapEnvironment,
+    _env: &MettaEnvironment,
 ) -> bool {
     let mut var_bindings: HashMap<&str, &MettaValue> = HashMap::new();
 
@@ -192,7 +192,7 @@ pub fn validate_type_vars(
 /// Used for type variable unification - ensures values bound to the same
 /// type variable have compatible types.
 pub fn values_compatible(a: &MettaValue, b: &MettaValue) -> bool {
-    use MettaValueInner::*;
+    use crate::backend::models::metta_value::MettaValueInner::*;
 
     match (a.inner(), b.inner()) {
         // Same ground types are compatible

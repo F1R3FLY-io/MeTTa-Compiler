@@ -4,6 +4,7 @@
 //! with appropriate error messages when types don't match.
 
 use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::metta_value_trait::MettaValueTrait;
 
 /// Extract a Long (integer) value from MettaValue, returning a formatted error if not a Long
 pub(super) fn extract_long(value: &MettaValue, context: &str) -> Result<i64, MettaValue> {

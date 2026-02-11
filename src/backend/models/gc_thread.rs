@@ -34,7 +34,7 @@
 //!   dead set entries for slots re-allocated after the snapshot epoch.
 //! - **Bug 2 (Data Race)**: Fixed by snapshot-based GC. The GC thread operates
 //!   exclusively on the owned `GcSnapshot` — never touches live allocator state.
-//!   ArenaValues are immutable after creation, so reading value data is safe.
+//!   MettaValues are immutable after creation, so reading value data is safe.
 //! - **Bug 3 (Watermark)**: Fixed by full sweep. The GC sweeps ALL committed
 //!   slots in the snapshot — no watermark restriction. Live byte counts are
 //!   accurate for threshold calibration.
@@ -68,7 +68,7 @@ unsafe impl Send for GcRequest {}
 
 /// Handle to the background GC thread.
 ///
-/// Spawned when `ArenaState::new()` is called. Joined when `ArenaState` is
+/// Spawned when `MettaState::new()` is called. Joined when `MettaState` is
 /// dropped (sends `Shutdown` signal and waits).
 pub struct GcThread {
     /// Channel to send requests to the GC thread.

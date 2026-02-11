@@ -470,11 +470,11 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for ModOpGeneric
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::models::{GcFactory, MettaValue};
 
     #[test]
     fn test_add_op_generic_longs() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let args = vec![MettaValue::Long(1), MettaValue::Long(2)];
         let mut state = GenericGroundedState::new("+".to_string(), args);
 
@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn test_add_op_generic_floats() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let args = vec![MettaValue::Float(1.5), MettaValue::Float(2.5)];
         let mut state = GenericGroundedState::new("+".to_string(), args);
 
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_sub_op_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state = GenericGroundedState::new("-".to_string(), vec![MettaValue::Long(10), MettaValue::Long(3)]);
 
         let op = SubOpGeneric;
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_mul_op_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state = GenericGroundedState::new("*".to_string(), vec![MettaValue::Long(6), MettaValue::Long(7)]);
 
         let op = MulOpGeneric;
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn test_div_op_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state = GenericGroundedState::new("/".to_string(), vec![MettaValue::Long(20), MettaValue::Long(4)]);
 
         let op = DivOpGeneric;
@@ -611,7 +611,7 @@ mod tests {
 
     #[test]
     fn test_div_by_zero() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state = GenericGroundedState::new("/".to_string(), vec![MettaValue::Long(10), MettaValue::Long(0)]);
 
         let op = DivOpGeneric;
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn test_mod_op_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state = GenericGroundedState::new("%".to_string(), vec![MettaValue::Long(17), MettaValue::Long(5)]);
 
         let op = ModOpGeneric;

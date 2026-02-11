@@ -9,14 +9,14 @@
 //! ## Design
 //!
 //! These types are parameterized over the value type `V`, enabling grounded operations
-//! to work with both heap-allocated (`MettaValue`) and arena-allocated (`ArenaValue`)
+//! to work with both heap-allocated (`MettaValue`) and arena-allocated (`MettaValue`)
 //! types without conversion at boundaries.
 //!
 //! ## Zero-Conversion Pattern
 //!
 //! By using generic types, evaluated arguments are stored in their native representation:
 //! - `MettaValue.clone()` = O(1) Arc increment
-//! - `ArenaValue.clone()` = O(1) pointer copy
+//! - `MettaValue.clone()` = O(1) pointer copy
 //!
 //! This eliminates the need for conversion between heap and arena types during
 //! grounded operation execution.

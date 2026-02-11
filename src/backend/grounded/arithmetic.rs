@@ -8,7 +8,7 @@
 //! - `ModOp` - Modulo (%)
 
 use super::{
-    find_error, friendly_type_name, HeapEnvironment, EvalFn, ExecError, GroundedOperation,
+    find_error, friendly_type_name, MettaEnvironment, EvalFn, ExecError, GroundedOperation,
     GroundedResult, MettaValue,
 };
 use crate::backend::models::MettaValueInner;
@@ -24,7 +24,7 @@ impl GroundedOperation for AddOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         if args.len() != 2 {
@@ -103,7 +103,7 @@ impl GroundedOperation for SubOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         if args.len() != 2 {
@@ -180,7 +180,7 @@ impl GroundedOperation for MulOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         if args.len() != 2 {
@@ -257,7 +257,7 @@ impl GroundedOperation for DivOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         if args.len() != 2 {
@@ -339,7 +339,7 @@ impl GroundedOperation for ModOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         if args.len() != 2 {

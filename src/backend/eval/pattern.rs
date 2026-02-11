@@ -65,18 +65,18 @@ pub(crate) fn pattern_match_impl(
         // Process each pattern-value pair
         let matches = match (pat.inner(), val.inner()) {
             // Wildcard matches anything
-            (MettaValueInner::Atom(p), _) if p == "_" => true,
+            (MettaValueInner::Atom(p), _) if *p == "_" => true,
 
             // FAST PATH: First variable binding (empty bindings)
             // Optimization: Skip lookup when bindings are empty - directly insert
             // This reduces single-variable regression from 16.8% to ~5-7%
             (MettaValueInner::Atom(p), _)
                 if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
-                    && p != "&"
+                    && *p != "&"
                     && bindings.is_empty()
                     && work_stack.is_empty() =>
             {
-                bindings.insert(p.clone(), val.clone());
+                bindings.insert(p.to_string(), val.clone());
                 true
             }
 
@@ -84,13 +84,13 @@ pub(crate) fn pattern_match_impl(
             // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
             (MettaValueInner::Atom(p), _)
                 if (p.starts_with('$') || p.starts_with('&') || p.starts_with('\''))
-                    && p != "&" =>
+                    && *p != "&" =>
             {
                 // Check if variable is already bound (linear search for SmartBindings)
-                if let Some((_, existing)) = bindings.iter().find(|(name, _)| name.as_str() == p) {
+                if let Some((_, existing)) = bindings.iter().find(|(name, _)| name.as_str() == *p) {
                     existing == val
                 } else {
-                    bindings.insert(p.clone(), val.clone());
+                    bindings.insert(p.to_string(), val.clone());
                     true
                 }
             }
@@ -104,9 +104,9 @@ pub(crate) fn pattern_match_impl(
             (MettaValueInner::Unit, MettaValueInner::Unit) => true,
             // Unit pattern matches Empty atom (HE-compatible: () pattern in case matches Empty)
             // This is needed because case converts empty results to Atom("Empty") internally
-            (MettaValueInner::Unit, MettaValueInner::Atom(v)) if v == "Empty" => true,
+            (MettaValueInner::Unit, MettaValueInner::Atom(v)) if *v == "Empty" => true,
             // Empty atom pattern matches Unit (symmetry: Empty pattern matches () values)
-            (MettaValueInner::Atom(p), MettaValueInner::Unit) if p == "Empty" => true,
+            (MettaValueInner::Atom(p), MettaValueInner::Unit) if *p == "Empty" => true,
 
             // Unit pattern matches only empty values (Unit, empty S-expr, or Empty atom)
             // For discard pattern, use wildcard _ instead
@@ -121,7 +121,7 @@ pub(crate) fn pattern_match_impl(
             }
             (MettaValueInner::SExpr(p_items), MettaValueInner::Unit) if p_items.is_empty() => true,
             (MettaValueInner::SExpr(p_items), MettaValueInner::Atom(v))
-                if p_items.is_empty() && v == "Empty" =>
+                if p_items.is_empty() && *v == "Empty" =>
             {
                 true
             }

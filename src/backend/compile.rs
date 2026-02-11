@@ -9,68 +9,11 @@
 
 #[cfg(test)]
 use crate::backend::models::MettaValueInner;
-use crate::backend::models::{ArenaState, MettaState, MettaValue, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaState, MettaValue, MettaValueFactory, MettaValueTrait};
 use crate::ir::MettaExpr;
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind, TreeSitterMettaParser};
 
 use tracing::{debug, error, info, instrument, warn};
-
-/// Compile MeTTa source code into a MettaState ready for evaluation
-/// Returns a compiled state with pending expressions and empty environment
-#[instrument(level = "info", skip(src))]
-pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
-    info!(
-        line_count = src.lines().count(),
-        char_count = src.chars().count(),
-        "Compiling MeTTa source"
-    );
-
-    // Parse the source into s-expressions using Tree-Sitter
-    let mut parser = TreeSitterMettaParser::new().map_err(|e| SyntaxError {
-        kind: SyntaxErrorKind::ParserInit(e),
-        line: 0,
-        column: 0,
-        text: String::new(),
-        file_path: None,
-    })?;
-
-    let sexprs = parser.parse(src).map_err(|e| {
-        error!(
-            kind = ?e.kind,
-            text = %e,
-            "Syntax error from parsing MeTTa source code"
-        );
-        debug!(src, %e);
-        e
-    })?;
-
-    let metta_values: Result<Vec<_>, _> = sexprs.iter().map(MettaValue::try_from).collect();
-    let metta_values = metta_values.map_err(|e| {
-        error!(
-            text = %e,
-            "Error during converting MeTTa expressions to MeTTa values"
-        );
-        debug!(src, %e);
-        SyntaxError {
-            kind: SyntaxErrorKind::Generic,
-            line: 1,
-            column: 1,
-            text: e,
-            file_path: None,
-        }
-    })?;
-
-    Ok(MettaState::new_compiled(metta_values))
-}
-
-/// Compile MeTTa source code with a file path for error reporting
-/// The file path will be included in any syntax error messages
-pub fn compile_with_path(src: &str, file_path: Option<&str>) -> Result<MettaState, SyntaxError> {
-    compile(src).map_err(|e| match file_path {
-        Some(path) => e.with_file_path(path),
-        None => e,
-    })
-}
 
 // ============================================================================
 // Generic Compilation - Zero-Conversion Support
@@ -78,8 +21,8 @@ pub fn compile_with_path(src: &str, file_path: Option<&str>) -> Result<MettaStat
 
 /// Convert a MettaExpr to any value type using a factory.
 ///
-/// This enables zero-conversion compilation for both heap (MettaValue) and
-/// arena (ArenaValue) allocation strategies.
+/// This generic function enables zero-conversion compilation by delegating
+/// value construction to the provided factory (e.g., `GcFactory`).
 pub fn expr_to_value_generic<V, F>(expr: &MettaExpr, factory: &F) -> Result<V, String>
 where
     V: MettaValueTrait + Clone,
@@ -140,7 +83,7 @@ where
 ///
 /// # Type Parameters
 ///
-/// - `V`: The value type (e.g., `MettaValue` or `ArenaValue`)
+/// - `V`: The value type (e.g., `MettaValue`)
 /// - `F`: The factory type for constructing values
 ///
 /// # Arguments
@@ -211,11 +154,11 @@ where
 // Arena Compilation - Session-Based Dual-Arena Pipeline
 // ============================================================================
 
-/// Compile MeTTa source code to an ArenaState for session-based evaluation.
+/// Compile MeTTa source code to an MettaState for session-based evaluation.
 ///
-/// This function creates a session-scoped ArenaState, compiles the source
+/// This function creates a session-scoped MettaState, compiles the source
 /// expressions into the session's storage arena, and returns the populated
-/// state ready for evaluation with `eval_arena` or `eval_trampoline_arena`.
+/// state ready for evaluation with `eval` or `eval_trampoline`.
 ///
 /// # Arguments
 ///
@@ -223,14 +166,14 @@ where
 ///
 /// # Returns
 ///
-/// An `ArenaState` containing the compiled expressions in its storage arena,
+/// An `MettaState` containing the compiled expressions in its storage arena,
 /// or a syntax error.
 ///
 /// ## Dual-Arena Model
 ///
-/// The returned `ArenaState` owns a session-scoped storage arena:
+/// The returned `MettaState` owns a session-scoped storage arena:
 /// - Source expressions are allocated in the storage arena
-/// - O(1) bulk deallocation when ArenaState is dropped
+/// - O(1) bulk deallocation when MettaState is dropped
 /// - Efficient arena pooling reduces allocation overhead
 ///
 /// During evaluation:
@@ -240,18 +183,18 @@ where
 /// # Example
 ///
 /// ```ignore
-/// use mettatron::backend::compile::compile_arena;
-/// use mettatron::backend::eval::{eval_arena, trampoline::new_arena_env};
+/// use mettatron::backend::compile::compile;
+/// use mettatron::backend::eval::{eval, trampoline::new_env};
 ///
-/// // Compile to ArenaState
-/// let state = compile_arena("!(+ 1 2)").unwrap();
+/// // Compile to MettaState
+/// let state = compile("!(+ 1 2)").unwrap();
 ///
 /// // Create arena environment
-/// let mut env = new_arena_env();
+/// let mut env = new_env();
 ///
 /// // Evaluate - zero conversions throughout
 /// for &expr in state.source() {
-///     let (results, new_env) = eval_arena(expr, env, &state);
+///     let (results, new_env) = eval(expr, env, &state);
 ///     env = new_env;
 /// }
 ///
@@ -259,20 +202,18 @@ where
 /// drop(state);
 /// ```
 #[instrument(level = "info", skip(src))]
-pub fn compile_arena(src: &str) -> Result<ArenaState, SyntaxError> {
-    use crate::backend::models::ArenaState;
-
+pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
     info!(
         line_count = src.lines().count(),
         char_count = src.chars().count(),
-        "Compiling MeTTa source to ArenaState"
+        "Compiling MeTTa source to MettaState"
     );
 
-    // Create ArenaState (acquires storage arena from pool)
-    let mut state = ArenaState::new();
+    // Create MettaState (acquires storage arena from pool)
+    let mut state = MettaState::new();
 
-    // Get factory for storage arena
-    let factory = state.storage_factory();
+    // Get factory for value allocation
+    let factory = state.factory();
 
     // Parse the source into s-expressions using Tree-Sitter
     let mut parser = TreeSitterMettaParser::new().map_err(|e| SyntaxError {
@@ -311,76 +252,22 @@ pub fn compile_arena(src: &str) -> Result<ArenaState, SyntaxError> {
         state.source_mut().push(value);
     }
 
-    info!(expr_count = state.source().len(), "ArenaState compilation successful");
+    info!(expr_count = state.source().len(), "MettaState compilation successful");
 
     Ok(state)
 }
 
-/// Compile MeTTa source code to ArenaState with a file path for error reporting.
+/// Compile MeTTa source code to MettaState with a file path for error reporting.
 ///
-/// Like `compile_arena`, but includes the file path in any syntax error messages.
-pub fn compile_arena_with_path(
+/// Like `compile`, but includes the file path in any syntax error messages.
+pub fn compile_with_path(
     src: &str,
     file_path: Option<&str>,
-) -> Result<ArenaState, SyntaxError> {
-    use crate::backend::models::ArenaState;
-    compile_arena(src).map_err(|e| match file_path {
+) -> Result<MettaState, SyntaxError> {
+    compile(src).map_err(|e| match file_path {
         Some(path) => e.with_file_path(path),
         None => e,
     })
-}
-
-/// Implement idiomatic Rust conversion from MettaExpr to MettaValue
-impl TryFrom<&MettaExpr> for MettaValue {
-    type Error = String;
-
-    fn try_from(sexpr: &MettaExpr) -> Result<Self, String> {
-        match sexpr {
-            MettaExpr::Atom(s, _span) => {
-                // Parse literals (MeTTa uses capitalized True/False per hyperon-experimental)
-                match s.as_str() {
-                    "True" => Ok(MettaValue::Bool(true)),
-                    "False" => Ok(MettaValue::Bool(false)),
-                    _ => {
-                        // Keep the original symbol as-is (including operators like +, -, *, etc.)
-                        Ok(MettaValue::Atom(s.clone()))
-                    }
-                }
-            }
-            MettaExpr::String(s, _span) => Ok(MettaValue::String(s.clone())),
-            MettaExpr::Integer(n, _span) => Ok(MettaValue::Long(*n)),
-            MettaExpr::Float(f, _span) => Ok(MettaValue::Float(*f)),
-            MettaExpr::List(items, _span) => {
-                if items.is_empty() {
-                    // HE-compatible: () is an empty S-expression, not unit
-                    // This allows collapse to produce (()) and () to evaluate to ()
-                    Ok(MettaValue::SExpr(vec![]))
-                } else {
-                    // Check if this is a conjunction: (,) or (, expr1 expr2 ...)
-                    let is_conjunction = items
-                        .first()
-                        .is_some_and(|first| matches!(first, MettaExpr::Atom(s, _) if s == ","));
-
-                    if is_conjunction {
-                        // Convert to Conjunction variant (skip the comma operator)
-                        let goals: Result<Vec<_>, _> =
-                            items[1..].iter().map(MettaValue::try_from).collect();
-                        Ok(MettaValue::Conjunction(goals?))
-                    } else {
-                        // Regular S-expression
-                        let values: Result<Vec<_>, _> =
-                            items.iter().map(MettaValue::try_from).collect();
-                        Ok(MettaValue::SExpr(values?))
-                    }
-                }
-            }
-            MettaExpr::Quoted(expr, _span) => {
-                // For quoted expressions, wrap in a quote operator
-                let inner = MettaValue::try_from(expr.as_ref())?;
-                Ok(MettaValue::quote(inner))
-            }
-        }
-    }
 }
 
 /// Helper function to create an error value
@@ -695,18 +582,18 @@ mod tests {
 
     #[test]
     fn test_error_with_atom_message() {
-        use crate::backend::compile::compile_arena;
-        use crate::backend::eval::eval_arena;
-        use crate::backend::eval::trampoline::new_arena_env;
-        use crate::backend::models::ArenaValueInner;
+        use crate::backend::compile::compile;
+        use crate::backend::eval::eval;
+        use crate::backend::eval::trampoline::new_env;
+        use crate::backend::models::MettaValueInner;
 
         let input = r#"!(error failure-code 42)"#;
-        let state = compile_arena(input).expect("compile failed");
-        let env = new_arena_env();
-        let (results, _env) = eval_arena(state.source()[0], env, &state);
+        let state = compile(input).expect("compile failed");
+        let env = new_env();
+        let (results, _env) = eval(state.source()[0], env, &state);
 
         assert_eq!(results.len(), 1);
-        if let ArenaValueInner::Error(msg, _) = results[0].inner() {
+        if let MettaValueInner::Error(msg, _) = results[0].inner() {
             assert_eq!(*msg, "failure-code");
         } else {
             panic!("Expected error, got: {:?}", results[0]);
@@ -718,62 +605,16 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_compile_arena_simple() {
-        use crate::backend::compile::compile_arena;
-        use crate::backend::models::ArenaValueInner;
-
-        let src = "(+ 1 2)";
-        let result = compile_arena(src);
-        assert!(result.is_ok());
-
-        let state = result.unwrap();
-        let source = state.source();
-        assert_eq!(source.len(), 1);
-        assert!(source[0].is_sexpr());
-
-        if let ArenaValueInner::SExpr(items) = source[0].inner() {
-            assert_eq!(items.len(), 3);
-            assert!(items[0].is_atom());
-            assert_eq!(items[0].as_atom(), Some("+"));
-            assert!(items[1].is_long());
-            assert_eq!(items[1].as_long(), Some(1));
-            assert!(items[2].is_long());
-            assert_eq!(items[2].as_long(), Some(2));
-        } else {
-            panic!("Expected SExpr");
-        }
-    }
-
-    #[test]
-    fn test_compile_arena_literals() {
-        use crate::backend::compile::compile_arena;
-
-        let src = "(True False 42 \"hello\")";
-        let state = compile_arena(src).unwrap();
-        let source = state.source();
-
-        assert_eq!(source.len(), 1);
-        if let Some(items) = source[0].as_sexpr() {
-            assert_eq!(items[0].as_bool(), Some(true));
-            assert_eq!(items[1].as_bool(), Some(false));
-            assert_eq!(items[2].as_long(), Some(42));
-            assert_eq!(items[3].as_string(), Some("hello"));
-        } else {
-            panic!("Expected SExpr");
-        }
-    }
-
-    #[test]
-    fn test_compile_arena_with_eval() {
-        use crate::backend::compile::compile_arena;
-        use crate::backend::eval::trampoline::{eval_trampoline_arena, new_arena_env};
+    fn test_compile_with_eval() {
+        use crate::backend::compile::compile;
+        use crate::backend::eval::trampoline::{eval_trampoline, new_env};
 
         let src = "!(+ 1 2)";
-        let state = compile_arena(src).unwrap();
-        let env = new_arena_env();
+        let state = compile(src).unwrap();
+        let env = new_env();
 
         // Evaluate the expression
-        let (results, _env) = eval_trampoline_arena(state.source()[0], env, &state);
+        let (results, _env) = eval_trampoline(state.source()[0], env, &state);
 
         // Results should contain [3]
         assert_eq!(results.len(), 1);

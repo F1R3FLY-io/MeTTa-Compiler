@@ -6,18 +6,18 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::compile::compile_arena;
-    use crate::backend::eval::trampoline::new_arena_env;
+    use crate::backend::compile::compile;
+    use crate::backend::eval::trampoline::new_env;
 
     /// Helper to run arena-based evaluation and collect results as strings
     fn run_eval(src: &str) -> Vec<String> {
-        use crate::backend::eval::trampoline::eval_trampoline_arena;
-        let state = compile_arena(src).expect("compile failed");
-        let mut env = new_arena_env();
+        use crate::backend::eval::trampoline::eval_trampoline;
+        let state = compile(src).expect("compile failed");
+        let mut env = new_env();
         let mut all_results = Vec::new();
 
         for expr in state.source() {
-            let (results, new_env) = eval_trampoline_arena(expr.clone(), env, &state);
+            let (results, new_env) = eval_trampoline(expr.clone(), env, &state);
             env = new_env;
             for result in &results {
                 all_results.push(result.to_string());

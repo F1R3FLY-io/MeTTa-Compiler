@@ -144,35 +144,35 @@ fn write_output(output: Option<&str>, content: &str) -> Result<(), String> {
     }
 }
 
-/// Format an ArenaValue result for display.
-fn format_result(value: &ArenaValue) -> String {
+/// Format an MettaValue result for display.
+fn format_result(value: &MettaValue) -> String {
     match value.inner() {
-        ArenaValueInner::Atom(s) => s.to_string(),
-        ArenaValueInner::Bool(b) => b.to_string(),
-        ArenaValueInner::Long(n) => n.to_string(),
-        ArenaValueInner::Float(f) => f.to_string(),
-        ArenaValueInner::String(s) => format!("\"{}\"", s),
-        ArenaValueInner::Error(msg, details) => {
+        MettaValueInner::Atom(s) => s.to_string(),
+        MettaValueInner::Bool(b) => b.to_string(),
+        MettaValueInner::Long(n) => n.to_string(),
+        MettaValueInner::Float(f) => f.to_string(),
+        MettaValueInner::String(s) => format!("\"{}\"", s),
+        MettaValueInner::Error(msg, details) => {
             format!("(Error {} {})", msg, format_result(details))
         }
-        ArenaValueInner::Type(t) => format!("Type({})", format_result(t)),
-        ArenaValueInner::SExpr(items) => {
+        MettaValueInner::Type(t) => format!("Type({})", format_result(t)),
+        MettaValueInner::SExpr(items) => {
             let formatted: Vec<String> = items.iter().map(format_result).collect();
             format!("({})", formatted.join(" "))
         }
-        ArenaValueInner::Conjunction(goals) => {
+        MettaValueInner::Conjunction(goals) => {
             let formatted: Vec<String> = goals.iter().map(format_result).collect();
             format!("(, {})", formatted.join(" "))
         }
-        ArenaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-        ArenaValueInner::State(id) => format!("(State {})", id),
-        ArenaValueInner::Unit => "()".to_string(),
-        ArenaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
-        ArenaValueInner::Empty => "Empty".to_string(),
+        MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+        MettaValueInner::State(id) => format!("(State {})", id),
+        MettaValueInner::Unit => "()".to_string(),
+        MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+        MettaValueInner::Empty => "Empty".to_string(),
     }
 }
 
-fn format_results(results: &[ArenaValue]) -> String {
+fn format_results(results: &[MettaValue]) -> String {
     if results.is_empty() {
         return "[]".to_string();
     }
@@ -201,7 +201,7 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         .map(|s| s.as_str());
 
     // Create arena environment (uses eval arena factory)
-    let mut env = new_arena_env();
+    let mut env = new_env();
 
     // Set the current module path for relative includes
     if let Some(ref input_path) = options.input {
@@ -222,12 +222,12 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         env.set_strict_mode(true);
     }
 
-    // Compile to ArenaState (acquires storage arena from pool)
-    let state = compile_arena_with_path(input, file_path)
+    // Compile to MettaState (acquires storage arena from pool)
+    let state = compile_with_path(input, file_path)
         .map_err(|e| e.to_string())?;
 
-    // Snapshot source expressions (ArenaValue is Copy)
-    let source_exprs: Vec<ArenaValue<'static>> = state.source().iter().copied().collect();
+    // Snapshot source expressions (MettaValue is Copy)
+    let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
 
     // Evaluate each expression using arena evaluation with bytecode/JIT tiering
     let mut output = String::new();
@@ -235,11 +235,11 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         // Only output results for S-expressions, not atoms or ground types
         let should_output = expr.is_sexpr();
 
-        let (results, new_env) = eval_arena(expr, env, &state);
+        let (results, new_env) = eval(expr, env, &state);
         env = new_env;
 
         // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
-        let filtered_results: Vec<ArenaValue> = results
+        let filtered_results: Vec<MettaValue> = results
             .into_iter()
             .filter(|v| !v.is_empty())
             .collect();
@@ -251,15 +251,10 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         }
     }
 
-    // ArenaState drops here: O(1) bulk deallocation
-    // - Storage arena returned to pool (reset, not freed)
-    // - Eval arena marked for lazy reset (deferred to next session)
-    //
-    // All ArenaValues have been formatted to String, so it's safe to
-    // explicitly reset the eval arena now to free intermediates.
+    // MettaState drops here — values remain in global slab allocator
+    // and will be reclaimed by GC when no longer referenced.
     drop(state);
     drop(env);
-    mettatron::backend::models::reset_eval_arena();
 
     Ok(output)
 }
@@ -306,7 +301,7 @@ fn run_repl(options: &Options) {
     // Create output highlighter
     let output_highlighter = QueryHighlighter::new().ok();
 
-    let mut env = new_arena_env();
+    let mut env = new_env();
 
     // Configure strict mode if requested
     if options.strict_mode {
@@ -339,17 +334,17 @@ fn run_repl(options: &Options) {
                     helper.add_to_history(input.to_string());
                 }
 
-                match compile_arena(input) {
+                match compile(input) {
                     Ok(state) => {
                         for &expr in state.source() {
                             // Only output results for S-expressions, not atoms or ground types
                             let should_output = expr.is_sexpr();
 
-                            let (results, updated_env) = eval_arena(expr, env, &state);
+                            let (results, updated_env) = eval(expr, env, &state);
                             env = updated_env;
 
                             // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
-                            let filtered_results: Vec<ArenaValue> = results
+                            let filtered_results: Vec<MettaValue> = results
                                 .into_iter()
                                 .filter(|v| !v.is_empty())
                                 .collect();

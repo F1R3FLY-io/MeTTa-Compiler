@@ -40,7 +40,7 @@ impl Compiler {
 
                 // Add all alternatives to constant pool
                 let mut const_indices = Vec::with_capacity(alternatives.len());
-                for alt in alternatives {
+                for alt in *alternatives {
                     let idx = self.builder.add_constant(alt.clone());
                     const_indices.push(idx);
                 }
@@ -54,6 +54,11 @@ impl Compiler {
                     self.builder.emit_raw(&idx.to_be_bytes());
                 }
 
+                Ok(())
+            }
+            // Unit is the normalized form of SExpr([]) - treat as empty superpose
+            MettaValueInner::Unit => {
+                self.builder.emit(Opcode::PushEmpty);
                 Ok(())
             }
             // If not an S-expression, just evaluate the argument
@@ -154,9 +159,10 @@ impl Compiler {
     pub(crate) fn compile_let_star(&mut self, args: &[MettaValue]) -> CompileResult<()> {
         self.check_arity("let*", args.len(), 2)?;
 
-        // Get bindings list
-        let bindings = match args[0].inner() {
-            MettaValueInner::SExpr(items) => items,
+        // Get bindings list (Unit is the normalized form of SExpr([]))
+        let bindings: &[MettaValue] = match args[0].inner() {
+            MettaValueInner::SExpr(items) => *items,
+            MettaValueInner::Unit => &[],
             _ => {
                 return Err(CompileError::InvalidExpression(
                     "let* bindings must be a list".to_string(),
@@ -210,7 +216,7 @@ impl Compiler {
         match pattern.inner() {
             MettaValueInner::Atom(name) if name.starts_with('$') => {
                 // Simple variable binding
-                let var_name = name[1..].to_string();
+                let var_name = (*name)[1..].to_string();
                 let slot = self.context.declare_local(var_name)?;
                 if slot <= 255 {
                     self.builder.emit_byte(Opcode::StoreLocal, slot as u8);
@@ -218,14 +224,14 @@ impl Compiler {
                     self.builder.emit_u16(Opcode::StoreLocalWide, slot);
                 }
             }
-            MettaValueInner::Atom(name) if name == "_" => {
+            MettaValueInner::Atom(name) if *name == "_" => {
                 // Wildcard - just pop the value
                 self.builder.emit(Opcode::Pop);
             }
             MettaValueInner::SExpr(items) => {
                 // Destructuring pattern
                 // For each element, dup the value, extract element, bind
-                for (i, item) in items.iter().enumerate() {
+                for (i, item) in (*items).iter().enumerate() {
                     self.builder.emit(Opcode::Dup);
                     self.builder.emit_byte(Opcode::GetElement, i as u8);
                     self.compile_pattern_binding(item)?;
@@ -246,7 +252,7 @@ impl Compiler {
         match expr.inner() {
             // Atoms can be pushed directly
             MettaValueInner::Atom(name) => {
-                let idx = self.builder.add_constant(MettaValue::Atom(name.clone()));
+                let idx = self.builder.add_constant(MettaValue::Atom(*name));
                 if name.starts_with('$') {
                     self.builder.emit_u16(Opcode::PushVariable, idx);
                 } else {
@@ -255,7 +261,7 @@ impl Compiler {
             }
             // S-expressions need to be built
             MettaValueInner::SExpr(items) => {
-                for item in items {
+                for item in *items {
                     self.compile_quoted(item)?;
                 }
                 if items.len() <= 255 {

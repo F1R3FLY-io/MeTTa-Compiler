@@ -10,7 +10,7 @@ use super::helpers::metta_to_jit;
 use super::space_ops::jit_runtime_space_match;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
 use crate::backend::bytecode::mork_bridge::MorkBridge;
-use crate::backend::models::{MettaValue, MettaValueInner};
+use crate::backend::models::MettaValueInner;
 
 // =============================================================================
 // Phase H: MORK Bridge

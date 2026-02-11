@@ -4,7 +4,7 @@ use super::*;
 use crate::backend::models::MettaValueInner;
 
 // Mock eval function for testing
-fn mock_eval(value: MettaValue, env: HeapEnvironment) -> (Vec<MettaValue>, HeapEnvironment) {
+fn mock_eval(value: MettaValue, env: MettaEnvironment) -> (Vec<MettaValue>, MettaEnvironment) {
     // Just return the value as-is (no evaluation)
     (vec![value], env)
 }
@@ -12,10 +12,10 @@ fn mock_eval(value: MettaValue, env: HeapEnvironment) -> (Vec<MettaValue>, HeapE
 // Mock eval function that propagates errors
 fn mock_eval_with_error(
     value: MettaValue,
-    env: HeapEnvironment,
-) -> (Vec<MettaValue>, HeapEnvironment) {
+    env: MettaEnvironment,
+) -> (Vec<MettaValue>, MettaEnvironment) {
     if let MettaValueInner::Atom(name) = value.inner() {
-        if name == "error_expr" {
+        if *name == "error_expr" {
             return (
                 vec![MettaValue::Error(
                     "test error".to_string(),
@@ -31,7 +31,7 @@ fn mock_eval_with_error(
 #[test]
 fn test_add_op() {
     let add = AddOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(2), MettaValue::Long(3)];
     let result = add.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -43,7 +43,7 @@ fn test_add_op() {
 #[test]
 fn test_add_float() {
     let add = AddOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(2.5), MettaValue::Float(3.5)];
     let result = add.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -59,7 +59,7 @@ fn test_add_float() {
 #[test]
 fn test_comparison_less() {
     let less = LessOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(2), MettaValue::Long(3)];
     let result = less.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -71,7 +71,7 @@ fn test_comparison_less() {
 #[test]
 fn test_logical_and_short_circuit() {
     let and = AndOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     // false AND <anything> should return false without evaluating second arg
     let args = vec![
@@ -87,7 +87,7 @@ fn test_logical_and_short_circuit() {
 #[test]
 fn test_equality() {
     let eq = EqualOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     // Test Nil == ()
     let args = vec![MettaValue::Unit(), MettaValue::SExpr(vec![])];
@@ -100,7 +100,7 @@ fn test_equality() {
 #[test]
 fn test_division_by_zero() {
     let div = DivOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(10), MettaValue::Long(0)];
     let result = div.execute_raw(&args, &env, &mock_eval);
@@ -111,7 +111,7 @@ fn test_division_by_zero() {
 #[test]
 fn test_incorrect_arity() {
     let add = AddOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(1)];
     let result = add.execute_raw(&args, &env, &mock_eval);
@@ -122,7 +122,7 @@ fn test_incorrect_arity() {
 #[test]
 fn test_type_error_on_type_mismatch() {
     let add = AddOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![
         MettaValue::Long(1),
@@ -141,7 +141,7 @@ fn test_type_error_on_type_mismatch() {
 #[test]
 fn test_add_integer_overflow() {
     let add = AddOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(i64::MAX), MettaValue::Long(1)];
     let result = add.execute_raw(&args, &env, &mock_eval);
@@ -152,7 +152,7 @@ fn test_add_integer_overflow() {
 #[test]
 fn test_add_mixed_long_float() {
     let add = AddOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(2), MettaValue::Float(3.5)];
     let result = add.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -168,7 +168,7 @@ fn test_add_mixed_long_float() {
 #[test]
 fn test_add_mixed_float_long() {
     let add = AddOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(2.5), MettaValue::Long(3)];
     let result = add.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -184,7 +184,7 @@ fn test_add_mixed_float_long() {
 #[test]
 fn test_add_error_propagation_first_arg() {
     let add = AddOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![
         MettaValue::Atom("error_expr".to_string()),
@@ -199,7 +199,7 @@ fn test_add_error_propagation_first_arg() {
 #[test]
 fn test_add_error_propagation_second_arg() {
     let add = AddOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![
         MettaValue::Long(5),
@@ -214,7 +214,7 @@ fn test_add_error_propagation_second_arg() {
 #[test]
 fn test_sub_integer_overflow() {
     let sub = SubOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(i64::MIN), MettaValue::Long(1)];
     let result = sub.execute_raw(&args, &env, &mock_eval);
@@ -225,7 +225,7 @@ fn test_sub_integer_overflow() {
 #[test]
 fn test_sub_float() {
     let sub = SubOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(5.5), MettaValue::Float(2.5)];
     let result = sub.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -241,7 +241,7 @@ fn test_sub_float() {
 #[test]
 fn test_sub_mixed_long_float() {
     let sub = SubOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(5), MettaValue::Float(2.5)];
     let result = sub.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -257,7 +257,7 @@ fn test_sub_mixed_long_float() {
 #[test]
 fn test_sub_mixed_float_long() {
     let sub = SubOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(5.5), MettaValue::Long(2)];
     let result = sub.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -273,7 +273,7 @@ fn test_sub_mixed_float_long() {
 #[test]
 fn test_sub_type_error() {
     let sub = SubOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![
         MettaValue::Atom("not-a-number".to_string()),
@@ -287,7 +287,7 @@ fn test_sub_type_error() {
 #[test]
 fn test_mul_integer_overflow() {
     let mul = MulOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(i64::MAX), MettaValue::Long(2)];
     let result = mul.execute_raw(&args, &env, &mock_eval);
@@ -298,7 +298,7 @@ fn test_mul_integer_overflow() {
 #[test]
 fn test_mul_float() {
     let mul = MulOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(2.5), MettaValue::Float(4.0)];
     let result = mul.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -314,7 +314,7 @@ fn test_mul_float() {
 #[test]
 fn test_mul_mixed_long_float() {
     let mul = MulOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(3), MettaValue::Float(2.5)];
     let result = mul.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -330,7 +330,7 @@ fn test_mul_mixed_long_float() {
 #[test]
 fn test_mul_mixed_float_long() {
     let mul = MulOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(2.5), MettaValue::Long(3)];
     let result = mul.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -346,7 +346,7 @@ fn test_mul_mixed_float_long() {
 #[test]
 fn test_mul_type_error() {
     let mul = MulOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Bool(true), MettaValue::Long(1)];
     let result = mul.execute_raw(&args, &env, &mock_eval);
@@ -357,7 +357,7 @@ fn test_mul_type_error() {
 #[test]
 fn test_div_float() {
     let div = DivOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(10.0), MettaValue::Float(4.0)];
     let result = div.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -373,7 +373,7 @@ fn test_div_float() {
 #[test]
 fn test_div_float_by_zero() {
     let div = DivOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(10.0), MettaValue::Float(0.0)];
     let result = div.execute_raw(&args, &env, &mock_eval);
@@ -384,7 +384,7 @@ fn test_div_float_by_zero() {
 #[test]
 fn test_div_mixed_long_float() {
     let div = DivOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(10), MettaValue::Float(4.0)];
     let result = div.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -400,7 +400,7 @@ fn test_div_mixed_long_float() {
 #[test]
 fn test_div_mixed_long_float_by_zero() {
     let div = DivOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(10), MettaValue::Float(0.0)];
     let result = div.execute_raw(&args, &env, &mock_eval);
@@ -411,7 +411,7 @@ fn test_div_mixed_long_float_by_zero() {
 #[test]
 fn test_div_mixed_float_long() {
     let div = DivOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(10.0), MettaValue::Long(4)];
     let result = div.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -427,7 +427,7 @@ fn test_div_mixed_float_long() {
 #[test]
 fn test_div_mixed_float_long_by_zero() {
     let div = DivOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(10.0), MettaValue::Long(0)];
     let result = div.execute_raw(&args, &env, &mock_eval);
@@ -438,7 +438,7 @@ fn test_div_mixed_float_long_by_zero() {
 #[test]
 fn test_div_type_error() {
     let div = DivOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::String("test".to_string()), MettaValue::Long(1)];
     let result = div.execute_raw(&args, &env, &mock_eval);
@@ -449,7 +449,7 @@ fn test_div_type_error() {
 #[test]
 fn test_mod_by_zero() {
     let mod_op = ModOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(10), MettaValue::Long(0)];
     let result = mod_op.execute_raw(&args, &env, &mock_eval);
@@ -460,7 +460,7 @@ fn test_mod_by_zero() {
 #[test]
 fn test_mod_normal() {
     let mod_op = ModOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(10), MettaValue::Long(3)];
     let result = mod_op.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -472,7 +472,7 @@ fn test_mod_normal() {
 #[test]
 fn test_mod_type_error() {
     let mod_op = ModOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Float(10.0), MettaValue::Long(3)];
     let result = mod_op.execute_raw(&args, &env, &mock_eval);
@@ -483,7 +483,7 @@ fn test_mod_type_error() {
 #[test]
 fn test_mod_second_arg_type_error() {
     let mod_op = ModOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(10), MettaValue::Float(3.0)];
     let result = mod_op.execute_raw(&args, &env, &mock_eval);
@@ -498,7 +498,7 @@ fn test_mod_second_arg_type_error() {
 #[test]
 fn test_less_false() {
     let less = LessOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(5), MettaValue::Long(3)];
     let result = less.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -510,7 +510,7 @@ fn test_less_false() {
 #[test]
 fn test_less_equal_values() {
     let less = LessOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(3), MettaValue::Long(3)];
     let result = less.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -522,7 +522,7 @@ fn test_less_equal_values() {
 #[test]
 fn test_less_eq_true() {
     let less_eq = LessEqOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(3), MettaValue::Long(3)];
     let result = less_eq.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -534,7 +534,7 @@ fn test_less_eq_true() {
 #[test]
 fn test_less_eq_false() {
     let less_eq = LessEqOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(5), MettaValue::Long(3)];
     let result = less_eq.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -546,7 +546,7 @@ fn test_less_eq_false() {
 #[test]
 fn test_greater_true() {
     let greater = GreaterOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(5), MettaValue::Long(3)];
     let result = greater.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -558,7 +558,7 @@ fn test_greater_true() {
 #[test]
 fn test_greater_false() {
     let greater = GreaterOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(3), MettaValue::Long(5)];
     let result = greater.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -570,7 +570,7 @@ fn test_greater_false() {
 #[test]
 fn test_greater_eq_true() {
     let greater_eq = GreaterEqOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(5), MettaValue::Long(5)];
     let result = greater_eq.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -582,7 +582,7 @@ fn test_greater_eq_true() {
 #[test]
 fn test_greater_eq_false() {
     let greater_eq = GreaterEqOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(3), MettaValue::Long(5)];
     let result = greater_eq.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -594,7 +594,7 @@ fn test_greater_eq_false() {
 #[test]
 fn test_not_equal_true() {
     let not_eq = NotEqualOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(3), MettaValue::Long(5)];
     let result = not_eq.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -606,7 +606,7 @@ fn test_not_equal_true() {
 #[test]
 fn test_not_equal_false() {
     let not_eq = NotEqualOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(5), MettaValue::Long(5)];
     let result = not_eq.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -618,7 +618,7 @@ fn test_not_equal_false() {
 #[test]
 fn test_equality_different_types() {
     let eq = EqualOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Long(5), MettaValue::Float(5.0)];
     let result = eq.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -631,7 +631,7 @@ fn test_equality_different_types() {
 #[test]
 fn test_equality_atoms() {
     let eq = EqualOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![
         MettaValue::Atom("test".to_string()),
@@ -646,7 +646,7 @@ fn test_equality_atoms() {
 #[test]
 fn test_equality_bools() {
     let eq = EqualOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Bool(true), MettaValue::Bool(true)];
     let result = eq.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -662,7 +662,7 @@ fn test_equality_bools() {
 #[test]
 fn test_and_true_true() {
     let and = AndOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Bool(true), MettaValue::Bool(true)];
     let result = and.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -674,7 +674,7 @@ fn test_and_true_true() {
 #[test]
 fn test_and_true_false() {
     let and = AndOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Bool(true), MettaValue::Bool(false)];
     let result = and.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -686,7 +686,7 @@ fn test_and_true_false() {
 #[test]
 fn test_or_false_false() {
     let or = OrOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Bool(false), MettaValue::Bool(false)];
     let result = or.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -698,7 +698,7 @@ fn test_or_false_false() {
 #[test]
 fn test_or_true_false() {
     let or = OrOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Bool(true), MettaValue::Bool(false)];
     let result = or.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -710,7 +710,7 @@ fn test_or_true_false() {
 #[test]
 fn test_or_short_circuit() {
     let or = OrOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     // true OR <anything> should return true without evaluating second arg
     let args = vec![
@@ -726,7 +726,7 @@ fn test_or_short_circuit() {
 #[test]
 fn test_not_true() {
     let not = NotOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Bool(true)];
     let result = not.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -738,7 +738,7 @@ fn test_not_true() {
 #[test]
 fn test_not_false() {
     let not = NotOp;
-    let env = HeapEnvironment::default();
+    let env = MettaEnvironment::default();
 
     let args = vec![MettaValue::Bool(false)];
     let result = not.execute_raw(&args, &env, &mock_eval).unwrap();
@@ -758,62 +758,16 @@ fn test_registry_new() {
 }
 
 #[test]
-fn test_registry_with_standard_ops() {
-    let registry = GroundedRegistry::with_standard_ops();
-    assert!(registry.get("+").is_some());
-    assert!(registry.get("-").is_some());
-    assert!(registry.get("*").is_some());
-    assert!(registry.get("/").is_some());
-    assert!(registry.get("%").is_some());
-    assert!(registry.get("<").is_some());
-    assert!(registry.get("<=").is_some());
-    assert!(registry.get(">").is_some());
-    assert!(registry.get(">=").is_some());
-    assert!(registry.get("==").is_some());
-    assert!(registry.get("!=").is_some());
-    assert!(registry.get("and").is_some());
-    assert!(registry.get("or").is_some());
-    assert!(registry.get("not").is_some());
-}
-
-#[test]
-fn test_registry_default() {
+fn test_registry_default_is_empty() {
     let registry = GroundedRegistry::default();
-    assert!(registry.get("+").is_some());
-}
-
-#[test]
-fn test_registry_clone() {
-    let registry = GroundedRegistry::with_standard_ops();
-    let cloned = registry.clone();
-    assert!(cloned.get("+").is_some());
-}
-
-#[test]
-fn test_registry_tco_new() {
-    let registry = GroundedRegistryTCO::new();
+    // Default is now empty — active evaluation uses GenericGroundedRegistry
     assert!(registry.get("+").is_none());
 }
 
 #[test]
-fn test_registry_tco_with_standard_ops() {
-    let registry = GroundedRegistryTCO::with_standard_ops();
-    assert!(registry.get("+").is_some());
-    assert!(registry.get("-").is_some());
-    assert!(registry.get("*").is_some());
-    assert!(registry.get("/").is_some());
-    assert!(registry.get("%").is_some());
-}
-
-#[test]
-fn test_registry_tco_default() {
-    let registry = GroundedRegistryTCO::default();
-    assert!(registry.get("+").is_some());
-}
-
-#[test]
-fn test_registry_tco_clone() {
-    let registry = GroundedRegistryTCO::with_standard_ops();
+fn test_registry_clone() {
+    let mut registry = GroundedRegistry::new();
+    registry.register(std::sync::Arc::new(AddOp));
     let cloned = registry.clone();
     assert!(cloned.get("+").is_some());
 }

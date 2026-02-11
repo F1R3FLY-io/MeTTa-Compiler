@@ -105,7 +105,7 @@ proptest! {
     /// Adding a rule increases rule_count by 1
     #[test]
     fn prop_add_rule_increments_count(rule in arb_rule()) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let count_before = env.rule_count();
         env.add_rule(rule);
         let count_after = env.rule_count();
@@ -115,7 +115,7 @@ proptest! {
     /// Adding multiple distinct rules increases count correctly
     #[test]
     fn prop_add_multiple_rules(rules in prop::collection::vec(arb_rule(), 1..10)) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let n = rules.len();
         for rule in rules {
             env.add_rule(rule);
@@ -126,7 +126,7 @@ proptest! {
     /// Clone isolation: mutations to clone don't affect original
     #[test]
     fn prop_clone_isolation(rule in arb_rule()) {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let original_count = env.rule_count();
 
         let mut clone = env.clone();
@@ -141,7 +141,7 @@ proptest! {
     /// Multiple clones are independent
     #[test]
     fn prop_multiple_clones_independent(rules in prop::collection::vec(arb_rule(), 3..=3)) {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
 
         let mut clone1 = env.clone();
         let mut clone2 = env.clone();
@@ -170,7 +170,7 @@ proptest! {
     /// so we test that adding increases the multiplicity from 1 to 1+ when added.
     #[test]
     fn prop_add_fact_increments_multiplicity(fact in arb_fact()) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add the fact
         env.add_to_space(&fact);
@@ -182,7 +182,7 @@ proptest! {
     /// Adding same fact N times results in multiplicity N
     #[test]
     fn prop_add_fact_n_times(fact in arb_fact(), n in 1usize..5) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         for _ in 0..n {
             env.add_to_space(&fact);
@@ -195,7 +195,7 @@ proptest! {
     /// Removing decrements multiplicity (testing the delta, not absolute value)
     #[test]
     fn prop_remove_fact_decrements_multiplicity(fact in arb_fact()) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add twice
         env.add_to_space(&fact);
@@ -217,7 +217,7 @@ proptest! {
     /// Different facts have independent multiplicities
     #[test]
     fn prop_facts_independent_multiplicity(facts in prop::collection::vec(arb_fact(), 2..=2)) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         let fact1 = &facts[0];
         let fact2 = &facts[1];
@@ -237,7 +237,7 @@ proptest! {
     /// Clone preserves multiplicities
     #[test]
     fn prop_clone_preserves_multiplicities(fact in arb_fact(), n in 1usize..4) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         for _ in 0..n {
             env.add_to_space(&fact);
@@ -251,7 +251,7 @@ proptest! {
     /// Clone isolation for multiplicities
     #[test]
     fn prop_clone_multiplicity_isolation(fact in arb_fact()) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         env.add_to_space(&fact);
         env.add_to_space(&fact);
 
@@ -275,7 +275,7 @@ proptest! {
     /// match_space returns correct number of results for multiplicity
     #[test]
     fn prop_match_space_returns_multiplicity_results(fact in arb_fact(), n in 1usize..4) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         for _ in 0..n {
             env.add_to_space(&fact);
@@ -294,7 +294,7 @@ proptest! {
     /// match_space with non-existent pattern returns empty
     #[test]
     fn prop_match_space_nonexistent_empty(fact in arb_fact()) {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
 
         let template = MettaValue::Atom("found".to_string());
         let results: Vec<MettaValue> = env
@@ -317,14 +317,14 @@ proptest! {
     /// New environment owns data
     #[test]
     fn prop_new_env_owns_data(_unit: ()) {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         prop_assert!(env.owns_data);
     }
 
     /// Clone does not own data initially
     #[test]
     fn prop_clone_does_not_own_data(_unit: ()) {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let clone = env.clone();
         prop_assert!(!clone.owns_data);
     }
@@ -332,7 +332,7 @@ proptest! {
     /// Clone owns data after mutation
     #[test]
     fn prop_clone_owns_data_after_mutation(rule in arb_rule()) {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let mut clone = env.clone();
 
         prop_assert!(!clone.owns_data);
@@ -345,7 +345,7 @@ proptest! {
     /// Make_owned is idempotent (second mutation doesn't re-copy)
     #[test]
     fn prop_make_owned_idempotent(rules in prop::collection::vec(arb_rule(), 2..=2)) {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         let mut clone = env.clone();
 
         // First mutation triggers make_owned
@@ -370,7 +370,7 @@ proptest! {
     /// Rules can be retrieved after adding
     #[test]
     fn prop_rules_retrievable(rule in arb_rule()) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         env.add_rule(rule.clone());
 
         // Get head symbol and arity from LHS
@@ -388,7 +388,7 @@ proptest! {
     /// iter_rules returns all added rules
     #[test]
     fn prop_iter_rules_returns_all(rules in prop::collection::vec(arb_rule(), 1..5)) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let n = rules.len();
 
         for rule in rules {
@@ -410,14 +410,14 @@ proptest! {
     /// has_binding returns false for non-existing bindings
     #[test]
     fn prop_has_binding_false_for_nonexistent(name in arb_symbol_name()) {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         prop_assert!(!env.has_binding(&name));
     }
 
     /// get_binding returns None for non-existing bindings
     #[test]
     fn prop_get_binding_none_for_nonexistent(name in arb_symbol_name()) {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
         prop_assert!(env.get_binding(&name).is_none());
     }
 }
@@ -432,7 +432,7 @@ proptest! {
     /// create_state creates unique state IDs
     #[test]
     fn prop_create_state_unique_ids(_unit: ()) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         let state1 = env.create_state(&MettaValue::Long(1));
         let state2 = env.create_state(&MettaValue::Long(2));
@@ -447,7 +447,7 @@ proptest! {
     /// get_state returns the stored value
     #[test]
     fn prop_get_state_returns_value(val in arb_simple_value()) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let state_id = env.create_state(&val);
 
         let retrieved = env.get_state(state_id);
@@ -458,7 +458,7 @@ proptest! {
     /// change_state updates the value
     #[test]
     fn prop_change_state_updates(val1 in arb_simple_value(), val2 in arb_simple_value()) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let state_id = env.create_state(&val1);
 
         // Change state
@@ -474,7 +474,7 @@ proptest! {
     /// has_state returns correct value
     #[test]
     fn prop_has_state_correct(val in arb_simple_value()) {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Non-existent state
         prop_assert!(!env.has_state(99999));
@@ -496,7 +496,7 @@ mod regression_tests {
     /// Test: Empty environment operations don't panic
     #[test]
     fn test_empty_env_operations() {
-        let env = HeapEnvironment::default();
+        let env = MettaEnvironment::default();
 
         // These should not panic
         let _ = env.rule_count();
@@ -511,7 +511,7 @@ mod regression_tests {
     /// Test: Clone chain maintains isolation at all levels
     #[test]
     fn test_deep_clone_chain_isolation() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         env.add_rule(Rule::new(
             MettaValue::Atom("level0".to_string()),
             MettaValue::Atom("body0".to_string()),
@@ -544,7 +544,7 @@ mod regression_tests {
     /// Test: Removing non-existent fact doesn't panic
     #[test]
     fn test_remove_nonexistent_fact() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let fact = MettaValue::Atom("nonexistent".to_string());
 
         // This should not panic
@@ -559,7 +559,7 @@ mod regression_tests {
     /// Test: match_space with variable pattern works
     #[test]
     fn test_match_space_with_variable() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         let fact = MettaValue::SExpr(vec![
             MettaValue::Atom("person".to_string()),
@@ -584,7 +584,7 @@ mod regression_tests {
         assert_eq!(results.len(), 1);
 
         if let MettaValueInner::Atom(name) = results[0].inner() {
-            assert_eq!(name, "Alice");
+            assert_eq!(*name, "Alice");
         } else {
             panic!("Expected atom result");
         }
@@ -594,7 +594,7 @@ mod regression_tests {
     /// Note: States use RwLock<HashMap> and are explicitly NOT copy-on-write
     #[test]
     fn test_state_clone_shared() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let state_id = env.create_state(&MettaValue::Long(100));
 
         let mut clone = env.clone();
@@ -610,7 +610,7 @@ mod regression_tests {
     /// Test: Rule index is correctly maintained
     #[test]
     fn test_rule_index_maintained() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add rules with same head
         env.add_rule(Rule::new(
@@ -640,7 +640,7 @@ mod regression_tests {
     /// Test: Space operations with different value types
     #[test]
     fn test_space_ops_different_types() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         let facts = vec![
             MettaValue::Long(42),

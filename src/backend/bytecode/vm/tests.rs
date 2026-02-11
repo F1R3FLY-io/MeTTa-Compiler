@@ -8,10 +8,9 @@ use super::pattern::{pattern_matches, unify};
 use super::types::VmError;
 use super::BytecodeVM;
 use crate::backend::bytecode::chunk::ChunkBuilder;
-use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::bytecode::opcodes::Opcode;
-use crate::backend::environment::HeapEnvironment;
-use crate::backend::models::{MettaValue, MettaValueInner, SpaceHandle};
+use crate::backend::environment::GenericEnvironment;
+use crate::backend::models::{GcFactory, MettaValue, MettaValueInner, SpaceHandle};
 
 #[test]
 fn test_vm_push_pop() {
@@ -129,12 +128,12 @@ fn test_pattern_matches() {
 
     // S-expression matching
     assert!(pattern_matches(
-        &MettaValue::sexpr(vec![
+        &MettaValue::SExpr(vec![
             MettaValue::sym("add"),
             MettaValue::var("x"),
             MettaValue::var("y"),
         ]),
-        &MettaValue::sexpr(vec![
+        &MettaValue::SExpr(vec![
             MettaValue::sym("add"),
             MettaValue::Long(1),
             MettaValue::Long(2),
@@ -1069,8 +1068,8 @@ fn test_pattern_wildcard() {
     ));
 
     assert!(pattern_matches(
-        &MettaValue::sexpr(vec![MettaValue::sym("_"), MettaValue::Long(2),]),
-        &MettaValue::sexpr(vec![MettaValue::sym("anything"), MettaValue::Long(2),])
+        &MettaValue::SExpr(vec![MettaValue::sym("_"), MettaValue::Long(2),]),
+        &MettaValue::SExpr(vec![MettaValue::sym("anything"), MettaValue::Long(2),])
     ));
 }
 
@@ -1094,12 +1093,12 @@ fn test_unification_bidirectional() {
 #[test]
 fn test_unification_sexpr() {
     let bindings = unify(
-        &MettaValue::sexpr(vec![
+        &MettaValue::SExpr(vec![
             MettaValue::sym("add"),
             MettaValue::var("x"),
             MettaValue::var("y"),
         ]),
-        &MettaValue::sexpr(vec![
+        &MettaValue::SExpr(vec![
             MettaValue::sym("add"),
             MettaValue::Long(1),
             MettaValue::Long(2),
@@ -1119,8 +1118,8 @@ fn test_unification_failure() {
 
     // Different arity S-expressions don't unify
     assert!(unify(
-        &MettaValue::sexpr(vec![MettaValue::Long(1)]),
-        &MettaValue::sexpr(vec![MettaValue::Long(1), MettaValue::Long(2)])
+        &MettaValue::SExpr(vec![MettaValue::Long(1)]),
+        &MettaValue::SExpr(vec![MettaValue::Long(1), MettaValue::Long(2)])
     )
     .is_none());
 }
@@ -1129,23 +1128,21 @@ fn test_unification_failure() {
 
 #[test]
 fn test_vm_space_add_get_atoms() {
-    // Create a space manually and test add/get operations
-    let space = SpaceHandle::new(1, "test_space".to_string());
+    // Add atoms to the environment's space and retrieve them via SpaceGetAtoms
+    let mut env = GenericEnvironment::new(GcFactory::default());
 
-    // Add some atoms to the space
-    space.add_atom(MettaValue::Long(1));
-    space.add_atom(MettaValue::Long(2));
-    space.add_atom(MettaValue::sym("foo"));
+    // Add atoms to the environment's default space
+    env.add_to_space(&MettaValue::Long(1));
+    env.add_to_space(&MettaValue::Long(2));
+    env.add_to_space(&MettaValue::sym("foo"));
 
-    // Create bytecode that pushes the space and gets its atoms
+    // Create bytecode that gets atoms from the environment
     let mut builder = ChunkBuilder::new("test");
-    let space_const = builder.add_constant(MettaValue::Space(space.clone()));
-    builder.emit_u16(Opcode::PushConstant, space_const);
     builder.emit(Opcode::SpaceGetAtoms);
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::new(chunk);
+    let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
     assert_eq!(results.len(), 1);
@@ -1220,15 +1217,15 @@ fn test_vm_space_remove_opcode() {
 fn test_vm_space_match_opcode() {
     // Test SpaceMatch opcode with simple pattern matching
     let space = SpaceHandle::new(4, "match_test".to_string());
-    space.add_atom(MettaValue::sexpr(vec![
+    space.add_atom(MettaValue::SExpr(vec![
         MettaValue::sym("fact"),
         MettaValue::Long(1),
     ]));
-    space.add_atom(MettaValue::sexpr(vec![
+    space.add_atom(MettaValue::SExpr(vec![
         MettaValue::sym("fact"),
         MettaValue::Long(2),
     ]));
-    space.add_atom(MettaValue::sexpr(vec![
+    space.add_atom(MettaValue::SExpr(vec![
         MettaValue::sym("other"),
         MettaValue::Long(3),
     ]));
@@ -1236,7 +1233,7 @@ fn test_vm_space_match_opcode() {
     let mut builder = ChunkBuilder::new("test");
     let space_const = builder.add_constant(MettaValue::Space(space.clone()));
     // Pattern: (fact $x)
-    let pattern = builder.add_constant(MettaValue::sexpr(vec![
+    let pattern = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("fact"),
         MettaValue::var("x"),
     ]));
@@ -1279,14 +1276,9 @@ fn test_vm_collect_empty() {
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
 
-    // Should return empty list
+    // Should return empty list (normalized to Unit after Nil/Unit merge)
     assert_eq!(results.len(), 1);
-    match results[0].inner() {
-        MettaValueInner::SExpr(items) => {
-            assert!(items.is_empty());
-        }
-        _ => panic!("Expected S-expression"),
-    }
+    assert!(results[0].is_unit(), "Expected Unit (empty S-expression)");
 }
 
 #[test]
@@ -1354,8 +1346,7 @@ fn test_vm_collect_filters_nil() {
 #[test]
 fn test_vm_call_no_rules() {
     // Test Call opcode with no matching rules - should return expression unchanged
-    let env = HeapEnvironment::default();
-    let bridge = Arc::new(MorkBridge::from_env(env));
+    let env = GenericEnvironment::new(GcFactory::default());
 
     // Build bytecode for (unknown 42)
     let mut builder = ChunkBuilder::new("test_call_no_rules");
@@ -1366,7 +1357,7 @@ fn test_vm_call_no_rules() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::with_bridge(chunk, bridge);
+    let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
     // Should return (unknown 42) since no rules match
@@ -1383,11 +1374,11 @@ fn test_vm_call_no_rules() {
 
 #[test]
 fn test_vm_call_simple_rule() {
-    use crate::backend::models::Rule;
+    use crate::backend::models::GenericRule;
 
     // Test Call opcode with a simple rule: (double $x) -> (+ $x $x)
-    let mut env = HeapEnvironment::default();
-    let rule = Rule::new(
+    let mut env = GenericEnvironment::new(GcFactory::default());
+    let rule = GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("double"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("+"),
@@ -1395,8 +1386,7 @@ fn test_vm_call_simple_rule() {
             MettaValue::sym("$x"),
         ]),
     );
-    env.add_rule(rule);
-    let bridge = Arc::new(MorkBridge::from_env(env));
+    env.add_generic_rule(rule);
 
     // Build bytecode for (double 5)
     let mut builder = ChunkBuilder::new("test_call_simple");
@@ -1407,12 +1397,16 @@ fn test_vm_call_simple_rule() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::with_bridge(chunk, bridge);
+    let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
-    // The rule body (+ $x $x) with $x=5 compiles to Add, so result should be 10
+    // Rule dispatch substitutes (+ $x $x) with $x=5 → (+ 5 5).
+    // Lazy semantics: the VM returns the substituted S-expression, not the reduced value.
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Long(10));
+    let items = results[0].as_sexpr().expect("result should be an S-expression");
+    assert_eq!(items[0].as_atom(), Some("+"));
+    assert_eq!(items[1].as_long(), Some(5));
+    assert_eq!(items[2].as_long(), Some(5));
 }
 
 #[test]
@@ -1445,8 +1439,7 @@ fn test_vm_call_no_bridge() {
 #[test]
 fn test_vm_tail_call_no_rules() {
     // Test TailCall opcode with no matching rules
-    let env = HeapEnvironment::default();
-    let bridge = Arc::new(MorkBridge::from_env(env));
+    let env = GenericEnvironment::new(GcFactory::default());
 
     // Build bytecode for (unknown 42) using TailCall
     let mut builder = ChunkBuilder::new("test_tail_call_no_rules");
@@ -1457,7 +1450,7 @@ fn test_vm_tail_call_no_rules() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::with_bridge(chunk, bridge);
+    let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
     // Should return (unknown 42) since no rules match
@@ -1474,11 +1467,11 @@ fn test_vm_tail_call_no_rules() {
 
 #[test]
 fn test_vm_tail_call_simple_rule() {
-    use crate::backend::models::Rule;
+    use crate::backend::models::GenericRule;
 
     // Test TailCall opcode with a simple rule: (inc $x) -> (+ $x 1)
-    let mut env = HeapEnvironment::default();
-    let rule = Rule::new(
+    let mut env = GenericEnvironment::new(GcFactory::default());
+    let rule = GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("inc"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("+"),
@@ -1486,8 +1479,7 @@ fn test_vm_tail_call_simple_rule() {
             MettaValue::Long(1),
         ]),
     );
-    env.add_rule(rule);
-    let bridge = Arc::new(MorkBridge::from_env(env));
+    env.add_generic_rule(rule);
 
     // Build bytecode for (inc 10) using TailCall
     let mut builder = ChunkBuilder::new("test_tail_call_simple");
@@ -1498,21 +1490,25 @@ fn test_vm_tail_call_simple_rule() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::with_bridge(chunk, bridge);
+    let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
-    // The rule body (+ $x 1) with $x=10 compiles to Add, so result should be 11
+    // Rule dispatch substitutes (+ $x 1) with $x=10 → (+ 10 1).
+    // Lazy semantics: the VM returns the substituted S-expression, not the reduced value.
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Long(11));
+    let items = results[0].as_sexpr().expect("result should be an S-expression");
+    assert_eq!(items[0].as_atom(), Some("+"));
+    assert_eq!(items[1].as_long(), Some(10));
+    assert_eq!(items[2].as_long(), Some(1));
 }
 
 #[test]
 fn test_vm_call_with_multiple_args() {
-    use crate::backend::models::Rule;
+    use crate::backend::models::GenericRule;
 
     // Test Call with multiple arguments: (add3 $a $b $c) -> (+ (+ $a $b) $c)
-    let mut env = HeapEnvironment::default();
-    let rule = Rule::new(
+    let mut env = GenericEnvironment::new(GcFactory::default());
+    let rule = GenericRule::new(
         MettaValue::SExpr(vec![
             MettaValue::sym("add3"),
             MettaValue::sym("$a"),
@@ -1529,8 +1525,7 @@ fn test_vm_call_with_multiple_args() {
             MettaValue::sym("$c"),
         ]),
     );
-    env.add_rule(rule);
-    let bridge = Arc::new(MorkBridge::from_env(env));
+    env.add_generic_rule(rule);
 
     // Build bytecode for (add3 1 2 3)
     let mut builder = ChunkBuilder::new("test_call_multi_args");
@@ -1543,12 +1538,21 @@ fn test_vm_call_with_multiple_args() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::with_bridge(chunk, bridge);
+    let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
-    // (add3 1 2 3) -> (+ (+ 1 2) 3) -> (+ 3 3) -> 6
+    // Rule dispatch substitutes (add3 1 2 3) → (+ (+ 1 2) 3).
+    // Lazy semantics: the VM returns the substituted S-expression, not the reduced value.
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Long(6));
+    let items = results[0].as_sexpr().expect("result should be an S-expression");
+    assert_eq!(items[0].as_atom(), Some("+"));
+    // items[1] = (+ 1 2)
+    let inner = items[1].as_sexpr().expect("inner should be an S-expression");
+    assert_eq!(inner[0].as_atom(), Some("+"));
+    assert_eq!(inner[1].as_long(), Some(1));
+    assert_eq!(inner[2].as_long(), Some(2));
+    // items[2] = 3
+    assert_eq!(items[2].as_long(), Some(3));
 }
 
 // =======================================================================
@@ -1557,34 +1561,32 @@ fn test_vm_call_with_multiple_args() {
 
 #[test]
 fn test_vm_call_multiple_rules_creates_choice_point() {
-    use crate::backend::models::Rule;
+    use crate::backend::models::GenericRule;
 
     // Set up environment with multiple rules for (choose)
     // This tests that op_call creates choice points for multiple matching rules
-    let mut env = HeapEnvironment::default();
+    let mut env = GenericEnvironment::new(GcFactory::default());
 
     // Rule 1: (= (choose) a)
-    let rule1 = Rule::new(
+    let rule1 = GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("choose")]),
         MettaValue::sym("a"),
     );
-    env.add_rule(rule1);
+    env.add_generic_rule(rule1);
 
     // Rule 2: (= (choose) b)
-    let rule2 = Rule::new(
+    let rule2 = GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("choose")]),
         MettaValue::sym("b"),
     );
-    env.add_rule(rule2);
+    env.add_generic_rule(rule2);
 
     // Rule 3: (= (choose) c)
-    let rule3 = Rule::new(
+    let rule3 = GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("choose")]),
         MettaValue::sym("c"),
     );
-    env.add_rule(rule3);
-
-    let bridge = Arc::new(MorkBridge::from_env(env));
+    env.add_generic_rule(rule3);
 
     // Build bytecode for (choose) with Yield
     // When choice points are exhausted, op_fail returns Break directly
@@ -1597,7 +1599,7 @@ fn test_vm_call_multiple_rules_creates_choice_point() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::with_bridge(chunk, bridge);
+    let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
     // Results are returned directly as separate values when exhausted
@@ -1622,11 +1624,11 @@ fn test_vm_call_multiple_rules_creates_choice_point() {
 
 #[test]
 fn test_vm_call_single_rule_no_choice_point() {
-    use crate::backend::models::Rule;
+    use crate::backend::models::GenericRule;
 
     // Set up environment with a single rule
-    let mut env = HeapEnvironment::default();
-    let rule = Rule::new(
+    let mut env = GenericEnvironment::new(GcFactory::default());
+    let rule = GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("single"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("+"),
@@ -1634,9 +1636,7 @@ fn test_vm_call_single_rule_no_choice_point() {
             MettaValue::Long(1),
         ]),
     );
-    env.add_rule(rule);
-
-    let bridge = Arc::new(MorkBridge::from_env(env));
+    env.add_generic_rule(rule);
 
     // Build bytecode for (single 5)
     let mut builder = ChunkBuilder::new("test_single_match");
@@ -1647,12 +1647,16 @@ fn test_vm_call_single_rule_no_choice_point() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::with_bridge(chunk, bridge);
+    let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
-    // (single 5) -> (+ 5 1) -> 6
+    // Rule dispatch substitutes (single 5) → (+ 5 1).
+    // Lazy semantics: the VM returns the substituted S-expression, not the reduced value.
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], MettaValue::Long(6));
+    let items = results[0].as_sexpr().expect("result should be an S-expression");
+    assert_eq!(items[0].as_atom(), Some("+"));
+    assert_eq!(items[1].as_long(), Some(5));
+    assert_eq!(items[2].as_long(), Some(1));
 
     // Should have no choice points left
     assert!(vm.choice_points_len() == 0);
@@ -1694,7 +1698,7 @@ fn test_vm_fork_basic_alternatives() {
 
 #[test]
 fn test_vm_fork_nested_choice_points() {
-    use crate::backend::models::Rule;
+    use crate::backend::models::GenericRule;
 
     // Test nested non-determinism:
     // (= (outer) (inner)) -- outer calls inner
@@ -1704,24 +1708,22 @@ fn test_vm_fork_nested_choice_points() {
     // When (outer) is called, it matches the rule and calls (inner).
     // (inner) has two matching rules, so a choice point is created.
     // Each result flows back through (outer) via Yield.
-    let mut env = HeapEnvironment::default();
+    let mut env = GenericEnvironment::new(GcFactory::default());
 
-    env.add_rule(Rule::new(
+    env.add_generic_rule(GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("outer")]),
         MettaValue::SExpr(vec![MettaValue::sym("inner")]),
     ));
 
-    env.add_rule(Rule::new(
+    env.add_generic_rule(GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("inner")]),
         MettaValue::sym("x"),
     ));
 
-    env.add_rule(Rule::new(
+    env.add_generic_rule(GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("inner")]),
         MettaValue::sym("y"),
     ));
-
-    let bridge = Arc::new(MorkBridge::from_env(env));
 
     // Build bytecode for evaluating (outer) with Yield
     // Note: Results are returned directly when choice points exhausted
@@ -1734,7 +1736,7 @@ fn test_vm_fork_nested_choice_points() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::with_bridge(chunk, bridge);
+    let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
     // (outer) -> (inner) -> x or y
@@ -1753,13 +1755,13 @@ fn test_vm_fork_nested_choice_points() {
 
 #[test]
 fn test_vm_alternative_rulematch() {
-    use crate::backend::models::Rule;
+    use crate::backend::models::GenericRule;
 
     // Test that Alternative::RuleMatch properly handles multiple matching rules
     // (= (pair $x) (cons $x $x))
     // (= (pair $x) (dup $x))
-    let mut env = HeapEnvironment::default();
-    env.add_rule(Rule::new(
+    let mut env = GenericEnvironment::new(GcFactory::default());
+    env.add_generic_rule(GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("pair"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("cons"),
@@ -1769,12 +1771,10 @@ fn test_vm_alternative_rulematch() {
     ));
 
     // Add second rule with same pattern
-    env.add_rule(Rule::new(
+    env.add_generic_rule(GenericRule::new(
         MettaValue::SExpr(vec![MettaValue::sym("pair"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![MettaValue::sym("dup"), MettaValue::sym("$x")]),
     ));
-
-    let bridge = Arc::new(MorkBridge::from_env(env));
 
     // Build bytecode for (pair 5) with Yield to collect results
     // Results are returned directly when choice points exhausted
@@ -1788,7 +1788,7 @@ fn test_vm_alternative_rulematch() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let mut vm = BytecodeVM::with_bridge(chunk, bridge);
+    let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
     // Results are returned directly as separate values when exhausted
@@ -2601,15 +2601,15 @@ fn test_vm_space_match_with_template() {
     let space = SpaceHandle::new(100, "test_space".to_string());
 
     // Add atoms to space: (foo 1) (foo 2) (bar 3)
-    space.add_atom(MettaValue::sexpr(vec![
+    space.add_atom(MettaValue::SExpr(vec![
         MettaValue::sym("foo"),
         MettaValue::Long(1),
     ]));
-    space.add_atom(MettaValue::sexpr(vec![
+    space.add_atom(MettaValue::SExpr(vec![
         MettaValue::sym("foo"),
         MettaValue::Long(2),
     ]));
-    space.add_atom(MettaValue::sexpr(vec![
+    space.add_atom(MettaValue::SExpr(vec![
         MettaValue::sym("bar"),
         MettaValue::Long(3),
     ]));
@@ -2619,14 +2619,14 @@ fn test_vm_space_match_with_template() {
     builder.emit_u16(Opcode::PushConstant, space_const);
 
     // Push pattern: (foo $x)
-    let pattern_const = builder.add_constant(MettaValue::sexpr(vec![
+    let pattern_const = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("foo"),
         MettaValue::var("x"),
     ]));
     builder.emit_u16(Opcode::PushConstant, pattern_const);
 
     // Push template: (result $x)
-    let template_const = builder.add_constant(MettaValue::sexpr(vec![
+    let template_const = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("result"),
         MettaValue::var("x"),
     ]));
@@ -2647,7 +2647,7 @@ fn test_vm_space_match_with_template() {
             assert_eq!(items.len(), 2);
 
             // Verify both results have "result" as head
-            for item in items {
+            for item in *items {
                 match item.inner() {
                     MettaValueInner::SExpr(inner) => {
                         assert_eq!(inner[0], MettaValue::sym("result"));
@@ -2670,7 +2670,7 @@ fn test_vm_space_match_no_matches() {
 
     // Create a space with atoms that won't match
     let space = SpaceHandle::new(101, "test_space".to_string());
-    space.add_atom(MettaValue::sexpr(vec![
+    space.add_atom(MettaValue::SExpr(vec![
         MettaValue::sym("bar"),
         MettaValue::Long(1),
     ]));
@@ -2680,14 +2680,14 @@ fn test_vm_space_match_no_matches() {
     builder.emit_u16(Opcode::PushConstant, space_const);
 
     // Push pattern: (foo $x) - won't match (bar 1)
-    let pattern_const = builder.add_constant(MettaValue::sexpr(vec![
+    let pattern_const = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("foo"),
         MettaValue::var("x"),
     ]));
     builder.emit_u16(Opcode::PushConstant, pattern_const);
 
     // Push template
-    let template_const = builder.add_constant(MettaValue::sexpr(vec![
+    let template_const = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("result"),
         MettaValue::var("x"),
     ]));
@@ -2701,13 +2701,8 @@ fn test_vm_space_match_no_matches() {
     let results = vm.run().expect("VM should succeed");
 
     assert_eq!(results.len(), 1);
-    // Should get empty S-expression
-    match results[0].inner() {
-        MettaValueInner::SExpr(items) => {
-            assert!(items.is_empty());
-        }
-        _ => panic!("Expected empty S-expression"),
-    }
+    // Should get empty S-expression (normalized to Unit after Nil/Unit merge)
+    assert!(results[0].is_unit(), "Expected Unit (empty S-expression)");
 }
 
 // =============================================================================
@@ -2799,25 +2794,25 @@ mod generic_vm_tests {
     use crate::backend::bytecode::vm::GenericBytecodeVM;
     use crate::backend::environment::GenericEnvironment;
     use crate::backend::models::{
-        HeapMettaValueFactory, MettaValue, MettaValueFactory,
+        GcFactory, MettaValue, MettaValueFactory,
     };
 
-    fn factory() -> HeapMettaValueFactory {
-        HeapMettaValueFactory
+    fn factory() -> GcFactory {
+        GcFactory::default()
     }
 
     /// Test basic arithmetic with the generic VM.
     #[test]
     fn test_generic_vm_arithmetic() {
         let f = factory();
-        let mut builder = GenericChunkBuilder::new("test_arith", f.clone());
+        let mut builder = GenericChunkBuilder::with_factory("test_arith", f.clone());
         builder.emit_byte(Opcode::PushLongSmall, 10);
         builder.emit_byte(Opcode::PushLongSmall, 32);
         builder.emit(Opcode::Add);
         builder.emit(Opcode::Return);
 
         let chunk = builder.build_arc();
-        let mut vm = GenericBytecodeVM::new(chunk, f);
+        let mut vm = GenericBytecodeVM::with_factory(chunk, f);
         let results = vm.run().expect("VM should succeed");
 
         assert_eq!(results.len(), 1);
@@ -2838,7 +2833,7 @@ mod generic_vm_tests {
         env.add_generic_rule(rule);
 
         // Bytecode: Call with head="double", arity=1, argument=5
-        let mut builder = GenericChunkBuilder::new("test_call", f.clone());
+        let mut builder = GenericChunkBuilder::with_factory("test_call", f.clone());
         let head_idx = builder.add_constant(f.atom("double"));
         builder.emit_byte(Opcode::PushLongSmall, 5); // Push argument
         builder.emit_u16(Opcode::Call, head_idx);
@@ -2846,28 +2841,23 @@ mod generic_vm_tests {
         builder.emit(Opcode::Return);
 
         let chunk = builder.build_arc();
-        let mut vm = GenericBytecodeVM::with_env(chunk, env, f);
+        let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, f);
         let results = vm.run().expect("VM should succeed");
 
-        // Should get (+ 5 5) after rule dispatch (bindings applied to body)
+        // Rule dispatch substitutes (double 5) → (+ 5 5).
+        // Lazy semantics: the VM returns the substituted S-expression, not the reduced value.
         assert_eq!(results.len(), 1);
-        let result = &results[0];
-        // The result should be an S-expression (+ 5 5) since we don't recursively evaluate
-        if let Some(items) = result.as_sexpr() {
-            assert_eq!(items.len(), 3);
-            assert_eq!(items[0].as_atom(), Some("+"));
-            assert_eq!(items[1].as_long(), Some(5));
-            assert_eq!(items[2].as_long(), Some(5));
-        } else {
-            panic!("Expected S-expression result, got: {:?}", result.type_name());
-        }
+        let items = results[0].as_sexpr().expect("result should be an S-expression");
+        assert_eq!(items[0].as_atom(), Some("+"));
+        assert_eq!(items[1].as_long(), Some(5));
+        assert_eq!(items[2].as_long(), Some(5));
     }
 
     /// Test that PushVariable resolves bindings from the bindings stack.
     #[test]
     fn test_generic_vm_variable_binding() {
         let f = factory();
-        let mut builder = GenericChunkBuilder::new("test_var_binding", f.clone());
+        let mut builder = GenericChunkBuilder::with_factory("test_var_binding", f.clone());
 
         // Store a binding for "$x"
         let var_idx = builder.add_constant(f.atom("$x"));
@@ -2879,7 +2869,7 @@ mod generic_vm_tests {
         builder.emit(Opcode::Return);
 
         let chunk = builder.build_arc();
-        let mut vm = GenericBytecodeVM::new(chunk, f);
+        let mut vm = GenericBytecodeVM::with_factory(chunk, f);
         let results = vm.run().expect("VM should succeed");
 
         assert_eq!(results.len(), 1);
@@ -2890,14 +2880,14 @@ mod generic_vm_tests {
     #[test]
     fn test_generic_vm_unbound_variable() {
         let f = factory();
-        let mut builder = GenericChunkBuilder::new("test_unbound", f.clone());
+        let mut builder = GenericChunkBuilder::with_factory("test_unbound", f.clone());
 
         let var_idx = builder.add_constant(f.atom("$y"));
         builder.emit_u16(Opcode::PushVariable, var_idx);
         builder.emit(Opcode::Return);
 
         let chunk = builder.build_arc();
-        let mut vm = GenericBytecodeVM::new(chunk, f);
+        let mut vm = GenericBytecodeVM::with_factory(chunk, f);
         let results = vm.run().expect("VM should succeed");
 
         assert_eq!(results.len(), 1);
@@ -2908,7 +2898,7 @@ mod generic_vm_tests {
     #[test]
     fn test_generic_vm_decon_atom() {
         let f = factory();
-        let mut builder = GenericChunkBuilder::new("test_decon", f.clone());
+        let mut builder = GenericChunkBuilder::with_factory("test_decon", f.clone());
 
         // Push an S-expression (a b c)
         let expr = f.sexpr(vec![f.atom("a"), f.atom("b"), f.atom("c")]);
@@ -2918,7 +2908,7 @@ mod generic_vm_tests {
         builder.emit(Opcode::Return);
 
         let chunk = builder.build_arc();
-        let mut vm = GenericBytecodeVM::new(chunk, f);
+        let mut vm = GenericBytecodeVM::with_factory(chunk, f);
         let results = vm.run().expect("VM should succeed");
 
         assert_eq!(results.len(), 1);
@@ -2949,12 +2939,12 @@ mod generic_vm_tests {
         env.add_to_space(&f.atom("hello"));
         env.add_to_space(&f.long(42));
 
-        let mut builder = GenericChunkBuilder::new("test_space", f.clone());
+        let mut builder = GenericChunkBuilder::with_factory("test_space", f.clone());
         builder.emit(Opcode::SpaceGetAtoms);
         builder.emit(Opcode::Return);
 
         let chunk = builder.build_arc();
-        let mut vm = GenericBytecodeVM::with_env(chunk, env, f);
+        let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, f);
         let results = vm.run().expect("VM should succeed");
 
         assert_eq!(results.len(), 1);
@@ -2973,14 +2963,14 @@ mod generic_vm_tests {
         use crate::backend::bytecode::native_registry::GenericNativeRegistry;
 
         let f = factory();
-        let mut registry = GenericNativeRegistry::<MettaValue, HeapMettaValueFactory>::new();
+        let mut registry = GenericNativeRegistry::<MettaValue, GcFactory>::new();
         let func_id = registry.register("add2", |args, _ctx| {
             let a = args.get(0).and_then(|v| v.as_long()).unwrap_or(0);
             let b = args.get(1).and_then(|v| v.as_long()).unwrap_or(0);
             Ok(vec![MettaValue::Long(a + b)])
         });
 
-        let mut builder = GenericChunkBuilder::new("test_native", f.clone());
+        let mut builder = GenericChunkBuilder::with_factory("test_native", f.clone());
         builder.emit_byte(Opcode::PushLongSmall, 10);
         builder.emit_byte(Opcode::PushLongSmall, 32);
         builder.emit_u16(Opcode::CallNative, func_id);
@@ -3016,13 +3006,13 @@ mod generic_vm_tests {
         use crate::backend::bytecode::external_registry::GenericExternalRegistry;
 
         let f = factory();
-        let mut registry = GenericExternalRegistry::<MettaValue, HeapMettaValueFactory>::new();
+        let mut registry = GenericExternalRegistry::<MettaValue, GcFactory>::new();
         registry.register("triple", |args, _ctx| {
             let n = args.get(0).and_then(|v| v.as_long()).unwrap_or(0);
             Ok(vec![MettaValue::Long(n * 3)])
         });
 
-        let mut builder = GenericChunkBuilder::new("test_external", f.clone());
+        let mut builder = GenericChunkBuilder::with_factory("test_external", f.clone());
         let name_idx = builder.add_constant(f.atom("triple"));
         builder.emit_byte(Opcode::PushLongSmall, 14);
         builder.emit_u16(Opcode::CallExternal, name_idx);
@@ -3068,7 +3058,7 @@ mod generic_vm_tests {
             crate::backend::bytecode::generic_memo_cache::GenericMemoCache::<MettaValue>::new(1024),
         );
 
-        let mut builder = GenericChunkBuilder::new("test_cached", f.clone());
+        let mut builder = GenericChunkBuilder::with_factory("test_cached", f.clone());
         let head_idx = builder.add_constant(f.atom("square"));
         builder.emit_byte(Opcode::PushLongSmall, 7);
         builder.emit_u16(Opcode::CallCached, head_idx);
@@ -3129,7 +3119,7 @@ mod generic_vm_tests {
         let f = factory();
         let env = GenericEnvironment::new(f.clone());
 
-        let mut builder = GenericChunkBuilder::new("test_define_dispatch", f.clone());
+        let mut builder = GenericChunkBuilder::with_factory("test_define_dispatch", f.clone());
 
         // Define rule: (= (greet $x) (hello $x))
         let pattern = f.sexpr(vec![f.atom("greet"), f.atom("$x")]);
@@ -3150,7 +3140,7 @@ mod generic_vm_tests {
         builder.emit(Opcode::Return);
 
         let chunk = builder.build_arc();
-        let mut vm = GenericBytecodeVM::with_env(chunk, env, f);
+        let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, f);
         let results = vm.run().expect("VM should succeed");
 
         assert_eq!(results.len(), 1);
@@ -3164,20 +3154,20 @@ mod generic_vm_tests {
         }
     }
 
-    /// Test the HeapGenericBytecodeVM type alias works.
+    /// Test the BytecodeVM type alias works.
     #[test]
     fn test_heap_generic_vm_alias() {
-        use super::super::HeapGenericBytecodeVM;
+        use super::super::BytecodeVM;
+        use crate::backend::bytecode::chunk::ChunkBuilder;
 
-        let f = factory();
-        let mut builder = GenericChunkBuilder::new("test_alias", f.clone());
+        let mut builder = ChunkBuilder::new("test_alias");
         builder.emit_byte(Opcode::PushLongSmall, 7);
         builder.emit(Opcode::Dup);
         builder.emit(Opcode::Mul);
         builder.emit(Opcode::Return);
 
         let chunk = builder.build_arc();
-        let mut vm: HeapGenericBytecodeVM = GenericBytecodeVM::new(chunk, f);
+        let mut vm: BytecodeVM = BytecodeVM::new(chunk);
         let results = vm.run().expect("VM should succeed");
 
         assert_eq!(results.len(), 1);
@@ -4017,12 +4007,9 @@ fn test_vm_collect_no_results() {
     let mut vm = BytecodeVM::new(chunk);
     let result = vm.run().expect("VM should succeed");
 
-    // Should return empty S-expression
+    // Should return empty S-expression (normalized to Unit after Nil/Unit merge)
     assert_eq!(result.len(), 1);
-    match result[0].inner() {
-        MettaValueInner::SExpr(items) => assert!(items.is_empty()),
-        _ => panic!("Expected empty S-expression"),
-    }
+    assert!(result[0].is_unit(), "Expected Unit (empty S-expression)");
 }
 
 #[test]
@@ -4077,7 +4064,7 @@ fn test_vm_guard_type_error() {
 fn test_vm_get_head_empty_phase3d() {
     // GetHead on empty S-expression
     let mut builder = ChunkBuilder::new("test");
-    let empty_idx = builder.add_constant(MettaValue::sexpr(vec![]));
+    let empty_idx = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty_idx);
     builder.emit(Opcode::GetHead);
     builder.emit(Opcode::Return);
@@ -4095,7 +4082,7 @@ fn test_vm_get_head_empty_phase3d() {
 fn test_vm_get_tail_empty_phase3d() {
     // GetTail on empty S-expression
     let mut builder = ChunkBuilder::new("test");
-    let empty_idx = builder.add_constant(MettaValue::sexpr(vec![]));
+    let empty_idx = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty_idx);
     builder.emit(Opcode::GetTail);
     builder.emit(Opcode::Return);
@@ -4114,7 +4101,7 @@ fn test_vm_cons_atom_invalid_tail_phase3d() {
     // ConsAtom with invalid tail type (not S-expression or Nil)
     let mut builder = ChunkBuilder::new("test");
     builder.emit_byte(Opcode::PushLongSmall, 1); // head
-    let str_idx = builder.add_constant(MettaValue::String("not a list".into()));
+    let str_idx = builder.add_constant(MettaValue::String("not a list".to_string()));
     builder.emit_u16(Opcode::PushConstant, str_idx); // tail (String, not S-expr)
     builder.emit(Opcode::ConsAtom);
     builder.emit(Opcode::Return);
@@ -4131,7 +4118,7 @@ fn test_vm_cons_atom_invalid_tail_phase3d() {
 fn test_vm_index_atom_oob() {
     // IndexAtom with out-of-bounds index
     let mut builder = ChunkBuilder::new("test");
-    let list_idx = builder.add_constant(MettaValue::sexpr(vec![
+    let list_idx = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::Long(1),
         MettaValue::Long(2),
     ]));
@@ -4152,7 +4139,7 @@ fn test_vm_index_atom_oob() {
 fn test_vm_index_atom_negative() {
     // IndexAtom with negative index
     let mut builder = ChunkBuilder::new("test");
-    let list_idx = builder.add_constant(MettaValue::sexpr(vec![
+    let list_idx = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::Long(1),
         MettaValue::Long(2),
     ]));
@@ -4173,12 +4160,12 @@ fn test_vm_index_atom_negative() {
 fn test_vm_index_atom_non_integer() {
     // IndexAtom with non-integer index
     let mut builder = ChunkBuilder::new("test");
-    let list_idx = builder.add_constant(MettaValue::sexpr(vec![
+    let list_idx = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::Long(1),
         MettaValue::Long(2),
     ]));
     builder.emit_u16(Opcode::PushConstant, list_idx);
-    let index = builder.add_constant(MettaValue::String("not an integer".into()));
+    let index = builder.add_constant(MettaValue::String("not an integer".to_string()));
     builder.emit_u16(Opcode::PushConstant, index);
     builder.emit(Opcode::IndexAtom);
     builder.emit(Opcode::Return);
@@ -4194,7 +4181,7 @@ fn test_vm_index_atom_non_integer() {
 fn test_vm_min_atom_empty() {
     // MinAtom on empty S-expression
     let mut builder = ChunkBuilder::new("test");
-    let empty_idx = builder.add_constant(MettaValue::sexpr(vec![]));
+    let empty_idx = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty_idx);
     builder.emit(Opcode::MinAtom);
     builder.emit(Opcode::Return);
@@ -4210,7 +4197,7 @@ fn test_vm_min_atom_empty() {
 fn test_vm_min_atom_no_numbers() {
     // MinAtom on S-expression with no numeric values
     let mut builder = ChunkBuilder::new("test");
-    let list_idx = builder.add_constant(MettaValue::sexpr(vec![
+    let list_idx = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("a"),
         MettaValue::sym("b"),
     ]));
@@ -4229,7 +4216,7 @@ fn test_vm_min_atom_no_numbers() {
 fn test_vm_max_atom_empty() {
     // MaxAtom on empty S-expression
     let mut builder = ChunkBuilder::new("test");
-    let empty_idx = builder.add_constant(MettaValue::sexpr(vec![]));
+    let empty_idx = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty_idx);
     builder.emit(Opcode::MaxAtom);
     builder.emit(Opcode::Return);
@@ -4245,7 +4232,7 @@ fn test_vm_max_atom_empty() {
 fn test_vm_max_atom_no_numbers() {
     // MaxAtom on S-expression with no numeric values
     let mut builder = ChunkBuilder::new("test");
-    let list_idx = builder.add_constant(MettaValue::sexpr(vec![
+    let list_idx = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("x"),
         MettaValue::sym("y"),
     ]));
@@ -4266,7 +4253,7 @@ fn test_vm_max_atom_no_numbers() {
 fn test_vm_decon_atom_empty_phase3d() {
     // DeconAtom on empty S-expression
     let mut builder = ChunkBuilder::new("test");
-    let empty_idx = builder.add_constant(MettaValue::sexpr(vec![]));
+    let empty_idx = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty_idx);
     builder.emit(Opcode::DeconAtom);
     builder.emit(Opcode::Return);
@@ -4318,7 +4305,7 @@ fn test_vm_mod_overflow() {
 fn test_vm_sub_type_error() {
     // Subtraction with non-numeric types
     let mut builder = ChunkBuilder::new("test");
-    let str_idx = builder.add_constant(MettaValue::String("hello".into()));
+    let str_idx = builder.add_constant(MettaValue::String("hello".to_string()));
     builder.emit_u16(Opcode::PushConstant, str_idx);
     builder.emit_byte(Opcode::PushLongSmall, 1);
     builder.emit(Opcode::Sub);
@@ -4351,7 +4338,7 @@ fn test_vm_mul_type_error() {
 fn test_vm_comparison_type_error() {
     // Comparison between incompatible types
     let mut builder = ChunkBuilder::new("test");
-    let str_idx = builder.add_constant(MettaValue::String("abc".into()));
+    let str_idx = builder.add_constant(MettaValue::String("abc".to_string()));
     builder.emit_u16(Opcode::PushConstant, str_idx);
     builder.emit_byte(Opcode::PushLongSmall, 5);
     builder.emit(Opcode::Lt);
@@ -4370,7 +4357,7 @@ fn test_vm_comparison_type_error() {
 fn test_vm_match_head_invalid_constant() {
     // MatchHead with invalid constant index
     let mut builder = ChunkBuilder::new("test");
-    let list_idx = builder.add_constant(MettaValue::sexpr(vec![
+    let list_idx = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("foo"),
         MettaValue::Long(1),
     ]));
@@ -4476,7 +4463,7 @@ fn test_vm_is_variable_false() {
 fn test_vm_is_sexpr_true() {
     // IsSExpr on an S-expression
     let mut builder = ChunkBuilder::new("test");
-    let sexpr_idx = builder.add_constant(MettaValue::sexpr(vec![MettaValue::Long(1)]));
+    let sexpr_idx = builder.add_constant(MettaValue::SExpr(vec![MettaValue::Long(1)]));
     builder.emit_u16(Opcode::PushConstant, sexpr_idx);
     builder.emit(Opcode::IsSExpr);
     builder.emit(Opcode::Return);
@@ -4558,7 +4545,7 @@ fn test_vm_get_metatype_number() {
 #[test]
 fn test_vm_get_metatype_expression() {
     let mut builder = ChunkBuilder::new("test");
-    let sexpr_idx = builder.add_constant(MettaValue::sexpr(vec![MettaValue::Long(1)]));
+    let sexpr_idx = builder.add_constant(MettaValue::SExpr(vec![MettaValue::Long(1)]));
     builder.emit_u16(Opcode::PushConstant, sexpr_idx);
     builder.emit(Opcode::GetMetaType);
     builder.emit(Opcode::Return);
@@ -4590,7 +4577,7 @@ fn test_vm_get_metatype_variable() {
 #[test]
 fn test_vm_get_metatype_string() {
     let mut builder = ChunkBuilder::new("test");
-    let str_idx = builder.add_constant(MettaValue::String("hello".into()));
+    let str_idx = builder.add_constant(MettaValue::String("hello".to_string()));
     builder.emit_u16(Opcode::PushConstant, str_idx);
     builder.emit(Opcode::GetMetaType);
     builder.emit(Opcode::Return);
@@ -4632,7 +4619,7 @@ fn test_vm_repr_number() {
     let result = vm.run().expect("VM should succeed");
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], MettaValue::String("42".into()));
+    assert_eq!(result[0], MettaValue::String("42".to_string()));
 }
 
 #[test]
@@ -4647,13 +4634,13 @@ fn test_vm_repr_bool() {
     let result = vm.run().expect("VM should succeed");
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], MettaValue::String("True".into()));
+    assert_eq!(result[0], MettaValue::String("True".to_string()));
 }
 
 #[test]
 fn test_vm_repr_sexpr() {
     let mut builder = ChunkBuilder::new("test");
-    let sexpr_idx = builder.add_constant(MettaValue::sexpr(vec![
+    let sexpr_idx = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("+"),
         MettaValue::Long(1),
         MettaValue::Long(2),
@@ -4667,7 +4654,7 @@ fn test_vm_repr_sexpr() {
     let result = vm.run().expect("VM should succeed");
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], MettaValue::String("(+ 1 2)".into()));
+    assert_eq!(result[0], MettaValue::String("(+ 1 2)".to_string()));
 }
 
 // =============================================================================
@@ -4681,19 +4668,19 @@ fn test_vm_repr_sexpr() {
 /// Test DefineRule opcode adds a rule to the environment.
 #[test]
 fn test_vm_define_rule_with_env() {
-    use crate::backend::models::{HeapMettaValueFactory};
+
 
     let mut builder = ChunkBuilder::new("test_define_rule");
 
     // Push pattern: (double $x)
-    let pattern = builder.add_constant(MettaValue::sexpr(vec![
+    let pattern = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("double"),
         MettaValue::var("x"),
     ]));
     builder.emit_u16(Opcode::PushConstant, pattern);
 
     // Push body: (* 2 $x)
-    let body = builder.add_constant(MettaValue::sexpr(vec![
+    let body = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("*"),
         MettaValue::Long(2),
         MettaValue::var("x"),
@@ -4705,7 +4692,7 @@ fn test_vm_define_rule_with_env() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -4740,7 +4727,6 @@ fn test_vm_define_rule_no_env() {
 /// Test LoadGlobal loads binding from environment.
 #[test]
 fn test_vm_load_global_exists() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_load_global");
 
@@ -4754,7 +4740,7 @@ fn test_vm_load_global_exists() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -4765,7 +4751,6 @@ fn test_vm_load_global_exists() {
 /// Test LoadGlobal returns atom when binding not found.
 #[test]
 fn test_vm_load_global_not_found() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_load_global_not_found");
 
@@ -4774,7 +4759,7 @@ fn test_vm_load_global_not_found() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -4803,7 +4788,6 @@ fn test_vm_load_global_no_env() {
 /// Test StoreGlobal stores new binding.
 #[test]
 fn test_vm_store_global_new() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_store_global");
 
@@ -4816,7 +4800,7 @@ fn test_vm_store_global_new() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -4827,7 +4811,6 @@ fn test_vm_store_global_new() {
 /// Test StoreGlobal updates existing binding.
 #[test]
 fn test_vm_store_global_update() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_store_global_update");
 
@@ -4846,7 +4829,7 @@ fn test_vm_store_global_update() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -4857,16 +4840,16 @@ fn test_vm_store_global_update() {
 /// Test DispatchRules with single matching rule.
 #[test]
 fn test_vm_dispatch_rules_single_match() {
-    use crate::backend::models::{HeapMettaValueFactory};
+
 
     let mut builder = ChunkBuilder::new("test_dispatch_rules");
 
     // First, define a rule: (= (inc $x) (+ $x 1))
-    let pattern = builder.add_constant(MettaValue::sexpr(vec![
+    let pattern = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("inc"),
         MettaValue::var("x"),
     ]));
-    let body = builder.add_constant(MettaValue::sexpr(vec![
+    let body = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("+"),
         MettaValue::var("x"),
         MettaValue::Long(1),
@@ -4877,7 +4860,7 @@ fn test_vm_dispatch_rules_single_match() {
     builder.emit(Opcode::Pop); // Pop Unit
 
     // Now call (inc 5)
-    let call_expr = builder.add_constant(MettaValue::sexpr(vec![
+    let call_expr = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("inc"),
         MettaValue::Long(5),
     ]));
@@ -4886,7 +4869,7 @@ fn test_vm_dispatch_rules_single_match() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -4906,12 +4889,11 @@ fn test_vm_dispatch_rules_single_match() {
 /// Test DispatchRules returns expression unchanged when no rules match.
 #[test]
 fn test_vm_dispatch_rules_no_match() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_dispatch_no_match");
 
     // Define a rule for (foo $x)
-    let pattern = builder.add_constant(MettaValue::sexpr(vec![
+    let pattern = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("foo"),
         MettaValue::var("x"),
     ]));
@@ -4922,7 +4904,7 @@ fn test_vm_dispatch_rules_no_match() {
     builder.emit(Opcode::Pop);
 
     // Try to dispatch (bar 1) - won't match (foo $x)
-    let call_expr = builder.add_constant(MettaValue::sexpr(vec![
+    let call_expr = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("bar"),
         MettaValue::Long(1),
     ]));
@@ -4931,7 +4913,7 @@ fn test_vm_dispatch_rules_no_match() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -4949,7 +4931,6 @@ fn test_vm_dispatch_rules_no_match() {
 /// Test DispatchRules with non-callable (not S-expression).
 #[test]
 fn test_vm_dispatch_rules_non_callable() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_dispatch_non_callable");
 
@@ -4959,7 +4940,7 @@ fn test_vm_dispatch_rules_non_callable() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -4971,12 +4952,11 @@ fn test_vm_dispatch_rules_non_callable() {
 /// Test DispatchRules with S-expression having non-atom head.
 #[test]
 fn test_vm_dispatch_rules_non_atom_head() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_dispatch_non_atom_head");
 
     // S-expression with Long as head: (42 1 2)
-    let expr = builder.add_constant(MettaValue::sexpr(vec![
+    let expr = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::Long(42),
         MettaValue::Long(1),
         MettaValue::Long(2),
@@ -4986,7 +4966,7 @@ fn test_vm_dispatch_rules_non_atom_head() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5005,7 +4985,7 @@ fn test_vm_dispatch_rules_non_atom_head() {
 fn test_vm_dispatch_rules_no_env() {
     let mut builder = ChunkBuilder::new("test_dispatch_no_env");
 
-    let expr = builder.add_constant(MettaValue::sexpr(vec![
+    let expr = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("test"),
         MettaValue::Long(1),
     ]));
@@ -5030,7 +5010,6 @@ fn test_vm_dispatch_rules_no_env() {
 /// Test DispatchRules with atom (arity 0).
 #[test]
 fn test_vm_dispatch_rules_atom() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_dispatch_atom");
 
@@ -5049,7 +5028,7 @@ fn test_vm_dispatch_rules_atom() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5064,7 +5043,6 @@ fn test_vm_dispatch_rules_atom() {
 /// Test NewState creates a state cell.
 #[test]
 fn test_vm_new_state_basic() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_new_state");
 
@@ -5073,7 +5051,7 @@ fn test_vm_new_state_basic() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5106,7 +5084,6 @@ fn test_vm_new_state_no_env() {
 /// Test GetState retrieves value from state cell.
 #[test]
 fn test_vm_get_state_basic() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_get_state");
 
@@ -5118,7 +5095,7 @@ fn test_vm_get_state_basic() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5129,7 +5106,6 @@ fn test_vm_get_state_basic() {
 /// Test GetState with invalid state ID fails.
 #[test]
 fn test_vm_get_state_invalid_id() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_get_state_invalid");
 
@@ -5140,7 +5116,7 @@ fn test_vm_get_state_invalid_id() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let result = vm.run();
 
@@ -5152,7 +5128,6 @@ fn test_vm_get_state_invalid_id() {
 /// Test GetState with non-State value fails.
 #[test]
 fn test_vm_get_state_non_state() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_get_state_non_state");
 
@@ -5162,7 +5137,7 @@ fn test_vm_get_state_non_state() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let result = vm.run();
 
@@ -5174,7 +5149,6 @@ fn test_vm_get_state_non_state() {
 /// Test ChangeState modifies state value.
 #[test]
 fn test_vm_change_state_basic() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_change_state");
 
@@ -5192,7 +5166,7 @@ fn test_vm_change_state_basic() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5203,7 +5177,6 @@ fn test_vm_change_state_basic() {
 /// Test ChangeState with invalid state ID fails.
 #[test]
 fn test_vm_change_state_invalid_id() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_change_state_invalid");
 
@@ -5214,7 +5187,7 @@ fn test_vm_change_state_invalid_id() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let result = vm.run();
 
@@ -5226,7 +5199,6 @@ fn test_vm_change_state_invalid_id() {
 /// Test ChangeState with non-State value fails.
 #[test]
 fn test_vm_change_state_non_state() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_change_state_non_state");
 
@@ -5236,7 +5208,7 @@ fn test_vm_change_state_non_state() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let result = vm.run();
 
@@ -5248,7 +5220,6 @@ fn test_vm_change_state_non_state() {
 /// Test state persistence through multiple operations.
 #[test]
 fn test_vm_state_persistence() {
-    use crate::backend::models::HeapMettaValueFactory;
 
     let mut builder = ChunkBuilder::new("test_state_persistence");
 
@@ -5280,7 +5251,7 @@ fn test_vm_state_persistence() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = HeapEnvironment::new(HeapMettaValueFactory);
+    let env = GenericEnvironment::new(GcFactory::default());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5338,19 +5309,25 @@ fn test_vm_space_remove_non_space() {
 /// Test SpaceGetAtoms with non-space fails gracefully.
 #[test]
 fn test_vm_space_get_atoms_non_space() {
+    // SpaceGetAtoms reads from environment, not stack.
+    // Pushing a non-space value is irrelevant — it stays on stack.
+    // With no env, SpaceGetAtoms returns empty SExpr.
     let mut builder = ChunkBuilder::new("test_space_get_atoms_non_space");
 
-    builder.emit_byte(Opcode::PushLongSmall, 123); // Not a Space
     builder.emit(Opcode::SpaceGetAtoms);
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    let result = vm.run();
+    let results = vm.run().expect("VM should succeed with no env");
 
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(err, VmError::TypeError { expected: "Space", .. }));
+    assert_eq!(results.len(), 1);
+    // No environment attached, so empty list
+    match results[0].inner() {
+        MettaValueInner::SExpr(atoms) => assert!(atoms.is_empty()),
+        MettaValueInner::Unit => {} // Unit = empty expression, also valid
+        _ => panic!("Expected empty S-expression or Unit"),
+    }
 }
 
 /// Test SpaceMatch with non-space fails gracefully.
@@ -5919,23 +5896,23 @@ fn test_pattern_matches_wildcard() {
     ));
     assert!(pattern_matches(
         &MettaValue::sym("_"),
-        &MettaValue::sexpr(vec![MettaValue::sym("a"), MettaValue::sym("b")])
+        &MettaValue::SExpr(vec![MettaValue::sym("a"), MettaValue::sym("b")])
     ));
 }
 
 /// Test pattern_matches with nested S-expressions.
 #[test]
 fn test_pattern_matches_nested_sexpr() {
-    let pattern = MettaValue::sexpr(vec![
+    let pattern = MettaValue::SExpr(vec![
         MettaValue::sym("outer"),
-        MettaValue::sexpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::sym("inner"),
             MettaValue::var("x"),
         ]),
     ]);
-    let value = MettaValue::sexpr(vec![
+    let value = MettaValue::SExpr(vec![
         MettaValue::sym("outer"),
-        MettaValue::sexpr(vec![
+        MettaValue::SExpr(vec![
             MettaValue::sym("inner"),
             MettaValue::Long(42),
         ]),
@@ -5946,11 +5923,11 @@ fn test_pattern_matches_nested_sexpr() {
 /// Test pattern_matches fails on mismatched structure.
 #[test]
 fn test_pattern_matches_mismatched_structure() {
-    let pattern = MettaValue::sexpr(vec![
+    let pattern = MettaValue::SExpr(vec![
         MettaValue::sym("a"),
         MettaValue::sym("b"),
     ]);
-    let value = MettaValue::sexpr(vec![
+    let value = MettaValue::SExpr(vec![
         MettaValue::sym("a"),
         MettaValue::sym("b"),
         MettaValue::sym("c"),
@@ -6005,12 +5982,12 @@ fn test_unify_both_variables() {
 /// Test unify with nested S-expressions.
 #[test]
 fn test_unify_nested_sexpr() {
-    let a = MettaValue::sexpr(vec![
+    let a = MettaValue::SExpr(vec![
         MettaValue::sym("f"),
         MettaValue::var("x"),
         MettaValue::Long(1),
     ]);
-    let b = MettaValue::sexpr(vec![
+    let b = MettaValue::SExpr(vec![
         MettaValue::sym("f"),
         MettaValue::Long(42),
         MettaValue::var("y"),
@@ -6031,8 +6008,8 @@ fn test_unify_fails_atoms() {
 /// Test unify fails on incompatible lengths.
 #[test]
 fn test_unify_fails_length() {
-    let a = MettaValue::sexpr(vec![MettaValue::sym("a")]);
-    let b = MettaValue::sexpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
+    let a = MettaValue::SExpr(vec![MettaValue::sym("a")]);
+    let b = MettaValue::SExpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
     assert!(unify(&a, &b).is_none());
 }
 
@@ -6045,7 +6022,7 @@ fn test_unify_fails_length() {
 fn test_vm_get_head_empty() {
     let mut builder = ChunkBuilder::new("test_get_head_empty");
 
-    let empty = builder.add_constant(MettaValue::sexpr(vec![]));
+    let empty = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty);
     builder.emit(Opcode::GetHead);
     builder.emit(Opcode::Return);
@@ -6080,7 +6057,7 @@ fn test_vm_get_head_non_sexpr_5a() {
 fn test_vm_get_tail_empty() {
     let mut builder = ChunkBuilder::new("test_get_tail_empty");
 
-    let empty = builder.add_constant(MettaValue::sexpr(vec![]));
+    let empty = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty);
     builder.emit(Opcode::GetTail);
     builder.emit(Opcode::Return);
@@ -6097,7 +6074,7 @@ fn test_vm_get_tail_empty() {
 fn test_vm_get_tail_success() {
     let mut builder = ChunkBuilder::new("test_get_tail");
 
-    let sexpr = builder.add_constant(MettaValue::sexpr(vec![
+    let sexpr = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("a"),
         MettaValue::sym("b"),
         MettaValue::sym("c"),
@@ -6144,7 +6121,7 @@ fn test_vm_get_arity_non_sexpr_5a() {
 fn test_vm_get_element_out_of_bounds() {
     let mut builder = ChunkBuilder::new("test_get_element_oob");
 
-    let sexpr = builder.add_constant(MettaValue::sexpr(vec![
+    let sexpr = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("a"),
         MettaValue::sym("b"),
     ]));
@@ -6164,7 +6141,7 @@ fn test_vm_get_element_out_of_bounds() {
 fn test_vm_decon_atom_success() {
     let mut builder = ChunkBuilder::new("test_decon_atom");
 
-    let sexpr = builder.add_constant(MettaValue::sexpr(vec![
+    let sexpr = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("head"),
         MettaValue::Long(1),
         MettaValue::Long(2),
@@ -6198,7 +6175,7 @@ fn test_vm_decon_atom_success() {
 fn test_vm_decon_atom_empty() {
     let mut builder = ChunkBuilder::new("test_decon_atom_empty");
 
-    let empty = builder.add_constant(MettaValue::sexpr(vec![]));
+    let empty = builder.add_constant(MettaValue::SExpr(vec![]));
     builder.emit_u16(Opcode::PushConstant, empty);
     builder.emit(Opcode::DeconAtom);
     builder.emit(Opcode::Return);
@@ -6215,7 +6192,7 @@ fn test_vm_decon_atom_empty() {
 fn test_vm_cons_atom_sexpr() {
     let mut builder = ChunkBuilder::new("test_cons_atom");
 
-    let tail = builder.add_constant(MettaValue::sexpr(vec![
+    let tail = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("b"),
         MettaValue::sym("c"),
     ]));
@@ -6351,7 +6328,7 @@ fn test_vm_is_variable_false_5a() {
 fn test_vm_is_sexpr_true_5a() {
     let mut builder = ChunkBuilder::new("test_is_sexpr_true");
 
-    let sexpr = builder.add_constant(MettaValue::sexpr(vec![MettaValue::sym("a")]));
+    let sexpr = builder.add_constant(MettaValue::SExpr(vec![MettaValue::sym("a")]));
     builder.emit_u16(Opcode::PushConstant, sexpr);
     builder.emit(Opcode::IsSExpr);
     builder.emit(Opcode::Return);
@@ -6421,12 +6398,12 @@ fn test_vm_is_symbol_false_5a() {
 fn test_vm_match_opcode_true() {
     let mut builder = ChunkBuilder::new("test_match_true");
 
-    let pattern = builder.add_constant(MettaValue::sexpr(vec![
+    let pattern = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("add"),
         MettaValue::var("x"),
         MettaValue::var("y"),
     ]));
-    let value = builder.add_constant(MettaValue::sexpr(vec![
+    let value = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("add"),
         MettaValue::Long(1),
         MettaValue::Long(2),
@@ -6450,11 +6427,11 @@ fn test_vm_match_opcode_true() {
 fn test_vm_match_opcode_false() {
     let mut builder = ChunkBuilder::new("test_match_false");
 
-    let pattern = builder.add_constant(MettaValue::sexpr(vec![
+    let pattern = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("add"),
         MettaValue::Long(1),
     ]));
-    let value = builder.add_constant(MettaValue::sexpr(vec![
+    let value = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("sub"),
         MettaValue::Long(1),
     ]));
@@ -6477,12 +6454,12 @@ fn test_vm_match_opcode_false() {
 fn test_vm_match_bind_opcode_5a() {
     let mut builder = ChunkBuilder::new("test_match_bind");
 
-    let pattern = builder.add_constant(MettaValue::sexpr(vec![
+    let pattern = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("pair"),
         MettaValue::var("x"),
         MettaValue::var("y"),
     ]));
-    let value = builder.add_constant(MettaValue::sexpr(vec![
+    let value = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("pair"),
         MettaValue::Long(10),
         MettaValue::Long(20),
@@ -6507,7 +6484,7 @@ fn test_vm_match_head_true() {
     let mut builder = ChunkBuilder::new("test_match_head_true");
 
     let expected = builder.add_constant(MettaValue::sym("foo"));
-    let value = builder.add_constant(MettaValue::sexpr(vec![
+    let value = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("foo"),
         MettaValue::Long(1),
     ]));
@@ -6531,7 +6508,7 @@ fn test_vm_match_head_false() {
     let mut builder = ChunkBuilder::new("test_match_head_false");
 
     let expected = builder.add_constant(MettaValue::sym("bar"));
-    let value = builder.add_constant(MettaValue::sexpr(vec![
+    let value = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("foo"),
         MettaValue::Long(1),
     ]));
@@ -6553,7 +6530,7 @@ fn test_vm_match_head_false() {
 fn test_vm_match_arity_true() {
     let mut builder = ChunkBuilder::new("test_match_arity_true");
 
-    let value = builder.add_constant(MettaValue::sexpr(vec![
+    let value = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("a"),
         MettaValue::sym("b"),
         MettaValue::sym("c"),
@@ -6576,7 +6553,7 @@ fn test_vm_match_arity_true() {
 fn test_vm_match_arity_false() {
     let mut builder = ChunkBuilder::new("test_match_arity_false");
 
-    let value = builder.add_constant(MettaValue::sexpr(vec![
+    let value = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("a"),
         MettaValue::sym("b"),
     ]));
@@ -6598,11 +6575,11 @@ fn test_vm_match_arity_false() {
 fn test_vm_unify_opcode_true() {
     let mut builder = ChunkBuilder::new("test_unify_true");
 
-    let a = builder.add_constant(MettaValue::sexpr(vec![
+    let a = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("f"),
         MettaValue::var("x"),
     ]));
-    let b = builder.add_constant(MettaValue::sexpr(vec![
+    let b = builder.add_constant(MettaValue::SExpr(vec![
         MettaValue::sym("f"),
         MettaValue::Long(42),
     ]));

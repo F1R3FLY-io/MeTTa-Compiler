@@ -239,14 +239,14 @@ impl<V: MettaValueTrait + Clone> GenericGroundedOperationTCO<V> for NotOpGeneric
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::models::{GcFactory, MettaValue};
 
     fn run_binary_logical<Op: GenericGroundedOperationTCO<MettaValue>>(
         op: &Op,
         a: bool,
         b: bool,
     ) -> bool {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state = GenericGroundedState::new(
             op.name().to_string(),
             vec![MettaValue::Bool(a), MettaValue::Bool(b)],
@@ -279,7 +279,7 @@ mod tests {
     }
 
     fn run_unary_logical<Op: GenericGroundedOperationTCO<MettaValue>>(op: &Op, a: bool) -> bool {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state =
             GenericGroundedState::new(op.name().to_string(), vec![MettaValue::Bool(a)]);
 
@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn test_and_short_circuit() {
         // When first arg is all False, should short-circuit
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state = GenericGroundedState::new(
             "and".to_string(),
             vec![MettaValue::Bool(false), MettaValue::Bool(true)],
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn test_or_short_circuit() {
         // When first arg is all True, should short-circuit
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state = GenericGroundedState::new(
             "or".to_string(),
             vec![MettaValue::Bool(true), MettaValue::Bool(false)],

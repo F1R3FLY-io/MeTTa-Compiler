@@ -172,7 +172,7 @@ pub unsafe extern "C" fn jit_runtime_map_atom(
 
     let metta_list = jit_list.to_metta();
     let items = match metta_list.inner() {
-        MettaValueInner::SExpr(items) => items.clone(),
+        MettaValueInner::SExpr(items) => items.to_vec(),
         _ => {
             // Not a list, return original
             return list;
@@ -248,7 +248,7 @@ pub unsafe extern "C" fn jit_runtime_filter_atom(
 
     let metta_list = jit_list.to_metta();
     let items = match metta_list.inner() {
-        MettaValueInner::SExpr(items) => items.clone(),
+        MettaValueInner::SExpr(items) => items.to_vec(),
         _ => return list,
     };
 
@@ -331,7 +331,7 @@ pub unsafe extern "C" fn jit_runtime_foldl_atom(
 
     let metta_list = jit_list.to_metta();
     let items = match metta_list.inner() {
-        MettaValueInner::SExpr(items) => items.clone(),
+        MettaValueInner::SExpr(items) => items.to_vec(),
         _ => return init, // Not a list, return init
     };
 

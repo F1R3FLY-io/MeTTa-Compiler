@@ -3,27 +3,18 @@
 //! Provides methods for converting between MORK expressions and MettaValues.
 //! Handles the low-level byte encoding used by PathMap trie storage.
 //!
-//! ## Optimization: Arena-based Conversion
-//!
-//! The `mork_expr_to_arena_value` function converts MORK expressions directly to
-//! arena-allocated values, avoiding individual heap allocations. This is 2-3x
-//! faster than converting to heap-allocated MettaValue for transient values.
-//!
 //! ## Epoch-Based Variable Names
 //!
 //! Variable names use epoch-suffixed format ("$a%0", "$b%0", etc.) to prevent
 //! variable capture bugs when rules from different scopes share the same
 //! De Bruijn index but represent different logical variables.
 
-use bumpalo::collections::Vec as BumpVec;
-use bumpalo::Bump;
 use mork::space::Space;
 use mork_expr::{maybe_byte_item, Expr, Tag};
-use std::slice::from_raw_parts;
-use tracing::{trace, warn};
+use tracing::warn;
 
 use super::MettaValue;
-use crate::backend::models::{ArenaValue, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
 /// Base variable names for MORK variables (without `$` prefix).
 /// Each invocation of a MORK-to-value conversion generates unique variable names
@@ -44,7 +35,7 @@ static VARNAME_BASES: [&str; 64] = [
 /// ensuring that variables from different rule applications never collide.
 static VARNAME_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-impl super::HeapEnvironment {
+impl super::MettaEnvironment {
     /// Extract (head_symbol_bytes, arity) from MORK expression bytes in O(1).
     ///
     /// This is used for lazy pre-filtering in `match_space()`: if the pattern has a fixed
@@ -114,200 +105,12 @@ impl super::HeapEnvironment {
         expr: &Expr,
         space: &Space<V>,
     ) -> Result<MettaValue, String> {
-        // CACHE DISABLED: Pointer-based caching doesn't work with PathMap's buffer reuse.
-        // PathMap's read_zipper.path() returns a reference to an internal buffer that
-        // changes content in-place while the pointer stays constant during iteration.
-        // A proper fix would require content-based hashing, but for now we disable it.
-
-        // Stack-based traversal to avoid recursion limits
-        #[derive(Debug)]
-        enum StackFrame {
-            Arity {
-                remaining: u8,
-                items: Vec<MettaValue>,
-            },
-        }
-
-        let mut stack: Vec<StackFrame> = Vec::new();
-        let mut offset = 0usize;
-        let ptr = expr.ptr;
-        let mut newvar_count = 0u8; // Track how many NewVars we've seen for proper indexing
-        let epoch = VARNAME_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut var_names: Vec<String> = Vec::new();
-
-        'parsing: loop {
-            // Read the next byte and interpret as tag
-            let byte = unsafe { *ptr.byte_add(offset) };
-            let tag = match maybe_byte_item(byte) {
-                Ok(t) => t,
-                Err(reserved_byte) => {
-                    // Reserved byte encountered - this is the bug we're fixing!
-                    // Instead of panicking, return an error that calling code can handle
-                    warn!(
-                        target: "mettatron::environment::mork_expr_to_metta_value",
-                        reserved_byte, offset,
-                        "Reserved byte encountered during MORK conversion"
-                    );
-                    return Err(format!(
-                        "Reserved byte {} at offset {}",
-                        reserved_byte, offset
-                    ));
-                }
-            };
-
-            offset += 1;
-
-            // Handle the tag and build MettaValue
-            let value = match tag {
-                Tag::NewVar => {
-                    // De Bruijn index - NewVar introduces a new variable with the next index
-                    // Use epoch-suffixed names to prevent variable capture across scopes
-                    let base = if (newvar_count as usize) < VARNAME_BASES.len() {
-                        VARNAME_BASES[newvar_count as usize]
-                    } else {
-                        return Err(format!("Too many variables: {}", newvar_count));
-                    };
-                    let var_name = format!("${}%{}", base, epoch);
-                    newvar_count += 1;
-                    var_names.push(var_name.clone());
-                    MettaValue::Atom(var_name)
-                }
-                Tag::VarRef(i) => {
-                    // Variable reference - look up the epoch-unique name
-                    if (i as usize) < var_names.len() {
-                        MettaValue::Atom(var_names[i as usize].clone())
-                    } else {
-                        return Err(format!(
-                            "Variable reference {} out of range (only {} vars defined)",
-                            i,
-                            var_names.len()
-                        ));
-                    }
-                }
-                Tag::SymbolSize(size) => {
-                    // Read symbol bytes
-                    let symbol_bytes =
-                        unsafe { from_raw_parts(ptr.byte_add(offset), size as usize) };
-                    offset += size as usize;
-
-                    // Look up symbol in symbol table if interning is enabled
-                    let symbol_str = {
-                        #[cfg(feature = "interning")]
-                        {
-                            // With interning, symbols are ALWAYS stored as 8-byte i64 IDs
-                            if symbol_bytes.len() == 8 {
-                                // Convert bytes to i64, then back to bytes for symbol table lookup
-                                let symbol_id = i64::from_be_bytes(
-                                    symbol_bytes.try_into().expect("8 bytes expected"),
-                                )
-                                .to_be_bytes();
-                                if let Some(actual_bytes) = space.sm.get_bytes(symbol_id) {
-                                    // Found in symbol table - use actual symbol string
-                                    String::from_utf8_lossy(actual_bytes).into_owned()
-                                } else {
-                                    // Symbol ID not in table - fall back to treating as raw bytes
-                                    trace!(
-                                        target: "mettatron::environment::mork_expr_to_metta_value",
-                                        symbol_id = ?symbol_id,
-                                        "Symbol ID not found in symbol table, using raw bytes"
-                                    );
-                                    String::from_utf8_lossy(symbol_bytes).into_owned()
-                                }
-                            } else {
-                                // Not 8 bytes - treat as raw symbol string
-                                String::from_utf8_lossy(symbol_bytes).into_owned()
-                            }
-                        }
-                        #[cfg(not(feature = "interning"))]
-                        {
-                            // Without interning, symbols are stored as raw UTF-8 bytes
-                            String::from_utf8_lossy(symbol_bytes).into_owned()
-                        }
-                    };
-
-                    // Parse the symbol to check if it's a number or string literal
-                    // OPTIMIZATION: Fast-path check - only try parsing as integer if first byte
-                    // could plausibly start a number (digit or minus sign followed by digit)
-                    let first_byte = symbol_str.as_bytes().first().copied().unwrap_or(0);
-                    let could_be_number = first_byte.is_ascii_digit()
-                        || (first_byte == b'-'
-                            && symbol_str.len() > 1
-                            && symbol_str
-                                .as_bytes()
-                                .get(1)
-                                .is_some_and(|b| b.is_ascii_digit()));
-
-                    if could_be_number {
-                        if let Ok(n) = symbol_str.parse::<i64>() {
-                            MettaValue::Long(n)
-                        } else {
-                            MettaValue::Atom(symbol_str)
-                        }
-                    } else if symbol_str == "true" {
-                        MettaValue::Bool(true)
-                    } else if symbol_str == "false" {
-                        MettaValue::Bool(false)
-                    } else if symbol_str.starts_with('"')
-                        && symbol_str.ends_with('"')
-                        && symbol_str.len() >= 2
-                    {
-                        // String literal - strip quotes
-                        MettaValue::String(symbol_str[1..symbol_str.len() - 1].to_string())
-                    } else {
-                        MettaValue::Atom(symbol_str)
-                    }
-                }
-                Tag::Arity(arity) => {
-                    if arity == 0 {
-                        // Empty s-expression
-                        MettaValue::Unit()
-                    } else {
-                        // Push new frame for this s-expression
-                        stack.push(StackFrame::Arity {
-                            remaining: arity,
-                            items: Vec::new(),
-                        });
-                        continue 'parsing;
-                    }
-                }
-            };
-
-            // Value is complete - add to parent or return
-            // OPTIMIZATION: Use Option to make ownership transfer explicit and avoid clones
-            let mut current_value = Some(value);
-            'popping: loop {
-                let v = current_value
-                    .take()
-                    .expect("value must be Some at start of popping loop");
-
-                // Check if stack is empty - if so, return the value
-                if stack.is_empty() {
-                    return Ok(v);
-                }
-
-                // Add value to parent frame
-                let should_pop = match stack.last_mut() {
-                    None => unreachable!(), // Already checked above
-                    Some(StackFrame::Arity { remaining, items }) => {
-                        items.push(v); // OPTIMIZATION: No clone needed - value is consumed
-                        *remaining -= 1;
-                        *remaining == 0
-                    }
-                };
-
-                if should_pop {
-                    // S-expression is complete - pop and take ownership of items
-                    // OPTIMIZATION: Take ownership instead of cloning
-                    if let Some(StackFrame::Arity { items, .. }) = stack.pop() {
-                        current_value = Some(MettaValue::SExpr(items));
-                        continue 'popping;
-                    }
-                } else {
-                    // More items needed - go back to parsing
-                    continue 'parsing;
-                }
-            }
-        }
+        // Delegate to the efficient factory-based generic implementation.
+        // Since MettaValue = MettaValue, the factory allocates directly
+        // into the global slab allocator without intermediate heap Strings.
+        use crate::backend::models::global_factory;
+        let factory = global_factory();
+        super::mork_encoding::mork_expr_to_generic_value(expr, space, &factory)
     }
 
     /// Helper function to serialize a MORK Expr to a readable string
@@ -344,194 +147,6 @@ impl super::HeapEnvironment {
         String::from_utf8_lossy(&buffer).to_string()
     }
 
-    /// Convert a MORK Expr directly to ArenaValue (arena-allocated).
-    ///
-    /// This is an optimized version that allocates all values from the provided
-    /// arena, avoiding individual heap allocations. Use this for transient values
-    /// that don't need to outlive the arena.
-    ///
-    /// ## Performance Benefits
-    ///
-    /// - No individual Arc wrapping for each value
-    /// - No reference counting overhead
-    /// - O(1) bulk deallocation when arena drops
-    /// - Better cache locality
-    #[allow(unused_variables)]
-    pub(crate) fn mork_expr_to_arena_value<'a, V: Clone + Default + Send + Sync + Unpin>(
-        arena: &'a Bump,
-        expr: &Expr,
-        space: &Space<V>,
-    ) -> Result<ArenaValue<'a>, String> {
-        // Stack-based traversal to avoid recursion limits
-        #[derive(Debug)]
-        enum StackFrame<'a> {
-            Arity {
-                remaining: u8,
-                items: BumpVec<'a, ArenaValue<'a>>,
-            },
-        }
-
-        let mut stack: Vec<StackFrame<'a>> = Vec::new();
-        let mut offset = 0usize;
-        let ptr = expr.ptr;
-        let mut newvar_count = 0u8;
-        let epoch = VARNAME_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut var_names: Vec<String> = Vec::new();
-
-        'parsing: loop {
-            let byte = unsafe { *ptr.byte_add(offset) };
-            let tag = match maybe_byte_item(byte) {
-                Ok(t) => t,
-                Err(reserved_byte) => {
-                    warn!(
-                        target: "mettatron::environment::mork_expr_to_arena_value",
-                        reserved_byte, offset,
-                        "Reserved byte encountered during MORK conversion"
-                    );
-                    return Err(format!(
-                        "Reserved byte {} at offset {}",
-                        reserved_byte, offset
-                    ));
-                }
-            };
-
-            offset += 1;
-
-            let value = match tag {
-                Tag::NewVar => {
-                    // Use epoch-suffixed names to prevent variable capture across scopes
-                    let base = if (newvar_count as usize) < VARNAME_BASES.len() {
-                        VARNAME_BASES[newvar_count as usize]
-                    } else {
-                        return Err(format!("Too many variables: {}", newvar_count));
-                    };
-                    let var_name = format!("${}%{}", base, epoch);
-                    newvar_count += 1;
-                    let arena_str = arena.alloc_str(&var_name);
-                    var_names.push(var_name);
-                    ArenaValue::atom(arena, arena_str)
-                }
-                Tag::VarRef(i) => {
-                    if (i as usize) < var_names.len() {
-                        let arena_str = arena.alloc_str(&var_names[i as usize]);
-                        ArenaValue::atom(arena, arena_str)
-                    } else {
-                        return Err(format!(
-                            "Variable reference {} out of range (only {} vars defined)",
-                            i,
-                            var_names.len()
-                        ));
-                    }
-                }
-                Tag::SymbolSize(size) => {
-                    let symbol_bytes =
-                        unsafe { from_raw_parts(ptr.byte_add(offset), size as usize) };
-                    offset += size as usize;
-
-                    // Look up symbol in symbol table if interning is enabled
-                    let symbol_str: &str = {
-                        #[cfg(feature = "interning")]
-                        {
-                            if symbol_bytes.len() == 8 {
-                                let symbol_id = i64::from_be_bytes(
-                                    symbol_bytes.try_into().expect("8 bytes expected"),
-                                )
-                                .to_be_bytes();
-                                if let Some(actual_bytes) = space.sm.get_bytes(symbol_id) {
-                                    let s = std::str::from_utf8(actual_bytes).unwrap_or("");
-                                    arena.alloc_str(s)
-                                } else {
-                                    let s = std::str::from_utf8(symbol_bytes).unwrap_or("");
-                                    arena.alloc_str(s)
-                                }
-                            } else {
-                                let s = std::str::from_utf8(symbol_bytes).unwrap_or("");
-                                arena.alloc_str(s)
-                            }
-                        }
-                        #[cfg(not(feature = "interning"))]
-                        {
-                            let s = std::str::from_utf8(symbol_bytes).unwrap_or("");
-                            arena.alloc_str(s)
-                        }
-                    };
-
-                    // Parse the symbol to check if it's a number or string literal
-                    let first_byte = symbol_str.as_bytes().first().copied().unwrap_or(0);
-                    let could_be_number = first_byte.is_ascii_digit()
-                        || (first_byte == b'-'
-                            && symbol_str.len() > 1
-                            && symbol_str
-                                .as_bytes()
-                                .get(1)
-                                .is_some_and(|b| b.is_ascii_digit()));
-
-                    if could_be_number {
-                        if let Ok(n) = symbol_str.parse::<i64>() {
-                            ArenaValue::long(arena, n)
-                        } else {
-                            ArenaValue::atom(arena, symbol_str)
-                        }
-                    } else if symbol_str == "true" {
-                        ArenaValue::bool(arena, true)
-                    } else if symbol_str == "false" {
-                        ArenaValue::bool(arena, false)
-                    } else if symbol_str.starts_with('"')
-                        && symbol_str.ends_with('"')
-                        && symbol_str.len() >= 2
-                    {
-                        // String literal - strip quotes and allocate in arena
-                        let content = &symbol_str[1..symbol_str.len() - 1];
-                        ArenaValue::string(arena, content)
-                    } else {
-                        ArenaValue::atom(arena, symbol_str)
-                    }
-                }
-                Tag::Arity(arity) => {
-                    if arity == 0 {
-                        ArenaValue::unit(arena)
-                    } else {
-                        // Push new frame for this s-expression
-                        stack.push(StackFrame::Arity {
-                            remaining: arity,
-                            items: BumpVec::with_capacity_in(arity as usize, arena),
-                        });
-                        continue 'parsing;
-                    }
-                }
-            };
-
-            // Value is complete - add to parent or return
-            let mut current_value = Some(value);
-            'popping: loop {
-                let v = current_value
-                    .take()
-                    .expect("value must be Some at start of popping loop");
-
-                if stack.is_empty() {
-                    return Ok(v);
-                }
-
-                let should_pop = match stack.last_mut() {
-                    None => unreachable!(),
-                    Some(StackFrame::Arity { remaining, items }) => {
-                        items.push(v);
-                        *remaining -= 1;
-                        *remaining == 0
-                    }
-                };
-
-                if should_pop {
-                    if let Some(StackFrame::Arity { items, .. }) = stack.pop() {
-                        current_value = Some(ArenaValue::sexpr(arena, items));
-                        continue 'popping;
-                    }
-                } else {
-                    continue 'parsing;
-                }
-            }
-        }
-    }
 }
 
 /// Convert MORK Expr to generic value V using factory.
@@ -542,8 +157,7 @@ impl super::HeapEnvironment {
 /// ## Zero-Conversion Design
 ///
 /// The factory-based approach means:
-/// - `HeapMettaValueFactory` constructs `MettaValue` directly
-/// - `ArenaValueFactory` constructs `ArenaValue` directly
+/// - `GcFactory` constructs `MettaValue` (= `MettaValue`) directly
 /// - No intermediate type conversion needed
 ///
 /// ## Performance

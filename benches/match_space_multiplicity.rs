@@ -12,7 +12,7 @@
 //! ```
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::environment::HeapEnvironment;
+use mettatron::backend::environment::MettaEnvironment;
 use mettatron::backend::MettaValue;
 use std::time::Duration;
 
@@ -30,7 +30,7 @@ fn bench_match_space_single_multiplicity(c: &mut Criterion) {
     // Reduced ranges to avoid OOM: [100, 500, 1000, 5000] -> [50, 100, 200, 500]
     for atom_count in [50, 100, 200, 500].iter() {
         // Pre-populate environment with atoms directly
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         for i in 0..*atom_count {
             let fact = MettaValue::SExpr(vec![
@@ -96,7 +96,7 @@ fn bench_match_space_high_multiplicity(c: &mut Criterion) {
 
     // Test with different multiplicities - reduced to avoid OOM: [1, 2, 5, 10] -> [1, 2, 3, 5]
     for multiplicity in [1, 2, 3, 5].iter() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Reduced unique atom count to avoid OOM: 100 -> 50
         for i in 0..50 {
@@ -135,7 +135,7 @@ fn bench_match_space_high_multiplicity(c: &mut Criterion) {
     // Reduced to avoid OOM: [50, 100, 500, 1000] -> [25, 50, 100, 200]
     // Reduced multiplicity: 5 -> 3
     for atom_count in [25, 50, 100, 200].iter() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let multiplicity = 3;
 
         for i in 0..*atom_count {
@@ -179,7 +179,7 @@ fn bench_match_space_first(c: &mut Criterion) {
 
     // Reduced ranges to avoid OOM: [100, 500, 1000, 5000] -> [50, 100, 200, 500]
     for atom_count in [50, 100, 200, 500].iter() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add atoms - target is in the middle
         for i in 0..*atom_count {
@@ -262,7 +262,7 @@ fn bench_match_space_exists(c: &mut Criterion) {
 
     // Reduced ranges to avoid OOM: [100, 500, 1000, 5000] -> [50, 100, 200, 500]
     for atom_count in [50, 100, 200, 500].iter() {
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         for i in 0..*atom_count {
             let fact = MettaValue::SExpr(vec![

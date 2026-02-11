@@ -1,5 +1,5 @@
 use crate::backend::environment::multiplicity::Multiplicity;
-use crate::backend::environment::HeapEnvironment;
+use crate::backend::environment::MettaEnvironment;
 /// PathMap Par Integration Module
 ///
 /// Provides conversion between MeTTa types and Rholang PathMap-based Par types.
@@ -36,7 +36,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
     let par = match value.inner() {
         MettaValueInner::Atom(s) => {
             // Atoms are plain strings (no quotes)
-            create_string_par(s.clone())
+            create_string_par(s.to_string())
         }
         MettaValueInner::Bool(b) => Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GBool(*b)),
@@ -69,7 +69,7 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
         MettaValueInner::Error(msg, details) => {
             // Represent errors as tuples: ("error", msg, details)
             let tag_par = create_string_par("error".to_string());
-            let msg_par = create_string_par(msg.clone());
+            let msg_par = create_string_par(msg.to_string());
             let details_par = metta_value_to_par(details);
 
             Par::default().with_exprs(vec![Expr {
@@ -192,7 +192,7 @@ pub fn metta_values_to_list_par(values: &[MettaValue]) -> Par {
 ///   ("space", GByteArray) - Raw MORK trie bytes
 ///   ("multiplicities", GByteArray) - Binary encoded multiplicities map
 /// Note: Type assertions are stored within the space, not separately
-pub fn environment_to_par(env: &HeapEnvironment) -> Par {
+pub fn environment_to_par(env: &MettaEnvironment) -> Par {
     // CRITICAL FIX for "reserved 111" bug:
     // We CANNOT use dump_all_sexpr() because it calls serialize2() which interprets
     // bytes as MORK tags. When symbol data contains bytes in range 64-127 (like 'o'=111),
@@ -471,7 +471,7 @@ pub fn metta_error_to_par(error_msg: &str) -> Par {
     // Create a MettaState with the error in output
     let error_state = MettaState {
         source: vec![],
-        environment: HeapEnvironment::default(),
+        environment: MettaEnvironment::default(),
         output: vec![error_value],
     };
 
@@ -530,7 +530,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
                                         let msg = par_to_metta_value(&tuple.ps[1])?;
                                         let details = par_to_metta_value(&tuple.ps[2])?;
                                         if let MettaValueInner::String(msg_str) = msg.inner() {
-                                            Ok(MettaValue::Error(msg_str.clone(), details))
+                                            Ok(MettaValue::Error(msg_str, details))
                                         } else {
                                             Err("Error message must be a string".to_string())
                                         }
@@ -585,7 +585,7 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
 ///   (("space", GByteArray), ("multiplicities", GByteArray))
 ///   or (("space", GByteArray), ("multiplicities", GByteArray), ("large_exprs", GByteArray))
 /// Note: Type assertions are stored within the space, not separately
-pub fn par_to_environment(par: &Par) -> Result<HeapEnvironment, String> {
+pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
     use std::collections::HashMap;
     trace!(target: "mettatron::rholang_integration::par_to_environment", par_exprs_count = par.exprs.len());
 
@@ -701,7 +701,7 @@ pub fn par_to_environment(par: &Par) -> Result<HeapEnvironment, String> {
             }
 
             // Reconstruct Environment
-            let mut env = HeapEnvironment::default();
+            let mut env = MettaEnvironment::default();
 
             // Restore multiplicities
             env.set_multiplicities(multiplicities_map);
@@ -1020,7 +1020,7 @@ mod tests {
     #[test]
     fn test_environment_serialization_roundtrip() {
         // Create an environment with a rule
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         let rule = Rule::new(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
@@ -1166,7 +1166,7 @@ mod tests {
         // Test round-trip
         let roundtrip = par_to_metta_value(&par).unwrap();
         if let MettaValueInner::String(s) = roundtrip.inner() {
-            assert_eq!(s, "hello world");
+            assert_eq!(*s, "hello world");
         } else {
             panic!("Expected MettaValue::String");
         }
@@ -1334,7 +1334,7 @@ mod tests {
     #[test]
     fn test_reserved_bytes_roundtrip_y_z() {
         // Test with symbols containing 'y' (121) and 'z' (122) - reserved bytes
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add expression with reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1364,7 +1364,7 @@ mod tests {
     #[test]
     fn test_reserved_bytes_roundtrip_tilde() {
         // Test with tilde '~' (126) - the specific byte mentioned in the bug report
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add expression with tilde (the problematic reserved byte)
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1399,7 +1399,7 @@ mod tests {
     #[test]
     fn test_reserved_bytes_multiple_roundtrips() {
         // Test multiple round-trips to ensure bytes are preserved exactly
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add multiple expressions with various reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1446,7 +1446,7 @@ mod tests {
     #[test]
     fn test_reserved_bytes_with_rules() {
         // Test the original bug scenario: rules with if + match containing reserved bytes
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add fact with reserved bytes
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1499,7 +1499,7 @@ mod tests {
     fn test_reserved_bytes_all_range() {
         // Test all bytes in the reserved range (64-127)
         // This ensures the fix works for ANY reserved byte, not just specific ones
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add expressions with various ASCII characters in the reserved range
         // '@' = 64, 'A' = 65, ..., 'Z' = 90, ..., 'z' = 122, '{' = 123, '~' = 126, DEL = 127
@@ -1536,7 +1536,7 @@ mod tests {
         // REGRESSION TEST for the "reserved 111" bug from robot_planning.rho
         // This test specifically uses symbols containing 'o' (byte 111) which is reserved
         // The bug occurred when dump_all_sexpr() tried to interpret 'o' as a tag byte
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add facts with 'o' (111) - the specific byte that triggered the demo failure
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1601,7 +1601,7 @@ mod tests {
     fn test_reserved_bytes_with_evaluation() {
         // Test that deserialized Environment can actually be USED for evaluation
         // This exposes issues that simple round-trip tests miss
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
 
         // Add facts with 'o' (111) - reserved byte
         env.add_to_space(&MettaValue::SExpr(vec![
@@ -1632,13 +1632,13 @@ mod tests {
         // Verify source is populated after compile
         assert_eq!(state.source.len(), 1, "Source should have 1 expression");
         assert!(
-            state.source[0].is_eval_expr(),
+            state.source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!")),
             "Source[0] should be an eval expression (starts with !)"
         );
         println!(
             "After compile: source = {:?}, is_eval_expr = {}",
             state.source[0],
-            state.source[0].is_eval_expr()
+            state.source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!"))
         );
 
         // Serialize to PathMap Par
@@ -1656,12 +1656,12 @@ mod tests {
         println!(
             "After deserialize: source = {:?}, is_eval_expr = {}",
             deserialized.source[0],
-            deserialized.source[0].is_eval_expr()
+            deserialized.source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!"))
         );
 
         // Critical: Check that is_eval_expr() still returns true
         assert!(
-            deserialized.source[0].is_eval_expr(),
+            deserialized.source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!")),
             "Deserialized source[0] should still be an eval expression"
         );
 
@@ -2073,7 +2073,7 @@ mod tests {
         let roundtrip = par_to_metta_value(&par).unwrap();
 
         if let MettaValueInner::String(s) = roundtrip.inner() {
-            assert_eq!(s, "hello \"world\" with \\ backslash");
+            assert_eq!(*s, "hello \"world\" with \\ backslash");
         } else {
             panic!("Expected String after roundtrip");
         }

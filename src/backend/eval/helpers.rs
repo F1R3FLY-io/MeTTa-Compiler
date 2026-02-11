@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use phf::phf_set;
 use tracing::trace;
 
-use crate::backend::environment::{HeapEnvironment, GenericEnvironment};
+use crate::backend::environment::{MettaEnvironment, GenericEnvironment};
 use crate::backend::fuzzy_match::{FuzzyMatcher, SmartSuggestion, SuggestionContext};
 use crate::backend::models::{Bindings, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
@@ -245,7 +245,7 @@ pub fn friendly_value_repr(value: &MettaValue) -> String {
                     result_stack.push(if *b { "True" } else { "False" }.to_string());
                 }
                 MettaValueInner::String(s) => result_stack.push(format!("\"{}\"", s)),
-                MettaValueInner::Atom(a) => result_stack.push(a.clone()),
+                MettaValueInner::Atom(a) => result_stack.push((*a).to_string()),
                 MettaValueInner::Unit => result_stack.push("()".to_string()),
                 MettaValueInner::Empty => result_stack.push("Empty".to_string()),
                 MettaValueInner::Space(handle) => {
@@ -337,7 +337,7 @@ pub fn friendly_value_repr(value: &MettaValue) -> String {
 pub fn suggest_special_form_with_context(
     op: &str,
     expr: &[MettaValue],
-    env: &HeapEnvironment,
+    env: &MettaEnvironment,
 ) -> Option<SmartSuggestion> {
     use std::sync::OnceLock;
 
@@ -366,7 +366,7 @@ pub fn is_grounded_op(name: &str) -> bool {
 /// - Variables ($x) are kept as-is (they're for pattern matching)
 /// - S-expressions are kept unevaluated (lazy evaluation)
 /// - Special tokens like &self are NOT resolved here (handled in eval_step)
-pub fn resolve_tokens_shallow(items: &[MettaValue], env: &HeapEnvironment) -> Vec<MettaValue> {
+pub fn resolve_tokens_shallow(items: &[MettaValue], env: &MettaEnvironment) -> Vec<MettaValue> {
     items
         .iter()
         .map(|item| {
@@ -378,12 +378,12 @@ pub fn resolve_tokens_shallow(items: &[MettaValue], env: &HeapEnvironment) -> Ve
                     }
                     // Skip special atoms like &self, &kb that might be handled elsewhere
                     // or are truly space references
-                    if name == "&self" {
+                    if *name == "&self" {
                         // Let &self be resolved later in eval_step
                         return item.clone();
                     }
                     // Try to resolve registered tokens (e.g., &stack → Space)
-                    if let Some(bound_value) = env.lookup_token(name) {
+                    if let Some(bound_value) = env.lookup_token(*name) {
                         bound_value
                     } else {
                         item.clone()
@@ -494,7 +494,7 @@ pub fn preprocess_space_refs(items: Vec<MettaValue>) -> Vec<MettaValue> {
                         if let (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) =
                             (items[i].inner(), items[i + 1].inner())
                         {
-                            if a == "&" {
+                            if *a == "&" {
                                 // Combine `& name` into `&name`
                                 result_stack.push(MettaValue::Atom(format!("&{}", b)));
                                 i += 2;
@@ -525,7 +525,7 @@ pub fn preprocess_space_refs(items: Vec<MettaValue>) -> Vec<MettaValue> {
 
                             // Push nested items for processing
                             work_stack.push(PreprocessWork::ProcessItems {
-                                items: nested.clone(), // O(1) - cloning Vec of Arc-wrapped values
+                                items: nested.to_vec(), // Convert &[MettaValue] to Vec
                                 start_index: child_start,
                             });
 
@@ -561,11 +561,11 @@ pub fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
         MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner() {
             MettaValueInner::Atom(head)
                 if !head.starts_with('$')
-                    && (!head.starts_with('&') || head == "&")
+                    && (!head.starts_with('&') || *head == "&")
                     && !head.starts_with('\'')
-                    && head != "_" =>
+                    && *head != "_" =>
             {
-                Some(head.as_str())
+                Some(*head)
             }
             _ => None,
         },
@@ -573,11 +573,11 @@ pub fn get_head_symbol(pattern: &MettaValue) -> Option<&str> {
         // EXCEPT: standalone "&" is allowed (used in match)
         MettaValueInner::Atom(head)
             if !head.starts_with('$')
-                && (!head.starts_with('&') || head == "&")
+                && (!head.starts_with('&') || *head == "&")
                 && !head.starts_with('\'')
-                && head != "_" =>
+                && *head != "_" =>
         {
-            Some(head.as_str())
+            Some(*head)
         }
         _ => None,
     };
@@ -609,8 +609,8 @@ pub fn pattern_specificity(pattern: &MettaValue) -> usize {
                 if (s.starts_with('$')
                     || s.starts_with('&')
                     || s.starts_with('\'')
-                    || s == "_")
-                    && s != "&" =>
+                    || *s == "_")
+                    && *s != "&" =>
             {
                 total += 1000; // Variables are least specific
             }
@@ -627,10 +627,10 @@ pub fn pattern_specificity(pattern: &MettaValue) -> usize {
             | MettaValueInner::Empty => {}
             // Compound types: push children onto work stack
             MettaValueInner::SExpr(items) => {
-                work_stack.extend(items.iter());
+                work_stack.extend((*items).iter());
             }
             MettaValueInner::Conjunction(goals) => {
-                work_stack.extend(goals.iter());
+                work_stack.extend((*goals).iter());
             }
             MettaValueInner::Error(_, details) => {
                 work_stack.push(details);
@@ -672,9 +672,9 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
         // Apply bindings to variables (atoms starting with $, &, or ')
         // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
         MettaValueInner::Atom(s)
-            if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && s != "&" =>
+            if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')) && *s != "&" =>
         {
-            match bindings.iter().find(|(name, _)| name.as_str() == s) {
+            match bindings.iter().find(|(name, _)| name.as_str() == *s) {
                 Some((_name, val)) => return Cow::Owned(val.clone()),
                 None => return Cow::Borrowed(value),
             }
@@ -733,9 +733,9 @@ fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> C
                     // Variable substitution
                     MettaValueInner::Atom(s)
                         if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\''))
-                            && s != "&" =>
+                            && *s != "&" =>
                     {
-                        match bindings.iter().find(|(name, _)| name.as_str() == s) {
+                        match bindings.iter().find(|(name, _)| name.as_str() == *s) {
                             Some((_name, bound_val)) => {
                                 result_stack.push((bound_val.clone(), true));
                             }
@@ -770,7 +770,7 @@ fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> C
                     }
                     // Error: push build marker, then push details
                     MettaValueInner::Error(msg, details) => {
-                        work_stack.push(ApplyBindingsWork::BuildError(msg.clone(), val));
+                        work_stack.push(ApplyBindingsWork::BuildError(msg.to_string(), val));
                         work_stack.push(ApplyBindingsWork::Process(details));
                     }
                     // All other types: no substitution needed
@@ -974,7 +974,7 @@ mod tests {
         let result = preprocess_space_refs(items);
         assert_eq!(result.len(), 1);
         if let MettaValueInner::Atom(s) = result[0].inner() {
-            assert_eq!(s, "&self");
+            assert_eq!(*s, "&self");
         } else {
             panic!("Expected Atom");
         }
@@ -992,7 +992,7 @@ mod tests {
         if let MettaValueInner::SExpr(inner) = result[0].inner() {
             assert_eq!(inner.len(), 1);
             if let MettaValueInner::Atom(s) = inner[0].inner() {
-                assert_eq!(s, "&kb");
+                assert_eq!(*s, "&kb");
             } else {
                 panic!("Expected Atom");
             }

@@ -4,7 +4,7 @@
 //! values of any type implementing `MettaValueTrait`. This eliminates boundary
 //! conversions during pattern matching by allowing bindings to store values in
 //! their native representation (either heap-allocated `MettaValue` or arena-allocated
-//! `ArenaValue`).
+//! `MettaValue`).
 //!
 //! ## Design
 //!
@@ -19,7 +19,7 @@
 //! By using `GenericBindings<V>`, we avoid O(n) deep allocations during pattern
 //! matching and binding application:
 //! - `MettaValue.clone()` = O(1) Arc increment
-//! - `ArenaValue.clone()` = O(1) pointer copy
+//! - `MettaValue.clone()` = O(1) pointer copy
 //! - No conversions between types during evaluation
 
 use smallvec::SmallVec;

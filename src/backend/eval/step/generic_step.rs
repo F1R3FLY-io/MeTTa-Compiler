@@ -31,7 +31,7 @@ use super::generic_types::GenericEvalStep;
 ///
 /// # Type Parameters
 ///
-/// - `C`: The evaluation context (e.g., `StaticArenaContext`)
+/// - `C`: The evaluation context (e.g., `StaticEvalContext`)
 ///
 /// # Arguments
 ///
@@ -141,13 +141,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::eval::trampoline::StaticArenaContext;
+    use crate::backend::eval::trampoline::StaticEvalContext;
     use crate::backend::models::MettaValueFactory;
 
     #[test]
     fn test_eval_step_generic_ground_types() {
-        let ctx = StaticArenaContext::get();
-        let env = StaticArenaContext::new_env();
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
         let factory = ctx.factory();
 
         // Bool
@@ -173,8 +173,8 @@ mod tests {
 
     #[test]
     fn test_eval_step_generic_atom() {
-        let ctx = StaticArenaContext::get();
-        let env = StaticArenaContext::new_env();
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
         let factory = ctx.factory();
 
         let value = factory.atom("foo");
@@ -189,8 +189,8 @@ mod tests {
 
     #[test]
     fn test_eval_step_generic_sexpr() {
-        let ctx = StaticArenaContext::get();
-        let env = StaticArenaContext::new_env();
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
         let factory = ctx.factory();
 
         // S-expression should dispatch to eval_sexpr_step_generic
@@ -214,8 +214,8 @@ mod tests {
 
     #[test]
     fn test_eval_step_generic_error_propagation() {
-        let ctx = StaticArenaContext::get();
-        let env = StaticArenaContext::new_env();
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
         let factory = ctx.factory();
 
         let error = factory.error("test error", factory.atom("TestError"));
@@ -230,8 +230,8 @@ mod tests {
 
     #[test]
     fn test_eval_step_generic_empty() {
-        let ctx = StaticArenaContext::get();
-        let env = StaticArenaContext::new_env();
+        let ctx = StaticEvalContext::get();
+        let env = StaticEvalContext::new_env();
         let factory = ctx.factory();
 
         let value = factory.empty();

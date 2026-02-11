@@ -275,7 +275,7 @@ pub fn pattern_match_simple_generic<V: MettaValueTrait + Clone>(
 /// This function performs pattern matching between a pattern and a value,
 /// returning variable bindings if successful. Uses `MettaValueTrait` methods
 /// instead of `MettaValueInner` pattern matching, enabling zero-conversion
-/// operations for ArenaValue.
+/// operations for MettaValue.
 ///
 /// ## Supported Pattern Types
 ///
@@ -633,7 +633,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::models::{GcFactory, MettaValue};
 
     #[test]
     fn test_collect_variables_generic() {
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_seal_variables_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("foo".to_string()),
             MettaValue::Atom("$x".to_string()),
@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn test_eval_sealed_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let items = vec![
             MettaValue::Atom("sealed".to_string()),
             MettaValue::SExpr(vec![MettaValue::Atom("$x".to_string())]),
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn test_eval_atom_subst_generic() {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let items = vec![
             MettaValue::Atom("atom-subst".to_string()),
             MettaValue::Long(42),

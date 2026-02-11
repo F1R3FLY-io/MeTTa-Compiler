@@ -46,7 +46,7 @@ pub unsafe extern "C" fn jit_runtime_load_global(
         let constant_ptr = ctx_ref.constants.add(symbol_idx as usize);
         let constant = &*constant_ptr;
         match constant.inner() {
-            MettaValueInner::Atom(name) => Some(name.clone()),
+            MettaValueInner::Atom(name) => Some(name.to_string()),
             _ => None,
         }
     } else {
@@ -129,8 +129,8 @@ pub unsafe extern "C" fn jit_runtime_load_space(
         let constant_ptr = ctx_ref.constants.add(name_idx as usize);
         let constant = &*constant_ptr;
         match constant.inner() {
-            MettaValueInner::Atom(name) => name.clone(),
-            MettaValueInner::String(name) => name.clone(),
+            MettaValueInner::Atom(name) => name.to_string(),
+            MettaValueInner::String(name) => name.to_string(),
             _ => {
                 // Not a valid space name
                 return JitValue::unit().to_bits();

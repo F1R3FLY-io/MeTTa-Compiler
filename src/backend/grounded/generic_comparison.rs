@@ -267,14 +267,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{HeapMettaValueFactory, MettaValue};
+    use crate::backend::models::{GcFactory, MettaValue};
 
     fn run_comparison<Op: GenericGroundedOperationTCO<MettaValue>>(
         op: &Op,
         a: i64,
         b: i64,
     ) -> bool {
-        let factory = HeapMettaValueFactory;
+        let factory = GcFactory::default();
         let mut state = GenericGroundedState::new(op.name().to_string(), vec![MettaValue::Long(a), MettaValue::Long(b)]);
 
         op.execute_step_generic(&mut state, &factory);

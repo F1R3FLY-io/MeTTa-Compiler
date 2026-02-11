@@ -287,8 +287,8 @@ pub unsafe extern "C" fn jit_runtime_eval_unquote(
     // If it's a quote, unwrap it; otherwise return as-is
     match metta.inner() {
         MettaValueInner::SExpr(elems) if !elems.is_empty() => {
-            if let MettaValueInner::Atom(ref s) = elems[0].inner() {
-                if s == "quote" && elems.len() == 2 {
+            if let MettaValueInner::Atom(s) = elems[0].inner() {
+                if *s == "quote" && elems.len() == 2 {
                     // Return the quoted content
                     return metta_to_jit(&elems[1]).to_bits();
                 }
@@ -517,6 +517,10 @@ pub unsafe extern "C" fn jit_runtime_eval_superpose(
             // Empty superpose - signal failure
             JIT_SIGNAL_FAIL as u64
         }
+        MettaValueInner::Unit => {
+            // Unit is the normalized form of SExpr([]) - empty superpose
+            JIT_SIGNAL_FAIL as u64
+        }
         _ => {
             // Not a list - return as-is (single value)
             list
@@ -708,9 +712,9 @@ pub unsafe extern "C" fn jit_runtime_eval_apply(
     let closure_val = JitValue::from_raw(closure).to_metta();
 
     // Extract closure components: (lambda param_count (captured_env...) body_ip)
-    if let MettaValueInner::SExpr(ref items) = closure_val.inner() {
+    if let MettaValueInner::SExpr(items) = closure_val.inner() {
         if items.len() >= 3 {
-            let is_lambda = matches!(items[0].inner(), MettaValueInner::Atom(s) if s == "lambda");
+            let is_lambda = matches!(items[0].inner(), MettaValueInner::Atom(s) if *s == "lambda");
             if !is_lambda {
                 // Not a lambda - return unchanged
                 return closure;
@@ -736,21 +740,21 @@ pub unsafe extern "C" fn jit_runtime_eval_apply(
             }
 
             // Install captured environment bindings
-            if let MettaValueInner::SExpr(ref captured_env) = items[2].inner() {
+            if let MettaValueInner::SExpr(captured_env) = items[2].inner() {
                 // Push a new binding frame for the closure scope
                 jit_runtime_push_binding_frame(ctx);
 
                 // Install each captured binding
                 // Variables in MeTTa are Atoms that start with $
-                for captured in captured_env {
-                    if let MettaValueInner::SExpr(ref binding) = captured.inner() {
+                for captured in *captured_env {
+                    if let MettaValueInner::SExpr(binding) = captured.inner() {
                         if binding.len() >= 2 {
-                            if let MettaValueInner::Atom(ref name) = binding[0].inner() {
+                            if let MettaValueInner::Atom(name) = binding[0].inner() {
                                 // Variables start with $ - strip it for binding name
                                 let binding_name = if name.starts_with('$') {
                                     &name[1..]
                                 } else {
-                                    name.as_str()
+                                    name
                                 };
                                 let name_hash = hash_string(binding_name);
                                 let value_bits = metta_to_jit(&binding[1]).to_bits();

@@ -83,7 +83,7 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
             let mut min_val: Option<f64> = None;
             let mut min_item: Option<&MettaValue> = None;
 
-            for item in items {
+            for item in *items {
                 let val = match item.inner() {
                     MettaValueInner::Long(x) => Some(*x as f64),
                     MettaValueInner::Float(x) => Some(*x),
@@ -140,7 +140,7 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
             let mut max_val: Option<f64> = None;
             let mut max_item: Option<&MettaValue> = None;
 
-            for item in items {
+            for item in *items {
                 let val = match item.inner() {
                     MettaValueInner::Long(x) => Some(*x as f64),
                     MettaValueInner::Float(x) => Some(*x),

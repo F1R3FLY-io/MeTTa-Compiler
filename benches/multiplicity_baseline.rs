@@ -22,8 +22,8 @@
 //! ```
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::environment::HeapEnvironment;
-use mettatron::backend::{MettaValue, Rule};
+use mettatron::backend::environment::MettaEnvironment;
+use mettatron::backend::{MettaValue, MettaValueTrait, Rule};
 
 /// Generate N rules for benchmarking
 /// Uses realistic rule structures similar to those in actual MeTTa programs
@@ -58,7 +58,7 @@ fn bench_rule_insertion_with_multiplicity(c: &mut Criterion) {
             rule_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = HeapEnvironment::default();
+                    let mut env = MettaEnvironment::default();
                     for rule in &rules {
                         env.add_rule(black_box(rule.clone()));
                     }
@@ -79,7 +79,7 @@ fn bench_rule_count_lookup(c: &mut Criterion) {
         let rules = generate_rules(*rule_count);
 
         // Pre-populate environment with rules
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         for rule in &rules {
             env.add_rule(rule.clone());
             // Add some rules twice to create multiplicities > 1
@@ -123,7 +123,7 @@ fn bench_mixed_workload(c: &mut Criterion) {
             op_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = HeapEnvironment::default();
+                    let mut env = MettaEnvironment::default();
                     // Insert phase
                     for rule in &rules {
                         env.add_rule(rule.clone());
@@ -142,7 +142,7 @@ fn bench_mixed_workload(c: &mut Criterion) {
             op_count,
             |b, _| {
                 b.iter(|| {
-                    let mut env = HeapEnvironment::default();
+                    let mut env = MettaEnvironment::default();
                     // Interleaved pattern
                     for rule in &rules {
                         env.add_rule(rule.clone());
@@ -165,7 +165,7 @@ fn bench_environment_fork(c: &mut Criterion) {
         let rules = generate_rules(*rule_count);
 
         // Pre-populate environment
-        let mut env = HeapEnvironment::default();
+        let mut env = MettaEnvironment::default();
         for rule in &rules {
             env.add_rule(rule.clone());
         }

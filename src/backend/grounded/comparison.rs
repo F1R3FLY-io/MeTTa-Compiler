@@ -6,7 +6,7 @@
 //! - `EqualOp`, `NotEqualOp` - Equality / inequality
 
 use super::{
-    friendly_type_name, HeapEnvironment, EvalFn, ExecError, GroundedOperation, GroundedResult,
+    friendly_type_name, MettaEnvironment, EvalFn, ExecError, GroundedOperation, GroundedResult,
     MettaValue,
 };
 use crate::backend::models::MettaValueInner;
@@ -22,7 +22,7 @@ impl GroundedOperation for LessOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         eval_comparison(args, env, eval_fn, CompareKind::Less)
@@ -40,7 +40,7 @@ impl GroundedOperation for LessEqOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         eval_comparison(args, env, eval_fn, CompareKind::LessEq)
@@ -58,7 +58,7 @@ impl GroundedOperation for GreaterOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         eval_comparison(args, env, eval_fn, CompareKind::Greater)
@@ -76,7 +76,7 @@ impl GroundedOperation for GreaterEqOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         eval_comparison(args, env, eval_fn, CompareKind::GreaterEq)
@@ -94,7 +94,7 @@ impl GroundedOperation for EqualOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         eval_equality(args, env, eval_fn, true)
@@ -112,7 +112,7 @@ impl GroundedOperation for NotEqualOp {
     fn execute_raw(
         &self,
         args: &[MettaValue],
-        env: &HeapEnvironment,
+        env: &MettaEnvironment,
         eval_fn: &EvalFn,
     ) -> GroundedResult {
         eval_equality(args, env, eval_fn, false)
@@ -142,7 +142,7 @@ impl CompareKind {
 /// Helper function for comparison operations (supports numbers and strings)
 fn eval_comparison(
     args: &[MettaValue],
-    env: &HeapEnvironment,
+    env: &MettaEnvironment,
     eval_fn: &EvalFn,
     kind: CompareKind,
 ) -> GroundedResult {
@@ -193,7 +193,7 @@ fn eval_comparison(
 /// Supports comparing all value types, not just numeric
 fn eval_equality(
     args: &[MettaValue],
-    env: &HeapEnvironment,
+    env: &MettaEnvironment,
     eval_fn: &EvalFn,
     is_equal: bool,
 ) -> GroundedResult {

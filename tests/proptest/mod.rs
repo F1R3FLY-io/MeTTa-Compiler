@@ -5,6 +5,7 @@
 //! both valid and invalid MeTTa syntax across various language constructs.
 
 pub mod compiling;
+pub mod eval;
 pub mod evaluating;
 
 pub mod strategies;

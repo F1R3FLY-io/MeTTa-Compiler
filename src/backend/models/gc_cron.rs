@@ -974,6 +974,22 @@ fn execute_memory_monitor(
         should_gc = true;
     }
 
+    // Back-pressure computation: throttle allocation when GC can't keep up
+    let bp_level = if threshold > 0 {
+        if current_committed >= threshold * 2 {
+            3 // Heavy: > 2x threshold
+        } else if current_committed >= threshold * 3 / 2 {
+            2 // Medium: 1.5x - 2x threshold
+        } else if current_committed >= threshold {
+            1 // Light: 1x - 1.5x threshold
+        } else {
+            0 // None: below threshold
+        }
+    } else {
+        0
+    };
+    super::gc_allocator::set_backpressure_level(bp_level);
+
     if should_gc {
         request_gc();
     }

@@ -36,7 +36,8 @@ fn main() {
         match compile(input) {
             Ok(state) => {
                 // Evaluate each expression
-                for &expr in state.source() {
+                let source_exprs: Vec<_> = state.source().iter().copied().collect();
+                for expr in source_exprs {
                     let (results, updated_env) = eval(expr, env.clone(), &state);
                     env = updated_env;
 

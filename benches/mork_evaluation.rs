@@ -28,7 +28,8 @@ fn eval_mork_to_fixed_point(facts: &[&str], rules: &[&str], max_iterations: usiz
     let mut env = new_env();
 
     // First pass: evaluate all expressions (facts + exec rules)
-    for &expr in state.source() {
+    let source_exprs: Vec<_> = state.source().iter().copied().collect();
+    for expr in source_exprs {
         let (_, new_env) = eval(expr, env, &state);
         env = new_env;
     }
@@ -42,7 +43,8 @@ fn eval_mork_to_fixed_point(facts: &[&str], rules: &[&str], max_iterations: usiz
         for _ in 1..max_iterations {
             let prev_env = env.clone();
 
-            for &expr in rules_state.source() {
+            let rules_exprs: Vec<_> = rules_state.source().iter().copied().collect();
+            for expr in rules_exprs {
                 let (_, new_env) = eval(expr, env, &rules_state);
                 env = new_env;
             }

@@ -1299,6 +1299,41 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
             let states = self.states.read();
             roots.extend(states.values().copied());
         }
+
+        // Pattern cache keys: LruCache<MettaValue, Vec<u8>>
+        // The keys are MettaValues whose inner pointers reference slab slots.
+        // Without collecting these, GC could free slots still referenced by
+        // cached keys, causing use-after-free on next cache lookup (Hash/Eq).
+        {
+            let cache = self.pattern_cache.read();
+            for (key, _) in cache.iter() {
+                roots.push(*key);
+            }
+        }
+
+        // Large expression PathMap values: PathMap<MettaValue>
+        // Stores MettaValues for expressions with arity >= 64. These values
+        // are slab-allocated and must be kept alive by the GC.
+        {
+            let large_pm = self.large_expr_pathmap.read();
+            if let Some(ref pm) = *large_pm {
+                for (_key, val) in pm.iter() {
+                    roots.push(*val);
+                }
+            }
+        }
+
+        // Tokenizer values: bind! stores MettaValues inside closures.
+        // Without collecting these, GC frees Space handles (e.g., &kb, &stack)
+        // and State values (e.g., &sp) that are still looked up via token resolution.
+        {
+            let tokenizer = self.tokenizer.read();
+            roots.extend(tokenizer.collect_gc_values());
+        }
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "Environment"
     }
 }
 

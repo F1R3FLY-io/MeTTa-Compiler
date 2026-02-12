@@ -32,7 +32,7 @@
 
 use std::alloc::Layout;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use portable_atomic::AtomicU128;
 
 use super::metta_value::{MettaValue, MettaValueInner};
@@ -418,9 +418,77 @@ impl TreiberStack {
         }
     }
 
+    /// Atomically drain the entire free list, returning the old packed head.
+    ///
+    /// After this call, the stack is empty. Concurrent `pop()` returns `None`
+    /// (alloc falls through to bump alloc). Concurrent `push()` starts a new
+    /// chain from `TREIBER_NULL`. The caller owns the returned chain exclusively
+    /// and can walk it via `FreeNode::next` pointers.
+    fn drain(&self) -> u128 {
+        self.head.swap(TREIBER_NULL, Ordering::AcqRel)
+    }
+
     /// Check if the stack is empty (approximate, for diagnostics only).
     fn is_empty(&self) -> bool {
         self.head.load(Ordering::Relaxed) == TREIBER_NULL
+    }
+}
+
+// ============================================================================
+// ASAN Integration for Custom Slab Allocator
+// ============================================================================
+//
+// Standard AddressSanitizer doesn't know about our slab allocator's internal
+// slot recycling. Without manual poisoning, ASAN sees all slab memory as valid
+// (mmap'd pages are always accessible) and cannot detect use-after-free when
+// we recycle a slot via the Treiber stack free list.
+//
+// These helpers call ASAN's manual poisoning API to mark freed slots as
+// inaccessible and re-mark them as accessible on allocation. This gives ASAN
+// full visibility into our custom allocator's lifecycle, producing proper
+// use-after-free reports with allocation and deallocation stacks.
+//
+// When ASAN is not active (normal builds), these are compile-time no-ops.
+
+/// Size of the Treiber stack FreeNode header (u128 = 16 bytes).
+/// This region is left unpoisoned when a slot is freed because the
+/// Treiber stack stores its `next` pointer there.
+const FREE_NODE_SIZE: usize = std::mem::size_of::<FreeNode>();
+
+/// Poison a slab slot after freeing it.
+///
+/// Marks bytes `FREE_NODE_SIZE..slot_size` as inaccessible to ASAN. The first
+/// `FREE_NODE_SIZE` bytes are left unpoisoned because the Treiber stack stores
+/// `FreeNode.next` (a u128 = 16 bytes) at the beginning of the freed slot.
+#[inline(always)]
+#[allow(unused_variables)]
+unsafe fn asan_poison_slab_slot(ptr: *mut u8, slot_size: usize) {
+    #[cfg(sanitize = "address")]
+    {
+        extern "C" {
+            fn __asan_poison_memory_region(addr: *const std::ffi::c_void, size: usize);
+        }
+        if slot_size > FREE_NODE_SIZE {
+            __asan_poison_memory_region(
+                ptr.add(FREE_NODE_SIZE) as *const std::ffi::c_void,
+                slot_size - FREE_NODE_SIZE,
+            );
+        }
+    }
+}
+
+/// Unpoison a slab slot before using it after allocation.
+///
+/// Marks the entire slot as accessible to ASAN.
+#[inline(always)]
+#[allow(unused_variables)]
+unsafe fn asan_unpoison_slab_slot(ptr: *mut u8, slot_size: usize) {
+    #[cfg(sanitize = "address")]
+    {
+        extern "C" {
+            fn __asan_unpoison_memory_region(addr: *const std::ffi::c_void, size: usize);
+        }
+        __asan_unpoison_memory_region(ptr as *const std::ffi::c_void, slot_size);
     }
 }
 
@@ -458,6 +526,8 @@ impl DataClassAllocator {
 
         // Fast path: pop from Treiber stack free list
         if let Some(ptr) = self.free_list.pop() {
+            // ASAN: unpoison the slot before reuse
+            unsafe { asan_unpoison_slab_slot(ptr, self.slot_size); }
             // Increment page live_count for the page containing this slot
             self.increment_page_live_count(ptr);
             return ptr;
@@ -468,6 +538,7 @@ impl DataClassAllocator {
         if !page_ptr.is_null() {
             let page = unsafe { &*page_ptr };
             if let Some(ptr) = page.bump_alloc(self.slot_size) {
+                // NOTE: page.live_count already incremented inside bump_alloc()
                 return ptr;
             }
         }
@@ -482,12 +553,14 @@ impl DataClassAllocator {
         // Double-check: another thread may have added a page
         if let Some(last) = pages.last() {
             if let Some(ptr) = last.bump_alloc(self.slot_size) {
+                // NOTE: page.live_count already incremented inside bump_alloc()
                 return ptr;
             }
         }
         let page = Box::new(DataPage::new(self.slot_size));
         let ptr = page.bump_alloc(self.slot_size)
             .expect("fresh page should have room");
+        // NOTE: page.live_count already incremented inside bump_alloc()
         let page_ptr = &*page as *const DataPage as *mut DataPage;
         self.current_page.store(page_ptr, Ordering::Release);
         pages.push(page);
@@ -518,6 +591,10 @@ impl DataClassAllocator {
                 }
             }
         }
+        // ASAN: poison the freed slot BEFORE push (skip FreeNode header used by Treiber stack).
+        // Must poison before push to avoid race: another thread could pop() + unpoison()
+        // between push and poison, then we'd poison an in-use slot.
+        unsafe { asan_poison_slab_slot(ptr, self.slot_size); }
         self.free_list.push(ptr);
     }
 
@@ -533,47 +610,86 @@ impl DataClassAllocator {
         if count > 0 { count as usize * self.slot_size } else { 0 }
     }
 
-    /// Release empty pages (lock-free read for check, write lock for removal).
+    /// Release empty pages via atomic drain + filter + rebuild of the free list.
+    ///
+    /// Same mechanism as `ValueAllocator::release_empty_pages()`:
+    /// 1. Quick read-lock check for any empty pages (common case: no-op)
+    /// 2. Write-lock to identify empty pages (excluding current_page)
+    /// 3. Atomically drain the Treiber stack free list (single XCHG, O(1))
+    /// 4. Walk the drained chain, push back survivors not in released pages
+    /// 5. swap_remove empty pages (triggers munmap via MmapPage::Drop)
     fn release_empty_pages(&self) {
-        let pages = self.pages.read().expect("data pages lock poisoned");
-        let has_empty = pages.iter().any(|page| {
-            page.live_count.load(Ordering::Relaxed) <= 0
-                && page.bump_count.load(Ordering::Relaxed) > 0
-        });
-        drop(pages);
+        // Phase 1: Quick check with read lock (common case: no empty pages)
+        {
+            let pages = self.pages.read().expect("data pages lock poisoned");
+            let has_empty = pages.iter().any(|page| {
+                page.live_count.load(Ordering::Relaxed) <= 0
+                    && page.bump_count.load(Ordering::Relaxed) > 0
+            });
+            if !has_empty {
+                return;
+            }
+        }
 
-        if !has_empty {
+        // Phase 2: Write lock — identify empty pages, excluding current_page
+        let mut pages = self.pages.write().expect("data pages lock poisoned");
+        let current_page_ptr = self.current_page.load(Ordering::Acquire);
+
+        // Collect address ranges of empty pages (for fast membership check during walk)
+        let mut release_ranges: Vec<(usize, usize)> = Vec::new();
+        for page in pages.iter() {
+            let page_ptr = &**page as *const DataPage as *mut DataPage;
+            if page.live_count.load(Ordering::Relaxed) <= 0
+                && page.bump_count.load(Ordering::Relaxed) > 0
+                && page_ptr != current_page_ptr
+            {
+                let start = page.data.as_ptr() as usize;
+                release_ranges.push((start, start + PAGE_SIZE));
+            }
+        }
+
+        if release_ranges.is_empty() {
             return;
         }
 
-        let mut pages = self.pages.write().expect("data pages lock poisoned");
-        // Find empty page indices
-        let empty_indices: Vec<usize> = pages.iter().enumerate()
-            .filter(|(_, page)| {
-                page.live_count.load(Ordering::Relaxed) <= 0
-                    && page.bump_count.load(Ordering::Relaxed) > 0
-            })
-            .map(|(i, _)| i)
-            .collect();
+        // Phase 3: Drain free list (atomic swap, O(1))
+        let old_head = self.free_list.drain();
 
-        // Note: we can't easily remove Treiber stack entries pointing into empty pages
-        // without a full scan. Since the GC thread is the one calling this after processing
-        // dead values, and those slots were already popped from the free list, this is safe.
-        // Any stale free-list entries pointing into released pages will simply be skipped
-        // on next pop (the page is unmapped, so the CAS will fail or the pointer is invalid).
-        // To be safe, we'll rebuild the current_page pointer.
+        // Phase 4: Walk drained chain, push back survivors
+        let mut current = old_head;
+        while current != TREIBER_NULL {
+            let ptr = treiber_unpack_ptr(current);
+            // Read next BEFORE any munmap — slot memory is still mapped here
+            let next = unsafe { (*(ptr as *const FreeNode)).next };
 
-        for &idx in empty_indices.iter().rev() {
-            pages.swap_remove(idx);
+            let addr = ptr as usize;
+            let in_released = release_ranges.iter()
+                .any(|&(start, end)| addr >= start && addr < end);
+
+            if !in_released {
+                self.free_list.push(ptr);
+            }
+
+            current = next;
         }
 
-        // Update current_page to the last page (or null if empty)
-        if let Some(last) = pages.last() {
-            let page_ptr = &**last as *const DataPage as *mut DataPage;
-            self.current_page.store(page_ptr, Ordering::Release);
-        } else {
+        // Phase 5: Remove empty pages (triggers munmap via MmapPage::Drop)
+        // Iterate in reverse so swap_remove indices remain valid.
+        let mut i = pages.len();
+        while i > 0 {
+            i -= 1;
+            let page_start = pages[i].data.as_ptr() as usize;
+            if release_ranges.iter().any(|&(start, _)| start == page_start) {
+                pages.swap_remove(i);
+            }
+        }
+
+        // Phase 6: Update current_page if all pages were released
+        if pages.is_empty() {
             self.current_page.store(std::ptr::null_mut(), Ordering::Release);
         }
+        // Otherwise current_page is still valid — we excluded it from release,
+        // and Box<DataPage> heap address is stable across swap_remove.
     }
 }
 
@@ -635,6 +751,8 @@ impl ValueAllocator {
                     break;
                 }
             }
+            // ASAN: mark slot as accessible (was poisoned on free)
+            unsafe { asan_unpoison_slab_slot(ptr, self.slot_size); }
             return ptr;
         }
 
@@ -643,6 +761,7 @@ impl ValueAllocator {
         if !page_ptr.is_null() {
             let page = unsafe { &*page_ptr };
             if let Some((ptr, _idx)) = page.bump_alloc(self.slot_size) {
+                // NOTE: page.live_count already incremented inside bump_alloc()
                 return ptr;
             }
         }
@@ -657,12 +776,14 @@ impl ValueAllocator {
         // Double-check: another thread may have added a page while we waited
         if let Some(last) = pages.last() {
             if let Some((ptr, _idx)) = last.bump_alloc(self.slot_size) {
+                // NOTE: page.live_count already incremented inside bump_alloc()
                 return ptr;
             }
         }
         let page = Box::new(ValuePage::new(self.slot_size));
         let (ptr, _idx) = page.bump_alloc(self.slot_size)
             .expect("fresh page should have room");
+        // NOTE: page.live_count already incremented inside bump_alloc()
         let page_ptr = &*page as *const ValuePage as *mut ValuePage;
         self.current_page.store(page_ptr, Ordering::Release);
         pages.push(page);
@@ -670,18 +791,35 @@ impl ValueAllocator {
     }
 
     /// Return a value slot to the free list (lock-free).
+    ///
+    /// Sets the slot epoch to `u64::MAX` before pushing to the free list.
+    /// This prevents the GC sweep from treating already-freed slots as dead
+    /// (the epoch filter in `process_gc_response` checks `slot_epoch > snapshot_epoch`,
+    /// and `u64::MAX` is always greater than any snapshot epoch).
+    ///
+    /// Without this, an empty `free_set` in `build_snapshot()` causes double-freeing:
+    /// the sweep sees the freed slot as "allocated but unmarked" and adds it to the
+    /// dead set again. The Treiber stack then gets the same pointer pushed twice,
+    /// creating a cycle that causes two allocations to alias the same slot → SEGV.
+    ///
+    /// Corresponds to TLA+ model's `freeSet` tracking in `ProcessGcResponse`.
     fn free(&self, ptr: *mut u8) {
         self.live_count.fetch_sub(1, Ordering::Relaxed);
-        // Decrement page live_count
+        // Decrement page live_count and set slot epoch to u64::MAX (sentinel)
         {
             let pages = self.pages.read().expect("value pages lock poisoned");
             for page in pages.iter() {
-                if let Some(_idx) = page.slot_index(ptr as *const u8, self.slot_size) {
+                if let Some(idx) = page.slot_index(ptr as *const u8, self.slot_size) {
                     page.live_count.fetch_sub(1, Ordering::Relaxed);
+                    // Sentinel epoch: marks slot as freed so GC sweep won't re-free it.
+                    // Cleared on re-allocation (alloc() sets epoch to current allocator epoch).
+                    page.set_slot_epoch(idx, u64::MAX);
                     break;
                 }
             }
         }
+        // ASAN: mark slot as inaccessible (detects use-after-free)
+        unsafe { asan_poison_slab_slot(ptr, self.slot_size); }
         self.free_list.push(ptr);
     }
 
@@ -703,9 +841,20 @@ impl ValueAllocator {
         if count > 0 { count as usize * self.slot_size } else { 0 }
     }
 
-    /// Release empty pages.
+    /// Release empty pages via atomic drain + filter + rebuild of the free list.
+    ///
+    /// Safe page release mechanism:
+    /// 1. Quick read-lock check for any empty pages (common case: no-op)
+    /// 2. Write-lock to identify empty pages (excluding current_page)
+    /// 3. Atomically drain the Treiber stack free list (single XCHG, O(1))
+    /// 4. Walk the drained chain, push back survivors not in released pages
+    /// 5. swap_remove empty pages (triggers munmap via MmapPage::Drop)
+    ///
+    /// **Hot path impact: ZERO** — alloc/free are unchanged. During the brief
+    /// drain window, `pop()` returns `None` and alloc falls through to bump
+    /// alloc (correct, lock-free).
     fn release_empty_pages(&self) {
-        // Quick check with read lock
+        // Phase 1: Quick check with read lock (common case: no empty pages)
         {
             let pages = self.pages.read().expect("value pages lock poisoned");
             let has_empty = pages.iter().any(|page| {
@@ -717,26 +866,65 @@ impl ValueAllocator {
             }
         }
 
+        // Phase 2: Write lock — identify empty pages, excluding current_page
         let mut pages = self.pages.write().expect("value pages lock poisoned");
-        let empty_indices: Vec<usize> = pages.iter().enumerate()
-            .filter(|(_, page)| {
-                page.live_count.load(Ordering::Relaxed) <= 0
-                    && page.bump_count.load(Ordering::Relaxed) > 0
-            })
-            .map(|(i, _)| i)
-            .collect();
+        let current_page_ptr = self.current_page.load(Ordering::Acquire);
 
-        for &idx in empty_indices.iter().rev() {
-            pages.swap_remove(idx);
+        // Collect address ranges of empty pages (for fast membership check during walk)
+        let mut release_ranges: Vec<(usize, usize)> = Vec::new();
+        for page in pages.iter() {
+            let page_ptr = &**page as *const ValuePage as *mut ValuePage;
+            if page.live_count.load(Ordering::Relaxed) <= 0
+                && page.bump_count.load(Ordering::Relaxed) > 0
+                && page_ptr != current_page_ptr
+            {
+                let start = page.data.as_ptr() as usize;
+                release_ranges.push((start, start + PAGE_SIZE));
+            }
         }
 
-        // Update current_page
-        if let Some(last) = pages.last() {
-            let page_ptr = &**last as *const ValuePage as *mut ValuePage;
-            self.current_page.store(page_ptr, Ordering::Release);
-        } else {
+        if release_ranges.is_empty() {
+            return;
+        }
+
+        // Phase 3: Drain free list (atomic swap, O(1))
+        let old_head = self.free_list.drain();
+
+        // Phase 4: Walk drained chain, push back survivors
+        let mut current = old_head;
+        while current != TREIBER_NULL {
+            let ptr = treiber_unpack_ptr(current);
+            // Read next BEFORE any munmap — slot memory is still mapped here
+            let next = unsafe { (*(ptr as *const FreeNode)).next };
+
+            let addr = ptr as usize;
+            let in_released = release_ranges.iter()
+                .any(|&(start, end)| addr >= start && addr < end);
+
+            if !in_released {
+                self.free_list.push(ptr);
+            }
+
+            current = next;
+        }
+
+        // Phase 5: Remove empty pages (triggers munmap via MmapPage::Drop)
+        // Iterate in reverse so swap_remove indices remain valid.
+        let mut i = pages.len();
+        while i > 0 {
+            i -= 1;
+            let page_start = pages[i].data.as_ptr() as usize;
+            if release_ranges.iter().any(|&(start, _)| start == page_start) {
+                pages.swap_remove(i);
+            }
+        }
+
+        // Phase 6: Update current_page if all pages were released
+        if pages.is_empty() {
             self.current_page.store(std::ptr::null_mut(), Ordering::Release);
         }
+        // Otherwise current_page is still valid — we excluded it from release,
+        // and Box<ValuePage> heap address is stable across swap_remove.
     }
 }
 
@@ -1047,7 +1235,7 @@ static GLOBAL_ALLOCATOR: OnceLock<SlabAllocator> = OnceLock::new();
 /// Initialize the global allocator (call once at startup). Idempotent.
 ///
 /// The GC cron manager is spawned lazily on the first call to `global_gc_cron()`,
-/// which happens when `maybe_trigger_gc()` is first called from the trampoline.
+/// which happens when `maybe_process_gc_response()` is first called from the trampoline.
 pub fn init_global_allocator() {
     GLOBAL_ALLOCATOR.get_or_init(SlabAllocator::new);
 }
@@ -1114,61 +1302,369 @@ pub fn global_gc_cron() -> &'static super::gc_cron::GcCronSingleton {
     })
 }
 
-/// Check if GC is requested and trigger it if so.
-///
-/// Called from `SessionContext::maybe_gc()` every 256 trampoline iterations.
-/// Non-blocking: if a GC cycle is already in progress, the snapshot is queued
-/// and the function returns immediately.
-///
-/// Also lazily spawns the GC cron manager on first call, so rate-based and
-/// threshold-based triggering is active for the remainder of the process.
-///
-/// Returns `true` if a GC cycle was triggered.
-/// Whether GC collection is enabled at runtime.
-///
-/// Gated behind `METTA_GC_COLLECT=1` because the current root collection
-/// (`collect_all_roots()`) only covers registered environments, NOT values on
-/// the trampoline's Rust call stack (work_stack, continuations, locals in
-/// `apply_bindings_generic`, etc.). Triggering GC without complete roots causes
-/// use-after-free (confirmed by AddressSanitizer on mmverify workloads).
-///
-/// Once trampoline stack root scanning is implemented, this gate can be removed.
-static GC_COLLECT_ENABLED: OnceLock<bool> = OnceLock::new();
+// ============================================================================
+// GC Runtime Control — Quiescent-State Collection
+// ============================================================================
+//
+// GC is always enabled by default. The `--no-gc` CLI flag disables it via
+// `disable_gc()`. The quiescent-state protocol ensures GC only triggers when
+// no eval threads are active (trampoline stacks are empty), so environment
+// roots + MettaState source/output roots form a complete root set.
 
-fn gc_collect_enabled() -> bool {
-    *GC_COLLECT_ENABLED.get_or_init(|| std::env::var("METTA_GC_COLLECT").is_ok())
+/// Whether GC collection is disabled at runtime (via `--no-gc` CLI flag).
+/// Defaults to false (GC enabled). Set once at startup.
+static GC_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Disable GC collection (called from CLI `--no-gc` flag).
+pub fn disable_gc() {
+    GC_DISABLED.store(true, Ordering::Release);
 }
 
-pub fn maybe_trigger_gc() -> bool {
-    // Lazily spawn the GC cron manager (idempotent via OnceLock)
-    let _ = global_gc_cron();
+/// Check if GC is disabled.
+pub fn is_gc_disabled() -> bool {
+    GC_DISABLED.load(Ordering::Acquire)
+}
 
-    // GC collection gated until trampoline stack root scanning is implemented
-    if !gc_collect_enabled() {
-        // Still consume the flag to prevent unbounded buildup
+// ============================================================================
+// Quiescent-State Coordination — EvalGuard + ACTIVE_EVALUATORS
+// ============================================================================
+//
+// The quiescent-state protocol ensures GC snapshots are only built when no
+// eval threads are active. This avoids scanning trampoline Rust call stacks
+// (work_stack, continuations, locals) which are NOT registered as GC roots.
+//
+// Protocol:
+// 1. Each eval() wraps its body in EvalGuard::enter() / drop
+// 2. EvalGuard::enter() increments ACTIVE_EVALUATORS, checks GC_IN_PROGRESS
+// 3. maybe_quiescent_gc() checks ACTIVE_EVALUATORS == 0 before building snapshot
+// 4. GC_IN_PROGRESS prevents new evals from starting during snapshot building
+// 5. GC_CYCLE_IN_FLIGHT prevents queueing multiple snapshots in the GC channel
+//    (set on snapshot send, cleared on response processing)
+//
+// This is NOT stop-the-world: only snapshot capture (sub-millisecond) is
+// synchronous. The actual mark-sweep runs asynchronously on the GC thread.
+
+/// Number of concurrently active eval() / eval_trampoline() calls.
+/// GC triggers ONLY when this reaches 0 (quiescent state).
+static ACTIVE_EVALUATORS: AtomicU32 = AtomicU32::new(0);
+
+/// Set by `maybe_quiescent_gc()` during snapshot building (sub-millisecond).
+/// `EvalGuard::enter()` spins until this is false.
+/// NOT stop-the-world: only guards the brief snapshot capture, not mark-sweep.
+static GC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Set when a GC snapshot is sent to the GC thread, cleared when the response
+/// is processed. Prevents queueing multiple snapshots in the mpsc channel.
+///
+/// Aligns with TLA+ model's `~hasGcRequest /\ gcPhase = "idle"` preconditions
+/// on `TryQuiescentGc_AcquireFlag`. Without this, `maybe_quiescent_gc()` could
+/// send multiple snapshots while the GC thread is still processing a previous
+/// one, wasting memory and CPU on redundant GC cycles.
+static GC_CYCLE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// RAII guard that tracks active evaluators for quiescent-state GC.
+///
+/// When an `EvalGuard` is alive, GC snapshot building is inhibited (the guard
+/// increments `ACTIVE_EVALUATORS` on creation and decrements on drop). GC can
+/// only trigger at quiescent points when all guards have been dropped.
+///
+/// The guard also blocks briefly (spin-loop) if a GC snapshot is currently
+/// being built (`GC_IN_PROGRESS`), ensuring the snapshot sees a consistent
+/// root set.
+pub struct EvalGuard;
+
+impl EvalGuard {
+    /// Enter an evaluation — blocks briefly if GC snapshot is in progress.
+    ///
+    /// Increments `ACTIVE_EVALUATORS` and checks `GC_IN_PROGRESS`. If a
+    /// snapshot is being built, backs off and retries to prevent a TOCTOU
+    /// race where a new eval starts between the quiescent check and snapshot
+    /// capture.
+    #[inline]
+    pub fn enter() -> Self {
+        loop {
+            ACTIVE_EVALUATORS.fetch_add(1, Ordering::AcqRel);
+            if !GC_IN_PROGRESS.load(Ordering::Acquire) {
+                break; // No GC in progress, safe to proceed
+            }
+            // GC in progress — back off and retry
+            ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
+            while GC_IN_PROGRESS.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+        }
+        EvalGuard
+    }
+}
+
+impl Drop for EvalGuard {
+    #[inline]
+    fn drop(&mut self) {
+        ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Get the current active evaluator count (for testing and diagnostics).
+pub fn active_evaluator_count() -> u32 {
+    ACTIVE_EVALUATORS.load(Ordering::Acquire)
+}
+
+/// Check if a GC cycle is currently in flight (snapshot sent, response not processed).
+pub fn gc_cycle_in_flight() -> bool {
+    GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
+}
+
+// ============================================================================
+// Backpressure — Graduated Allocation Throttling
+// ============================================================================
+//
+// When allocation rate outpaces GC, the cron monitor (gc_cron.rs) sets a
+// backpressure level (0..3) based on committed_bytes / gc_threshold ratio:
+//
+//   Level 0: committed < threshold          — no throttling
+//   Level 1: committed >= threshold         — yield (Tier 1)
+//   Level 2: committed >= threshold * 1.5   — sleep(10μs) (Tier 1)
+//   Level 3: committed >= threshold * 2.0   — sleep(100μs) (Tier 1)
+//                                             + block until GC completes (Tier 2)
+//
+// Two tiers of application:
+//   Tier 1 (apply_backpressure_tier1): Called from SessionContext::maybe_gc()
+//     every 256 trampoline iterations. Yields or sleeps to slow allocation.
+//   Tier 2 (apply_backpressure_tier2): Called from main.rs between top-level
+//     expressions. At MAX level, spin-yields until gc_cycle_in_flight() is false.
+//
+// The cron monitor recomputes the level every ~100ms. ProcessGcResponse also
+// immediately re-evaluates backpressure for faster feedback after GC.
+//
+// Modeled in TLA+ (SlabGC_Quiescent.tla) as:
+//   - CronMonitorPoll sets backpressureLevel based on committed/threshold
+//   - ContinueEval is guarded by ~(backpressureLevel >= MAX_BP /\ GcCycleInFlight)
+//   - ProcessGcResponse decrements backpressureLevel by 1
+//   - BackpressureEventuallyRelaxes liveness property verified
+
+/// Current backpressure level (0..MAX_BACKPRESSURE). Set by cron monitor,
+/// read by eval threads. Relaxed ordering suffices since this is advisory.
+static BACKPRESSURE_LEVEL: AtomicU8 = AtomicU8::new(0);
+
+/// Maximum backpressure level. At this level, Tier 2 blocks until GC completes.
+pub const MAX_BACKPRESSURE: u8 = 3;
+
+/// Get the current backpressure level (0 = none, 3 = maximum).
+#[inline]
+pub fn backpressure_level() -> u8 {
+    BACKPRESSURE_LEVEL.load(Ordering::Relaxed)
+}
+
+/// Set the backpressure level (clamped to MAX_BACKPRESSURE).
+/// Called from gc_cron.rs execute_memory_monitor() and from
+/// maybe_process_gc_response() for faster feedback.
+#[inline]
+pub fn set_backpressure_level(level: u8) {
+    BACKPRESSURE_LEVEL.store(level.min(MAX_BACKPRESSURE), Ordering::Relaxed);
+}
+
+/// Tier 1 backpressure: graduated yield/sleep during eval.
+///
+/// Called from `SessionContext::maybe_gc()` every 256 trampoline iterations.
+/// At level 0, this is a no-op (zero overhead on the hot path).
+#[inline]
+pub fn apply_backpressure_tier1() {
+    match backpressure_level() {
+        0 => {} // No backpressure — hot path, zero overhead
+        1 => std::thread::yield_now(),
+        2 => std::thread::sleep(std::time::Duration::from_micros(10)),
+        _ => std::thread::sleep(std::time::Duration::from_micros(100)),
+    }
+}
+
+/// Tier 2 backpressure: block at max level until GC cycle completes.
+///
+/// Called from main.rs between top-level expressions. At MAX level,
+/// waits until `gc_cycle_in_flight()` returns false by sleeping briefly
+/// and processing any pending GC response each iteration.
+///
+/// The caller should also call `maybe_process_gc_response()` as a
+/// standalone action before this function (matching TLA+ ProcessGcResponse
+/// at "between" phase), so the common case of an already-available
+/// response is handled without entering the loop.
+///
+/// At levels below MAX, this is a no-op.
+#[inline]
+pub fn apply_backpressure_tier2() {
+    if backpressure_level() >= MAX_BACKPRESSURE {
+        while gc_cycle_in_flight() {
+            // Process GC response if available — clears gc_cycle_in_flight
+            // and updates backpressure level.
+            if maybe_process_gc_response() {
+                break; // Response processed, in-flight flag cleared
+            }
+            // GC thread still working — sleep briefly instead of burning CPU.
+            // 1ms is short enough to not delay eval noticeably but avoids
+            // the 98%+ CPU usage from sched_yield spin-looping.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+}
+
+/// Trigger GC at a quiescent point (no active evaluators).
+///
+/// Called from eval loops between top-level expressions. Only triggers if:
+/// 1. GC is not disabled (`--no-gc`)
+/// 2. `GC_REQUESTED` is set (by cron monitor or manual request)
+/// 3. No GC cycle is already in flight (`GC_CYCLE_IN_FLIGHT == false`)
+/// 4. No evaluators are active (`ACTIVE_EVALUATORS == 0`)
+///
+/// Uses `GC_IN_PROGRESS` flag to prevent new evals from starting during
+/// the brief snapshot capture (sub-millisecond). The actual mark-sweep
+/// runs asynchronously on the GC thread.
+///
+/// The `GC_CYCLE_IN_FLIGHT` check (step 3) ensures at most one GC cycle
+/// is in flight at a time, aligning with TLA+ `~hasGcRequest /\ ~hasGcResponse
+/// /\ gcPhase = "idle"` preconditions on `TryQuiescentGc_AcquireFlag`.
+///
+/// Returns `true` if a GC cycle was triggered.
+pub fn maybe_quiescent_gc() -> bool {
+    // Fast path: skip if GC is disabled
+    if is_gc_disabled() {
         GC_REQUESTED.store(false, Ordering::Relaxed);
         return false;
     }
 
-    let gc = global_gc_thread().lock().expect("gc thread mutex poisoned");
+    // Check if GC was requested
+    if !GC_REQUESTED.load(Ordering::Acquire) {
+        return false;
+    }
 
-    // Always drain any pending GC response (regardless of whether new GC requested)
+    // Don't trigger if a GC cycle is already in flight (snapshot sent, response
+    // not yet processed). Aligns with TLA+ `~hasGcRequest /\ ~hasGcResponse /\
+    // gcPhase = "idle"` preconditions on TryQuiescentGc_AcquireFlag.
+    if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+        return false;
+    }
+
+    // Check quiescent state
+    if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
+        return false;
+    }
+
+    // Consume GC request (CAS to avoid double-trigger)
+    if GC_REQUESTED
+        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return false;
+    }
+
+    // Set GC_IN_PROGRESS to prevent new evals from starting
+    GC_IN_PROGRESS.store(true, Ordering::Release);
+
+    // Double-check no eval snuck in between our check and the flag set
+    if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
+        GC_IN_PROGRESS.store(false, Ordering::Release);
+        // Re-set GC_REQUESTED so we try again at the next quiescent point
+        GC_REQUESTED.store(true, Ordering::Release);
+        return false;
+    }
+
+    // Safe: no evaluators active, build snapshot and trigger GC
+    let gc = global_gc_thread().lock().expect("gc thread mutex poisoned");
+    let result = trigger_gc_cycle_locked(&gc);
+
+    GC_IN_PROGRESS.store(false, Ordering::Release);
+    result
+}
+
+/// Process any pending GC response from the GC thread.
+///
+/// Called from `SessionContext::maybe_gc()` every 256 trampoline iterations.
+/// This does NOT trigger new GC cycles — it only:
+/// 1. Lazily spawns the GC cron manager (idempotent via OnceLock)
+/// 2. Processes pending GC responses (epoch-filtered sweep — safe at any time)
+/// 3. Updates adaptive threshold
+///
+/// New GC cycles are triggered exclusively by `maybe_quiescent_gc()` at
+/// quiescent points between top-level expressions.
+///
+/// Returns `true` if a GC response was processed.
+pub fn maybe_process_gc_response() -> bool {
+    // Lazily spawn the GC cron manager (idempotent via OnceLock)
+    let _ = global_gc_cron();
+
+    let gc = global_gc_thread().lock().expect("gc thread mutex poisoned");
     let alloc = global_allocator();
+
     if let Some(response) = gc.try_recv_response() {
+        // DIAGNOSTIC: Log response stats to stderr to understand what's being freed
+        eprintln!(
+            "[GC] Response: {} dead values, {} dead data, {} live values, {} live bytes, epoch {}",
+            response.dead_values.len(),
+            response.dead_data.len(),
+            response.live_values,
+            response.live_bytes,
+            response.snapshot_epoch,
+        );
+
         alloc.process_gc_response(&response);
-        alloc.release_empty_pages();
+        // Page release is handled inside process_gc_response() (Phase 5).
 
         // Adaptive threshold: next_threshold = max(live_bytes * GROWTH_FACTOR, MIN_GC_THRESHOLD)
         let new_threshold = (response.live_bytes as f64 * GC_GROWTH_FACTOR) as usize;
         alloc.set_gc_threshold(new_threshold.max(MIN_GC_THRESHOLD));
+
+        // Clear in-flight flag — aligns with TLA+ `hasGcResponse' = FALSE`
+        // in ProcessGcResponse. A new GC cycle can now be triggered.
+        GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
+
+        // Immediate backpressure feedback — don't wait for next cron poll (100ms).
+        // Re-evaluate backpressure level based on current committed/threshold ratio.
+        // Models TLA+ ProcessGcResponse: backpressureLevel' = max(bp - 1, 0).
+        let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
+        let threshold = alloc.gc_threshold_atomic().load(Ordering::Relaxed);
+        let new_level = if threshold > 0 {
+            if committed >= threshold * 2 { 3 }
+            else if committed >= threshold * 3 / 2 { 2 }
+            else if committed >= threshold { 1 }
+            else { 0 }
+        } else { 0 };
+        set_backpressure_level(new_level);
+
+        return true;
+    }
+    false
+}
+
+/// Print GC statistics to stderr.
+///
+/// Prints slab allocator stats, GC cron stats, and active evaluator count.
+/// Called from CLI `--gc-stats` flag or when `METTA_GC_STATS=1` env var is set.
+pub fn print_gc_stats() {
+    let alloc = global_allocator();
+    let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
+    let alloc_count = alloc.alloc_count_atomic().load(Ordering::Relaxed);
+    let threshold = alloc.gc_threshold_atomic().load(Ordering::Relaxed);
+
+    eprintln!("=== GC Statistics ===");
+    eprintln!("  Slab allocator:");
+    eprintln!("    Committed bytes:  {}", committed);
+    eprintln!("    Total allocs:     {}", alloc_count);
+    eprintln!("    GC threshold:     {}", threshold);
+    eprintln!("    GC disabled:      {}", is_gc_disabled());
+
+    // GC cron stats (if initialized)
+    if let Some(cron) = GLOBAL_GC_CRON.get() {
+        let stats = cron.stats.snapshot();
+        eprintln!("  GC cron:");
+        eprintln!("    Tasks executed:   {}", stats.tasks_executed);
+        eprintln!("    Tasks failed:     {}", stats.tasks_failed);
+        eprintln!("    Tasks panicked:   {}", stats.tasks_panicked);
+        eprintln!("    Transitions:      {}", stats.transitions);
+    } else {
+        eprintln!("  GC cron: not initialized");
     }
 
-    // Check if new GC was requested
-    if GC_REQUESTED.compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed).is_err() {
-        return false;
-    }
-
-    trigger_gc_cycle_locked(&gc)
+    eprintln!("  Active evaluators:  {}", active_evaluator_count());
+    eprintln!("  GC cycle in flight: {}", gc_cycle_in_flight());
+    eprintln!("=====================");
 }
 
 // ============================================================================
@@ -1191,6 +1687,11 @@ pub trait RootProvider: Send + Sync {
     /// Implementations should push all `MettaValue` values that are
     /// currently reachable from this provider into the `roots` vector.
     fn collect_roots(&self, roots: &mut Vec<MettaValue>);
+
+    /// Human-readable name for diagnostic logging.
+    fn provider_name(&self) -> &'static str {
+        "unknown"
+    }
 }
 
 /// Global registry of active root providers using weak references.
@@ -1225,15 +1726,71 @@ pub fn register_root_provider(provider: &Arc<dyn RootProvider>) {
 /// Dead (dropped) providers are automatically pruned during collection.
 pub fn collect_all_roots() -> Vec<MettaValue> {
     let mut registry = root_registry().write().expect("root registry write lock poisoned");
+    let total_providers = registry.len();
     let mut roots = Vec::with_capacity(registry.len() * 64); // heuristic pre-alloc
+    let mut alive_providers = 0usize;
+    let mut dead_providers = 0usize;
     registry.retain(|weak| {
         if let Some(strong) = weak.upgrade() {
+            let before = roots.len();
             strong.collect_roots(&mut roots);
+            let contributed = roots.len() - before;
+            alive_providers += 1;
+            eprintln!("[GC] Root provider #{} ({}): {} roots contributed", alive_providers, strong.provider_name(), contributed);
             true
         } else {
+            dead_providers += 1;
             false // Provider was dropped — remove from registry
         }
     });
+    eprintln!(
+        "[GC] Root collection: {} providers ({} alive, {} dead), {} total roots",
+        total_providers, alive_providers, dead_providers, roots.len()
+    );
+
+    // Diagnostic: log variant breakdown and Space root addresses
+    {
+        let mut n_atom = 0usize;
+        let mut n_sexpr = 0usize;
+        let mut n_space = 0usize;
+        let mut n_long = 0usize;
+        let mut n_bool = 0usize;
+        let mut n_string = 0usize;
+        let mut n_float = 0usize;
+        let mut n_error = 0usize;
+        let mut n_type = 0usize;
+        let mut n_unit = 0usize;
+        let mut n_empty = 0usize;
+        let mut n_state = 0usize;
+        let mut n_conj = 0usize;
+        let mut n_memo = 0usize;
+        for root in &roots {
+            match root.inner() {
+                MettaValueInner::Atom(_) => n_atom += 1,
+                MettaValueInner::SExpr(_) => n_sexpr += 1,
+                MettaValueInner::Space(h) => {
+                    n_space += 1;
+                    eprintln!("[GC] Root Space: {:p} name={:?}", root.inner_ptr(), h.name);
+                }
+                MettaValueInner::Long(_) => n_long += 1,
+                MettaValueInner::Bool(_) => n_bool += 1,
+                MettaValueInner::String(_) => n_string += 1,
+                MettaValueInner::Float(_) => n_float += 1,
+                MettaValueInner::Error(_, _) => n_error += 1,
+                MettaValueInner::Type(_) => n_type += 1,
+                MettaValueInner::Unit => n_unit += 1,
+                MettaValueInner::Empty => n_empty += 1,
+                MettaValueInner::State(_) => n_state += 1,
+                MettaValueInner::Conjunction(_) => n_conj += 1,
+                MettaValueInner::Memo(_) => n_memo += 1,
+            }
+        }
+        eprintln!(
+            "[GC] Root variants: atom={} sexpr={} space={} long={} bool={} string={} float={} error={} type={} unit={} empty={} state={} conj={} memo={}",
+            n_atom, n_sexpr, n_space, n_long, n_bool, n_string, n_float, n_error, n_type, n_unit, n_empty, n_state, n_conj, n_memo
+        );
+    }
+
     roots
 }
 
@@ -1274,7 +1831,13 @@ pub fn trigger_gc_cycle(gc_thread: &super::gc_thread::GcThread) -> bool {
     // First, process any pending GC response from previous cycle
     if let Some(response) = gc_thread.try_recv_response() {
         alloc.process_gc_response(&response);
-        alloc.release_empty_pages();
+        // Page release is handled inside process_gc_response() (Phase 5).
+        GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
+    }
+
+    // Don't queue another cycle if one is already in flight
+    if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+        return false;
     }
 
     // Collect roots from all registered providers
@@ -1282,16 +1845,22 @@ pub fn trigger_gc_cycle(gc_thread: &super::gc_thread::GcThread) -> bool {
 
     // Build snapshot and send to GC thread
     let snapshot = alloc.build_snapshot(roots);
+    GC_CYCLE_IN_FLIGHT.store(true, Ordering::Release);
     gc_thread.request_gc(snapshot);
     true
 }
 
 /// Same as `trigger_gc_cycle` but takes an already-locked GcThread mutex guard.
-/// Used by `maybe_trigger_gc()` to avoid double-locking.
+/// Used by `maybe_quiescent_gc()` to avoid double-locking.
+///
+/// Sets `GC_CYCLE_IN_FLIGHT` before sending the snapshot to prevent queueing
+/// multiple snapshots. Aligns with TLA+ `hasGcRequest' = TRUE` in
+/// `TryQuiescentGc_SnapshotOK`.
 fn trigger_gc_cycle_locked(gc_thread: &super::gc_thread::GcThread) -> bool {
     let alloc = global_allocator();
     let roots = collect_all_roots();
     let snapshot = alloc.build_snapshot(roots);
+    GC_CYCLE_IN_FLIGHT.store(true, Ordering::Release);
     gc_thread.request_gc(snapshot);
     true
 }
@@ -1405,59 +1974,204 @@ impl SlabAllocator {
     }
 
     /// Process a GC response with epoch-based TOCTOU filtering.
+    ///
+    /// Three-phase structure to avoid reading from freed slots:
+    /// 1. Epoch filter: identify non-filtered dead values
+    /// 2. Collect dead data from non-filtered values (slot content still valid)
+    /// 3. Free value slots (push to free list + ASAN poison)
+    /// 4. Free data slots
     pub fn process_gc_response(&self, response: &GcResponse) {
+        // === Phase 1: Epoch filtering ===
+        // Separate dead values into filtered (re-allocated after snapshot) and
+        // non-filtered (genuinely dead, safe to reclaim).
         let mut filtered_values: std::collections::HashSet<*mut u8> =
             std::collections::HashSet::new();
+        let mut non_filtered_dead: Vec<*mut u8> = Vec::new();
 
-        let pages = self.values.pages.read().expect("value pages lock poisoned");
-
-        for &ptr in &response.dead_values {
-            // EPOCH FILTER: check if slot was re-allocated after snapshot
-            let mut skip = false;
-            for page in pages.iter() {
-                if let Some(idx) = page.slot_index(ptr as *const u8, self.values.slot_size) {
-                    if page.slot_epoch(idx) > response.snapshot_epoch {
-                        filtered_values.insert(ptr);
-                        skip = true;
-                    }
-                    break;
-                }
-            }
-            if !skip {
-                // Free the value slot
-                self.values.live_count.fetch_sub(1, Ordering::Relaxed);
+        {
+            let pages = self.values.pages.read().expect("value pages lock poisoned");
+            for &ptr in &response.dead_values {
+                let mut skip = false;
                 for page in pages.iter() {
-                    if let Some(_idx) = page.slot_index(ptr as *const u8, self.values.slot_size) {
-                        page.live_count.fetch_sub(1, Ordering::Relaxed);
+                    if let Some(idx) = page.slot_index(ptr as *const u8, self.values.slot_size) {
+                        if page.slot_epoch(idx) > response.snapshot_epoch {
+                            filtered_values.insert(ptr);
+                            skip = true;
+                        }
                         break;
                     }
                 }
-                self.values.free_list.push(ptr);
+                if !skip {
+                    non_filtered_dead.push(ptr);
+                }
             }
         }
 
-        drop(pages);
-
-        // Free data for non-filtered dead values
-        if filtered_values.is_empty() {
-            for &(ptr, size) in &response.dead_data {
-                self.free_data_slot(ptr, size);
-            }
+        // === Phase 2: Collect dead data BEFORE freeing value slots ===
+        // The slot content is still valid here — we haven't pushed to the free list yet.
+        // This fixes a bug in the previous code where the filtered-values branch read
+        // from slots that had already been pushed to the free list (use-after-free).
+        let dead_data_to_free: Vec<(*mut u8, usize)> = if filtered_values.is_empty() {
+            // No filtering needed — use the pre-computed dead_data from the GC response
+            response.dead_data.clone()
         } else {
-            for &ptr in &response.dead_values {
-                if filtered_values.contains(&ptr) {
-                    continue;
-                }
+            // Filtering needed — re-derive dead data from non-filtered values only
+            let mut data = Vec::new();
+            for &ptr in &non_filtered_dead {
                 let inner_val = unsafe { &*(ptr as *const MettaValueInner) };
                 let mut data_entries = Vec::new();
                 collect_dead_data(inner_val, &mut data_entries);
-                for (data_ptr, size) in data_entries {
-                    self.free_data_slot(data_ptr, size);
+                data.extend(data_entries);
+            }
+            data
+        };
+
+        // === Phase 3: Free value slots (push to free list + ASAN poison) ===
+        //
+        // DIAGNOSTIC modes (controlled by METTA_GC_NO_FREE env var):
+        //   "1" = skip all freeing (confirms GC incorrectly classifies live values as dead)
+        //   "2" = ASAN-poison dead slots but DON'T push to free list (prevents reuse,
+        //         so ASAN can detect the exact stale access without ABA interference)
+        //   unset = normal freeing (production path)
+        //
+        // TODO: Remove diagnostic modes after the bug is fixed.
+        let gc_no_free = std::env::var("METTA_GC_NO_FREE").unwrap_or_default();
+        match gc_no_free.as_str() {
+            "1" => {
+                eprintln!(
+                    "[GC] DIAGNOSTIC: skipping free of {} value slots and {} data entries",
+                    non_filtered_dead.len(),
+                    dead_data_to_free.len(),
+                );
+            }
+            "2" => {
+                // ASAN-poison dead slots to detect stale accesses, but don't
+                // push to free list — prevents ABA (reuse masks the bug).
+                eprintln!(
+                    "[GC] DIAGNOSTIC: poisoning {} dead value slots (no free-list push)",
+                    non_filtered_dead.len(),
+                );
+
+                // Diagnostic: variant breakdown of dead values + flag Space values
+                {
+                    let mut n_atom = 0usize;
+                    let mut n_sexpr = 0usize;
+                    let mut n_space = 0usize;
+                    let mut n_long = 0usize;
+                    let mut n_bool = 0usize;
+                    let mut n_string = 0usize;
+                    let mut n_float = 0usize;
+                    let mut n_error = 0usize;
+                    let mut n_type = 0usize;
+                    let mut n_unit = 0usize;
+                    let mut n_empty = 0usize;
+                    let mut n_state = 0usize;
+                    let mut n_conj = 0usize;
+                    let mut n_memo = 0usize;
+                    for &ptr in &non_filtered_dead {
+                        let inner = unsafe { &*(ptr as *const MettaValueInner) };
+                        match inner {
+                            MettaValueInner::Atom(_) => n_atom += 1,
+                            MettaValueInner::SExpr(_) => n_sexpr += 1,
+                            MettaValueInner::Space(h) => {
+                                n_space += 1;
+                                eprintln!("[GC] DEAD Space: {:p} name={:?}", ptr, h.name);
+                            }
+                            MettaValueInner::Long(_) => n_long += 1,
+                            MettaValueInner::Bool(_) => n_bool += 1,
+                            MettaValueInner::String(_) => n_string += 1,
+                            MettaValueInner::Float(_) => n_float += 1,
+                            MettaValueInner::Error(_, _) => n_error += 1,
+                            MettaValueInner::Type(_) => n_type += 1,
+                            MettaValueInner::Unit => n_unit += 1,
+                            MettaValueInner::Empty => n_empty += 1,
+                            MettaValueInner::State(_) => n_state += 1,
+                            MettaValueInner::Conjunction(_) => n_conj += 1,
+                            MettaValueInner::Memo(_) => n_memo += 1,
+                        }
+                    }
+                    eprintln!(
+                        "[GC] Dead variants: atom={} sexpr={} space={} long={} bool={} string={} float={} error={} type={} unit={} empty={} state={} conj={} memo={}",
+                        n_atom, n_sexpr, n_space, n_long, n_bool, n_string, n_float, n_error, n_type, n_unit, n_empty, n_state, n_conj, n_memo
+                    );
+                }
+
+                let pages = self.values.pages.read().expect("value pages lock poisoned");
+                for &ptr in &non_filtered_dead {
+                    // Set sentinel epoch so future GC cycles skip this slot
+                    // (prevents re-sweep of already-poisoned memory).
+                    for page in pages.iter() {
+                        if let Some(idx) = page.slot_index(ptr as *const u8, self.values.slot_size) {
+                            page.set_slot_epoch(idx, u64::MAX);
+                            break;
+                        }
+                    }
+                    // Poison the ENTIRE slot (not just bytes 16+) since we're
+                    // not pushing to the free list (no FreeNode needed).
+                    #[cfg(sanitize = "address")]
+                    unsafe {
+                        extern "C" {
+                            fn __asan_poison_memory_region(
+                                addr: *const std::ffi::c_void,
+                                size: usize,
+                            );
+                        }
+                        __asan_poison_memory_region(
+                            ptr as *const std::ffi::c_void,
+                            self.values.slot_size,
+                        );
+                    }
+                    let _ = ptr; // suppress unused warning when ASAN is off
+                }
+                drop(pages);
+                // Also poison dead data slots
+                for &(ptr, size) in &dead_data_to_free {
+                    #[cfg(sanitize = "address")]
+                    unsafe {
+                        extern "C" {
+                            fn __asan_poison_memory_region(
+                                addr: *const std::ffi::c_void,
+                                size: usize,
+                            );
+                        }
+                        __asan_poison_memory_region(
+                            ptr as *const std::ffi::c_void,
+                            size,
+                        );
+                    }
+                    let _ = (ptr, size);
+                }
+            }
+            _ => {
+                // Normal freeing path
+                let pages = self.values.pages.read().expect("value pages lock poisoned");
+                for &ptr in &non_filtered_dead {
+                    self.values.live_count.fetch_sub(1, Ordering::Relaxed);
+                    for page in pages.iter() {
+                        if let Some(idx) = page.slot_index(ptr as *const u8, self.values.slot_size) {
+                            page.live_count.fetch_sub(1, Ordering::Relaxed);
+                            // Sentinel epoch: prevents double-free by future GC cycles.
+                            page.set_slot_epoch(idx, u64::MAX);
+                            break;
+                        }
+                    }
+                    // ASAN: poison the freed slot BEFORE push (skip FreeNode header).
+                    unsafe { asan_poison_slab_slot(ptr, self.values.slot_size); }
+                    self.values.free_list.push(ptr);
                 }
             }
         }
 
-        // Release empty pages
+        // === Phase 4: Free dead data slots ===
+        if gc_no_free.is_empty() {
+            for (ptr, size) in dead_data_to_free {
+                self.free_data_slot(ptr, size);
+            }
+        }
+
+        // === Phase 5: Release empty pages ===
+        // Safe: free-list entries from released pages are filtered out via
+        // atomic drain + rebuild in release_empty_pages().
         self.values.release_empty_pages();
         for dc in &self.data_classes {
             dc.release_empty_pages();
@@ -1523,10 +2237,16 @@ impl SlabAllocator {
         self.release_empty_pages();
     }
 
-    /// Release empty pages across all allocators.
+    /// Release empty pages across all allocators via atomic drain + filter + rebuild.
     ///
-    /// Pages with `live_count == 0` and `bump_count > 0` are dropped, which
-    /// calls `munmap` and returns physical memory to the OS immediately.
+    /// Each sub-allocator atomically drains its Treiber stack free list, walks
+    /// the disconnected chain to filter out entries from empty pages, pushes
+    /// survivors back, then `swap_remove`s the empty pages (triggering `munmap`
+    /// via `MmapPage::Drop`). This returns physical memory to the OS immediately.
+    ///
+    /// **Hot path impact: ZERO** — alloc/free paths are unchanged. During the
+    /// brief drain window, `pop()` returns `None` and alloc falls through to
+    /// bump allocation (correct, lock-free).
     pub fn release_empty_pages(&self) {
         self.values.release_empty_pages();
         for dc in &self.data_classes {
@@ -1585,6 +2305,19 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
                     worklist.push(inner_ptr);
                 }
             }
+            MettaValueInner::Space(handle) => {
+                // Traverse into SpaceHandle to mark rule LHS/RHS and module atoms.
+                // Without this, values stored as rules inside spaces would be
+                // incorrectly classified as dead by the GC sweep phase.
+                let mut space_values = Vec::new();
+                handle.collect_gc_values(&mut space_values);
+                for val in &space_values {
+                    let val_ptr = val.inner_ptr();
+                    if snapshot_mark_value(snapshot, val_ptr as *const u8, slot_size) {
+                        worklist.push(val_ptr);
+                    }
+                }
+            }
             MettaValueInner::Atom(_)
             | MettaValueInner::Bool(_)
             | MettaValueInner::Long(_)
@@ -1592,7 +2325,6 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
             | MettaValueInner::String(_)
             | MettaValueInner::Unit
             | MettaValueInner::Empty
-            | MettaValueInner::Space(_)
             | MettaValueInner::State(_)
             | MettaValueInner::Memo(_) => {}
         }
@@ -1704,6 +2436,16 @@ pub fn mark_from_roots(
                     worklist.push(inner_ptr);
                 }
             }
+            MettaValueInner::Space(handle) => {
+                let mut space_values = Vec::new();
+                handle.collect_gc_values(&mut space_values);
+                for val in &space_values {
+                    let val_ptr = val.inner_ptr();
+                    if alloc.mark_value(val_ptr as *const u8) {
+                        worklist.push(val_ptr);
+                    }
+                }
+            }
             MettaValueInner::Atom(_)
             | MettaValueInner::Bool(_)
             | MettaValueInner::Long(_)
@@ -1711,7 +2453,6 @@ pub fn mark_from_roots(
             | MettaValueInner::String(_)
             | MettaValueInner::Unit
             | MettaValueInner::Empty
-            | MettaValueInner::Space(_)
             | MettaValueInner::State(_)
             | MettaValueInner::Memo(_) => {}
         }

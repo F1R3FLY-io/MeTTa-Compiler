@@ -53,7 +53,8 @@ fn bench_rule_matching(c: &mut Criterion) {
                         compile(&full_program).expect("Failed to compile program");
                     let mut env = new_env();
 
-                    for &expr in state.source() {
+                    let source_exprs: Vec<_> = state.source().iter().copied().collect();
+                    for expr in source_exprs {
                         let (_, new_env) = eval(black_box(expr), env, black_box(&state));
                         env = new_env;
                     }
@@ -78,9 +79,12 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     // Pre-compile rule and load it into env
     let simple_rule_state = compile(simple_setup).expect("Failed to compile");
     let mut simple_env = new_env();
-    for &expr in simple_rule_state.source() {
-        let (_, new_env) = eval(expr, simple_env, &simple_rule_state);
-        simple_env = new_env;
+    {
+        let source_exprs: Vec<_> = simple_rule_state.source().iter().copied().collect();
+        for expr in source_exprs {
+            let (_, new_env) = eval(expr, simple_env, &simple_rule_state);
+            simple_env = new_env;
+        }
     }
 
     // Pre-compile query
@@ -104,9 +108,12 @@ fn bench_pattern_complexity(c: &mut Criterion) {
 
     let nested_rule_state = compile(nested_setup).expect("Failed to compile");
     let mut nested_env = new_env();
-    for &expr in nested_rule_state.source() {
-        let (_, new_env) = eval(expr, nested_env, &nested_rule_state);
-        nested_env = new_env;
+    {
+        let source_exprs: Vec<_> = nested_rule_state.source().iter().copied().collect();
+        for expr in source_exprs {
+            let (_, new_env) = eval(expr, nested_env, &nested_rule_state);
+            nested_env = new_env;
+        }
     }
 
     let nested_query_state = compile(nested_query).expect("Failed to compile");
@@ -128,9 +135,12 @@ fn bench_pattern_complexity(c: &mut Criterion) {
 
     let multi_rule_state = compile(multi_arg_setup).expect("Failed to compile");
     let mut multi_env = new_env();
-    for &expr in multi_rule_state.source() {
-        let (_, new_env) = eval(expr, multi_env, &multi_rule_state);
-        multi_env = new_env;
+    {
+        let source_exprs: Vec<_> = multi_rule_state.source().iter().copied().collect();
+        for expr in source_exprs {
+            let (_, new_env) = eval(expr, multi_env, &multi_rule_state);
+            multi_env = new_env;
+        }
     }
 
     let multi_query_state = compile(multi_arg_query).expect("Failed to compile");
@@ -166,7 +176,8 @@ fn bench_full_evaluation(c: &mut Criterion) {
             let state = compile(fib_program).expect("Failed to compile");
             let mut env = new_env();
 
-            for &expr in state.source() {
+            let source_exprs: Vec<_> = state.source().iter().copied().collect();
+            for expr in source_exprs {
                 let (_, new_env) = eval(black_box(expr), env, &state);
                 env = new_env;
             }
@@ -204,7 +215,8 @@ fn bench_full_evaluation(c: &mut Criterion) {
             let state = compile(type_program).expect("Failed to compile");
             let mut env = new_env();
 
-            for &expr in state.source() {
+            let source_exprs: Vec<_> = state.source().iter().copied().collect();
+            for expr in source_exprs {
                 let (_, new_env) = eval(black_box(expr), env, &state);
                 env = new_env;
             }
@@ -236,7 +248,8 @@ fn bench_large_rule_sets(c: &mut Criterion) {
                         compile(&full_program).expect("Failed to compile program");
                     let mut env = new_env();
 
-                    for &expr in state.source() {
+                    let source_exprs: Vec<_> = state.source().iter().copied().collect();
+                    for expr in source_exprs {
                         let (_, new_env) = eval(black_box(expr), env, black_box(&state));
                         env = new_env;
                     }

@@ -32,7 +32,8 @@ fn run_program(src: &str) -> usize {
     let mut env = new_env();
     let mut eval_count = 0;
 
-    for &expr in state.source() {
+    let source_exprs: Vec<_> = state.source().iter().copied().collect();
+    for expr in source_exprs {
         let (_, new_env) = eval(black_box(expr), env, &state);
         env = new_env;
         eval_count += 1;

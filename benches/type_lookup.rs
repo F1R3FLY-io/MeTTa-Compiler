@@ -32,7 +32,7 @@ fn bench_type_lookup(c: &mut Criterion) {
                 // Setup: Create environment with N type assertions
                 let mut env = MettaEnvironment::default();
                 let state = compile(&types_src).expect("Failed to compile types");
-                for typ in state.source {
+                for typ in state.source().iter().copied() {
                     env.add_to_space(&typ);
                 }
 
@@ -52,7 +52,7 @@ fn bench_type_lookup(c: &mut Criterion) {
                 // Setup: Create environment with N type assertions
                 let mut env = MettaEnvironment::default();
                 let state = compile(&types_src).expect("Failed to compile types");
-                for typ in state.source {
+                for typ in state.source().iter().copied() {
                     env.add_to_space(&typ);
                 }
 
@@ -72,7 +72,7 @@ fn bench_type_lookup(c: &mut Criterion) {
                 // Setup: Create environment with N type assertions
                 let mut env = MettaEnvironment::default();
                 let state = compile(&types_src).expect("Failed to compile types");
-                for typ in state.source {
+                for typ in state.source().iter().copied() {
                     env.add_to_space(&typ);
                 }
 
@@ -92,7 +92,7 @@ fn bench_type_lookup(c: &mut Criterion) {
                 // Setup: Create environment with N type assertions
                 let mut env = MettaEnvironment::default();
                 let state = compile(&types_src).expect("Failed to compile types");
-                for typ in state.source {
+                for typ in state.source().iter().copied() {
                     env.add_to_space(&typ);
                 }
 
@@ -125,7 +125,7 @@ fn bench_type_index_build(c: &mut Criterion) {
                         // Setup: Create fresh environment for each iteration (cold cache)
                         let mut env = MettaEnvironment::default();
                         let state = compile(&types_src).expect("Failed to compile types");
-                        for typ in state.source {
+                        for typ in state.source().iter().copied() {
                             env.add_to_space(&typ);
                         }
                         env
@@ -147,7 +147,7 @@ fn bench_type_index_build(c: &mut Criterion) {
                 // Setup: Create environment and warm up cache
                 let mut env = MettaEnvironment::default();
                 let state = compile(&types_src).expect("Failed to compile types");
-                for typ in state.source {
+                for typ in state.source().iter().copied() {
                     env.add_to_space(&typ);
                 }
                 // Warm up: Build the type index
@@ -181,7 +181,7 @@ fn bench_type_lookup_mixed(c: &mut Criterion) {
                         let mut types_partial_src = generate_type_assertions(type_count - 1);
                         types_partial_src.push_str("(: new-atom Int)\n");
                         let state = compile(&types_partial_src).expect("Failed to compile types");
-                        for typ in state.source {
+                        for typ in state.source().iter().copied() {
                             env.add_to_space(&typ);
                         }
                         env

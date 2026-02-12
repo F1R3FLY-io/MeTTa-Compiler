@@ -13,6 +13,7 @@ use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 use std::sync::OnceLock;
 
+#[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, trace, warn};
 
 /// MeTTa built-in keywords for syntax-level "did you mean" suggestions
@@ -99,7 +100,7 @@ pub fn compile_safe(src: &str) -> crate::backend::models::MettaState {
             let improved_msg = improve_error_message(&error);
 
             // Create error s-expression in storage arena: (error "message")
-            let mut state = MettaState::new();
+            let state = MettaState::new();
             let factory = state.factory();
             let error_sexpr = factory.sexpr(vec![
                 factory.atom("error"),
@@ -315,15 +316,20 @@ pub fn run_state(
     let mut env = env;
     let mut outputs = Vec::new();
 
-    for &expr in compiled_state.source() {
+    let source = compiled_state.source();
+    for &expr in source.iter() {
         let is_eval_expr = is_eval_expression(&expr);
 
         let (results, new_env) = eval(expr, env, compiled_state);
         env = new_env;
 
+        // Consume results BEFORE GC processing — results Vec is not a GC root
         if is_eval_expr {
             outputs.extend(results);
         }
+
+        // Quiescent point: try GC between top-level expressions
+        crate::backend::models::maybe_quiescent_gc();
     }
 
     info!(
@@ -363,7 +369,9 @@ pub async fn run_state_async(
     // Batch expressions into parallelizable groups
     let mut current_batch: Vec<(usize, MettaValue, bool)> = Vec::new();
 
-    for (idx, &expr) in compiled_state.source().iter().enumerate() {
+    // Snapshot source expressions to avoid holding MutexGuard across await points
+    let source_exprs: Vec<MettaValue> = compiled_state.source().iter().copied().collect();
+    for (idx, &expr) in source_exprs.iter().enumerate() {
         let is_eval_expr = is_eval_expression(&expr);
         let is_rule_def = matches!(expr.inner(), MettaValueInner::SExpr(items)
             if items.len() >= 1 && matches!(items[0].inner(), MettaValueInner::Atom("=")));
@@ -441,6 +449,8 @@ async fn evaluate_batch_parallel_arena(
         .map(|(idx, expr, should_output)| {
             let env = env.clone();
             pool.spawn(move || {
+                // Track this parallel eval as active (prevents GC during evaluation)
+                let _guard = crate::backend::models::EvalGuard::enter();
                 // For parallel evaluation, use StaticEvalContext which provides
                 // a thread-local leaked Bump arena per thread (Copy, Send-safe)
                 use crate::backend::eval::trampoline::{eval_trampoline_generic, StaticEvalContext};
@@ -492,6 +502,8 @@ async fn evaluate_batch_parallel_arena(
     let mut results: Vec<_> = batch
         .into_par_iter()
         .map(|(idx, expr, should_output)| {
+            // Track this parallel eval as active (prevents GC during evaluation)
+            let _guard = crate::backend::models::EvalGuard::enter();
             // For parallel evaluation, use StaticEvalContext which provides
             // a thread-local leaked Bump arena per thread (Copy, Send-safe)
             use crate::backend::eval::trampoline::{eval_trampoline_generic, StaticEvalContext};
@@ -563,7 +575,7 @@ pub fn eval_metta_session(src: &str) -> Result<Vec<String>, SyntaxError> {
     );
 
     // Compile to MettaState (acquires storage arena from pool)
-    let mut state = compile(src)?;
+    let state = compile(src)?;
 
     // Create arena environment (uses eval arena factory)
     let mut env = new_env();
@@ -578,18 +590,21 @@ pub fn eval_metta_session(src: &str) -> Result<Vec<String>, SyntaxError> {
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
 
-        // Only collect output for evaluation expressions (!)
+        // Consume results BEFORE GC processing — results Vec is not a GC root
         if is_eval_expr {
             for result in &results {
                 state.output_mut().push(*result);
             }
         }
+
+        // Quiescent point: try GC between top-level expressions
+        crate::backend::models::maybe_quiescent_gc();
     }
 
     // Convert results to strings BEFORE MettaState drops
     // This ensures we have owned data that survives the arena
-    let result_strings: Vec<String> = state
-        .output()
+    let output = state.output();
+    let result_strings: Vec<String> = output
         .iter()
         .map(|v| v.friendly_repr())
         .collect();
@@ -646,7 +661,7 @@ pub fn eval_metta_session_raw(src: &str) -> Result<MettaState, SyntaxError> {
     );
 
     // Compile to MettaState (acquires storage arena from pool)
-    let mut state = compile(src)?;
+    let state = compile(src)?;
 
     // Create arena environment (uses eval arena factory)
     let mut env = new_env();
@@ -661,12 +676,15 @@ pub fn eval_metta_session_raw(src: &str) -> Result<MettaState, SyntaxError> {
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
 
-        // Only collect output for evaluation expressions (!)
+        // Consume results BEFORE GC processing — results Vec is not a GC root
         if is_eval_expr {
             for result in &results {
                 state.output_mut().push(*result);
             }
         }
+
+        // Quiescent point: try GC between top-level expressions
+        crate::backend::models::maybe_quiescent_gc();
     }
 
     info!(result_count = state.output().len(), "Session evaluation complete (raw)");
@@ -755,9 +773,10 @@ mod tests {
     fn test_compile_safe_success() {
         use crate::backend::models::MettaValueInner;
         let state = compile_safe("(+ 1 2)");
-        assert_eq!(state.source().len(), 1);
+        let source = state.source();
+        assert_eq!(source.len(), 1);
         // Should be a valid S-expression, not an error
-        match state.source()[0].inner() {
+        match source[0].inner() {
             MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 3);
                 match items[0].inner() {
@@ -773,9 +792,10 @@ mod tests {
     fn test_compile_safe_syntax_error() {
         use crate::backend::models::MettaValueInner;
         let state = compile_safe("(+ 1 2");
-        assert_eq!(state.source().len(), 1);
+        let source = state.source();
+        assert_eq!(source.len(), 1);
         // Should be an error s-expression
-        match state.source()[0].inner() {
+        match source[0].inner() {
             MettaValueInner::SExpr(items) => {
                 assert_eq!(items.len(), 2);
                 match items[0].inner() {
@@ -797,7 +817,8 @@ mod tests {
     fn test_compile_safe_improves_error_message() {
         use crate::backend::models::MettaValueInner;
         let state = compile_safe("(+ 1 2");
-        match state.source()[0].inner() {
+        let source = state.source();
+        match source[0].inner() {
             MettaValueInner::SExpr(items) => {
                 if let MettaValueInner::String(msg) = items[1].inner() {
                     // Should include hint about unclosed parenthesis

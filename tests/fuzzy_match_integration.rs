@@ -475,7 +475,7 @@ fn test_compile_basic_expression() {
 
     let state = result.unwrap();
     assert!(
-        !state.source.is_empty(),
+        !state.source().is_empty(),
         "Should have at least one expression"
     );
 }
@@ -486,7 +486,7 @@ fn test_compile_nested_expression() {
     assert!(result.is_ok(), "Should compile nested expression");
 
     let state = result.unwrap();
-    assert!(!state.source.is_empty());
+    assert!(!state.source().is_empty());
 }
 
 #[test]
@@ -495,7 +495,7 @@ fn test_compile_rule_definition() {
     assert!(result.is_ok(), "Should compile rule definition");
 
     let state = result.unwrap();
-    assert!(!state.source.is_empty());
+    assert!(!state.source().is_empty());
 }
 
 #[test]
@@ -504,7 +504,7 @@ fn test_compile_multiple_expressions() {
     assert!(result.is_ok(), "Should compile multiple expressions");
 
     let state = result.unwrap();
-    assert!(state.source.len() >= 2, "Should have multiple expressions");
+    assert!(state.source().len() >= 2, "Should have multiple expressions");
 }
 
 // ============================================================================

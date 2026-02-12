@@ -972,6 +972,51 @@ impl SpaceHandle {
     // End Generic Value Operations
     // ========================================================================
 
+    /// Collect all slab-allocated MettaValues referenced by this space.
+    ///
+    /// Used by the GC mark phase to traverse into Space values. Without this,
+    /// values stored as rules inside a SpaceHandle would not be marked as
+    /// reachable, causing the GC to incorrectly classify them as dead.
+    ///
+    /// Collects:
+    /// - Rule LHS and RHS from Owned base data
+    /// - Rule LHS and RHS from Owned overlay (added_rules)
+    /// - Atoms from Module-backed spaces (Vec<MettaValue>)
+    ///
+    /// Note: Atoms in Owned spaces are stored as interned bytes (AtomId) in the
+    /// SymbolTable, not as direct MettaValue references. They are reconstructed
+    /// on demand via `SymbolTable::resolve()`, so they don't need GC traversal.
+    pub(crate) fn collect_gc_values(&self, values: &mut Vec<MettaValue>) {
+        match &self.backing {
+            SpaceBacking::Owned { base, overlay } => {
+                // Collect rule lhs/rhs from base data
+                let base_data = base.read();
+                for rule in &base_data.rules {
+                    values.push(rule.lhs);
+                    values.push(rule.rhs);
+                }
+                drop(base_data);
+
+                // Collect overlay added_rules
+                if let Some(ov) = overlay {
+                    let ov_data = ov.read();
+                    for rule in &ov_data.added_rules {
+                        values.push(rule.lhs);
+                        values.push(rule.rhs);
+                    }
+                }
+            }
+            SpaceBacking::Module { space, .. } => {
+                // Collect atoms from module space (local atoms only — dependencies have
+                // their own environments registered as separate root providers)
+                let ms = space.read();
+                values.extend(ms.get_atoms_local().into_iter());
+                // main_space is an MettaEnvironment — registered as its own root provider
+                // dep_spaces contain ModuleSpaces recursively — their environments are also registered
+            }
+        }
+    }
+
     /// Check if two space handles point to the same underlying data.
     ///
     /// Note: Two forked handles from the same base are NOT the same space

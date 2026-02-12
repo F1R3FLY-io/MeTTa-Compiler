@@ -284,7 +284,7 @@ mod tests {
         let result = compile("");
         assert!(result.is_ok());
         let state = result.unwrap();
-        assert_eq!(state.source.len(), 0);
+        assert_eq!(state.source().len(), 0);
     }
 
     #[test]
@@ -294,13 +294,13 @@ mod tests {
         assert!(result.is_ok());
 
         let state = result.unwrap();
-        assert_eq!(state.source.len(), 1);
+        assert_eq!(state.source().len(), 1);
         // Environment is empty at compile time (facts added during eval)
         assert_eq!(state.environment.rule_count(), 0);
-        assert!(state.output.is_empty());
+        assert!(state.output().is_empty());
 
         // Should be: (+ 1 2) - operator symbol preserved
-        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
+        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Atom("+".to_string()));
             assert_eq!(items[1], MettaValue::Long(1));
@@ -314,7 +314,7 @@ mod tests {
     fn test_compile_multiple_expressions() {
         let src = "(+ 1 2) (* 3 4)";
         let state = compile(src).unwrap();
-        assert_eq!(state.source.len(), 2);
+        assert_eq!(state.source().len(), 2);
     }
 
     #[test]
@@ -333,7 +333,7 @@ mod tests {
         for (op, expected) in operators {
             let src = format!("({} 1 2)", op);
             let state = compile(&src).unwrap();
-            if let MettaValueInner::SExpr(items) = state.source[0].inner() {
+            if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
                 assert_eq!(
                     items[0],
                     MettaValue::Atom(expected.to_string()),
@@ -349,7 +349,7 @@ mod tests {
         // Test > operator - should be preserved as-is
         let src = "(> 1 2)";
         let state = compile(src).unwrap();
-        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
+        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
             assert_eq!(items[0], MettaValue::Atom(">".to_string()));
         }
 
@@ -363,7 +363,7 @@ mod tests {
         let src = "(+ -5 -10)";
         let state = compile(src).unwrap();
 
-        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
+        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
             assert_eq!(items[0], MettaValue::Atom("+".to_string()));
             assert_eq!(items[1], MettaValue::Long(-5));
             assert_eq!(items[2], MettaValue::Long(-10));
@@ -377,8 +377,8 @@ mod tests {
         let src = "0";
         let state = compile(src).unwrap();
 
-        assert_eq!(state.source.len(), 1);
-        assert_eq!(state.source[0], MettaValue::Long(0));
+        assert_eq!(state.source().len(), 1);
+        assert_eq!({let s = state.source(); s[0]}, MettaValue::Long(0));
     }
 
     #[test]
@@ -386,7 +386,7 @@ mod tests {
         let src = "(True False 42 \"hello\")";
         let state = compile(src).unwrap();
 
-        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
+        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
             assert_eq!(items[0], MettaValue::Bool(true));
             assert_eq!(items[1], MettaValue::Bool(false));
             assert_eq!(items[2], MettaValue::Long(42));
@@ -399,7 +399,7 @@ mod tests {
         let src = "(list 42 -7 0 True False \"text\" ())";
         let state = compile(src).unwrap();
 
-        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
+        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
             assert_eq!(items[0], MettaValue::Atom("list".to_string()));
             assert_eq!(items[1], MettaValue::Long(42));
             assert_eq!(items[2], MettaValue::Long(-7));
@@ -421,7 +421,7 @@ mod tests {
         let src = "(true false)";
         let state = compile(src).unwrap();
 
-        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
+        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Atom("true".to_string()));
             assert_eq!(items[1], MettaValue::Atom("false".to_string()));
@@ -433,7 +433,7 @@ mod tests {
         let src = "(True False)";
         let state = compile(src).unwrap();
 
-        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
+        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Bool(true));
             assert_eq!(items[1], MettaValue::Bool(false));
@@ -451,7 +451,7 @@ mod tests {
             (* 3 4)
         "#;
         let state = compile(src).unwrap();
-        assert_eq!(state.source.len(), 2);
+        assert_eq!(state.source().len(), 2);
     }
 
     #[test]
@@ -459,9 +459,9 @@ mod tests {
         let src = "(: x Number)";
         let state = compile(src).unwrap();
 
-        assert_eq!(state.source.len(), 1);
+        assert_eq!(state.source().len(), 1);
 
-        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
+        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Atom(":".to_string()));
             assert_eq!(items[1], MettaValue::Atom("x".to_string()));
@@ -476,9 +476,9 @@ mod tests {
         let src = "!(double 5)";
         let state = compile(src).unwrap();
 
-        assert_eq!(state.source.len(), 1);
+        assert_eq!(state.source().len(), 1);
 
-        if let MettaValueInner::SExpr(items) = state.source[0].inner() {
+        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Atom("!".to_string()));
 
@@ -498,8 +498,8 @@ mod tests {
         let src = "$x";
         let state = compile(src).unwrap();
 
-        assert_eq!(state.source.len(), 1);
-        assert_eq!(state.source[0], MettaValue::Atom("$x".to_string()));
+        assert_eq!(state.source().len(), 1);
+        assert_eq!({let s = state.source(); s[0]}, MettaValue::Atom("$x".to_string()));
     }
 
     #[test]
@@ -507,10 +507,10 @@ mod tests {
         let src = "'quoted";
         let state = compile(src).unwrap();
 
-        assert_eq!(state.source.len(), 1);
+        assert_eq!(state.source().len(), 1);
         // Tree-Sitter parser treats 'quoted as a prefixed expression: (' quoted)
         assert_eq!(
-            state.source[0],
+            {let s = state.source(); s[0]},
             MettaValue::SExpr(vec![
                 MettaValue::Atom("'".to_string()),
                 MettaValue::Atom("quoted".to_string())
@@ -523,10 +523,10 @@ mod tests {
         let src = "(+ 1 (+ 2 (+ 3 (+ 4 5))))";
         let state = compile(src).unwrap();
 
-        assert_eq!(state.source.len(), 1);
+        assert_eq!(state.source().len(), 1);
 
         // Outer: (+ 1 ...)
-        if let MettaValueInner::SExpr(outer) = state.source[0].inner() {
+        if let MettaValueInner::SExpr(outer) = {let s = state.source(); s[0]}.inner() {
             assert_eq!(outer[0], MettaValue::Atom("+".to_string()));
             assert_eq!(outer[1], MettaValue::Long(1));
 
@@ -590,7 +590,7 @@ mod tests {
         let input = r#"!(error failure-code 42)"#;
         let state = compile(input).expect("compile failed");
         let env = new_env();
-        let (results, _env) = eval(state.source()[0], env, &state);
+        let (results, _env) = eval({let s = state.source(); s[0]}, env, &state);
 
         assert_eq!(results.len(), 1);
         if let MettaValueInner::Error(msg, _) = results[0].inner() {
@@ -614,7 +614,7 @@ mod tests {
         let env = new_env();
 
         // Evaluate the expression
-        let (results, _env) = eval_trampoline(state.source()[0], env, &state);
+        let (results, _env) = eval_trampoline({let s = state.source(); s[0]}, env, &state);
 
         // Results should contain [3]
         assert_eq!(results.len(), 1);

@@ -1,3 +1,7 @@
+// Enable cfg(sanitize = "address") for ASAN integration with the slab allocator.
+// Requires nightly Rust (same as -Zsanitizer=address).
+#![feature(cfg_sanitize)]
+
 pub mod backend;
 pub mod config;
 pub mod ir;
@@ -32,7 +36,7 @@ pub mod tree_sitter_parser;
 /// # Example
 ///
 /// ```rust
-/// use mettatron::{compile, eval, new_env};
+/// use mettatron::{compile, eval, new_env, MettaValue};
 ///
 /// // Define a rule and evaluate it
 /// let input = r#"
@@ -42,7 +46,8 @@ pub mod tree_sitter_parser;
 ///
 /// let state = compile(input).unwrap();
 /// let mut env = new_env();
-/// for &expr in state.source() {
+/// let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+/// for expr in source_exprs {
 ///     let (results, new_env) = eval(expr, env, &state);
 ///     env = new_env;
 ///
@@ -220,7 +225,8 @@ mod tests {
         let mut env = new_env();
         let mut all_results = Vec::new();
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
 
@@ -248,7 +254,8 @@ mod tests {
         let mut env = new_env();
         let mut evaluations = Vec::new();
 
-        for (i, &expr) in state.source().iter().enumerate() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for (i, expr) in source_exprs.iter().copied().enumerate() {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
 
@@ -294,7 +301,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -317,7 +325,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -343,7 +352,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -369,7 +379,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -418,7 +429,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -475,7 +487,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -509,7 +522,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -622,7 +636,8 @@ mod tests {
         let mut env = new_env();
         let mut results = Vec::new();
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -646,7 +661,8 @@ mod tests {
         let mut env = new_env();
         let mut errors = Vec::new();
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(r) = expr_results.first() {
@@ -673,7 +689,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -724,7 +741,8 @@ mod tests {
         let mut env = new_env();
         let mut results = Vec::new();
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -754,7 +772,8 @@ mod tests {
         let mut env = new_env();
         let mut last_result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -778,7 +797,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -802,7 +822,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -827,7 +848,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -851,7 +873,8 @@ mod tests {
         let mut env = new_env();
         let mut last_result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -874,7 +897,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -909,7 +933,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -934,7 +959,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -959,7 +985,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -1005,7 +1032,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -1044,7 +1072,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -1069,7 +1098,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -1101,7 +1131,8 @@ mod tests {
         let mut env = new_env();
         let mut last_result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
@@ -1118,7 +1149,8 @@ mod tests {
         let src = "(a (b (c d)))";
         let state = compile(src).expect("compile failed");
 
-        if let MettaValueInner::SExpr(outer) = state.source()[0].inner() {
+        let first = {let s = state.source(); s[0]};
+        if let MettaValueInner::SExpr(outer) = first.inner() {
             assert!(matches!(outer[0].inner(), MettaValueInner::Atom("a")));
 
             if let MettaValueInner::SExpr(middle) = outer[1].inner() {
@@ -1150,7 +1182,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1179,7 +1212,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1210,7 +1244,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1245,7 +1280,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1287,7 +1323,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1327,7 +1364,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1361,7 +1399,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1397,7 +1436,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1427,7 +1467,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1457,7 +1498,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1500,7 +1542,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1532,11 +1575,12 @@ mod tests {
         let mut env = new_env();
         let mut last_result = Vec::new();
 
-        for (i, &expr) in state.source().iter().enumerate() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for (i, expr) in source_exprs.iter().copied().enumerate() {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             // Capture results from the last expression (the match)
-            if i == state.source().len() - 1 {
+            if i == source_exprs.len() - 1 {
                 last_result = expr_results;
             }
         }
@@ -1561,7 +1605,8 @@ mod tests {
         let mut env = new_env();
         let mut result = None;
 
-        for &expr in state.source() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for expr in source_exprs {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
@@ -1599,11 +1644,12 @@ mod tests {
         let mut env = new_env();
         let mut last_result = Vec::new();
 
-        for (i, &expr) in state.source().iter().enumerate() {
+        let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
+        for (i, expr) in source_exprs.iter().copied().enumerate() {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             // Capture results from the last expression (the match)
-            if i == state.source().len() - 1 {
+            if i == source_exprs.len() - 1 {
                 last_result = expr_results;
             }
         }

@@ -207,6 +207,18 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
         Self { tokens: Vec::new() }
     }
 
+    /// Collect all values stored in the tokenizer for GC root tracking.
+    ///
+    /// Calls each token constructor with its pattern string to extract the value.
+    /// This is safe because token constructors created by `register_token_value`
+    /// and `register_token_value_regex` are pure functions that return clones of
+    /// captured values.
+    pub fn collect_gc_values(&self) -> Vec<V> {
+        self.tokens.iter()
+            .map(|entry| (entry.constructor)(entry.pattern.pattern_str()))
+            .collect()
+    }
+
     /// Register a token with a simple value using exact string match.
     ///
     /// When `pattern` is encountered, it will be replaced with `value`.

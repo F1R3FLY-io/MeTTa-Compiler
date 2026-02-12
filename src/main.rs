@@ -26,6 +26,8 @@ fn print_usage() {
     eprintln!("    --repl                  Start interactive REPL");
     eprintln!("    --eval                  Evaluate and print results (default)");
     eprintln!("    --strict-mode           Disable transitive imports (explicit deps only)");
+    eprintln!("    --no-gc                 Disable garbage collection");
+    eprintln!("    --gc-stats              Print GC statistics on exit");
     eprintln!();
     eprintln!("ARGUMENTS:");
     eprintln!("    <INPUT>                 Input MeTTa file (use '-' for stdin)");
@@ -47,6 +49,8 @@ struct Options {
     show_sexpr: bool,
     repl_mode: bool,
     strict_mode: bool,
+    no_gc: bool,
+    gc_stats: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -57,6 +61,8 @@ fn parse_args() -> Result<Options, String> {
     let mut show_sexpr = false;
     let mut repl_mode = false;
     let mut strict_mode = false;
+    let mut no_gc = false;
+    let mut gc_stats = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -88,6 +94,12 @@ fn parse_args() -> Result<Options, String> {
             "--strict-mode" => {
                 strict_mode = true;
             }
+            "--no-gc" => {
+                no_gc = true;
+            }
+            "--gc-stats" => {
+                gc_stats = true;
+            }
             arg if arg.starts_with('-') && arg != "-" => {
                 return Err(format!("Unknown option: {}", arg));
             }
@@ -107,6 +119,8 @@ fn parse_args() -> Result<Options, String> {
         show_sexpr,
         repl_mode,
         strict_mode,
+        no_gc,
+        gc_stats,
     })
 }
 
@@ -238,17 +252,30 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
 
-        // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
+        // IMPORTANT: Format results BEFORE GC processing. The `results` Vec is a local
+        // variable NOT registered as a GC root. If we process GC first, a snapshot could
+        // mark result values as dead (they're unreachable from registered roots) and free
+        // them, causing use-after-free when we later call format_results().
         let filtered_results: Vec<MettaValue> = results
             .into_iter()
             .filter(|v| !v.is_empty())
             .collect();
 
-        // Print results with list notation (only for S-expressions)
-        // HE-compatible: print [] for empty result sets
         if should_output {
             output.push_str(&format!("{}\n", format_results(&filtered_results)));
         }
+
+        // Process any pending GC response (standalone, matching TLA+ ProcessGcResponse
+        // at "between" phase). This clears GC_CYCLE_IN_FLIGHT and updates backpressure
+        // before we attempt to trigger a new GC cycle or check tier 2.
+        maybe_process_gc_response();
+
+        // Quiescent point: try GC between top-level expressions
+        maybe_quiescent_gc();
+
+        // Tier 2 back-pressure: may block between expressions when pressure is extreme.
+        // Safe because EvalGuard has been dropped (thread at quiescent point).
+        apply_backpressure_tier2();
     }
 
     // MettaState drops here — values remain in global slab allocator
@@ -336,27 +363,43 @@ fn run_repl(options: &Options) {
 
                 match compile(input) {
                     Ok(state) => {
-                        for &expr in state.source() {
+                        // Snapshot source expressions (MettaValue is Copy)
+                        let source_exprs: Vec<MettaValue> =
+                            state.source().iter().copied().collect();
+
+                        for expr in source_exprs {
                             // Only output results for S-expressions, not atoms or ground types
                             let should_output = expr.is_sexpr();
 
                             let (results, updated_env) = eval(expr, env, &state);
                             env = updated_env;
 
-                            // Filter out Empty sentinels (HE-compatible: Empty is filtered at result collection)
+                            // IMPORTANT: Format results BEFORE GC processing. The `results`
+                            // Vec is a local variable NOT registered as a GC root. See the
+                            // equivalent comment in eval_metta() for the full explanation.
                             let filtered_results: Vec<MettaValue> = results
                                 .into_iter()
                                 .filter(|v| !v.is_empty())
                                 .collect();
 
-                            // Print results with syntax highlighting (only for S-expressions)
-                            // HE-compatible: print [] for empty result sets
                             if should_output {
                                 let output = format_results(&filtered_results);
                                 let highlighted =
                                     highlight_output(&output, output_highlighter.as_ref());
                                 println!("{}", highlighted);
                             }
+
+                            // Process any pending GC response (standalone, matching TLA+
+                            // ProcessGcResponse at "between" phase).
+                            maybe_process_gc_response();
+
+                            // Quiescent point: try GC between top-level expressions
+                            maybe_quiescent_gc();
+
+                            // Tier 2 back-pressure: may block between expressions when
+                            // pressure is extreme. Safe because EvalGuard has been dropped
+                            // (thread at quiescent point).
+                            apply_backpressure_tier2();
                         }
 
                         // Update completions with newly defined functions
@@ -398,9 +441,17 @@ fn main() {
         }
     };
 
+    // Disable GC if requested
+    if options.no_gc {
+        disable_gc();
+    }
+
     // REPL mode
     if options.repl_mode {
         run_repl(&options);
+        if options.gc_stats || env::var("METTA_GC_STATS").map_or(false, |v| v == "1") {
+            print_gc_stats();
+        }
         return;
     }
 
@@ -432,5 +483,10 @@ fn main() {
     if let Err(e) = write_output(options.output.as_deref(), &output) {
         eprintln!("Error: {}", e);
         process::exit(1);
+    }
+
+    // Print GC stats if requested (via CLI flag or env var)
+    if options.gc_stats || env::var("METTA_GC_STATS").map_or(false, |v| v == "1") {
+        print_gc_stats();
     }
 }

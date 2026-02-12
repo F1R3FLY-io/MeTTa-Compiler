@@ -47,7 +47,10 @@ impl PatternHistory {
         }
 
         // Parse the command
-        let parsed = compile(command).ok().map(|state| state.source);
+        let parsed = compile(command).ok().map(|state| {
+            let source = state.source();
+            source.clone()
+        });
 
         let entry = HistoryEntry {
             source: command.to_string(),

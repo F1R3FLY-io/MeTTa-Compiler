@@ -14,6 +14,7 @@ The chapters build progressively. Each chapter assumes understanding of prior on
 | 4 | [The Garbage Collector](04-garbage-collector.md) | Mark-sweep algorithm, snapshots, epoch-based TOCTOU prevention, GC thread protocol, cron manager |
 | 5 | [System Integration](05-integration.md) | `GcFactory`, `MettaValue`, root registry, evaluation loop, JIT runtime, deserialization |
 | 6 | [Formal Verification](06-formal-verification.md) | TLA+ models, four bugs discovered, fixes verified, relationship to source code |
+| 7 | [Backpressure](07-backpressure.md) | Graduated allocation throttling, Tier 1/2 application, TLA+ verification |
 
 ## Quick Reference
 
@@ -24,8 +25,11 @@ The chapters build progressively. Each chapter assumes understanding of prior on
 | `global_allocator()` | `gc_allocator.rs:1043` | Get `&'static SlabAllocator` (lazy init) |
 | `global_factory()` | `gc_allocator.rs:1048` | Get `GcFactory` backed by global allocator |
 | `global_gc_thread()` | `gc_allocator.rs:1065` | Get `&'static Mutex<GcThread>` (lazy spawn) |
-| `maybe_trigger_gc()` | `gc_allocator.rs:1082` | Non-blocking GC check, called every 256 trampoline iterations |
-| `request_gc()` | `gc_allocator.rs:1071` | Set `GC_REQUESTED` flag for next `maybe_trigger_gc()` call |
+| `maybe_quiescent_gc()` | `gc_allocator.rs` | Trigger GC at quiescent point (no active evaluators) |
+| `maybe_process_gc_response()` | `gc_allocator.rs` | Process pending GC response, update threshold + backpressure |
+| `apply_backpressure_tier1()` | `gc_allocator.rs` | Graduated yield/sleep during eval (called every 256 iterations) |
+| `apply_backpressure_tier2()` | `gc_allocator.rs` | Block at MAX level until GC completes (between expressions) |
+| `request_gc()` | `gc_allocator.rs` | Set `GC_REQUESTED` flag for next quiescent point |
 | `collect_all_roots()` | `gc_allocator.rs:1152` | Gather roots from all registered `RootProvider`s |
 | `register_root_provider()` | `gc_allocator.rs:1140` | Register a `Weak<dyn RootProvider>` with the root registry |
 
@@ -55,3 +59,4 @@ The chapters build progressively. Each chapter assumes understanding of prior on
 | `tla/SlabGC.tla` | 6 | Original model (3 bugs) |
 | `tla/SlabGC_Reactive.tla` | 6 | Fixed model (epoch + snapshot) |
 | `tla/SlabGC_Pages.tla` | 6 | Page-level model (4th bug) |
+| `tla/SlabGC_Quiescent.tla` | 6, 7 | Multi-thread quiescent-state protocol + backpressure model |

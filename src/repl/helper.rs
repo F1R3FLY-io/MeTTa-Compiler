@@ -451,7 +451,7 @@ mod tests {
         let state = compile(code).unwrap();
 
         // IMPORTANT: Rules are added to environment during evaluation
-        for &expr in state.source() {
+        for &expr in state.source().iter() {
             let (_, updated_env) = eval(expr, env, &state);
             env = updated_env;
         }
@@ -481,7 +481,7 @@ mod tests {
         let state = compile(code).unwrap();
 
         // Evaluate to add rules to environment
-        for &expr in state.source() {
+        for &expr in state.source().iter() {
             let (_, updated_env) = eval(expr, env, &state);
             env = updated_env;
         }
@@ -509,7 +509,7 @@ mod tests {
         let state = compile(code).unwrap();
 
         // Evaluate to add rules to environment
-        for &expr in state.source() {
+        for &expr in state.source().iter() {
             let (_, updated_env) = eval(expr, env, &state);
             env = updated_env;
         }

@@ -408,7 +408,7 @@ pub fn metta_state_to_pathmap_par(state: &MettaState) -> Par {
 
     // Field 0: ("source", <list of exprs>)
     let pending_tag = create_string_par("source".to_string());
-    let pending_list = metta_values_to_list_par(&state.source);
+    let pending_list = metta_values_to_list_par(&state.source());
     field_tuples.push(Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::ETupleBody(ETuple {
             ps: vec![pending_tag, pending_list],
@@ -430,7 +430,7 @@ pub fn metta_state_to_pathmap_par(state: &MettaState) -> Par {
 
     // Field 2: ("output", <list of output>)
     let outputs_tag = create_string_par("output".to_string());
-    let outputs_list = metta_values_to_list_par(&state.output);
+    let outputs_list = metta_values_to_list_par(&state.output());
     field_tuples.push(Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::ETupleBody(ETuple {
             ps: vec![outputs_tag, outputs_list],
@@ -469,11 +469,10 @@ pub fn metta_error_to_par(error_msg: &str) -> Par {
     let error_value = MettaValue::Error(error_msg.to_string(), MettaValue::Unit());
 
     // Create a MettaState with the error in output
-    let error_state = MettaState {
-        source: vec![],
-        environment: MettaEnvironment::default(),
-        output: vec![error_value],
-    };
+    let error_state = MettaState::new_accumulated(
+        MettaEnvironment::default(),
+        vec![error_value],
+    );
 
     // Return as PathMap (consistent with metta_state_to_pathmap_par)
     metta_state_to_pathmap_par(&error_state)
@@ -989,11 +988,9 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
                         Vec::new()
                     };
 
-                    Ok(MettaState {
-                        source,
-                        environment,
-                        output,
-                    })
+                    let state = MettaState::new_accumulated(environment, output);
+                    *state.source_mut() = source;
+                    Ok(state)
                 } else {
                     debug!(target: "mettatron::rholang_integration::pathmap_par_to_metta_state", "expected ETupleBody in PathMap");
                     Err("Expected ETupleBody in PathMap".to_string())
@@ -1630,16 +1627,19 @@ mod tests {
         let state = compile(query).expect("Failed to compile");
 
         // Verify source is populated after compile
-        assert_eq!(state.source.len(), 1, "Source should have 1 expression");
-        assert!(
-            state.source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!")),
-            "Source[0] should be an eval expression (starts with !)"
-        );
-        println!(
-            "After compile: source = {:?}, is_eval_expr = {}",
-            state.source[0],
-            state.source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!"))
-        );
+        {
+            let source = state.source();
+            assert_eq!(source.len(), 1, "Source should have 1 expression");
+            assert!(
+                source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!")),
+                "Source[0] should be an eval expression (starts with !)"
+            );
+            println!(
+                "After compile: source = {:?}, is_eval_expr = {}",
+                source[0],
+                source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!"))
+            );
+        }
 
         // Serialize to PathMap Par
         let par = metta_state_to_pathmap_par(&state);
@@ -1648,22 +1648,25 @@ mod tests {
         let deserialized = pathmap_par_to_metta_state(&par).expect("Failed to deserialize PathMap");
 
         // Verify source is preserved
-        assert_eq!(
-            deserialized.source.len(),
-            1,
-            "Deserialized source should have 1 expression"
-        );
-        println!(
-            "After deserialize: source = {:?}, is_eval_expr = {}",
-            deserialized.source[0],
-            deserialized.source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!"))
-        );
+        {
+            let source = deserialized.source();
+            assert_eq!(
+                source.len(),
+                1,
+                "Deserialized source should have 1 expression"
+            );
+            println!(
+                "After deserialize: source = {:?}, is_eval_expr = {}",
+                source[0],
+                source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!"))
+            );
 
-        // Critical: Check that is_eval_expr() still returns true
-        assert!(
-            deserialized.source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!")),
-            "Deserialized source[0] should still be an eval expression"
-        );
+            // Critical: Check that is_eval_expr() still returns true
+            assert!(
+                source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!")),
+                "Deserialized source[0] should still be an eval expression"
+            );
+        }
 
         println!("✓ Source field with ! expression survives roundtrip");
     }

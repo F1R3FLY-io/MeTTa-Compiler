@@ -93,6 +93,10 @@ pub fn eval(
         execute_arena, global_tiered_cache,
         ExecutionTier, TierStatusKind,
     };
+    use crate::backend::models::EvalGuard;
+
+    // Track this eval as active (prevents GC during evaluation)
+    let _guard = EvalGuard::enter();
 
     // Record execution in arena tiered cache
     // This triggers background bytecode and JIT compilation at thresholds

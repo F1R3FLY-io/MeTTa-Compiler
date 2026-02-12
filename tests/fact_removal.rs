@@ -53,7 +53,8 @@ fn test_remove_from_multiple_facts() {
         (parent Carol Dave)
     "#;
     let state = compile(source).expect("compile failed");
-    for &expr in state.source() {
+    let source_exprs: Vec<_> = state.source().iter().copied().collect();
+    for expr in source_exprs {
         env.add_to_space(&expr);
     }
 

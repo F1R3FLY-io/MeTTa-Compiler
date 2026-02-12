@@ -16,8 +16,9 @@ mod tests {
         let mut env = new_env();
         let mut all_results = Vec::new();
 
-        for expr in state.source() {
-            let (results, new_env) = eval_trampoline(expr.clone(), env, &state);
+        let source_exprs: Vec<_> = state.source().iter().copied().collect();
+        for expr in source_exprs {
+            let (results, new_env) = eval_trampoline(expr, env, &state);
             env = new_env;
             for result in &results {
                 all_results.push(result.to_string());

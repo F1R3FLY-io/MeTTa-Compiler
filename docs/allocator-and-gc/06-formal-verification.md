@@ -13,6 +13,7 @@ MeTTaTron's slab allocator and GC were verified with three TLA+ models. These mo
 | Original | `tla/SlabGC.tla` | Models the initial (buggy) design; discovers Bugs 1-3 |
 | Reactive | `tla/SlabGC_Reactive.tla` | Models the fixed design with snapshot + epoch; verifies Bugs 1-3 fixed |
 | Pages | `tla/SlabGC_Pages.tla` | Extends Reactive with page-level tracking; discovers and fixes Bug 4 |
+| Quiescent | `tla/SlabGC_Quiescent.tla` | Multi-thread quiescent protocol, cron pressure, backpressure, reclamation completeness |
 
 ## SlabGC.tla — The Original Model
 
@@ -291,6 +292,110 @@ Each TLA+ invariant maps to a safety property in the implementation:
 | `BumpPtrValid` | `bump_alloc()` CAS ensures sequential slot assignment |
 | `FreeSetValid` | `free_list.push(ptr)` only called on dead slots after epoch filtering |
 
+## SlabGC_Quiescent.tla — Multi-Thread Quiescent-State Protocol
+
+This model generalizes the single-thread reactive model to multi-threaded
+evaluation with lock-free coordination, quiescent-state GC triggering,
+cron-based memory pressure monitoring, and graduated backpressure.
+
+### State Space
+
+| Variable Group | Variables | Description |
+|----------------|-----------|-------------|
+| Per-thread | `threadPhase`, `threadExprs`, `stackRoots` | Thread lifecycle and stack roots |
+| Coordination | `activeEvaluators`, `gcInProgressFlag`, `gcRequested` | Lock-free EvalGuard protocol |
+| Allocator | `slotState`, `bumpPtr`, `freeSet`, `registeredRoots`, `epoch`, `slotEpoch` | Shared allocator state |
+| Pressure | `allocsSinceLastPoll`, `gcThreshold`, `backpressureLevel` | Cron monitor and backpressure |
+| Snapshot | `hasGcRequest`, `snap*` (5 vars) | GC snapshot channel |
+| Response | `hasGcResponse`, `resp*` (3 vars) | GC response channel |
+| GC thread | `gcPhase`, `gcMarked` | Mark-sweep state |
+
+### Key Protocol Actions
+
+| Action | Models |
+|--------|--------|
+| `EvalGuardEnter_{Increment,Proceed,BackOff}` | Lock-free `EvalGuard::enter()` with retry |
+| `EvalGuardDrop` | Guard drop with stack→registered root transfer |
+| `TryQuiescentGc_{AcquireFlag,SnapshotOK,Abort}` | 3-step quiescent GC with double-check |
+| `CronMonitorPoll` | Memory pressure + backpressure computation |
+| `ProcessGcResponse` | Epoch-filtered dead slot freeing + adaptive threshold |
+| `ContinueEval` | Tier 2 backpressure guard on re-entry |
+
+### Safety Invariants (16 total)
+
+| Invariant | What It Verifies |
+|-----------|------------------|
+| `TypeOK` | All variables within bounds |
+| `NoLiveValueFreed` | No root (registered OR stack) is in "freed" state |
+| `SnapshotCapturesAllRoots` | Stack roots empty when GC snapshot is built |
+| `GcFlagConsistent` | `GC_IN_PROGRESS` → no thread in "eval" |
+| `ActiveCountCorrect` | Atomic counter matches actual entering+eval threads |
+| `RegisteredRootsAreAllocated` | All registered roots have "alloc" state |
+| `StackRootsAreAllocated` | All stack roots have "alloc" state |
+| `FreeSetValid` | Free set entries have "freed" state |
+| `BumpPtrValid` | Slots beyond bump pointer are "free" |
+| `MemoryBounded` | Bump pointer within bounds |
+| `AtMostOneGcAcquire` | At most one thread in GC acquire phase |
+| `StackRootsOnlyDuringEval` | Stack roots empty outside "eval" phase |
+| `GcThresholdPositive` | Threshold ≥ minimum |
+| `BackpressureLevelBounded` | Level ∈ 0..3 |
+| `GcSweepIsComplete` | **Reclamation**: sweep finds ALL dead values at snapshot time |
+| `NoLiveValueInDeadSet` | **Reclamation**: no snapshot root appears in dead set |
+
+#### Reclamation Completeness (GcSweepIsComplete)
+
+This invariant verifies that when GC produces a response, `respDeadSet`
+equals **exactly** the set of committed, allocated, non-root, non-free-set
+values at snapshot time:
+
+```tla+
+GcSweepIsComplete ==
+    hasGcResponse =>
+        respDeadSet = {s \in Slots :
+            /\ s < snapBumpPtr
+            /\ snapSlotState[s] = "alloc"
+            /\ s \notin snapRoots
+            /\ s \notin snapFreeSet}
+```
+
+This directly verifies that values dropped from MettaState (via
+`DropRegisteredRoot`) and values discarded by worker threads (via
+`DropStackRoot` / `EvalGuardDrop`) are identified for collection. No
+allocated value can "escape" the sweep — the dead set is exactly complete.
+
+### Liveness Properties (4 total)
+
+| Property | What It Verifies |
+|----------|------------------|
+| `AllThreadsComplete` | All threads eventually finish |
+| `GcEventuallyTriggered` | GC requests are eventually consumed |
+| `BackpressureEventuallyRelaxes` | Backpressure cannot permanently stall threads |
+| `AllDeadValuesEventuallyFreed` | **Reclamation**: dead values eventually freed |
+
+#### Reclamation Liveness (AllDeadValuesEventuallyFreed)
+
+```tla+
+AllDeadValuesEventuallyFreed ==
+    \A s \in Slots :
+        (slotState[s] = "alloc" /\ s \notin AllLiveRoots) ~>
+            (slotState[s] = "freed" \/ \A t \in Threads : threadPhase[t] = "done")
+```
+
+This says: whenever a value becomes dead (allocated but not in any root),
+it is eventually freed by GC or the system terminates. Combined with
+`GcSweepIsComplete` (GC finds ALL dead values when it runs), this gives
+end-to-end reclamation: no permanent memory leak during operation.
+
+### Verification Results
+
+TLC explores the full state space with `NumEvalThreads=2, MaxSlots=4,
+MaxRoots=2, MaxExprs=2`:
+
+- **Safety**: ~2.4 billion states generated, ~441 million distinct states,
+  all 16 invariants hold. Completed in ~30 minutes on 36 cores.
+- **Liveness**: 7 temporal property branches checked on full state graph,
+  all 4 properties hold under strong fairness.
+
 ## Model Checking Configuration
 
 The TLC model checker uses small constant bounds for exhaustive exploration:
@@ -308,3 +413,6 @@ These bounds are small enough for exhaustive state space exploration (tens of mi
 The model checking wrappers are:
 - `tla/MC_SlabGC.tla` — configures TLC for `SlabGC.tla`
 - `tla/MC_SlabGC_Reactive.tla` — configures TLC for `SlabGC_Reactive.tla`
+- `tla/MC_SlabGC_Quiescent.tla` — configures TLC for `SlabGC_Quiescent.tla`
+  - `tla/SlabGC_Quiescent.cfg` — safety invariant checking (16 invariants)
+  - `tla/SlabGC_Quiescent_deadlock.cfg` — liveness + deadlock checking (4 properties)

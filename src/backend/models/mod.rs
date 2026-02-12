@@ -16,10 +16,14 @@ pub mod space_handle;
 pub use metta_value::{MettaValue, MettaValueInner};
 pub use atom_id::{AtomId, SymbolTable};
 pub use gc_allocator::{
-    collect_all_roots, global_allocator, global_factory, global_gc_cron,
-    global_gc_thread, init_global_allocator, is_gc_requested, maybe_trigger_gc,
-    register_root_provider, request_gc, trigger_gc_cycle, try_register_env_roots,
-    GcFactory, RootProvider, SlabAllocator,
+    active_evaluator_count, apply_backpressure_tier1, apply_backpressure_tier2,
+    backpressure_level, collect_all_roots, disable_gc, gc_cycle_in_flight,
+    global_allocator, global_factory, global_gc_cron, global_gc_thread,
+    init_global_allocator, is_gc_disabled, is_gc_requested,
+    maybe_process_gc_response, maybe_quiescent_gc, print_gc_stats,
+    register_root_provider, request_gc, set_backpressure_level, trigger_gc_cycle,
+    try_register_env_roots, EvalGuard, GcFactory, RootProvider, SlabAllocator,
+    MAX_BACKPRESSURE,
 };
 pub use gc_cron::{GcCronSingleton, CronHandle, CronStats, CronStatsSnapshot};
 pub use bindings::SmartBindings as Bindings;

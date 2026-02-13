@@ -19,7 +19,7 @@
 
 use crate::backend::compile::compile_generic;
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{GenericRule, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 use crate::backend::modules::resolve_module_path;
 
 /// Generic result type for module operations
@@ -108,12 +108,8 @@ where
             if sexpr_items.len() == 3 {
                 if let Some(op) = sexpr_items[0].as_atom() {
                     if op == "=" {
-                        // Add rule using GenericRule for zero-conversion
-                        let rule = GenericRule::new(
-                            sexpr_items[1].clone(),
-                            sexpr_items[2].clone(),
-                        );
-                        env.add_generic_rule(rule);
+                        // Add rule directly for zero-conversion
+                        env.add_rule(sexpr_items[1].clone(), sexpr_items[2].clone());
                         continue;
                     }
                     if op == ":" {

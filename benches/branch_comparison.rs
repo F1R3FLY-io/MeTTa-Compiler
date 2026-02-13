@@ -13,7 +13,7 @@ use mettatron::backend::compile::compile;
 use mettatron::backend::environment::MettaEnvironment;
 use mettatron::backend::eval::eval;
 use mettatron::backend::eval::trampoline::new_env;
-use mettatron::backend::{MettaValue, Rule};
+use mettatron::backend::MettaValue;
 
 // ============================================================================
 // Helper Functions
@@ -33,10 +33,10 @@ fn generate_facts(n: usize) -> Vec<MettaValue> {
 }
 
 /// Generate N rules for benchmarking
-fn generate_rules(n: usize) -> Vec<Rule> {
+fn generate_rules(n: usize) -> Vec<(MettaValue, MettaValue)> {
     let mut rules = Vec::new();
     for i in 0..n {
-        rules.push(Rule::new(
+        rules.push((
             MettaValue::SExpr(vec![
                 MettaValue::Atom("rule".to_string()),
                 MettaValue::Long(i as i64),
@@ -175,8 +175,8 @@ fn bench_cow_clone(c: &mut Criterion) {
     for rule_count in [0, 10, 100, 500, 1000].iter() {
         let mut env = MettaEnvironment::default();
         let rules = generate_rules(*rule_count);
-        for rule in &rules {
-            env.add_rule(rule.clone());
+        for (lhs, rhs) in &rules {
+            env.add_rule(lhs.clone(), rhs.clone());
         }
 
         group.bench_with_input(
@@ -247,13 +247,13 @@ fn bench_rule_matching(c: &mut Criterion) {
 
         // Add fibonacci-like rules
         for i in 0..*rule_count {
-            env.add_rule(Rule::new(
+            env.add_rule(
                 MettaValue::SExpr(vec![
                     MettaValue::Atom("fib".to_string()),
                     MettaValue::Long(i as i64),
                 ]),
                 MettaValue::Long((i * 2) as i64),
-            ));
+            );
         }
 
         // Benchmark lookup

@@ -250,8 +250,6 @@ mod tests {
 
     #[test]
     fn test_static_arena_env_persists_rules() {
-        use crate::backend::models::GenericRule;
-
         // Reset to ensure clean state
         StaticEvalContext::reset_env();
 
@@ -266,14 +264,13 @@ mod tests {
             factory.atom("$x"),
         ]);
         let rhs = factory.atom("result");
-        let rule = GenericRule::new(lhs, rhs);
 
-        env.add_generic_rule(rule);
+        env.add_rule(lhs.clone(), rhs);
         StaticEvalContext::update_env(env);
 
         // Get env again and verify rule persists
         let env2 = StaticEvalContext::get_or_create_env();
-        let rules: Vec<_> = env2.get_matching_rules("test-fn", 1).collect();
+        let rules = env2.get_matching_rules_for_expr(&lhs);
         assert_eq!(rules.len(), 1);
 
         // Clean up

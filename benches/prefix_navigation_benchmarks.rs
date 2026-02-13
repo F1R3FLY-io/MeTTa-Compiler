@@ -23,7 +23,7 @@ fn generate_test_env(num_types: usize, num_rules: usize) -> MettaEnvironment {
             MettaValue::Atom("$x".to_string()),
         ]);
         let rhs = MettaValue::Atom(format!("result{}", i));
-        env.add_rule(mettatron::backend::Rule::new(lhs, rhs));
+        env.add_rule(lhs, rhs);
     }
 
     env
@@ -237,19 +237,19 @@ fn bench_has_fact_baseline_1000_facts(b: &mut Bencher) {
 #[bench]
 fn bench_iter_rules_10_rules(b: &mut Bencher) {
     let env = generate_test_env(0, 10);
-    b.iter(|| env.iter_rules().count());
+    b.iter(|| env.collect_rules().len());
 }
 
 #[bench]
 fn bench_iter_rules_100_rules(b: &mut Bencher) {
     let env = generate_test_env(0, 100);
-    b.iter(|| env.iter_rules().count());
+    b.iter(|| env.collect_rules().len());
 }
 
 #[bench]
 fn bench_iter_rules_1000_rules(b: &mut Bencher) {
     let env = generate_test_env(0, 1000);
-    b.iter(|| env.iter_rules().count());
+    b.iter(|| env.collect_rules().len());
 }
 
 // Required by harness = false in Cargo.toml for #[bench] attribute tests

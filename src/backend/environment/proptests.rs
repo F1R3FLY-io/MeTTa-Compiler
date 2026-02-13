@@ -80,10 +80,10 @@ fn arb_rule_rhs() -> impl Strategy<Value = MettaValue> {
     ]
 }
 
-/// Generate a complete Rule
-fn arb_rule() -> impl Strategy<Value = Rule> {
+/// Generate a complete rule as (lhs, rhs) tuple
+fn arb_rule() -> impl Strategy<Value = (MettaValue, MettaValue)> {
     (arb_rule_lhs(), arb_rule_rhs())
-        .prop_map(|(lhs, rhs)| Rule::new(lhs, rhs))
+        .prop_map(|(lhs, rhs)| (lhs, rhs))
 }
 
 /// Generate a fact (simple S-expression data)
@@ -107,7 +107,8 @@ proptest! {
     fn prop_add_rule_increments_count(rule in arb_rule()) {
         let mut env = MettaEnvironment::default();
         let count_before = env.rule_count();
-        env.add_rule(rule);
+        let (lhs, rhs) = rule;
+        env.add_rule(lhs, rhs);
         let count_after = env.rule_count();
         prop_assert_eq!(count_after, count_before + 1);
     }
@@ -117,8 +118,8 @@ proptest! {
     fn prop_add_multiple_rules(rules in prop::collection::vec(arb_rule(), 1..10)) {
         let mut env = MettaEnvironment::default();
         let n = rules.len();
-        for rule in rules {
-            env.add_rule(rule);
+        for (lhs, rhs) in rules {
+            env.add_rule(lhs, rhs);
         }
         prop_assert_eq!(env.rule_count(), n);
     }
@@ -130,7 +131,8 @@ proptest! {
         let original_count = env.rule_count();
 
         let mut clone = env.clone();
-        clone.add_rule(rule);
+        let (lhs, rhs) = rule;
+        clone.add_rule(lhs, rhs);
 
         // Original unchanged
         prop_assert_eq!(env.rule_count(), original_count);
@@ -147,9 +149,9 @@ proptest! {
         let mut clone2 = env.clone();
         let mut clone3 = env.clone();
 
-        clone1.add_rule(rules[0].clone());
-        clone2.add_rule(rules[1].clone());
-        clone3.add_rule(rules[2].clone());
+        clone1.add_rule(rules[0].0.clone(), rules[0].1.clone());
+        clone2.add_rule(rules[1].0.clone(), rules[1].1.clone());
+        clone3.add_rule(rules[2].0.clone(), rules[2].1.clone());
 
         prop_assert_eq!(env.rule_count(), 0);
         prop_assert_eq!(clone1.rule_count(), 1);
@@ -337,7 +339,8 @@ proptest! {
 
         prop_assert!(!clone.owns_data);
 
-        clone.add_rule(rule);
+        let (lhs, rhs) = rule;
+        clone.add_rule(lhs, rhs);
 
         prop_assert!(clone.owns_data);
     }
@@ -349,11 +352,11 @@ proptest! {
         let mut clone = env.clone();
 
         // First mutation triggers make_owned
-        clone.add_rule(rules[0].clone());
+        clone.add_rule(rules[0].0.clone(), rules[0].1.clone());
         let ptr_after_first = Arc::as_ptr(&clone.shared);
 
         // Second mutation should NOT trigger another make_owned
-        clone.add_rule(rules[1].clone());
+        clone.add_rule(rules[1].0.clone(), rules[1].1.clone());
         let ptr_after_second = Arc::as_ptr(&clone.shared);
 
         prop_assert_eq!(ptr_after_first, ptr_after_second);
@@ -371,31 +374,25 @@ proptest! {
     #[test]
     fn prop_rules_retrievable(rule in arb_rule()) {
         let mut env = MettaEnvironment::default();
-        env.add_rule(rule.clone());
+        let lhs = rule.0.clone();
+        env.add_rule(rule.0, rule.1);
 
-        // Get head symbol and arity from LHS
-        if let MettaValueInner::SExpr(elements) = rule.lhs.inner() {
-            if let Some(MettaValue { .. }) = elements.first() {
-                if let MettaValueInner::Atom(head) = elements[0].inner() {
-                    let arity = elements.len() - 1;
-                    let matching: Vec<_> = env.get_matching_rules_iter(head, arity).collect();
-                    prop_assert!(!matching.is_empty(), "Should find at least one matching rule");
-                }
-            }
-        }
+        // Use get_matching_rules_for_expr with the LHS expression
+        let matching = env.get_matching_rules_for_expr(&lhs);
+        prop_assert!(!matching.is_empty(), "Should find at least one matching rule");
     }
 
-    /// iter_rules returns all added rules
+    /// collect_rules returns all added rules
     #[test]
-    fn prop_iter_rules_returns_all(rules in prop::collection::vec(arb_rule(), 1..5)) {
+    fn prop_collect_rules_returns_all(rules in prop::collection::vec(arb_rule(), 1..5)) {
         let mut env = MettaEnvironment::default();
         let n = rules.len();
 
-        for rule in rules {
-            env.add_rule(rule);
+        for (lhs, rhs) in rules {
+            env.add_rule(lhs, rhs);
         }
 
-        let count: usize = env.iter_rules().count();
+        let count: usize = env.collect_rules().len();
         prop_assert_eq!(count, n);
     }
 }
@@ -500,7 +497,7 @@ mod regression_tests {
 
         // These should not panic
         let _ = env.rule_count();
-        let _ = env.iter_rules().count();
+        let _ = env.collect_rules().len();
         let _ = env.get_binding("nonexistent");
         let _ = env.get_state(12345);
 
@@ -512,28 +509,28 @@ mod regression_tests {
     #[test]
     fn test_deep_clone_chain_isolation() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(Rule::new(
+        env.add_rule(
             MettaValue::Atom("level0".to_string()),
             MettaValue::Atom("body0".to_string()),
-        ));
+        );
 
         let mut level1 = env.clone();
-        level1.add_rule(Rule::new(
+        level1.add_rule(
             MettaValue::Atom("level1".to_string()),
             MettaValue::Atom("body1".to_string()),
-        ));
+        );
 
         let mut level2 = level1.clone();
-        level2.add_rule(Rule::new(
+        level2.add_rule(
             MettaValue::Atom("level2".to_string()),
             MettaValue::Atom("body2".to_string()),
-        ));
+        );
 
         let mut level3 = level2.clone();
-        level3.add_rule(Rule::new(
+        level3.add_rule(
             MettaValue::Atom("level3".to_string()),
             MettaValue::Atom("body3".to_string()),
-        ));
+        );
 
         assert_eq!(env.rule_count(), 1);
         assert_eq!(level1.rule_count(), 2);
@@ -607,33 +604,41 @@ mod regression_tests {
         assert_eq!(clone.get_state(state_id), Some(MettaValue::Long(200)));
     }
 
-    /// Test: Rule index is correctly maintained
+    /// Test: Rule lookup via PathMap is correctly maintained
     #[test]
-    fn test_rule_index_maintained() {
+    fn test_rule_lookup_maintained() {
         let mut env = MettaEnvironment::default();
 
         // Add rules with same head
-        env.add_rule(Rule::new(
+        env.add_rule(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("foo".to_string()),
                 MettaValue::Atom("$x".to_string()),
             ]),
             MettaValue::Long(1),
-        ));
-        env.add_rule(Rule::new(
+        );
+        env.add_rule(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("foo".to_string()),
                 MettaValue::Atom("$y".to_string()),
             ]),
             MettaValue::Long(2),
-        ));
+        );
 
-        // Should find both rules
-        let matching: Vec<_> = env.get_matching_rules_iter("foo", 1).collect();
+        // Should find both rules using a query expression with matching head and arity
+        let query_foo = MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("$z".to_string()),
+        ]);
+        let matching = env.get_matching_rules_for_expr(&query_foo);
         assert_eq!(matching.len(), 2);
 
         // Different head should find nothing
-        let matching_bar: Vec<_> = env.get_matching_rules_iter("bar", 1).collect();
+        let query_bar = MettaValue::SExpr(vec![
+            MettaValue::Atom("bar".to_string()),
+            MettaValue::Atom("$z".to_string()),
+        ]);
+        let matching_bar = env.get_matching_rules_for_expr(&query_bar);
         assert_eq!(matching_bar.len(), 0);
     }
 

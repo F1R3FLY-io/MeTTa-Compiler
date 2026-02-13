@@ -172,9 +172,8 @@ impl MettaEnvironment {
         }
 
         // Cache miss or variable pattern - perform conversion
-        let space = self.create_space();
         let mut ctx = ConversionContext::new();
-        let bytes = metta_to_mork_bytes(value, &space, &mut ctx)?;
+        let bytes = metta_to_mork_bytes(value, &self.shared_mapping, &mut ctx)?;
 
         if is_ground {
             // Store ground patterns in cache for future use (write access)
@@ -396,21 +395,15 @@ impl MettaEnvironment {
         use super::multiplicity::Multiplicity;
         use crate::backend::mork_convert::{metta_to_mork_bytes, ConversionContext};
 
-        // Create shared temporary space for MORK conversion
-        let temp_space: Space<Multiplicity> = Space {
-            sm: self.shared_mapping.clone(),
-            btm: PathMap::new(),
-            mmaps: HashMap::new(),
-        };
-
         // Pre-convert all facts to MORK bytes (outside lock)
         // This works for both ground terms AND variable-containing terms
         // Variables are encoded using De Bruijn indices
+        let sm = &self.shared_mapping;
         let mork_facts: Vec<Vec<u8>> = facts
             .iter()
             .map(|fact| {
                 let mut ctx = ConversionContext::new();
-                metta_to_mork_bytes(fact, &temp_space, &mut ctx)
+                metta_to_mork_bytes(fact, sm, &mut ctx)
                     .map_err(|e| format!("MORK conversion failed for {:?}: {}", fact, e))
             })
             .collect::<Result<Vec<_>, _>>()?;

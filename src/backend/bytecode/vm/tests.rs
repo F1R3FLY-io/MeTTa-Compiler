@@ -1374,11 +1374,9 @@ fn test_vm_call_no_rules() {
 
 #[test]
 fn test_vm_call_simple_rule() {
-    use crate::backend::models::GenericRule;
-
     // Test Call opcode with a simple rule: (double $x) -> (+ $x $x)
     let mut env = GenericEnvironment::new(GcFactory::default());
-    let rule = GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("double"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("+"),
@@ -1386,7 +1384,6 @@ fn test_vm_call_simple_rule() {
             MettaValue::sym("$x"),
         ]),
     );
-    env.add_generic_rule(rule);
 
     // Build bytecode for (double 5)
     let mut builder = ChunkBuilder::new("test_call_simple");
@@ -1467,11 +1464,9 @@ fn test_vm_tail_call_no_rules() {
 
 #[test]
 fn test_vm_tail_call_simple_rule() {
-    use crate::backend::models::GenericRule;
-
     // Test TailCall opcode with a simple rule: (inc $x) -> (+ $x 1)
     let mut env = GenericEnvironment::new(GcFactory::default());
-    let rule = GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("inc"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("+"),
@@ -1479,7 +1474,6 @@ fn test_vm_tail_call_simple_rule() {
             MettaValue::Long(1),
         ]),
     );
-    env.add_generic_rule(rule);
 
     // Build bytecode for (inc 10) using TailCall
     let mut builder = ChunkBuilder::new("test_tail_call_simple");
@@ -1504,11 +1498,9 @@ fn test_vm_tail_call_simple_rule() {
 
 #[test]
 fn test_vm_call_with_multiple_args() {
-    use crate::backend::models::GenericRule;
-
     // Test Call with multiple arguments: (add3 $a $b $c) -> (+ (+ $a $b) $c)
     let mut env = GenericEnvironment::new(GcFactory::default());
-    let rule = GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![
             MettaValue::sym("add3"),
             MettaValue::sym("$a"),
@@ -1525,7 +1517,6 @@ fn test_vm_call_with_multiple_args() {
             MettaValue::sym("$c"),
         ]),
     );
-    env.add_generic_rule(rule);
 
     // Build bytecode for (add3 1 2 3)
     let mut builder = ChunkBuilder::new("test_call_multi_args");
@@ -1561,32 +1552,27 @@ fn test_vm_call_with_multiple_args() {
 
 #[test]
 fn test_vm_call_multiple_rules_creates_choice_point() {
-    use crate::backend::models::GenericRule;
-
     // Set up environment with multiple rules for (choose)
     // This tests that op_call creates choice points for multiple matching rules
     let mut env = GenericEnvironment::new(GcFactory::default());
 
     // Rule 1: (= (choose) a)
-    let rule1 = GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("choose")]),
         MettaValue::sym("a"),
     );
-    env.add_generic_rule(rule1);
 
     // Rule 2: (= (choose) b)
-    let rule2 = GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("choose")]),
         MettaValue::sym("b"),
     );
-    env.add_generic_rule(rule2);
 
     // Rule 3: (= (choose) c)
-    let rule3 = GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("choose")]),
         MettaValue::sym("c"),
     );
-    env.add_generic_rule(rule3);
 
     // Build bytecode for (choose) with Yield
     // When choice points are exhausted, op_fail returns Break directly
@@ -1624,11 +1610,9 @@ fn test_vm_call_multiple_rules_creates_choice_point() {
 
 #[test]
 fn test_vm_call_single_rule_no_choice_point() {
-    use crate::backend::models::GenericRule;
-
     // Set up environment with a single rule
     let mut env = GenericEnvironment::new(GcFactory::default());
-    let rule = GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("single"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("+"),
@@ -1636,7 +1620,6 @@ fn test_vm_call_single_rule_no_choice_point() {
             MettaValue::Long(1),
         ]),
     );
-    env.add_generic_rule(rule);
 
     // Build bytecode for (single 5)
     let mut builder = ChunkBuilder::new("test_single_match");
@@ -1698,8 +1681,6 @@ fn test_vm_fork_basic_alternatives() {
 
 #[test]
 fn test_vm_fork_nested_choice_points() {
-    use crate::backend::models::GenericRule;
-
     // Test nested non-determinism:
     // (= (outer) (inner)) -- outer calls inner
     // (= (inner) x) -- inner returns x
@@ -1710,20 +1691,20 @@ fn test_vm_fork_nested_choice_points() {
     // Each result flows back through (outer) via Yield.
     let mut env = GenericEnvironment::new(GcFactory::default());
 
-    env.add_generic_rule(GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("outer")]),
         MettaValue::SExpr(vec![MettaValue::sym("inner")]),
-    ));
+    );
 
-    env.add_generic_rule(GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("inner")]),
         MettaValue::sym("x"),
-    ));
+    );
 
-    env.add_generic_rule(GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("inner")]),
         MettaValue::sym("y"),
-    ));
+    );
 
     // Build bytecode for evaluating (outer) with Yield
     // Note: Results are returned directly when choice points exhausted
@@ -1755,26 +1736,24 @@ fn test_vm_fork_nested_choice_points() {
 
 #[test]
 fn test_vm_alternative_rulematch() {
-    use crate::backend::models::GenericRule;
-
     // Test that Alternative::RuleMatch properly handles multiple matching rules
     // (= (pair $x) (cons $x $x))
     // (= (pair $x) (dup $x))
     let mut env = GenericEnvironment::new(GcFactory::default());
-    env.add_generic_rule(GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("pair"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
             MettaValue::sym("cons"),
             MettaValue::sym("$x"),
             MettaValue::sym("$x"),
         ]),
-    ));
+    );
 
     // Add second rule with same pattern
-    env.add_generic_rule(GenericRule::new(
+    env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("pair"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![MettaValue::sym("dup"), MettaValue::sym("$x")]),
-    ));
+    );
 
     // Build bytecode for (pair 5) with Yield to collect results
     // Results are returned directly when choice points exhausted
@@ -2829,8 +2808,7 @@ mod generic_vm_tests {
         // Define rule: (= (double $x) (+ $x $x))
         let rule_lhs = f.sexpr(vec![f.atom("double"), f.atom("$x")]);
         let rule_rhs = f.sexpr(vec![f.atom("+"), f.atom("$x"), f.atom("$x")]);
-        let rule = crate::backend::models::GenericRule::new(rule_lhs, rule_rhs);
-        env.add_generic_rule(rule);
+        env.add_rule(rule_lhs, rule_rhs);
 
         // Bytecode: Call with head="double", arity=1, argument=5
         let mut builder = GenericChunkBuilder::with_factory("test_call", f.clone());
@@ -3051,8 +3029,7 @@ mod generic_vm_tests {
         // Define rule: (= (square $x) (* $x $x))
         let rule_lhs = f.sexpr(vec![f.atom("square"), f.atom("$x")]);
         let rule_rhs = f.sexpr(vec![f.atom("*"), f.atom("$x"), f.atom("$x")]);
-        let rule = crate::backend::models::GenericRule::new(rule_lhs, rule_rhs);
-        env.add_generic_rule(rule);
+        env.add_rule(rule_lhs, rule_rhs);
 
         let memo_cache = Arc::new(
             crate::backend::bytecode::generic_memo_cache::GenericMemoCache::<MettaValue>::new(1024),

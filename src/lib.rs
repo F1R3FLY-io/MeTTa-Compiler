@@ -91,7 +91,7 @@ pub use backend::{
     // Allocator utilities
     global_factory, global_allocator, GcFactory,
     // Data model types (used by bytecode VM, JIT, and tiered cache internals)
-    models::{MettaState, Rule},
+    models::MettaState,
 };
 
 // State evaluation API

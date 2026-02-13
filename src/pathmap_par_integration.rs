@@ -888,9 +888,9 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                 }
             }
 
-            // Rebuild the rule index from the restored MORK Space
+            // Rebuild bloom filter from the restored MORK Space
             // This is critical for rule matching to work after deserialization
-            env.rebuild_rule_index();
+            env.rebuild_bloom_filter();
 
             Ok(env)
         } else {
@@ -1012,13 +1012,12 @@ pub fn pathmap_par_to_metta_state(par: &Par) -> Result<MettaState, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::Rule;
 
     #[test]
     fn test_environment_serialization_roundtrip() {
         // Create an environment with a rule
         let mut env = MettaEnvironment::default();
-        let rule = Rule::new(
+        env.add_rule(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
                 MettaValue::Atom("$x".to_string()),
@@ -1029,7 +1028,6 @@ mod tests {
                 MettaValue::Long(2),
             ]),
         );
-        env.add_rule(rule);
 
         // Verify original environment
         assert_eq!(env.rule_count(), 1);
@@ -1371,7 +1369,7 @@ mod tests {
         ]));
 
         // Get initial iter count
-        let initial_count = env.iter_rules().count();
+        let initial_count = env.collect_rules().len();
         println!("Initial space has {} rules", initial_count);
 
         // Serialize to Par
@@ -1383,7 +1381,7 @@ mod tests {
 
         // The key test: it didn't panic! The bug is fixed.
         // Verify Space is not empty - exact structure may vary due to MORK normalization
-        let final_count = env2.iter_rules().count();
+        let final_count = env2.collect_rules().len();
         println!("Deserialized space has {} rules", final_count);
         assert_eq!(
             final_count, initial_count,
@@ -1410,25 +1408,25 @@ mod tests {
             MettaValue::Atom("room_z".to_string()), // 'z' = 122 (reserved)
         ]));
 
-        let initial_count = env.iter_rules().count();
+        let initial_count = env.collect_rules().len();
         println!("Initial space has {} rules", initial_count);
 
         // First round-trip - this used to panic
         let par1 = environment_to_par(&env);
         let env2 = par_to_environment(&par1).expect("First round-trip failed");
-        let count2 = env2.iter_rules().count();
+        let count2 = env2.collect_rules().len();
         println!("After 1st round-trip: {} rules", count2);
 
         // Second round-trip
         let par2 = environment_to_par(&env2);
         let env3 = par_to_environment(&par2).expect("Second round-trip failed");
-        let count3 = env3.iter_rules().count();
+        let count3 = env3.collect_rules().len();
         println!("After 2nd round-trip: {} rules", count3);
 
         // Third round-trip
         let par3 = environment_to_par(&env3);
         let env4 = par_to_environment(&par3).expect("Third round-trip failed");
-        let count4 = env4.iter_rules().count();
+        let count4 = env4.collect_rules().len();
         println!("After 3rd round-trip: {} rules", count4);
 
         // The key test: multiple round-trips don't panic and preserve data
@@ -1453,7 +1451,7 @@ mod tests {
         ]));
 
         // Add rule that uses match (the pattern that triggered the bug)
-        let rule = Rule::new(
+        env.add_rule(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("is_connected".to_string()),
                 MettaValue::Atom("$from".to_string()),
@@ -1471,7 +1469,6 @@ mod tests {
                 MettaValue::Bool(true),
             ]),
         );
-        env.add_rule(rule);
 
         // Serialize to Par (this is what happens when sending to Rholang)
         let par = environment_to_par(&env);
@@ -1507,7 +1504,7 @@ mod tests {
             MettaValue::Atom("@~".to_string()),  // @=64, ~=126 (both reserved)
         ]));
 
-        let initial_count = env.iter_rules().count();
+        let initial_count = env.collect_rules().len();
         println!("Initial space has {} rules", initial_count);
 
         // Serialize to Par
@@ -1518,7 +1515,7 @@ mod tests {
             par_to_environment(&par).expect("Round-trip with multiple reserved bytes failed");
 
         // The critical test: it didn't panic! All reserved bytes handled.
-        let final_count = env2.iter_rules().count();
+        let final_count = env2.collect_rules().len();
         println!("Deserialized space has {} rules", final_count);
         assert_eq!(
             final_count, initial_count,
@@ -1549,7 +1546,7 @@ mod tests {
         ]));
 
         // Add a rule that uses match (pattern from robot_planning.rho)
-        let rule = Rule::new(
+        env.add_rule(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("is_connected".to_string()), // 'o' = 111, 'n' = 110 (RESERVED!)
                 MettaValue::Atom("$from".to_string()),
@@ -1567,9 +1564,8 @@ mod tests {
                 MettaValue::Bool(true),
             ]),
         );
-        env.add_rule(rule);
 
-        let initial_count = env.iter_rules().count();
+        let initial_count = env.collect_rules().len();
         println!("Initial space has {} rules", initial_count);
 
         // THIS IS THE EXACT OPERATION THAT FAILED IN robot_planning.rho DEMO!
@@ -1582,7 +1578,7 @@ mod tests {
         );
 
         // Verify data is preserved
-        let final_count = env2.iter_rules().count();
+        let final_count = env2.collect_rules().len();
         println!("Deserialized space has {} rules", final_count);
         assert_eq!(
             final_count, initial_count,

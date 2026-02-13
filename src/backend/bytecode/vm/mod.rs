@@ -2525,7 +2525,6 @@ where
     // === Environment Operations ===
 
     fn op_define_rule(&mut self) -> VmResult<()> {
-        use crate::backend::models::GenericRule;
         trace!(target: "mettatron::vm::rules", ip = self.ip, "define_rule (generic)");
 
         let body = self.pop()?;
@@ -2538,9 +2537,8 @@ where
             )
         })?;
 
-        // Create and add the generic rule
-        let rule = GenericRule::new(pattern, body);
-        env.add_generic_rule(rule);
+        // Add the rule (lhs=pattern, rhs=body)
+        env.add_rule(pattern, body);
 
         // Push Unit to indicate success
         self.push(self.make_unit());
@@ -2589,27 +2587,23 @@ where
         // Pop the call expression from the stack
         let expr = self.pop()?;
 
-        // Extract head symbol and arity for indexed rule lookup
-        let (head, arity) = if let Some(items) = expr.as_sexpr() {
+        // Guard: only dispatch on callable expressions (s-exprs with atom head, or bare atoms)
+        if let Some(items) = expr.as_sexpr() {
             if items.is_empty() {
                 // Empty expression - return unchanged
                 self.push(expr);
                 return Ok(());
             }
-            if let Some(name) = items[0].as_atom() {
-                (name, items.len() - 1)
-            } else {
+            if items[0].as_atom().is_none() {
                 // Head is not an atom - return expression unchanged
                 self.push(expr);
                 return Ok(());
             }
-        } else if let Some(name) = expr.as_atom() {
-            (name, 0)
-        } else {
+        } else if expr.as_atom().is_none() {
             // Not a callable expression - return unchanged
             self.push(expr);
             return Ok(());
-        };
+        }
 
         // Get environment reference
         let env = match &self.env {
@@ -2621,8 +2615,8 @@ where
             }
         };
 
-        // Look up matching rules by head symbol and arity using generic method
-        let candidate_rules = env.get_matching_rules_vec(head, arity);
+        // Look up matching rules for the expression
+        let candidate_rules = env.get_matching_rules_for_expr(&expr);
 
         if candidate_rules.is_empty() {
             // No rules match - return expression unchanged
@@ -2632,10 +2626,10 @@ where
 
         // Try to pattern match each rule against the expression
         let mut matches: Vec<(V, GenericBindings<V>)> = Vec::new();
-        for rule in &candidate_rules {
-            if let Some(bindings) = pattern_match_generic(&rule.lhs, &expr) {
+        for (lhs, rhs, _multiplicity) in &candidate_rules {
+            if let Some(bindings) = pattern_match_generic(lhs, &expr) {
                 // Found a match - apply bindings to the rule body
-                let instantiated_body = apply_bindings_generic(&rule.rhs, &bindings, &self.factory);
+                let instantiated_body = apply_bindings_generic(rhs, &bindings, &self.factory);
                 matches.push((instantiated_body, bindings));
             }
         }

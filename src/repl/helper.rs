@@ -92,52 +92,20 @@ impl MettaHelper {
     /// internal variable names ($a, $b, etc.) and don't preserve their original names.
     /// Only function names (symbols) remain unchanged after compilation.
     pub fn update_from_environment(&mut self, env: &crate::backend::MettaEnvironment) {
-        use crate::backend::models::MettaValueInner;
-
         // Clear previous definitions
         self.defined_functions.clear();
         self.defined_variables.clear();
 
-        // Helper closure to extract function/constant names from a rule LHS
-        let mut extract_name = |lhs: &crate::backend::models::MettaValue| {
-            match lhs.inner() {
-                MettaValueInner::SExpr(items) if !items.is_empty() => {
-                    // Pattern like (fibonacci $n) -> extract "fibonacci"
-                    if let MettaValueInner::Atom(name) = items[0].inner() {
-                        if !name.starts_with('$')
-                            && !name.starts_with('&')
-                            && !name.starts_with('\'')
-                        {
-                            let name_str = name.to_string();
-                            if !self.defined_functions.contains(&name_str) {
-                                self.defined_functions.push(name_str);
-                            }
-                        }
-                    }
-                }
-                MettaValueInner::Atom(name) => {
-                    // Simple constant like (= my-const 42) -> extract "my-const"
-                    if !name.starts_with('$') && !name.starts_with('&') && !name.starts_with('\'') {
-                        let name_str = name.to_string();
-                        if !self.defined_functions.contains(&name_str) {
-                            self.defined_functions.push(name_str);
-                        }
-                    }
-                }
-                _ => {}
+        // Extract function names from rule heads via iter_rule_heads()
+        for (head, _arity, _count) in env.iter_rule_heads() {
+            if !head.is_empty()
+                && !head.starts_with('$')
+                && !head.starts_with('&')
+                && !head.starts_with('\'')
+                && !self.defined_functions.contains(&head)
+            {
+                self.defined_functions.push(head);
             }
-        };
-
-        // Extract function names from indexed rules
-        for (_key, rules) in env.shared.rule_index.read().iter() {
-            for rule in rules {
-                extract_name(&rule.lhs);
-            }
-        }
-
-        // Also check wildcard rules
-        for rule in env.shared.wildcard_rules.read().iter() {
-            extract_name(&rule.lhs);
         }
 
         // Sort for consistent ordering

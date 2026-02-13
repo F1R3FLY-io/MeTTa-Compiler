@@ -29,7 +29,8 @@ use tracing::warn;
 use crate::backend::environment::MettaEnvironment;
 use crate::backend::eval::pattern_match;
 use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
-use crate::backend::models::metta_value_trait::MettaValueTrait;
+// Disabled: MettaValueTrait import no longer needed — MettaValue has inherent inner() method.
+// use crate::backend::models::metta_value_trait::MettaValueTrait;
 
 use super::chunk::BytecodeChunk;
 use super::compiler::{compile, CompileError};
@@ -223,21 +224,15 @@ impl MorkBridge {
         expr: &MettaValue,
         env: &MettaEnvironment,
     ) -> Vec<(MettaValue, MettaValue, Bindings)> {
-        // Extract head symbol and arity for indexed lookup (lazy iteration)
-        let matching_rules = if let Some(head) = get_head_symbol(expr) {
-            let arity = expr.get_arity();
-            env.get_matching_rules_iter(head, arity)
-        } else {
-            // For expressions without head symbol, check wildcard rules
-            env.get_matching_rules_iter("", 0)
-        };
+        // Get candidate rules from environment (indexed lookup with bloom filter)
+        let matching_rules = env.get_matching_rules_for_expr(expr);
 
         // Collect matching rules with bindings
         let mut matches: Vec<(MettaValue, MettaValue, Bindings, usize)> = Vec::new();
-        for rule in matching_rules {
-            if let Some(bindings) = pattern_match(&rule.lhs, expr) {
-                let specificity = pattern_specificity(&rule.lhs);
-                matches.push((rule.lhs.clone(), rule.rhs.clone(), bindings, specificity));
+        for (lhs, rhs, _multiplicity) in matching_rules {
+            if let Some(bindings) = pattern_match(&lhs, expr) {
+                let specificity = pattern_specificity(&lhs);
+                matches.push((lhs, rhs, bindings, specificity));
             }
         }
 
@@ -296,17 +291,18 @@ impl MorkBridge {
     }
 }
 
-/// Extract head symbol from an expression
-fn get_head_symbol(expr: &MettaValue) -> Option<&str> {
-    match expr.inner() {
-        MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner() {
-            MettaValueInner::Atom(name) => Some(*name),
-            _ => None,
-        },
-        MettaValueInner::Atom(name) => Some(*name),
-        _ => None,
-    }
-}
+// Disabled: get_head_symbol is no longer needed here because
+// get_matching_rules_for_expr handles head symbol extraction internally.
+// fn get_head_symbol(expr: &MettaValue) -> Option<&str> {
+//     match expr.inner() {
+//         MettaValueInner::SExpr(items) if !items.is_empty() => match items[0].inner() {
+//             MettaValueInner::Atom(name) => Some(*name),
+//             _ => None,
+//         },
+//         MettaValueInner::Atom(name) => Some(*name),
+//         _ => None,
+//     }
+// }
 
 /// Calculate pattern specificity (lower = more specific)
 ///
@@ -330,7 +326,7 @@ fn pattern_specificity(pattern: &MettaValue) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::Rule;
+    // Rule type removed — rules are (lhs, rhs) tuples stored as (= lhs rhs) in PathMap
 
     #[test]
     fn test_bridge_creation() {
@@ -358,7 +354,7 @@ mod tests {
         let mut env = MettaEnvironment::default();
 
         // Add rule: (= (double $x) (+ $x $x))
-        let rule = Rule::new(
+        env.add_rule(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
                 MettaValue::Atom("$x".to_string()),
@@ -369,7 +365,6 @@ mod tests {
                 MettaValue::Atom("$x".to_string()),
             ]),
         );
-        env.add_rule(rule);
 
         let bridge = MorkBridge::from_env(env);
 
@@ -395,7 +390,7 @@ mod tests {
         let mut env = MettaEnvironment::default();
 
         // Add rule
-        let rule = Rule::new(
+        env.add_rule(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("inc".to_string()),
                 MettaValue::Atom("$x".to_string()),
@@ -406,7 +401,6 @@ mod tests {
                 MettaValue::Long(1),
             ]),
         );
-        env.add_rule(rule);
 
         let bridge = MorkBridge::from_env(env);
 

@@ -48,8 +48,8 @@ mod type_system;
 pub use generic::{GenericEnvironment, GenericEnvironmentShared, MettaEnvironment, MultiplicityMatch as GenericMultiplicityMatch};
 pub use named_spaces::NamedSpaceIter;
 pub use pattern_matching::MultiplicityMatch;
-pub use rule_management::{MatchingRulesIter, RuleHeadsIter, RulesIter};
+pub use rule_management::RuleHeadsIter;
 pub use scope::ScopeTracker;
 
 use super::models::MettaValueInner;
-use super::{MettaValue, Rule};
+use super::MettaValue;

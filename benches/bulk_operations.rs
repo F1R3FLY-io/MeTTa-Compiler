@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use mettatron::backend::environment::MettaEnvironment;
-use mettatron::backend::{MettaValue, Rule};
+use mettatron::backend::MettaValue;
 
 /// Generate N facts for benchmarking
 fn generate_facts(n: usize) -> Vec<MettaValue> {
@@ -16,10 +16,10 @@ fn generate_facts(n: usize) -> Vec<MettaValue> {
 }
 
 /// Generate N rules for benchmarking
-fn generate_rules(n: usize) -> Vec<Rule> {
+fn generate_rules(n: usize) -> Vec<(MettaValue, MettaValue)> {
     let mut rules = Vec::new();
     for i in 0..n {
-        rules.push(Rule::new(
+        rules.push((
             MettaValue::SExpr(vec![
                 MettaValue::Atom("rule".to_string()),
                 MettaValue::Long(i as i64),
@@ -91,8 +91,8 @@ fn bench_individual_rules(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let mut env = MettaEnvironment::default();
-                    for rule in &rules {
-                        env.add_rule(black_box(rule.clone()));
+                    for (lhs, rhs) in &rules {
+                        env.add_rule(black_box(lhs.clone()), black_box(rhs.clone()));
                     }
                     black_box(env);
                 });
@@ -179,8 +179,8 @@ fn bench_rule_speedup_comparison(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let mut env = MettaEnvironment::default();
-                    for rule in &rules {
-                        env.add_rule(black_box(rule.clone()));
+                    for (lhs, rhs) in &rules {
+                        env.add_rule(black_box(lhs.clone()), black_box(rhs.clone()));
                     }
                     black_box(env);
                 });

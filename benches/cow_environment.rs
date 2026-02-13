@@ -7,7 +7,7 @@
 // taskset -c 0-17 cargo bench --bench cow_environment
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::models::{MettaValue, Rule};
+use mettatron::backend::models::MettaValue;
 use mettatron::backend::MettaEnvironment;
 use std::sync::Arc as StdArc;
 
@@ -16,8 +16,8 @@ use std::sync::Arc as StdArc;
 // ============================================================================
 
 /// Create a test rule for benchmarking
-fn make_test_rule(pattern: &str, body: &str) -> Rule {
-    Rule::new(
+fn make_test_rule(pattern: &str, body: &str) -> (MettaValue, MettaValue) {
+    (
         MettaValue::Atom(pattern.to_string()),
         MettaValue::Atom(body.to_string()),
     )
@@ -27,8 +27,8 @@ fn make_test_rule(pattern: &str, body: &str) -> Rule {
 fn populate_environment(n: usize) -> MettaEnvironment {
     let mut env = MettaEnvironment::default();
     for i in 0..n {
-        let rule = make_test_rule(&format!("(rule{} $x)", i), &format!("(result{} $x)", i));
-        env.add_rule(rule);
+        let (lhs, rhs) = make_test_rule(&format!("(rule{} $x)", i), &format!("(result{} $x)", i));
+        env.add_rule(lhs, rhs);
     }
     env
 }
@@ -94,8 +94,8 @@ fn bench_make_owned_cost(c: &mut Criterion) {
                 || base.clone(), // Setup: create shared clone
                 |mut clone| {
                     // First mutation triggers make_owned()
-                    let rule = make_test_rule("(trigger $x)", "(owned $x)");
-                    clone.add_rule(rule);
+                    let (lhs, rhs) = make_test_rule("(trigger $x)", "(owned $x)");
+                    clone.add_rule(lhs, rhs);
                     black_box(clone)
                 },
                 criterion::BatchSize::SmallInput,
@@ -190,11 +190,11 @@ fn bench_multi_clone_mutate(c: &mut Criterion) {
                 .map(|i| {
                     let mut clone = base.clone();
                     for j in 0..10 {
-                        let rule = make_test_rule(
+                        let (lhs, rhs) = make_test_rule(
                             &format!("(clone{}_rule{} $x)", i, j),
                             &format!("(result{} $x)", j),
                         );
-                        clone.add_rule(rule);
+                        clone.add_rule(lhs, rhs);
                     }
                     clone
                 })
@@ -209,8 +209,8 @@ fn bench_multi_clone_mutate(c: &mut Criterion) {
             let clones: Vec<_> = (0..100)
                 .map(|i| {
                     let mut clone = base.clone();
-                    let rule = make_test_rule(&format!("(clone{} $x)", i), "(result $x)");
-                    clone.add_rule(rule);
+                    let (lhs, rhs) = make_test_rule(&format!("(clone{} $x)", i), "(result $x)");
+                    clone.add_rule(lhs, rhs);
                     clone
                 })
                 .collect();
@@ -249,7 +249,8 @@ fn bench_read_operations(c: &mut Criterion) {
 
     // Read after make_owned (exclusive again)
     let mut mutated_clone = env.clone();
-    mutated_clone.add_rule(make_test_rule("(trigger $x)", "(owned $x)"));
+    let (lhs, rhs) = make_test_rule("(trigger $x)", "(owned $x)");
+    mutated_clone.add_rule(lhs, rhs);
 
     group.bench_function("rule_count_after_make_owned", |b| {
         b.iter(|| {
@@ -274,8 +275,8 @@ fn bench_typical_workload(c: &mut Criterion) {
             // Create and populate
             let mut env = MettaEnvironment::default();
             for i in 0..50 {
-                let rule = make_test_rule(&format!("(rule{} $x)", i), "(result $x)");
-                env.add_rule(rule);
+                let (lhs, rhs) = make_test_rule(&format!("(rule{} $x)", i), "(result $x)");
+                env.add_rule(lhs, rhs);
             }
 
             // Clone for parallel evaluation
@@ -283,8 +284,8 @@ fn bench_typical_workload(c: &mut Criterion) {
 
             // Mutate clone
             for i in 0..10 {
-                let rule = make_test_rule(&format!("(dynamic{} $x)", i), "(result $x)");
-                clone.add_rule(rule);
+                let (lhs, rhs) = make_test_rule(&format!("(dynamic{} $x)", i), "(result $x)");
+                clone.add_rule(lhs, rhs);
             }
 
             // Read from both

@@ -27,7 +27,7 @@ use crate::backend::eval::mork_forms_generic::{
 };
 use crate::backend::eval::trampoline::{ContextEnv, EvalContext};
 use crate::backend::grounded::{has_generic_grounded_op, GenericGroundedState};
-use crate::backend::models::{GenericRule, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
 use super::generic_types::GenericEvalStep;
 use super::grounded::find_grounded_arg_indices_generic;
@@ -84,10 +84,9 @@ where
                     return GenericEvalStep::Done((vec![err], env));
                 }
 
-                // Add rule directly using GenericRule - zero-conversion storage
-                let rule = GenericRule::new(items[1].clone(), items[2].clone());
+                // Add rule directly - zero-conversion storage
                 let mut new_env = env.clone();
-                new_env.add_generic_rule(rule);
+                new_env.add_rule(items[1].clone(), items[2].clone());
 
                 // Rule definitions return empty list
                 return GenericEvalStep::Done((vec![], new_env));

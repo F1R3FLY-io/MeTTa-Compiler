@@ -15,11 +15,10 @@
 //! ```ignore
 //! GenericEnvironment<V>
 //!   └── Arc<GenericEnvironmentShared<V>>
-//!         ├── rule_index: RwLock<HashMap<(Symbol, usize), Vec<GenericRule<V>>>>
-//!         ├── wildcard_rules: RwLock<Vec<GenericRule<V>>>
+//!         ├── btm: RwLock<PathMap<Multiplicity>>  (rules + facts as MORK bytes)
 //!         ├── named_spaces: RwLock<HashMap<u64, (String, Vec<V>)>>
 //!         ├── bindings: RwLock<HashMap<String, V>>
-//!         └── ... (type-agnostic fields: btm, symbols, states, etc.)
+//!         └── ... (type-agnostic fields: symbols, states, etc.)
 //! ```
 //!
 //! ## Thread Safety
@@ -49,10 +48,9 @@ use super::scope::ScopeTracker;
 use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::grounded::{GenericGroundedRegistry, GroundedRegistry};
 use crate::backend::models::{
-    GenericRule, IndexedMultiset, MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle, SymbolTable,
+    MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle,
 };
 use crate::backend::modules::ModuleRegistry;
-use crate::backend::symbol::Symbol;
 use crate::backend::models::GcFactory;
 
 // ============================================================================
@@ -154,7 +152,7 @@ impl<V: Clone> MultiplicityMatch<V> {
 /// ## Thread Safety
 ///
 /// Uses `parking_lot::RwLock<HashMap>` for environment-owned maps (bindings, types,
-/// rule_index, named_spaces, states). These maps are protected by CoW semantics:
+/// named_spaces, states). These maps are protected by CoW semantics:
 /// after `make_owned()`, only a single writer accesses the new HashMap.
 ///
 /// Other structures use:
@@ -164,17 +162,10 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     // ========================================================================
     // Type-Agnostic Storage (bytes/MORK)
     // ========================================================================
-    /// PathMap trie for fact storage (value = atom multiplicity)
+    /// PathMap trie for fact storage (value = atom multiplicity).
+    /// Rules are stored as `(= lhs rhs)` MORK byte keys — no separate index.
     /// Uses parking_lot::RwLock (PathMap has no concurrent alternative)
     pub(crate) btm: RwLock<PathMap<Multiplicity>>,
-
-    /// Shared symbol table for atom interning (Arc-wrapped for sharing across clones)
-    /// Enables O(1) equality comparison via AtomId instead of structural comparison
-    pub(crate) symbols: Arc<SymbolTable>,
-
-    /// Indexed multiplicity tracking: O(1) lookup via array indexing.
-    /// Uses parking_lot::RwLock (IndexedMultiset uses internal DashMap)
-    pub(crate) multiplicities: RwLock<IndexedMultiset>,
 
     /// Mutable state cells registry (stores V directly - no serialization)
     /// Uses RwLock<HashMap> — protected by CoW semantics
@@ -182,21 +173,6 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
 
     /// Counter for generating unique state IDs (lock-free atomic)
     pub(crate) next_state_id: AtomicU64,
-
-    // ========================================================================
-    // Generic Rule Storage (parameterized over V)
-    // ========================================================================
-    /// Rule index: Maps (head_symbol, arity) -> Vec<GenericRule<V>>
-    /// Uses RwLock<HashMap> — protected by CoW semantics
-    #[allow(clippy::type_complexity)]
-    pub(crate) rule_index: RwLock<HashMap<(Symbol, usize), Vec<GenericRule<V>>>>,
-
-    /// Wildcard rules: Rules without a clear head symbol
-    /// Uses RwLock since wildcard rules are rarely modified
-    pub(crate) wildcard_rules: RwLock<Vec<GenericRule<V>>>,
-
-    /// Fast flag: true if any wildcard rules exist (lock-free atomic)
-    pub(crate) has_wildcard_rules: AtomicBool,
 
     // ========================================================================
     // Generic Named Spaces (parameterized over V)
@@ -269,6 +245,7 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
 
     /// O(1) total atom count (sum of all multiplicities)
     pub(crate) total_atoms: AtomicUsize,
+
 }
 
 /// Generic environment parameterized over value type and factory.
@@ -327,13 +304,16 @@ where
     pub fn new(factory: F) -> Self {
         use mork_interning::SharedMapping;
 
-        // Create shared symbol table for atom interning
-        let symbols = Arc::new(SymbolTable::new());
-
-        // Create the shared mapping for MORK symbol interning
+        // Create the shared mapping for MORK symbol interning.
         let shared_mapping = SharedMapping::new();
 
-        // Warm up SharedMapping to avoid PathMap ensure_root() TOCTOU race.
+        // Warm up SharedMapping to pre-initialize all 128 internal PathMap
+        // buckets (to_symbol). PathMap::ensure_root() uses UnsafeCell without
+        // synchronization — a TOCTOU race where concurrent threads both enter
+        // do_init_root() causes data races on the trie root. Pre-inserting one
+        // byte per bucket (0..128 = MAX_WRITER_THREADS) forces eager root
+        // allocation while we have exclusive write permission, eliminating the
+        // race window before any multi-threaded access occurs.
         if let Ok(permit) = shared_mapping.try_aquire_permission() {
             for i in 0..128u8 {
                 let _ = permit.get_sym_or_insert(&[i]);
@@ -343,15 +323,8 @@ where
         let shared = Arc::new(GenericEnvironmentShared {
             // Type-agnostic storage
             btm: RwLock::new(PathMap::new()),
-            symbols,
-            multiplicities: RwLock::new(IndexedMultiset::new()),
             states: RwLock::new(HashMap::new()),
             next_state_id: AtomicU64::new(1),
-
-            // Generic rule storage
-            rule_index: RwLock::new(HashMap::with_capacity(128)),
-            wildcard_rules: RwLock::new(Vec::new()),
-            has_wildcard_rules: AtomicBool::new(false),
 
             // Generic named spaces
             named_spaces: RwLock::new(HashMap::new()),
@@ -418,19 +391,10 @@ where
         let new_shared = Arc::new(GenericEnvironmentShared {
             // Type-agnostic storage - deep copy (parking_lot::RwLock doesn't use Result)
             btm: RwLock::new(self.shared.btm.read().clone()),
-            symbols: Arc::clone(&self.shared.symbols), // Share symbol table (append-only)
-            multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
             // RwLock<HashMap> - read lock + clone
             states: RwLock::new(self.shared.states.read().clone()),
             // Atomic - load and create new
             next_state_id: AtomicU64::new(self.shared.next_state_id.load(Ordering::Acquire)),
-
-            // Generic rule storage - RwLock<HashMap>
-            rule_index: RwLock::new(self.shared.rule_index.read().clone()),
-            wildcard_rules: RwLock::new(self.shared.wildcard_rules.read().clone()),
-            has_wildcard_rules: AtomicBool::new(
-                self.shared.has_wildcard_rules.load(Ordering::Acquire),
-            ),
 
             // Generic named spaces - RwLock<HashMap>
             named_spaces: RwLock::new(self.shared.named_spaces.read().clone()),
@@ -470,24 +434,15 @@ where
 
     /// Create a forked environment for nondeterministic branch isolation.
     ///
-    /// Uses efficient O(1) multiplicity tracking via `IndexedMultiset::fork()`.
+    /// Uses O(1) PathMap CoW clone for fork isolation.
     pub fn fork_for_nondeterminism(&self) -> Self {
         trace!(target: "mettatron::generic_environment::fork", "Forking environment for nondeterminism");
 
         let new_shared = Arc::new(GenericEnvironmentShared {
             // Type-agnostic storage (parking_lot::RwLock - no .expect())
             btm: RwLock::new(self.shared.btm.read().clone()),
-            symbols: Arc::clone(&self.shared.symbols),
-            multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
             states: RwLock::new(self.shared.states.read().clone()),
             next_state_id: AtomicU64::new(self.shared.next_state_id.load(Ordering::Acquire)),
-
-            // Generic rule storage - RwLock<HashMap>
-            rule_index: RwLock::new(self.shared.rule_index.read().clone()),
-            wildcard_rules: RwLock::new(self.shared.wildcard_rules.read().clone()),
-            has_wildcard_rules: AtomicBool::new(
-                self.shared.has_wildcard_rules.load(Ordering::Acquire),
-            ),
 
             // Generic named spaces - RwLock<HashMap>
             named_spaces: RwLock::new(self.shared.named_spaces.read().clone()),
@@ -626,45 +581,7 @@ where
             total
         };
 
-        // Merge rule indices
-        let merged_rule_index: HashMap<(Symbol, usize), Vec<GenericRule<V>>> = {
-            let mut merged = self.shared.rule_index.read().clone();
-            // Merge other's rules (deduplicate by comparing LHS via MettaValueTrait)
-            for (key, other_rules) in other.shared.rule_index.read().iter() {
-                merged
-                    .entry(key.clone())
-                    .and_modify(|existing| {
-                        for rule in other_rules.iter() {
-                            let is_duplicate = existing.iter().any(|r| {
-                                r.lhs.structurally_equivalent(&rule.lhs)
-                            });
-                            if !is_duplicate {
-                                existing.push(rule.clone());
-                            }
-                        }
-                    })
-                    .or_insert_with(|| other_rules.clone());
-            }
-            merged
-        };
-
-        // Merge wildcard rules (deduplicate by comparing LHS via MettaValueTrait)
-        let merged_wildcard_rules = {
-            let self_wildcards = self.shared.wildcard_rules.read();
-            let other_wildcards = other.shared.wildcard_rules.read();
-            let mut merged = self_wildcards.clone();
-            for rule in other_wildcards.iter() {
-                // Zero-conversion deduplication using trait method
-                let is_duplicate = merged.iter().any(|r| {
-                    r.lhs.structurally_equivalent(&rule.lhs)
-                });
-                if !is_duplicate {
-                    merged.push(rule.clone());
-                }
-            }
-            merged
-        };
-        let has_wildcards = !merged_wildcard_rules.is_empty();
+        // Rules are stored as (= lhs rhs) MORK bytes in PathMap — merged via merge_pathmaps_max above.
 
         // Merge bindings (other takes precedence)
         let merged_bindings: HashMap<String, V> = {
@@ -729,14 +646,8 @@ where
         // Create new shared state with merged data
         let new_shared = Arc::new(GenericEnvironmentShared {
             btm: RwLock::new(merged_btm),
-            symbols: Arc::clone(&self.shared.symbols), // Append-only, share
-            multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
             states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
-
-            rule_index: RwLock::new(merged_rule_index),
-            wildcard_rules: RwLock::new(merged_wildcard_rules),
-            has_wildcard_rules: AtomicBool::new(has_wildcards),
 
             named_spaces: RwLock::new(merged_named_spaces),
             next_space_id: AtomicU64::new(max_space_id),
@@ -923,82 +834,7 @@ where
             total
         };
 
-        // Merge rule indices
-        let merged_rule_index: HashMap<(Symbol, usize), Vec<GenericRule<V>>> = {
-            let mut base_rules = base.shared.rule_index.read().clone();
-
-            // Merge all others' rules
-            for other in &others[merge_start_idx..] {
-                for (key, other_rules) in other.shared.rule_index.read().iter() {
-                    base_rules
-                        .entry(key.clone())
-                        .and_modify(|existing| {
-                            for rule in other_rules.iter() {
-                                let is_duplicate = existing.iter().any(|r| {
-                                    r.lhs.structurally_equivalent(&rule.lhs)
-                                });
-                                if !is_duplicate {
-                                    existing.push(rule.clone());
-                                }
-                            }
-                        })
-                        .or_insert_with(|| other_rules.clone());
-                }
-            }
-
-            // Merge self's rules if not included in base
-            if !include_self {
-                for (key, self_rules) in self.shared.rule_index.read().iter() {
-                    base_rules
-                        .entry(key.clone())
-                        .and_modify(|existing| {
-                            for rule in self_rules.iter() {
-                                let is_duplicate = existing.iter().any(|r| {
-                                    r.lhs.structurally_equivalent(&rule.lhs)
-                                });
-                                if !is_duplicate {
-                                    existing.push(rule.clone());
-                                }
-                            }
-                        })
-                        .or_insert_with(|| self_rules.clone());
-                }
-            }
-
-            base_rules
-        };
-
-        // Merge wildcard rules
-        let merged_wildcard_rules = {
-            let mut merged = base.shared.wildcard_rules.read().clone();
-
-            for other in &others[merge_start_idx..] {
-                let other_wildcards = other.shared.wildcard_rules.read();
-                for rule in other_wildcards.iter() {
-                    let is_duplicate = merged.iter().any(|r| {
-                        r.lhs.structurally_equivalent(&rule.lhs)
-                    });
-                    if !is_duplicate {
-                        merged.push(rule.clone());
-                    }
-                }
-            }
-
-            if !include_self {
-                let self_wildcards = self.shared.wildcard_rules.read();
-                for rule in self_wildcards.iter() {
-                    let is_duplicate = merged.iter().any(|r| {
-                        r.lhs.structurally_equivalent(&rule.lhs)
-                    });
-                    if !is_duplicate {
-                        merged.push(rule.clone());
-                    }
-                }
-            }
-
-            merged
-        };
-        let has_wildcards = !merged_wildcard_rules.is_empty();
+        // Rules are stored as (= lhs rhs) MORK bytes in PathMap — merged via merge_pathmaps_max above.
 
         // Merge bindings (later environments take precedence)
         let merged_bindings: HashMap<String, V> = {
@@ -1080,14 +916,8 @@ where
         // Create new shared state with merged data
         let new_shared = Arc::new(GenericEnvironmentShared {
             btm: RwLock::new(merged_btm),
-            symbols: Arc::clone(&self.shared.symbols), // Append-only, share
-            multiplicities: RwLock::new(self.shared.multiplicities.read().fork()),
             states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
-
-            rule_index: RwLock::new(merged_rule_index),
-            wildcard_rules: RwLock::new(merged_wildcard_rules),
-            has_wildcard_rules: AtomicBool::new(has_wildcards),
 
             named_spaces: RwLock::new(merged_named_spaces),
             next_space_id: AtomicU64::new(max_space_id),
@@ -1133,11 +963,6 @@ where
     // Accessors
     // ========================================================================
 
-    /// Get the shared symbol table.
-    pub fn symbols(&self) -> &Arc<SymbolTable> {
-        &self.shared.symbols
-    }
-
     /// Get the generic grounded registry.
     pub fn generic_grounded_registry(&self) -> &GenericGroundedRegistry {
         &self.shared.generic_grounded_registry
@@ -1158,37 +983,15 @@ where
     /// Collect all GC root values from this environment.
     ///
     /// Traverses all structures that hold `V` values:
-    /// - `rule_index`: All rule LHS/RHS patterns
-    /// - `wildcard_rules`: All wildcard rule LHS/RHS patterns
     /// - `named_spaces`: All atoms in named spaces
     /// - `bindings`: All symbol binding values
     /// - `types`: All type assertion values
     /// - `states`: All mutable state cell values
     ///
-    /// Note: `btm` (PathMap) stores MORK-encoded bytes, not `V` values directly.
-    /// `large_expr_pathmap` stores `V` but is behind an `Option<PathMap<V>>` which
-    /// we skip for now (rare; expressions with arity >= 64).
+    /// Note: Rules are stored as MORK bytes in `btm` (PathMap), not as `V` values.
+    /// They hold no slab pointers and thus are NOT GC roots.
+    /// `large_expr_pathmap` stores `V` and IS collected (handled by RootProvider impl).
     pub fn gc_roots(&self, roots: &mut Vec<V>) {
-        // Rules: collect LHS and RHS from all indexed rules
-        {
-            let rule_index = self.shared.rule_index.read();
-            for rules in rule_index.values() {
-                for rule in rules {
-                    roots.push(rule.lhs.clone());
-                    roots.push(rule.rhs.clone());
-                }
-            }
-        }
-
-        // Wildcard rules
-        {
-            let wildcard_rules = self.shared.wildcard_rules.read();
-            for rule in wildcard_rules.iter() {
-                roots.push(rule.lhs.clone());
-                roots.push(rule.rhs.clone());
-            }
-        }
-
         // Named spaces: collect all atoms
         {
             let named_spaces = self.shared.named_spaces.read();
@@ -1254,26 +1057,6 @@ use crate::backend::models::gc_allocator::RootProvider;
 
 impl RootProvider for GenericEnvironmentShared<MettaValue> {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        // Rules: collect LHS and RHS from all indexed rules
-        {
-            let rule_index = self.rule_index.read();
-            for rules in rule_index.values() {
-                for rule in rules {
-                    roots.push(rule.lhs);
-                    roots.push(rule.rhs);
-                }
-            }
-        }
-
-        // Wildcard rules
-        {
-            let wildcard_rules = self.wildcard_rules.read();
-            for rule in wildcard_rules.iter() {
-                roots.push(rule.lhs);
-                roots.push(rule.rhs);
-            }
-        }
-
         // Named spaces: collect all atoms
         {
             let named_spaces = self.named_spaces.read();
@@ -1433,11 +1216,10 @@ where
 
         self.make_owned();
 
-        let space = self.create_space();
         let mut ctx = ConversionContext::new();
 
         // Direct V → MORK bytes conversion (no to_heap())
-        match value_to_mork_bytes_generic(value, &space, &mut ctx) {
+        match value_to_mork_bytes_generic(value, &self.shared_mapping, &mut ctx) {
             Ok(mork_bytes) => {
                 let mut btm = self.shared.btm.write();
                 add_atom(&mut btm, &mork_bytes);
@@ -1487,11 +1269,10 @@ where
 
         self.make_owned();
 
-        let space = self.create_space();
         let mut ctx = ConversionContext::new();
 
         // Direct V → MORK bytes conversion (no to_heap())
-        match value_to_mork_bytes_generic(value, &space, &mut ctx) {
+        match value_to_mork_bytes_generic(value, &self.shared_mapping, &mut ctx) {
             Ok(mork_bytes) => {
                 let mut btm = self.shared.btm.write();
 
@@ -1585,11 +1366,10 @@ where
         use crate::backend::varint_encoding::value_to_varint_key_generic;
         use super::multiplicity::add_atom;
 
-        let space = self.create_space();
         let mut ctx = ConversionContext::new();
 
         // Direct V → MORK bytes conversion (no to_heap())
-        match value_to_mork_bytes_generic(value, &space, &mut ctx) {
+        match value_to_mork_bytes_generic(value, &self.shared_mapping, &mut ctx) {
             Ok(mork_bytes) => {
                 let mut btm = self.shared.btm.write();
                 add_atom(&mut btm, &mork_bytes);
@@ -1639,11 +1419,10 @@ where
         use crate::backend::varint_encoding::value_to_varint_key_generic;
         use super::multiplicity::{get_multiplicity, remove_atom};
 
-        let space = self.create_space();
         let mut ctx = ConversionContext::new();
 
         // Direct V → MORK bytes conversion (no to_heap())
-        match value_to_mork_bytes_generic(value, &space, &mut ctx) {
+        match value_to_mork_bytes_generic(value, &self.shared_mapping, &mut ctx) {
             Ok(mork_bytes) => {
                 let mut btm = self.shared.btm.write();
 
@@ -1920,12 +1699,11 @@ mod tests {
             MettaValue::Long(1),
         ]);
         let rhs = MettaValue::Long(42);
-        let rule = crate::backend::Rule::new(lhs, rhs);
 
-        env.add_rule(rule);
+        env.add_rule(lhs.clone(), rhs);
 
         // Should have one rule for (add, 2)
-        let rules: Vec<_> = env.get_matching_rules_iter("add", 2).collect();
+        let rules = env.get_matching_rules_for_expr(&lhs);
         assert_eq!(rules.len(), 1);
     }
 

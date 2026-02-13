@@ -21,7 +21,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use mettatron::backend::environment::MettaEnvironment;
-use mettatron::backend::{MettaValue, MettaValueInner, Rule};
+use mettatron::backend::{MettaValue, MettaValueInner};
 
 // ================================================================================================
 // Helper Functions
@@ -41,10 +41,10 @@ fn create_test_facts(n: usize) -> Vec<MettaValue> {
 }
 
 /// Generate N unique rules for benchmarking
-fn create_test_rules(n: usize) -> Vec<Rule> {
+fn create_test_rules(n: usize) -> Vec<(MettaValue, MettaValue)> {
     let mut rules = Vec::new();
     for i in 0..n {
-        rules.push(Rule::new(
+        rules.push((
             MettaValue::SExpr(vec![
                 MettaValue::Atom("pattern".to_string()),
                 MettaValue::Long(i as i64),
@@ -74,7 +74,7 @@ fn prepopulate_with_facts(env: &mut MettaEnvironment, facts: &[MettaValue]) {
 }
 
 /// Prepopulate environment with rules
-fn prepopulate_with_rules(env: &mut MettaEnvironment, rules: Vec<Rule>) {
+fn prepopulate_with_rules(env: &mut MettaEnvironment, rules: Vec<(MettaValue, MettaValue)>) {
     env.add_rules_bulk(rules).unwrap();
 }
 
@@ -94,7 +94,7 @@ fn create_mixed_fact_dataset(
 }
 
 /// Create mixed rule dataset with specified duplicate ratio
-fn create_mixed_rule_dataset(total: usize, duplicate_ratio: f64) -> (Vec<Rule>, Vec<Rule>) {
+fn create_mixed_rule_dataset(total: usize, duplicate_ratio: f64) -> (Vec<(MettaValue, MettaValue)>, Vec<(MettaValue, MettaValue)>) {
     let num_duplicates = (total as f64 * duplicate_ratio) as usize;
     let _num_new = total - num_duplicates;
 

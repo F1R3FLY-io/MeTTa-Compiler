@@ -4,45 +4,45 @@
 //! independently of the Environment. This matches HE's design where
 //! spaces are first-class values.
 //!
-//! ## Copy-on-Write (CoW) for Nondeterministic Branch Isolation
+//! ## Copy-on-Write (CoW) via PathMap Clone
 //!
 //! When MeTTa evaluation forks into nondeterministic branches (e.g., from `match`
 //! returning multiple results), each branch needs isolated access to mutable state.
 //! Without isolation, one branch's `add-atom` affects all other branches.
 //!
-//! CoW semantics solve this:
-//! - `fork()` creates a logical copy that shares base data (O(1) operation)
-//! - First write to forked space copies data to local overlay
+//! PathMap::clone() provides O(1) CoW via Arc-based structural sharing:
+//! - `fork()` creates a logical copy that shares trie data (O(1) operation)
+//! - First write to forked space copies only the affected trie nodes
 //! - Each branch sees its own modifications without affecting others
 //!
 //! SpaceHandle supports two backing stores:
-//! - `SpaceData` - For dynamically created spaces (`new-space`)
-//! - `ModuleSpace` - For module-backed spaces (`mod-space!`) with live references
+//! - PathMap<Multiplicity> — For dynamically created spaces (`new-space`)
+//! - ModuleSpace — For module-backed spaces (`mod-space!`) with live references
 //!
 //! ## Multiplicity Tracking
 //!
-//! Space atoms are stored using `AtomMultisetSnapshot` which provides:
-//! - O(1) cloning via structural sharing (`im::HashMap`)
-//! - Proper multiplicity tracking (count per unique atom)
-//! - Memory-efficient storage (one atom + count, not N copies)
+//! Space atoms are stored as MORK bytes in a PathMap<Multiplicity>, providing:
+//! - Proper multiplicity tracking (count per unique atom path)
+//! - Memory-efficient storage via trie structural sharing
+//! - O(1) fork via PathMap::clone()
 //!
-//! ## Generic Value Support
+//! ## MORK Serialization
 //!
-//! SpaceHandle stores atoms via `AtomMultisetSnapshot` which uses byte-based
-//! storage via `SymbolTable`. This enables generic operations:
-//! - `add_atom_generic<V>(&self, atom: &V)` - Serializes V to bytes, interns in SymbolTable
-//! - `collapse_generic<V, F>(&self, factory: &F) -> Vec<V>` - Deserializes bytes to V
-//!
-//! This design eliminates conversions at evaluation boundaries - atoms are stored
-//! once as bytes and deserialized only when needed.
+//! Each SpaceHandle has a SharedMappingHandle for MORK symbol interning.
+//! MettaValue ↔ MORK bytes conversion happens at add/remove/collapse boundaries.
 
 use std::sync::Arc;
 
+use mork_interning::{SharedMapping, SharedMappingHandle};
 use parking_lot::RwLock;
+use pathmap::PathMap;
 
-use super::metta_value_trait::{MettaValueTrait, MettaValueFactory};
-use super::{AtomMultisetSnapshot, MettaValue, Rule, SymbolTable};
+use super::metta_value_trait::{MettaValueFactory, MettaValueTrait};
+use super::MettaValue;
+use crate::backend::environment::multiplicity::{self, Multiplicity};
+use crate::backend::environment::mork_encoding;
 use crate::backend::environment::MultiplicityMatch;
+use crate::backend::mork_convert::metta_to_mork_bytes_pooled;
 use crate::backend::modules::{ModId, ModuleSpace};
 
 /// Generic version of MultiplicityMatch that works with any value type.
@@ -65,61 +65,21 @@ impl<V> GenericMultiplicityMatch<V> {
     }
 }
 
-/// Local modifications overlay for Copy-on-Write semantics.
-///
-/// When a space is forked, the overlay tracks local changes without modifying
-/// the shared base. This enables nondeterministic branch isolation.
-///
-/// Both `added` and `removed` use `AtomMultisetSnapshot` for:
-/// - O(1) cloning via structural sharing
-/// - Proper multiplicity tracking
-/// - Memory-efficient storage
-#[derive(Debug, Clone)]
-pub struct SpaceOverlay {
-    /// Atoms added in this fork (local additions with multiplicities)
-    pub added: AtomMultisetSnapshot,
-    /// Atoms removed in this fork (tombstones with counts)
-    /// The count represents how many instances were removed
-    pub removed: AtomMultisetSnapshot,
-    /// Rules added in this fork
-    pub added_rules: Vec<Rule>,
-}
-
-impl SpaceOverlay {
-    /// Create a new empty overlay with the given symbol table.
-    pub fn new(symbols: Arc<SymbolTable>) -> Self {
-        Self {
-            added: AtomMultisetSnapshot::new(Arc::clone(&symbols)),
-            removed: AtomMultisetSnapshot::new(symbols),
-            added_rules: Vec::new(),
-        }
-    }
-
-    /// Check if an atom was removed in this overlay
-    pub fn is_removed(&self, atom: &MettaValue) -> bool {
-        self.removed.contains(atom)
-    }
-
-    /// Get the net removal count for an atom (how many more removed than added back)
-    pub fn removal_count(&self, atom: &MettaValue) -> usize {
-        self.removed.count(atom)
-    }
-}
-
 /// The backing store for a SpaceHandle.
 ///
 /// This enum allows SpaceHandle to work with both:
-/// - Standalone spaces (from `new-space`) with optional CoW overlay
+/// - Standalone spaces (from `new-space`) with PathMap-based CoW
 /// - Module spaces (from `mod-space!`) with live references
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum SpaceBacking {
-    /// Owned space data (for new-space) with optional CoW overlay
+    /// Owned space data (for new-space) using PathMap for O(1) CoW fork
     Owned {
-        /// Base space data (shared, read-only after fork)
-        base: Arc<RwLock<SpaceData>>,
-        /// Overlay for local modifications (None = no local changes yet)
-        /// When Some, this branch has been forked and modifications go here
-        overlay: Option<Arc<RwLock<SpaceOverlay>>>,
+        /// Atoms stored as MORK bytes with multiplicity tracking.
+        /// PathMap::clone() provides O(1) CoW structural sharing.
+        atoms: Arc<RwLock<PathMap<Multiplicity>>>,
+        /// SharedMappingHandle for MORK symbol interning.
+        /// Each SpaceHandle has its own interning table.
+        shared_mapping: SharedMappingHandle,
     },
     /// Module-backed space (for mod-space!) with live reference
     Module {
@@ -128,10 +88,27 @@ pub enum SpaceBacking {
     },
 }
 
+impl std::fmt::Debug for SpaceBacking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpaceBacking::Owned { atoms, .. } => f
+                .debug_struct("Owned")
+                .field("atoms", atoms)
+                .field("shared_mapping", &"<SharedMappingHandle>")
+                .finish(),
+            SpaceBacking::Module { mod_id, space } => f
+                .debug_struct("Module")
+                .field("mod_id", mod_id)
+                .field("space", space)
+                .finish(),
+        }
+    }
+}
+
 /// Thread-safe handle to a space's data.
 ///
 /// SpaceHandle wraps the space data in Arc<RwLock<>> for:
-/// - Cheap cloning (O(1) - just increments ref count)
+/// - O(1) fork via PathMap structural sharing (CoW)
 /// - Thread-safe read/write access
 /// - Shared ownership across MettaValue instances
 ///
@@ -143,109 +120,58 @@ pub struct SpaceHandle {
     pub id: u64,
     /// Human-readable name
     pub name: String,
-    /// Shared symbol table for atom interning (enables O(1) equality via AtomId)
-    symbols: Arc<SymbolTable>,
-    /// The backing store (owned SpaceData or live ModuleSpace reference)
+    /// The backing store (owned PathMap or live ModuleSpace reference)
     backing: SpaceBacking,
 }
 
-/// The actual data stored in a space.
+/// Create a new SharedMappingHandle for a SpaceHandle.
 ///
-/// Uses `AtomMultisetSnapshot` for atom storage, providing:
-/// - O(1) cloning via structural sharing (`im::HashMap`)
-/// - Proper multiplicity tracking (count per unique atom)
-/// - Memory-efficient storage (one atom + count, not N copies)
-#[derive(Debug, Clone)]
-pub struct SpaceData {
-    /// Atoms stored in this space with their multiplicities
-    pub atoms: AtomMultisetSnapshot,
-    /// Rules defined in this space (for matching)
-    pub rules: Vec<Rule>,
+/// Each SpaceHandle gets its own SharedMapping to avoid cross-handle
+/// lock contention during parallel evaluation. No warmup needed because
+/// SpaceHandle's PathMap is behind `Arc<RwLock>` which serializes writes,
+/// preventing the `ensure_root()` TOCTOU race.
+#[inline]
+fn new_space_mapping() -> SharedMappingHandle {
+    SharedMappingHandle::from(SharedMapping::new())
 }
 
-impl SpaceData {
-    /// Create new empty SpaceData with the given symbol table.
-    pub fn new(symbols: Arc<SymbolTable>) -> Self {
-        Self {
-            atoms: AtomMultisetSnapshot::new(symbols),
-            rules: Vec::new(),
-        }
-    }
-
-    /// Create SpaceData with initial atoms.
-    pub fn with_atoms(
-        symbols: Arc<SymbolTable>,
-        atoms: impl IntoIterator<Item = MettaValue>,
-    ) -> Self {
-        let mut multiset = AtomMultisetSnapshot::new(symbols);
-        for atom in atoms {
-            multiset = multiset.insert(&atom);
-        }
-        Self {
-            atoms: multiset,
-            rules: Vec::new(),
-        }
+/// Create a MORK Space for deserialization (only sm is used).
+fn deserialization_space(sm: &SharedMappingHandle) -> mork::space::Space<Multiplicity> {
+    mork::space::Space {
+        sm: sm.clone(),
+        btm: PathMap::new(),
+        mmaps: std::collections::HashMap::new(),
     }
 }
 
 impl SpaceHandle {
     /// Create a new space handle with the given ID and name.
-    /// Uses a fresh symbol table - prefer `with_symbols` for sharing.
     pub fn new(id: u64, name: String) -> Self {
-        let symbols = Arc::new(SymbolTable::new());
         Self {
             id,
             name,
-            symbols: Arc::clone(&symbols),
             backing: SpaceBacking::Owned {
-                base: Arc::new(RwLock::new(SpaceData::new(symbols))),
-                overlay: None,
-            },
-        }
-    }
-
-    /// Create a new space handle with a shared symbol table.
-    /// This is the preferred constructor when integrating with Environment.
-    pub fn with_symbols(id: u64, name: String, symbols: Arc<SymbolTable>) -> Self {
-        Self {
-            id,
-            name,
-            symbols: Arc::clone(&symbols),
-            backing: SpaceBacking::Owned {
-                base: Arc::new(RwLock::new(SpaceData::new(symbols))),
-                overlay: None,
+                atoms: Arc::new(RwLock::new(PathMap::new())),
+                shared_mapping: new_space_mapping(),
             },
         }
     }
 
     /// Create a space handle with existing data.
     pub fn with_data(id: u64, name: String, atoms: Vec<MettaValue>) -> Self {
-        let symbols = Arc::new(SymbolTable::new());
-        Self {
-            id,
-            name,
-            symbols: Arc::clone(&symbols),
-            backing: SpaceBacking::Owned {
-                base: Arc::new(RwLock::new(SpaceData::with_atoms(symbols, atoms))),
-                overlay: None,
-            },
+        let sm = new_space_mapping();
+        let mut pm = PathMap::new();
+        for atom in &atoms {
+            if let Ok(bytes) = metta_to_mork_bytes_pooled(atom, &sm) {
+                multiplicity::add_atom(&mut pm, &bytes);
+            }
         }
-    }
-
-    /// Create a space handle with existing data and a shared symbol table.
-    pub fn with_data_and_symbols(
-        id: u64,
-        name: String,
-        atoms: Vec<MettaValue>,
-        symbols: Arc<SymbolTable>,
-    ) -> Self {
         Self {
             id,
             name,
-            symbols: Arc::clone(&symbols),
             backing: SpaceBacking::Owned {
-                base: Arc::new(RwLock::new(SpaceData::with_atoms(symbols, atoms))),
-                overlay: None,
+                atoms: Arc::new(RwLock::new(pm)),
+                shared_mapping: sm,
             },
         }
     }
@@ -254,33 +180,10 @@ impl SpaceHandle {
     ///
     /// This provides live reference semantics where mutations are immediately
     /// visible to all holders of the space reference.
-    ///
-    /// # Arguments
-    /// - `mod_id` - The module's unique identifier
-    /// - `name` - Human-readable name for the space
-    /// - `space` - Arc reference to the module's ModuleSpace
     pub fn for_module(mod_id: ModId, name: String, space: Arc<RwLock<ModuleSpace>>) -> Self {
-        // Module spaces use their own fresh symbol table
-        let symbols = Arc::new(SymbolTable::new());
         Self {
             id: mod_id.value(),
             name,
-            symbols,
-            backing: SpaceBacking::Module { mod_id, space },
-        }
-    }
-
-    /// Create a space handle backed by a module's space with a shared symbol table.
-    pub fn for_module_with_symbols(
-        mod_id: ModId,
-        name: String,
-        space: Arc<RwLock<ModuleSpace>>,
-        symbols: Arc<SymbolTable>,
-    ) -> Self {
-        Self {
-            id: mod_id.value(),
-            name,
-            symbols,
             backing: SpaceBacking::Module { mod_id, space },
         }
     }
@@ -290,42 +193,15 @@ impl SpaceHandle {
     /// This is used when deserializing Space values from bytes. The resulting
     /// handle has minimal backing data - it's essentially a reference that must
     /// be resolved against the actual Environment to access atoms.
-    ///
-    /// # Arguments
-    /// - `id` - The space's unique identifier
-    /// - `name` - Human-readable name for the space
-    /// - `is_module` - Whether this is a module-backed space
-    pub fn new_from_serialized(id: u64, name: String, is_module: bool) -> Self {
-        let symbols = Arc::new(SymbolTable::new());
-        // Create minimal backing - the Environment will need to be consulted for actual data
-        if is_module {
-            // For module spaces, we create a stub - actual data must come from Environment
-            // Create empty owned backing since we don't have the actual module reference
-            Self {
-                id,
-                name,
-                symbols: Arc::clone(&symbols),
-                backing: SpaceBacking::Owned {
-                    base: Arc::new(RwLock::new(SpaceData::new(symbols))),
-                    overlay: None,
-                },
-            }
-        } else {
-            Self::new(id, name)
-        }
-    }
-
-    /// Get a reference to the symbol table used by this space.
-    #[inline]
-    pub fn symbols(&self) -> &Arc<SymbolTable> {
-        &self.symbols
+    pub fn new_from_serialized(id: u64, name: String, _is_module: bool) -> Self {
+        Self::new(id, name)
     }
 
     /// Fork this space handle for nondeterministic branch isolation.
     ///
-    /// Creates a new handle that shares the base data but has its own overlay
-    /// for local modifications. This is an O(1) operation - actual data copying
-    /// only happens on first write (Copy-on-Write semantics).
+    /// Creates a new handle with an independent PathMap clone. PathMap::clone()
+    /// is O(1) via Arc-based structural sharing (CoW) — actual data copying
+    /// only happens on first write to divergent trie nodes.
     ///
     /// # Example
     /// ```ignore
@@ -340,84 +216,42 @@ impl SpaceHandle {
     /// ```
     pub fn fork(&self) -> Self {
         match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                // If we already have an overlay, we need to create a new base that
-                // represents the current state (base + overlay) for the forked child.
-                // This ensures proper isolation.
-                if overlay.is_some() {
-                    // Materialize current state into a new base using multiset snapshot
-                    let current_atoms = self.collapse_to_multiset();
-                    let current_rules = self.rules();
-                    Self {
-                        id: self.id,
-                        name: self.name.clone(),
-                        symbols: Arc::clone(&self.symbols),
-                        backing: SpaceBacking::Owned {
-                            base: Arc::new(RwLock::new(SpaceData {
-                                atoms: current_atoms,
-                                rules: current_rules,
-                            })),
-                            overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(Arc::clone(
-                                &self.symbols,
-                            ))))),
-                        },
-                    }
-                } else {
-                    // No overlay yet - forked handle gets a snapshot of current base
-                    // to ensure true isolation (original modifications don't affect fork)
-                    //
-                    // Note: We create a new base from a snapshot of the current atoms.
-                    // This is O(1) via AtomMultisetSnapshot's structural sharing.
-                    // The forked space has its own independent base and overlay.
-                    let base_data = base.read();
-                    Self {
-                        id: self.id,
-                        name: self.name.clone(),
-                        symbols: Arc::clone(&self.symbols),
-                        backing: SpaceBacking::Owned {
-                            base: Arc::new(RwLock::new(SpaceData {
-                                // Clone the snapshot - O(1) due to im::HashMap structural sharing
-                                atoms: base_data.atoms.clone(),
-                                rules: base_data.rules.clone(),
-                            })),
-                            overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(Arc::clone(
-                                &self.symbols,
-                            ))))),
-                        },
-                    }
-                }
-            }
-            SpaceBacking::Module { mod_id: _, space } => {
-                // Module spaces: fork creates a snapshot (not live)
-                // This gives each branch its own isolated copy
-                let atoms = space.read().get_all_atoms();
+            SpaceBacking::Owned {
+                atoms,
+                shared_mapping,
+            } => {
+                // PathMap::clone() is O(1) via Arc CoW structural sharing.
+                let forked_atoms = atoms.read().clone();
                 Self {
                     id: self.id,
                     name: self.name.clone(),
-                    symbols: Arc::clone(&self.symbols),
                     backing: SpaceBacking::Owned {
-                        base: Arc::new(RwLock::new(SpaceData::with_atoms(
-                            Arc::clone(&self.symbols),
-                            atoms,
-                        ))),
-                        overlay: Some(Arc::new(RwLock::new(SpaceOverlay::new(Arc::clone(
-                            &self.symbols,
-                        ))))),
+                        atoms: Arc::new(RwLock::new(forked_atoms)),
+                        shared_mapping: shared_mapping.clone(),
+                    },
+                }
+            }
+            SpaceBacking::Module { space, .. } => {
+                // Module spaces: fork creates a snapshot (not live).
+                // Serialize module atoms into a new PathMap for isolation.
+                let module_atoms = space.read().get_all_atoms();
+                let sm = new_space_mapping();
+                let mut pm = PathMap::new();
+                for atom in &module_atoms {
+                    if let Ok(bytes) = metta_to_mork_bytes_pooled(atom, &sm) {
+                        multiplicity::add_atom(&mut pm, &bytes);
+                    }
+                }
+                Self {
+                    id: self.id,
+                    name: self.name.clone(),
+                    backing: SpaceBacking::Owned {
+                        atoms: Arc::new(RwLock::new(pm)),
+                        shared_mapping: sm,
                     },
                 }
             }
         }
-    }
-
-    /// Check if this space has been forked (has an overlay).
-    pub fn is_forked(&self) -> bool {
-        matches!(
-            &self.backing,
-            SpaceBacking::Owned {
-                overlay: Some(_),
-                ..
-            }
-        )
     }
 
     /// Check if this space is backed by a module.
@@ -436,38 +270,31 @@ impl SpaceHandle {
     /// Create a space handle that shares data with another handle.
     /// Used when creating references to the same underlying space.
     ///
-    /// Note: This creates a shallow clone - both handles share the same base AND overlay.
-    /// For isolated copies, use `fork()` instead.
+    /// Note: This creates a shallow clone - both handles share the same
+    /// underlying PathMap and rules Vec via Arc. For isolated copies,
+    /// use `fork()` instead.
     pub fn share_data(&self, new_id: u64, new_name: String) -> Self {
         Self {
             id: new_id,
             name: new_name,
-            symbols: Arc::clone(&self.symbols),
             backing: self.backing.clone(),
         }
     }
 
     /// Add an atom to this space.
     ///
-    /// If forked (has overlay), adds to overlay.
-    /// Otherwise, adds directly to base.
+    /// For owned spaces, serializes to MORK bytes and adds to PathMap.
+    /// For module spaces, delegates to ModuleSpace.
     pub fn add_atom(&self, atom: MettaValue) {
         match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                if let Some(overlay) = overlay {
-                    // Forked: add to overlay
-                    let mut overlay_lock = overlay.write();
-                    // If this atom was previously removed, decrement removal count
-                    if overlay_lock.removed.contains(&atom) {
-                        if let Some(new_removed) = overlay_lock.removed.remove(&atom) {
-                            overlay_lock.removed = new_removed;
-                        }
-                    }
-                    overlay_lock.added = overlay_lock.added.insert(&atom);
-                } else {
-                    // Not forked: add directly to base
-                    let mut data = base.write();
-                    data.atoms = data.atoms.insert(&atom);
+            SpaceBacking::Owned {
+                atoms,
+                shared_mapping,
+                ..
+            } => {
+                if let Ok(bytes) = metta_to_mork_bytes_pooled(&atom, shared_mapping) {
+                    let mut pm = atoms.write();
+                    multiplicity::add_atom(&mut pm, &bytes);
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -479,46 +306,24 @@ impl SpaceHandle {
 
     /// Remove an atom from this space.
     /// Returns true if the atom was found and removed.
-    ///
-    /// If forked (has overlay), adds tombstone to overlay.
-    /// Otherwise, removes directly from base.
     pub fn remove_atom(&self, atom: &MettaValue) -> bool {
         match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                if let Some(overlay) = overlay {
-                    // Forked: check if atom exists (in base or overlay.added)
-                    let mut overlay_lock = overlay.write();
-
-                    // First check if it was added in this overlay
-                    if overlay_lock.added.contains(atom) {
-                        if let Some(new_added) = overlay_lock.added.remove(atom) {
-                            overlay_lock.added = new_added;
-                            return true;
-                        }
-                    }
-
-                    // Check if it exists in base (and not already removed)
-                    let base_data = base.read();
-                    if base_data.atoms.contains(atom) && !overlay_lock.is_removed(atom) {
-                        // Add tombstone
-                        overlay_lock.removed = overlay_lock.removed.insert(atom);
-                        return true;
-                    }
-
-                    false
-                } else {
-                    // Not forked: remove directly from base
-                    let mut data = base.write();
-                    if data.atoms.contains(atom) {
-                        if let Some(new_atoms) = data.atoms.remove(atom) {
-                            data.atoms = new_atoms;
-                            true
-                        } else {
-                            false
-                        }
+            SpaceBacking::Owned {
+                atoms,
+                shared_mapping,
+                ..
+            } => {
+                if let Ok(bytes) = metta_to_mork_bytes_pooled(atom, shared_mapping) {
+                    let mut pm = atoms.write();
+                    let old_count = multiplicity::get_multiplicity(&pm, &bytes);
+                    if old_count > 0 {
+                        multiplicity::remove_atom(&mut pm, &bytes);
+                        true
                     } else {
                         false
                     }
+                } else {
+                    false
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -530,34 +335,37 @@ impl SpaceHandle {
 
     /// Get all atoms in this space (collapse) - expands multiplicities.
     ///
-    /// If forked, returns: (base atoms - removed) + added
-    /// Each atom is repeated according to its multiplicity.
+    /// Iterates the PathMap, deserializes each MORK entry to MettaValue,
+    /// and expands by multiplicity count.
     pub fn collapse(&self) -> Vec<MettaValue> {
         match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                let base_data = base.read();
+            SpaceBacking::Owned {
+                atoms,
+                shared_mapping,
+                ..
+            } => {
+                let pm = atoms.read();
+                let space = deserialization_space(shared_mapping);
+                let factory = super::GcFactory::default();
+                let mut result = Vec::new();
 
-                if let Some(overlay) = overlay {
-                    let overlay_lock = overlay.read();
-
-                    // Start with expanded base atoms, filter out removed ones
-                    let mut result: Vec<MettaValue> = Vec::new();
-                    for (atom, count) in base_data.atoms.iter() {
-                        // Get removal count from overlay
-                        let removal_count = overlay_lock.removal_count(&atom);
-                        let effective_count = count.saturating_sub(removal_count);
-                        for _ in 0..effective_count {
-                            result.push(atom.clone());
+                use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
+                let mut rz = pm.read_zipper();
+                while rz.to_next_val() {
+                    let path = rz.path();
+                    let count = rz.val().map(|m| m.count()).unwrap_or(0);
+                    if count == 0 {
+                        continue;
+                    }
+                    if let Ok(value) =
+                        mork_encoding::mork_bytes_to_generic_value(path, &space, &factory)
+                    {
+                        for _ in 0..count {
+                            result.push(value);
                         }
                     }
-
-                    // Add atoms from overlay (expanded)
-                    result.extend(overlay_lock.added.expand());
-
-                    result
-                } else {
-                    base_data.atoms.expand()
                 }
+                result
             }
             SpaceBacking::Module { space, .. } => {
                 let space = space.read();
@@ -566,89 +374,37 @@ impl SpaceHandle {
         }
     }
 
-    /// Get atoms as a multiset snapshot (preserves multiplicities without expansion).
-    ///
-    /// This is more efficient than `collapse()` for cases where multiplicities
-    /// need to be preserved or when O(1) cloning is desired.
-    pub fn collapse_to_multiset(&self) -> AtomMultisetSnapshot {
-        match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                let base_data = base.read();
-
-                if let Some(overlay) = overlay {
-                    let overlay_lock = overlay.read();
-
-                    // Merge: base + added - removed
-                    let mut merged = base_data.atoms.clone();
-
-                    // Add from overlay
-                    merged = merged.merge(&overlay_lock.added);
-
-                    // Remove tombstones
-                    for (atom, removal_count) in overlay_lock.removed.iter() {
-                        for _ in 0..removal_count {
-                            if let Some(new_merged) = merged.remove(&atom) {
-                                merged = new_merged;
-                            }
-                        }
-                    }
-
-                    merged
-                } else {
-                    base_data.atoms.clone()
-                }
-            }
-            SpaceBacking::Module { space, .. } => {
-                // Module spaces don't track multiplicities, so we convert Vec to multiset
-                let space = space.read();
-                let atoms = space.get_all_atoms();
-                SpaceData::with_atoms(Arc::clone(&self.symbols), atoms).atoms
-            }
-        }
-    }
-
     /// Get all atoms as MultiplicityMatch with their actual counts.
     ///
-    /// This provides type consistency with `Environment::match_space()` for
-    /// code that needs to handle both owned spaces and module spaces uniformly.
-    ///
-    /// Unlike the previous implementation that always returned count=1, this
-    /// returns the actual multiplicities, enabling efficient handling of
+    /// Returns the actual multiplicities, enabling efficient handling of
     /// high-multiplicity atoms.
     pub fn collapse_with_multiplicity(&self) -> Vec<MultiplicityMatch<MettaValue>> {
         match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                let base_data = base.read();
+            SpaceBacking::Owned {
+                atoms,
+                shared_mapping,
+                ..
+            } => {
+                let pm = atoms.read();
+                let space = deserialization_space(shared_mapping);
+                let factory = super::GcFactory::default();
+                let mut results = Vec::new();
 
-                if let Some(overlay) = overlay {
-                    let overlay_lock = overlay.read();
-
-                    // Build result from merged multiset
-                    let mut results = Vec::new();
-
-                    // Process base atoms, accounting for removals
-                    for (atom, base_count) in base_data.atoms.iter() {
-                        let removal_count = overlay_lock.removal_count(&atom);
-                        let effective_count = base_count.saturating_sub(removal_count);
-                        if effective_count > 0 {
-                            results.push(MultiplicityMatch::new(atom, effective_count));
-                        }
+                use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
+                let mut rz = pm.read_zipper();
+                while rz.to_next_val() {
+                    let path = rz.path();
+                    let count = rz.val().map(|m| m.count()).unwrap_or(0);
+                    if count == 0 {
+                        continue;
                     }
-
-                    // Add atoms from overlay
-                    for (atom, count) in overlay_lock.added.iter() {
-                        results.push(MultiplicityMatch::new(atom, count));
+                    if let Ok(value) =
+                        mork_encoding::mork_bytes_to_generic_value(path, &space, &factory)
+                    {
+                        results.push(MultiplicityMatch::new(value, count as usize));
                     }
-
-                    results
-                } else {
-                    // No overlay: directly convert base atoms
-                    base_data
-                        .atoms
-                        .iter()
-                        .map(|(atom, count)| MultiplicityMatch::new(atom, count))
-                        .collect()
                 }
+                results
             }
             SpaceBacking::Module { space, .. } => {
                 // Module spaces don't track multiplicities, each atom has count=1
@@ -665,21 +421,15 @@ impl SpaceHandle {
     /// Get the total number of atoms in this space (sum of multiplicities).
     pub fn atom_count(&self) -> usize {
         match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                if let Some(overlay) = overlay {
-                    let base_data = base.read();
-                    let overlay_lock = overlay.read();
-
-                    // Count = base total - removed total + added total
-                    let base_total = base_data.atoms.total();
-                    let removed_total = overlay_lock.removed.total();
-                    let added_total = overlay_lock.added.total();
-
-                    base_total.saturating_sub(removed_total) + added_total
-                } else {
-                    let data = base.read();
-                    data.atoms.total()
+            SpaceBacking::Owned { atoms, .. } => {
+                let pm = atoms.read();
+                let mut total: usize = 0;
+                use pathmap::zipper::{ZipperIteration, ZipperValues};
+                let mut rz = pm.read_zipper();
+                while rz.to_next_val() {
+                    total += rz.val().map(|m| m.count() as usize).unwrap_or(0);
                 }
+                total
             }
             SpaceBacking::Module { space, .. } => {
                 let space = space.read();
@@ -691,45 +441,36 @@ impl SpaceHandle {
     /// Get the number of unique atoms in this space (distinct count).
     pub fn distinct_atom_count(&self) -> usize {
         match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                if let Some(_overlay) = overlay {
-                    // Need to count unique atoms across base + overlay - removed
-                    self.collapse_to_multiset().distinct_count()
-                } else {
-                    let data = base.read();
-                    data.atoms.distinct_count()
+            SpaceBacking::Owned { atoms, .. } => {
+                let pm = atoms.read();
+                let mut count: usize = 0;
+                use pathmap::zipper::ZipperIteration;
+                let mut rz = pm.read_zipper();
+                while rz.to_next_val() {
+                    count += 1;
                 }
+                count
             }
             SpaceBacking::Module { space, .. } => {
                 let space = space.read();
-                space.get_all_atoms().len() // Module spaces don't deduplicate
+                space.get_all_atoms().len()
             }
         }
     }
 
     /// Check if the space contains a specific atom.
-    ///
-    /// If forked, checks overlay first (added/removed), then base.
     pub fn contains(&self, atom: &MettaValue) -> bool {
         match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                if let Some(overlay) = overlay {
-                    let overlay_lock = overlay.read();
-                    let base_data = base.read();
-
-                    // Check if added in overlay
-                    if overlay_lock.added.contains(atom) {
-                        return true;
-                    }
-
-                    // Check if in base (accounting for removals)
-                    let base_count = base_data.atoms.count(atom);
-                    let removal_count = overlay_lock.removal_count(atom);
-
-                    base_count > removal_count
+            SpaceBacking::Owned {
+                atoms,
+                shared_mapping,
+                ..
+            } => {
+                if let Ok(bytes) = metta_to_mork_bytes_pooled(atom, shared_mapping) {
+                    let pm = atoms.read();
+                    multiplicity::get_multiplicity(&pm, &bytes) > 0
                 } else {
-                    let data = base.read();
-                    data.atoms.contains(atom)
+                    false
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -742,19 +483,16 @@ impl SpaceHandle {
     /// Get the multiplicity (count) of a specific atom in this space.
     pub fn atom_multiplicity(&self, atom: &MettaValue) -> usize {
         match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                if let Some(overlay) = overlay {
-                    let overlay_lock = overlay.read();
-                    let base_data = base.read();
-
-                    let base_count = base_data.atoms.count(atom);
-                    let removal_count = overlay_lock.removal_count(atom);
-                    let added_count = overlay_lock.added.count(atom);
-
-                    base_count.saturating_sub(removal_count) + added_count
+            SpaceBacking::Owned {
+                atoms,
+                shared_mapping,
+                ..
+            } => {
+                if let Ok(bytes) = metta_to_mork_bytes_pooled(atom, shared_mapping) {
+                    let pm = atoms.read();
+                    multiplicity::get_multiplicity(&pm, &bytes) as usize
                 } else {
-                    let data = base.read();
-                    data.atoms.count(atom)
+                    0
                 }
             }
             SpaceBacking::Module { space, .. } => {
@@ -768,112 +506,34 @@ impl SpaceHandle {
         }
     }
 
-    /// Add a rule to this space.
-    /// Note: For module spaces, rules are stored in the Environment, not ModuleSpace.
-    pub fn add_rule(&self, rule: Rule) {
-        match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                if let Some(overlay) = overlay {
-                    // Forked: add to overlay
-                    let mut overlay_lock = overlay.write();
-                    overlay_lock.added_rules.push(rule);
-                } else {
-                    // Not forked: add directly to base
-                    let mut data = base.write();
-                    data.rules.push(rule);
-                }
-            }
-            SpaceBacking::Module { .. } => {
-                // Module spaces store rules in Environment, not here
-                // This is a no-op for module spaces (rules added via eval)
-            }
-        }
-    }
-
-    /// Get all rules in this space.
-    /// Note: For module spaces, returns empty (rules are in Environment).
-    pub fn rules(&self) -> Vec<Rule> {
-        match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                let base_data = base.read();
-
-                if let Some(overlay) = overlay {
-                    let overlay_lock = overlay.read();
-                    let mut rules = base_data.rules.clone();
-                    rules.extend(overlay_lock.added_rules.iter().cloned());
-                    rules
-                } else {
-                    base_data.rules.clone()
-                }
-            }
-            SpaceBacking::Module { .. } => {
-                // Module rules are stored in Environment, not ModuleSpace
-                Vec::new()
-            }
-        }
-    }
+    // Rules are stored in the Environment's PathMap, not in SpaceHandle.
+    // Use env.add_rule(lhs, rhs) instead.
 
     // ========================================================================
     // Generic Value Operations
     // ========================================================================
     // These methods work with any value type implementing MettaValueTrait.
-    // Atoms are stored as bytes via SymbolTable, enabling zero-conversion
-    // evaluation at semantic boundaries.
+    // Atoms are stored as MORK bytes in PathMap; generic methods
+    // serialize/deserialize when crossing type boundaries.
     // ========================================================================
 
     /// Add an atom of any type implementing MettaValueTrait.
     ///
-    /// The value is serialized to bytes and interned in the SymbolTable.
-    /// This enables generic evaluation without conversion at boundaries.
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Works with both MettaValue and MettaValue
-    /// handle.add_atom_generic(&my_value);
-    /// ```
+    /// The value is serialized to bytes and deserialized to MettaValue
+    /// for storage. This enables generic evaluation without conversion
+    /// at caller sites.
     pub fn add_atom_generic<V: MettaValueTrait>(&self, atom: &V) {
-        // Serialize to bytes - this is the canonical byte representation
         let bytes = atom.serialize();
-
-        match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                if let Some(overlay) = overlay {
-                    // Forked: add to overlay via deserialization to MettaValue
-                    // (AtomMultisetSnapshot currently works with MettaValue)
-                    let heap_atom = self.deserialize_to_metta(&bytes);
-                    let mut overlay_lock = overlay.write();
-                    // If this atom was previously removed, decrement removal count
-                    if overlay_lock.removed.contains(&heap_atom) {
-                        if let Some(new_removed) = overlay_lock.removed.remove(&heap_atom) {
-                            overlay_lock.removed = new_removed;
-                        }
-                    }
-                    overlay_lock.added = overlay_lock.added.insert(&heap_atom);
-                } else {
-                    // Not forked: add directly to base
-                    let heap_atom = self.deserialize_to_metta(&bytes);
-                    let mut data = base.write();
-                    data.atoms = data.atoms.insert(&heap_atom);
-                }
-            }
-            SpaceBacking::Module { space, .. } => {
-                // Module spaces need MettaValue - deserialize from bytes
-                let heap_atom = self.deserialize_to_metta(&bytes);
-                let mut space = space.write();
-                space.add_atom(heap_atom);
-            }
-        }
+        let heap_atom = self.deserialize_to_metta(&bytes);
+        self.add_atom(heap_atom);
     }
 
     /// Remove an atom of any type implementing MettaValueTrait.
     ///
     /// Returns true if the atom was found and removed.
     pub fn remove_atom_generic<V: MettaValueTrait>(&self, atom: &V) -> bool {
-        // Serialize to bytes for lookup
         let bytes = atom.serialize();
         let heap_atom = self.deserialize_to_metta(&bytes);
-
-        // Delegate to existing remove_atom
         self.remove_atom(&heap_atom)
     }
 
@@ -888,44 +548,29 @@ impl SpaceHandle {
     ///
     /// This is the generic version of `collapse()` that returns values
     /// of any type implementing MettaValueTrait.
-    ///
-    /// # Type Parameters
-    ///
-    /// - `V`: The output value type (must implement `MettaValueTrait + Clone`)
-    /// - `F`: The factory type (must implement `MettaValueFactory<V>`)
-    ///
-    /// # Arguments
-    ///
-    /// - `factory`: Factory for constructing output values
     pub fn collapse_generic<V, F>(&self, factory: &F) -> Vec<V>
     where
         V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
         F: MettaValueFactory<V>,
     {
-        // Get heap values and convert each to the target type
         let heap_atoms = self.collapse();
         heap_atoms
             .iter()
             .map(|atom| {
-                // Serialize the MettaValue to bytes
                 let bytes = atom.serialize();
-                // Deserialize to the target type
                 match factory.deserialize(&bytes) {
                     Ok((value, _)) => value,
-                    Err(_) => {
-                        // Fallback: create an error atom
-                        factory.atom("?deserialization_error?")
-                    }
+                    Err(_) => factory.atom("?deserialization_error?"),
                 }
             })
             .collect()
     }
 
     /// Get atoms as MultiplicityMatch with their actual counts (generic version).
-    ///
-    /// This provides type consistency with `Environment::match_space()` and
-    /// returns values in the requested generic type.
-    pub fn collapse_with_multiplicity_generic<V, F>(&self, factory: &F) -> Vec<GenericMultiplicityMatch<V>>
+    pub fn collapse_with_multiplicity_generic<V, F>(
+        &self,
+        factory: &F,
+    ) -> Vec<GenericMultiplicityMatch<V>>
     where
         V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
         F: MettaValueFactory<V>,
@@ -974,73 +619,32 @@ impl SpaceHandle {
 
     /// Collect all slab-allocated MettaValues referenced by this space.
     ///
-    /// Used by the GC mark phase to traverse into Space values. Without this,
-    /// values stored as rules inside a SpaceHandle would not be marked as
-    /// reachable, causing the GC to incorrectly classify them as dead.
+    /// Used by the GC mark phase to traverse into Space values.
     ///
-    /// Collects:
-    /// - Rule LHS and RHS from Owned base data
-    /// - Rule LHS and RHS from Owned overlay (added_rules)
-    /// - Atoms from Module-backed spaces (Vec<MettaValue>)
-    ///
-    /// Note: Atoms in Owned spaces are stored as interned bytes (AtomId) in the
-    /// SymbolTable, not as direct MettaValue references. They are reconstructed
-    /// on demand via `SymbolTable::resolve()`, so they don't need GC traversal.
+    /// Owned spaces store atoms as MORK bytes in PathMap (no slab pointers),
+    /// so no GC collection is needed. Module spaces have live MettaValue atoms
+    /// that reference slab memory.
     pub(crate) fn collect_gc_values(&self, values: &mut Vec<MettaValue>) {
         match &self.backing {
-            SpaceBacking::Owned { base, overlay } => {
-                // Collect rule lhs/rhs from base data
-                let base_data = base.read();
-                for rule in &base_data.rules {
-                    values.push(rule.lhs);
-                    values.push(rule.rhs);
-                }
-                drop(base_data);
-
-                // Collect overlay added_rules
-                if let Some(ov) = overlay {
-                    let ov_data = ov.read();
-                    for rule in &ov_data.added_rules {
-                        values.push(rule.lhs);
-                        values.push(rule.rhs);
-                    }
-                }
+            SpaceBacking::Owned { .. } => {
+                // PathMap atoms are MORK bytes — no slab pointers, no GC roots.
             }
             SpaceBacking::Module { space, .. } => {
                 // Collect atoms from module space (local atoms only — dependencies have
                 // their own environments registered as separate root providers)
                 let ms = space.read();
                 values.extend(ms.get_atoms_local().into_iter());
-                // main_space is an MettaEnvironment — registered as its own root provider
-                // dep_spaces contain ModuleSpaces recursively — their environments are also registered
             }
         }
     }
 
     /// Check if two space handles point to the same underlying data.
-    ///
-    /// Note: Two forked handles from the same base are NOT the same space
-    /// (they have different overlays).
     pub fn same_space(&self, other: &SpaceHandle) -> bool {
         match (&self.backing, &other.backing) {
             (
-                SpaceBacking::Owned {
-                    base: a,
-                    overlay: ao,
-                },
-                SpaceBacking::Owned {
-                    base: b,
-                    overlay: bo,
-                },
-            ) => {
-                // Same base AND same overlay (or both None)
-                Arc::ptr_eq(a, b)
-                    && match (ao, bo) {
-                        (None, None) => true,
-                        (Some(ao), Some(bo)) => Arc::ptr_eq(ao, bo),
-                        _ => false,
-                    }
-            }
+                SpaceBacking::Owned { atoms: a, .. },
+                SpaceBacking::Owned { atoms: b, .. },
+            ) => Arc::ptr_eq(a, b),
             (SpaceBacking::Module { mod_id: a, .. }, SpaceBacking::Module { mod_id: b, .. }) => {
                 a == b
             }
@@ -1051,8 +655,6 @@ impl SpaceHandle {
 
 impl PartialEq for SpaceHandle {
     fn eq(&self, other: &Self) -> bool {
-        // Two space handles are equal if they have the same ID
-        // (they may or may not share the same underlying data)
         self.id == other.id
     }
 }
@@ -1076,7 +678,6 @@ mod tests {
         assert_eq!(handle.id, 1);
         assert_eq!(handle.name, "test");
         assert_eq!(handle.atom_count(), 0);
-        assert!(!handle.is_forked());
     }
 
     #[test]
@@ -1143,9 +744,8 @@ mod tests {
         let original = SpaceHandle::new(1, "stack".to_string());
         original.add_atom(MettaValue::Long(1));
 
-        // Fork creates isolated copy
+        // Fork creates isolated copy (O(1) via PathMap CoW)
         let forked = original.fork();
-        assert!(forked.is_forked());
 
         // Forked sees original data
         assert!(forked.contains(&MettaValue::Long(1)));
@@ -1168,7 +768,6 @@ mod tests {
         original.add_atom(MettaValue::Long(1));
         original.add_atom(MettaValue::Long(2));
 
-        // Fork
         let forked = original.fork();
 
         // Remove from forked - should NOT affect original
@@ -1209,7 +808,6 @@ mod tests {
 
     #[test]
     fn test_fork_from_fork() {
-        // Test nested forking
         let original = SpaceHandle::new(1, "stack".to_string());
         original.add_atom(MettaValue::Long(1));
 
@@ -1254,17 +852,11 @@ mod tests {
         let forked = original.fork();
 
         // Forked should NOT be the same space as original
-        // (they have different overlays)
         assert!(!original.same_space(&forked));
     }
 
     #[test]
     fn test_nondeterministic_branch_simulation() {
-        // Simulate what happens in nondeterministic evaluation:
-        // - Original space has some data
-        // - Multiple branches fork and modify independently
-        // - Each branch should see only its own modifications
-
         let original = SpaceHandle::new(1, "kb".to_string());
         original.add_atom(MettaValue::Atom("fact1".to_string()));
 
@@ -1449,7 +1041,6 @@ mod tests {
     fn test_multiplicity_mixed_atoms() {
         let handle = SpaceHandle::new(1, "test".to_string());
 
-        // Add different atoms with different multiplicities
         let a = MettaValue::Atom("a".to_string());
         let b = MettaValue::Atom("b".to_string());
         let c = MettaValue::Atom("c".to_string());
@@ -1482,8 +1073,6 @@ mod tests {
 
     #[test]
     fn test_multiplicity_memory_efficiency() {
-        // This test verifies that adding the same atom many times
-        // doesn't create N copies in memory
         let handle = SpaceHandle::new(1, "test".to_string());
         let atom =
             MettaValue::String("large_string_that_would_waste_memory_if_duplicated".to_string());
@@ -1503,30 +1092,6 @@ mod tests {
         let matches = handle.collapse_with_multiplicity();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].count, 10000);
-    }
-
-    #[test]
-    fn test_multiplicity_collapse_to_multiset() {
-        let handle = SpaceHandle::new(1, "test".to_string());
-        let atom = MettaValue::Long(7);
-
-        for _ in 0..100 {
-            handle.add_atom(atom.clone());
-        }
-
-        // Get multiset snapshot (O(1) clone)
-        let multiset = handle.collapse_to_multiset();
-
-        // Should have 100 total
-        assert_eq!(multiset.total(), 100);
-
-        // Should have 1 distinct
-        assert_eq!(multiset.distinct_count(), 1);
-
-        // Verify it's a proper snapshot (modifications don't affect original)
-        let multiset2 = multiset.insert(&MettaValue::Long(8));
-        assert_eq!(multiset2.total(), 101);
-        assert_eq!(multiset.total(), 100); // Original unchanged
     }
 
     // ============================================================
@@ -1629,8 +1194,6 @@ mod tests {
 
     #[test]
     fn test_generic_operations_roundtrip() {
-        // Test that add_atom_generic and collapse_generic are semantically equivalent
-        // to add_atom and collapse
         use crate::backend::models::GcFactory;
 
         let handle1 = SpaceHandle::new(1, "test1".to_string());

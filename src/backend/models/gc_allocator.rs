@@ -1806,6 +1806,13 @@ where
     V: crate::backend::models::metta_value_trait::MettaValueTrait
         + Clone + Send + Sync + Unpin + 'static,
 {
+    // Skip registration when GC is disabled or the GC thread hasn't been spawned.
+    // This avoids ROOT_REGISTRY write lock contention when many environments are
+    // created in parallel (e.g., test suites with thousands of env creations).
+    if is_gc_disabled() || GLOBAL_GC_THREAD.get().is_none() {
+        return;
+    }
+
     use std::any::Any;
     // Clone the Arc and try to downcast to the concrete MettaValue type
     let any: Arc<dyn Any + Send + Sync> = shared.clone();

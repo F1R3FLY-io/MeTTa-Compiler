@@ -20,6 +20,7 @@ use super::models::{Bindings, MettaValue, MettaValueInner, MettaValueTrait};
 use mork::space::{ParDataParser, Space};
 use mork_expr::{Expr, ExprEnv, ExprZipper};
 use mork_frontend::bytestring_parser::Parser;
+use mork_interning::SharedMappingHandle;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use tracing::{debug, trace, warn};
@@ -191,9 +192,9 @@ impl ConversionContext {
 ///
 /// Instead of allocating a new 256KB buffer for each call, we use a thread-local
 /// buffer pool. This eliminates ~4% malloc/free overhead for large expressions.
-pub fn metta_to_mork_bytes<V: Clone + Default + Send + Sync + Unpin>(
+pub fn metta_to_mork_bytes(
     value: &MettaValue,
-    space: &Space<V>,
+    sm: &SharedMappingHandle,
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String> {
     trace!(
@@ -221,7 +222,7 @@ pub fn metta_to_mork_bytes<V: Clone + Default + Send + Sync + Unpin>(
     // MORK's threading model assumes each thread holds ONE WritePermit for the duration
     // of operations. Creating a new ParDataParser per symbol (as was done before) violated
     // this assumption and caused races when multiple threads accessed the same Slab chain.
-    let mut pdp = ParDataParser::new(&space.sm);
+    let mut pdp = ParDataParser::new(sm);
 
     write_metta_value(value, &mut pdp, ctx, &mut ez).map_err(|e| {
         debug!(
@@ -247,17 +248,201 @@ pub fn metta_to_mork_bytes<V: Clone + Default + Send + Sync + Unpin>(
 ///
 /// This is a convenience function that acquires and releases the context automatically.
 /// Use this when you don't need to access the variable mappings after conversion.
-pub fn metta_to_mork_bytes_pooled<V: Clone + Default + Send + Sync + Unpin>(
+pub fn metta_to_mork_bytes_pooled(
     value: &MettaValue,
-    space: &Space<V>,
+    sm: &SharedMappingHandle,
 ) -> Result<Vec<u8>, String> {
     let mut ctx = acquire_context();
-    let result = metta_to_mork_bytes(value, space, &mut ctx);
+    let result = metta_to_mork_bytes(value, sm, &mut ctx);
     release_context(ctx);
     result
 }
 
-/// Recursively write MettaValue to ExprZipper
+/// Convert MettaValue to MORK query pattern bytes using De Bruijn encoding.
+///
+/// Variables (`$x`, `&y`, `'z`) are encoded as MORK NewVar/VarRef using De Bruijn indices.
+/// Wildcards (`_`) are encoded as MORK NewVar (anonymous variables).
+///
+/// This is the encoding needed for MORK's `query_multi()` structural matching, where
+/// NewVar matches any bytes in the trie. The `ctx.var_names` records the original
+/// variable names so `mork_bindings_to_metta()` can recover them from match results.
+///
+/// For storage (adding atoms/rules to PathMap), use `metta_to_mork_bytes()` instead,
+/// which encodes variables as literal symbols to preserve names through round-trip.
+pub fn metta_to_mork_query_bytes(
+    value: &MettaValue,
+    sm: &SharedMappingHandle,
+    ctx: &mut ConversionContext,
+) -> Result<Vec<u8>, String> {
+    let mut pooled = PooledBuffer::acquire();
+    let buffer = pooled.as_mut();
+
+    const MAX_BUFFER_SIZE: usize = 262144;
+    if buffer.len() < MAX_BUFFER_SIZE {
+        buffer.resize(MAX_BUFFER_SIZE, 0);
+    }
+
+    let expr = Expr {
+        ptr: buffer.as_mut_ptr(),
+    };
+    let mut ez = ExprZipper::new(expr);
+    let mut pdp = ParDataParser::new(sm);
+
+    write_metta_value_debruijn(value, &mut pdp, ctx, &mut ez)?;
+
+    if ez.loc > MAX_BUFFER_SIZE {
+        return Err(format!(
+            "Expression too large for MORK conversion: {} bytes (max {})",
+            ez.loc, MAX_BUFFER_SIZE
+        ));
+    }
+
+    Ok(buffer[..ez.loc].to_vec())
+}
+
+/// Recursively write MettaValue to ExprZipper using De Bruijn encoding for variables.
+///
+/// This is the old encoding that uses NewVar/VarRef for pattern matching queries.
+/// Variables get De Bruijn indices; wildcards (`_`) become anonymous NewVar.
+fn write_metta_value_debruijn(
+    value: &MettaValue,
+    pdp: &mut ParDataParser,
+    ctx: &mut ConversionContext,
+    ez: &mut ExprZipper,
+) -> Result<(), String> {
+    match value.inner() {
+        MettaValueInner::Atom(name) => {
+            if *name == "&" || *name == "&self" || *name == "&kb" || *name == "&stack" {
+                write_symbol(name.as_bytes(), pdp, ez)?;
+            } else if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
+                let var_id = &name[1..];
+                match ctx.get_or_create_var(var_id)? {
+                    None => {
+                        ez.write_new_var();
+                        ez.loc += 1;
+                    }
+                    Some(idx) => {
+                        ez.write_var_ref(idx);
+                        ez.loc += 1;
+                    }
+                }
+            } else if *name == "_" {
+                // Wildcard — each occurrence is a unique anonymous variable.
+                // Register in context to keep De Bruijn indices in sync.
+                let anon_id = format!("__anon{}", ctx.var_names.len());
+                ctx.get_or_create_var(&anon_id)?;
+                ez.write_new_var();
+                ez.loc += 1;
+            } else {
+                write_symbol(name.as_bytes(), pdp, ez)?;
+            }
+        }
+
+        MettaValueInner::Bool(b) => {
+            let s = if *b { "true" } else { "false" };
+            write_symbol(s.as_bytes(), pdp, ez)?;
+        }
+
+        MettaValueInner::Long(n) => {
+            let s = n.to_string();
+            write_symbol(s.as_bytes(), pdp, ez)?;
+        }
+
+        MettaValueInner::Float(f) => {
+            let s = f.to_string();
+            write_symbol(s.as_bytes(), pdp, ez)?;
+        }
+
+        MettaValueInner::String(s) => {
+            let quoted = format!("\"{}\"", s);
+            write_symbol(quoted.as_bytes(), pdp, ez)?;
+        }
+
+        MettaValueInner::Unit => {
+            ez.write_arity(0);
+            ez.loc += 1;
+        }
+
+        MettaValueInner::SExpr(items) => {
+            if items.len() >= 64 {
+                return Err(format!(
+                    "Expression has too many children ({}) - MORK arity limit is 63",
+                    items.len()
+                ));
+            }
+            ez.write_arity(items.len() as u8);
+            ez.loc += 1;
+            for item in *items {
+                write_metta_value_debruijn(item, pdp, ctx, ez)?;
+            }
+        }
+
+        MettaValueInner::Error(msg, details) => {
+            ez.write_arity(3);
+            ez.loc += 1;
+            write_symbol(b"error", pdp, ez)?;
+            write_symbol(format!("\"{}\"", msg).as_bytes(), pdp, ez)?;
+            write_metta_value_debruijn(details, pdp, ctx, ez)?;
+        }
+
+        MettaValueInner::Type(t) => {
+            write_metta_value_debruijn(t, pdp, ctx, ez)?;
+        }
+
+        MettaValueInner::Conjunction(goals) => {
+            let total_arity = goals.len() + 1;
+            if total_arity >= 64 {
+                return Err(format!(
+                    "Conjunction has too many goals ({}) - MORK arity limit is 63",
+                    goals.len()
+                ));
+            }
+            ez.write_arity(total_arity as u8);
+            ez.loc += 1;
+            write_symbol(b",", pdp, ez)?;
+            for goal in *goals {
+                write_metta_value_debruijn(goal, pdp, ctx, ez)?;
+            }
+        }
+
+        MettaValueInner::Space(handle) => {
+            ez.write_arity(3);
+            ez.loc += 1;
+            write_symbol(b"Space", pdp, ez)?;
+            write_symbol(handle.id.to_string().as_bytes(), pdp, ez)?;
+            write_symbol(format!("\"{}\"", handle.name).as_bytes(), pdp, ez)?;
+        }
+
+        MettaValueInner::State(id) => {
+            ez.write_arity(2);
+            ez.loc += 1;
+            write_symbol(b"State", pdp, ez)?;
+            write_symbol(id.to_string().as_bytes(), pdp, ez)?;
+        }
+
+        MettaValueInner::Memo(handle) => {
+            return Err(format!(
+                "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
+                handle.name, handle.id
+            ));
+        }
+
+        MettaValueInner::Empty => {
+            return Err(
+                "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Recursively write MettaValue to ExprZipper.
+///
+/// Variables (`$x`, `&y`, `'z`) and wildcards (`_`) are written as literal symbols,
+/// preserving their names through MORK round-trip (storage → PathMap → deserialization).
+///
+/// For MORK query patterns that need De Bruijn encoding (NewVar/VarRef), use
+/// `write_metta_value_debruijn()` instead.
 fn write_metta_value(
     value: &MettaValue,
     pdp: &mut ParDataParser,
@@ -266,35 +451,9 @@ fn write_metta_value(
 ) -> Result<(), String> {
     match value.inner() {
         MettaValueInner::Atom(name) => {
-            // Check if it's a variable
-            // EXCEPT: standalone "&" is a literal operator (used in match), not a variable
-            // EXCEPT: "&self", "&kb", "&stack" are space references, not variables
-            if *name == "&" || *name == "&self" || *name == "&kb" || *name == "&stack" {
-                // Space references and standalone & are NOT variables - write as symbols
-                write_symbol(name.as_bytes(), pdp, ez)?;
-            } else if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
-                // Variable - use De Bruijn encoding
-                let var_id = &name[1..]; // Remove prefix
-                match ctx.get_or_create_var(var_id)? {
-                    None => {
-                        // First occurrence - write NewVar
-                        ez.write_new_var();
-                        ez.loc += 1;
-                    }
-                    Some(idx) => {
-                        // Subsequent occurrence - write VarRef
-                        ez.write_var_ref(idx);
-                        ez.loc += 1;
-                    }
-                }
-            } else if *name == "_" {
-                // Wildcard - treat as anonymous variable
-                ez.write_new_var();
-                ez.loc += 1;
-            } else {
-                // Regular atom - write as symbol
-                write_symbol(name.as_bytes(), pdp, ez)?;
-            }
+            // All atoms (including variables like $x and wildcards _) are written as symbols.
+            // This preserves names through MORK round-trip for correct rule matching.
+            write_symbol(name.as_bytes(), pdp, ez)?;
         }
 
         MettaValueInner::Bool(b) => {
@@ -453,14 +612,13 @@ fn write_symbol(bytes: &[u8], pdp: &mut ParDataParser, ez: &mut ExprZipper) -> R
 /// - Buffer pooling (thread-local reusable buffers)
 /// - Context pooling (reusable variable tracking)
 /// - Single ParDataParser per conversion (proper MORK threading)
-pub fn value_to_mork_bytes_generic<V, M>(
+pub fn value_to_mork_bytes_generic<V>(
     value: &V,
-    space: &Space<M>,
+    sm: &SharedMappingHandle,
     ctx: &mut ConversionContext,
 ) -> Result<Vec<u8>, String>
 where
     V: MettaValueTrait,
-    M: Clone + Default + Send + Sync + Unpin,
 {
     trace!(
         target: "mettatron::conversion::value_to_mork_bytes_generic",
@@ -483,7 +641,7 @@ where
     let mut ez = ExprZipper::new(expr);
 
     // Create ParDataParser once for the entire conversion
-    let mut pdp = ParDataParser::new(&space.sm);
+    let mut pdp = ParDataParser::new(sm);
 
     write_value_generic(value, &mut pdp, ctx, &mut ez).map_err(|e| {
         debug!(
@@ -506,16 +664,15 @@ where
 }
 
 /// Convenience wrapper for value_to_mork_bytes_generic with pooled context.
-pub fn value_to_mork_bytes_generic_pooled<V, M>(
+pub fn value_to_mork_bytes_generic_pooled<V>(
     value: &V,
-    space: &Space<M>,
+    sm: &SharedMappingHandle,
 ) -> Result<Vec<u8>, String>
 where
     V: MettaValueTrait,
-    M: Clone + Default + Send + Sync + Unpin,
 {
     let mut ctx = acquire_context();
-    let result = value_to_mork_bytes_generic(value, space, &mut ctx);
+    let result = value_to_mork_bytes_generic(value, sm, &mut ctx);
     release_context(ctx);
     result
 }
@@ -527,7 +684,7 @@ where
 fn write_value_generic<V: MettaValueTrait>(
     value: &V,
     pdp: &mut ParDataParser,
-    ctx: &mut ConversionContext,
+    _ctx: &mut ConversionContext,
     ez: &mut ExprZipper,
 ) -> Result<(), String> {
     // Stack-based traversal to handle deep S-expressions without stack overflow
@@ -540,35 +697,10 @@ fn write_value_generic<V: MettaValueTrait>(
     while let Some(item) = work_stack.pop() {
         match item {
             WorkItem::Process(v) => {
-                // Atoms (including variables)
+                // Atoms (including variables and wildcards) — written as literal symbols
+                // to preserve names through MORK round-trip for correct rule matching.
                 if let Some(name) = v.as_atom() {
-                    // Check special atoms that are NOT variables
-                    if name == "&" || name == "&self" || name == "&kb" || name == "&stack" {
-                        write_symbol(name.as_bytes(), pdp, ez)?;
-                    } else if name.starts_with('$')
-                        || name.starts_with('&')
-                        || name.starts_with('\'')
-                    {
-                        // Variable - use De Bruijn encoding
-                        let var_id = &name[1..];
-                        match ctx.get_or_create_var(var_id)? {
-                            None => {
-                                ez.write_new_var();
-                                ez.loc += 1;
-                            }
-                            Some(idx) => {
-                                ez.write_var_ref(idx);
-                                ez.loc += 1;
-                            }
-                        }
-                    } else if name == "_" {
-                        // Wildcard - anonymous variable
-                        ez.write_new_var();
-                        ez.loc += 1;
-                    } else {
-                        // Regular atom
-                        write_symbol(name.as_bytes(), pdp, ez)?;
-                    }
+                    write_symbol(name.as_bytes(), pdp, ez)?;
                     continue;
                 }
 
@@ -798,7 +930,7 @@ mod tests {
         let mut ctx = ConversionContext::new();
 
         let atom = MettaValue::Atom("foo".to_string());
-        let result = metta_to_mork_bytes(&atom, &space, &mut ctx);
+        let result = metta_to_mork_bytes(&atom, &space.sm, &mut ctx);
         assert!(result.is_ok());
     }
 
@@ -808,12 +940,13 @@ mod tests {
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
-        // First occurrence should create NewVar
+        // Variables are now written as literal symbols (not De Bruijn NewVar).
+        // This preserves names through MORK round-trip for correct rule matching.
         let var = MettaValue::Atom("$x".to_string());
-        let result = metta_to_mork_bytes(&var, &space, &mut ctx);
+        let result = metta_to_mork_bytes(&var, &space.sm, &mut ctx);
         assert!(result.is_ok());
-        assert_eq!(ctx.var_names.len(), 1);
-        assert_eq!(ctx.var_names[0], "x");
+        // Context is NOT populated because variables are symbols, not De Bruijn.
+        assert_eq!(ctx.var_names.len(), 0);
     }
 
     #[test]
@@ -828,7 +961,7 @@ mod tests {
             MettaValue::Atom("$x".to_string()),
         ]);
 
-        let result = metta_to_mork_bytes(&sexpr, &space, &mut ctx);
+        let result = metta_to_mork_bytes(&sexpr, &space.sm, &mut ctx);
         assert!(result.is_ok());
     }
 
@@ -838,17 +971,17 @@ mod tests {
         let space = env.create_space();
         let mut ctx = ConversionContext::new();
 
-        // (* $x $x) - same variable twice
+        // (* $x $x) - same variable twice, written as literal symbols
         let sexpr = MettaValue::SExpr(vec![
             MettaValue::Atom("*".to_string()),
             MettaValue::Atom("$x".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]);
 
-        let result = metta_to_mork_bytes(&sexpr, &space, &mut ctx);
+        let result = metta_to_mork_bytes(&sexpr, &space.sm, &mut ctx);
         assert!(result.is_ok());
-        // Should only have one variable in context
-        assert_eq!(ctx.var_names.len(), 1);
+        // Variables are symbols now, not De Bruijn — context stays empty
+        assert_eq!(ctx.var_names.len(), 0);
     }
 
     // =========================================================================
@@ -863,11 +996,11 @@ mod tests {
 
         let atom = MettaValue::Atom("foo".to_string());
         // Test generic version produces same result as original
-        let original_result = metta_to_mork_bytes(&atom, &space, &mut ctx);
+        let original_result = metta_to_mork_bytes(&atom, &space.sm, &mut ctx);
         assert!(original_result.is_ok());
 
         let mut generic_ctx = ConversionContext::new();
-        let generic_result = value_to_mork_bytes_generic(&atom, &space, &mut generic_ctx);
+        let generic_result = value_to_mork_bytes_generic(&atom, &space.sm, &mut generic_ctx);
         assert!(generic_result.is_ok());
 
         // Both should produce identical bytes
@@ -882,11 +1015,11 @@ mod tests {
         let var = MettaValue::Atom("$x".to_string());
 
         let mut ctx1 = ConversionContext::new();
-        let original_result = metta_to_mork_bytes(&var, &space, &mut ctx1);
+        let original_result = metta_to_mork_bytes(&var, &space.sm, &mut ctx1);
         assert!(original_result.is_ok());
 
         let mut ctx2 = ConversionContext::new();
-        let generic_result = value_to_mork_bytes_generic(&var, &space, &mut ctx2);
+        let generic_result = value_to_mork_bytes_generic(&var, &space.sm, &mut ctx2);
         assert!(generic_result.is_ok());
 
         assert_eq!(original_result.unwrap(), generic_result.unwrap());
@@ -905,11 +1038,11 @@ mod tests {
         ]);
 
         let mut ctx1 = ConversionContext::new();
-        let original_result = metta_to_mork_bytes(&sexpr, &space, &mut ctx1);
+        let original_result = metta_to_mork_bytes(&sexpr, &space.sm, &mut ctx1);
         assert!(original_result.is_ok());
 
         let mut ctx2 = ConversionContext::new();
-        let generic_result = value_to_mork_bytes_generic(&sexpr, &space, &mut ctx2);
+        let generic_result = value_to_mork_bytes_generic(&sexpr, &space.sm, &mut ctx2);
         assert!(generic_result.is_ok());
 
         assert_eq!(original_result.unwrap(), generic_result.unwrap());
@@ -941,11 +1074,11 @@ mod tests {
         ]);
 
         let mut ctx1 = ConversionContext::new();
-        let original_result = metta_to_mork_bytes(&sexpr, &space, &mut ctx1);
+        let original_result = metta_to_mork_bytes(&sexpr, &space.sm, &mut ctx1);
         assert!(original_result.is_ok());
 
         let mut ctx2 = ConversionContext::new();
-        let generic_result = value_to_mork_bytes_generic(&sexpr, &space, &mut ctx2);
+        let generic_result = value_to_mork_bytes_generic(&sexpr, &space.sm, &mut ctx2);
         assert!(generic_result.is_ok());
 
         // Both should produce identical bytes
@@ -977,10 +1110,10 @@ mod tests {
 
         for value in values {
             let mut ctx1 = ConversionContext::new();
-            let original = metta_to_mork_bytes(&value, &space, &mut ctx1);
+            let original = metta_to_mork_bytes(&value, &space.sm, &mut ctx1);
 
             let mut ctx2 = ConversionContext::new();
-            let generic = value_to_mork_bytes_generic(&value, &space, &mut ctx2);
+            let generic = value_to_mork_bytes_generic(&value, &space.sm, &mut ctx2);
 
             assert!(original.is_ok(), "Original conversion failed for {:?}", value);
             assert!(generic.is_ok(), "Generic conversion failed for {:?}", value);
@@ -1008,10 +1141,10 @@ mod tests {
         );
 
         let mut ctx1 = ConversionContext::new();
-        let original = metta_to_mork_bytes(&error, &space, &mut ctx1);
+        let original = metta_to_mork_bytes(&error, &space.sm, &mut ctx1);
 
         let mut ctx2 = ConversionContext::new();
-        let generic = value_to_mork_bytes_generic(&error, &space, &mut ctx2);
+        let generic = value_to_mork_bytes_generic(&error, &space.sm, &mut ctx2);
 
         assert!(original.is_ok());
         assert!(generic.is_ok());

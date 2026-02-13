@@ -12,26 +12,11 @@ use std::sync::{Arc as StdArc, Barrier};
 use std::thread;
 
 /// Helper: Create a simple rule for testing
-fn make_test_rule(lhs: &str, rhs: &str) -> Rule {
-    Rule::new(
+fn make_test_rule(lhs: &str, rhs: &str) -> (MettaValue, MettaValue) {
+    (
         MettaValue::Atom(lhs.to_string()),
         MettaValue::Atom(rhs.to_string()),
     )
-}
-
-/// Helper: Extract head symbol and arity from a MettaValue (for get_matching_rules)
-fn extract_head_arity(value: &MettaValue) -> (&str, usize) {
-    match value.inner() {
-        MettaValueInner::Atom(s) => (*s, 0),
-        MettaValueInner::SExpr(vec) if !vec.is_empty() => {
-            if let MettaValueInner::Atom(head) = vec[0].inner() {
-                (*head, vec.len() - 1)
-            } else {
-                ("", 0) // Fallback for non-atom head
-            }
-        }
-        _ => ("", 0), // Fallback for other cases
-    }
 }
 
 /// Helper: Create a simple MettaValue fact for testing
@@ -96,10 +81,10 @@ fn test_clone_shares_arc_pointers() {
 fn test_make_owned_triggers_on_first_write() {
     // Test: First mutation should trigger make_owned() and deep copy
     let mut env = MettaEnvironment::default();
-    let rule = make_test_rule("(test $x)", "(result $x)");
+    let (lhs, rhs) = make_test_rule("(test $x)", "(result $x)");
 
     // Add rule to original (already owns data, no make_owned() needed)
-    env.add_rule(rule.clone());
+    env.add_rule(lhs, rhs);
     assert!(env.owns_data, "Original should still own data");
     assert!(
         env.modified.load(Ordering::Acquire),
@@ -114,7 +99,8 @@ fn test_make_owned_triggers_on_first_write() {
     let btm_ptr_before = StdArc::as_ptr(&clone.shared);
 
     // First mutation triggers make_owned()
-    clone.add_rule(make_test_rule("(clone $y)", "(cloned $y)"));
+    let (lhs2, rhs2) = make_test_rule("(clone $y)", "(cloned $y)");
+    clone.add_rule(lhs2, rhs2);
 
     // After mutation
     assert!(clone.owns_data, "Clone should own data after mutation");
@@ -135,25 +121,23 @@ fn test_make_owned_triggers_on_first_write() {
 fn test_isolation_after_clone_mutation() {
     // Test: Mutations to clone should not affect original
     let mut env = MettaEnvironment::default();
-    let rule1 = make_test_rule("(original $x)", "(original-result $x)");
-    env.add_rule(rule1.clone());
+    let (lhs1, rhs1) = make_test_rule("(original $x)", "(original-result $x)");
+    env.add_rule(lhs1.clone(), rhs1.clone());
 
     // Clone and add different rule
     let mut clone = env.clone();
-    let rule2 = make_test_rule("(cloned $y)", "(cloned-result $y)");
-    clone.add_rule(rule2.clone());
+    let (lhs2, rhs2) = make_test_rule("(cloned $y)", "(cloned-result $y)");
+    clone.add_rule(lhs2.clone(), rhs2.clone());
 
     // Original should only have rule1
-    let (head1, arity1) = extract_head_arity(&rule1.lhs);
-    let original_rules: Vec<_> = env.get_matching_rules_iter(head1, arity1).collect();
+    let original_rules = env.get_matching_rules_for_expr(&lhs1);
     assert_eq!(original_rules.len(), 1, "Original should have 1 rule");
 
     // Clone should have both rules (rule1 was shared, rule2 was added)
-    let clone_rules: Vec<_> = clone.get_matching_rules_iter(head1, arity1).collect();
+    let clone_rules = clone.get_matching_rules_for_expr(&lhs1);
     assert_eq!(clone_rules.len(), 1, "Clone should have original rule");
 
-    let (head2, arity2) = extract_head_arity(&rule2.lhs);
-    let clone_rules2: Vec<_> = clone.get_matching_rules_iter(head2, arity2).collect();
+    let clone_rules2 = clone.get_matching_rules_for_expr(&lhs2);
     assert_eq!(clone_rules2.len(), 1, "Clone should have new rule");
 }
 
@@ -167,7 +151,8 @@ fn test_modification_tracking() {
     );
 
     // Add rule → should set modified flag
-    env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+    let (lhs, rhs) = make_test_rule("(test $x)", "(result $x)");
+    env.add_rule(lhs, rhs);
     assert!(
         env.modified.load(Ordering::Acquire),
         "Env should be modified after add_rule"
@@ -181,7 +166,8 @@ fn test_modification_tracking() {
     );
 
     // Mutate clone → should set clone's modified flag
-    clone.add_rule(make_test_rule("(test2 $y)", "(result2 $y)"));
+    let (lhs2, rhs2) = make_test_rule("(test2 $y)", "(result2 $y)");
+    clone.add_rule(lhs2, rhs2);
     assert!(
         clone.modified.load(Ordering::Acquire),
         "Clone should be modified after mutation"
@@ -195,7 +181,8 @@ fn test_make_owned_idempotency() {
     let mut clone = env.clone();
 
     // First mutation triggers make_owned()
-    clone.add_rule(make_test_rule("(test1 $x)", "(result1 $x)"));
+    let (lhs1, rhs1) = make_test_rule("(test1 $x)", "(result1 $x)");
+    clone.add_rule(lhs1, rhs1);
     assert!(
         clone.owns_data,
         "Clone should own data after first mutation"
@@ -205,7 +192,8 @@ fn test_make_owned_idempotency() {
     let shared_ptr_first = StdArc::as_ptr(&clone.shared);
 
     // Second mutation should NOT trigger another make_owned()
-    clone.add_rule(make_test_rule("(test2 $y)", "(result2 $y)"));
+    let (lhs2, rhs2) = make_test_rule("(test2 $y)", "(result2 $y)");
+    clone.add_rule(lhs2, rhs2);
 
     // Arc pointers should be same (no second deep copy)
     let shared_ptr_second = StdArc::as_ptr(&clone.shared);
@@ -220,7 +208,8 @@ fn test_deep_clone_copies_all_fields() {
     // Test: make_owned() should deep copy the consolidated shared state
     // (All 17 RwLock fields are now in one Arc<EnvironmentShared>)
     let mut env = MettaEnvironment::default();
-    env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+    let (lhs, rhs) = make_test_rule("(test $x)", "(result $x)");
+    env.add_rule(lhs, rhs);
 
     let mut clone = env.clone();
 
@@ -228,7 +217,8 @@ fn test_deep_clone_copies_all_fields() {
     let shared_before = StdArc::as_ptr(&clone.shared);
 
     // Trigger make_owned()
-    clone.add_rule(make_test_rule("(clone $y)", "(cloned $y)"));
+    let (lhs2, rhs2) = make_test_rule("(clone $y)", "(cloned $y)");
+    clone.add_rule(lhs2, rhs2);
 
     // Get Arc pointer after mutation
     let shared_after = StdArc::as_ptr(&clone.shared);
@@ -244,16 +234,20 @@ fn test_deep_clone_copies_all_fields() {
 fn test_multiple_clones_independent() {
     // Test: Multiple clones should be independent after mutation
     let mut env = MettaEnvironment::default();
-    env.add_rule(make_test_rule("(original $x)", "(original-result $x)"));
+    let (lhs, rhs) = make_test_rule("(original $x)", "(original-result $x)");
+    env.add_rule(lhs, rhs);
 
     let mut clone1 = env.clone();
     let mut clone2 = env.clone();
     let mut clone3 = env.clone();
 
     // Mutate each clone differently
-    clone1.add_rule(make_test_rule("(clone1 $a)", "(result1 $a)"));
-    clone2.add_rule(make_test_rule("(clone2 $b)", "(result2 $b)"));
-    clone3.add_rule(make_test_rule("(clone3 $c)", "(result3 $c)"));
+    let (lhs1, rhs1) = make_test_rule("(clone1 $a)", "(result1 $a)");
+    clone1.add_rule(lhs1, rhs1);
+    let (lhs2, rhs2) = make_test_rule("(clone2 $b)", "(result2 $b)");
+    clone2.add_rule(lhs2, rhs2);
+    let (lhs3, rhs3) = make_test_rule("(clone3 $c)", "(result3 $c)");
+    clone3.add_rule(lhs3, rhs3);
 
     // Each clone should have only its own rule (plus original)
     let original_count = env.rule_count();
@@ -276,10 +270,12 @@ fn property_clone_never_shares_mutable_state_after_write() {
     // Property: After mutation, clone and original should have independent state
     for i in 0..10 {
         let mut env = MettaEnvironment::default();
-        env.add_rule(make_test_rule(&format!("(test{}  $x)", i), "(result $x)"));
+        let (lhs, rhs) = make_test_rule(&format!("(test{}  $x)", i), "(result $x)");
+        env.add_rule(lhs, rhs);
 
         let mut clone = env.clone();
-        clone.add_rule(make_test_rule(&format!("(clone{} $y)", i), "(cloned $y)"));
+        let (lhs2, rhs2) = make_test_rule(&format!("(clone{} $y)", i), "(cloned $y)");
+        clone.add_rule(lhs2, rhs2);
 
         // Verify Arc pointers are different (consolidated shared pointer)
         let env_ptr = StdArc::as_ptr(&env.shared);
@@ -309,10 +305,11 @@ fn property_parallel_writes_are_isolated() {
                 barrier.wait();
 
                 // Each thread adds a unique rule
-                clone.add_rule(make_test_rule(
+                let (lhs, rhs) = make_test_rule(
                     &format!("(thread{} $x)", i),
                     &format!("(result{} $x)", i),
-                ));
+                );
+                clone.add_rule(lhs, rhs);
 
                 // Verify this clone only has 1 rule
                 let count = clone.rule_count();
@@ -354,7 +351,8 @@ fn stress_many_clones_with_mutations() {
 
     for i in 0..1000 {
         let mut clone = env.clone();
-        clone.add_rule(make_test_rule(&format!("(stress{} $x)", i), "(result $x)"));
+        let (lhs, rhs) = make_test_rule(&format!("(stress{} $x)", i), "(result $x)");
+        clone.add_rule(lhs, rhs);
 
         assert!(
             clone.owns_data,
@@ -376,11 +374,13 @@ fn stress_many_clones_with_mutations() {
 fn stress_deep_clone_chains() {
     // Stress: Create clone chains (clone of clone of clone...)
     let mut env = MettaEnvironment::default();
-    env.add_rule(make_test_rule("(original $x)", "(result $x)"));
+    let (lhs, rhs) = make_test_rule("(original $x)", "(result $x)");
+    env.add_rule(lhs, rhs);
 
     let mut current = env.clone();
     for i in 0..10 {
-        current.add_rule(make_test_rule(&format!("(depth{} $x)", i), "(result $x)"));
+        let (lhs_i, rhs_i) = make_test_rule(&format!("(depth{} $x)", i), "(result $x)");
+        current.add_rule(lhs_i, rhs_i);
         let next = current.clone();
         current = next;
     }
@@ -405,7 +405,8 @@ fn stress_concurrent_clone_and_mutate() {
             thread::spawn(move || {
                 for j in 0..100 {
                     let mut clone = env.as_ref().clone();
-                    clone.add_rule(make_test_rule(&format!("(t{}_{} $x)", i, j), "(result $x)"));
+                    let (lhs, rhs) = make_test_rule(&format!("(t{}_{} $x)", i, j), "(result $x)");
+                    clone.add_rule(lhs, rhs);
                     assert_eq!(clone.rule_count(), 1, "Clone should have 1 rule");
                 }
             })
@@ -446,8 +447,8 @@ fn integration_parallel_eval_with_dynamic_rules() {
             thread::spawn(move || {
                 // Each thread adds rules dynamically during "evaluation"
                 for j in 0..10 {
-                    let rule = make_test_rule(&format!("(eval{}_{}  $x)", i, j), "(result $x)");
-                    env.add_rule(rule);
+                    let (lhs, rhs) = make_test_rule(&format!("(eval{}_{}  $x)", i, j), "(result $x)");
+                    env.add_rule(lhs, rhs);
                 }
 
                 let count = env.rule_count();
@@ -485,7 +486,8 @@ fn integration_read_while_write() {
     // Integration: Test concurrent reads and writes (RwLock benefit)
     let mut env = MettaEnvironment::default();
     for i in 0..100 {
-        env.add_rule(make_test_rule(&format!("(rule{} $x)", i), "(result $x)"));
+        let (lhs, rhs) = make_test_rule(&format!("(rule{} $x)", i), "(result $x)");
+        env.add_rule(lhs, rhs);
     }
 
     let env = StdArc::new(env);
@@ -531,8 +533,8 @@ fn integration_clone_preserves_rule_data() {
         make_test_rule("(size car small)", "(assert size car small)"),
     ];
 
-    for rule in &rules {
-        env.add_rule(rule.clone());
+    for (lhs, rhs) in &rules {
+        env.add_rule(lhs.clone(), rhs.clone());
     }
 
     // Clone environment
@@ -546,10 +548,9 @@ fn integration_clone_preserves_rule_data() {
     );
 
     // Verify each rule is accessible
-    for rule in &rules {
-        let (head, arity) = extract_head_arity(&rule.lhs);
-        let original_matches: Vec<_> = env.get_matching_rules_iter(head, arity).collect();
-        let clone_matches: Vec<_> = clone.get_matching_rules_iter(head, arity).collect();
+    for (lhs, _rhs) in &rules {
+        let original_matches = env.get_matching_rules_for_expr(lhs);
+        let clone_matches = clone.get_matching_rules_for_expr(lhs);
 
         assert!(!original_matches.is_empty(), "Original should have rule");
         assert!(!clone_matches.is_empty(), "Clone should have rule");
@@ -928,7 +929,7 @@ mod all_atom_multiplicity {
         }
     }
 
-    /// Test: Multiplicity survives rebuild_rule_index
+    /// Test: Multiplicity survives rebuild_bloom_filter
     #[test]
     fn test_multiplicity_survives_rebuild() {
         let mut env = MettaEnvironment::default();
@@ -953,8 +954,8 @@ mod all_atom_multiplicity {
             "Multiplicity should be 2 before rebuild"
         );
 
-        // Rebuild rule index
-        env.rebuild_rule_index();
+        // Rebuild bloom filter
+        env.rebuild_bloom_filter();
 
         // Check multiplicity after rebuild (should still be 2)
         assert_eq!(
@@ -970,7 +971,7 @@ mod thread_safety {
     use std::time::Duration;
 
     // Helper: Create a test rule with proper SExpr structure
-    fn make_test_rule_sexpr(pattern: &str, body: &str) -> Rule {
+    fn make_test_rule_sexpr(pattern: &str, body: &str) -> (MettaValue, MettaValue) {
         // Parse pattern string into proper MettaValue structure
         // "(head $x)" → SExpr([Atom("head"), Atom("$x")])
         let lhs = if pattern.starts_with('(') && pattern.ends_with(')') {
@@ -1010,7 +1011,7 @@ mod thread_safety {
             MettaValue::Atom(body.to_string())
         };
 
-        Rule::new(lhs, rhs)
+        (lhs, rhs)
     }
 
     #[test]
@@ -1019,10 +1020,11 @@ mod thread_safety {
 
         // Add some base rules
         for i in 0..10 {
-            base.add_rule(make_test_rule_sexpr(
+            let (lhs, rhs) = make_test_rule_sexpr(
                 &format!("(base{} $x)", i),
                 "(result $x)",
-            ));
+            );
+            base.add_rule(lhs, rhs);
         }
 
         let base = StdArc::new(base);
@@ -1035,10 +1037,11 @@ mod thread_safety {
 
                     // Add thread-specific rules
                     for i in 0..5 {
-                        clone.add_rule(make_test_rule_sexpr(
+                        let (lhs, rhs) = make_test_rule_sexpr(
                             &format!("(thread{}_rule{} $x)", thread_id, i),
                             &format!("(result{} $x)", i),
-                        ));
+                        );
+                        clone.add_rule(lhs, rhs);
                     }
 
                     // Verify this clone has base + thread-specific rules
@@ -1081,10 +1084,11 @@ mod thread_safety {
 
         // Add base rules
         for i in 0..20 {
-            base.add_rule(make_test_rule_sexpr(
+            let (lhs, rhs) = make_test_rule_sexpr(
                 &format!("(base{} $x)", i),
                 "(result $x)",
-            ));
+            );
+            base.add_rule(lhs, rhs);
         }
 
         let base = StdArc::new(base);
@@ -1104,10 +1108,11 @@ mod thread_safety {
 
                     // Mutate concurrently
                     for i in 0..RULES_PER_THREAD {
-                        clone.add_rule(make_test_rule_sexpr(
+                        let (lhs, rhs) = make_test_rule_sexpr(
                             &format!("(t{}_r{} $x)", thread_id, i),
                             &format!("(res{} $x)", i),
-                        ));
+                        );
+                        clone.add_rule(lhs, rhs);
                     }
 
                     // Verify count
@@ -1164,10 +1169,11 @@ mod thread_safety {
 
                     // Add rules concurrently
                     for i in 0..RULES_PER_THREAD {
-                        clone.add_rule(make_test_rule_sexpr(
+                        let (lhs, rhs) = make_test_rule_sexpr(
                             &format!("(rule_{}_{} $x)", thread_id, i),
                             &format!("(body_{}_{} $x)", thread_id, i),
-                        ));
+                        );
+                        clone.add_rule(lhs, rhs);
                     }
 
                     clone
@@ -1200,10 +1206,11 @@ mod thread_safety {
 
         let mut base = MettaEnvironment::default();
         for i in 0..50 {
-            base.add_rule(make_test_rule_sexpr(
+            let (lhs, rhs) = make_test_rule_sexpr(
                 &format!("(rule{} $x)", i),
                 "(result $x)",
-            ));
+            );
+            base.add_rule(lhs, rhs);
         }
 
         let env = StdArc::new(base);
@@ -1247,10 +1254,11 @@ mod thread_safety {
 
         let mut base = MettaEnvironment::default();
         for i in 0..20 {
-            base.add_rule(make_test_rule_sexpr(
+            let (lhs, rhs) = make_test_rule_sexpr(
                 &format!("(base{} $x)", i),
                 "(result $x)",
-            ));
+            );
+            base.add_rule(lhs, rhs);
         }
 
         let env = StdArc::new(base);
@@ -1287,10 +1295,11 @@ mod thread_safety {
                     // Get a clone and mutate it
                     let mut clone = (*env).clone();
                     for i in 0..10 {
-                        clone.add_rule(make_test_rule_sexpr(
+                        let (lhs, rhs) = make_test_rule_sexpr(
                             &format!("(mut{}_{} $x)", id, i),
                             "(result $x)",
-                        ));
+                        );
+                        clone.add_rule(lhs, rhs);
                         thread::sleep(Duration::from_micros(10));
                     }
 
@@ -1315,10 +1324,11 @@ mod thread_safety {
 
         let mut base = MettaEnvironment::default();
         for i in 0..10 {
-            base.add_rule(make_test_rule_sexpr(
+            let (lhs, rhs) = make_test_rule_sexpr(
                 &format!("(base{} $x)", i),
                 "(result $x)",
-            ));
+            );
+            base.add_rule(lhs, rhs);
         }
 
         // Create one shared clone
@@ -1339,10 +1349,11 @@ mod thread_safety {
 
                     // This mutation triggers make_owned() for this specific clone
                     // All threads do this simultaneously, testing atomicity
-                    my_clone.add_rule(make_test_rule_sexpr(
+                    let (lhs, rhs) = make_test_rule_sexpr(
                         &format!("(first_mutation_{} $x)", thread_id),
                         "(result $x)",
-                    ));
+                    );
+                    my_clone.add_rule(lhs, rhs);
 
                     // Verify we have base + 1 rule
                     assert_eq!(
@@ -1378,10 +1389,11 @@ mod thread_safety {
 
         let mut base = MettaEnvironment::default();
         for i in 0..30 {
-            base.add_rule(make_test_rule_sexpr(
+            let (lhs, rhs) = make_test_rule_sexpr(
                 &format!("(rule{} $x)", i),
                 "(result $x)",
-            ));
+            );
+            base.add_rule(lhs, rhs);
         }
 
         let shared = StdArc::new(base);
@@ -1417,10 +1429,11 @@ mod thread_safety {
 
                     for i in 0..10 {
                         let mut clone = (*shared).clone();
-                        clone.add_rule(make_test_rule_sexpr(
+                        let (lhs, rhs) = make_test_rule_sexpr(
                             &format!("(writer{}_{} $x)", id, i),
                             "(result $x)",
-                        ));
+                        );
+                        clone.add_rule(lhs, rhs);
                         assert_eq!(
                             clone.rule_count(),
                             31,
@@ -1459,7 +1472,7 @@ mod thread_safety {
         ]);
 
         // Add the rule via add_rule() first (sets up rule_index and multiplicity tracking)
-        env.add_rule(Rule::new(lhs.clone(), rhs.clone()));
+        env.add_rule(lhs.clone(), rhs.clone());
 
         // Create the rule s-expression for add_to_space() second add
         let rule_sexpr = MettaValue::SExpr(vec![
@@ -1473,14 +1486,14 @@ mod thread_safety {
 
         // Get the rule count (should be 2)
         // Find the rule and check its count
-        let rules: Vec<Rule> = env.iter_rules().collect();
+        let rules = env.collect_rules();
         assert!(!rules.is_empty(), "Should have at least one rule");
 
         // Find the rule we added
-        let rule = rules
+        let found = rules
             .iter()
-            .find(|r| {
-                if let MettaValueInner::SExpr(lhs_elems) = r.lhs.inner() {
+            .find(|(rule_lhs, _rule_rhs)| {
+                if let MettaValueInner::SExpr(lhs_elems) = rule_lhs.inner() {
                     if lhs_elems.len() == 2 {
                         if let MettaValueInner::Atom(head) = lhs_elems[0].inner() {
                             return *head == "foo";
@@ -1491,7 +1504,7 @@ mod thread_safety {
             })
             .expect("Should find the foo rule");
 
-        let count_before = env.get_rule_count(rule);
+        let count_before = env.get_rule_count(&found.0, &found.1);
         assert_eq!(count_before, 2, "Rule should have multiplicity of 2");
 
         // Remove the rule once
@@ -1500,7 +1513,7 @@ mod thread_safety {
         // Check that multiplicity decreased
         // Note: The rule might still be present (or removed depending on implementation)
         // but the multiplicity count should have been decremented
-        let count_after = env.get_rule_count(rule);
+        let count_after = env.get_rule_count(&found.0, &found.1);
         assert_eq!(
             count_after, 1,
             "Rule multiplicity should be 1 after removal"
@@ -1510,7 +1523,7 @@ mod thread_safety {
         env.remove_from_space(&rule_sexpr);
 
         // After second removal, count should be 0 (but get_rule_count returns 1 for missing)
-        let count_final = env.get_rule_count(rule);
+        let count_final = env.get_rule_count(&found.0, &found.1);
         assert!(
             count_final <= 1,
             "Rule multiplicity should be 0 or 1 after second removal"
@@ -1537,54 +1550,65 @@ mod thread_safety {
     #[test]
     fn test_env_rule_count_after_add() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+        let (lhs, rhs) = make_test_rule("(test $x)", "(result $x)");
+        env.add_rule(lhs, rhs);
         assert_eq!(env.rule_count(), 1, "Env should have 1 rule after add");
 
-        env.add_rule(make_test_rule("(test2 $y)", "(result2 $y)"));
+        let (lhs2, rhs2) = make_test_rule("(test2 $y)", "(result2 $y)");
+        env.add_rule(lhs2, rhs2);
         assert_eq!(env.rule_count(), 2, "Env should have 2 rules");
     }
 
     #[test]
-    fn test_env_iter_rules_empty() {
+    fn test_env_collect_rules_empty() {
         let env = MettaEnvironment::default();
-        let rules: Vec<_> = env.iter_rules().collect();
-        assert!(rules.is_empty(), "iter_rules on empty env should be empty");
+        let rules = env.collect_rules();
+        assert!(rules.is_empty(), "collect_rules on empty env should be empty");
     }
 
     #[test]
-    fn test_env_iter_rules_with_rules() {
+    fn test_env_collect_rules_with_rules() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(make_test_rule("(a $x)", "(b $x)"));
-        env.add_rule(make_test_rule("(c $y)", "(d $y)"));
+        let (lhs1, rhs1) = make_test_rule("(a $x)", "(b $x)");
+        env.add_rule(lhs1, rhs1);
+        let (lhs2, rhs2) = make_test_rule("(c $y)", "(d $y)");
+        env.add_rule(lhs2, rhs2);
 
-        let rules: Vec<_> = env.iter_rules().collect();
+        let rules = env.collect_rules();
         assert_eq!(rules.len(), 2, "Should have 2 rules");
     }
 
     #[test]
     fn test_env_get_matching_rules_no_match() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(make_test_rule("(foo $x)", "(bar $x)"));
+        let (lhs, rhs) = make_test_rule("(foo $x)", "(bar $x)");
+        env.add_rule(lhs, rhs);
 
         // Try to get rules for non-existent head
-        let rules: Vec<_> = env.get_matching_rules_iter("baz", 1).collect();
+        let query = MettaValue::SExpr(vec![
+            MettaValue::Atom("baz".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+        let rules = env.get_matching_rules_for_expr(&query);
         assert!(rules.is_empty(), "Should have no matching rules for 'baz'");
     }
 
     #[test]
     fn test_env_get_matching_rules_match() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(make_test_rule_sexpr("(foo $x)", "(bar $x)"));
+        let (lhs, rhs) = make_test_rule_sexpr("(foo $x)", "(bar $x)");
+        env.add_rule(lhs.clone(), rhs);
 
         // Get rules for matching head
-        let rules: Vec<_> = env.get_matching_rules_iter("foo", 1).collect();
+        let rules = env.get_matching_rules_for_expr(&lhs);
         assert!(!rules.is_empty(), "Should have matching rules for 'foo'");
     }
 
     #[test]
     fn test_env_clone_does_not_own() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+        let (lhs, rhs) = make_test_rule("(test $x)", "(result $x)");
+        env.add_rule(lhs, rhs);
 
         let clone = env.clone();
         assert!(!clone.owns_data, "Clone should not own data");
@@ -1594,16 +1618,19 @@ mod thread_safety {
     #[test]
     fn test_env_multiple_clones_independent_modifications() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(make_test_rule_sexpr("(base $x)", "(result $x)"));
+        let (lhs_base, rhs_base) = make_test_rule_sexpr("(base $x)", "(result $x)");
+        env.add_rule(lhs_base, rhs_base);
 
         let mut clone1 = env.clone();
         let mut clone2 = env.clone();
 
         // Modify clone1
-        clone1.add_rule(make_test_rule_sexpr("(clone1 $x)", "(res1 $x)"));
+        let (lhs_c1, rhs_c1) = make_test_rule_sexpr("(clone1 $x)", "(res1 $x)");
+        clone1.add_rule(lhs_c1, rhs_c1);
 
         // Modify clone2
-        clone2.add_rule(make_test_rule_sexpr("(clone2 $y)", "(res2 $y)"));
+        let (lhs_c2, rhs_c2) = make_test_rule_sexpr("(clone2 $y)", "(res2 $y)");
+        clone2.add_rule(lhs_c2, rhs_c2);
 
         // Verify independence
         assert_eq!(env.rule_count(), 1, "Original should have 1 rule");
@@ -1611,10 +1638,18 @@ mod thread_safety {
         assert_eq!(clone2.rule_count(), 2, "Clone2 should have 2 rules");
 
         // Verify they have different rules
-        let clone1_has_clone2: Vec<_> = clone1.get_matching_rules_iter("clone2", 1).collect();
+        let clone2_query = MettaValue::SExpr(vec![
+            MettaValue::Atom("clone2".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+        let clone1_has_clone2 = clone1.get_matching_rules_for_expr(&clone2_query);
         assert!(clone1_has_clone2.is_empty(), "Clone1 should not have clone2's rules");
 
-        let clone2_has_clone1: Vec<_> = clone2.get_matching_rules_iter("clone1", 1).collect();
+        let clone1_query = MettaValue::SExpr(vec![
+            MettaValue::Atom("clone1".to_string()),
+            MettaValue::Atom("$x".to_string()),
+        ]);
+        let clone2_has_clone1 = clone2.get_matching_rules_for_expr(&clone1_query);
         assert!(clone2_has_clone1.is_empty(), "Clone2 should not have clone1's rules");
     }
 
@@ -1686,7 +1721,8 @@ mod thread_safety {
         let shared_ptr_before = StdArc::as_ptr(&clone.shared);
 
         // Mutate to trigger CoW
-        clone.add_rule(make_test_rule("(test $x)", "(result $x)"));
+        let (lhs, rhs) = make_test_rule("(test $x)", "(result $x)");
+        clone.add_rule(lhs, rhs);
         let shared_ptr_after = StdArc::as_ptr(&clone.shared);
 
         // Should have different Arc after mutation
@@ -1698,14 +1734,16 @@ mod thread_safety {
         let mut env = MettaEnvironment::default();
         assert!(!env.modified.load(Ordering::Relaxed), "New env should not be modified");
 
-        env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+        let (lhs, rhs) = make_test_rule("(test $x)", "(result $x)");
+        env.add_rule(lhs, rhs);
         assert!(env.modified.load(Ordering::Relaxed), "Env should be modified after add_rule");
     }
 
     #[test]
     fn test_env_clone_fresh_modified_flag() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(make_test_rule("(test $x)", "(result $x)"));
+        let (lhs, rhs) = make_test_rule("(test $x)", "(result $x)");
+        env.add_rule(lhs, rhs);
         assert!(env.modified.load(Ordering::Relaxed), "Original should be modified");
 
         let clone = env.clone();
@@ -1715,10 +1753,10 @@ mod thread_safety {
     #[test]
     fn test_env_get_rule_count_missing() {
         let env = MettaEnvironment::default();
-        let rule = make_test_rule("(nonexistent $x)", "(result $x)");
+        let (lhs, rhs) = make_test_rule("(nonexistent $x)", "(result $x)");
 
         // Count for non-existent rule should be handled gracefully (0 or 1)
-        let count = env.get_rule_count(&rule);
+        let count = env.get_rule_count(&lhs, &rhs);
         assert!(count <= 1, "Count for non-existent rule should be 0 or 1");
     }
 
@@ -1727,64 +1765,13 @@ mod thread_safety {
         let mut env = MettaEnvironment::default();
 
         // Add a rule with variable as head (wildcard rule)
-        env.add_rule(Rule::new(
+        env.add_rule(
             MettaValue::Atom("$any".to_string()),
             MettaValue::Atom("matched".to_string()),
-        ));
+        );
 
         // Wildcard rules should be tracked
         // (exact behavior depends on implementation)
     }
 
-    #[test]
-    fn test_extract_head_arity_atom() {
-        let value = MettaValue::Atom("test".to_string());
-        let (head, arity) = extract_head_arity(&value);
-        assert_eq!(head, "test");
-        assert_eq!(arity, 0);
-    }
-
-    #[test]
-    fn test_extract_head_arity_sexpr() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Atom("foo".to_string()),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        let (head, arity) = extract_head_arity(&value);
-        assert_eq!(head, "foo");
-        assert_eq!(arity, 2);
-    }
-
-    #[test]
-    fn test_extract_head_arity_empty_sexpr() {
-        let value = MettaValue::SExpr(vec![]);
-        let (head, arity) = extract_head_arity(&value);
-        assert_eq!(head, "");
-        assert_eq!(arity, 0);
-    }
-
-    #[test]
-    fn test_extract_head_arity_non_atom_head() {
-        let value = MettaValue::SExpr(vec![
-            MettaValue::Long(42), // Non-atom head
-            MettaValue::Atom("arg".to_string()),
-        ]);
-        let (head, arity) = extract_head_arity(&value);
-        assert_eq!(head, ""); // Fallback
-        assert_eq!(arity, 0);
-    }
-
-    #[test]
-    fn test_extract_head_arity_other_types() {
-        let value = MettaValue::Long(42);
-        let (head, arity) = extract_head_arity(&value);
-        assert_eq!(head, "");
-        assert_eq!(arity, 0);
-
-        let value = MettaValue::Bool(true);
-        let (head, arity) = extract_head_arity(&value);
-        assert_eq!(head, "");
-        assert_eq!(arity, 0);
-    }
 }

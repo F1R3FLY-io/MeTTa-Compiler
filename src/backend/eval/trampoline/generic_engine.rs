@@ -397,20 +397,15 @@ pub fn pattern_specificity_generic<V: MettaValueTrait>(pattern: &V) -> usize {
 ///
 /// This is the generic version of `try_match_all_rules` that works with any
 /// value type implementing `MettaValueTrait`. It retrieves rules from the
-/// environment using `get_matching_rules_generic` and performs pattern matching
+/// environment using `get_matching_rules_for_expr` and performs pattern matching
 /// without any value type conversions.
 ///
 /// # Zero-Conversion Design
 ///
-/// For arena mode, this function:
-/// 1. Deserializes rules directly from `RuleBytes` into `GenericRule<MettaValue>`
+/// This function:
+/// 1. Retrieves `(lhs, rhs, multiplicity)` tuples from the environment
 /// 2. Pattern matches using `pattern_match_generic` (no conversion)
 /// 3. Returns `GenericBindings<MettaValue>` (no conversion)
-///
-/// For heap mode, this function:
-/// 1. Deserializes rules into `GenericRule<MettaValue>`
-/// 2. Pattern matches using `pattern_match_generic`
-/// 3. Returns `GenericBindings<MettaValue>`
 ///
 /// # Type Parameters
 ///
@@ -430,22 +425,19 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Copy + Clone,
 {
-    // Extract head symbol and arity for indexed lookup
-    let head = expr.get_head_symbol().unwrap_or("");
-    let arity = expr.get_arity();
-
-    // Get matching rules from the environment (zero-conversion for arena)
-    let mut sorted_rules = env.get_matching_rules_vec(head, arity);
+    // Get matching rules from the environment (zero-conversion for arena).
+    // Returns (lhs, rhs, multiplicity) tuples filtered by head symbol and arity.
+    let mut sorted_rules = env.get_matching_rules_for_expr(expr);
 
     // Sort rules by specificity (more specific first)
-    sorted_rules.sort_by_key(|rule| pattern_specificity_generic(&rule.lhs));
+    sorted_rules.sort_by_key(|(lhs, _, _)| pattern_specificity_generic(lhs));
 
     // Collect ALL matching rules, tracking LHS specificity
-    let mut matches: Vec<(V, GenericBindings<V>, usize, Option<u32>)> = Vec::new();
-    for rule in sorted_rules {
-        if let Some(bindings) = pattern_match_generic(&rule.lhs, expr) {
-            let lhs_specificity = pattern_specificity_generic(&rule.lhs);
-            matches.push((rule.rhs.clone(), bindings, lhs_specificity, rule.multiplicity_idx));
+    let mut matches: Vec<(V, GenericBindings<V>, usize, u64)> = Vec::new();
+    for (lhs, rhs, multiplicity) in &sorted_rules {
+        if let Some(bindings) = pattern_match_generic(lhs, expr) {
+            let lhs_specificity = pattern_specificity_generic(lhs);
+            matches.push((rhs.clone(), bindings, lhs_specificity, *multiplicity));
         }
     }
 
@@ -457,16 +449,10 @@ where
             .filter(|(_, _, spec, _)| *spec == best_spec)
             .collect();
 
-        // Duplicate results based on rule count (multiplicity)
+        // Duplicate results based on rule multiplicity
         let mut final_matches = Vec::new();
-        for (rhs, bindings, _, multiplicity_idx) in best_matches {
-            // Get the count from multiplicity index if available
-            // For now, we use count=1 as the default since multiplicity tracking
-            // is handled elsewhere. The key optimization is zero-conversion.
-            let count = multiplicity_idx
-                .map(|idx| env.get_rule_count_by_index(idx))
-                .unwrap_or(1);
-
+        for (rhs, bindings, _, multiplicity) in best_matches {
+            let count = multiplicity.max(1);
             for _ in 0..count {
                 final_matches.push((rhs.clone(), bindings.clone()));
             }

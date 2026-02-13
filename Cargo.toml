@@ -91,14 +91,6 @@ name = "iter_rules_bench"
 harness = false
 
 [[bench]]
-name = "multiplicity_tracking"
-harness = false
-
-[[bench]]
-name = "multiplicity_baseline"
-harness = false
-
-[[bench]]
 name = "match_space_multiplicity"
 harness = false
 
@@ -198,9 +190,6 @@ rayon = "1.10"
 
 # Crossbeam - Lock-free channels for custom eval thread pool
 crossbeam-channel = "0.5"
-
-# im - Persistent immutable collections (HAMT) for fork/CoW semantics
-im = "15.1"
 
 # owning_ref - Safe abstraction for returning iterators that own their lock guards
 owning_ref = "0.4"

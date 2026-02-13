@@ -263,7 +263,7 @@ impl From<MettaValue> for MettaState {
 mod tests {
     use super::*;
     use crate::backend::compile;
-    use crate::backend::models::Rule;
+    // Rule type removed — rules are (lhs, rhs) tuples stored as (= lhs rhs) in PathMap
 
     #[test]
     fn test_to_json_empty() {
@@ -315,14 +315,14 @@ mod tests {
     #[test]
     fn test_to_json_with_environment() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(Rule::new(
+        env.add_rule(
             MettaValue::Atom("x".to_string()),
             MettaValue::Long(1),
-        ));
-        env.add_rule(Rule::new(
+        );
+        env.add_rule(
             MettaValue::Atom("y".to_string()),
             MettaValue::Long(2),
-        ));
+        );
 
         let state = MettaState::new_accumulated(env, Vec::new());
         let json = state.to_json_string();
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn test_to_json_complete() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(Rule::new(
+        env.add_rule(
             MettaValue::SExpr(vec![
                 MettaValue::Atom("double".to_string()),
                 MettaValue::Atom("$x".to_string()),
@@ -344,7 +344,7 @@ mod tests {
                 MettaValue::Atom("$x".to_string()),
                 MettaValue::Long(2),
             ]),
-        ));
+        );
 
         let state = MettaState::from_parts(
             vec![MettaValue::Atom("test".to_string())],

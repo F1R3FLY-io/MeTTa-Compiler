@@ -236,19 +236,21 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
     // Snapshot source expressions (MettaValue is Copy)
     let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
 
-    // Evaluate each expression using arena evaluation with bytecode/JIT tiering
+    // Evaluate each expression using arena evaluation with bytecode/JIT tiering.
+    // Each expression gets its own SessionGuard — values allocated during eval
+    // are tagged with the session's context ID and released asynchronously on
+    // a background thread when the guard drops (after results are formatted).
     let mut output = String::new();
     for expr in source_exprs {
         // Only output results for S-expressions, not atoms or ground types
         let should_output = expr.is_sexpr();
 
+        let guard = SessionGuard::enter();
+
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
 
-        // IMPORTANT: Format results BEFORE GC processing. The `results` Vec is a local
-        // variable NOT registered as a GC root. If we process GC first, a snapshot could
-        // mark result values as dead (they're unreachable from registered roots) and free
-        // them, causing use-after-free when we later call format_results().
+        // Format results WHILE guard is alive — values are not yet released.
         let filtered_results: Vec<MettaValue> = results
             .into_iter()
             .filter(|v| !v.is_empty())
@@ -258,17 +260,8 @@ fn eval_metta(input: &str, options: &Options) -> Result<String, String> {
             output.push_str(&format!("{}\n", format_results(&filtered_results)));
         }
 
-        // Process any pending GC response (standalone, matching TLA+ ProcessGcResponse
-        // at "between" phase). This clears GC_CYCLE_IN_FLIGHT and updates backpressure
-        // before we attempt to trigger a new GC cycle or check tier 2.
-        maybe_process_gc_response();
-
-        // Quiescent point: try GC between top-level expressions
-        maybe_quiescent_gc();
-
-        // Tier 2 back-pressure: may block between expressions when pressure is extreme.
-        // Safe because EvalGuard has been dropped (thread at quiescent point).
-        apply_backpressure_tier2();
+        // Drop guard triggers async release_session() on background thread
+        drop(guard);
     }
 
     // MettaState drops here — values remain in global slab allocator
@@ -364,12 +357,12 @@ fn run_repl(options: &Options) {
                             // Only output results for S-expressions, not atoms or ground types
                             let should_output = expr.is_sexpr();
 
+                            let guard = SessionGuard::enter();
+
                             let (results, updated_env) = eval(expr, env, &state);
                             env = updated_env;
 
-                            // IMPORTANT: Format results BEFORE GC processing. The `results`
-                            // Vec is a local variable NOT registered as a GC root. See the
-                            // equivalent comment in eval_metta() for the full explanation.
+                            // Format results WHILE guard is alive — values not yet released.
                             let filtered_results: Vec<MettaValue> = results
                                 .into_iter()
                                 .filter(|v| !v.is_empty())
@@ -382,17 +375,8 @@ fn run_repl(options: &Options) {
                                 println!("{}", highlighted);
                             }
 
-                            // Process any pending GC response (standalone, matching TLA+
-                            // ProcessGcResponse at "between" phase).
-                            maybe_process_gc_response();
-
-                            // Quiescent point: try GC between top-level expressions
-                            maybe_quiescent_gc();
-
-                            // Tier 2 back-pressure: may block between expressions when
-                            // pressure is extreme. Safe because EvalGuard has been dropped
-                            // (thread at quiescent point).
-                            apply_backpressure_tier2();
+                            // Drop guard triggers async release_session()
+                            drop(guard);
                         }
 
                         // Update completions with newly defined functions

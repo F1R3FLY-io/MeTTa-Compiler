@@ -320,18 +320,18 @@ pub fn run_state(
     for &expr in source.iter() {
         let is_eval_expr = is_eval_expression(&expr);
 
+        let guard = crate::backend::models::SessionGuard::enter();
+
         let (results, new_env) = eval(expr, env, compiled_state);
         env = new_env;
 
-        // Consume results BEFORE GC processing — results Vec is not a GC root
+        // Consume results WHILE guard alive — values not yet released
         if is_eval_expr {
             outputs.extend(results);
         }
 
-        // Process any pending GC response (clears GC_CYCLE_IN_FLIGHT)
-        crate::backend::models::maybe_process_gc_response();
-        // Quiescent point: try GC between top-level expressions
-        crate::backend::models::maybe_quiescent_gc();
+        // Drop guard triggers async release_session()
+        drop(guard);
     }
 
     info!(
@@ -589,20 +589,20 @@ pub fn eval_metta_session(src: &str) -> Result<Vec<String>, SyntaxError> {
     for expr in source_exprs {
         let is_eval_expr = is_eval_expression(&expr);
 
+        let guard = crate::backend::models::SessionGuard::enter();
+
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
 
-        // Consume results BEFORE GC processing — results Vec is not a GC root
+        // Consume results WHILE guard alive — values not yet released
         if is_eval_expr {
             for result in &results {
                 state.output_mut().push(*result);
             }
         }
 
-        // Process any pending GC response (clears GC_CYCLE_IN_FLIGHT)
-        crate::backend::models::maybe_process_gc_response();
-        // Quiescent point: try GC between top-level expressions
-        crate::backend::models::maybe_quiescent_gc();
+        // Drop guard triggers async release_session()
+        drop(guard);
     }
 
     // Convert results to strings BEFORE MettaState drops
@@ -677,20 +677,20 @@ pub fn eval_metta_session_raw(src: &str) -> Result<MettaState, SyntaxError> {
     for expr in source_exprs {
         let is_eval_expr = is_eval_expression(&expr);
 
+        let guard = crate::backend::models::SessionGuard::enter();
+
         let (results, new_env) = eval(expr, env, &state);
         env = new_env;
 
-        // Consume results BEFORE GC processing — results Vec is not a GC root
+        // Consume results WHILE guard alive — values not yet released
         if is_eval_expr {
             for result in &results {
                 state.output_mut().push(*result);
             }
         }
 
-        // Process any pending GC response (clears GC_CYCLE_IN_FLIGHT)
-        crate::backend::models::maybe_process_gc_response();
-        // Quiescent point: try GC between top-level expressions
-        crate::backend::models::maybe_quiescent_gc();
+        // Drop guard triggers async release_session()
+        drop(guard);
     }
 
     info!(result_count = state.output().len(), "Session evaluation complete (raw)");

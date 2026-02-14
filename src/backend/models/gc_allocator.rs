@@ -31,6 +31,7 @@
 //! after the allocator is dropped (only at program exit).
 
 use std::alloc::Layout;
+use std::cell::Cell;
 use std::sync::{Arc, OnceLock, Weak};
 use parking_lot::{Condvar, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -139,6 +140,10 @@ struct ValuePage {
     /// the free list, its epoch is set to the allocator's current epoch.
     /// GC checks: if slot_epoch > snapshot_epoch, skip (re-allocated after snapshot).
     epochs: Vec<AtomicU64>,
+    /// Per-slot session context ID for session-based GC.
+    /// Context 0 = persistent (never released by session GC).
+    /// Other values identify the session that allocated the slot.
+    context_ids: Vec<AtomicU32>,
 }
 
 impl ValuePage {
@@ -149,6 +154,7 @@ impl ValuePage {
         let data = MmapPage::new(PAGE_SIZE);
         let marks: Vec<AtomicU64> = (0..mark_words).map(|_| AtomicU64::new(0)).collect();
         let epochs: Vec<AtomicU64> = (0..capacity).map(|_| AtomicU64::new(0)).collect();
+        let context_ids: Vec<AtomicU32> = (0..capacity).map(|_| AtomicU32::new(0)).collect();
         Self {
             data,
             bump_count: AtomicUsize::new(0),
@@ -156,6 +162,7 @@ impl ValuePage {
             live_count: AtomicIsize::new(0),
             marks,
             epochs,
+            context_ids,
         }
     }
 
@@ -251,6 +258,18 @@ impl ValuePage {
     #[inline]
     fn set_slot_epoch(&self, idx: usize, epoch: u64) {
         self.epochs[idx].store(epoch, Ordering::Release);
+    }
+
+    /// Get slot context ID (atomic).
+    #[inline]
+    fn context_id(&self, idx: usize) -> u32 {
+        self.context_ids[idx].load(Ordering::Acquire)
+    }
+
+    /// Set slot context ID (atomic).
+    #[inline]
+    fn set_context_id(&self, idx: usize, id: u32) {
+        self.context_ids[idx].store(id, Ordering::Release);
     }
 }
 
@@ -517,14 +536,29 @@ impl DataClassAllocator {
     }
 
     /// Allocate a slot of this size class (lock-free hot path).
+    ///
+    /// After popping from the free list, validates the pointer against the
+    /// pages vector under a read-lock. If the page was munmapped by
+    /// `release_empty_pages()` between the pop and the lock acquisition,
+    /// the stale pointer is discarded and allocation falls through to the
+    /// bump allocator.
     fn alloc(&self) -> *mut u8 {
         // Fast path: pop from Treiber stack free list
         if let Some(ptr) = self.free_list.pop() {
-            // ASAN: unpoison the slot before reuse
-            unsafe { asan_unpoison_slab_slot(ptr, self.slot_size); }
-            // Increment page live_count for the page containing this slot
-            self.increment_page_live_count(ptr);
-            return ptr;
+            // Validate that the page still exists — it may have been munmapped
+            // by release_empty_pages() between our pop() and this read-lock.
+            let pages = self.pages.read();
+            for page in pages.iter() {
+                if page.contains(ptr as *const u8, self.slot_size) {
+                    // Page still mapped — safe to reuse this slot
+                    page.live_count.fetch_add(1, Ordering::Relaxed);
+                    // ASAN: unpoison the slot before reuse
+                    unsafe { asan_unpoison_slab_slot(ptr, self.slot_size); }
+                    return ptr;
+                }
+            }
+            // Page was munmapped between pop() and read-lock — discard stale
+            // pointer and fall through to bump allocation.
         }
 
         // Try bump-allocating from the current page
@@ -562,15 +596,19 @@ impl DataClassAllocator {
     }
 
     /// Increment the live_count of the page containing the given pointer.
-    fn increment_page_live_count(&self, ptr: *mut u8) {
-        let pages = self.pages.read();
-        for page in pages.iter() {
-            if page.contains(ptr as *const u8, self.slot_size) {
-                page.live_count.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-        }
-    }
+    // DISABLED: increment_page_live_count is no longer needed — alloc() now
+    // inlines the page lookup to validate pointers after free_list.pop(),
+    // combining the page existence check with the live_count increment.
+    //
+    // fn increment_page_live_count(&self, ptr: *mut u8) {
+    //     let pages = self.pages.read();
+    //     for page in pages.iter() {
+    //         if page.contains(ptr as *const u8, self.slot_size) {
+    //             page.live_count.fetch_add(1, Ordering::Relaxed);
+    //             return;
+    //         }
+    //     }
+    // }
 
     /// Return a slot to the free list (lock-free).
     fn free(&self, ptr: *mut u8) {
@@ -621,6 +659,10 @@ impl DataClassAllocator {
     /// 3. Atomically drain the Treiber stack free list (single XCHG, O(1))
     /// 4. Walk the drained chain, push back survivors not in released pages
     /// 5. swap_remove empty pages (triggers munmap via MmapPage::Drop)
+    ///
+    /// Race safety: `alloc()` validates free-list pointers against the pages
+    /// vector under a read-lock after `pop()`. Stale pointers to munmapped
+    /// pages are discarded, falling through to bump allocation.
     fn release_empty_pages(&self) {
         // Phase 1: Quick check with read lock (common case: no empty pages)
         {
@@ -736,53 +778,73 @@ impl ValueAllocator {
     ///
     /// Free-list allocations increment the epoch and tag the slot.
     /// Bump allocations don't need epoch tagging.
+    /// All paths stamp the current thread's session context ID.
+    ///
+    /// After popping from the free list, validates the pointer against the
+    /// pages vector under a read-lock. If the page was munmapped by
+    /// `release_empty_pages()` between the pop and the lock acquisition,
+    /// the stale pointer is discarded and allocation falls through to the
+    /// bump allocator. The epoch is only incremented for valid allocations.
     fn alloc(&self) -> *mut u8 {
+        let ctx_id = current_context_id();
+
         // Fast path: pop from Treiber stack free list
         if let Some(ptr) = self.free_list.pop() {
-            // EPOCH: increment and tag the re-allocated slot
-            let new_epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
-            // Find the page and set the slot's epoch + increment page live_count
+            // Validate that the page still exists — it may have been munmapped
+            // by release_empty_pages() between our pop() and this read-lock.
             let pages = self.pages.read();
             for page in pages.iter() {
                 if let Some(idx) = page.slot_index(ptr as *const u8, self.slot_size) {
+                    // Page still mapped — safe to reuse this slot
+                    let new_epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
                     page.set_slot_epoch(idx, new_epoch);
+                    page.set_context_id(idx, ctx_id);
                     page.live_count.fetch_add(1, Ordering::Relaxed);
-                    break;
+                    // ASAN: mark slot as accessible (was poisoned on free)
+                    unsafe { asan_unpoison_slab_slot(ptr, self.slot_size); }
+                    return ptr;
                 }
             }
-            // ASAN: mark slot as accessible (was poisoned on free)
-            unsafe { asan_unpoison_slab_slot(ptr, self.slot_size); }
-            return ptr;
+            // Page was munmapped between pop() and read-lock — discard stale
+            // pointer and fall through to bump allocation.
         }
 
         // Try bump-allocating from the current page
         let page_ptr = self.current_page.load(Ordering::Acquire);
         if !page_ptr.is_null() {
             let page = unsafe { &*page_ptr };
-            if let Some((ptr, _idx)) = page.bump_alloc(self.slot_size) {
+            if let Some((ptr, idx)) = page.bump_alloc(self.slot_size) {
                 // NOTE: page.live_count already incremented inside bump_alloc()
+                page.set_context_id(idx, ctx_id);
                 return ptr;
             }
         }
 
         // Need a new page — acquire write lock (rare)
-        self.alloc_new_page()
+        self.alloc_new_page_with_ctx(ctx_id)
     }
 
-    /// Slow path: allocate a new page.
+    /// Slow path: allocate a new page (used by non-session paths).
     fn alloc_new_page(&self) -> *mut u8 {
+        self.alloc_new_page_with_ctx(current_context_id())
+    }
+
+    /// Slow path: allocate a new page with a specific context ID.
+    fn alloc_new_page_with_ctx(&self, ctx_id: u32) -> *mut u8 {
         let mut pages = self.pages.write();
         // Double-check: another thread may have added a page while we waited
         if let Some(last) = pages.last() {
-            if let Some((ptr, _idx)) = last.bump_alloc(self.slot_size) {
+            if let Some((ptr, idx)) = last.bump_alloc(self.slot_size) {
                 // NOTE: page.live_count already incremented inside bump_alloc()
+                last.set_context_id(idx, ctx_id);
                 return ptr;
             }
         }
         let page = Box::new(ValuePage::new(self.slot_size));
-        let (ptr, _idx) = page.bump_alloc(self.slot_size)
+        let (ptr, idx) = page.bump_alloc(self.slot_size)
             .expect("fresh page should have room");
         // NOTE: page.live_count already incremented inside bump_alloc()
+        page.set_context_id(idx, ctx_id);
         let page_ptr = &*page as *const ValuePage as *mut ValuePage;
         self.current_page.store(page_ptr, Ordering::Release);
         pages.push(page);
@@ -845,6 +907,10 @@ impl ValueAllocator {
     /// **Hot path impact: ZERO** — alloc/free are unchanged. During the brief
     /// drain window, `pop()` returns `None` and alloc falls through to bump
     /// alloc (correct, lock-free).
+    ///
+    /// Race safety: `alloc()` validates free-list pointers against the pages
+    /// vector under a read-lock after `pop()`. Stale pointers to munmapped
+    /// pages are discarded, falling through to bump allocation.
     fn release_empty_pages(&self) {
         // Phase 1: Quick check with read lock (common case: no empty pages)
         {
@@ -1341,6 +1407,219 @@ pub fn is_gc_disabled() -> bool {
 }
 
 // ============================================================================
+// Session-Based GC — Context ID Infrastructure
+// ============================================================================
+//
+// Each top-level eval gets a unique context ID. All allocations during that
+// eval are tagged with the ID. On eval completion, an RAII guard triggers
+// bulk release of the session's values (minus anything referenced by roots).
+//
+// Context 0 = persistent (compile-time values, never released by sessions).
+// Other values are monotonically increasing session IDs.
+
+/// Global monotonic counter for session context IDs.
+/// Context 0 is reserved for persistent (non-session) allocations.
+static NEXT_CONTEXT_ID: AtomicU32 = AtomicU32::new(1);
+
+thread_local! {
+    /// Per-thread current session context ID.
+    /// 0 = no active session (allocations are persistent).
+    static THREAD_CONTEXT_ID: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Get the current thread's session context ID.
+///
+/// Returns 0 if no `SessionGuard` is active (persistent allocation).
+/// Cost: thread-local read (~1ns), no atomic operations.
+#[inline]
+pub fn current_context_id() -> u32 {
+    THREAD_CONTEXT_ID.with(|c| c.get())
+}
+
+/// RAII guard for session-based GC. Each top-level eval creates one.
+///
+/// On creation: allocates a unique context ID and sets the thread-local.
+/// On drop: clears the thread-local and enqueues an async release of the
+/// session's values (minus survivors). The actual collection runs on a
+/// dedicated background thread, not on the eval thread.
+///
+/// The guard must be held until results have been formatted/consumed,
+/// because values are freed asynchronously after drop.
+pub struct SessionGuard {
+    context_id: u32,
+}
+
+impl SessionGuard {
+    /// Enter a new session — allocates a unique context ID.
+    ///
+    /// All values allocated while this guard is alive will be tagged with
+    /// the session's context ID and eligible for bulk release on drop.
+    ///
+    /// Context ID 0 is reserved as the "persistent" sentinel (values that
+    /// are never released by session-based GC). On wrap-around (~4.29B
+    /// sessions), ID 0 is skipped to avoid accidentally marking session
+    /// allocations as persistent.
+    pub fn enter() -> Self {
+        let mut id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
+        if id == 0 {
+            // Wrapped around; skip 0 (persistent sentinel)
+            id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
+        }
+        THREAD_CONTEXT_ID.with(|c| c.set(id));
+        SessionGuard { context_id: id }
+    }
+
+    /// Get this session's context ID.
+    #[inline]
+    pub fn context_id(&self) -> u32 {
+        self.context_id
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        // Clear thread-local so subsequent allocations are persistent (ctx=0)
+        THREAD_CONTEXT_ID.with(|c| c.set(0));
+        // Enqueue async release — the background session release thread handles
+        // root tracing and sweeping. Cost: one channel send (~50ns).
+        if !is_gc_disabled() {
+            enqueue_session_release(self.context_id);
+        }
+    }
+}
+
+// ============================================================================
+// Async Session Release Thread
+// ============================================================================
+//
+// A dedicated background thread processes session releases asynchronously.
+// The eval thread only pays the cost of a channel send (~50ns) per session,
+// not the full root trace + sweep.
+//
+// The thread is lazily spawned on the first session release request.
+
+/// Channel sender for session release requests. Lazily initialized.
+static SESSION_RELEASE_TX: OnceLock<std::sync::mpsc::Sender<u32>> = OnceLock::new();
+
+/// Handle to the session release thread (for join on shutdown).
+static SESSION_RELEASE_THREAD: OnceLock<Mutex<Option<std::thread::JoinHandle<()>>>> = OnceLock::new();
+
+/// Enqueue a session context ID for async release.
+///
+/// Cost: one channel send (~50ns). The background thread performs the actual
+/// root tracing and sweep.
+fn enqueue_session_release(context_id: u32) {
+    if context_id == 0 {
+        return; // Never release persistent values
+    }
+
+    let tx = SESSION_RELEASE_TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<u32>();
+
+        let handle = std::thread::Builder::new()
+            .name("mettatron-session-gc".to_string())
+            .spawn(move || {
+                session_release_thread_main(rx);
+            })
+            .expect("failed to spawn session release thread");
+
+        SESSION_RELEASE_THREAD.get_or_init(|| Mutex::new(Some(handle)));
+        tx
+    });
+
+    // Best-effort send: if the thread has shut down, silently drop
+    let _ = tx.send(context_id);
+}
+
+/// Main loop for the session release background thread.
+///
+/// Receives context IDs and calls `release_session()` on the global allocator.
+/// Batches multiple pending releases to reduce root-tracing overhead.
+fn session_release_thread_main(rx: std::sync::mpsc::Receiver<u32>) {
+    loop {
+        // Block waiting for the first request
+        match rx.recv() {
+            Ok(first_id) => {
+                // Drain any additional pending releases (batching)
+                let mut ids = vec![first_id];
+                while let Ok(id) = rx.try_recv() {
+                    ids.push(id);
+                }
+
+                // Retry loop: wait for quiescence, acquire GC_IN_PROGRESS,
+                // double-check, trace roots, release sessions.
+                'quiescence: loop {
+                    // === Wait for quiescent state ===
+                    // The trampoline's work_stack and continuations hold
+                    // MettaValues NOT registered as GC roots. Root tracing
+                    // must happen when no evaluator is active.
+                    {
+                        let mut lock = QUIESCENT_MUTEX.lock();
+                        while ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
+                            QUIESCENT_CONDVAR.wait(&mut lock);
+                        }
+                    }
+
+                    // === Acquire GC_IN_PROGRESS (CAS) ===
+                    // Prevents new evals from starting during root tracing.
+                    // CAS-based for mutual exclusion with maybe_quiescent_gc()
+                    // (currently unwired, but future-proof).
+                    let gc_guard = loop {
+                        if let Some(guard) = GcInProgressGuard::try_enter() {
+                            break guard;
+                        }
+                        // Another thread holds GC_IN_PROGRESS — park
+                        let mut lock = GC_PROGRESS_MUTEX.lock();
+                        while GC_IN_PROGRESS.load(Ordering::Acquire) {
+                            GC_PROGRESS_CONDVAR.wait(&mut lock);
+                        }
+                    };
+
+                    // Double-check: no eval snuck in between condvar wake
+                    // and GC_IN_PROGRESS acquisition (same pattern as
+                    // maybe_quiescent_gc).
+                    if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
+                        drop(gc_guard);
+                        continue 'quiescence;
+                    }
+
+                    // === Safe: trace roots at quiescent point ===
+                    let alloc = global_allocator();
+                    let surviving = alloc.trace_surviving_set();
+
+                    // Release GC_IN_PROGRESS — evals can resume.
+                    // Freeing below is safe because:
+                    // - Surviving values promoted to context_id=0 (persistent)
+                    // - Freed values have the released session's context_id
+                    // - release_empty_pages() only frees live_count=0 pages
+                    // - alloc() validates free-list pointers (race fix)
+                    drop(gc_guard);
+
+                    for context_id in &ids {
+                        alloc.release_session_with_surviving(
+                            *context_id, &surviving,
+                        );
+                    }
+                    break 'quiescence;
+                }
+            }
+            Err(_) => {
+                // Channel closed — shut down
+                break;
+            }
+        }
+    }
+}
+
+/// Release all values allocated during a session, except those reachable from roots.
+///
+/// Public free function for use by external callers. Enqueues an async release
+/// on the background session release thread.
+pub fn release_session(context_id: u32) {
+    enqueue_session_release(context_id);
+}
+
+// ============================================================================
 // Quiescent-State Coordination — EvalGuard + ACTIVE_EVALUATORS
 // ============================================================================
 //
@@ -1374,6 +1653,13 @@ static GC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// the flag and are about to `wait()` cannot miss the notification.
 static GC_PROGRESS_MUTEX: Mutex<()> = Mutex::new(());
 static GC_PROGRESS_CONDVAR: Condvar = Condvar::new();
+
+/// Mutex + Condvar pair for notifying threads waiting for quiescent state
+/// (ACTIVE_EVALUATORS == 0). EvalGuard::drop() notifies when transitioning
+/// from 1→0. Used by session_release_thread_main() to wait for safe root
+/// tracing points.
+static QUIESCENT_MUTEX: Mutex<()> = Mutex::new(());
+static QUIESCENT_CONDVAR: Condvar = Condvar::new();
 
 /// Set when a GC snapshot is sent to the GC thread, cleared when the response
 /// is processed. Prevents queueing multiple snapshots in the mpsc channel.
@@ -1426,7 +1712,15 @@ impl EvalGuard {
 impl Drop for EvalGuard {
     #[inline]
     fn drop(&mut self) {
-        ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
+        let prev = ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            // Transitioned to quiescent state (0 active evaluators).
+            // Notify session release thread waiting for safe root tracing.
+            // Must hold mutex to prevent lost wakeups: a thread that checked
+            // ACTIVE_EVALUATORS > 0 and is about to wait() must see our notify.
+            let _lock = QUIESCENT_MUTEX.lock();
+            QUIESCENT_CONDVAR.notify_all();
+        }
     }
 }
 
@@ -1443,6 +1737,20 @@ impl GcInProgressGuard {
     fn enter() -> Self {
         GC_IN_PROGRESS.store(true, Ordering::Release);
         GcInProgressGuard
+    }
+
+    /// Try to enter GC-in-progress state. Returns None if another thread
+    /// already holds the guard (e.g., maybe_quiescent_gc() or another
+    /// session release cycle).
+    fn try_enter() -> Option<Self> {
+        if GC_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(GcInProgressGuard)
+        } else {
+            None
+        }
     }
 }
 
@@ -2174,6 +2482,201 @@ impl SlabAllocator {
         self.committed_bytes_atomic.store(self.committed_bytes(), Ordering::Relaxed);
     }
 
+    // ========================================================================
+    // Session-Based GC — Bulk Release by Context ID
+    // ========================================================================
+
+    /// Release all values allocated during a session (identified by `context_id`),
+    /// except those reachable from registered GC roots (surviving set).
+    ///
+    /// Traces roots first, then delegates to `release_session_with_surviving()`.
+    #[inline]
+    pub fn release_session(&self, context_id: u32) {
+        if context_id == 0 {
+            return; // Never release persistent values
+        }
+        let surviving = self.trace_surviving_set();
+        self.release_session_with_surviving(context_id, &surviving);
+    }
+
+    /// Release all values allocated during a session, using a pre-computed
+    /// surviving set. Used by the async session release thread for batching:
+    /// trace roots once, then release multiple sessions.
+    ///
+    /// Protocol:
+    /// 1. Scan all ValuePages for slots where `context_id == target_id`
+    /// 2. For each matching slot:
+    ///    - If ptr is in surviving set → **promote** to persistent (context_id=0), skip
+    ///    - If epoch is `u64::MAX` → already freed, skip
+    ///    - Otherwise → dead: collect data, free value slot
+    /// 3. Free dead data slots in batch
+    /// 4. Release empty pages
+    /// 5. Update committed_bytes
+    pub fn release_session_with_surviving(
+        &self,
+        context_id: u32,
+        surviving: &std::collections::HashSet<*const u8>,
+    ) {
+        if context_id == 0 {
+            return; // Never release persistent values
+        }
+
+        let slot_size = self.values.slot_size;
+        let mut non_filtered_dead: Vec<ResolvedDead> = Vec::new();
+        let dead_data_to_free: Vec<(*mut u8, usize)>;
+
+        {
+            let pages = self.values.pages.read();
+
+            // Scan all pages for slots matching this context_id
+            for (page_idx, page) in pages.iter().enumerate() {
+                let bump = page.bump_count.load(Ordering::Acquire);
+                for slot_idx in 0..bump {
+                    if page.context_id(slot_idx) != context_id {
+                        continue;
+                    }
+
+                    // Check if already freed (epoch sentinel)
+                    if page.slot_epoch(slot_idx) == u64::MAX {
+                        continue;
+                    }
+
+                    let ptr = page.slot_ptr(slot_idx, slot_size);
+
+                    if surviving.contains(&(ptr as *const u8)) {
+                        // Promote: value is reachable from roots, make persistent
+                        page.set_context_id(slot_idx, 0);
+                    } else {
+                        // Dead: collect for freeing
+                        non_filtered_dead.push(ResolvedDead {
+                            ptr,
+                            page_idx,
+                            slot_idx,
+                        });
+                    }
+                }
+            }
+
+            // Collect dead data BEFORE freeing value slots (slot content still valid)
+            dead_data_to_free = {
+                let mut data = Vec::new();
+                for entry in &non_filtered_dead {
+                    let inner_val = unsafe { &*(entry.ptr as *const MettaValueInner) };
+                    let mut data_entries = Vec::new();
+                    collect_dead_data(inner_val, &mut data_entries);
+                    data.extend(data_entries);
+                }
+                data
+            };
+
+            // Free value slots — O(D'), zero page lookups (indices cached)
+            for entry in &non_filtered_dead {
+                let page = &pages[entry.page_idx];
+                page.live_count.fetch_sub(1, Ordering::Relaxed);
+                // Sentinel epoch: prevents double-free by future GC cycles
+                page.set_slot_epoch(entry.slot_idx, u64::MAX);
+                // ASAN: poison the freed slot BEFORE push
+                unsafe { asan_poison_slab_slot(entry.ptr, slot_size); }
+                self.values.free_list.push(entry.ptr);
+            }
+        } // read lock released
+
+        // Phase 3: Free dead data slots in batch
+        self.free_data_slots_batch(dead_data_to_free);
+
+        // Phase 4: Release empty pages (munmap).
+        // Safe because:
+        // 1. Root tracing happened at quiescent state (ACTIVE_EVALUATORS == 0),
+        //    capturing all reachable values. Surviving values were promoted to
+        //    persistent (context_id=0), keeping their pages alive (live_count > 0).
+        // 2. alloc() validates free-list pointers against the pages vector under
+        //    read-lock. If a page was munmapped, the stale pointer is discarded.
+        self.values.release_empty_pages();
+        for dc in &self.data_classes {
+            dc.release_empty_pages();
+        }
+
+        // Phase 5: Update committed bytes
+        self.committed_bytes_atomic.store(self.committed_bytes(), Ordering::Relaxed);
+    }
+
+    /// Trace the surviving set: DFS from all registered GC roots.
+    ///
+    /// Returns a `HashSet<*const u8>` of all value slot pointers reachable
+    /// from the root registry. Same traversal logic as `mark_snapshot()` but
+    /// builds a HashSet instead of setting mark bits.
+    ///
+    /// Public because the async session release thread calls this to batch
+    /// multiple session releases with a single root trace.
+    pub fn trace_surviving_set(&self) -> std::collections::HashSet<*const u8> {
+        let roots = collect_all_roots();
+        let mut surviving = std::collections::HashSet::with_capacity(roots.len() * 4);
+        let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(1024);
+
+        // Seed worklist with root inner pointers
+        for root in &roots {
+            let ptr = root.inner_ptr();
+            if surviving.insert(ptr as *const u8) {
+                worklist.push(ptr);
+            }
+        }
+
+        // DFS traversal — same variant matching as mark_snapshot()
+        while let Some(ptr) = worklist.pop() {
+            match unsafe { &*ptr } {
+                MettaValueInner::SExpr(children) => {
+                    for child in children.iter() {
+                        let child_ptr = child.inner_ptr();
+                        if surviving.insert(child_ptr as *const u8) {
+                            worklist.push(child_ptr);
+                        }
+                    }
+                }
+                MettaValueInner::Conjunction(goals) => {
+                    for goal in goals.iter() {
+                        let goal_ptr = goal.inner_ptr();
+                        if surviving.insert(goal_ptr as *const u8) {
+                            worklist.push(goal_ptr);
+                        }
+                    }
+                }
+                MettaValueInner::Error(_, details) => {
+                    let details_ptr = details.inner_ptr();
+                    if surviving.insert(details_ptr as *const u8) {
+                        worklist.push(details_ptr);
+                    }
+                }
+                MettaValueInner::Type(inner) => {
+                    let inner_ptr = inner.inner_ptr();
+                    if surviving.insert(inner_ptr as *const u8) {
+                        worklist.push(inner_ptr);
+                    }
+                }
+                MettaValueInner::Space(handle) => {
+                    let mut space_values = Vec::new();
+                    handle.collect_gc_values(&mut space_values);
+                    for val in &space_values {
+                        let val_ptr = val.inner_ptr();
+                        if surviving.insert(val_ptr as *const u8) {
+                            worklist.push(val_ptr);
+                        }
+                    }
+                }
+                MettaValueInner::Atom(_)
+                | MettaValueInner::Bool(_)
+                | MettaValueInner::Long(_)
+                | MettaValueInner::Float(_)
+                | MettaValueInner::String(_)
+                | MettaValueInner::Unit
+                | MettaValueInner::Empty
+                | MettaValueInner::State(_)
+                | MettaValueInner::Memo(_) => {}
+            }
+        }
+
+        surviving
+    }
+
     /// Take a watermark snapshot.
     pub fn watermark(&self) -> AllocationWatermark {
         let pages = self.values.pages.read();
@@ -2240,6 +2743,10 @@ impl SlabAllocator {
     /// **Hot path impact: ZERO** — alloc/free paths are unchanged. During the
     /// brief drain window, `pop()` returns `None` and alloc falls through to
     /// bump allocation (correct, lock-free).
+    ///
+    /// Race safety: `alloc()` validates free-list pointers against the pages
+    /// vector under a read-lock after `pop()`. Stale pointers to munmapped
+    /// pages are discarded, falling through to bump allocation.
     pub fn release_empty_pages(&self) {
         self.values.release_empty_pages();
         for dc in &self.data_classes {
@@ -3469,5 +3976,259 @@ mod tests {
             assert_eq!(*page.ptr, 42);
         }
         // Drop will call munmap
+    }
+
+    // ========================================================================
+    // Session-Based GC — Context ID Infrastructure Tests
+    // ========================================================================
+
+    #[test]
+    fn test_context_id_persistent_by_default() {
+        // Without a SessionGuard, allocations should get context_id=0 (persistent)
+        assert_eq!(current_context_id(), 0);
+        let factory = global_factory();
+        let v = factory.long(42);
+        let alloc = global_allocator();
+        let pages = alloc.values.pages.read();
+        let slot_size = alloc.values.slot_size;
+        for page in pages.iter() {
+            if let Some(idx) = page.slot_index(v.inner_ptr() as *const u8, slot_size) {
+                assert_eq!(page.context_id(idx), 0, "persistent alloc should have context_id=0");
+                return;
+            }
+        }
+        panic!("value not found in any page");
+    }
+
+    #[test]
+    fn test_session_guard_sets_context_id() {
+        let guard = SessionGuard::enter();
+        let ctx_id = guard.context_id();
+        assert_ne!(ctx_id, 0, "session context ID should be non-zero");
+        assert_eq!(current_context_id(), ctx_id, "thread-local should match guard");
+
+        // Allocate a value inside the session
+        let factory = global_factory();
+        let v = factory.long(123);
+        let alloc = global_allocator();
+        let pages = alloc.values.pages.read();
+        let slot_size = alloc.values.slot_size;
+        for page in pages.iter() {
+            if let Some(idx) = page.slot_index(v.inner_ptr() as *const u8, slot_size) {
+                assert_eq!(page.context_id(idx), ctx_id,
+                    "value allocated inside session should have session's context_id");
+                drop(guard);
+                assert_eq!(current_context_id(), 0, "thread-local should be cleared after drop");
+                return;
+            }
+        }
+        panic!("value not found in any page");
+    }
+
+    #[test]
+    fn test_session_guard_clears_on_drop() {
+        {
+            let _guard = SessionGuard::enter();
+            assert_ne!(current_context_id(), 0);
+        }
+        assert_eq!(current_context_id(), 0, "context ID should be 0 after guard drops");
+    }
+
+    #[test]
+    fn test_session_ids_monotonically_increasing() {
+        let g1 = SessionGuard::enter();
+        let id1 = g1.context_id();
+        drop(g1);
+
+        let g2 = SessionGuard::enter();
+        let id2 = g2.context_id();
+        drop(g2);
+
+        let g3 = SessionGuard::enter();
+        let id3 = g3.context_id();
+        drop(g3);
+
+        assert!(id2 > id1, "session IDs should be monotonically increasing");
+        assert!(id3 > id2, "session IDs should be monotonically increasing");
+    }
+
+    #[test]
+    fn test_session_id_never_zero() {
+        // Context ID 0 is reserved as the "persistent" sentinel.
+        // SessionGuard::enter() must skip 0 even on wrap-around.
+        // We can't easily test the full u32 wrap, but we can verify the
+        // invariant: every SessionGuard has context_id != 0.
+        for _ in 0..100 {
+            let guard = SessionGuard::enter();
+            assert_ne!(guard.context_id(), 0, "session context_id must never be 0 (persistent sentinel)");
+            drop(guard);
+        }
+    }
+
+    #[test]
+    fn test_multiple_values_in_session() {
+        let guard = SessionGuard::enter();
+        let ctx_id = guard.context_id();
+        let factory = global_factory();
+
+        // Allocate several values of different types
+        let v1 = factory.long(1);
+        let v2 = factory.atom("test");
+        let v3 = factory.bool(true);
+        let v4 = factory.sexpr(vec![v1, v2]);
+
+        let alloc = global_allocator();
+        let pages = alloc.values.pages.read();
+        let slot_size = alloc.values.slot_size;
+
+        for val in &[v1, v2, v3, v4] {
+            let mut found = false;
+            for page in pages.iter() {
+                if let Some(idx) = page.slot_index(val.inner_ptr() as *const u8, slot_size) {
+                    assert_eq!(page.context_id(idx), ctx_id,
+                        "all values in session should share context_id");
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found, "value not found in any page");
+        }
+        drop(guard);
+    }
+
+    #[test]
+    fn test_concurrent_sessions_different_ids() {
+        use std::sync::Barrier;
+
+        let barrier = Arc::new(Barrier::new(4));
+        let handles: Vec<_> = (0..4).map(|_| {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let guard = SessionGuard::enter();
+                let id = guard.context_id();
+                barrier.wait(); // All threads have their session IDs
+                assert_ne!(id, 0);
+                drop(guard);
+                id
+            })
+        }).collect();
+
+        let ids: Vec<u32> = handles.into_iter()
+            .map(|h| h.join().expect("thread panicked"))
+            .collect();
+
+        // All IDs should be unique
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "concurrent session IDs should be unique");
+    }
+
+    // ========================================================================
+    // Session-Based GC — release_session() Tests
+    // ========================================================================
+
+    #[test]
+    fn test_release_session_frees_dead_values() {
+        let alloc = global_allocator();
+        let factory = global_factory();
+
+        // Allocate values in a session
+        let guard = SessionGuard::enter();
+        let ctx_id = guard.context_id();
+        let _v1 = factory.long(10001);
+        let _v2 = factory.long(10002);
+        let _v3 = factory.atom("session-garbage");
+
+        // Manually release synchronously (testing the core release logic)
+        THREAD_CONTEXT_ID.with(|c| c.set(0));
+        alloc.release_session(ctx_id);
+
+        // After release, allocator should still be functional
+        let v = factory.long(42);
+        assert_eq!(v.as_long(), Some(42));
+
+        // Prevent double release from guard drop
+        std::mem::forget(guard);
+    }
+
+    #[test]
+    fn test_release_session_preserves_persistent_values() {
+        let factory = global_factory();
+        let alloc = global_allocator();
+
+        // Allocate persistent values (no session guard)
+        let persistent = factory.long(99999);
+        let persistent_ptr = persistent.inner_ptr() as *const u8;
+
+        // Start a session and allocate garbage
+        let guard = SessionGuard::enter();
+        let ctx_id = guard.context_id();
+        let _garbage = factory.long(88888);
+        THREAD_CONTEXT_ID.with(|c| c.set(0));
+
+        // Release session
+        alloc.release_session(ctx_id);
+
+        // Persistent value should still be accessible
+        assert_eq!(persistent.as_long(), Some(99999));
+        assert!(alloc.contains_value(persistent_ptr),
+            "persistent value should still exist after session release");
+
+        std::mem::forget(guard);
+    }
+
+    #[test]
+    fn test_release_session_context_zero_is_noop() {
+        let alloc = global_allocator();
+        // Releasing context 0 should return immediately without crashing
+        alloc.release_session(0);
+        // Allocator should still work after no-op release
+        let factory = global_factory();
+        let v = factory.long(42);
+        assert_eq!(v.as_long(), Some(42));
+    }
+
+    #[test]
+    fn test_session_guard_drop_releases() {
+        let factory = global_factory();
+
+        // Create a session, allocate values, then drop the guard
+        {
+            let _guard = SessionGuard::enter();
+            for i in 0..100 {
+                let _v = factory.long(i + 50000);
+            }
+            // guard drops here, triggering release_session()
+        }
+
+        // After drop, no crash and allocator is still functional
+        let v = factory.long(42);
+        assert_eq!(v.as_long(), Some(42));
+    }
+
+    #[test]
+    fn test_session_guard_drop_with_gc_disabled() {
+        // Temporarily disable GC
+        let was_disabled = is_gc_disabled();
+        if !was_disabled {
+            disable_gc();
+        }
+
+        let factory = global_factory();
+        {
+            let _guard = SessionGuard::enter();
+            let _v = factory.long(77777);
+            // guard drops but release_session is skipped when GC is disabled
+        }
+
+        // Re-enable GC for other tests
+        if !was_disabled {
+            GC_DISABLED.store(false, Ordering::Release);
+        }
+
+        // Should not crash
+        let v = factory.long(88888);
+        assert_eq!(v.as_long(), Some(88888));
     }
 }

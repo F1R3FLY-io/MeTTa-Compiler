@@ -96,34 +96,17 @@ impl<'s> EvalContext for SessionContext<'s> {
         &self.factory
     }
 
-    /// Apply Tier 1 back-pressure during evaluation.
+    /// No-op: session-based GC replaces polling-based GC.
     ///
-    /// Called every 256 trampoline iterations. Applies graduated yield/sleep
-    /// to slow allocation when GC can't keep up. Never hard-blocks because
-    /// the caller still holds an EvalGuard.
-    ///
-    /// GC response processing is NOT done here — per the TLA+ model
-    /// (`SlabGC_Quiescent.tla`), `ProcessGcResponse` requires
-    /// `threadPhase[t] = "between"`, meaning responses must only be
-    /// processed between top-level expressions (at quiescent points),
-    /// never during eval when the trampoline holds stack roots.
+    /// Previously called every 256 trampoline iterations to apply backpressure
+    /// and spawn the GC cron manager. With session-based GC, reclamation
+    /// happens asynchronously when `SessionGuard` drops (between top-level
+    /// expressions), so no polling or backpressure is needed during eval.
     #[inline]
     fn maybe_gc(&self) {
-        // NOTE: maybe_process_gc_response() was previously called here but
-        // this violates the TLA+ model — response processing inside eval
-        // can free values that are still on the trampoline continuation stack
-        // (stack roots not visible to the GC root registry). Responses are
-        // now processed exclusively between expressions in main.rs/run_repl().
-        //
-        // crate::backend::models::gc_allocator::maybe_process_gc_response();
-
-        // Lazily spawn the GC cron manager (idempotent via OnceLock).
-        // This must still happen during eval to ensure the cron starts.
-        let _ = crate::backend::models::gc_allocator::global_gc_cron();
-
-        // Tier 1 back-pressure: non-blocking yield/sleep during evaluation.
-        // Safe because we still hold EvalGuard (never hard-blocks).
-        crate::backend::models::gc_allocator::apply_backpressure_tier1();
+        // Session-based GC: all reclamation is triggered by SessionGuard::drop()
+        // which enqueues the session's context_id for async bulk release on a
+        // dedicated background thread. No polling or backpressure needed here.
     }
 }
 

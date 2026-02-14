@@ -95,20 +95,16 @@ pub fn eval(
 ) -> EvalResult {
     use crate::backend::models::EvalGuard;
 
-    // Scope the EvalGuard so it drops before GC lifecycle.
+    // Scope the EvalGuard so it drops after eval completes.
     let result = {
         let _guard = EvalGuard::enter();
         eval_inner(value, env, state)
     };
     // _guard dropped here — ACTIVE_EVALUATORS decremented.
 
-    // Try GC lifecycle only at outermost eval boundary (ACTIVE_EVALUATORS == 0).
-    // This is cheap: one atomic load on every eval return, GC work only when quiescent.
-    // This makes GC accessible from any code path (library, tests, REPL) — not just main.rs.
-    if crate::backend::models::gc_allocator::active_evaluator_count() == 0 {
-        crate::backend::models::gc_allocator::maybe_process_gc_response();
-        crate::backend::models::gc_allocator::maybe_quiescent_gc();
-    }
+    // Session-based GC: reclamation is triggered by SessionGuard::drop() between
+    // top-level expressions. No post-eval GC lifecycle needed here — the caller
+    // (main.rs, rholang_integration.rs) manages SessionGuard around eval+format.
 
     result
 }
